@@ -12,30 +12,30 @@ export default function ConnectionsPage() {
           text="Add and manage database connections."
         />
 
-        <div className="db-card">
-          <h2 className="db-card__title">Add Connection</h2>
+        <div className="conn-card">
+          <h2 className="conn-card__title">Add Connection</h2>
 
-          <div className="db-form">
+          <div className="conn-form">
             <input
               type="text"
               placeholder="Database Name"
-              className="db-form__input"
+              className="conn-input"
             />
 
             <input
               type="text"
               placeholder="Host"
-              className="db-form__input"
+              className="conn-input"
             />
 
-            <div className="db-form__row">
+            <div className="conn-row">
               <input
                 type="text"
                 placeholder="Port"
-                className="db-form__input"
+                className="conn-input"
               />
 
-              <select className="db-form__select">
+              <select className="conn-select">
                 <option>PostgreSQL</option>
                 <option>MySQL</option>
                 <option>SQL Server</option>
@@ -45,30 +45,28 @@ export default function ConnectionsPage() {
             <input
               type="text"
               placeholder="Username"
-              className="db-form__input"
+              className="conn-input"
             />
 
             <input
               type="password"
               placeholder="Password"
-              className="db-form__input"
+              className="conn-input"
             />
 
-            <div className="db-btn-group">
-              <button className="db-btn db-btn--primary">
+            <div className="conn-btn-group">
+              <button className="conn-btn conn-btn--primary">
                 Test Connection
               </button>
-              <button className="db-btn db-btn--secondary">
-                Save
-              </button>
+              <button className="conn-btn conn-btn--secondary">Save</button>
             </div>
           </div>
         </div>
 
-        <div className="db-card">
-          <h2 className="db-card__title">Saved Connections</h2>
+        <div className="conn-card">
+          <h2 className="conn-card__title">Saved Connections</h2>
 
-          <table className="db-table">
+          <table className="conn-table">
             <thead>
               <tr>
                 <th>Name</th>
