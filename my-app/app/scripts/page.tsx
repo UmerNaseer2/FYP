@@ -18,26 +18,15 @@ export default function ScriptsPage() {
           text="Review generated SQL scripts before approval."
         />
 
-        <div className="db-card">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "16px",
-              gap: "12px",
-              flexWrap: "wrap",
-            }}
-          >
-            <div className="db-card__title" style={{ marginBottom: 0 }}>
-              Generated Scripts
-            </div>
-            <button className="db-btn db-btn--primary">Approve</button>
+        <div className="script-card">
+          <div className="script-header">
+            <h2 className="script-card__title">Generated Scripts</h2>
+            <button className="script-btn script-btn--primary">Approve</button>
           </div>
 
-          <div className="db-codebox">
+          <div className="script-codebox">
             {scripts.map((line, index) => (
-              <div className="db-codebox__line" key={index}>
+              <div className="script-codebox__line" key={index}>
                 {index + 1}. {line}
               </div>
             ))}

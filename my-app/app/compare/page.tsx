@@ -3,16 +3,40 @@ import Topbar from "../../components/Topbar";
 
 export default function ComparePage() {
   const rows = [
-    { item: "users.email", type: "Column", change: "Modified", status: "Pending" },
-    { item: "orders", type: "Table", change: "Added", status: "Approved" },
-    { item: "idx_customer_name", type: "Index", change: "Removed", status: "Pending" },
-    { item: "payments.user_id", type: "Foreign Key", change: "Added", status: "Review" },
+    {
+      item: "users.email",
+      type: "Column",
+      change: "Modified",
+      status: "Pending",
+    },
+    {
+      item: "orders",
+      type: "Table",
+      change: "Added",
+      status: "Approved",
+    },
+    {
+      item: "idx_customer_name",
+      type: "Index",
+      change: "Removed",
+      status: "Review",
+    },
+    {
+      item: "payments.user_id",
+      type: "Foreign Key",
+      change: "Added",
+      status: "Pending",
+    },
   ];
 
-  const getBadge = (status: string) => {
-    if (status === "Approved") return "db-badge db-badge--approved";
-    if (status === "Pending") return "db-badge db-badge--pending";
-    return "db-badge db-badge--review";
+  const getBadgeClass = (status: string) => {
+    if (status === "Approved") {
+      return "compare-badge compare-badge--approved";
+    }
+    if (status === "Pending") {
+      return "compare-badge compare-badge--pending";
+    }
+    return "compare-badge compare-badge--review";
   };
 
   return (
@@ -25,23 +49,24 @@ export default function ComparePage() {
           text="Compare two schemas and check the differences."
         />
 
-        <div className="db-card">
-          <div className="db-card__title">Comparison Result</div>
+        <div className="compare-card">
+          <h2 className="compare-card__title">Comparison Result</h2>
 
-          <div className="db-form__row" style={{ marginBottom: "16px" }}>
-            <select className="db-form__select">
+          <div className="compare-top">
+            <select className="compare-select">
               <option>Schema A</option>
             </select>
-            <select className="db-form__select">
+
+            <select className="compare-select">
               <option>Schema B</option>
             </select>
+
+            <button className="compare-btn compare-btn--primary">
+              Compare
+            </button>
           </div>
 
-          <button className="db-btn db-btn--primary" style={{ marginBottom: "16px" }}>
-            Compare
-          </button>
-
-          <table className="db-table">
+          <table className="compare-table">
             <thead>
               <tr>
                 <th>Item</th>
@@ -50,6 +75,7 @@ export default function ComparePage() {
                 <th>Status</th>
               </tr>
             </thead>
+
             <tbody>
               {rows.map((row) => (
                 <tr key={row.item}>
@@ -57,7 +83,9 @@ export default function ComparePage() {
                   <td>{row.type}</td>
                   <td>{row.change}</td>
                   <td>
-                    <span className={getBadge(row.status)}>{row.status}</span>
+                    <span className={getBadgeClass(row.status)}>
+                      {row.status}
+                    </span>
                   </td>
                 </tr>
               ))}
