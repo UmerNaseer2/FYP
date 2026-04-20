@@ -2,11 +2,11 @@ import Link from "next/link";
 
 export default function Sidebar({ current }: { current: string }) {
   const links = [
-    { name: "Dashboard",         href: "/" },
-    { name: "Connections",       href: "/connections" },
+    { name: "Dashboard", href: "/" },
+    { name: "Connections", href: "/connections" },
     { name: "Schema Comparison", href: "/compare" },
     { name: "Version Detection", href: "/versions" },
-    { name: "SQL Scripts",       href: "/scripts" },
+    { name: "SQL Scripts", href: "/scripts" },
   ];
 
   return (
