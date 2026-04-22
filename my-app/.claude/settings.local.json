@@ -7,7 +7,17 @@
       "Bash(npx tsc *)",
       "Bash(npx jest *)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(kill 65756)"
+      "Bash(kill 65756)",
+      "Bash(psql \"postgresql://postgres:umer@localhost:5432/postgres\" -c \"\\\\dn\")",
+      "Read(//Applications/**)",
+      "Read(//Library/PostgreSQL/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(/Library/PostgreSQL/18/bin/psql \"postgresql://postgres:umer@localhost:5432/postgres\" -c \"\\\\dn+\")",
+      "Bash(/Library/PostgreSQL/18/bin/psql \"postgresql://postgres@localhost:5432/postgres\" -c \"\\\\conninfo\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if k in ['scripts','dependencies','devDependencies']}, indent=2\\)\\)\")",
+      "Bash(/Library/PostgreSQL/18/bin/psql \"postgresql://postgres:umer@localhost:5432/postgres\" -c \"SELECT current_database\\(\\), current_user, version\\(\\);\")",
+      "Bash(/Library/PostgreSQL/18/bin/psql \"postgresql://postgres:SThNO6Vf3nOg959igYD3@localhost:5432/postgres\" -c \"SELECT current_database\\(\\), current_user;\")",
+      "Bash(/Library/PostgreSQL/18/bin/psql \"postgresql://postgres:SThNO6Vf3nOg959igYD3@localhost:5432/postgres\" -c \"SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN \\('information_schema'\\) AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name;\")"
     ]
   }
 }
