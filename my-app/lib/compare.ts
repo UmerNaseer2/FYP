@@ -81,6 +81,15 @@ const WEIGHTS = {
   },
 } as const;
 
+// Exported so the UI can display each dimension as a % of its maximum.
+// If you change WEIGHTS.table above, this updates automatically.
+export const TABLE_DIMENSION_MAX = {
+  name:          WEIGHTS.table.name,
+  constraints:   WEIGHTS.table.constraints,
+  columns:       WEIGHTS.table.columns,
+  relationships: WEIGHTS.table.relationships,
+} as const;
+
 // --- Match thresholds -------------------------------------------------------
 // A pair scoring at or above the accept threshold is a confident match.
 // Between accept and possible, it shows up as a rename candidate for review.
