@@ -17,7 +17,6 @@ import {
   summarizeColumns,
   type CompareReport,
   type ConstraintDiff,
-  type MatchCandidate,
   type TableMatch,
 } from "../../lib/compare";
 
@@ -49,14 +48,6 @@ function getTargetById(targets: CompareTarget[], id: string): CompareTarget {
   return targets.find((target) => target.id === id) ?? targets[0];
 }
 
-function scoreBreakdownLabel(candidate: MatchCandidate): string {
-  if (candidate.kind === "table") {
-    return `Name ${candidate.breakdown.name}, constraints ${candidate.breakdown.constraints}, columns ${candidate.breakdown.columns ?? 0}`;
-  }
-
-  return `Name ${candidate.breakdown.name}, type ${candidate.breakdown.type ?? 0}, constraints ${candidate.breakdown.constraints}, order ${candidate.breakdown.order ?? 0}`;
-}
-
 function groupConstraintDiffs(diffs: ConstraintDiff[]): Record<ConstraintKind | "FOREIGN KEY", ConstraintDiff[]> {
   return {
     "PRIMARY KEY": diffs.filter((diff) => diff.kind === "PRIMARY KEY"),
@@ -67,13 +58,134 @@ function groupConstraintDiffs(diffs: ConstraintDiff[]): Record<ConstraintKind | 
   };
 }
 
-function renderTableList(title: string, tables: TableSnapshot[], sideClass: string) {
+// ---------------------------------------------------------------------------
+// Plain-English helpers
+// ---------------------------------------------------------------------------
+
+function matchConfidenceLabel(score: number): string {
+  if (score >= 90) return "Very high confidence";
+  if (score >= 75) return "High confidence";
+  if (score >= 60) return "Good match";
+  return "Partial match";
+}
+
+function renderScoreBar(score: number) {
+  const label = matchConfidenceLabel(score);
+  const fillClass =
+    score >= 75
+      ? "compare-score-bar-fill--high"
+      : score >= 60
+      ? "compare-score-bar-fill--medium"
+      : "compare-score-bar-fill--low";
+
+  return (
+    <div className="compare-score-display">
+      <div className="compare-score-display__header">
+        <span className="compare-score-display__label">
+          Match confidence — {label}
+        </span>
+        <span className="compare-score-display__value">{score}%</span>
+      </div>
+      <div className="compare-score-bar-track">
+        <div
+          className={`compare-score-bar-fill ${fillClass}`}
+          style={{ width: `${score}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function classifyChange(change: string): "breaking" | "safe" | "info" {
+  if (change.startsWith("Type changed")) return "breaking";
+  if (change.includes("nullable to not null")) return "breaking";
+  if (change.includes("not null to nullable")) return "safe";
+  if (change.startsWith("Size/precision changed")) return "safe";
+  if (change.startsWith("Order changed")) return "info";
+  if (change.includes("Primary key participation changed")) return "breaking";
+  return "info";
+}
+
+function constraintSectionTitle(kind: string): {
+  title: string;
+  description: string;
+} {
+  switch (kind) {
+    case "Primary Key":
+      return {
+        title: "Primary Key",
+        description:
+          "The unique row identifier. Changing this affects how every other table that links here finds records.",
+      };
+    case "Unique Constraints":
+      return {
+        title: "Unique Constraints",
+        description:
+          "Rules that prevent duplicate values in a column or group of columns.",
+      };
+    case "Foreign Keys":
+      return {
+        title: "Foreign Keys",
+        description:
+          "Links to rows in other tables. Differences here mean the two schemas describe different relationships between data.",
+      };
+    case "Check Constraints":
+      return {
+        title: "Check Constraints",
+        description:
+          "Custom rules that every value in a column must satisfy (e.g. price > 0, status IN ('active','inactive')).",
+      };
+    case "Exclude Constraints":
+      return {
+        title: "Exclude Constraints",
+        description:
+          "Advanced rules that prevent two rows from having conflicting values at the same time (common in scheduling schemas).",
+      };
+    default:
+      return { title: kind, description: "" };
+  }
+}
+
+function healthBanner(report: CompareReport) {
+  const hasMissingTables =
+    report.summary.tablesOnlyInA > 0 || report.summary.tablesOnlyInB > 0;
+  const hasChanges =
+    report.summary.changedTables > 0 || report.summary.changedConstraints > 0;
+
+  if (hasMissingTables) {
+    const count = report.summary.tablesOnlyInA + report.summary.tablesOnlyInB;
+    return (
+      <div className="compare-health-banner compare-health-banner--error">
+        ⚠ Schemas are out of sync — {count} table
+        {count === 1 ? "" : "s"} exist in only one schema and need to be
+        created in the other.
+      </div>
+    );
+  }
+  if (hasChanges) {
+    return (
+      <div className="compare-health-banner compare-health-banner--warning">
+        ⚡ Differences detected — {report.summary.changedTables} table
+        {report.summary.changedTables === 1 ? "" : "s"} have structural
+        changes that need to be reviewed before deploying.
+      </div>
+    );
+  }
+  return (
+    <div className="compare-health-banner compare-health-banner--success">
+      ✓ Schemas are in sync — no structural differences found.
+    </div>
+  );
+}
+
+function renderTableList(title: string, description: string, tables: TableSnapshot[], sideClass: string) {
   return (
     <section className="compare-report-block">
       <div className="compare-report-block__header">
         <h3 className="compare-report-block__title">{title}</h3>
         <span className={`compare-pill ${sideClass}`}>{tables.length}</span>
       </div>
+      <p className="compare-section-desc">{description}</p>
       {tables.length === 0 ? (
         <p className="compare-hint">None.</p>
       ) : (
@@ -99,11 +211,16 @@ function renderRenameSection(report: CompareReport) {
   return (
     <section className="compare-report-block">
       <div className="compare-report-block__header">
-        <h3 className="compare-report-block__title">Likely Rename Candidates</h3>
+        <h3 className="compare-report-block__title">Possible Renamed Tables</h3>
         <span className="compare-pill compare-pill--neutral">
           {accepted.length + possible.length}
         </span>
       </div>
+      <p className="compare-section-desc">
+        These tables have different names but very similar column structures —
+        they may have been renamed between schemas. Review each one to confirm
+        before treating it as a missing table.
+      </p>
 
       {accepted.length === 0 && possible.length === 0 ? (
         <p className="compare-hint">No likely renamed tables were detected.</p>
@@ -118,12 +235,10 @@ function renderRenameSection(report: CompareReport) {
                 {table.left.name} <span className="compare-arrow">→</span>{" "}
                 {table.right.name}
               </p>
+              {renderScoreBar(table.score)}
               <p className="compare-note-card__text">
-                Accepted similarity match at {table.score}%.
-              </p>
-              <p className="compare-note-card__meta">
-                Name {table.breakdown.name}, constraints {table.breakdown.constraints},
-                columns {table.breakdown.columns ?? 0}
+                The column structure, constraints, and FK relationships closely
+                match. This table was likely renamed.
               </p>
             </div>
           ))}
@@ -137,11 +252,10 @@ function renderRenameSection(report: CompareReport) {
                 {candidate.leftName} <span className="compare-arrow">?</span>{" "}
                 {candidate.rightName}
               </p>
+              {renderScoreBar(candidate.score)}
               <p className="compare-note-card__text">
-                Possible match at {candidate.score}%.
-              </p>
-              <p className="compare-note-card__meta">
-                {scoreBreakdownLabel(candidate)}
+                Low-confidence match — the structure partially overlaps but this
+                could be a coincidence. Check manually.
               </p>
             </div>
           ))}
@@ -160,9 +274,14 @@ function renderConstraintGroup(
     return null;
   }
 
+  const { title: displayTitle, description } = constraintSectionTitle(title);
+
   return (
     <div className="compare-detail-group">
-      <h5 className="compare-detail-group__title">{title}</h5>
+      <h5 className="compare-detail-group__title">{displayTitle}</h5>
+      {description && (
+        <p className="compare-section-desc">{description}</p>
+      )}
       <ul className="compare-bullet-list">
         {diffs.map((diff) => (
           <li key={`${title}-${diff.summary}`} className="compare-bullet-list__item">
@@ -245,10 +364,7 @@ function renderMatchedTable(tableMatch: TableMatch) {
         </span>
       </div>
 
-      <p className="compare-note-card__meta compare-note-card__meta--inline">
-        Name {tableMatch.breakdown.name}, constraints {tableMatch.breakdown.constraints},
-        columns {tableMatch.breakdown.columns ?? 0}
-      </p>
+      {renderScoreBar(tableMatch.score)}
 
       {tableMatch.changedSections.length > 0 && (
         <div className="compare-chip-row">
@@ -262,7 +378,13 @@ function renderMatchedTable(tableMatch: TableMatch) {
 
       <div className="compare-detail-grid">
         <div className="compare-detail-group">
-          <h5 className="compare-detail-group__title">Columns Only In A</h5>
+          <h5 className="compare-detail-group__title">
+            Columns only in A
+          </h5>
+          <p className="compare-section-desc">
+            These columns exist in A but are absent in B — B needs to add them
+            to stay in sync.
+          </p>
           {tableMatch.columnsOnlyInA.length === 0 ? (
             <p className="compare-hint">None.</p>
           ) : (
@@ -272,7 +394,8 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   key={`${tableMatch.left.name}-${column.name}`}
                   className="compare-bullet-list__item"
                 >
-                  {column.name} ({column.typeDisplay})
+                  {column.name}{" "}
+                  <span className="compare-column-type">{column.typeDisplay}</span>
                 </li>
               ))}
             </ul>
@@ -280,7 +403,13 @@ function renderMatchedTable(tableMatch: TableMatch) {
         </div>
 
         <div className="compare-detail-group">
-          <h5 className="compare-detail-group__title">Columns Only In B</h5>
+          <h5 className="compare-detail-group__title">
+            Columns only in B
+          </h5>
+          <p className="compare-section-desc">
+            These columns exist in B but are absent in A — A needs to add them
+            to stay in sync.
+          </p>
           {tableMatch.columnsOnlyInB.length === 0 ? (
             <p className="compare-hint">None.</p>
           ) : (
@@ -290,7 +419,8 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   key={`${tableMatch.right.name}-${column.name}`}
                   className="compare-bullet-list__item"
                 >
-                  {column.name} ({column.typeDisplay})
+                  {column.name}{" "}
+                  <span className="compare-column-type">{column.typeDisplay}</span>
                 </li>
               ))}
             </ul>
@@ -299,9 +429,13 @@ function renderMatchedTable(tableMatch: TableMatch) {
       </div>
 
       <div className="compare-detail-group">
-        <h5 className="compare-detail-group__title">Changed Matched Columns</h5>
+        <h5 className="compare-detail-group__title">Changed Columns</h5>
+        <p className="compare-section-desc">
+          These columns exist in both tables but have differences. Breaking
+          changes may cause errors in your application if not handled carefully.
+        </p>
         {changedColumns.length === 0 ? (
-          <p className="compare-hint">No matched columns changed.</p>
+          <p className="compare-hint">No column differences found.</p>
         ) : (
           <div className="compare-stack">
             {changedColumns.map((match) => (
@@ -319,14 +453,26 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   )}
                 </p>
                 <ul className="compare-bullet-list">
-                  {match.changes.map((change) => (
-                    <li
-                      key={`${match.left.name}-${change}`}
-                      className="compare-bullet-list__item"
-                    >
-                      {change}
-                    </li>
-                  ))}
+                  {match.changes.map((change) => {
+                    const severity = classifyChange(change);
+                    return (
+                      <li
+                        key={`${match.left.name}-${change}`}
+                        className="compare-bullet-list__item"
+                      >
+                        <span
+                          className={`compare-severity-tag compare-severity-tag--${severity}`}
+                        >
+                          {severity === "breaking"
+                            ? "Breaking"
+                            : severity === "safe"
+                            ? "Safe"
+                            : "Info"}
+                        </span>
+                        {change}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ))}
@@ -337,6 +483,10 @@ function renderMatchedTable(tableMatch: TableMatch) {
       {tableMatch.possibleColumnMatches.length > 0 && (
         <div className="compare-detail-group">
           <h5 className="compare-detail-group__title">Possible Renamed Columns</h5>
+          <p className="compare-section-desc">
+            These columns have different names but similar types and positions —
+            they may have been renamed.
+          </p>
           <div className="compare-stack">
             {tableMatch.possibleColumnMatches.map((candidate) => (
               <div
@@ -347,11 +497,9 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   {candidate.leftName} <span className="compare-arrow">?</span>{" "}
                   {candidate.rightName}
                 </p>
+                {renderScoreBar(candidate.score)}
                 <p className="compare-note-card__text">
-                  Possible match at {candidate.score}%.
-                </p>
-                <p className="compare-note-card__meta">
-                  {scoreBreakdownLabel(candidate)}
+                  Possible rename — check if this is intentional.
                 </p>
               </div>
             ))}
@@ -589,52 +737,52 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
         {report ? (
           <>
+            {healthBanner(report)}
+
             <div className="compare-summary-grid">
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Tables Only In A</p>
+                <p className="compare-summary-card__label">Missing from B</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.tablesOnlyInA}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  {report.left.database}.{report.left.schema}
+                  Tables in A that B doesn&apos;t have yet
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Tables Only In B</p>
+                <p className="compare-summary-card__label">Missing from A</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.tablesOnlyInB}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  {report.right.database}.{report.right.schema}
+                  Tables in B that A doesn&apos;t have yet
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Changed Matched Tables</p>
+                <p className="compare-summary-card__label">Tables With Changes</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.changedTables}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  Exact + similarity matches
+                  Same table in both but structure differs
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Changed Constraints</p>
+                <p className="compare-summary-card__label">Rule Changes</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.changedConstraints}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  PK, unique, FK, check, exclude
+                  Differences in keys, links, or validation rules
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">
-                  Likely Rename Candidates
-                </p>
+                <p className="compare-summary-card__label">Possible Renames</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.likelyRenameCandidates}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  Accepted + possible similarity matches
+                  Tables that may have been renamed
                 </p>
               </div>
             </div>
@@ -667,11 +815,13 @@ export default async function ComparePage({ searchParams }: PageProps) {
               <div className="compare-report-grid">
                 {renderTableList(
                   "Tables Only In A",
+                  `These tables exist in ${report.left.database}.${report.left.schema} but haven't been created in ${report.right.database}.${report.right.schema} yet. If B is your production database, this is a gap that needs to be filled.`,
                   report.tablesOnlyInA,
                   "compare-pill--danger"
                 )}
                 {renderTableList(
                   "Tables Only In B",
+                  `These tables exist in ${report.right.database}.${report.right.schema} but are absent from ${report.left.database}.${report.left.schema}. They may be new tables added to B that A doesn't know about yet.`,
                   report.tablesOnlyInB,
                   "compare-pill--info"
                 )}
