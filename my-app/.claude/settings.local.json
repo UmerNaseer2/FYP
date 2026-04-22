@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pandoc --track-changes=all \"/Users/m3/FYP MATERIAL/Project Description Degree.docx\" -t plain)",
+      "Bash(awk '{print $NF}')",
+      "Bash(grep -E \"\\\\.\\(tsx|ts|json\\)$\")",
+      "Bash(npx tsc *)",
+      "Bash(npx jest *)",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}

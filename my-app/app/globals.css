@@ -782,6 +782,114 @@ body {
   }
 }
 
+/* ===== Compare Page — score bar ===== */
+
+.compare-score-display {
+  margin-bottom: 14px;
+}
+
+.compare-score-display__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.compare-score-display__label {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.compare-score-display__value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.compare-score-bar-track {
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.compare-score-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.compare-score-bar-fill--high   { background: #22c55e; }
+.compare-score-bar-fill--medium { background: #f59e0b; }
+.compare-score-bar-fill--low    { background: #ef4444; }
+
+/* ===== Compare Page — severity tags on column changes ===== */
+
+.compare-severity-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.compare-severity-tag--breaking {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.compare-severity-tag--safe {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.compare-severity-tag--info {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+/* ===== Compare Page — plain-English section descriptions ===== */
+
+.compare-section-desc {
+  font-size: 12px;
+  color: #64748b;
+  margin: -2px 0 10px;
+  line-height: 1.5;
+}
+
+/* ===== Compare Page — overall health banner ===== */
+
+.compare-health-banner {
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compare-health-banner--error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.compare-health-banner--warning {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.compare-health-banner--success {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
 /* ===================================================== */
 /* ===== Scripts Page ===== */
 /* ===================================================== */
