@@ -6,7 +6,8 @@
       "Bash(grep -E \"\\\\.\\(tsx|ts|json\\)$\")",
       "Bash(npx tsc *)",
       "Bash(npx jest *)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(kill 65756)"
     ]
   }
 }

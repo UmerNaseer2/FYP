@@ -15,8 +15,10 @@ import {
   describeTableMatch,
   describeConstraint,
   summarizeColumns,
+  TABLE_DIMENSION_MAX,
   type CompareReport,
   type ConstraintDiff,
+  type ScoreBreakdown,
   type TableMatch,
 } from "../../lib/compare";
 
@@ -92,6 +94,37 @@ function renderScoreBar(score: number) {
           style={{ width: `${score}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+function renderBreakdown(breakdown: ScoreBreakdown) {
+  const dims: Array<{ label: string; value: number; max: number; hint: string }> = [
+    { label: "Name",         value: breakdown.name,         max: TABLE_DIMENSION_MAX.name,        hint: "How similar the table names are" },
+    { label: "Columns",      value: breakdown.columns ?? 0, max: TABLE_DIMENSION_MAX.columns,     hint: "How well the column structures match" },
+    { label: "Constraints",  value: breakdown.constraints,  max: TABLE_DIMENSION_MAX.constraints, hint: "Keys, foreign keys, and rules overlap" },
+  ];
+
+  if (breakdown.relationships !== undefined) {
+    dims.push({
+      label: "Relationships",
+      value: breakdown.relationships,
+      max: TABLE_DIMENSION_MAX.relationships,
+      hint: "How similarly this table connects to others via foreign keys",
+    });
+  }
+
+  return (
+    <div className="compare-breakdown">
+      {dims.map((dim) => {
+        const pct = Math.round((dim.value / dim.max) * 100);
+        return (
+          <span key={dim.label} className="compare-breakdown__item" title={dim.hint}>
+            <span className="compare-breakdown__label">{dim.label}</span>
+            <span className="compare-breakdown__score">{pct}%</span>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -365,6 +398,7 @@ function renderMatchedTable(tableMatch: TableMatch) {
       </div>
 
       {renderScoreBar(tableMatch.score)}
+      {renderBreakdown(tableMatch.breakdown)}
 
       {tableMatch.changedSections.length > 0 && (
         <div className="compare-chip-row">
@@ -373,6 +407,20 @@ function renderMatchedTable(tableMatch: TableMatch) {
               {section}
             </span>
           ))}
+        </div>
+      )}
+
+      {!tableMatch.exact && (
+        <div className="compare-similarity-notice">
+          <strong>Why was this matched?</strong> These two tables have different
+          names but the algorithm found them structurally similar — columns,
+          data types, constraints, and foreign-key relationships all closely
+          align. This is the rename-detection feature at work.{" "}
+          <strong>Please verify</strong> that{" "}
+          <code>{tableMatch.left.name}</code> and{" "}
+          <code>{tableMatch.right.name}</code> really are the same table before
+          treating this as a confirmed rename — if they are two separate tables
+          that happen to look alike, they should be reviewed independently.
         </div>
       )}
 
