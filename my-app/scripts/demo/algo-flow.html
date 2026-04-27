@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Schema Comparison — Algorithm Flow</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 48px 32px 80px;
+    }
+
+    /* ── Page header ─────────────────────────────────────────────────────── */
+    .page-title {
+      text-align: center;
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+    .page-sub {
+      text-align: center;
+      font-size: 0.9rem;
+      color: #64748b;
+      margin-bottom: 56px;
+    }
+
+    /* ── Flow column ─────────────────────────────────────────────────────── */
+    .flow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* ── Stage label ─────────────────────────────────────────────────────── */
+    .stage-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 3px 10px;
+      border-radius: 20px;
+      margin-bottom: 8px;
+      align-self: flex-start;
+    }
+
+    /* ── Generic card ────────────────────────────────────────────────────── */
+    .card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 22px 28px;
+      width: 100%;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+      border: 1.5px solid #e2e8f0;
+    }
+    .card__title {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .card__body {
+      font-size: 0.875rem;
+      color: #475569;
+      line-height: 1.6;
+    }
+    .card__body code {
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 0.82rem;
+      color: #1e293b;
+    }
+
+    /* ── Arrow connector ─────────────────────────────────────────────────── */
+    .arrow {
+      width: 2px;
+      height: 36px;
+      background: #94a3b8;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .arrow::after {
+      content: '';
+      position: absolute;
+      bottom: -8px;
+      left: -5px;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 9px solid #94a3b8;
+    }
+    .arrow--tall { height: 52px; }
+
+    /* ── Color themes per stage ──────────────────────────────────────────── */
+    .theme-input   { border-color: #3b82f6; }
+    .theme-input   .card__title { color: #1d4ed8; }
+    .label-input   { background: #dbeafe; color: #1d4ed8; }
+
+    .theme-pre     { border-color: #8b5cf6; }
+    .theme-pre     .card__title { color: #6d28d9; }
+    .label-pre     { background: #ede9fe; color: #6d28d9; }
+
+    .theme-pass1   { border-color: #06b6d4; }
+    .theme-pass1   .card__title { color: #0e7490; }
+    .label-pass1   { background: #cffafe; color: #0e7490; }
+
+    .theme-pass2   { border-color: #f59e0b; }
+    .theme-pass2   .card__title { color: #b45309; }
+    .label-pass2   { background: #fef3c7; color: #b45309; }
+
+    .theme-score   { border-color: #10b981; }
+    .theme-score   .card__title { color: #065f46; }
+    .label-score   { background: #d1fae5; color: #065f46; }
+
+    .theme-col     { border-color: #f97316; }
+    .theme-col     .card__title { color: #c2410c; }
+    .label-col     { background: #ffedd5; color: #c2410c; }
+
+    .theme-con     { border-color: #ec4899; }
+    .theme-con     .card__title { color: #be185d; }
+    .label-con     { background: #fce7f3; color: #be185d; }
+
+    .theme-out     { border-color: #0f172a; }
+    .theme-out     .card__title { color: #0f172a; }
+    .label-out     { background: #0f172a; color: #f8fafc; }
+
+    /* ── Input pair layout ───────────────────────────────────────────────── */
+    .input-pair {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 12px;
+      width: 100%;
+      align-items: center;
+    }
+    .vs-badge {
+      font-size: 0.75rem;
+      font-weight: 800;
+      color: #94a3b8;
+      letter-spacing: 0.05em;
+    }
+    .schema-box {
+      background: #fff;
+      border-radius: 12px;
+      border: 2px solid;
+      padding: 16px 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+    .schema-box.left  { border-color: #3b82f6; }
+    .schema-box.right { border-color: #10b981; }
+    .schema-box__label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 4px;
+    }
+    .schema-box.left  .schema-box__label { color: #1d4ed8; }
+    .schema-box.right .schema-box__label { color: #065f46; }
+    .schema-box__title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .schema-box__items {
+      font-size: 0.8rem;
+      color: #475569;
+      line-height: 1.7;
+    }
+
+    /* ── Decision branches ───────────────────────────────────────────────── */
+    .branches {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      width: 100%;
+    }
+    .branch-card {
+      border-radius: 12px;
+      border: 2px solid;
+      padding: 16px;
+      text-align: center;
+    }
+    .branch-card__score {
+      font-size: 1.1rem;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .branch-card__label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .branch-card__note {
+      font-size: 0.75rem;
+      color: #64748b;
+      line-height: 1.4;
+    }
+    .branch-accept  { border-color: #10b981; background: #f0fdf4; }
+    .branch-accept  .branch-card__score { color: #065f46; }
+    .branch-accept  .branch-card__label { color: #065f46; }
+    .branch-possible { border-color: #f59e0b; background: #fffbeb; }
+    .branch-possible .branch-card__score { color: #b45309; }
+    .branch-possible .branch-card__label { color: #b45309; }
+    .branch-ignore  { border-color: #cbd5e1; background: #f8fafc; }
+    .branch-ignore  .branch-card__score { color: #94a3b8; }
+    .branch-ignore  .branch-card__label { color: #94a3b8; }
+
+    /* ── Scoring dimensions grid ─────────────────────────────────────────── */
+    .dim-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .dim-card {
+      border-radius: 10px;
+      border: 1.5px solid #e2e8f0;
+      padding: 14px 16px;
+      background: #f8fafc;
+    }
+    .dim-card__header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .dim-card__name {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #1e293b;
+    }
+    .dim-card__weight {
+      font-size: 0.82rem;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 20px;
+      background: #1e293b;
+      color: #fff;
+    }
+    .dim-card__desc {
+      font-size: 0.78rem;
+      color: #64748b;
+      line-height: 1.5;
+    }
+    .dim-card__formula {
+      margin-top: 6px;
+      font-size: 0.75rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      background: #e2e8f0;
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: #334155;
+      line-height: 1.5;
+    }
+
+    /* ── Column sub-scoring ──────────────────────────────────────────────── */
+    .sub-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .sub-card {
+      border-radius: 8px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 10px 12px;
+      text-align: center;
+    }
+    .sub-card__pts {
+      font-size: 1rem;
+      font-weight: 800;
+      color: #f97316;
+    }
+    .sub-card__label {
+      font-size: 0.72rem;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    /* ── Constraint families ─────────────────────────────────────────────── */
+    .family-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .family-pill {
+      border-radius: 8px;
+      border: 1.5px solid #fbcfe8;
+      background: #fdf2f8;
+      padding: 8px 14px;
+      font-size: 0.78rem;
+    }
+    .family-pill__name {
+      font-weight: 700;
+      color: #be185d;
+      margin-bottom: 2px;
+    }
+    .family-pill__sig {
+      color: #64748b;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.72rem;
+    }
+
+    /* ── Output summary ──────────────────────────────────────────────────── */
+    .output-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .output-item {
+      background: #f1f5f9;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.8rem;
+    }
+    .output-item__label {
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 2px;
+    }
+    .output-item__desc {
+      color: #64748b;
+      line-height: 1.4;
+    }
+
+    /* ── Threshold bar ───────────────────────────────────────────────────── */
+    .threshold-bar {
+      display: flex;
+      height: 10px;
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 10px 0 6px;
+      border: 1px solid #e2e8f0;
+    }
+    .threshold-bar__red    { background: #fecaca; flex: 55; }
+    .threshold-bar__yellow { background: #fde68a; flex: 15; }
+    .threshold-bar__green  { background: #bbf7d0; flex: 30; }
+    .threshold-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      color: #94a3b8;
+    }
+
+    .note {
+      font-size: 0.78rem;
+      color: #64748b;
+      background: #f8fafc;
+      border-left: 3px solid #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 10px;
+      line-height: 1.5;
+    }
+
+    .two-pass {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .pass-box {
+      background: #f8fafc;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 0.8rem;
+    }
+    .pass-box__title {
+      font-weight: 700;
+      font-size: 0.8rem;
+      color: #1e293b;
+      margin-bottom: 4px;
+    }
+    .pass-box__body {
+      color: #475569;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+<h1 class="page-title">Schema Comparison — Algorithm Flow</h1>
+<p class="page-sub">End-to-end walkthrough of how two PostgreSQL schemas are compared, scored, and reported.</p>
+
+<div class="flow">
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 0 — INPUTS
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-input">Stage 0 — Inputs</span>
+
+  <div class="input-pair">
+    <div class="schema-box left">
+      <div class="schema-box__label">Left — Schema A</div>
+      <div class="schema-box__title">ecom_v1</div>
+      <div class="schema-box__items">
+        📋 users<br>
+        📋 categories<br>
+        📋 products<br>
+        📋 orders<br>
+        📋 order_items
+      </div>
+    </div>
+
+    <div class="vs-badge">VS</div>
+
+    <div class="schema-box right">
+      <div class="schema-box__label">Right — Schema B</div>
+      <div class="schema-box__title">ecom_v2</div>
+      <div class="schema-box__items">
+        📋 customers<br>
+        📋 categories<br>
+        📋 products<br>
+        📋 orders<br>
+        📋 purchase_lines<br>
+        📋 payments
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 1 — PREPROCESSING
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-pre">Stage 1 — Preprocessing</span>
+
+  <div class="card theme-pre">
+    <div class="card__title">Build Incoming FK Maps (one per schema)</div>
+    <div class="card__body">
+      Before any comparison starts, the algorithm walks every table in each schema and builds a reverse index:
+      <strong>"which tables point at me?"</strong>
+      This is computed once and reused for every pairwise table comparison —
+      so the FK graph lookup is O(1) per table, not O(n²).
+      <br><br>
+      Example from ecom_v1:<br>
+      <code>users</code> ← referenced by <code>orders.user_id</code><br>
+      <code>categories</code> ← referenced by <code>products.category_id</code><br>
+      <code>orders</code> ← referenced by <code>order_items.order_id</code><br>
+      <code>products</code> ← referenced by <code>order_items.product_id</code>
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 2 — PASS 1
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-pass1">Stage 2 — Pass 1: Exact Name Matching</span>
+
+  <div class="card theme-pass1">
+    <div class="card__title">Match tables that share the same name</div>
+    <div class="card__body">
+      Normalise every table name (trim whitespace, case-sensitive) and look
+      each left table up in a right-side name map. Matches go straight to
+      full scoring. No similarity threshold needed — a name match is a match.
+    </div>
+    <div class="two-pass">
+      <div class="pass-box">
+        <div class="pass-box__title">✅ Exact matches found</div>
+        <div class="pass-box__body">
+          <code>categories</code> ↔ <code>categories</code><br>
+          <code>products</code> ↔ <code>products</code><br>
+          <code>orders</code> ↔ <code>orders</code><br>
+          → All go to full scoring
+        </div>
+      </div>
+      <div class="pass-box">
+        <div class="pass-box__title">⏭ Unmatched — sent to Pass 2</div>
+        <div class="pass-box__body">
+          Left only: <code>users</code>, <code>order_items</code><br>
+          Right only: <code>customers</code>, <code>purchase_lines</code>, <code>payments</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 3 — PASS 2
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-pass2">Stage 3 — Pass 2: Similarity Matching</span>
+
+  <div class="card theme-pass2">
+    <div class="card__title">Score every unmatched left–right pair, find mutual best matches</div>
+    <div class="card__body">
+      Score all combinations of unmatched tables (2 left × 3 right = 6 pairs here).
+      For each left table, find its highest-scoring right candidate.
+      For each right table, find its highest-scoring left candidate.
+      A match is only accepted if <strong>both sides agree</strong> — i.e. each is the other's best option.
+      This prevents one popular right-side table from absorbing multiple weak left-side matches.
+    </div>
+
+    <div class="threshold-bar" style="margin-top:14px;">
+      <div class="threshold-bar__red"></div>
+      <div class="threshold-bar__yellow"></div>
+      <div class="threshold-bar__green"></div>
+    </div>
+    <div class="threshold-labels">
+      <span>0</span>
+      <span>55 — possible threshold</span>
+      <span>70 — accept threshold</span>
+      <span>100</span>
+    </div>
+
+    <div class="branches" style="margin-top:14px;">
+      <div class="branch-card branch-accept">
+        <div class="branch-card__score">≥ 70</div>
+        <div class="branch-card__label">Accepted Rename</div>
+        <div class="branch-card__note">
+          Confident structural match. Treated as the same table with a different name.
+          Shown in the matched table details section.
+          <br><br>
+          <strong>users ↔ customers (87)</strong><br>
+          <strong>order_items ↔ purchase_lines (81)</strong>
+        </div>
+      </div>
+      <div class="branch-card branch-possible">
+        <div class="branch-card__score">55 – 69</div>
+        <div class="branch-card__label">Possible Rename</div>
+        <div class="branch-card__note">
+          Partial overlap — flagged for manual review. Not auto-matched.
+          Appears in the "Possible Renamed Tables" section for the user to decide.
+        </div>
+      </div>
+      <div class="branch-card branch-ignore">
+        <div class="branch-card__score">&lt; 55</div>
+        <div class="branch-card__label">No Match</div>
+        <div class="branch-card__note">
+          Too dissimilar. Table reported as "only in A" or "only in B".
+          <br><br>
+          <strong>payments</strong> — only in B, no candidate in A reaches 55.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 4 — TABLE SCORING
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-score">Stage 4 — Table Pair Scoring (0–100)</span>
+
+  <div class="card theme-score">
+    <div class="card__title">Four weighted dimensions → normalised to 0–100</div>
+    <div class="card__body">
+      Run for every matched pair — both exact-name matches and similarity matches.
+      Each dimension earns raw points; the total is scaled to 0–100 so the threshold
+      constants stay meaningful regardless of how many dimensions contributed.
+      The <strong>relationships</strong> dimension is skipped for tables with no FK involvement,
+      and the remaining three dimensions fill the full 0–100 range instead.
+    </div>
+
+    <div class="dim-grid">
+
+      <div class="dim-card">
+        <div class="dim-card__header">
+          <span class="dim-card__name">① Name Similarity</span>
+          <span class="dim-card__weight">× 20</span>
+        </div>
+        <div class="dim-card__desc">
+          Levenshtein edit distance between the two table names, normalised by the longer name. 1.0 = identical, 0.0 = nothing in common.
+        </div>
+        <div class="dim-card__formula">
+sim = 1 − levenshtein(a, b) / max(len_a, len_b)
+pts = sim × 20
+
+"users" vs "customers" → 1 − 4/9 = 0.56 → 11.1 pts
+"categories" vs "categories" → 1.0 → 20 pts
+        </div>
+      </div>
+
+      <div class="dim-card">
+        <div class="dim-card__header">
+          <span class="dim-card__name">② Column Structure</span>
+          <span class="dim-card__weight">× 55</span>
+        </div>
+        <div class="dim-card__desc">
+          Each left column finds its best-scoring right column, and vice versa.
+          All scores are averaged together (left pool + right pool).
+          See Stage 5 for how individual column pairs are scored.
+        </div>
+        <div class="dim-card__formula">
+leftScores  = [best score per left column]
+rightScores = [best score per right column]
+ratio = average(leftScores + rightScores)
+pts   = ratio × 55
+
+users vs customers → ratio 0.92 → 50.6 pts
+        </div>
+      </div>
+
+      <div class="dim-card">
+        <div class="dim-card__header">
+          <span class="dim-card__name">③ Constraint Families</span>
+          <span class="dim-card__weight">× 15</span>
+        </div>
+        <div class="dim-card__desc">
+          Five families scored independently using signature-based Jaccard similarity,
+          then averaged. See Stage 6 for signature details.
+        </div>
+        <div class="dim-card__formula">
+families = [PK, UNIQUE, FK, CHECK, EXCLUDE]
+each → Jaccard(left_signatures, right_signatures)
+pts = average(families) × 15
+
+order_items vs purchase_lines:
+  FK = 0.0 (schema names differ in signature)
+  others = 1.0 → average 0.8 → 12 pts
+        </div>
+      </div>
+
+      <div class="dim-card">
+        <div class="dim-card__header">
+          <span class="dim-card__name">④ FK Graph (Relationships)</span>
+          <span class="dim-card__weight">× 10</span>
+        </div>
+        <div class="dim-card__desc">
+          Compares which tables this table points to (outgoing) and which tables point at it (incoming), using multiset similarity on names and shapes.
+          This is the strongest rename signal when names drift.
+        </div>
+        <div class="dim-card__formula">
+outgoing: multiset_sim(ref_table_names, shapes)
+incoming: multiset_sim(referring_table_names, shapes)
+pts = average(present buckets) × 10
+
+users vs customers:
+  incoming: ["orders"] vs ["orders"] → 1.0 → 10 pts
+        </div>
+      </div>
+
+    </div>
+
+    <div class="note">
+      <strong>Final score formula:</strong>
+      &nbsp; score = (name_pts + col_pts + con_pts + rel_pts) × 100 / max_possible &nbsp;→&nbsp;
+      rounded to 1 decimal place.
+      When relationships is skipped (isolated table), max_possible = 90 instead of 100.
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 5 — COLUMN DETAIL
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-col">Stage 5 — Column-Level Detail</span>
+
+  <div class="card theme-col">
+    <div class="card__title">Two-pass column matching inside each matched table pair</div>
+    <div class="card__body">
+      Same two-pass logic as the table level, applied per column.
+      Pass 1 matches by exact name. Leftovers go to similarity scoring.
+    </div>
+
+    <div class="two-pass" style="margin-top:12px;">
+      <div class="pass-box">
+        <div class="pass-box__title">Pass 1 — Exact column name match</div>
+        <div class="pass-box__body">
+          Normalise names, look up in a map.
+          Matched columns go straight to diff reporting.
+          In <code>orders</code>: <code>id</code>, <code>status</code>,
+          <code>total_amount</code>, <code>placed_at</code> all match exactly.
+        </div>
+      </div>
+      <div class="pass-box">
+        <div class="pass-box__title">Pass 2 — Similarity on leftovers</div>
+        <div class="pass-box__body">
+          Unmatched columns scored pairwise.
+          In <code>orders</code>: <code>user_id</code> (left) vs <code>customer_id</code> (right)
+          → score 51/60 → accepted column rename.
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px; font-size:0.82rem; font-weight:700; color:#c2410c;">
+      Column pair score — 4 sub-dimensions (max 60 total)
+    </div>
+    <div class="sub-grid">
+      <div class="sub-card">
+        <div class="sub-card__pts">× 15</div>
+        <div class="sub-card__label">Name<br><span style="color:#94a3b8">Levenshtein similarity</span></div>
+      </div>
+      <div class="sub-card">
+        <div class="sub-card__pts">× 20</div>
+        <div class="sub-card__label">Type<br><span style="color:#94a3b8">exact=20, same base=12, different=0</span></div>
+      </div>
+      <div class="sub-card">
+        <div class="sub-card__pts">× 15</div>
+        <div class="sub-card__label">Constraints<br><span style="color:#94a3b8">nullable, PK, unique, FK flags</span></div>
+      </div>
+      <div class="sub-card">
+        <div class="sub-card__pts">× 10</div>
+        <div class="sub-card__label">Order<br><span style="color:#94a3b8">relative position ratio</span></div>
+      </div>
+    </div>
+
+    <div class="note" style="margin-top:14px;">
+      Column thresholds: <strong>≥ 50/60</strong> → accepted match &nbsp;|&nbsp;
+      <strong>40–49/60</strong> → possible rename &nbsp;|&nbsp; <strong>&lt; 40</strong> → no match (column only in A or B).
+      <br>
+      Type is the heaviest signal because type changes are usually breaking.
+      Order is the lightest because column reordering is cosmetic.
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       STAGE 6 — CONSTRAINT DIFF
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-con">Stage 6 — Constraint Diff</span>
+
+  <div class="card theme-con">
+    <div class="card__title">Five constraint families — signature-based matching</div>
+    <div class="card__body">
+      For each matched table pair, constraints are diffed across five families.
+      Each family builds a <strong>signature</strong> per constraint — a string representing
+      what the rule <em>does</em>, not what it's called — so renamed constraints still match.
+      Strategy: match by name first, fall back to matching by signature.
+    </div>
+
+    <div class="family-row">
+      <div class="family-pill">
+        <div class="family-pill__name">PRIMARY KEY</div>
+        <div class="family-pill__sig">Signature: ordered column list<br>"id" or "user_id|account_id"</div>
+      </div>
+      <div class="family-pill">
+        <div class="family-pill__name">UNIQUE</div>
+        <div class="family-pill__sig">Signature: sorted column set<br>Jaccard on all unique constraint sigs</div>
+      </div>
+      <div class="family-pill">
+        <div class="family-pill__name">FOREIGN KEY</div>
+        <div class="family-pill__sig">Signature: local cols → schema → table → ref cols → ON UPDATE → ON DELETE<br>All 6 parts must match</div>
+      </div>
+      <div class="family-pill">
+        <div class="family-pill__name">CHECK</div>
+        <div class="family-pill__sig">Signature: normalised expression text<br>"check (price &gt; 0)"</div>
+      </div>
+      <div class="family-pill">
+        <div class="family-pill__name">EXCLUDE</div>
+        <div class="family-pill__sig">Signature: normalised expression text<br>Rare — most schemas score 1.0 here</div>
+      </div>
+    </div>
+
+    <div class="note">
+      Each constraint reports one of three outcomes:
+      <strong>only in A</strong> (removed), <strong>only in B</strong> (added), or
+      <strong>changed definition</strong> (same name, different rule).
+      These feed directly into the compare report UI.
+    </div>
+  </div>
+
+  <div class="arrow arrow--tall"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       OUTPUT
+  ════════════════════════════════════════════════════════════════════════ -->
+  <span class="stage-label label-out">Output — CompareReport</span>
+
+  <div class="card theme-out">
+    <div class="card__title">Structured report returned to the UI</div>
+    <div class="card__body">Everything the compare page renders comes from this single object.</div>
+    <div class="output-grid">
+      <div class="output-item">
+        <div class="output-item__label">matchedTables</div>
+        <div class="output-item__desc">All confirmed matches (exact + accepted renames) with full column diffs, constraint diffs, score breakdowns, and change lists.</div>
+      </div>
+      <div class="output-item">
+        <div class="output-item__label">tablesOnlyInA / tablesOnlyInB</div>
+        <div class="output-item__desc">Tables with no match on the other side and no rename candidate above the possible threshold.</div>
+      </div>
+      <div class="output-item">
+        <div class="output-item__label">possibleTableMatches</div>
+        <div class="output-item__desc">Rename candidates scoring 55–69. Shown as "needs manual review" — not auto-accepted.</div>
+      </div>
+      <div class="output-item">
+        <div class="output-item__label">summary</div>
+        <div class="output-item__desc">Counts: identical tables, changed tables, constraint changes, rename candidates, tables only in A/B. Drives the health banner and summary cards.</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /.flow -->
+
+</body>
+</html>
