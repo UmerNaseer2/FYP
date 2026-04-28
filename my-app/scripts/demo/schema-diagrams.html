@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Demo Schema Diagrams</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f4f6f9;
+      color: #1a1a2e;
+      padding: 40px 24px 80px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #1a1a2e;
+    }
+    .subtitle {
+      text-align: center;
+      color: #6b7280;
+      font-size: 0.95rem;
+      margin-bottom: 48px;
+    }
+
+    /* ── Legend ──────────────────────────────────────────────────────────── */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 48px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.82rem;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 20px;
+      padding: 4px 12px;
+    }
+    .badge {
+      font-size: 1rem;
+    }
+
+    /* ── Case sections ───────────────────────────────────────────────────── */
+    .case-section {
+      background: #fff;
+      border-radius: 16px;
+      border: 1px solid #e5e7eb;
+      padding: 32px;
+      margin-bottom: 48px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+
+    .case-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 8px;
+    }
+    .case-number {
+      background: #1a1a2e;
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 20px;
+      letter-spacing: 0.05em;
+    }
+    .case-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+    .case-tagline {
+      font-size: 0.9rem;
+      color: #6b7280;
+      margin-bottom: 28px;
+    }
+
+    /* ── Side-by-side diagrams ───────────────────────────────────────────── */
+    .diagram-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+
+    .schema-box {
+      border-radius: 12px;
+      padding: 20px;
+      border: 2px solid;
+    }
+    .schema-box.v1 {
+      border-color: #93c5fd;
+      background: #eff6ff;
+    }
+    .schema-box.v2 {
+      border-color: #86efac;
+      background: #f0fdf4;
+    }
+
+    .schema-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .schema-box.v1 .schema-label { color: #1d4ed8; }
+    .schema-box.v2 .schema-label { color: #15803d; }
+
+    .schema-name {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #374151;
+    }
+
+    /* shrink the mermaid SVG to fit */
+    .schema-box .mermaid svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* ── Diff notes panel ────────────────────────────────────────────────── */
+    .diff-panel {
+      background: #fffbeb;
+      border: 1px solid #fcd34d;
+      border-radius: 12px;
+      padding: 20px 24px;
+    }
+    .diff-panel h4 {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #92400e;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 14px;
+    }
+    .diff-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 8px;
+    }
+    .diff-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 0.875rem;
+      line-height: 1.4;
+    }
+    .diff-icon { flex-shrink: 0; font-size: 1rem; }
+    .diff-text { color: #374151; }
+    .diff-text strong { color: #1a1a2e; }
+
+    @media (max-width: 860px) {
+      .diagram-pair { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>Schema Diagrams — Demo Cases</h1>
+<p class="subtitle">Each case shows two schema versions (v1 left, v2 right) and what the comparison algorithm detects between them.</p>
+
+<div class="legend">
+  <div class="legend-item"><span class="badge">🔄</span> Table rename</div>
+  <div class="legend-item"><span class="badge">✏️</span> Column rename</div>
+  <div class="legend-item"><span class="badge">⚡</span> Type / nullability change</div>
+  <div class="legend-item"><span class="badge">➕</span> Added (only in v2)</div>
+  <div class="legend-item"><span class="badge">❌</span> Removed (only in v1)</div>
+  <div class="legend-item"><span class="badge">🔗</span> FK / constraint change</div>
+  <div class="legend-item"><span class="badge">✅</span> Identical — no changes</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     CASE 1  –  E-COMMERCE
+══════════════════════════════════════════════════════════════════════════ -->
+<section class="case-section">
+  <div class="case-header">
+    <span class="case-number">CASE 1</span>
+    <span class="case-title">E-Commerce</span>
+  </div>
+  <p class="case-tagline">Table renames detected via FK graph — the algorithm's most powerful signal.</p>
+
+  <div class="diagram-pair">
+
+    <div class="schema-box v1">
+      <div class="schema-label">Version 1  ·  Left</div>
+      <div class="schema-name">ecom_v1</div>
+      <div class="mermaid">
+erDiagram
+    users {
+        int id PK
+        varchar email UK
+        varchar full_name
+        timestamp created_at
+        boolean is_active
+    }
+    categories {
+        int id PK
+        varchar name UK
+        text description
+    }
+    products {
+        int id PK
+        varchar name
+        numeric price
+        int stock_qty
+        int category_id FK
+        timestamp created_at
+    }
+    orders {
+        int id PK
+        int user_id FK
+        varchar status
+        numeric total_amount
+        timestamp placed_at
+    }
+    order_items {
+        int id PK
+        int order_id FK
+        int product_id FK
+        int quantity
+        numeric unit_price
+    }
+    users ||--o{ orders : "places"
+    categories ||--o{ products : "has"
+    products ||--o{ order_items : "in"
+    orders ||--o{ order_items : "contains"
+      </div>
+    </div>
+
+    <div class="schema-box v2">
+      <div class="schema-label">Version 2  ·  Right</div>
+      <div class="schema-name">ecom_v2</div>
+      <div class="mermaid">
+erDiagram
+    customers {
+        int id PK
+        varchar email UK
+        varchar full_name
+        timestamp created_at
+        boolean is_active
+        varchar phone
+    }
+    categories {
+        int id PK
+        varchar name UK
+        text description
+    }
+    products {
+        int id PK
+        varchar name
+        numeric price
+        int stock_qty
+        int category_id FK
+        timestamp created_at
+        numeric discount_pct
+    }
+    orders {
+        int id PK
+        int customer_id FK
+        varchar status
+        numeric total_amount
+        timestamp placed_at
+    }
+    purchase_lines {
+        int id PK
+        int order_id FK
+        int product_id FK
+        int quantity
+        numeric unit_price
+    }
+    payments {
+        int id PK
+        int order_id FK
+        varchar method
+        numeric amount
+        timestamp paid_at
+    }
+    customers ||--o{ orders : "places"
+    categories ||--o{ products : "has"
+    products ||--o{ purchase_lines : "in"
+    orders ||--o{ purchase_lines : "contains"
+    orders ||--o{ payments : "paid via"
+      </div>
+    </div>
+
+  </div>
+
+  <div class="diff-panel">
+    <h4>What the Algorithm Detects</h4>
+    <div class="diff-grid">
+      <div class="diff-item"><span class="diff-icon">🔄</span><div class="diff-text"><strong>users → customers</strong> — table rename. Detected because orders FK points to customers in v2 the same way it pointed to users in v1 (FK graph match).</div></div>
+      <div class="diff-item"><span class="diff-icon">🔄</span><div class="diff-text"><strong>order_items → purchase_lines</strong> — table rename. Name similarity is low, but identical FK structure (→ orders, → products) and column set push score above threshold.</div></div>
+      <div class="diff-item"><span class="diff-icon">✏️</span><div class="diff-text"><strong>orders.user_id → orders.customer_id</strong> — column rename detected inside matched table.</div></div>
+      <div class="diff-item"><span class="diff-icon">⚡</span><div class="diff-text"><strong>price / total_amount / unit_price</strong> — type widened from NUMERIC(10,2) to NUMERIC(12,2).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>customers.phone</strong> — new column (v2 only).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>products.discount_pct</strong> — new column (v2 only).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>payments</strong> — entirely new table in v2.</div></div>
+      <div class="diff-item"><span class="diff-icon">✅</span><div class="diff-text"><strong>categories</strong> — identical in both versions, algorithm reports no changes.</div></div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     CASE 2  –  HR SYSTEM
+══════════════════════════════════════════════════════════════════════════ -->
+<section class="case-section">
+  <div class="case-header">
+    <span class="case-number">CASE 2</span>
+    <span class="case-title">HR System</span>
+  </div>
+  <p class="case-tagline">Column renames, a new constraint, a dropped table, and a possible rename candidate.</p>
+
+  <div class="diagram-pair">
+
+    <div class="schema-box v1">
+      <div class="schema-label">Version 1  ·  Left</div>
+      <div class="schema-name">hr_v1</div>
+      <div class="mermaid">
+erDiagram
+    departments {
+        int id PK
+        varchar name UK
+        varchar location
+        numeric budget
+    }
+    employees {
+        int id PK
+        varchar first_name
+        varchar last_name
+        varchar email UK
+        date hire_date
+        int department_id FK
+        numeric salary
+        int manager_id FK
+    }
+    roles {
+        int id PK
+        varchar title
+        int level
+        numeric min_salary
+        numeric max_salary
+    }
+    employee_roles {
+        int id PK
+        int employee_id FK
+        int role_id FK
+        date assigned_at
+    }
+    leave_requests {
+        int id PK
+        int employee_id FK
+        varchar leave_type
+        date start_date
+        date end_date
+        boolean approved
+    }
+    departments ||--o{ employees : "employs"
+    employees ||--o{ employees : "manages"
+    roles ||--o{ employee_roles : "assigned via"
+    employees ||--o{ employee_roles : "has"
+    employees ||--o{ leave_requests : "submits"
+      </div>
+    </div>
+
+    <div class="schema-box v2">
+      <div class="schema-label">Version 2  ·  Right</div>
+      <div class="schema-name">hr_v2</div>
+      <div class="mermaid">
+erDiagram
+    departments {
+        int id PK
+        varchar name UK
+        varchar location
+        numeric budget
+    }
+    employees {
+        int id PK
+        varchar first_name
+        varchar last_name
+        varchar work_email UK
+        date hire_date
+        int department_id FK
+        numeric base_salary
+        int manager_id FK
+    }
+    roles {
+        int id PK
+        varchar title
+        int grade
+        numeric min_salary
+        numeric max_salary
+    }
+    employee_roles {
+        int id PK
+        int employee_id FK
+        int role_id FK
+        date assigned_at
+        date end_date
+    }
+    time_off {
+        int id PK
+        int employee_id FK
+        varchar request_type
+        date start_date
+        date end_date
+        varchar status
+    }
+    departments ||--o{ employees : "employs"
+    employees ||--o{ employees : "manages"
+    roles ||--o{ employee_roles : "assigned via"
+    employees ||--o{ employee_roles : "has"
+    employees ||--o{ time_off : "submits"
+      </div>
+    </div>
+
+  </div>
+
+  <div class="diff-panel">
+    <h4>What the Algorithm Detects</h4>
+    <div class="diff-grid">
+      <div class="diff-item"><span class="diff-icon">✏️</span><div class="diff-text"><strong>employees.email → work_email</strong> — column rename inside matched table.</div></div>
+      <div class="diff-item"><span class="diff-icon">✏️</span><div class="diff-text"><strong>employees.salary → base_salary</strong> — column rename inside matched table.</div></div>
+      <div class="diff-item"><span class="diff-icon">✏️</span><div class="diff-text"><strong>roles.level → grade</strong> — column rename inside matched table.</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>employee_roles.end_date</strong> — new column (v2 only).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>CHECK (base_salary &gt; 0)</strong> — new constraint on employees in v2.</div></div>
+      <div class="diff-item"><span class="diff-icon">❌</span><div class="diff-text"><strong>leave_requests</strong> — only in v1, reported as "table removed".</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>time_off</strong> — only in v2. Algorithm may flag as <em>possible rename</em> of leave_requests (shared FK + date columns, different name).</div></div>
+      <div class="diff-item"><span class="diff-icon">✅</span><div class="diff-text"><strong>departments</strong> — identical in both versions, algorithm reports no changes.</div></div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     CASE 3  –  UNIVERSITY ENROLLMENT
+══════════════════════════════════════════════════════════════════════════ -->
+<section class="case-section">
+  <div class="case-header">
+    <span class="case-number">CASE 3</span>
+    <span class="case-title">University Enrollment</span>
+  </div>
+  <p class="case-tagline">No renames — all 5 tables present in both versions. Shows deep constraint and nullability diffing.</p>
+
+  <div class="diagram-pair">
+
+    <div class="schema-box v1">
+      <div class="schema-label">Version 1  ·  Left</div>
+      <div class="schema-name">uni_v1</div>
+      <div class="mermaid">
+erDiagram
+    departments {
+        int id PK
+        varchar name UK
+        varchar code UK
+        varchar faculty
+    }
+    professors {
+        int id PK
+        varchar first_name
+        varchar last_name
+        varchar email UK
+        int department_id FK
+        varchar rank
+    }
+    courses {
+        int id PK
+        varchar code UK
+        varchar title
+        int credits
+        int department_id FK
+        int professor_id FK
+    }
+    students {
+        int id PK
+        varchar student_number UK
+        varchar first_name
+        varchar last_name
+        varchar email UK
+        date enrolled_at
+        numeric gpa
+    }
+    enrollments {
+        int id PK
+        int student_id FK
+        int course_id FK
+        varchar semester
+        varchar grade
+        date enrolled_at
+    }
+    departments ||--o{ professors : "employs"
+    departments ||--o{ courses : "offers"
+    professors ||--o{ courses : "teaches"
+    students ||--o{ enrollments : "joins"
+    courses ||--o{ enrollments : "has"
+      </div>
+    </div>
+
+    <div class="schema-box v2">
+      <div class="schema-label">Version 2  ·  Right</div>
+      <div class="schema-name">uni_v2</div>
+      <div class="mermaid">
+erDiagram
+    departments {
+        int id PK
+        varchar name UK
+        varchar code UK
+        varchar faculty
+    }
+    professors {
+        int id PK
+        varchar first_name
+        varchar last_name
+        varchar email UK
+        int department_id FK
+        varchar rank
+        varchar office_number
+    }
+    courses {
+        int id PK
+        varchar code UK
+        varchar title
+        int credits
+        int department_id FK
+        int professor_id FK
+        int max_capacity
+    }
+    students {
+        int id PK
+        varchar student_number UK
+        varchar first_name
+        varchar last_name
+        varchar email UK
+        date enrolled_at
+        numeric gpa
+    }
+    enrollments {
+        int id PK
+        int student_id FK
+        int course_id FK
+        varchar semester
+        varchar grade
+        date enrolled_at
+    }
+    departments ||--o{ professors : "employs"
+    departments ||--o{ courses : "offers"
+    professors ||--o{ courses : "teaches"
+    students ||--o{ enrollments : "joins"
+    courses ||--o{ enrollments : "has"
+      </div>
+    </div>
+
+  </div>
+
+  <div class="diff-panel">
+    <h4>What the Algorithm Detects</h4>
+    <div class="diff-grid">
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>professors.office_number</strong> — new column (v2 only).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>courses.max_capacity</strong> — new column (v2 only).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>CHECK courses.credits BETWEEN 1 AND 6</strong> — new constraint in v2.</div></div>
+      <div class="diff-item"><span class="diff-icon">⚡</span><div class="diff-text"><strong>students.gpa</strong> — nullability changed: nullable (v1) → NOT NULL with DEFAULT 0.00 (v2).</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>CHECK students.gpa BETWEEN 0.00 AND 4.00</strong> — new constraint in v2.</div></div>
+      <div class="diff-item"><span class="diff-icon">🔗</span><div class="diff-text"><strong>enrollments FK on student_id</strong> — ON DELETE action changed: NO ACTION → CASCADE.</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>UNIQUE (student_id, course_id, semester)</strong> — new unique constraint on enrollments in v2.</div></div>
+      <div class="diff-item"><span class="diff-icon">➕</span><div class="diff-text"><strong>CHECK enrollments.grade</strong> — new check restricting grades to A/B/C/D/F/W.</div></div>
+      <div class="diff-item"><span class="diff-icon">✅</span><div class="diff-text"><strong>departments</strong> — identical in both versions, algorithm reports no changes.</div></div>
+    </div>
+  </div>
+</section>
+
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', er: { diagramPadding: 20 } });
+</script>
+</body>
+</html>

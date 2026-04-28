@@ -1,0 +1,87 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F4EC"/>
+      <stop offset="1" stop-color="#EEF3F8"/>
+    </linearGradient>
+    <linearGradient id="cardA" x1="0" y1="0" x2="260" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF8E8"/>
+      <stop offset="1" stop-color="#FFEAC2"/>
+    </linearGradient>
+    <linearGradient id="cardB" x1="0" y1="0" x2="260" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EAF4FF"/>
+      <stop offset="1" stop-color="#D4E8FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#203040" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#36546B"/>
+    </marker>
+    <style>
+      .title { font: 700 42px Arial, sans-serif; fill: #203040; }
+      .subtitle { font: 400 20px Arial, sans-serif; fill: #4E6476; }
+      .boxTitle { font: 700 24px Arial, sans-serif; fill: #203040; }
+      .boxText { font: 400 18px Arial, sans-serif; fill: #3A5263; }
+      .num { font: 700 22px Arial, sans-serif; fill: #203040; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+
+  <text x="120" y="110" class="title">Schema Comparison Flow</text>
+  <text x="120" y="150" class="subtitle">Presentation version</text>
+
+  <g filter="url(#shadow)">
+    <rect x="120" y="230" rx="26" ry="26" width="260" height="110" fill="url(#cardA)"/>
+    <circle cx="165" cy="285" r="26" fill="#F2C96D"/>
+    <text x="157" y="292" class="num">1</text>
+    <text x="205" y="275" class="boxTitle">Select</text>
+    <text x="205" y="305" class="boxText">Schemas</text>
+
+    <rect x="430" y="230" rx="26" ry="26" width="260" height="110" fill="url(#cardB)"/>
+    <circle cx="475" cy="285" r="26" fill="#8CC4FF"/>
+    <text x="467" y="292" class="num">2</text>
+    <text x="515" y="275" class="boxTitle">Load</text>
+    <text x="515" y="305" class="boxText">Metadata</text>
+
+    <rect x="740" y="230" rx="26" ry="26" width="260" height="110" fill="url(#cardA)"/>
+    <circle cx="785" cy="285" r="26" fill="#F2C96D"/>
+    <text x="777" y="292" class="num">3</text>
+    <text x="825" y="275" class="boxTitle">Build</text>
+    <text x="825" y="305" class="boxText">Snapshots</text>
+
+    <rect x="1050" y="230" rx="26" ry="26" width="320" height="110" fill="url(#cardB)"/>
+    <circle cx="1095" cy="285" r="26" fill="#8CC4FF"/>
+    <text x="1087" y="292" class="num">4</text>
+    <text x="1135" y="275" class="boxTitle">Exact Table</text>
+    <text x="1135" y="305" class="boxText">Match</text>
+
+    <rect x="1050" y="520" rx="26" ry="26" width="320" height="110" fill="url(#cardA)"/>
+    <circle cx="1095" cy="575" r="26" fill="#F2C96D"/>
+    <text x="1087" y="582" class="num">5</text>
+    <text x="1135" y="565" class="boxTitle">Similarity</text>
+    <text x="1135" y="595" class="boxText">Match</text>
+
+    <rect x="660" y="520" rx="26" ry="26" width="340" height="110" fill="url(#cardB)"/>
+    <circle cx="705" cy="575" r="26" fill="#8CC4FF"/>
+    <text x="697" y="582" class="num">6</text>
+    <text x="745" y="565" class="boxTitle">Compare Columns</text>
+    <text x="745" y="595" class="boxText">and Constraints</text>
+
+    <rect x="240" y="520" rx="26" ry="26" width="360" height="110" fill="url(#cardA)"/>
+    <circle cx="285" cy="575" r="26" fill="#F2C96D"/>
+    <text x="277" y="582" class="num">7</text>
+    <text x="325" y="565" class="boxTitle">Generate Final</text>
+    <text x="325" y="595" class="boxText">Report</text>
+  </g>
+
+  <path d="M380 285 H430" stroke="#36546B" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M690 285 H740" stroke="#36546B" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M1000 285 H1050" stroke="#36546B" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M1210 340 V470" stroke="#36546B" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M1050 575 H1000" stroke="#36546B" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M660 575 H600" stroke="#36546B" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <text x="120" y="785" class="subtitle">Steps: Select Schemas → Load Metadata → Build Snapshots → Exact Match → Similarity Match → Compare Structure → Final Report</text>
+</svg>
