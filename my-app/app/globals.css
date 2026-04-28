@@ -553,6 +553,18 @@ body {
   color: white;
 }
 
+.compare-btn--secondary {
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.compare-btn--secondary:hover {
+  background: #cbd5e1;
+}
+
 .compare-table {
   width: 100%;
   border-collapse: collapse;
@@ -911,6 +923,23 @@ body {
   color: #64748b;
   margin: -2px 0 10px;
   line-height: 1.5;
+}
+
+/* ===== Compare Page — migration script code block ===== */
+
+.compare-codebox {
+  background: #020617;
+  color: #e2e8f0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 16px;
+  border-radius: 10px;
+  overflow-x: auto;
+  overflow-y: auto;
+  white-space: pre;
+  margin: 0;
+  max-height: 600px;
 }
 
 /* ===== Compare Page — overall health banner ===== */

@@ -1,0 +1,406 @@
+import type { CompareReport, ConstraintDiff, TableMatch } from "./compare-types";
+import type { ColumnSnapshot, ForeignKeySnapshot, TableSnapshot } from "./postgres";
+import { extractBaseType } from "./compare";
+import { normalizeSimilarityText } from "./compare-utils";
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+export type SqlStatementKind =
+  | "CREATE_TABLE"
+  | "ADD_COLUMN"
+  | "ALTER_COLUMN_TYPE"
+  | "ALTER_COLUMN_NULLABILITY"
+  | "ADD_CONSTRAINT"
+  | "DROP_CONSTRAINT"
+  | "RENAME_TABLE"
+  | "RENAME_COLUMN";
+
+export type SqlStatement = {
+  sql: string;
+  description: string;
+  kind: SqlStatementKind;
+  severity: "breaking" | "safe" | "info";
+  tableName: string;
+};
+
+export type MigrationScript = {
+  statements: SqlStatement[];
+  warnings: string[];
+  sourceSchema: string;
+  targetSchema: string;
+};
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// Safely double-quote a PostgreSQL identifier, escaping any embedded quotes.
+function q(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function normalizeType(t: string): string {
+  return normalizeSimilarityText(t);
+}
+
+// Build the column definition fragment used in both CREATE TABLE and ADD COLUMN.
+// e.g.  "email" character varying(255) NOT NULL DEFAULT 'anon'
+function buildColumnDef(col: ColumnSnapshot): string {
+  let def = `${q(col.name)} ${col.typeDisplay}`;
+  if (!col.nullable) def += " NOT NULL";
+  if (col.columnDefault !== null) def += ` DEFAULT ${col.columnDefault}`;
+  return def;
+}
+
+// Build a full CREATE TABLE statement for a table that is missing from B.
+// FK constraints are intentionally omitted — they are emitted as separate
+// ALTER TABLE ADD CONSTRAINT statements in Phase 4 so that the order in which
+// tables appear in the script doesn't cause "referenced table doesn't exist yet"
+// errors.
+function buildCreateTable(table: TableSnapshot, schemaName: string): string {
+  const lines: string[] = table.columns.map((col) => `  ${buildColumnDef(col)}`);
+
+  if (table.primaryKey) {
+    lines.push(`  CONSTRAINT ${q(table.primaryKey.name)} ${table.primaryKey.definition}`);
+  }
+  for (const c of table.uniqueConstraints) {
+    lines.push(`  CONSTRAINT ${q(c.name)} ${c.definition}`);
+  }
+  for (const c of table.checkConstraints) {
+    lines.push(`  CONSTRAINT ${q(c.name)} ${c.definition}`);
+  }
+  for (const c of table.excludeConstraints) {
+    lines.push(`  CONSTRAINT ${q(c.name)} ${c.definition}`);
+  }
+
+  return (
+    `CREATE TABLE IF NOT EXISTS ${q(schemaName)}.${q(table.name)} (\n` +
+    lines.join(",\n") +
+    `\n);`
+  );
+}
+
+// Build a FK definition from structured snapshot fields instead of using the
+// raw pg_get_constraintdef string. This lets us rewrite the referenced schema:
+// if the FK pointed at sourceSchema (A), we redirect it to targetSchema (B)
+// so the constraint is valid in its new home.
+function buildFkDef(
+  fk: ForeignKeySnapshot,
+  sourceSchema: string,
+  targetSchema: string
+): string {
+  const localCols = fk.columns.map(q).join(", ");
+  const refSchema =
+    fk.referencedSchema === sourceSchema ? targetSchema : (fk.referencedSchema ?? targetSchema);
+  const refTable = fk.referencedTable ?? "";
+  const refCols = fk.referencedColumns.map(q).join(", ");
+
+  let def = `FOREIGN KEY (${localCols}) REFERENCES ${q(refSchema)}.${q(refTable)} (${refCols})`;
+  if (fk.onDelete !== "NO ACTION") def += ` ON DELETE ${fk.onDelete}`;
+  if (fk.onUpdate !== "NO ACTION") def += ` ON UPDATE ${fk.onUpdate}`;
+  return def;
+}
+
+// Look up a non-FK constraint definition from a table snapshot by kind + name.
+// FK constraints are handled separately via buildFkDef.
+function lookupConstraintDef(
+  table: TableSnapshot,
+  kind: ConstraintDiff["kind"],
+  name: string
+): { name: string; definition: string } | null {
+  if (kind === "PRIMARY KEY") {
+    return table.primaryKey?.name === name
+      ? { name: table.primaryKey.name, definition: table.primaryKey.definition }
+      : null;
+  }
+  if (kind === "UNIQUE") {
+    const c = table.uniqueConstraints.find((c) => c.name === name);
+    return c ? { name: c.name, definition: c.definition } : null;
+  }
+  if (kind === "CHECK") {
+    const c = table.checkConstraints.find((c) => c.name === name);
+    return c ? { name: c.name, definition: c.definition } : null;
+  }
+  if (kind === "EXCLUDE") {
+    const c = table.excludeConstraints.find((c) => c.name === name);
+    return c ? { name: c.name, definition: c.definition } : null;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Per-table ALTER statements (Phase 3)
+// ---------------------------------------------------------------------------
+
+function alterStatementsForMatch(
+  match: TableMatch,
+  sourceSchema: string,
+  targetSchema: string
+): SqlStatement[] {
+  const stmts: SqlStatement[] = [];
+  // After Phase 1 renames, the table in B carries A's name. Use that for all
+  // subsequent ALTER TABLE statements so they reference the correct name.
+  const tName = match.left.name;
+
+  // ── 3a. Column renames ────────────────────────────────────────────────────
+  // Must come before 3b/3c so later statements reference the post-rename name.
+  for (const colMatch of match.columnMatches) {
+    if (!colMatch.exact) {
+      stmts.push({
+        sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} RENAME COLUMN ${q(colMatch.right.name)} TO ${q(colMatch.left.name)};`,
+        description: `Rename column "${colMatch.right.name}" → "${colMatch.left.name}" in "${tName}" (${colMatch.score}% match — verify this is a rename before running)`,
+        kind: "RENAME_COLUMN",
+        severity: "breaking",
+        tableName: tName,
+      });
+    }
+  }
+
+  // ── 3b. Add columns that exist in A but are absent from B ─────────────────
+  for (const col of match.columnsOnlyInA) {
+    // NOT NULL + no default will fail on a non-empty table because PostgreSQL
+    // can't fill existing rows. Flag it so the user knows to add a DEFAULT or
+    // run on an empty table.
+    const risky = !col.nullable && col.columnDefault === null;
+    stmts.push({
+      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ADD COLUMN ${buildColumnDef(col)};`,
+      description:
+        `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
+        (risky ? " — WARNING: NOT NULL with no default, will fail on a non-empty table" : ""),
+      kind: "ADD_COLUMN",
+      severity: risky ? "breaking" : "safe",
+      tableName: tName,
+    });
+  }
+
+  // ── 3c. Type and nullability changes on matched columns ───────────────────
+  for (const colMatch of match.columnMatches) {
+    // After a rename (3a), this column is now called colMatch.left.name in B.
+    const colName = colMatch.left.name;
+    const leftNorm = normalizeType(colMatch.left.typeDisplay);
+    const rightNorm = normalizeType(colMatch.right.typeDisplay);
+
+    if (leftNorm !== rightNorm) {
+      const baseChanged =
+        extractBaseType(colMatch.left.typeDisplay) !== extractBaseType(colMatch.right.typeDisplay);
+      // USING is needed when PostgreSQL can't cast automatically (cross-type changes).
+      // Same-family changes (e.g. varchar(100) → varchar(200)) don't need it.
+      const usingSuffix = baseChanged
+        ? ` USING ${q(colName)}::${colMatch.left.typeDisplay}`
+        : "";
+      stmts.push({
+        sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} TYPE ${colMatch.left.typeDisplay}${usingSuffix};`,
+        description: baseChanged
+          ? `Change type of "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay} (may require data conversion)`
+          : `Widen "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay}`,
+        kind: "ALTER_COLUMN_TYPE",
+        severity: baseChanged ? "breaking" : "safe",
+        tableName: tName,
+      });
+    }
+
+    if (colMatch.left.nullable !== colMatch.right.nullable) {
+      if (!colMatch.left.nullable) {
+        stmts.push({
+          sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} SET NOT NULL;`,
+          description: `Enforce NOT NULL on "${colName}" in "${tName}"`,
+          kind: "ALTER_COLUMN_NULLABILITY",
+          severity: "breaking",
+          tableName: tName,
+        });
+      } else {
+        stmts.push({
+          sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} DROP NOT NULL;`,
+          description: `Allow nulls on "${colName}" in "${tName}"`,
+          kind: "ALTER_COLUMN_NULLABILITY",
+          severity: "safe",
+          tableName: tName,
+        });
+      }
+    }
+  }
+
+  // ── 3d. Constraint diffs ──────────────────────────────────────────────────
+  // Drop order: FKs first so we remove the dependency before anything else.
+  const toDrop = match.constraintDiffs.filter(
+    (d) => d.status === "onlyB" || d.status === "changedDefinition"
+  );
+  const dropFksFirst = toDrop.filter((d) => d.kind === "FOREIGN KEY");
+  const dropRest = toDrop.filter((d) => d.kind !== "FOREIGN KEY");
+
+  for (const diff of [...dropFksFirst, ...dropRest]) {
+    const constraintName = diff.rightName ?? "";
+    if (!constraintName) continue;
+    stmts.push({
+      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} DROP CONSTRAINT ${q(constraintName)};`,
+      description: `Drop ${diff.kind} "${constraintName}" from "${tName}"`,
+      kind: "DROP_CONSTRAINT",
+      severity: diff.kind === "FOREIGN KEY" || diff.kind === "PRIMARY KEY" ? "breaking" : "info",
+      tableName: tName,
+    });
+  }
+
+  // Add order: non-FKs first, then FKs (FKs need all referenced tables to exist).
+  const toAdd = match.constraintDiffs.filter(
+    (d) => d.status === "onlyA" || d.status === "changedDefinition"
+  );
+  const addNonFks = toAdd.filter((d) => d.kind !== "FOREIGN KEY");
+  const addFks = toAdd.filter((d) => d.kind === "FOREIGN KEY");
+
+  for (const diff of addNonFks) {
+    const cName = diff.leftName ?? "";
+    if (!cName) continue;
+    const found = lookupConstraintDef(match.left, diff.kind, cName);
+    if (!found) continue;
+    stmts.push({
+      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ADD CONSTRAINT ${q(found.name)} ${found.definition};`,
+      description: `Add ${diff.kind} "${found.name}" to "${tName}"`,
+      kind: "ADD_CONSTRAINT",
+      severity: diff.kind === "PRIMARY KEY" ? "breaking" : "info",
+      tableName: tName,
+    });
+  }
+
+  for (const diff of addFks) {
+    const fkName = diff.leftName ?? "";
+    const fk = match.left.foreignKeys.find((f) => f.name === fkName);
+    if (!fk) continue;
+    stmts.push({
+      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema, targetSchema)};`,
+      description: `Add FK "${fk.name}" to "${tName}"`,
+      kind: "ADD_CONSTRAINT",
+      severity: "info",
+      tableName: tName,
+    });
+  }
+
+  return stmts;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a migration script that brings B (right/target) in sync with A (left/source).
+ * The returned statements are ordered so they can be run top-to-bottom without
+ * manual reordering:
+ *
+ *   Phase 1 — Rename tables in B to match A's names
+ *   Phase 2 — CREATE TABLE for tables only in A (FK constraints queued for Phase 4)
+ *   Phase 3 — ALTER matched tables (column renames → add columns → type/null changes → constraints)
+ *   Phase 4 — FK constraints for newly created tables (safe to add now that all tables exist)
+ *
+ * Things we deliberately do NOT generate:
+ *   - DROP TABLE for tables only in B  (data-loss risk — surfaced as warnings instead)
+ *   - DROP COLUMN for columns only in B  (data-loss risk — surfaced as warnings instead)
+ */
+export function generateMigration(report: CompareReport): MigrationScript {
+  const sourceSchema = report.left.schema;
+  const targetSchema = report.right.schema;
+  const statements: SqlStatement[] = [];
+  const warnings: string[] = [];
+
+  // Tables in B not in A — we flag them but don't DROP (irreversible data loss).
+  for (const table of report.tablesOnlyInB) {
+    warnings.push(
+      `Table "${table.name}" exists in B but not in A — not included in migration (review manually).`
+    );
+  }
+
+  // Columns in B not in A, per matched table — same reasoning.
+  for (const match of report.matchedTables) {
+    for (const col of match.columnsOnlyInB) {
+      warnings.push(
+        `Column "${col.name}" in "${match.left.name}" exists in B but not in A — not dropped (review manually).`
+      );
+    }
+  }
+
+  // ── Phase 1: Rename tables ────────────────────────────────────────────────
+  // Similarity-matched tables have different names in A and B.
+  // We rename B's table to A's name so subsequent ALTER TABLE statements work.
+  for (const match of report.matchedTables) {
+    if (!match.exact) {
+      statements.push({
+        sql: `ALTER TABLE ${q(targetSchema)}.${q(match.right.name)} RENAME TO ${q(match.left.name)};`,
+        description: `Rename table "${match.right.name}" → "${match.left.name}" (${match.score}% similarity — verify this is a rename and not two unrelated tables)`,
+        kind: "RENAME_TABLE",
+        severity: "breaking",
+        tableName: match.right.name,
+      });
+    }
+  }
+
+  // ── Phase 2: CREATE TABLE for tables only in A ────────────────────────────
+  // FK constraints are queued separately (fkStatements) and appended in Phase 4
+  // so the ordering of CREATE TABLE statements doesn't matter.
+  const fkStatements: SqlStatement[] = [];
+
+  for (const table of report.tablesOnlyInA) {
+    statements.push({
+      sql: buildCreateTable(table, targetSchema),
+      description: `Create table "${table.name}" (exists in A, missing from B)`,
+      kind: "CREATE_TABLE",
+      severity: "info",
+      tableName: table.name,
+    });
+
+    for (const fk of table.foreignKeys) {
+      fkStatements.push({
+        sql: `ALTER TABLE ${q(targetSchema)}.${q(table.name)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema, targetSchema)};`,
+        description: `Add FK "${fk.name}" to "${table.name}"`,
+        kind: "ADD_CONSTRAINT",
+        severity: "info",
+        tableName: table.name,
+      });
+    }
+  }
+
+  // ── Phase 3: Alter matched tables ─────────────────────────────────────────
+  for (const match of report.matchedTables) {
+    statements.push(...alterStatementsForMatch(match, sourceSchema, targetSchema));
+  }
+
+  // ── Phase 4: FK constraints for newly created tables ──────────────────────
+  // All tables now exist, so FK references are safe to add.
+  statements.push(...fkStatements);
+
+  return {
+    statements,
+    warnings,
+    sourceSchema: `${report.left.database}.${report.left.schema}`,
+    targetSchema: `${report.right.database}.${report.right.schema}`,
+  };
+}
+
+// Render the migration script as a plain SQL text string with inline comments.
+// Each statement is preceded by a comment showing its severity and description.
+export function renderMigrationScript(script: MigrationScript): string {
+  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
+  const safe = script.statements.filter((s) => s.severity === "safe").length;
+  const info = script.statements.filter((s) => s.severity === "info").length;
+
+  const header = [
+    `-- ================================================================`,
+    `-- Migration: ${script.sourceSchema}  →  ${script.targetSchema}`,
+    `-- Direction: bring B in sync with A`,
+    `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
+    `-- ================================================================`,
+  ].join("\n");
+
+  if (script.statements.length === 0) {
+    return `${header}\n\n-- No changes needed.`;
+  }
+
+  const body = script.statements
+    .map(
+      (stmt) =>
+        `-- [${stmt.severity.toUpperCase()}] ${stmt.description}\n${stmt.sql}`
+    )
+    .join("\n\n");
+
+  return `${header}\n\n${body}`;
+}

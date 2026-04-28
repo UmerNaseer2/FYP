@@ -97,6 +97,7 @@ export type ColumnSnapshot = {
   ordinalPosition: number;
   typeDisplay: string;
   nullable: boolean;
+  columnDefault: string | null;
   isPrimaryKey: boolean;
   uniqueConstraintNames: string[];
   foreignKeyConstraintNames: string[];
@@ -259,6 +260,7 @@ export async function fetchSchemaSnapshot(
     ordinal_position: number;
     type_display: string;
     is_nullable: boolean;
+    column_default: string | null;
   };
 
   try {
@@ -277,7 +279,8 @@ export async function fetchSchemaSnapshot(
            c.column_name,
            c.ordinal_position,
            pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_display,
-           (c.is_nullable = 'YES') AS is_nullable
+           (c.is_nullable = 'YES') AS is_nullable,
+           pg_get_expr(ad.adbin, ad.adrelid) AS column_default
          FROM information_schema.columns c
          JOIN pg_namespace n
            ON n.nspname = c.table_schema
@@ -290,6 +293,9 @@ export async function fetchSchemaSnapshot(
           AND a.attname = c.column_name
           AND a.attnum > 0
           AND NOT a.attisdropped
+         LEFT JOIN pg_attrdef ad
+           ON ad.adrelid = cls.oid
+          AND ad.adnum = a.attnum
          WHERE c.table_schema = $1
          ORDER BY c.table_name, c.ordinal_position`,
         [schemaName]
@@ -374,6 +380,7 @@ export async function fetchSchemaSnapshot(
         ordinalPosition: row.ordinal_position,
         typeDisplay: row.type_display,
         nullable: row.is_nullable,
+        columnDefault: row.column_default ?? null,
         isPrimaryKey: false,
         uniqueConstraintNames: [],
         foreignKeyConstraintNames: [],
