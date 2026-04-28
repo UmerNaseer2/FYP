@@ -1,5 +1,7 @@
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
+import CopyButton from "../../components/CopyButton";
+import { generateMigration, renderMigrationScript } from "../../lib/generate-sql";
 import type {
   CompareTarget,
   ConstraintKind,
@@ -564,6 +566,67 @@ function renderMatchedTable(tableMatch: TableMatch) {
   );
 }
 
+function renderMigrationSection(report: CompareReport) {
+  const script = generateMigration(report);
+  const sqlText = renderMigrationScript(script);
+  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
+  const safe = script.statements.filter((s) => s.severity === "safe").length;
+  const info = script.statements.filter((s) => s.severity === "info").length;
+
+  return (
+    <div className="compare-card compare-card--spaced">
+      <div className="compare-card__header">
+        <div>
+          <h2 className="compare-card__title">Migration Script</h2>
+          <p className="compare-hint">
+            SQL to bring{" "}
+            <code className="compare-code">
+              {report.right.database}.{report.right.schema}
+            </code>{" "}
+            in sync with{" "}
+            <code className="compare-code">
+              {report.left.database}.{report.left.schema}
+            </code>
+            . Review every statement before running — breaking changes are
+            flagged.
+          </p>
+        </div>
+        <CopyButton text={sqlText} />
+      </div>
+
+      <div className="compare-chip-row">
+        <span className="compare-severity-tag compare-severity-tag--breaking">
+          {breaking} Breaking
+        </span>
+        <span className="compare-severity-tag compare-severity-tag--safe">
+          {safe} Safe
+        </span>
+        <span className="compare-severity-tag compare-severity-tag--info">
+          {info} Info
+        </span>
+      </div>
+
+      {script.warnings.length > 0 && (
+        <div className="compare-stack">
+          {script.warnings.map((w) => (
+            <p key={w} className="compare-hint compare-hint--error">
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {script.statements.length === 0 ? (
+        <p className="compare-hint">
+          No migration statements needed — schemas are already in sync.
+        </p>
+      ) : (
+        <pre className="compare-codebox">{sqlText}</pre>
+      )}
+    </div>
+  );
+}
+
 export default async function ComparePage({ searchParams }: PageProps) {
   const params = await searchParams;
   const resolved = resolveCompareTargets();
@@ -896,6 +959,8 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 )}
               </section>
             </div>
+
+          {renderMigrationSection(report)}
           </>
         ) : null}
       </main>
