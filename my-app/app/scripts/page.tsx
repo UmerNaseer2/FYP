@@ -4,8 +4,25 @@ import { useState, useEffect, useRef } from "react";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
 
+type ScriptRecord = {
+  id: number;
+  script_name: string;
+  version: string;
+  sql_content: string;
+  description: string | null;
+  created_at: string;
+};
+
+type ListScriptsResponse = {
+  scripts?: ScriptRecord[];
+};
+
+type RegisterScriptResponse =
+  | { success: true; script: ScriptRecord }
+  | { error: string };
+
 export default function ScriptsPage() {
-  const [scripts, setScripts] = useState<any[]>([]);
+  const [scripts, setScripts] = useState<ScriptRecord[]>([]);
   const [scriptNames, setScriptNames] = useState<string[]>([]);
   const [selectedExisting, setSelectedExisting] = useState("");
   const [newScriptName, setNewScriptName] = useState("");
@@ -30,11 +47,11 @@ export default function ScriptsPage() {
   const fetchScripts = async () => {
     try {
       const res = await fetch("/api/scripts/list");
-      const data = await res.json();
+      const data = (await res.json()) as ListScriptsResponse;
       if (data.scripts) {
         setScripts(data.scripts);
         const names = Array.from(
-          new Set(data.scripts.map((s: any) => s.script_name))
+          new Set(data.scripts.map((s) => s.script_name))
         ).sort() as string[];
         setScriptNames(names);
       }
@@ -123,8 +140,12 @@ export default function ScriptsPage() {
         body: JSON.stringify(form),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as RegisterScriptResponse;
       if (res.ok) {
+        if (!("script" in data)) {
+          setMessage({ type: "error", text: "Registration response was missing script data." });
+          return;
+        }
         setMessage({ type: "success", text: "Script registered successfully!" });
         setNewScriptId(data.script.id);
 
@@ -136,9 +157,12 @@ export default function ScriptsPage() {
         await fetchScripts();
         setExpandedScripts((prev) => ({ ...prev, [data.script.script_name]: true }));
       } else {
-        setMessage({ type: "error", text: data.error || "Registration failed" });
+        setMessage({
+          type: "error",
+          text: "error" in data ? data.error : "Registration failed",
+        });
       }
-    } catch (err) {
+    } catch {
       setMessage({ type: "error", text: "Network error" });
     } finally {
       setLoading(false);
@@ -146,7 +170,7 @@ export default function ScriptsPage() {
   };
 
   // Group scripts by script_name, versions sorted oldest‑first
-  const groupedScripts = scripts.reduce((acc: Record<string, any[]>, script: any) => {
+  const groupedScripts = scripts.reduce<Record<string, ScriptRecord[]>>((acc, script) => {
     if (!acc[script.script_name]) acc[script.script_name] = [];
     acc[script.script_name].push(script);
     return acc;
@@ -212,7 +236,7 @@ export default function ScriptsPage() {
 
                   {expandedScripts[name] && (
                     <div className="script-group__versions">
-                      {versions.map((script: any) => (
+                      {versions.map((script) => (
                         <div
                           key={script.id}
                           className={`script-version-item ${

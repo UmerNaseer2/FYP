@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import pool from "../../../../lib/db";
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { script_name, version, sql_content, description } = await request.json();
@@ -19,13 +23,14 @@ export async function POST(request: NextRequest) {
 
     const newScript = result.rows[0];
     return NextResponse.json({ success: true, script: newScript }, { status: 201 });
-  } catch (error: any) {
-    console.error("Register error:", error.message);
+  } catch (error: unknown) {
+    const message = errorMessage(error);
+    console.error("Register error:", message);
     if (
-      error.message.includes("already exists") ||
-      error.message.includes("cannot be empty")
+      message.includes("already exists") ||
+      message.includes("cannot be empty")
     ) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
+      return NextResponse.json({ error: message }, { status: 409 });
     }
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
