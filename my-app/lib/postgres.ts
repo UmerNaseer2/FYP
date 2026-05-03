@@ -159,6 +159,8 @@ type ConstraintRow = {
   confdeltype: string | null;
 };
 
+const COMPARE_IGNORED_TABLES = ["script_patch"];
+
 function trimEnv(name: string): string | undefined {
   const v = process.env[name]?.trim();
   return v && v.length > 0 ? v : undefined;
@@ -270,8 +272,9 @@ export async function fetchSchemaSnapshot(
          FROM information_schema.tables
          WHERE table_schema = $1
            AND table_type = 'BASE TABLE'
+           AND table_name <> ALL($2)
          ORDER BY table_name`,
-        [schemaName]
+        [schemaName, COMPARE_IGNORED_TABLES]
       ),
       pool.query<ColumnRow>(
         `SELECT
@@ -297,8 +300,9 @@ export async function fetchSchemaSnapshot(
            ON ad.adrelid = cls.oid
           AND ad.adnum = a.attnum
          WHERE c.table_schema = $1
+           AND c.table_name <> ALL($2)
          ORDER BY c.table_name, c.ordinal_position`,
-        [schemaName]
+        [schemaName, COMPARE_IGNORED_TABLES]
       ),
       pool.query<ConstraintRow>(
         `SELECT
@@ -341,6 +345,7 @@ export async function fetchSchemaSnapshot(
           AND ref_att.attnum = ref_cols.attnum
          WHERE ns.nspname = $1
            AND con.contype IN ('p', 'u', 'f', 'c', 'x')
+           AND tbl.relname <> ALL($2)
          GROUP BY
            tbl.relname,
            con.conname,
@@ -351,7 +356,7 @@ export async function fetchSchemaSnapshot(
            con.confupdtype,
            con.confdeltype
          ORDER BY tbl.relname, con.contype, con.conname`,
-        [schemaName]
+        [schemaName, COMPARE_IGNORED_TABLES]
       ),
     ]);
 
