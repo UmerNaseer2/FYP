@@ -638,7 +638,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
         <main className="db-main">
           <Topbar
             title="Schema Comparison"
-            text="Week-7 prototype for live PostgreSQL schema diffs."
+            text="Live PostgreSQL schema diffs for the current prototype."
           />
           <div className="compare-card">
             <h2 className="compare-card__title">PostgreSQL Targets</h2>
@@ -738,7 +738,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
       <main className="db-main">
         <Topbar
           title="Schema Comparison"
-          text="Week-7 prototype for live PostgreSQL schema diffs and constraint analysis."
+          text="Live PostgreSQL schema diffs and constraint analysis for the current prototype."
         />
 
         <div className="compare-card compare-card--setup compare-card--spaced">
