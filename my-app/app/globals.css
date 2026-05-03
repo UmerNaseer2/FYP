@@ -565,6 +565,7 @@ body {
   background: #cbd5e1;
 }
 
+
 .compare-table {
   width: 100%;
   border-collapse: collapse;
@@ -942,6 +943,7 @@ body {
   max-height: 600px;
 }
 
+
 /* ===== Compare Page — overall health banner ===== */
 
 .compare-health-banner {
@@ -1068,4 +1070,40 @@ body {
   .version-grid {
     flex-direction: column;
   }
+}
+
+/* ===== Version Detection Timeline ===== */
+.version-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.version-entry {
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  padding: 16px;
+  background: white;
+}
+
+.version-entry__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.version-entry__title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.version-entry__desc {
+  margin: 12px 0 6px;
+  color: #334155;
+}
+
+.version-entry__meta {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
 }
