@@ -35,14 +35,4 @@ Current compare scope:
 - Keep error states user-readable on `/compare`; database or schema issues should surface as clean messages, not crashes.
 - Favor simple, readable code over clever abstractions. This project is maintained by a beginner.
 
-# Deferred For Now
 
-Unless explicitly requested, do not treat these as in-scope:
-- Auth
-- GitHub push flow
-- Migration execution
-- SQL generation
-- Version-control workflow
-- Docker/compliance cleanup
-- Query analysis
-- Performance monitoring features
