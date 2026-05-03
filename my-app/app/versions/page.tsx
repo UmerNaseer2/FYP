@@ -1,14 +1,12 @@
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
 import {
-  fetchSchemaSnapshot,
+  fetchSchemaNames,
   resolveCompareTargets,
+  type CompareTarget,
 } from "../../lib/postgres";
-import { compareSchemas } from "../../lib/compare";
 import {
-  determineNewerSchema,
   fetchSchemaVersionInfo,
-  summarizeStructuralSeverity,
   type ChangeLevel,
   type VersionDetectionResult,
 } from "../../lib/version-detection";
@@ -17,19 +15,10 @@ export const dynamic = "force-dynamic";
 
 type PageProps = {
   searchParams: Promise<{
-    left?: string;
-    right?: string;
+    target?: string;
+    schema?: string;
   }>;
 };
-
-const schemaOptions = [
-  "ecom_v1",
-  "ecom_v2",
-  "hr_v1",
-  "hr_v2",
-  "uni_v1",
-  "uni_v2",
-];
 
 function levelClass(level: ChangeLevel) {
   switch (level) {
@@ -44,58 +33,107 @@ function levelClass(level: ChangeLevel) {
   }
 }
 
-function SchemaSelect({
-  name,
-  defaultValue,
-}: {
-  name: string;
-  defaultValue: string;
-}) {
+function pickTarget(targets: CompareTarget[], targetId: string | undefined) {
+  return targets.find((target) => target.id === targetId) ?? targets[0];
+}
+
+function pickSchema(schemas: string[], requested: string | undefined) {
+  if (requested && schemas.includes(requested)) return requested;
+  return schemas[0] ?? "";
+}
+
+function targetLabel(target: CompareTarget) {
+  return `Database ${target.id.toUpperCase()} - ${target.displayName}`;
+}
+
+function renderVersionSummary(
+  target: CompareTarget,
+  version: VersionDetectionResult
+) {
   return (
-    <select name={name} className="compare-select" defaultValue={defaultValue}>
-      {schemaOptions.map((schema) => (
-        <option key={`${name}-${schema}`} value={schema}>
-          {schema}
-        </option>
-      ))}
-    </select>
+    <section className="version-summary-grid">
+      <div className="version-card">
+        <p className="version-stat-label">Database</p>
+        <h3 className="version-stat-value">{target.displayName}</h3>
+        <p className="version-text">Target {target.id.toUpperCase()}</p>
+      </div>
+
+      <div className="version-card">
+        <p className="version-stat-label">Schema</p>
+        <h3 className="version-stat-value">{version.schema}</h3>
+        <p className="version-text">Selected environment/schema</p>
+      </div>
+
+      <div className="version-card">
+        <p className="version-stat-label">Detected Version</p>
+        <h3 className="version-stat-value">
+          {version.detectedVersion ?? "N/A"}
+        </h3>
+        <p className="version-text">
+          {version.hasVersionTable ? "Read from version table" : "No version row"}
+        </p>
+      </div>
+
+      <div className="version-card">
+        <p className="version-stat-label">Version Table</p>
+        <h3 className="version-stat-value">
+          {version.tableName ?? "Missing"}
+        </h3>
+        <p className="version-text">
+          {version.hasVersionTable ? "Ready for script checks" : "Needs setup"}
+        </p>
+      </div>
+    </section>
   );
 }
 
-function renderSchemaCard(title: string, version: VersionDetectionResult) {
+function renderStatusCard(version: VersionDetectionResult) {
+  if (version.hasVersionTable) {
+    return (
+      <section className="compare-report-block">
+        <div className="compare-report-block__header">
+          <div>
+            <h2 className="compare-report-block__title">Version Status</h2>
+            <p className="compare-section-desc">
+              This schema has version history, so the runner can later compare
+              it against approved scripts and identify pending versions.
+            </p>
+          </div>
+          <span className="compare-pill compare-pill--success">Ready</span>
+        </div>
+        <p className="version-text">{version.message}</p>
+      </section>
+    );
+  }
+
   return (
-    <div className="compare-schema-panel">
-      <h4 className="compare-schema-panel__title">{title}</h4>
-
-      <p>
-        <strong>Schema:</strong> {version.schema}
-      </p>
-
-      <p>
-        <strong>Version table:</strong> {version.tableName ?? "Not found"}
-      </p>
-
-      <p>
-        <strong>Detected version:</strong> {version.detectedVersion ?? "N/A"}
-      </p>
-
-      <p>
-        <strong>Mode:</strong>{" "}
-        {version.hasVersionTable
-          ? "Version-table comparison"
-          : "Fallback structural comparison"}
-      </p>
-
+    <section className="compare-report-block">
+      <div className="compare-report-block__header">
+        <div>
+          <h2 className="compare-report-block__title">Version Status</h2>
+          <p className="compare-section-desc">
+            This schema does not have a version table yet. Add
+            <code className="compare-code"> script_patch </code>
+            before using it for deployment version checks.
+          </p>
+        </div>
+        <span className="compare-pill compare-pill--warning">Setup needed</span>
+      </div>
       <p className="version-text">{version.message}</p>
-    </div>
+    </section>
   );
 }
 
-function renderTimeline(title: string, version: VersionDetectionResult) {
+function renderTimeline(version: VersionDetectionResult) {
   return (
     <section className="version-card">
       <div className="compare-report-block__header">
-        <h3 className="version-card__title">{title}</h3>
+        <div>
+          <h3 className="version-card__title">Version Timeline</h3>
+          <p className="compare-section-desc">
+            Applied scripts recorded inside this schema.
+          </p>
+        </div>
 
         <span className="compare-pill compare-pill--neutral">
           {version.timeline.length}
@@ -109,9 +147,12 @@ function renderTimeline(title: string, version: VersionDetectionResult) {
           {version.timeline.map((entry, index) => (
             <div key={`${version.schema}-${index}`} className="version-entry">
               <div className="version-entry__top">
-                <p className="version-entry__title">
-                  {entry.version ?? entry.label}
-                </p>
+                <div>
+                  <p className="version-entry__title">
+                    {entry.version ?? entry.label}
+                  </p>
+                  <p className="version-entry__label">{entry.label}</p>
+                </div>
 
                 <span className={levelClass(entry.changeLevel)}>
                   {entry.changeLevel}
@@ -123,7 +164,7 @@ function renderTimeline(title: string, version: VersionDetectionResult) {
               </p>
 
               <p className="version-entry__meta">
-                Applied at: {entry.appliedAt ?? "Unknown"} • Source:{" "}
+                Applied at: {entry.appliedAt ?? "Unknown"} · Source:{" "}
                 {entry.sourceTable}
               </p>
             </div>
@@ -136,10 +177,6 @@ function renderTimeline(title: string, version: VersionDetectionResult) {
 
 export default async function VersionsPage({ searchParams }: PageProps) {
   const params = await searchParams;
-
-  const leftSchema = params.left ?? "ecom_v1";
-  const rightSchema = params.right ?? "ecom_v2";
-
   const resolved = resolveCompareTargets();
 
   if (!resolved.ok) {
@@ -150,7 +187,7 @@ export default async function VersionsPage({ searchParams }: PageProps) {
         <main className="db-main">
           <Topbar
             title="Version Detection"
-            text="Check schema version and update status."
+            text="Check one schema's migration version history."
           />
 
           <div className="version-card">
@@ -162,33 +199,79 @@ export default async function VersionsPage({ searchParams }: PageProps) {
     );
   }
 
-  const [leftVersion, rightVersion] = await Promise.all([
-    fetchSchemaVersionInfo(resolved.a.config, leftSchema),
-    fetchSchemaVersionInfo(resolved.b.config, rightSchema),
-  ]);
+  const targets = [resolved.a, resolved.b];
+  const selectedTarget = pickTarget(targets, params.target);
+  const schemas = await fetchSchemaNames(selectedTarget.config);
 
-  const newerInfo = determineNewerSchema(leftVersion, rightVersion);
+  if (!schemas.ok) {
+    return (
+      <div className="db-layout">
+        <Sidebar current="Version Detection" />
 
-  let fallbackLevel: ChangeLevel | null = null;
-  let fallbackText: string | null = null;
+        <main className="db-main">
+          <Topbar
+            title="Version Detection"
+            text="Check one schema's migration version history."
+          />
 
-  if (!leftVersion.hasVersionTable || !rightVersion.hasVersionTable) {
-    const [leftSnapshot, rightSnapshot] = await Promise.all([
-      fetchSchemaSnapshot(resolved.a.config, leftSchema),
-      fetchSchemaSnapshot(resolved.b.config, rightSchema),
-    ]);
+          <section className="compare-card">
+            <h2 className="compare-card__title">Select Schema</h2>
+            <form className="compare-top">
+              <select
+                name="target"
+                className="compare-select"
+                defaultValue={selectedTarget.id}
+              >
+                {targets.map((target) => (
+                  <option key={target.id} value={target.id}>
+                    {targetLabel(target)}
+                  </option>
+                ))}
+              </select>
 
-    if (leftSnapshot.ok && rightSnapshot.ok) {
-      const report = compareSchemas(leftSnapshot.data, rightSnapshot.data);
-      const fallback = summarizeStructuralSeverity(report);
+              <button className="compare-btn compare-btn--primary" type="submit">
+                Check Version
+              </button>
+            </form>
+          </section>
 
-      fallbackLevel = fallback.level;
-      fallbackText = fallback.summary;
-    } else {
-      fallbackLevel = "unknown";
-      fallbackText = "Structural comparison could not run.";
-    }
+          <div className="version-card">
+            <h2 className="version-card__title">Could Not Load Schemas</h2>
+            <p className="version-text">{schemas.error}</p>
+          </div>
+        </main>
+      </div>
+    );
   }
+
+  const selectedSchema = pickSchema(schemas.data, params.schema);
+
+  if (!selectedSchema) {
+    return (
+      <div className="db-layout">
+        <Sidebar current="Version Detection" />
+
+        <main className="db-main">
+          <Topbar
+            title="Version Detection"
+            text="Check one schema's migration version history."
+          />
+
+          <section className="compare-card">
+            <h2 className="compare-card__title">Select Schema</h2>
+            <p className="compare-hint">
+              No user schemas were found in {selectedTarget.displayName}.
+            </p>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
+  const version = await fetchSchemaVersionInfo(
+    selectedTarget.config,
+    selectedSchema
+  );
 
   return (
     <div className="db-layout">
@@ -197,15 +280,36 @@ export default async function VersionsPage({ searchParams }: PageProps) {
       <main className="db-main">
         <Topbar
           title="Version Detection"
-          text="Detect schema versions, compare newer schema, and show timeline."
+          text="Check one schema's migration version history."
         />
 
         <section className="compare-card">
-          <h2 className="compare-card__title">Select Schemas</h2>
+          <h2 className="compare-card__title">Select Schema</h2>
 
           <form className="compare-top">
-            <SchemaSelect name="left" defaultValue={leftSchema} />
-            <SchemaSelect name="right" defaultValue={rightSchema} />
+            <select
+              name="target"
+              className="compare-select"
+              defaultValue={selectedTarget.id}
+            >
+              {targets.map((target) => (
+                <option key={target.id} value={target.id}>
+                  {targetLabel(target)}
+                </option>
+              ))}
+            </select>
+
+            <select
+              name="schema"
+              className="compare-select"
+              defaultValue={selectedSchema}
+            >
+              {schemas.data.map((schema) => (
+                <option key={schema} value={schema}>
+                  {schema}
+                </option>
+              ))}
+            </select>
 
             <button className="compare-btn compare-btn--primary" type="submit">
               Check Version
@@ -213,54 +317,27 @@ export default async function VersionsPage({ searchParams }: PageProps) {
           </form>
         </section>
 
-        <section className="compare-report-block">
-          <div className="compare-report-block__header">
-            <div>
-              <h2 className="compare-report-block__title">
-                {leftSchema} vs {rightSchema}
-              </h2>
+        {renderVersionSummary(selectedTarget, version)}
 
-              <p className="compare-section-desc">
-                This checks whether each schema has a version control table.
-                If version information is missing, the system uses structural
-                comparison fallback.
-              </p>
-            </div>
+        <div className="version-layout">
+          <div className="version-layout__main">{renderTimeline(version)}</div>
 
-            <span className="compare-pill compare-pill--neutral">
-              Version check
-            </span>
-          </div>
+          <aside className="version-layout__side">
+            {renderStatusCard(version)}
 
-          <div className="compare-schema-grid">
-            {renderSchemaCard("Left Schema", leftVersion)}
-            {renderSchemaCard("Right Schema", rightVersion)}
-          </div>
-
-          <div className="compare-note-card" style={{ marginTop: 16 }}>
-            <h4 className="compare-note-card__title">Newer Schema Result</h4>
-            <p className="compare-note-card__text">{newerInfo.reason}</p>
-          </div>
-
-          {fallbackText && fallbackLevel ? (
-            <div className="compare-note-card" style={{ marginTop: 12 }}>
-              <h4 className="compare-note-card__title">
-                Fallback Structural Comparison
-              </h4>
-
-              <p className="compare-note-card__text">
-                <span className={levelClass(fallbackLevel)}>
-                  {fallbackLevel}
-                </span>{" "}
-                {fallbackText}
-              </p>
-            </div>
-          ) : null}
-        </section>
-
-        <div className="compare-report-grid" style={{ marginTop: 20 }}>
-          {renderTimeline(`Version Timeline — ${leftSchema}`, leftVersion)}
-          {renderTimeline(`Version Timeline — ${rightSchema}`, rightVersion)}
+            <section className="compare-report-block">
+              <div className="compare-report-block__header">
+                <div>
+                  <h2 className="compare-report-block__title">How This Fits</h2>
+                  <p className="compare-section-desc">
+                    Schema comparison finds differences. SQL Scripts stores
+                    approved migrations. Version detection tells the runner
+                    what this one target schema has already applied.
+                  </p>
+                </div>
+              </div>
+            </section>
+          </aside>
         </div>
       </main>
     </div>

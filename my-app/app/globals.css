@@ -1477,11 +1477,53 @@ body {
   gap: 16px;
 }
 
+.version-summary-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 20px;
+}
+
+.version-layout {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.version-layout__main,
+.version-layout__side {
+  min-width: 0;
+}
+
+.version-layout__side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .version-card {
   background: white;
   border-radius: 12px;
   padding: 16px;
   flex: 1;
+}
+
+.version-stat-label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.version-stat-value {
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.15;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
 }
 
 .version-card__title {
@@ -1526,6 +1568,11 @@ body {
   .version-grid {
     flex-direction: column;
   }
+
+  .version-summary-grid,
+  .version-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ===== Version Detection Timeline ===== */
@@ -1551,6 +1598,12 @@ body {
 .version-entry__title {
   margin: 0;
   font-weight: 700;
+}
+
+.version-entry__label {
+  color: #64748b;
+  font-size: 12px;
+  margin: 4px 0 0;
 }
 
 .version-entry__desc {
