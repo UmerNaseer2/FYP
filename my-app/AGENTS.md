@@ -8,6 +8,13 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 This project is an FYP prototype for database schema comparison and related database-management workflows.
 
+Current week-7 priority:
+- The main deliverable is the `/compare` flow.
+- It must work as a real PostgreSQL schema comparison prototype, not just a mock UI.
+- It compares exactly two schemas at a time from preset live database targets.
+- It currently focuses on diff reporting, not SQL generation or deployment.
+
+
 Current compare scope:
 - Tables
 - Columns

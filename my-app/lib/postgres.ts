@@ -23,7 +23,7 @@ function poolKey(cfg: ClientConfig): string {
   ].join("\0");
 }
 
-function getPoolForConfig(cfg: ClientConfig): Pool {
+export function getPoolForConfig(cfg: ClientConfig): Pool {
   const key = poolKey(cfg);
   const map = poolMap();
   let p = map.get(key);

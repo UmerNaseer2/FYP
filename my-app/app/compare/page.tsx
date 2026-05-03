@@ -627,6 +627,7 @@ function renderMigrationSection(report: CompareReport) {
   );
 }
 
+
 export default async function ComparePage({ searchParams }: PageProps) {
   const params = await searchParams;
   const resolved = resolveCompareTargets();
