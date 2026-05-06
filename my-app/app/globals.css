@@ -151,43 +151,43 @@ body {
 /* ===================================================== */
 
 .conn-card {
-  background: white;
-  border-radius: 16px;
-  padding: 22px;
-  margin-bottom: 22px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-radius: 18px;
+  padding: 24px;
+  margin-bottom: 24px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
 }
 
 .conn-card__title {
-  margin: 0 0 16px;
-  font-size: 20px;
+  margin: 0 0 18px;
+  font-size: 21px;
   font-weight: 800;
   color: #0f172a;
 }
 
 .conn-form {
   display: grid;
-  gap: 14px;
+  gap: 15px;
 }
 
 .conn-input,
 .conn-select {
   width: 100%;
-  padding: 12px 14px;
+  padding: 13px 15px;
   border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  background: #f8fafc;
+  border-radius: 12px;
+  background: white;
   font-size: 14px;
   color: #0f172a;
+  transition: 0.2s ease;
 }
 
 .conn-input:focus,
 .conn-select:focus {
   outline: none;
-  border-color: #0f172a;
-  background: white;
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.12);
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
 }
 
 .conn-row {
@@ -196,20 +196,30 @@ body {
   gap: 14px;
 }
 
+.conn-help-text {
+  font-size: 13px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin: -4px 0 2px;
+}
+
 .conn-btn-group {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .conn-btn {
-  padding: 11px 16px;
-  border-radius: 10px;
+  padding: 11px 18px;
+  border-radius: 12px;
   border: none;
   cursor: pointer;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 800;
+  transition: 0.2s ease;
 }
 
 .conn-btn--primary {
@@ -219,6 +229,7 @@ body {
 
 .conn-btn--primary:hover {
   background: #1e293b;
+  transform: translateY(-1px);
 }
 
 .conn-btn--secondary {
@@ -228,6 +239,7 @@ body {
 
 .conn-btn--secondary:hover {
   background: #cbd5e1;
+  transform: translateY(-1px);
 }
 
 .conn-table {
@@ -235,12 +247,13 @@ body {
   border-collapse: separate;
   border-spacing: 0;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid #e2e8f0;
+  background: white;
 }
 
 .conn-table th {
-  background: #f8fafc;
+  background: #f1f5f9;
   color: #334155;
   font-size: 13px;
   text-align: left;
@@ -249,7 +262,7 @@ body {
 
 .conn-table th,
 .conn-table td {
-  padding: 13px 14px;
+  padding: 14px 16px;
   border-bottom: 1px solid #e2e8f0;
 }
 
@@ -265,40 +278,62 @@ body {
   background: #ecfdf5;
   border: 1px solid #86efac;
   color: #166534;
-  padding: 13px 15px;
-  border-radius: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
   margin-bottom: 16px;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 800;
 }
 
+.conn-test-btn,
 .conn-edit-btn,
 .conn-delete-btn {
   border: none;
-  padding: 8px 13px;
-  border-radius: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
   cursor: pointer;
-  font-weight: 700;
-  font-size: 13px;
+  font-weight: 800;
+  font-size: 12px;
+  margin-right: 8px;
+  transition: 0.2s ease;
+}
+
+.conn-test-btn {
+  background: #ecfdf5;
+  color: #15803d;
+  border: 1px solid #86efac;
+}
+
+.conn-test-btn::before {
+  content: "● ";
+}
+
+.conn-test-btn:hover {
+  background: #bbf7d0;
+  transform: translateY(-1px);
 }
 
 .conn-edit-btn {
-  background: #dbeafe;
+  background: #eff6ff;
   color: #1d4ed8;
-  margin-right: 8px;
+  border: 1px solid #bfdbfe;
 }
 
 .conn-edit-btn:hover {
   background: #bfdbfe;
+  transform: translateY(-1px);
 }
 
 .conn-delete-btn {
-  background: #fee2e2;
+  background: #fef2f2;
   color: #b91c1c;
+  border: 1px solid #fecaca;
+  margin-right: 0;
 }
 
 .conn-delete-btn:hover {
   background: #fecaca;
+  transform: translateY(-1px);
 }
 
 @media (max-width: 768px) {
@@ -311,12 +346,6 @@ body {
     overflow-x: auto;
     white-space: nowrap;
   }
-}
-
-.conn-help-text {
-  font-size: 13px;
-  color: #64748b;
-  margin-top: -5px;
 }
 
 /* ===================================================== */
