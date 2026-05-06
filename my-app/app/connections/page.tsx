@@ -37,23 +37,14 @@ export default function ConnectionsPage() {
   };
 
   const fetchConnections = async () => {
-    try {
-      const res = await fetch("/api/connections", {
-        cache: "no-store",
-      });
+    const res = await fetch("/api/connections", { cache: "no-store" });
+    const data = await safeJson(res);
 
-      const data = await safeJson(res);
-
-      if (Array.isArray(data)) {
-        setConnections(data);
-      } else {
-        setConnections([]);
-        setMessage(data.error || "Failed to load connections.");
-      }
-    } catch (error) {
-      console.error("Fetch error:", error);
+    if (Array.isArray(data)) {
+      setConnections(data);
+    } else {
       setConnections([]);
-      setMessage("Failed to load connections.");
+      setMessage(data.error || "Failed to load connections.");
     }
   };
 
@@ -90,60 +81,55 @@ export default function ConnectionsPage() {
     const method = editingId ? "PUT" : "POST";
     const body = editingId ? { id: editingId, ...form } : form;
 
-    try {
-      const res = await fetch("/api/connections", {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
+    const res = await fetch("/api/connections", {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
 
-      const data = await safeJson(res);
+    const data = await safeJson(res);
 
-      if (!res.ok) {
-        setMessage(data.error || "Failed to save connection.");
-        return;
-      }
-
-      setMessage(
-        editingId
-          ? "Connection updated successfully."
-          : "Connection saved successfully."
-      );
-
-      resetForm();
-      fetchConnections();
-    } catch (error) {
-      console.error("Save error:", error);
-      setMessage("Failed to save connection.");
+    if (!res.ok) {
+      setMessage(data.error || "Failed to save connection.");
+      return;
     }
+
+    setMessage(
+      editingId
+        ? "Connection updated successfully."
+        : "Connection saved successfully."
+    );
+
+    resetForm();
+    fetchConnections();
   };
 
   const handleTestConnection = async () => {
     setMessage("Testing connection...");
 
-    try {
-      const res = await fetch("/api/connections/test", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(form),
-      });
-
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        setMessage(data.error || "Connection failed.");
-        return;
-      }
-
-      setMessage("Connection successful.");
-    } catch (error) {
-      console.error("Test error:", error);
-      setMessage("Connection failed.");
+    if (form.type !== "PostgreSQL") {
+      setMessage(
+        "Only PostgreSQL is supported now. MySQL and SQL Server are coming soon."
+      );
+      return;
     }
+
+    const res = await fetch("/api/connections/test", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(form),
+    });
+
+    const data = await safeJson(res);
+
+    if (!res.ok) {
+      setMessage(data.error || "Connection failed.");
+      return;
+    }
+
+    setMessage("Connection successful.");
   };
 
   const handleEdit = (conn: Connection) => {
@@ -153,42 +139,36 @@ export default function ConnectionsPage() {
       name: conn.name,
       host: conn.host,
       port: String(conn.port),
-      database_name: conn.database_name || "postgres",
+      database_name: conn.database_name,
       type: conn.type,
       username: conn.username,
       password: "",
       connection_string: conn.connection_string || "",
     });
 
-    setMessage("Please enter password again before updating.");
+    setMessage("Enter password again before updating.");
   };
 
   const handleDelete = async (id: number) => {
-    const confirmDelete = confirm("Are you sure you want to delete this?");
-    if (!confirmDelete) return;
+    if (!confirm("Delete this connection?")) return;
 
-    try {
-      const res = await fetch("/api/connections", {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ id }),
-      });
+    const res = await fetch("/api/connections", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ id }),
+    });
 
-      const data = await safeJson(res);
+    const data = await safeJson(res);
 
-      if (!res.ok) {
-        setMessage(data.error || "Failed to delete connection.");
-        return;
-      }
-
-      setMessage("Connection deleted successfully.");
-      fetchConnections();
-    } catch (error) {
-      console.error("Delete error:", error);
-      setMessage("Failed to delete connection. Please check if server is running.");
+    if (!res.ok) {
+      setMessage(data.error || "Failed to delete.");
+      return;
     }
+
+    setMessage("Deleted successfully.");
+    fetchConnections();
   };
 
   return (
@@ -196,10 +176,7 @@ export default function ConnectionsPage() {
       <Sidebar current="Connections" />
 
       <main className="db-main">
-        <Topbar
-          title="Connections"
-          text="Add and manage database connections."
-        />
+        <Topbar title="Connections" text="Manage database connections" />
 
         {message && <div className="conn-message">{message}</div>}
 
@@ -213,7 +190,6 @@ export default function ConnectionsPage() {
               name="name"
               value={form.name}
               onChange={handleChange}
-              type="text"
               placeholder="Connection Name"
               className="conn-input"
             />
@@ -222,7 +198,6 @@ export default function ConnectionsPage() {
               name="host"
               value={form.host}
               onChange={handleChange}
-              type="text"
               placeholder="Host"
               className="conn-input"
             />
@@ -232,7 +207,6 @@ export default function ConnectionsPage() {
                 name="port"
                 value={form.port}
                 onChange={handleChange}
-                type="text"
                 placeholder="Port"
                 className="conn-input"
               />
@@ -244,16 +218,23 @@ export default function ConnectionsPage() {
                 className="conn-select"
               >
                 <option value="PostgreSQL">PostgreSQL</option>
-                <option value="MySQL">MySQL</option>
-                <option value="SQL Server">SQL Server</option>
+                <option value="MySQL" disabled>
+                  MySQL (Coming Soon)
+                </option>
+                <option value="SQL Server" disabled>
+                  SQL Server (Coming Soon)
+                </option>
               </select>
             </div>
+
+            <p className="conn-help-text">
+              PostgreSQL is fully supported. Others coming soon.
+            </p>
 
             <input
               name="database_name"
               value={form.database_name}
               onChange={handleChange}
-              type="text"
               placeholder="Database Name"
               className="conn-input"
             />
@@ -262,7 +243,6 @@ export default function ConnectionsPage() {
               name="username"
               value={form.username}
               onChange={handleChange}
-              type="text"
               placeholder="Username"
               className="conn-input"
             />
@@ -271,8 +251,8 @@ export default function ConnectionsPage() {
               name="password"
               value={form.password}
               onChange={handleChange}
-              type="password"
               placeholder="Password"
+              type="password"
               className="conn-input"
             />
 
@@ -280,7 +260,6 @@ export default function ConnectionsPage() {
               name="connection_string"
               value={form.connection_string}
               onChange={handleChange}
-              type="text"
               placeholder="Connection String (optional)"
               className="conn-input"
             />
@@ -288,7 +267,6 @@ export default function ConnectionsPage() {
             <div className="conn-btn-group">
               <button
                 className="conn-btn conn-btn--secondary"
-                type="button"
                 onClick={handleTestConnection}
               >
                 Test Connection
@@ -296,21 +274,10 @@ export default function ConnectionsPage() {
 
               <button
                 className="conn-btn conn-btn--primary"
-                type="button"
                 onClick={handleSave}
               >
                 {editingId ? "Update" : "Save"}
               </button>
-
-              {editingId && (
-                <button
-                  className="conn-btn conn-btn--secondary"
-                  type="button"
-                  onClick={resetForm}
-                >
-                  Cancel
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -325,46 +292,38 @@ export default function ConnectionsPage() {
                 <th>Type</th>
                 <th>Database</th>
                 <th>Host</th>
-                <th>Username</th>
+                <th>User</th>
                 <th>Action</th>
               </tr>
             </thead>
 
             <tbody>
-              {connections.length === 0 ? (
-                <tr>
-                  <td colSpan={6}>No connections saved yet.</td>
-                </tr>
-              ) : (
-                connections.map((conn) => (
-                  <tr key={conn.id}>
-                    <td>{conn.name}</td>
-                    <td>{conn.type}</td>
-                    <td>{conn.database_name}</td>
-                    <td>
-                      {conn.host}:{conn.port}
-                    </td>
-                    <td>{conn.username}</td>
-                    <td>
-                      <button
-                        className="conn-edit-btn"
-                        type="button"
-                        onClick={() => handleEdit(conn)}
-                      >
-                        Edit
-                      </button>
+              {connections.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.name}</td>
+                  <td>{c.type}</td>
+                  <td>{c.database_name}</td>
+                  <td>
+                    {c.host}:{c.port}
+                  </td>
+                  <td>{c.username}</td>
+                  <td>
+                    <button
+                      className="conn-edit-btn"
+                      onClick={() => handleEdit(c)}
+                    >
+                      Edit
+                    </button>
 
-                      <button
-                        className="conn-delete-btn"
-                        type="button"
-                        onClick={() => handleDelete(conn.id)}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
+                    <button
+                      className="conn-delete-btn"
+                      onClick={() => handleDelete(c.id)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
