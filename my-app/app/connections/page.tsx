@@ -37,14 +37,19 @@ export default function ConnectionsPage() {
   };
 
   const fetchConnections = async () => {
-    const res = await fetch("/api/connections", { cache: "no-store" });
-    const data = await safeJson(res);
+    try {
+      const res = await fetch("/api/connections", { cache: "no-store" });
+      const data = await safeJson(res);
 
-    if (Array.isArray(data)) {
-      setConnections(data);
-    } else {
-      setConnections([]);
-      setMessage(data.error || "Failed to load connections.");
+      if (Array.isArray(data)) {
+        setConnections(data);
+      } else {
+        setConnections([]);
+        setMessage(data.error || "Failed to load connections.");
+      }
+    } catch (error) {
+      console.error("Fetch error:", error);
+      setMessage("Failed to load connections.");
     }
   };
 
@@ -81,55 +86,80 @@ export default function ConnectionsPage() {
     const method = editingId ? "PUT" : "POST";
     const body = editingId ? { id: editingId, ...form } : form;
 
-    const res = await fetch("/api/connections", {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    try {
+      const res = await fetch("/api/connections", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-    const data = await safeJson(res);
+      const data = await safeJson(res);
 
-    if (!res.ok) {
-      setMessage(data.error || "Failed to save connection.");
-      return;
+      if (!res.ok) {
+        setMessage(data.error || "Failed to save connection.");
+        return;
+      }
+
+      setMessage(
+        editingId
+          ? "Connection updated successfully."
+          : "Connection saved successfully."
+      );
+
+      resetForm();
+      fetchConnections();
+    } catch (error) {
+      console.error("Save error:", error);
+      setMessage("Failed to save connection.");
     }
-
-    setMessage(
-      editingId
-        ? "Connection updated successfully."
-        : "Connection saved successfully."
-    );
-
-    resetForm();
-    fetchConnections();
   };
 
   const handleTestConnection = async () => {
     setMessage("Testing connection...");
 
-    if (form.type !== "PostgreSQL") {
-      setMessage(
-        "Only PostgreSQL is supported now. MySQL and SQL Server are coming soon."
-      );
-      return;
+    try {
+      const res = await fetch("/api/connections/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        setMessage(data.error || "Connection failed.");
+        return;
+      }
+
+      setMessage("Connection successful.");
+    } catch (error) {
+      console.error("Test error:", error);
+      setMessage("Connection failed.");
     }
+  };
 
-    const res = await fetch("/api/connections/test", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(form),
-    });
+  const handleQuickTest = async (conn: Connection) => {
+    setMessage(`Testing ${conn.name}...`);
 
-    const data = await safeJson(res);
+    try {
+      const res = await fetch("/api/connections/test-saved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: conn.id }),
+      });
 
-    if (!res.ok) {
-      setMessage(data.error || "Connection failed.");
-      return;
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        setMessage(data.error || `${conn.name} connection failed.`);
+        return;
+      }
+
+      setMessage(`${conn.name} connection successful.`);
+    } catch (error) {
+      console.error("Quick test error:", error);
+      setMessage("Connection failed. Please check API route.");
     }
-
-    setMessage("Connection successful.");
   };
 
   const handleEdit = (conn: Connection) => {
@@ -146,29 +176,32 @@ export default function ConnectionsPage() {
       connection_string: conn.connection_string || "",
     });
 
-    setMessage("Enter password again before updating.");
+    setMessage("Please enter password again before updating.");
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm("Delete this connection?")) return;
 
-    const res = await fetch("/api/connections", {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ id }),
-    });
+    try {
+      const res = await fetch("/api/connections", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
 
-    const data = await safeJson(res);
+      const data = await safeJson(res);
 
-    if (!res.ok) {
-      setMessage(data.error || "Failed to delete.");
-      return;
+      if (!res.ok) {
+        setMessage(data.error || "Failed to delete connection.");
+        return;
+      }
+
+      setMessage("Connection deleted successfully.");
+      fetchConnections();
+    } catch (error) {
+      console.error("Delete error:", error);
+      setMessage("Failed to delete connection.");
     }
-
-    setMessage("Deleted successfully.");
-    fetchConnections();
   };
 
   return (
@@ -176,7 +209,10 @@ export default function ConnectionsPage() {
       <Sidebar current="Connections" />
 
       <main className="db-main">
-        <Topbar title="Connections" text="Manage database connections" />
+        <Topbar
+          title="Connections"
+          text="Add and manage database connections."
+        />
 
         {message && <div className="conn-message">{message}</div>}
 
@@ -228,7 +264,8 @@ export default function ConnectionsPage() {
             </div>
 
             <p className="conn-help-text">
-              PostgreSQL is fully supported. Others coming soon.
+              PostgreSQL is fully supported. MySQL and SQL Server are prepared
+              for future support.
             </p>
 
             <input
@@ -251,8 +288,8 @@ export default function ConnectionsPage() {
               name="password"
               value={form.password}
               onChange={handleChange}
-              placeholder="Password"
               type="password"
+              placeholder="Password"
               className="conn-input"
             />
 
@@ -267,6 +304,7 @@ export default function ConnectionsPage() {
             <div className="conn-btn-group">
               <button
                 className="conn-btn conn-btn--secondary"
+                type="button"
                 onClick={handleTestConnection}
               >
                 Test Connection
@@ -274,10 +312,21 @@ export default function ConnectionsPage() {
 
               <button
                 className="conn-btn conn-btn--primary"
+                type="button"
                 onClick={handleSave}
               >
                 {editingId ? "Update" : "Save"}
               </button>
+
+              {editingId && (
+                <button
+                  className="conn-btn conn-btn--secondary"
+                  type="button"
+                  onClick={resetForm}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -292,38 +341,54 @@ export default function ConnectionsPage() {
                 <th>Type</th>
                 <th>Database</th>
                 <th>Host</th>
-                <th>User</th>
+                <th>Username</th>
                 <th>Action</th>
               </tr>
             </thead>
 
             <tbody>
-              {connections.map((c) => (
-                <tr key={c.id}>
-                  <td>{c.name}</td>
-                  <td>{c.type}</td>
-                  <td>{c.database_name}</td>
-                  <td>
-                    {c.host}:{c.port}
-                  </td>
-                  <td>{c.username}</td>
-                  <td>
-                    <button
-                      className="conn-edit-btn"
-                      onClick={() => handleEdit(c)}
-                    >
-                      Edit
-                    </button>
-
-                    <button
-                      className="conn-delete-btn"
-                      onClick={() => handleDelete(c.id)}
-                    >
-                      Delete
-                    </button>
-                  </td>
+              {connections.length === 0 ? (
+                <tr>
+                  <td colSpan={6}>No connections saved yet.</td>
                 </tr>
-              ))}
+              ) : (
+                connections.map((conn) => (
+                  <tr key={conn.id}>
+                    <td>{conn.name}</td>
+                    <td>{conn.type}</td>
+                    <td>{conn.database_name}</td>
+                    <td>
+                      {conn.host}:{conn.port}
+                    </td>
+                    <td>{conn.username}</td>
+                    <td>
+                      <button
+                        className="conn-test-btn"
+                        type="button"
+                        onClick={() => handleQuickTest(conn)}
+                      >
+                        Test
+                      </button>
+
+                      <button
+                        className="conn-edit-btn"
+                        type="button"
+                        onClick={() => handleEdit(conn)}
+                      >
+                        Edit
+                      </button>
+
+                      <button
+                        className="conn-delete-btn"
+                        type="button"
+                        onClick={() => handleDelete(conn.id)}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
