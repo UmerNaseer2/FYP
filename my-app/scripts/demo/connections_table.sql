@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS connections (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
