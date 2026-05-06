@@ -5,7 +5,7 @@ export async function POST(request: NextRequest) {
   let testPool: Pool | null = null;
 
   try {
-    const { host, port, type, username, password, database } =
+    const { host, port, type, username, password, database_name, connection_string } =
       await request.json();
 
     if (type !== "PostgreSQL") {
@@ -15,28 +15,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!host || !port || !username || !password) {
-      return NextResponse.json(
-        { error: "Host, port, username, and password are required." },
-        { status: 400 }
-      );
-    }
-
-    testPool = new Pool({
-      host,
-      port: Number(port),
-      database: database || "postgres",
-      user: username,
-      password,
-      connectionTimeoutMillis: 5000,
-    });
+    testPool = connection_string
+      ? new Pool({ connectionString: connection_string, connectionTimeoutMillis: 5000 })
+      : new Pool({
+          host,
+          port: Number(port),
+          database: database_name || "postgres",
+          user: username,
+          password,
+          connectionTimeoutMillis: 5000,
+        });
 
     await testPool.query("SELECT NOW()");
 
-    return NextResponse.json({
-      success: true,
-      message: "Connection successful.",
-    });
+    return NextResponse.json({ success: true, message: "Connection successful." });
   } catch (error) {
     console.error("Test connection error:", error);
     return NextResponse.json(
@@ -44,8 +36,6 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   } finally {
-    if (testPool) {
-      await testPool.end();
-    }
+    if (testPool) await testPool.end();
   }
 }
