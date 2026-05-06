@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import CopyButton from "../../components/CopyButton";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
+import { useUser } from "@/hooks/useUser";
+
 
 type ScriptRecord = {
   id: number;
@@ -108,6 +110,8 @@ function getSqlLineCount(sql: string): number {
 }
 
 export default function ScriptsPage() {
+  const { isAdmin, loading: roleLoading } = useUser();   // <-- added
+
   const [scripts, setScripts] = useState<ScriptRecord[]>([]);
   const [scriptNames, setScriptNames] = useState<string[]>([]);
   const [selectedExisting, setSelectedExisting] = useState("");
@@ -303,6 +307,11 @@ export default function ScriptsPage() {
     setExpandedScripts((prev) => ({ ...prev, [name]: !prev[name] }));
   };
 
+  // Show a loading indicator while role is being fetched (optional)
+  if (roleLoading) {
+    return <div className="loading-state">Checking permissions...</div>;
+  }
+
   return (
     <div className="db-layout">
       <Sidebar current="SQL Scripts" />
@@ -356,13 +365,16 @@ export default function ScriptsPage() {
                     Stored in PostgreSQL table <code>public.scripts</code>
                   </p>
                 </div>
-                <button
-                  className="script-btn script-btn--primary"
-                  onClick={() => setShowForm((current) => !current)}
-                  type="button"
-                >
-                  {showForm ? "Close Form" : "Register Script"}
-                </button>
+                {/* Only admin sees the Register Script button */}
+                {isAdmin && (
+                  <button
+                    className="script-btn script-btn--primary"
+                    onClick={() => setShowForm((current) => !current)}
+                    type="button"
+                  >
+                    {showForm ? "Close Form" : "Register Script"}
+                  </button>
+                )}
               </div>
 
               <div className="script-toolbar">
@@ -476,143 +488,120 @@ export default function ScriptsPage() {
             </section>
           </div>
 
-          <aside className="script-side-column">
-            <section className="script-panel script-panel--compact">
-              <h2 className="script-panel__title">Workflow</h2>
-              <div className="script-flow-list">
-                <div className="script-flow-step script-flow-step--done">
-                  <span className="script-flow-step__status">Ready</span>
-                  <strong>Registry</strong>
-                  <span>Save approved SQL versions</span>
-                </div>
-                <div className="script-flow-step script-flow-step--done">
-                  <span className="script-flow-step__status">Ready</span>
-                  <strong>Version table</strong>
-                  <span>Read schema patch history</span>
-                </div>
-                <div className="script-flow-step">
-                  <span className="script-flow-step__status">Next</span>
-                  <strong>DB runner</strong>
-                  <span>Preview and execute pending scripts</span>
-                </div>
-                <div className="script-flow-step">
-                  <span className="script-flow-step__status">Later</span>
-                  <strong>GitHub</strong>
-                  <span>Export approved scripts to repo</span>
-                </div>
-              </div>
-            </section>
-
-            {showForm && (
-              <section className="script-panel script-panel--form">
-                <div className="script-panel__header">
-                  <div>
-                    <h2 className="script-panel__title">Register Version</h2>
-                    <p className="script-panel__eyebrow">
-                      Manual entry until compare approval is wired in
-                    </p>
-                  </div>
-                </div>
-
-                <form onSubmit={handleSubmit} className="script-form">
-                  <div className="script-form-field">
-                    <label className="script-label" htmlFor="script-name-mode">
-                      Script
-                    </label>
-                    <select
-                      id="script-name-mode"
-                      value={selectedExisting}
-                      onChange={(event) => setSelectedExisting(event.target.value)}
-                      className="script-input script-select"
-                    >
-                      <option value="">Choose existing or new</option>
-                      <option value="__new__">Create new script</option>
-                      {scriptNames.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
+          {/* Only admin sees the registration form */}
+          {isAdmin && (
+            <aside className="script-side-column">
+              {showForm && (
+                <section className="script-panel script-panel--form">
+                  <div className="script-panel__header">
+                    <div>
+                      <h2 className="script-panel__title">Register Version</h2>
+                      <p className="script-panel__eyebrow">
+                        Manual entry until compare approval is wired in
+                      </p>
+                    </div>
                   </div>
 
-                  {selectedExisting === "__new__" && (
+                  <form onSubmit={handleSubmit} className="script-form">
                     <div className="script-form-field">
-                      <label className="script-label" htmlFor="new-script-name">
-                        New Script Name
+                      <label className="script-label" htmlFor="script-name-mode">
+                        Script
+                      </label>
+                      <select
+                        id="script-name-mode"
+                        value={selectedExisting}
+                        onChange={(event) => setSelectedExisting(event.target.value)}
+                        className="script-input script-select"
+                      >
+                        <option value="">Choose existing or new</option>
+                        <option value="__new__">Create new script</option>
+                        {scriptNames.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedExisting === "__new__" && (
+                      <div className="script-form-field">
+                        <label className="script-label" htmlFor="new-script-name">
+                          New Script Name
+                        </label>
+                        <input
+                          id="new-script-name"
+                          type="text"
+                          required
+                          value={newScriptName}
+                          onChange={(event) => setNewScriptName(event.target.value)}
+                          className="script-input"
+                          placeholder="sync_public_to_staging"
+                        />
+                      </div>
+                    )}
+
+                    <div className="script-form-field">
+                      <label className="script-label" htmlFor="script-version">
+                        Version
                       </label>
                       <input
-                        id="new-script-name"
+                        id="script-version"
                         type="text"
                         required
-                        value={newScriptName}
-                        onChange={(event) => setNewScriptName(event.target.value)}
+                        value={form.version}
+                        onChange={(event) =>
+                          setForm({ ...form, version: event.target.value })
+                        }
                         className="script-input"
-                        placeholder="sync_public_to_staging"
+                        placeholder="1.0.0"
                       />
                     </div>
-                  )}
 
-                  <div className="script-form-field">
-                    <label className="script-label" htmlFor="script-version">
-                      Version
-                    </label>
-                    <input
-                      id="script-version"
-                      type="text"
-                      required
-                      value={form.version}
-                      onChange={(event) =>
-                        setForm({ ...form, version: event.target.value })
-                      }
-                      className="script-input"
-                      placeholder="1.0.0"
-                    />
-                  </div>
+                    <div className="script-form-field">
+                      <label className="script-label" htmlFor="script-sql">
+                        SQL Content
+                      </label>
+                      <textarea
+                        id="script-sql"
+                        required
+                        rows={9}
+                        value={form.sql_content}
+                        onChange={(event) =>
+                          setForm({ ...form, sql_content: event.target.value })
+                        }
+                        className="script-input script-textarea"
+                        placeholder="CREATE TABLE ..."
+                      />
+                    </div>
 
-                  <div className="script-form-field">
-                    <label className="script-label" htmlFor="script-sql">
-                      SQL Content
-                    </label>
-                    <textarea
-                      id="script-sql"
-                      required
-                      rows={9}
-                      value={form.sql_content}
-                      onChange={(event) =>
-                        setForm({ ...form, sql_content: event.target.value })
-                      }
-                      className="script-input script-textarea"
-                      placeholder="CREATE TABLE ..."
-                    />
-                  </div>
+                    <div className="script-form-field">
+                      <label className="script-label" htmlFor="script-description">
+                        Description
+                      </label>
+                      <input
+                        id="script-description"
+                        type="text"
+                        value={form.description}
+                        onChange={(event) =>
+                          setForm({ ...form, description: event.target.value })
+                        }
+                        className="script-input"
+                        placeholder="Short change summary"
+                      />
+                    </div>
 
-                  <div className="script-form-field">
-                    <label className="script-label" htmlFor="script-description">
-                      Description
-                    </label>
-                    <input
-                      id="script-description"
-                      type="text"
-                      value={form.description}
-                      onChange={(event) =>
-                        setForm({ ...form, description: event.target.value })
-                      }
-                      className="script-input"
-                      placeholder="Short change summary"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="script-btn script-btn--primary script-btn--wide"
-                  >
-                    {loading ? "Registering..." : "Save Version"}
-                  </button>
-                </form>
-              </section>
-            )}
-          </aside>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="script-btn script-btn--primary script-btn--wide"
+                    >
+                      {loading ? "Registering..." : "Save Version"}
+                    </button>
+                  </form>
+                </section>
+              )}
+            </aside>
+          )}
         </section>
       </main>
     </div>
