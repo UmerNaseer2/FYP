@@ -213,6 +213,46 @@ body {
   border-bottom: 1px solid #e2e8f0;
 }
 
+.conn-message {
+  background: #ecfdf5;
+  border: 1px solid #86efac;
+  color: #166534;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.conn-delete-btn {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.conn-delete-btn:hover {
+  background: #fecaca;
+}
+
+.conn-edit-btn {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.conn-edit-btn:hover {
+  background: #bfdbfe;
+}
+
 /* ===================================================== */
 /* ===== Compare Page ===== */
 /* ===================================================== */
