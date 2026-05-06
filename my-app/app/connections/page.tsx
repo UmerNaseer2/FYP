@@ -9,8 +9,10 @@ type Connection = {
   name: string;
   host: string;
   port: number;
+  database_name: string;
   type: string;
   username: string;
+  connection_string?: string;
 };
 
 export default function ConnectionsPage() {
@@ -22,9 +24,11 @@ export default function ConnectionsPage() {
     name: "",
     host: "localhost",
     port: "5432",
+    database_name: "postgres",
     type: "PostgreSQL",
     username: "postgres",
     password: "",
+    connection_string: "",
   });
 
   const safeJson = async (res: Response) => {
@@ -72,9 +76,11 @@ export default function ConnectionsPage() {
       name: "",
       host: "localhost",
       port: "5432",
+      database_name: "postgres",
       type: "PostgreSQL",
       username: "postgres",
       password: "",
+      connection_string: "",
     });
   };
 
@@ -123,14 +129,7 @@ export default function ConnectionsPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          host: form.host,
-          port: form.port,
-          type: form.type,
-          username: form.username,
-          password: form.password,
-          database: "postgres",
-        }),
+        body: JSON.stringify(form),
       });
 
       const data = await safeJson(res);
@@ -149,13 +148,16 @@ export default function ConnectionsPage() {
 
   const handleEdit = (conn: Connection) => {
     setEditingId(conn.id);
+
     setForm({
       name: conn.name,
       host: conn.host,
       port: String(conn.port),
+      database_name: conn.database_name || "postgres",
       type: conn.type,
       username: conn.username,
       password: "",
+      connection_string: conn.connection_string || "",
     });
 
     setMessage("Please enter password again before updating.");
@@ -185,7 +187,7 @@ export default function ConnectionsPage() {
       fetchConnections();
     } catch (error) {
       console.error("Delete error:", error);
-      setMessage("Failed to delete connection.");
+      setMessage("Failed to delete connection. Please check if server is running.");
     }
   };
 
@@ -248,6 +250,15 @@ export default function ConnectionsPage() {
             </div>
 
             <input
+              name="database_name"
+              value={form.database_name}
+              onChange={handleChange}
+              type="text"
+              placeholder="Database Name"
+              className="conn-input"
+            />
+
+            <input
               name="username"
               value={form.username}
               onChange={handleChange}
@@ -262,6 +273,15 @@ export default function ConnectionsPage() {
               onChange={handleChange}
               type="password"
               placeholder="Password"
+              className="conn-input"
+            />
+
+            <input
+              name="connection_string"
+              value={form.connection_string}
+              onChange={handleChange}
+              type="text"
+              placeholder="Connection String (optional)"
               className="conn-input"
             />
 
@@ -303,6 +323,7 @@ export default function ConnectionsPage() {
               <tr>
                 <th>Name</th>
                 <th>Type</th>
+                <th>Database</th>
                 <th>Host</th>
                 <th>Username</th>
                 <th>Action</th>
@@ -312,13 +333,14 @@ export default function ConnectionsPage() {
             <tbody>
               {connections.length === 0 ? (
                 <tr>
-                  <td colSpan={5}>No connections saved yet.</td>
+                  <td colSpan={6}>No connections saved yet.</td>
                 </tr>
               ) : (
                 connections.map((conn) => (
                   <tr key={conn.id}>
                     <td>{conn.name}</td>
                     <td>{conn.type}</td>
+                    <td>{conn.database_name}</td>
                     <td>
                       {conn.host}:{conn.port}
                     </td>

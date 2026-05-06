@@ -37,7 +37,10 @@ export async function GET() {
     return NextResponse.json(result.rows);
   } catch (error) {
     console.error("GET connections error:", error);
-    return NextResponse.json({ error: "Failed to load connections." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to load connections." },
+      { status: 500 }
+    );
   }
 }
 
@@ -57,11 +60,14 @@ export async function POST(request: NextRequest) {
     } = await request.json();
 
     if (!name || !host || !port || !database_name || !type || !username || !password) {
-      return NextResponse.json({ error: "All fields are required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "All fields are required." },
+        { status: 400 }
+      );
     }
 
     const result = await pool.query(
-      `INSERT INTO connections 
+      `INSERT INTO connections
        (name, host, port, database_name, type, username, password, connection_string)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        RETURNING id, name, host, port, database_name, type, username, connection_string`,
@@ -80,7 +86,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result.rows[0], { status: 201 });
   } catch (error) {
     console.error("POST connection error:", error);
-    return NextResponse.json({ error: "Failed to save connection." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to save connection." },
+      { status: 500 }
+    );
   }
 }
 
@@ -101,14 +110,23 @@ export async function PUT(request: NextRequest) {
     } = await request.json();
 
     if (!id || !name || !host || !port || !database_name || !type || !username || !password) {
-      return NextResponse.json({ error: "All fields are required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "All fields are required." },
+        { status: 400 }
+      );
     }
 
     const result = await pool.query(
       `UPDATE connections
-       SET name=$1, host=$2, port=$3, database_name=$4, type=$5,
-           username=$6, password=$7, connection_string=$8
-       WHERE id=$9
+       SET name = $1,
+           host = $2,
+           port = $3,
+           database_name = $4,
+           type = $5,
+           username = $6,
+           password = $7,
+           connection_string = $8
+       WHERE id = $9
        RETURNING id, name, host, port, database_name, type, username, connection_string`,
       [
         name,
@@ -126,7 +144,10 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(result.rows[0]);
   } catch (error) {
     console.error("PUT connection error:", error);
-    return NextResponse.json({ error: "Failed to update connection." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to update connection." },
+      { status: 500 }
+    );
   }
 }
 
@@ -134,12 +155,24 @@ export async function DELETE(request: NextRequest) {
   try {
     await createConnectionsTable();
 
-    const { id } = await request.json();
+    const body = await request.json();
+    const id = body.id;
+
+    if (!id) {
+      return NextResponse.json(
+        { error: "Connection ID is required." },
+        { status: 400 }
+      );
+    }
+
     await pool.query("DELETE FROM connections WHERE id = $1", [id]);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("DELETE connection error:", error);
-    return NextResponse.json({ error: "Failed to delete connection." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to delete connection." },
+      { status: 500 }
+    );
   }
 }
