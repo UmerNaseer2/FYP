@@ -1,6 +1,11 @@
+"use client";
+
 import Link from "next/link";
+import { useUser } from "@/hooks/useUser";
 
 export default function Sidebar({ current }: { current: string }) {
+  const { isAdmin, loading } = useUser();
+
   const links = [
     { name: "Dashboard", href: "/" },
     { name: "Connections", href: "/connections" },
@@ -26,6 +31,16 @@ export default function Sidebar({ current }: { current: string }) {
             {link.name}
           </Link>
         ))}
+        {!loading && isAdmin && (
+          <Link
+            href="/adminControl"
+            className={`db-sidebar__link ${
+              current === "Admin Control" ? "db-sidebar__link--active" : ""
+            }`}
+          >
+            Admin Control
+          </Link>
+        )}
       </nav>
     </aside>
   );
