@@ -1,6 +1,7 @@
 "use client";
 
 import { useUser } from "@/hooks/useUser";
+import Link from "next/link";
 
 export default function AdminTestPage() {
   const { user, role, isAdmin, loading } = useUser();
@@ -17,9 +18,11 @@ export default function AdminTestPage() {
         <p><strong>Role from database:</strong> {role || "No role found"}</p>
         <p><strong>Is Admin?</strong> {isAdmin ? "✅ YES" : "❌ NO"}</p>
         <hr className="my-4" />
-        <p className="text-sm text-gray-500">
-          If role is 'admin' but isAdmin shows false, check your `useUser` hook.
-        </p>
+        <Link href="/">
+          <button className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+            Go to Dashboard
+          </button>
+        </Link>
       </div>
     </div>
   );

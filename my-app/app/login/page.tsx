@@ -15,7 +15,7 @@ export default function LoginPage() {
       provider: "azure",
       options: {
         scopes: "email openid profile User.Read",
-        redirectTo: `${window.location.origin}`,
+        redirectTo: `${window.location.origin}/adminTest`,
       },
     });
     if (error) {
