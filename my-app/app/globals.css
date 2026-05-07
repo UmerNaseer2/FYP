@@ -1607,23 +1607,127 @@ body {
 /* ===== Version Page ===== */
 /* ===================================================== */
 
-.version-grid {
-  display: flex;
-  gap: 16px;
+.version-card {
+  background: white;
+  border-radius: 16px;
+  padding: 22px;
+  margin-bottom: 22px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+
+.version-card__title {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.version-selector {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.version-select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.version-select:focus {
+  outline: none;
+  border-color: #0f172a;
+  background: white;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.12);
+}
+
+.version-btn {
+  background: #0f172a;
+  color: white;
+  border: none;
+  padding: 12px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.version-btn:hover {
+  background: #1e293b;
+}
+
+.version-result {
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.version-result h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.version-result p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.version-result--success {
+  background: #ecfdf5;
+  border: 1px solid #86efac;
+  color: #166534;
+}
+
+.version-result--warning {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+}
+
+.version-result--info {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
 }
 
 .version-summary-grid {
   display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 16px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 20px;
+  margin-bottom: 22px;
+}
+
+.version-stat-label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.version-stat-value {
+  font-size: 24px;
+  font-weight: 900;
+  margin: 8px 0;
+  color: #0f172a;
+}
+
+.version-text {
+  font-size: 14px;
+  color: #334155;
+  margin: 6px 0;
+  line-height: 1.5;
 }
 
 .version-layout {
-  align-items: start;
   display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: 1fr 420px;
+  gap: 18px;
 }
 
 .version-layout__main,
@@ -1631,129 +1735,144 @@ body {
   min-width: 0;
 }
 
-.version-layout__side {
+.version-timeline-header {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
 }
 
-.version-card {
-  background: white;
-  border-radius: 12px;
-  padding: 16px;
-  flex: 1;
-}
-
-.version-stat-label {
+.version-timeline-subtitle {
   color: #64748b;
+  font-size: 13px;
+  margin: -6px 0 0;
+}
+
+.version-count-pill {
+  background: #e2e8f0;
+  color: #334155;
+  border-radius: 999px;
+  padding: 6px 12px;
   font-size: 12px;
-  font-weight: 700;
-  margin: 0 0 8px;
-  text-transform: uppercase;
+  font-weight: 900;
 }
 
-.version-stat-value {
-  color: #0f172a;
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.15;
-  margin: 0 0 8px;
-  overflow-wrap: anywhere;
+.version-empty {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+  color: #64748b;
 }
 
-.version-card__title {
-  margin-bottom: 10px;
-  font-size: 18px;
-  font-weight: bold;
-}
-
-.version-text {
-  margin: 6px 0;
-  font-size: 14px;
-}
-
-/* ===== Responsive ===== */
-@media (max-width: 768px) {
-  .compare-card__header,
-  .compare-result-card__header,
-  .compare-report-block__header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .compare-form-grid,
-  .compare-summary-grid,
-  .compare-report-grid,
-  .compare-detail-grid,
-  .compare-constraint-catalog {
-    grid-template-columns: 1fr;
-  }
-
-  .db-layout {
-    flex-direction: column;
-  }
-
-  .db-sidebar {
-    width: 100%;
-  }
-
-  .dash-stats-row,
-  .conn-row,
-  .compare-top,
-  .version-grid {
-    flex-direction: column;
-  }
-
-  .version-summary-grid,
-  .version-layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ===== Version Detection Timeline ===== */
 .version-timeline {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .version-entry {
   border: 1px solid #dbe4f0;
-  border-radius: 12px;
+  border-left: 5px solid #0f172a;
+  border-radius: 14px;
   padding: 16px;
-  background: white;
+  background: #ffffff;
 }
 
 .version-entry__top {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  gap: 12px;
+  align-items: flex-start;
 }
 
 .version-entry__title {
   margin: 0;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
 }
 
 .version-entry__label {
+  margin: 4px 0 0;
   color: #64748b;
   font-size: 12px;
-  margin: 4px 0 0;
 }
 
 .version-entry__desc {
-  margin: 12px 0 6px;
+  margin: 12px 0 8px;
   color: #334155;
+  font-size: 14px;
 }
 
 .version-entry__meta {
   margin: 0;
-  font-size: 13px;
   color: #64748b;
+  font-size: 12px;
 }
 
+.version-badge {
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 
+.version-badge--additive {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.version-badge--breaking {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.version-badge--patch {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.version-badge--unknown {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+@media (max-width: 1100px) {
+  .version-summary-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .version-layout,
+  .version-selector {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .version-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .version-card {
+    padding: 18px;
+  }
+
+  .version-entry__top,
+  .version-timeline-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* ===================================================== */
 /* ===== Login Page ===== */
+/* ===================================================== */
+
 .login-container {
   display: flex;
   min-height: 100vh;

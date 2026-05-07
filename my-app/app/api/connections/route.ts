@@ -29,7 +29,16 @@ export async function GET() {
     await createConnectionsTable();
 
     const result = await pool.query(`
-      SELECT id, name, host, port, database_name, type, username, connection_string
+      SELECT 
+        id,
+        name,
+        host,
+        port,
+        database_name,
+        type,
+        username,
+        password,
+        connection_string
       FROM connections
       ORDER BY id DESC
     `);
@@ -37,6 +46,7 @@ export async function GET() {
     return NextResponse.json(result.rows);
   } catch (error) {
     console.error("GET connections error:", error);
+
     return NextResponse.json(
       { error: "Failed to load connections." },
       { status: 500 }
@@ -59,7 +69,15 @@ export async function POST(request: NextRequest) {
       connection_string,
     } = await request.json();
 
-    if (!name || !host || !port || !database_name || !type || !username || !password) {
+    if (
+      !name ||
+      !host ||
+      !port ||
+      !database_name ||
+      !type ||
+      !username ||
+      !password
+    ) {
       return NextResponse.json(
         { error: "All fields are required." },
         { status: 400 }
@@ -70,7 +88,7 @@ export async function POST(request: NextRequest) {
       `INSERT INTO connections
        (name, host, port, database_name, type, username, password, connection_string)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       RETURNING id, name, host, port, database_name, type, username, connection_string`,
+       RETURNING id, name, host, port, database_name, type, username, password, connection_string`,
       [
         name,
         host,
@@ -86,6 +104,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result.rows[0], { status: 201 });
   } catch (error) {
     console.error("POST connection error:", error);
+
     return NextResponse.json(
       { error: "Failed to save connection." },
       { status: 500 }
@@ -109,9 +128,18 @@ export async function PUT(request: NextRequest) {
       connection_string,
     } = await request.json();
 
-    if (!id || !name || !host || !port || !database_name || !type || !username || !password) {
+    if (
+      !id ||
+      !name ||
+      !host ||
+      !port ||
+      !database_name ||
+      !type ||
+      !username ||
+      !password
+    ) {
       return NextResponse.json(
-        { error: "All fields are required." },
+        { error: "All fields are required. Please enter password again." },
         { status: 400 }
       );
     }
@@ -127,7 +155,7 @@ export async function PUT(request: NextRequest) {
            password = $7,
            connection_string = $8
        WHERE id = $9
-       RETURNING id, name, host, port, database_name, type, username, connection_string`,
+       RETURNING id, name, host, port, database_name, type, username, password, connection_string`,
       [
         name,
         host,
@@ -144,6 +172,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(result.rows[0]);
   } catch (error) {
     console.error("PUT connection error:", error);
+
     return NextResponse.json(
       { error: "Failed to update connection." },
       { status: 500 }
@@ -155,8 +184,7 @@ export async function DELETE(request: NextRequest) {
   try {
     await createConnectionsTable();
 
-    const body = await request.json();
-    const id = body.id;
+    const { id } = await request.json();
 
     if (!id) {
       return NextResponse.json(
@@ -170,6 +198,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("DELETE connection error:", error);
+
     return NextResponse.json(
       { error: "Failed to delete connection." },
       { status: 500 }

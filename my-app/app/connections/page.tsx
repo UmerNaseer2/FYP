@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
 
@@ -16,6 +17,8 @@ type Connection = {
 };
 
 export default function ConnectionsPage() {
+  const router = useRouter();
+
   const [connections, setConnections] = useState<Connection[]>([]);
   const [message, setMessage] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -155,7 +158,9 @@ export default function ConnectionsPage() {
         return;
       }
 
-      setMessage(`${conn.name} connection successful.`);
+      setMessage(`${conn.name} connection successful. Opening Version Detection...`);
+
+      router.push(`/versions?connection=${conn.id}`);
     } catch (error) {
       console.error("Quick test error:", error);
       setMessage("Connection failed. Please check API route.");
@@ -367,7 +372,7 @@ export default function ConnectionsPage() {
                         type="button"
                         onClick={() => handleQuickTest(conn)}
                       >
-                        Test
+                        Test & Use
                       </button>
 
                       <button
