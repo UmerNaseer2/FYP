@@ -9,6 +9,7 @@ import {
   type ChangeLevel,
   type VersionDetectionResult,
 } from "../../lib/version-detection";
+import VersionSelector from "./VersionSelector";
 
 export const dynamic = "force-dynamic";
 
@@ -29,9 +30,16 @@ type SavedConnection = {
   type: string;
   username: string;
   password: string;
+  connection_string?: string | null;
 };
 
 function toConfig(conn: SavedConnection): ClientConfig {
+  if (conn.connection_string && conn.connection_string.trim() !== "") {
+    return {
+      connectionString: conn.connection_string.trim(),
+    };
+  }
+
   return {
     host: conn.host,
     port: Number(conn.port),
@@ -43,7 +51,7 @@ function toConfig(conn: SavedConnection): ClientConfig {
 
 async function getConnections(): Promise<SavedConnection[]> {
   const result = await pool.query(`
-    SELECT id, name, host, port, database_name, type, username, password
+    SELECT id, name, host, port, database_name, type, username, password, connection_string
     FROM connections
     WHERE type = 'PostgreSQL'
     ORDER BY id DESC
@@ -290,47 +298,13 @@ export default async function VersionsPage({ searchParams }: PageProps) {
         <section className="version-card">
           <h2 className="version-card__title">Select Connection and Schemas</h2>
 
-          <form className="version-selector">
-            <select
-              name="connection"
-              className="version-select"
-              defaultValue={selectedConnection.id}
-            >
-              {connections.map((conn) => (
-                <option key={conn.id} value={conn.id}>
-                  {conn.name} ({conn.database_name})
-                </option>
-              ))}
-            </select>
-
-            <select
-              name="schemaA"
-              className="version-select"
-              defaultValue={schemaA}
-            >
-              {schemas.data.map((schema) => (
-                <option key={schema} value={schema}>
-                  Schema A: {schema}
-                </option>
-              ))}
-            </select>
-
-            <select
-              name="schemaB"
-              className="version-select"
-              defaultValue={schemaB}
-            >
-              {schemas.data.map((schema) => (
-                <option key={schema} value={schema}>
-                  Schema B: {schema}
-                </option>
-              ))}
-            </select>
-
-            <button className="version-btn" type="submit">
-              Check Version
-            </button>
-          </form>
+          <VersionSelector
+            connections={connections}
+            schemas={schemas.data}
+            selectedConnectionId={selectedConnection.id}
+            schemaA={schemaA}
+            schemaB={schemaB}
+          />
         </section>
 
         <section className="version-card">
@@ -351,6 +325,9 @@ export default async function VersionsPage({ searchParams }: PageProps) {
             <h3 className="version-stat-value">{selectedConnection.name}</h3>
             <p className="version-text">
               {selectedConnection.host}:{selectedConnection.port}
+            </p>
+            <p className="version-text">
+              <strong>Database:</strong> {selectedConnection.database_name}
             </p>
           </div>
 
