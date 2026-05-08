@@ -700,6 +700,25 @@ body {
   background: #cbd5e1;
 }
 
+.compare-btn--save {
+  background: #166534;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.compare-btn--save:hover {
+  background: #15803d;
+}
+
+.compare-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 
 .compare-table {
   width: 100%;
@@ -1131,6 +1150,12 @@ body {
   background: #fef2f2;
   border: 1px solid #fca5a5;
   color: #b91c1c;
+}
+
+.script-message--info {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
 }
 
 .script-summary-grid {

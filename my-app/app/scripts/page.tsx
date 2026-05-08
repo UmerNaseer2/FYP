@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CopyButton from "../../components/CopyButton";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
@@ -55,21 +55,21 @@ function sortScriptsByVersion(scripts: ScriptRecord[]): ScriptRecord[] {
   });
 }
 
-function getNextVersion(versions: string[]): string {
+function getNextVersion(versions: string[], kind: ChangeKind = "patch"): string {
   if (versions.length === 0) return "1.0.0";
 
   const latest = [...versions].sort(compareVersions).at(-1) ?? "1.0.0";
   const parts = latest.replace(/^v/i, "").split(".");
 
-  while (parts.length < 3) {
-    parts.push("0");
-  }
+  while (parts.length < 3) parts.push("0");
 
-  const patchIndex = parts.length - 1;
-  const patch = Number.parseInt(parts[patchIndex], 10);
-  parts[patchIndex] = String(Number.isNaN(patch) ? 1 : patch + 1);
+  const major = Number.parseInt(parts[0], 10) || 0;
+  const minor = Number.parseInt(parts[1], 10) || 0;
+  const patch = Number.parseInt(parts[2], 10) || 0;
 
-  return parts.join(".");
+  if (kind === "breaking") return `${major + 1}.0.0`;
+  if (kind === "additive") return `${major}.${minor + 1}.0`;
+  return `${major}.${minor}.${patch + 1}`;
 }
 
 function inferChangeKind(sql: string): ChangeKind {
@@ -132,6 +132,10 @@ export default function ScriptsPage() {
   const [query, setQuery] = useState("");
   const [newScriptId, setNewScriptId] = useState<number | null>(null);
   const [expandedScripts, setExpandedScripts] = useState<Record<string, boolean>>({});
+  const [fromCompareNote, setFromCompareNote] = useState<string | null>(null);
+  const [pendingChangeKind, setPendingChangeKind] = useState<ChangeKind | null>(null);
+  const fromCompareRef = useRef(false);
+  const prevSelectedRef = useRef<string>("");
 
   const groupedScripts = useMemo(() => {
     return scripts.reduce<Record<string, ScriptRecord[]>>((acc, script) => {
@@ -206,17 +210,70 @@ export default function ScriptsPage() {
   };
 
   useEffect(() => {
-    fetchScripts();
+    const raw = sessionStorage.getItem("pendingScript");
+    if (!raw) return;
+    sessionStorage.removeItem("pendingScript");
+    try {
+      const data = JSON.parse(raw) as {
+        sql_content: string;
+        script_name: string;
+        description: string;
+        sourceLabel: string;
+        changeKind: ChangeKind;
+      };
+      fromCompareRef.current = true;
+      setSelectedExisting("__new__");
+      setNewScriptName(data.script_name);
+      setForm((prev) => ({
+        ...prev,
+        script_name: data.script_name,
+        sql_content: data.sql_content,
+        description: data.description,
+        version: "1.0.0", // placeholder — recalculated once scripts load
+      }));
+      setShowForm(true);
+      setPendingChangeKind(data.changeKind ?? "additive");
+      setFromCompareNote(
+        `Pre-filled from Schema Comparison (${data.sourceLabel}). Review and save when ready.`
+      );
+    } catch {
+      // Malformed sessionStorage data — ignore
+    }
   }, []);
 
   useEffect(() => {
+    fetchScripts();
+  }, []);
+
+  // Once the registry loads, recalculate the suggested version using the
+  // actual change kind so the version bump is correct (breaking/additive/patch).
+  useEffect(() => {
+    if (!pendingChangeKind || loadingScripts || selectedExisting !== "__new__" || !newScriptName) return;
+    const existing = groupedScripts[newScriptName] ?? [];
+    const nextVersion = getNextVersion(existing.map((s) => s.version), pendingChangeKind);
+    setForm((f) => ({ ...f, version: nextVersion }));
+    setPendingChangeKind(null);
+  }, [groupedScripts, loadingScripts, pendingChangeKind, selectedExisting, newScriptName]);
+
+  useEffect(() => {
+    const prevSelected = prevSelectedRef.current;
+    prevSelectedRef.current = selectedExisting;
+
     if (selectedExisting === "__new__") {
-      setForm((prev) => ({
-        ...prev,
-        script_name: newScriptName,
-        sql_content: "",
-        description: "",
-      }));
+      if (fromCompareRef.current) {
+        // First fire after sessionStorage load — only sync the name,
+        // do not clear sql_content or description.
+        fromCompareRef.current = false;
+        setForm((f) => ({ ...f, script_name: newScriptName }));
+        return;
+      }
+      if (prevSelected !== "__new__") {
+        // User just switched to "Create new script" — clear the form
+        setForm((f) => ({ ...f, script_name: newScriptName, sql_content: "", description: "" }));
+      } else {
+        // groupedScripts reloaded while still on __new__ — only sync the name
+        setForm((f) => ({ ...f, script_name: newScriptName }));
+      }
       return;
     }
 
@@ -293,6 +350,8 @@ export default function ScriptsPage() {
       setSelectedExisting("");
       setNewScriptName("");
       setShowForm(false);
+      setFromCompareNote(null);
+      setPendingChangeKind(null);
       setExpandedScripts((prev) => ({ ...prev, [data.script.script_name]: true }));
 
       await fetchScripts();
@@ -321,6 +380,12 @@ export default function ScriptsPage() {
           title="SQL Scripts"
           text="Approved migration registry and version history."
         />
+
+        {fromCompareNote && (
+          <div className="script-message script-message--info">
+            {fromCompareNote}
+          </div>
+        )}
 
         {message && (
           <div className={`script-message script-message--${message.type}`}>
