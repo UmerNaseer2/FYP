@@ -1,6 +1,7 @@
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
 import CopyButton from "../../components/CopyButton";
+import SaveScriptButton, { type ChangeKind } from "../../components/SaveScriptButton";
 import { generateMigration, renderMigrationScript } from "../../lib/generate-sql";
 import type {
   CompareTarget,
@@ -573,6 +574,19 @@ function renderMigrationSection(report: CompareReport) {
   const safe = script.statements.filter((s) => s.severity === "safe").length;
   const info = script.statements.filter((s) => s.severity === "info").length;
 
+  const suggestedName = `sync_${report.right.schema}_to_${report.left.schema}`
+    .replace(/[^a-z0-9_]/gi, "_")
+    .toLowerCase();
+  const suggestedDescription = `Sync ${report.right.database}.${report.right.schema} to match ${report.left.database}.${report.left.schema}`;
+  const sourceLabel = `${report.left.database}.${report.left.schema} → ${report.right.database}.${report.right.schema}`;
+
+  // Worst-case severity determines the version bump kind
+  const overallKind: ChangeKind = script.statements.some((s) => s.severity === "breaking")
+    ? "breaking"
+    : script.statements.some((s) => s.severity === "safe" || s.severity === "info")
+    ? "additive"
+    : "patch";
+
   return (
     <div className="compare-card compare-card--spaced">
       <div className="compare-card__header">
@@ -591,7 +605,18 @@ function renderMigrationSection(report: CompareReport) {
             flagged.
           </p>
         </div>
-        <CopyButton text={sqlText} />
+        <div className="compare-card__actions">
+          {script.statements.length > 0 && (
+            <SaveScriptButton
+              sqlContent={sqlText}
+              suggestedName={suggestedName}
+              suggestedDescription={suggestedDescription}
+              sourceLabel={sourceLabel}
+              changeKind={overallKind}
+            />
+          )}
+          <CopyButton text={sqlText} />
+        </div>
       </div>
 
       <div className="compare-chip-row">
