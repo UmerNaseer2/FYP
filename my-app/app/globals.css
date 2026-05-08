@@ -1943,3 +1943,153 @@ body {
   margin-bottom: 1rem;
 }
 
+/* ===================================================== */
+/* ===== Admin Control Page ===== */
+/* ===================================================== */
+.admin-card {
+  background: #ffffff;
+  border-radius: 18px;
+  padding: 28px;
+  margin-top: 24px;
+  border: 1px solid #dbe4f0;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.admin-card__title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 22px;
+}
+
+.admin-loading,
+.loading-state,
+.access-denied {
+  padding: 28px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.access-denied {
+  color: #dc2626;
+}
+
+.admin-table-wrapper {
+  overflow-x: auto;
+  border-radius: 14px;
+  border: 1px solid #dbe4f0;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #ffffff;
+}
+
+.admin-table thead {
+  background: #0f2a55;
+}
+
+.admin-table th {
+  padding: 15px 18px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-table td {
+  padding: 16px 18px;
+  font-size: 15px;
+  color: #1e293b;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.admin-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.role-badge {
+  display: inline-block;
+  min-width: 80px;
+  text-align: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.role-badge--admin {
+  background: #dbeafe;
+  color: #0f2a55;
+}
+
+.role-badge--viewer {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.admin-select {
+  min-width: 120px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+}
+
+.admin-select:hover {
+  border-color: #0f2a55;
+}
+
+.admin-select:focus {
+  border-color: #0f2a55;
+  box-shadow: 0 0 0 3px rgba(15, 42, 85, 0.15);
+}
+
+.admin-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.admin-updating {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+@media (max-width: 768px) {
+  .admin-card {
+    padding: 18px;
+  }
+
+  .admin-card__title {
+    font-size: 21px;
+  }
+
+  .admin-table th,
+  .admin-table td {
+    padding: 12px;
+    font-size: 13px;
+  }
+
+  .admin-select {
+    width: 100%;
+    margin-top: 6px;
+  }
+
+  .admin-updating {
+    display: block;
+    margin-left: 0;
+    margin-top: 6px;
+  }
+}

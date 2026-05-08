@@ -12,12 +12,23 @@
 
 import { Pool } from "pg";
 
-const pool = new Pool({
-  host: "localhost",
-  port: 5432,
-  database: "postgres",
-  user: "postgres",
-  password: "1234", //Real Postgred Password
-});
+declare global {
+  var __mainPgPool: Pool | undefined;
+}
+
+const pool =
+  globalThis.__mainPgPool ??
+  new Pool({
+    host: "localhost",
+    port: 5432,
+    database: "postgres",
+    user: "postgres",
+    password: "112233",
+    max: 5,
+  });
+
+if (process.env.NODE_ENV !== "production") {
+  globalThis.__mainPgPool = pool;
+}
 
 export default pool;
