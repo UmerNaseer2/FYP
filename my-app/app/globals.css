@@ -1313,6 +1313,152 @@ body {
   width: 100%;
 }
 
+.script-btn--github {
+  background: #24292f;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+.script-btn--github:hover:not(:disabled) {
+  background: #3d444d;
+}
+
+.script-btn--github-push {
+  background: #24292f;
+  color: #ffffff;
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.script-btn--github-push:hover:not(:disabled) {
+  background: #3d444d;
+}
+
+.script-btn--github-done {
+  background: #166534;
+  color: #ffffff;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.script-btn--github-done:hover {
+  background: #15803d;
+}
+
+.script-btn--error {
+  background: #991b1b;
+  color: #fff;
+}
+
+.script-btn--ghost {
+  background: transparent;
+  color: #64748b;
+  border: 1px solid #cbd5e1;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.script-btn--ghost:hover {
+  background: #f1f5f9;
+}
+
+/* GitHub pull panel */
+.github-pull-panel {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+}
+
+.github-pull-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.github-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.github-file-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  padding: 6px 10px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.github-file-item__name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.github-file-item__link {
+  color: #2563eb;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.github-file-item__link:hover {
+  text-decoration: underline;
+}
+
+.github-section {
+  margin-top: 24px;
+}
+
+/* Change kind selector in form */
+.change-kind-selector {
+  display: flex;
+  gap: 6px;
+}
+
+.change-kind-btn {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-transform: capitalize;
+  background: #f1f5f9;
+  color: #64748b;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.change-kind-btn--patch.change-kind-btn--active {
+  background: #f0fdf4;
+  border-color: #16a34a;
+  color: #15803d;
+}
+
+.change-kind-btn--additive.change-kind-btn--active {
+  background: #eff6ff;
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.change-kind-btn--breaking.change-kind-btn--active {
+  background: #fef2f2;
+  border-color: #dc2626;
+  color: #b91c1c;
+}
+
 .script-input {
   background: white;
   border: 1px solid #cbd5e1;
