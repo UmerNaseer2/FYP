@@ -193,7 +193,7 @@ function healthBanner(report: CompareReport) {
     return (
       <div className="compare-health-banner compare-health-banner--error">
         ⚠ Schemas are out of sync — {count} table
-        {count === 1 ? "" : "s"} exist in only one schema and need to be
+        {count === 1 ? " exists" : "s exist"} in only one schema and need to be
         created in the other.
       </div>
     );
@@ -591,17 +591,18 @@ function renderMigrationSection(report: CompareReport) {
     <div className="compare-card compare-card--spaced">
       <div className="compare-card__header">
         <div>
-          <h2 className="compare-card__title">Migration Script</h2>
+          <h2 className="compare-card__title">Migration Script: Right Syncs To Left</h2>
           <p className="compare-hint">
-            SQL to bring{" "}
+            This script modifies only the right/target schema{" "}
             <code className="compare-code">
               {report.right.database}.{report.right.schema}
             </code>{" "}
-            in sync with{" "}
+            so it matches the left/source schema{" "}
             <code className="compare-code">
               {report.left.database}.{report.left.schema}
             </code>
-            . Review every statement before running — breaking changes are
+            . Put the newer desired schema on the left and the outdated schema
+            on the right. Review every statement before running — breaking changes are
             flagged.
           </p>
         </div>
@@ -617,6 +618,12 @@ function renderMigrationSection(report: CompareReport) {
           )}
           <CopyButton text={sqlText} />
         </div>
+      </div>
+
+      <div className="compare-similarity-notice">
+        <strong>Direction check:</strong> generated SQL always updates the
+        right side to match the left side. If the left side is older than the
+        right side, this becomes a downgrade script.
       </div>
 
       <div className="compare-chip-row">
@@ -772,20 +779,20 @@ export default async function ComparePage({ searchParams }: PageProps) {
             <div>
               <h2 className="compare-card__title">Comparison Setup</h2>
               <p className="compare-hint">
-                Pick any two schemas from the preset database targets, then review
-                table, column, and constraint differences in one report.
+                Pick the desired source schema on the left and the target schema
+                to update on the right. Generated SQL always syncs right to left.
               </p>
             </div>
             <span className="compare-pill compare-pill--neutral">
-              Diff report only
+              Right syncs to left
             </span>
           </div>
 
           <form action="/compare" className="compare-form-grid">
             <div className="compare-form-card">
-              <h3 className="compare-form-card__title">Left Side (A)</h3>
+              <h3 className="compare-form-card__title">Left Side (A): Source / Desired</h3>
               <label className="compare-field">
-                <span className="compare-field__label">Database target</span>
+                <span className="compare-field__label">Source database target</span>
                 <select
                   name="leftDb"
                   defaultValue={leftTarget.id}
@@ -799,7 +806,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 </select>
               </label>
               <label className="compare-field">
-                <span className="compare-field__label">Schema</span>
+                <span className="compare-field__label">Source schema</span>
                 <select
                   name="leftSchema"
                   defaultValue={leftSchema}
@@ -815,9 +822,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
             </div>
 
             <div className="compare-form-card">
-              <h3 className="compare-form-card__title">Right Side (B)</h3>
+              <h3 className="compare-form-card__title">Right Side (B): Target / Outdated</h3>
               <label className="compare-field">
-                <span className="compare-field__label">Database target</span>
+                <span className="compare-field__label">Target database to update</span>
                 <select
                   name="rightDb"
                   defaultValue={rightTarget.id}
@@ -831,7 +838,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 </select>
               </label>
               <label className="compare-field">
-                <span className="compare-field__label">Schema</span>
+                <span className="compare-field__label">Target schema to update</span>
                 <select
                   name="rightSchema"
                   defaultValue={rightSchema}
@@ -850,6 +857,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
               <button type="submit" className="compare-btn compare-btn--primary">
                 Compare Schemas
               </button>
+              <p className="compare-hint compare-hint--tight compare-hint--error">
+                Direction matters: left is the version you want, right is the
+                database/schema that will receive changes.
+              </p>
               <p className="compare-hint compare-hint--tight">
                 Targets come from <code className="compare-code">DATABASE_URL</code>,{" "}
                 <code className="compare-code">DATABASE_URL_A</code>, and{" "}
@@ -878,21 +889,21 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
             <div className="compare-summary-grid">
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Missing from B</p>
+                <p className="compare-summary-card__label">Missing from Target (B)</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.tablesOnlyInA}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  Tables in A that B doesn&apos;t have yet
+                  Source tables that target does not have yet
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Missing from A</p>
+                <p className="compare-summary-card__label">Extra in Target (B)</p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.tablesOnlyInB}
                 </h2>
                 <p className="compare-summary-card__hint">
-                  Tables in B that A doesn&apos;t have yet
+                  Target tables absent from the source schema
                 </p>
               </div>
               <div className="compare-summary-card">
