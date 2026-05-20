@@ -96,12 +96,16 @@ export default function ConnectionsPage() {
         body: JSON.stringify(body),
       });
 
-      const data = await safeJson(res);
+      const safeJson = async (res: Response) => {
+        const text = await res.text();
 
-      if (!res.ok) {
-        setMessage(data.error || "Failed to save connection.");
-        return;
-      }
+        try {
+          return text ? JSON.parse(text) : {};
+        } catch {
+          console.error("API returned HTML instead of JSON:", text);
+          return [];
+        }
+      };
 
       setMessage(
         editingId
