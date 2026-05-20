@@ -5,17 +5,16 @@ export async function POST(request: NextRequest) {
   let testPool: Pool | null = null;
 
   try {
-    const {
-      host,
-      port,
-      type,
-      username,
-      password,
-      database_name,
-      connection_string,
-    } = await request.json();
+    const body = await request.json();
 
-    // only support PostgreSQL
+    const type = String(body.type ?? "PostgreSQL");
+    const host = String(body.host ?? "localhost").trim();
+    const port = Number(body.port ?? 5432);
+    const database = String(body.database_name ?? "postgres").trim();
+    const username = String(body.username ?? "postgres").trim();
+    const password = String(body.password ?? "").trim();
+    const connectionString = String(body.connection_string ?? "").trim();
+
     if (type !== "PostgreSQL") {
       return NextResponse.json(
         { error: "Only PostgreSQL is supported now." },
@@ -23,33 +22,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // decide connection method
-    if (connection_string && connection_string.trim() !== "") {
-      // use connection string
+    if (connectionString !== "") {
       testPool = new Pool({
-        connectionString: connection_string.trim(),
-        connectionTimeoutMillis: 10000, // 10 seconds
+        connectionString,
+        connectionTimeoutMillis: 10000,
       });
     } else {
-      // use manual fields
-      if (!host || !port || !username || !password) {
+      if (!host || !port || !database || !username || !password) {
         return NextResponse.json(
-          { error: "Host, port, username, and password are required." },
+          { error: "Please fill in host, port, database, username, and password." },
           { status: 400 }
         );
       }
 
       testPool = new Pool({
-        host: host || "localhost",
-        port: Number(port) || 5432,
-        database: database_name || "postgres",
-        user: username || "postgres",
-        password: password,
-        connectionTimeoutMillis: 10000, // 10 seconds
+        host,
+        port,
+        database,
+        user: username,
+        password,
+        connectionTimeoutMillis: 10000,
       });
     }
 
-    // test query
     await testPool.query("SELECT NOW()");
 
     return NextResponse.json({
@@ -62,7 +57,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Connection failed. Check host, port, username, password, or database name.",
+          "Connection failed. Please check host, port, database name, username, and password.",
       },
       { status: 500 }
     );
