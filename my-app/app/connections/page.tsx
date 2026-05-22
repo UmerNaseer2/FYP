@@ -1,7 +1,218 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
 
+type Connection = {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  database_name: string;
+  type: string;
+  username: string;
+  connection_string?: string;
+};
+
 export default function ConnectionsPage() {
+  const router = useRouter();
+
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [message, setMessage] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+
+  const [form, setForm] = useState({
+    name: "",
+    host: "localhost",
+    port: "5432",
+    database_name: "postgres",
+    type: "PostgreSQL",
+    username: "postgres",
+    password: "",
+    connection_string: "",
+  });
+
+  const safeJson = async (res: Response) => {
+    const text = await res.text();
+    return text ? JSON.parse(text) : {};
+  };
+
+  const fetchConnections = async () => {
+    try {
+      const res = await fetch("/api/connections", { cache: "no-store" });
+      const data = await safeJson(res);
+
+      if (Array.isArray(data)) {
+        setConnections(data);
+      } else {
+        setConnections([]);
+        setMessage(data.error || "Failed to load connections.");
+      }
+    } catch (error) {
+      console.error("Fetch error:", error);
+      setMessage("Failed to load connections.");
+    }
+  };
+
+  useEffect(() => {
+    fetchConnections();
+  }, []);
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  ) => {
+    setForm({
+      ...form,
+      [e.target.name]: e.target.value,
+    });
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setForm({
+      name: "",
+      host: "localhost",
+      port: "5432",
+      database_name: "postgres",
+      type: "PostgreSQL",
+      username: "postgres",
+      password: "",
+      connection_string: "",
+    });
+  };
+
+  const handleSave = async () => {
+    setMessage("");
+
+    const method = editingId ? "PUT" : "POST";
+    const body = editingId ? { id: editingId, ...form } : form;
+
+    try {
+      const res = await fetch("/api/connections", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const safeJson = async (res: Response) => {
+        const text = await res.text();
+
+        try {
+          return text ? JSON.parse(text) : {};
+        } catch {
+          console.error("API returned HTML instead of JSON:", text);
+          return [];
+        }
+      };
+
+      setMessage(
+        editingId
+          ? "Connection updated successfully."
+          : "Connection saved successfully."
+      );
+
+      resetForm();
+      fetchConnections();
+    } catch (error) {
+      console.error("Save error:", error);
+      setMessage("Failed to save connection.");
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setMessage("Testing connection...");
+
+    try {
+      const res = await fetch("/api/connections/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        setMessage(data.error || "Connection failed.");
+        return;
+      }
+
+      setMessage("Connection successful.");
+    } catch (error) {
+      console.error("Test error:", error);
+      setMessage("Connection failed.");
+    }
+  };
+
+  const handleQuickTest = async (conn: Connection) => {
+    setMessage(`Testing ${conn.name}...`);
+
+    try {
+      const res = await fetch("/api/connections/test-saved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: conn.id }),
+      });
+
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        setMessage(data.error || `${conn.name} connection failed.`);
+        return;
+      }
+
+      setMessage(`${conn.name} connection successful. Opening Version Detection...`);
+
+      router.push(`/versions?connection=${conn.id}`);
+    } catch (error) {
+      console.error("Quick test error:", error);
+      setMessage("Connection failed. Please check API route.");
+    }
+  };
+
+  const handleEdit = (conn: Connection) => {
+    setEditingId(conn.id);
+
+    setForm({
+      name: conn.name,
+      host: conn.host,
+      port: String(conn.port),
+      database_name: conn.database_name,
+      type: conn.type,
+      username: conn.username,
+      password: "",
+      connection_string: conn.connection_string || "",
+    });
+
+    setMessage("Please enter password again before updating.");
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm("Delete this connection?")) return;
+
+    try {
+      const res = await fetch("/api/connections", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        setMessage(data.error || "Failed to delete connection.");
+        return;
+      }
+
+      setMessage("Connection deleted successfully.");
+      fetchConnections();
+    } catch (error) {
+      console.error("Delete error:", error);
+      setMessage("Failed to delete connection.");
+    }
+  };
+
   return (
     <div className="db-layout">
       <Sidebar current="Connections" />
@@ -12,53 +223,119 @@ export default function ConnectionsPage() {
           text="Add and manage database connections."
         />
 
+        {message && <div className="conn-message">{message}</div>}
+
         <div className="conn-card">
-          <h2 className="conn-card__title">Add Connection</h2>
+          <h2 className="conn-card__title">
+            {editingId ? "Edit Connection" : "Add Connection"}
+          </h2>
 
           <div className="conn-form">
             <input
-              type="text"
-              placeholder="Database Name"
+              name="name"
+              value={form.name}
+              onChange={handleChange}
+              placeholder="Connection Name"
               className="conn-input"
             />
 
             <input
-              type="text"
+              name="host"
+              value={form.host}
+              onChange={handleChange}
               placeholder="Host"
               className="conn-input"
             />
 
             <div className="conn-row">
               <input
-                type="text"
+                name="port"
+                value={form.port}
+                onChange={handleChange}
                 placeholder="Port"
                 className="conn-input"
               />
 
-              <select className="conn-select">
-                <option>PostgreSQL</option>
-                <option>MySQL</option>
-                <option>SQL Server</option>
+              <select
+                name="type"
+                value={form.type}
+                onChange={handleChange}
+                className="conn-select"
+              >
+                <option value="PostgreSQL">PostgreSQL</option>
+                <option value="MySQL" disabled>
+                  MySQL (Coming Soon)
+                </option>
+                <option value="SQL Server" disabled>
+                  SQL Server (Coming Soon)
+                </option>
               </select>
             </div>
 
+            <p className="conn-help-text">
+              PostgreSQL is fully supported. MySQL and SQL Server are prepared
+              for future support.
+            </p>
+
             <input
-              type="text"
+              name="database_name"
+              value={form.database_name}
+              onChange={handleChange}
+              placeholder="Database Name"
+              className="conn-input"
+            />
+
+            <input
+              name="username"
+              value={form.username}
+              onChange={handleChange}
               placeholder="Username"
               className="conn-input"
             />
 
             <input
+              name="password"
+              value={form.password}
+              onChange={handleChange}
               type="password"
               placeholder="Password"
               className="conn-input"
             />
 
+            <input
+              name="connection_string"
+              value={form.connection_string}
+              onChange={handleChange}
+              placeholder="Connection String (optional)"
+              className="conn-input"
+            />
+
             <div className="conn-btn-group">
-              <button className="conn-btn conn-btn--primary">
+              <button
+                className="conn-btn conn-btn--secondary"
+                type="button"
+                onClick={handleTestConnection}
+              >
                 Test Connection
               </button>
-              <button className="conn-btn conn-btn--secondary">Save</button>
+
+              <button
+                className="conn-btn conn-btn--primary"
+                type="button"
+                onClick={handleSave}
+              >
+                {editingId ? "Update" : "Save"}
+              </button>
+
+              {editingId && (
+                <button
+                  className="conn-btn conn-btn--secondary"
+                  type="button"
+                  onClick={resetForm}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -71,20 +348,56 @@ export default function ConnectionsPage() {
               <tr>
                 <th>Name</th>
                 <th>Type</th>
+                <th>Database</th>
                 <th>Host</th>
+                <th>Username</th>
+                <th>Action</th>
               </tr>
             </thead>
+
             <tbody>
-              <tr>
-                <td>Main Database</td>
-                <td>PostgreSQL</td>
-                <td>localhost:5432</td>
-              </tr>
-              <tr>
-                <td>Testing Database</td>
-                <td>MySQL</td>
-                <td>localhost:3306</td>
-              </tr>
+              {connections.length === 0 ? (
+                <tr>
+                  <td colSpan={6}>No connections saved yet.</td>
+                </tr>
+              ) : (
+                connections.map((conn) => (
+                  <tr key={conn.id}>
+                    <td>{conn.name}</td>
+                    <td>{conn.type}</td>
+                    <td>{conn.database_name}</td>
+                    <td>
+                      {conn.host}:{conn.port}
+                    </td>
+                    <td>{conn.username}</td>
+                    <td>
+                      <button
+                        className="conn-test-btn"
+                        type="button"
+                        onClick={() => handleQuickTest(conn)}
+                      >
+                        Test & Use
+                      </button>
+
+                      <button
+                        className="conn-edit-btn"
+                        type="button"
+                        onClick={() => handleEdit(conn)}
+                      >
+                        Edit
+                      </button>
+
+                      <button
+                        className="conn-delete-btn"
+                        type="button"
+                        onClick={() => handleDelete(conn.id)}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
