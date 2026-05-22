@@ -65,6 +65,53 @@ body {
   color: white;
   font-weight: bold;
 }
+/* Sidebar user section - better spacing */
+.db-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0f172a;
+  color: white;
+  padding: 20px;
+  width: 280px; /* fixed width */
+}
+
+.db-sidebar__nav {
+  flex: 1;
+}
+
+.db-sidebar__user-section {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid #334155;
+}
+
+.db-sidebar__user-email {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  word-break: break-all;
+  margin-bottom: 0.75rem;
+  text-align: center;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+.db-sidebar__logout-btn {
+  width: 100%;
+  background-color: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.db-sidebar__logout-btn:hover {
+  background-color: #b91c1c;
+}
 
 /* ===== Topbar ===== */
 .db-topbar {
@@ -2166,7 +2213,136 @@ body {
   border-radius: 0.375rem;
   margin-bottom: 1rem;
 }
+/* ===================================================== */
+/* ===== Admin Control Page ===== */
+/* ===================================================== */
 
+.admin-card {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.admin-card__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: #1e293b;
+  border-left: 4px solid #2563eb;
+  padding-left: 12px;
+}
+
+.admin-table-wrapper {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 500px;
+  font-size: 0.875rem;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.admin-table th {
+  background-color: #f8fafc;
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.admin-table tr:hover {
+  background-color: #f1f5f9;
+}
+
+.admin-table td:first-child {
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+/* Role badges */
+.role-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.role-badge--admin {
+  background-color: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.role-badge--viewer {
+  background-color: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+}
+
+/* Role select dropdown */
+.admin-select {
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background-color: white;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.admin-select:hover {
+  border-color: #2563eb;
+  background-color: #f8fafc;
+}
+
+.admin-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: #f1f5f9;
+}
+
+/* Updating indicator */
+.admin-updating {
+  margin-left: 10px;
+  font-size: 0.7rem;
+  color: #2563eb;
+  font-style: italic;
+}
+
+/* Loading and access states */
+.admin-loading,
+.loading-state,
+.access-denied {
+  padding: 2rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #475569;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.access-denied {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  border-left: 4px solid #ef4444;
 /* ===================================================== */
 /* ===== Admin Control Page ===== */
 /* ===================================================== */

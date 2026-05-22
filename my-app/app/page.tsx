@@ -1,5 +1,6 @@
 "use client";
 
+import AuthGuard from "@/components/AuthGuard";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Sidebar from "../components/Sidebar";
@@ -45,7 +46,8 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="db-layout">
+<AuthGuard>
+      <div className="db-layout">
       <Sidebar current="Dashboard" />
 
       <main className="db-main">
@@ -115,5 +117,6 @@ export default function DashboardPage() {
         </section>
       </main>
     </div>
+    </AuthGuard>
   );
 }

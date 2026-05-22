@@ -14,10 +14,11 @@ type Profile = {
 
 export default function AdminControlPage() {
   const supabase = createClient();
-  const { isAdmin, loading: roleLoading } = useUser();
+  const { isAdmin, loading: roleLoading, user: currentUser } = useUser();
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
     if (isAdmin) {
@@ -47,6 +48,33 @@ export default function AdminControlPage() {
     setUpdating(null);
   };
 
+  const deleteUser = async (userId: string, userEmail: string) => {
+    if (currentUser?.id === userId) {
+      alert("You cannot delete your own account.");
+      return;
+    }
+
+    const confirmed = confirm(`Are you sure you want to delete ${userEmail}? This action cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeleting(userId);
+    
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .delete()
+      .eq("id", userId);
+    
+    if (profileError) {
+      alert(`Error deleting user: ${profileError.message}`);
+      setDeleting(null);
+      return;
+    }
+    
+    alert(`User ${userEmail} has been removed.`);
+    await fetchUsers();
+    setDeleting(null);
+  };
+
   if (roleLoading) return <div className="loading-state">Checking permissions...</div>;
   if (!isAdmin) return <div className="access-denied">Access denied. Admins only.</div>;
 
@@ -73,6 +101,7 @@ export default function AdminControlPage() {
                     <th>Email</th>
                     <th>Current Role</th>
                     <th>Change Role</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -97,6 +126,15 @@ export default function AdminControlPage() {
                         {updating === user.id && (
                           <span className="admin-updating">Updating...</span>
                         )}
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => deleteUser(user.id, user.email)}
+                          disabled={deleting === user.id || currentUser?.id === user.id}
+                          className="admin-delete-btn"
+                        >
+                          {deleting === user.id ? "..." : "Delete"}
+                        </button>
                       </td>
                     </tr>
                   ))}
