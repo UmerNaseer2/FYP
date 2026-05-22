@@ -1,9 +1,13 @@
+"use client";
+
+import AuthGuard from "@/components/AuthGuard";
 import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
 
 export default function DashboardPage() {
   return (
-    <div className="db-layout">
+<AuthGuard>
+      <div className="db-layout">
       <Sidebar current="Dashboard" />
 
       <main className="db-main">
@@ -47,5 +51,6 @@ export default function DashboardPage() {
         </div>
       </main>
     </div>
+    </AuthGuard>
   );
 }
