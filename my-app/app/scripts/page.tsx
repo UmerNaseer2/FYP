@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CopyButton from "../../components/CopyButton";
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
-import { useUser } from "@/hooks/useUser";
 
 
 type ScriptRecord = {
@@ -26,6 +25,14 @@ type RegisterScriptResponse =
   | { error: string };
 
 type ChangeKind = "breaking" | "additive" | "patch";
+
+type PushState = "idle" | "pushing" | "done" | "error";
+type GitHubScript = {
+  script_name: string;
+  version: string;
+  path: string;
+  download_url: string;
+};
 
 function versionParts(version: string): number[] {
   return version
@@ -55,21 +62,21 @@ function sortScriptsByVersion(scripts: ScriptRecord[]): ScriptRecord[] {
   });
 }
 
-function getNextVersion(versions: string[]): string {
+function getNextVersion(versions: string[], kind: ChangeKind = "patch"): string {
   if (versions.length === 0) return "1.0.0";
 
   const latest = [...versions].sort(compareVersions).at(-1) ?? "1.0.0";
   const parts = latest.replace(/^v/i, "").split(".");
 
-  while (parts.length < 3) {
-    parts.push("0");
-  }
+  while (parts.length < 3) parts.push("0");
 
-  const patchIndex = parts.length - 1;
-  const patch = Number.parseInt(parts[patchIndex], 10);
-  parts[patchIndex] = String(Number.isNaN(patch) ? 1 : patch + 1);
+  const major = Number.parseInt(parts[0], 10) || 0;
+  const minor = Number.parseInt(parts[1], 10) || 0;
+  const patch = Number.parseInt(parts[2], 10) || 0;
 
-  return parts.join(".");
+  if (kind === "breaking") return `${major + 1}.0.0`;
+  if (kind === "additive") return `${major}.${minor + 1}.0`;
+  return `${major}.${minor}.${patch + 1}`;
 }
 
 function inferChangeKind(sql: string): ChangeKind {
@@ -110,8 +117,6 @@ function getSqlLineCount(sql: string): number {
 }
 
 export default function ScriptsPage() {
-  const { isAdmin, loading: roleLoading } = useUser();   // <-- added
-
   const [scripts, setScripts] = useState<ScriptRecord[]>([]);
   const [scriptNames, setScriptNames] = useState<string[]>([]);
   const [selectedExisting, setSelectedExisting] = useState("");
@@ -131,7 +136,17 @@ export default function ScriptsPage() {
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
   const [newScriptId, setNewScriptId] = useState<number | null>(null);
+  const [changeKind, setChangeKind] = useState<ChangeKind>("patch");
   const [expandedScripts, setExpandedScripts] = useState<Record<string, boolean>>({});
+  const [pushStates, setPushStates] = useState<Record<string, PushState>>({});
+  const [pushUrls, setPushUrls] = useState<Record<string, string>>({});
+  const [githubScripts, setGithubScripts] = useState<GitHubScript[] | null>(null);
+  const [pullLoading, setPullLoading] = useState(false);
+  const [pullError, setPullError] = useState<string | null>(null);
+  const [fromCompareNote, setFromCompareNote] = useState<string | null>(null);
+  const [pendingChangeKind, setPendingChangeKind] = useState<ChangeKind | null>(null);
+  const fromCompareRef = useRef(false);
+  const prevSelectedRef = useRef<string>("");
 
   const groupedScripts = useMemo(() => {
     return scripts.reduce<Record<string, ScriptRecord[]>>((acc, script) => {
@@ -206,17 +221,71 @@ export default function ScriptsPage() {
   };
 
   useEffect(() => {
-    fetchScripts();
+    const raw = sessionStorage.getItem("pendingScript");
+    if (!raw) return;
+    sessionStorage.removeItem("pendingScript");
+    try {
+      const data = JSON.parse(raw) as {
+        sql_content: string;
+        script_name: string;
+        description: string;
+        sourceLabel: string;
+        changeKind: ChangeKind;
+      };
+      fromCompareRef.current = true;
+      setSelectedExisting("__new__");
+      setNewScriptName(data.script_name);
+      setForm((prev) => ({
+        ...prev,
+        script_name: data.script_name,
+        sql_content: data.sql_content,
+        description: data.description,
+        version: "1.0.0", // placeholder — recalculated once scripts load
+      }));
+      setShowForm(true);
+      setPendingChangeKind(data.changeKind ?? "additive");
+      setFromCompareNote(
+        `Pre-filled from Schema Comparison (${data.sourceLabel}). Review and save when ready.`
+      );
+    } catch {
+      // Malformed sessionStorage data — ignore
+    }
   }, []);
 
   useEffect(() => {
+    fetchScripts();
+  }, []);
+
+  // Once the registry loads, recalculate the suggested version using the
+  // actual change kind so the version bump is correct (breaking/additive/patch).
+  useEffect(() => {
+    if (!pendingChangeKind || loadingScripts || selectedExisting !== "__new__" || !newScriptName) return;
+    const existing = groupedScripts[newScriptName] ?? [];
+    const nextVersion = getNextVersion(existing.map((s) => s.version), pendingChangeKind);
+    setForm((f) => ({ ...f, version: nextVersion }));
+    setChangeKind(pendingChangeKind);
+    setPendingChangeKind(null);
+  }, [groupedScripts, loadingScripts, pendingChangeKind, selectedExisting, newScriptName]);
+
+  useEffect(() => {
+    const prevSelected = prevSelectedRef.current;
+    prevSelectedRef.current = selectedExisting;
+
     if (selectedExisting === "__new__") {
-      setForm((prev) => ({
-        ...prev,
-        script_name: newScriptName,
-        sql_content: "",
-        description: "",
-      }));
+      if (fromCompareRef.current) {
+        // First fire after sessionStorage load — only sync the name,
+        // do not clear sql_content or description.
+        fromCompareRef.current = false;
+        setForm((f) => ({ ...f, script_name: newScriptName }));
+        return;
+      }
+      if (prevSelected !== "__new__") {
+        // User just switched to "Create new script" — clear the form
+        setForm((f) => ({ ...f, script_name: newScriptName, sql_content: "", description: "" }));
+      } else {
+        // groupedScripts reloaded while still on __new__ — only sync the name
+        setForm((f) => ({ ...f, script_name: newScriptName }));
+      }
       return;
     }
 
@@ -225,7 +294,7 @@ export default function ScriptsPage() {
     const sameScripts = groupedScripts[selectedExisting] ?? [];
     const sortedScripts = sortScriptsByVersion(sameScripts);
     const latest = sortedScripts.at(-1);
-    const nextVersion = getNextVersion(sameScripts.map((script) => script.version));
+    const nextVersion = getNextVersion(sameScripts.map((script) => script.version), changeKind);
 
     setForm((prev) => ({
       ...prev,
@@ -234,7 +303,51 @@ export default function ScriptsPage() {
       sql_content: latest?.sql_content ?? "",
       description: latest?.description ?? "",
     }));
-  }, [groupedScripts, newScriptName, selectedExisting]);
+  }, [groupedScripts, newScriptName, selectedExisting, changeKind]);
+
+  const handlePush = async (script: ScriptRecord) => {
+    const key = `${script.script_name}@${script.version}`;
+    setPushStates((prev) => ({ ...prev, [key]: "pushing" }));
+    try {
+      const res = await fetch("/api/github/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          script_name: script.script_name,
+          version: script.version,
+          sql_content: script.sql_content,
+          description: script.description ?? undefined,
+        }),
+      });
+      const data = (await res.json()) as { url?: string; error?: string };
+      if (!res.ok || !data.url) {
+        setPushStates((prev) => ({ ...prev, [key]: "error" }));
+      } else {
+        setPushStates((prev) => ({ ...prev, [key]: "done" }));
+        setPushUrls((prev) => ({ ...prev, [key]: data.url! }));
+      }
+    } catch {
+      setPushStates((prev) => ({ ...prev, [key]: "error" }));
+    }
+  };
+
+  const handlePull = async () => {
+    setPullLoading(true);
+    setPullError(null);
+    try {
+      const res = await fetch("/api/github/pull");
+      const data = (await res.json()) as { scripts?: GitHubScript[]; error?: string };
+      if (!res.ok || !data.scripts) {
+        setPullError(data.error ?? "Could not fetch scripts from GitHub.");
+      } else {
+        setGithubScripts(data.scripts);
+      }
+    } catch {
+      setPullError("Network error fetching from GitHub.");
+    } finally {
+      setPullLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -293,6 +406,8 @@ export default function ScriptsPage() {
       setSelectedExisting("");
       setNewScriptName("");
       setShowForm(false);
+      setFromCompareNote(null);
+      setPendingChangeKind(null);
       setExpandedScripts((prev) => ({ ...prev, [data.script.script_name]: true }));
 
       await fetchScripts();
@@ -307,11 +422,6 @@ export default function ScriptsPage() {
     setExpandedScripts((prev) => ({ ...prev, [name]: !prev[name] }));
   };
 
-  // Show a loading indicator while role is being fetched (optional)
-  if (roleLoading) {
-    return <div className="loading-state">Checking permissions...</div>;
-  }
-
   return (
     <div className="db-layout">
       <Sidebar current="SQL Scripts" />
@@ -321,6 +431,12 @@ export default function ScriptsPage() {
           title="SQL Scripts"
           text="Approved migration registry and version history."
         />
+
+        {fromCompareNote && (
+          <div className="script-message script-message--info">
+            {fromCompareNote}
+          </div>
+        )}
 
         {message && (
           <div className={`script-message script-message--${message.type}`}>
@@ -365,16 +481,13 @@ export default function ScriptsPage() {
                     Stored in PostgreSQL table <code>public.scripts</code>
                   </p>
                 </div>
-                {/* Only admin sees the Register Script button */}
-                {isAdmin && (
-                  <button
-                    className="script-btn script-btn--primary"
-                    onClick={() => setShowForm((current) => !current)}
-                    type="button"
-                  >
-                    {showForm ? "Close Form" : "Register Script"}
-                  </button>
-                )}
+                <button
+                  className="script-btn script-btn--primary"
+                  onClick={() => setShowForm((current) => !current)}
+                  type="button"
+                >
+                  {showForm ? "Close Form" : "Register Script"}
+                </button>
               </div>
 
               <div className="script-toolbar">
@@ -463,6 +576,33 @@ export default function ScriptsPage() {
                                         {scriptKind}
                                       </span>
                                       <CopyButton text={script.sql_content} />
+                                      {(() => {
+                                        const key = `${script.script_name}@${script.version}`;
+                                        const state = pushStates[key] ?? "idle";
+                                        const url = pushUrls[key];
+                                        if (state === "done" && url) {
+                                          return (
+                                            <a
+                                              href={url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="script-btn script-btn--github-done"
+                                            >
+                                              ↑ On GitHub
+                                            </a>
+                                          );
+                                        }
+                                        return (
+                                          <button
+                                            className={`script-btn script-btn--github-push${state === "error" ? " script-btn--error" : ""}`}
+                                            onClick={() => handlePush(script)}
+                                            disabled={state === "pushing"}
+                                            type="button"
+                                          >
+                                            {state === "pushing" ? "Pushing..." : state === "error" ? "Retry ↑" : "↑ Push"}
+                                          </button>
+                                        );
+                                      })()}
                                     </div>
                                   </div>
 
@@ -488,16 +628,14 @@ export default function ScriptsPage() {
             </section>
           </div>
 
-          {/* Only admin sees the registration form */}
-          {isAdmin && (
-            <aside className="script-side-column">
+          <aside className="script-side-column">
               {showForm && (
                 <section className="script-panel script-panel--form">
                   <div className="script-panel__header">
                     <div>
                       <h2 className="script-panel__title">Register Version</h2>
                       <p className="script-panel__eyebrow">
-                        Manual entry until compare approval is wired in
+                        Save approved migration SQL to the registry
                       </p>
                     </div>
                   </div>
@@ -537,6 +675,26 @@ export default function ScriptsPage() {
                           className="script-input"
                           placeholder="sync_public_to_staging"
                         />
+                      </div>
+                    )}
+
+                    {selectedExisting && selectedExisting !== "__new__" && (
+                      <div className="script-form-field">
+                        <label className="script-label" htmlFor="change-kind">
+                          Change Kind
+                        </label>
+                        <div className="change-kind-selector">
+                          {(["patch", "additive", "breaking"] as ChangeKind[]).map((k) => (
+                            <button
+                              key={k}
+                              type="button"
+                              className={`change-kind-btn change-kind-btn--${k}${changeKind === k ? " change-kind-btn--active" : ""}`}
+                              onClick={() => setChangeKind(k)}
+                            >
+                              {k}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -601,6 +759,54 @@ export default function ScriptsPage() {
                 </section>
               )}
             </aside>
+        </section>
+
+        {/* GitHub section */}
+        <section className="script-panel github-section">
+          <div className="script-panel__header">
+            <div>
+              <h2 className="script-panel__title">GitHub</h2>
+              <p className="script-panel__eyebrow">
+                Push individual versions or view what&apos;s already in the repo
+              </p>
+            </div>
+            <button
+              className="script-btn script-btn--github"
+              onClick={handlePull}
+              disabled={pullLoading}
+              type="button"
+            >
+              {pullLoading ? "Fetching..." : "↓ Sync from GitHub"}
+            </button>
+          </div>
+
+          {pullError && (
+            <div className="script-message script-message--error">{pullError}</div>
+          )}
+
+          {githubScripts === null ? (
+            <p className="script-empty-state">
+              Click &quot;Sync from GitHub&quot; to see what&apos;s in the repo. Use the &quot;↑ Push&quot; button on any script version to upload it.
+            </p>
+          ) : githubScripts.length === 0 ? (
+            <p className="script-empty-state">No .sql files found in the repo yet.</p>
+          ) : (
+            <ul className="github-file-list">
+              {githubScripts.map((f) => (
+                <li key={f.path} className="github-file-item">
+                  <span className="github-file-item__name">{f.script_name}</span>
+                  <span className="script-version-pill">v{f.version}</span>
+                  <a
+                    href={f.download_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="github-file-item__link"
+                  >
+                    View SQL ↗
+                  </a>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
       </main>
