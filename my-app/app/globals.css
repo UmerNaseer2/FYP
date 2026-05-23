@@ -25,10 +25,16 @@ body {
 
 /* ===== Sidebar ===== */
 .db-sidebar {
-  width: 220px;
+  width: 280px;
   background: #0f172a;
   color: white;
   padding: 20px;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  left: 0;
+  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 .db-sidebar__title {
@@ -112,7 +118,10 @@ body {
 .db-sidebar__logout-btn:hover {
   background-color: #b91c1c;
 }
-
+.db-layout {
+  display: flex;
+  min-height: 100vh;
+}
 /* ===== Topbar ===== */
 .db-topbar {
   background: white;
@@ -2492,4 +2501,5 @@ body {
     margin-left: 0;
     margin-top: 6px;
   }
+}
 }
