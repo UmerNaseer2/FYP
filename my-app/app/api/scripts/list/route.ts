@@ -12,7 +12,7 @@ export async function GET() {
     );
     return NextResponse.json({ scripts: result.rows });
   } catch (error: any) {
-    console.error('Database error:', error.message);
+    console.error('List error:', error.message);
     return NextResponse.json(
       { error: error.message },
       { status: 500 }

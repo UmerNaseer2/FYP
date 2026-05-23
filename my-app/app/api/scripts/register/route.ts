@@ -1,38 +1,34 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { Pool } from 'pg';
 
-export async function GET() {
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+export async function POST(request: NextRequest) {
   try {
-    // Log that the API was called
-    console.log('API /api/scripts/list was called');
-    
-    // Dynamic import to avoid build issues
-    const { Pool } = await import('pg');
-    
-    const connectionString = process.env.DATABASE_URL || process.env.DATABASE_URL_A;
-    console.log('Connection string exists:', !!connectionString);
-    
-    const pool = new Pool({
-      connectionString: connectionString,
-    });
+    const body = await request.json();
+    const { script_name, version, sql_content, description } = body;
 
-    // Test connection first
-    await pool.query('SELECT 1');
-    console.log('Database connected successfully');
+    if (!script_name || !version || !sql_content) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
+    }
 
-    const result = await pool.query(`
-      SELECT id, script_name, version, sql_content, description, created_at
-      FROM scripts
-      ORDER BY script_name, created_at DESC
-    `);
-    
-    await pool.end();
-    
-    return NextResponse.json({ scripts: result.rows });
+    const result = await pool.query(
+      `INSERT INTO scripts (script_name, version, sql_content, description)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, script_name, version, sql_content, description, created_at`,
+      [script_name, version, sql_content, description || null]
+    );
+
+    return NextResponse.json({ success: true, script: result.rows[0] });
   } catch (error: any) {
-    console.error('Full error:', error);
-    // Return the actual error message
+    console.error('Register error:', error.message);
     return NextResponse.json(
-      { error: error.message || 'Failed to fetch scripts' },
+      { error: error.message || 'Failed to register script' },
       { status: 500 }
     );
   }
