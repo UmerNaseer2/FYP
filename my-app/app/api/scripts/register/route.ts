@@ -1,37 +1,39 @@
-import { NextRequest, NextResponse } from "next/server";
-import pool from "../../../../lib/db";
+import { NextResponse } from 'next/server';
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export async function POST(request: NextRequest) {
+export async function GET() {
   try {
-    const { script_name, version, sql_content, description } = await request.json();
+    // Log that the API was called
+    console.log('API /api/scripts/list was called');
+    
+    // Dynamic import to avoid build issues
+    const { Pool } = await import('pg');
+    
+    const connectionString = process.env.DATABASE_URL || process.env.DATABASE_URL_A;
+    console.log('Connection string exists:', !!connectionString);
+    
+    const pool = new Pool({
+      connectionString: connectionString,
+    });
 
-    if (!script_name || !version || !sql_content) {
-      return NextResponse.json(
-        { error: "script_name, version, and sql_content are required." },
-        { status: 400 }
-      );
-    }
+    // Test connection first
+    await pool.query('SELECT 1');
+    console.log('Database connected successfully');
 
-    const result = await pool.query(
-      `SELECT * FROM register_script($1, $2, $3, $4)`,
-      [script_name, version, sql_content, description || null]
+    const result = await pool.query(`
+      SELECT id, script_name, version, sql_content, description, created_at
+      FROM scripts
+      ORDER BY script_name, created_at DESC
+    `);
+    
+    await pool.end();
+    
+    return NextResponse.json({ scripts: result.rows });
+  } catch (error: any) {
+    console.error('Full error:', error);
+    // Return the actual error message
+    return NextResponse.json(
+      { error: error.message || 'Failed to fetch scripts' },
+      { status: 500 }
     );
-
-    const newScript = result.rows[0];
-    return NextResponse.json({ success: true, script: newScript }, { status: 201 });
-  } catch (error: unknown) {
-    const message = errorMessage(error);
-    console.error("Register error:", message);
-    if (
-      message.includes("already exists") ||
-      message.includes("cannot be empty")
-    ) {
-      return NextResponse.json({ error: message }, { status: 409 });
-    }
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
