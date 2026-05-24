@@ -1409,6 +1409,17 @@ body {
   border-radius: 6px;
 }
 
+.github-file-item__schema {
+  font-weight: 500;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.github-file-item__sep {
+  color: #d1d5db;
+  font-size: 12px;
+}
+
 .github-file-item__name {
   flex: 1;
   font-weight: 500;
@@ -2006,6 +2017,54 @@ body {
   line-height: 1.45;
   margin: 7px 0 0;
   padding: 9px 11px;
+}
+
+/* Phase 3 — pending item without checkbox column */
+.deploy-pending-item--no-checkbox {
+  cursor: default;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.deploy-pending-item--no-checkbox:hover {
+  background: inherit;
+}
+
+/* Phase 3 — "← target" badge on the target version row */
+.deploy-target-badge {
+  background: #dbeafe;
+  border-radius: 999px;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+/* Phase 3 — target version picker */
+.deploy-target-picker {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+
+.deploy-target-picker__row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.deploy-target-picker__row .script-input {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+/* Phase 3 — error hint under schema dropdown */
+.deploy-hint--error {
+  color: #b91c1c;
 }
 
 @media (max-width: 1100px) {
