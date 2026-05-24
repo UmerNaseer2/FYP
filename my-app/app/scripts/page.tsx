@@ -34,6 +34,37 @@ type GitHubScript = {
   download_url: string;
 };
 
+// A saved connection from /api/connections
+type Connection = {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  database_name: string;
+  type: string;
+};
+
+// What /api/scripts/preflight returns
+type PatchEntry = {
+  version: string;
+  title: string | null;
+  change_type: string;
+  applied_at: string;
+};
+
+type PreflightResult = {
+  hasVersionTable: boolean;
+  needsInit: boolean;
+  currentVersion: string | null;
+  timeline: PatchEntry[];
+  schema: string;
+  scriptName: string | null;
+  message: string;
+};
+
+// Per-script status while a deploy is running
+type DeployItemStatus = "idle" | "applying" | "done" | "error";
+
 function versionParts(version: string): number[] {
   return version
     .replace(/^v/i, "")
@@ -148,6 +179,23 @@ export default function ScriptsPage() {
   const fromCompareRef = useRef(false);
   const prevSelectedRef = useRef<string>("");
 
+  // ── Deploy panel state ────────────────────────────────────────────────────
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const [deployConnectionId, setDeployConnectionId] = useState<string>("");
+  const [deploySchema, setDeploySchema] = useState<string>("public");
+  const [deployScriptGroup, setDeployScriptGroup] = useState<string>("");
+  const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  // Set of script IDs the user has ticked to deploy
+  const [selectedVersionIds, setSelectedVersionIds] = useState<Set<number>>(new Set());
+  // Execution state — set during an active deploy run
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployStatus, setDeployStatus] = useState<Record<number, DeployItemStatus>>({});
+  const [deployErrors, setDeployErrors] = useState<Record<number, string>>({});
+  const [deployComplete, setDeployComplete] = useState(false);
+
   const groupedScripts = useMemo(() => {
     return scripts.reduce<Record<string, ScriptRecord[]>>((acc, script) => {
       if (!acc[script.script_name]) acc[script.script_name] = [];
@@ -186,6 +234,23 @@ export default function ScriptsPage() {
     });
   }, [groupedEntries, query]);
 
+  // Scripts that haven't been applied to the target DB yet.
+  // Recalculates whenever the user switches connection/schema or preflight returns.
+  const pendingScripts = useMemo<ScriptRecord[]>(() => {
+    if (!deployScriptGroup || !preflightResult) return [];
+
+    const groupVersions = groupedScripts[deployScriptGroup] ?? [];
+    const sorted = sortScriptsByVersion(groupVersions);
+
+    // If no version recorded in the DB, every script in the group is pending
+    if (!preflightResult.currentVersion) return sorted;
+
+    // Only scripts whose version is strictly greater than the DB's current highest version
+    return sorted.filter(
+      (s) => compareVersions(s.version, preflightResult.currentVersion!) > 0
+    );
+  }, [deployScriptGroup, preflightResult, groupedScripts]);
+
   const latestScript = groupedEntries[0]?.[1].at(-1) ?? null;
   const totalVersions = scripts.length;
   const breakingCount = scripts.filter(
@@ -217,6 +282,147 @@ export default function ScriptsPage() {
       setMessage({ type: "error", text: "Could not reach the scripts API." });
     } finally {
       setLoadingScripts(false);
+    }
+  };
+
+  // Load saved connections for the deploy panel target selector
+  useEffect(() => {
+    fetch("/api/connections", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (Array.isArray(data)) setConnections(data as Connection[]);
+      })
+      .catch(() => {
+        // Fail silently — deploy panel shows empty dropdown, not a crash
+      })
+      .finally(() => {
+        // Mark as loaded so the "no connections" hint only shows after fetch completes,
+        // not as a flash on every page load before the response arrives.
+        setConnectionsLoaded(true);
+      });
+  }, []);
+
+  // Bare API call — just fetches preflight result and updates state.
+  // Called both from the "Check DB" button and automatically after a successful deploy.
+  // scriptName scopes the timeline and currentVersion to a specific script family so
+  // that "products_migration v2.0.0" doesn't make "users_migration v1.0.0" look applied.
+  const runPreflightCheck = async (
+    connectionId: string,
+    schema: string,
+    scriptName: string,
+  ) => {
+    setPreflightLoading(true);
+    setPreflightError(null);
+    try {
+      const res = await fetch("/api/scripts/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionId: Number(connectionId),
+          schemaName: schema || "public",
+          scriptName: scriptName || undefined,
+        }),
+      });
+      const data = (await res.json()) as PreflightResult & { error?: string };
+      if (!res.ok) {
+        setPreflightError(data.error ?? "Pre-flight check failed.");
+        return;
+      }
+      setPreflightResult(data);
+    } catch {
+      setPreflightError("Network error during pre-flight check.");
+    } finally {
+      setPreflightLoading(false);
+    }
+  };
+
+  // Button handler — resets all deploy state first, then runs the check.
+  const handlePreflight = async () => {
+    if (!deployConnectionId) return;
+    setPreflightResult(null);
+    setSelectedVersionIds(new Set());
+    setDeployStatus({});
+    setDeployErrors({});
+    setDeployComplete(false);
+    await runPreflightCheck(deployConnectionId, deploySchema, deployScriptGroup);
+  };
+
+  // Apply selected pending scripts to the target DB, one at a time, in version order.
+  // Stops immediately if any script fails — later scripts are skipped to avoid
+  // applying a version on top of a broken schema state.
+  const handleDeploy = async () => {
+    if (selectedVersionIds.size === 0 || isDeploying) return;
+
+    // Apply in ascending version order — pendingScripts is already sorted this way
+    const toApply = pendingScripts.filter((s) => selectedVersionIds.has(s.id));
+
+    setIsDeploying(true);
+    setDeployComplete(false);
+    setDeployErrors({});
+    // Mark every selected script as idle so the status column renders immediately
+    setDeployStatus(
+      Object.fromEntries(toApply.map((s) => [s.id, "idle" as DeployItemStatus]))
+    );
+
+    let anyFailed = false;
+
+    for (const script of toApply) {
+      // Update this script to "applying" — shows a spinner in the row
+      setDeployStatus((prev) => ({ ...prev, [script.id]: "applying" }));
+
+      try {
+        const res = await fetch("/api/scripts/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            connectionId: Number(deployConnectionId),
+            schemaName: deploySchema || "public",
+            // script_name scopes this entry in script_patch so different families
+            // at the same version number don't block or pollute each other.
+            script_name: script.script_name,
+            sql_content: script.sql_content,
+            version: script.version,
+            // Use description as title; fall back to the script family name
+            title: script.description?.trim() || script.script_name,
+            description: script.description ?? undefined,
+            // inferChangeKind returns "breaking"|"additive"|"patch" — all valid change_types
+            change_type: inferChangeKind(script.sql_content),
+          }),
+        });
+
+        const data = (await res.json()) as { success?: boolean; error?: string };
+
+        if (!res.ok || !data.success) {
+          setDeployStatus((prev) => ({ ...prev, [script.id]: "error" }));
+          setDeployErrors((prev) => ({
+            ...prev,
+            [script.id]: data.error ?? "Unknown error from apply API.",
+          }));
+          anyFailed = true;
+          break; // Stop — do not apply subsequent scripts after a failure
+        }
+
+        setDeployStatus((prev) => ({ ...prev, [script.id]: "done" }));
+      } catch {
+        setDeployStatus((prev) => ({ ...prev, [script.id]: "error" }));
+        setDeployErrors((prev) => ({
+          ...prev,
+          [script.id]: "Network error — could not reach /api/scripts/apply.",
+        }));
+        anyFailed = true;
+        break;
+      }
+    }
+
+    setIsDeploying(false);
+    setDeployComplete(true);
+
+    // On full success: re-query the DB so the current version + pending list refresh.
+    // We call runPreflightCheck directly (not handlePreflight) so we don't wipe the
+    // deployStatus display — the user still sees the ✓ / ✗ marks after the refresh.
+    if (!anyFailed) {
+      setSelectedVersionIds(new Set());
+      await runPreflightCheck(deployConnectionId, deploySchema, deployScriptGroup);
     }
   };
 
@@ -759,6 +965,327 @@ export default function ScriptsPage() {
                 </section>
               )}
             </aside>
+        </section>
+
+        {/* ── Deploy Panel ──────────────────────────────────────────────── */}
+        <section className="script-panel deploy-section">
+          <div className="script-panel__header">
+            <div>
+              <h2 className="script-panel__title">Deploy to Database</h2>
+              <p className="script-panel__eyebrow">
+                Check what&apos;s pending and apply migrations to a target connection
+              </p>
+            </div>
+          </div>
+
+          {/* Step 1 — pick target connection, schema, and script group */}
+          <div className="deploy-controls">
+            <div className="script-form-field">
+              <label className="script-label" htmlFor="deploy-connection">
+                Target Connection
+              </label>
+              <select
+                id="deploy-connection"
+                className="script-input script-select"
+                value={deployConnectionId}
+                disabled={isDeploying}
+                onChange={(e) => {
+                  setDeployConnectionId(e.target.value);
+                  setPreflightResult(null);
+                  setPreflightError(null);
+                  setSelectedVersionIds(new Set());
+                  setDeployStatus({});
+                  setDeployErrors({});
+                  setDeployComplete(false);
+                  setIsDeploying(false);
+                }}
+              >
+                <option value="">Select a connection…</option>
+                {connections.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} — {c.host}/{c.database_name}
+                  </option>
+                ))}
+              </select>
+              {connectionsLoaded && connections.length === 0 && (
+                <p className="deploy-hint">
+                  No connections saved yet. Add one on the Connections page first.
+                </p>
+              )}
+            </div>
+
+            <div className="script-form-field">
+              <label className="script-label" htmlFor="deploy-schema">
+                Schema
+              </label>
+              <input
+                id="deploy-schema"
+                type="text"
+                className="script-input"
+                placeholder="public"
+                value={deploySchema}
+                disabled={isDeploying}
+                onChange={(e) => {
+                  setDeploySchema(e.target.value);
+                  setPreflightResult(null);
+                  setPreflightError(null);
+                  setSelectedVersionIds(new Set());
+                  setDeployStatus({});
+                  setDeployErrors({});
+                  setDeployComplete(false);
+                  setIsDeploying(false);
+                }}
+              />
+            </div>
+
+            <div className="script-form-field">
+              <label className="script-label" htmlFor="deploy-script-group">
+                Script Group
+              </label>
+              <select
+                id="deploy-script-group"
+                className="script-input script-select"
+                value={deployScriptGroup}
+                disabled={isDeploying}
+                onChange={(e) => {
+                  setDeployScriptGroup(e.target.value);
+                  setSelectedVersionIds(new Set());
+                  setDeployStatus({});
+                  setDeployErrors({});
+                  setDeployComplete(false);
+                }}
+              >
+                <option value="">Select a script group…</option>
+                {scriptNames.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              className="script-btn script-btn--primary"
+              type="button"
+              disabled={!deployConnectionId || preflightLoading || isDeploying}
+              onClick={handlePreflight}
+            >
+              {preflightLoading ? "Checking…" : "Check DB"}
+            </button>
+          </div>
+
+          {/* Pre-flight error */}
+          {preflightError && (
+            <div className="script-message script-message--error">
+              {preflightError}
+            </div>
+          )}
+
+          {/* Step 2 — preflight result: current version + applied history */}
+          {preflightResult && (
+            <div className="deploy-preflight">
+              {preflightResult.needsInit && (
+                <div className="script-message script-message--info">
+                  No <code>script_patch</code> table found in schema &quot;{preflightResult.schema}&quot;.
+                  It will be created automatically on first deploy.
+                </div>
+              )}
+
+              <div className="deploy-version-status">
+                <span className="deploy-version-label">DB current version:</span>
+                <strong className="deploy-version-value">
+                  {preflightResult.currentVersion
+                    ? `v${preflightResult.currentVersion}`
+                    : "None (no versions applied yet)"}
+                </strong>
+              </div>
+
+              {preflightResult.timeline.length > 0 && (
+                <details className="deploy-history">
+                  <summary className="deploy-history__summary">
+                    Applied history ({preflightResult.timeline.length} entr{preflightResult.timeline.length === 1 ? "y" : "ies"})
+                  </summary>
+                  <ul className="deploy-history-list">
+                    {preflightResult.timeline.map((entry) => (
+                      <li key={entry.version + "-" + entry.applied_at} className="deploy-history-item">
+                        <span className={`script-kind script-kind--${entry.change_type}`}>
+                          {entry.change_type}
+                        </span>
+                        <span className="deploy-history-version">v{entry.version}</span>
+                        {entry.title && (
+                          <span className="deploy-history-title">{entry.title}</span>
+                        )}
+                        <span className="deploy-history-date">
+                          {new Date(entry.applied_at).toLocaleString()}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+
+          {/* Step 3 — pending scripts list with checkboxes */}
+          {preflightResult && deployScriptGroup && (
+            <div className="deploy-pending">
+
+              {/* Deploy summary — lives OUTSIDE the pending/empty ternary so it
+                  stays visible even after a successful deploy empties the list */}
+              {deployComplete && (
+                <div
+                  className={
+                    Object.values(deployStatus).some((s) => s === "error")
+                      ? "script-message script-message--error"
+                      : "script-message script-message--success"
+                  }
+                >
+                  {Object.values(deployStatus).every((s) => s === "done") ? (
+                    <>
+                      ✓ All {Object.values(deployStatus).length} script
+                      {Object.values(deployStatus).length !== 1 ? "s" : ""} applied
+                      successfully. DB version has been updated.
+                    </>
+                  ) : (
+                    <>
+                      Deployment stopped early — one or more scripts failed.
+                      Scripts after the failure point were not applied.
+                      Fix the error above and retry.
+                    </>
+                  )}
+                </div>
+              )}
+
+              {pendingScripts.length === 0 ? (
+                <div className="script-empty-state">
+                  ✓ This database is already up to date. No pending scripts for &quot;{deployScriptGroup}&quot;.
+                </div>
+              ) : (
+                <>
+                  <div className="deploy-pending__header">
+                    <h3 className="deploy-pending__title">
+                      Pending ({pendingScripts.length})
+                    </h3>
+                    {/* Disabled while a deploy is running */}
+                    <button
+                      type="button"
+                      className="script-btn script-btn--secondary"
+                      disabled={isDeploying}
+                      onClick={() => {
+                        if (selectedVersionIds.size === pendingScripts.length) {
+                          setSelectedVersionIds(new Set());
+                        } else {
+                          setSelectedVersionIds(
+                            new Set(pendingScripts.map((s) => s.id))
+                          );
+                        }
+                      }}
+                    >
+                      {selectedVersionIds.size === pendingScripts.length
+                        ? "Deselect All"
+                        : "Select All"}
+                    </button>
+                  </div>
+
+                  <div className="deploy-pending-list">
+                    {pendingScripts.map((script) => {
+                      const kind = inferChangeKind(script.sql_content);
+                      const isChecked = selectedVersionIds.has(script.id);
+                      const status = deployStatus[script.id] ?? "idle";
+                      const errorMsg = deployErrors[script.id];
+
+                      return (
+                        <div key={script.id}>
+                          <label
+                            className={[
+                              "deploy-pending-item",
+                              `deploy-pending-item--${kind}`,
+                              isChecked ? "deploy-pending-item--selected" : "",
+                              status === "done"  ? "deploy-pending-item--done"  : "",
+                              status === "error" ? "deploy-pending-item--error-state" : "",
+                            ].filter(Boolean).join(" ")}
+                          >
+                            <input
+                              type="checkbox"
+                              className="deploy-pending-item__checkbox"
+                              checked={isChecked}
+                              // Lock checkboxes while deploying or once a script is applied
+                              disabled={isDeploying || status === "done"}
+                              onChange={() => {
+                                setSelectedVersionIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(script.id)) next.delete(script.id);
+                                  else next.add(script.id);
+                                  return next;
+                                });
+                              }}
+                            />
+
+                            <div className="deploy-pending-item__info">
+                              <span className="deploy-pending-item__version">
+                                v{script.version}
+                              </span>
+                              <span className={`script-kind script-kind--${kind}`}>
+                                {kind}
+                              </span>
+                              {script.description && (
+                                <span className="deploy-pending-item__desc">
+                                  {script.description}
+                                </span>
+                              )}
+                              <span className="deploy-pending-item__lines">
+                                {getSqlLineCount(script.sql_content)} SQL lines
+                              </span>
+                            </div>
+
+                            {/* Per-script status — only visible once deploy starts */}
+                            <div className="deploy-pending-item__status">
+                              {status === "applying" && (
+                                <span className="deploy-status deploy-status--applying">
+                                  Applying…
+                                </span>
+                              )}
+                              {status === "done" && (
+                                <span className="deploy-status deploy-status--done">
+                                  ✓ Applied
+                                </span>
+                              )}
+                              {status === "error" && (
+                                <span className="deploy-status deploy-status--error">
+                                  ✗ Failed
+                                </span>
+                              )}
+                            </div>
+                          </label>
+
+                          {/* Error detail shown below the row, not inside the label */}
+                          {errorMsg && (
+                            <p className="deploy-pending-item__error-msg">
+                              {errorMsg}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Deploy button */}
+                  <button
+                    type="button"
+                    className="script-btn script-btn--primary script-btn--wide"
+                    disabled={selectedVersionIds.size === 0 || isDeploying}
+                    onClick={handleDeploy}
+                  >
+                    {isDeploying
+                      ? "Deploying…"
+                      : selectedVersionIds.size === 0
+                        ? "Select scripts to deploy"
+                        : `Deploy ${selectedVersionIds.size} script${selectedVersionIds.size > 1 ? "s" : ""} →`}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </section>
 
         {/* GitHub section */}
