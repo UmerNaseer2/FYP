@@ -13,10 +13,12 @@ type GitHubItem = {
 };
 
 export type GitHubScript = {
+  schema_name: string;
   script_name: string;
   version: string;
   path: string;
   download_url: string;
+  sql_content: string;
 };
 
 export async function GET() {
@@ -52,29 +54,67 @@ export async function GET() {
 
   const scripts: GitHubScript[] = [];
 
-  // Walk each directory (script family) and collect .sql files
+  // New folder structure: <schema>/<script_name>/v<version>.sql
+  // Level 1: root dirs  → schema folders
+  // Level 2: schema dirs → script-family folders
+  // Level 3: script dirs → .sql files
   await Promise.all(
-    dirs.map(async (dir) => {
-      const dirRes = await fetch(
-        `https://api.github.com/repos/${OWNER}/${REPO}/contents/${dir.path}`,
+    dirs.map(async (schemaDir) => {
+      // Fetch contents of the schema folder
+      const schemaRes = await fetch(
+        `https://api.github.com/repos/${OWNER}/${REPO}/contents/${schemaDir.path}`,
         { headers }
       );
-      if (!dirRes.ok) return;
+      if (!schemaRes.ok) return;
 
-      const files = (await dirRes.json()) as GitHubItem[];
-      for (const file of files) {
-        if (file.type !== "file" || !file.name.endsWith(".sql")) continue;
-        // Filename is like v1.2.0.sql
-        const version = file.name.replace(/^v/i, "").replace(/\.sql$/i, "");
-        if (file.download_url) {
-          scripts.push({
-            script_name: dir.name,
-            version,
-            path: file.path,
-            download_url: file.download_url,
-          });
-        }
-      }
+      const schemaItems = (await schemaRes.json()) as GitHubItem[];
+      const scriptDirs = schemaItems.filter((item) => item.type === "dir");
+
+      // For each script-family dir inside the schema, collect .sql files
+      await Promise.all(
+        scriptDirs.map(async (scriptDir) => {
+          const scriptRes = await fetch(
+            `https://api.github.com/repos/${OWNER}/${REPO}/contents/${scriptDir.path}`,
+            { headers }
+          );
+          if (!scriptRes.ok) return;
+
+          const files = (await scriptRes.json()) as GitHubItem[];
+
+          // Fetch each .sql file's content concurrently
+          await Promise.all(
+            files.map(async (file) => {
+              if (file.type !== "file" || !file.name.endsWith(".sql")) return;
+              if (!file.download_url) return;
+
+              // Filename is like v1.2.0.sql — strip the leading "v" and ".sql"
+              const version = file.name.replace(/^v/i, "").replace(/\.sql$/i, "");
+
+              // Fetch raw SQL content via download_url (server-side, uses
+              // GitHub's pre-authenticated CDN URL — no extra PAT needed here)
+              let sql_content = "";
+              try {
+                const contentRes = await fetch(file.download_url);
+                if (contentRes.ok) {
+                  sql_content = await contentRes.text();
+                }
+              } catch {
+                // Content fetch failed — include the entry with empty content
+                // rather than dropping it entirely so the list still shows up
+              }
+
+              scripts.push({
+                schema_name: schemaDir.name,
+                script_name: scriptDir.name,
+                version,
+                path: file.path,
+                download_url: file.download_url,
+                sql_content,
+              });
+            })
+          );
+        })
+      );
     })
   );
 
