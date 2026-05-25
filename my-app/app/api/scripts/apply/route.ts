@@ -256,6 +256,12 @@ export async function POST(request: NextRequest) {
     await client.query("BEGIN");
     transactionStarted = true;
 
+    // Scope unqualified table names in the migration SQL to the target schema.
+    // SET LOCAL lasts only for this transaction — no side effects on the pool.
+    await client.query(
+      `SET LOCAL search_path TO ${quotedSchema}, public`
+    );
+
     // Duplicate check scoped to this script family.
     // Two different script families can legitimately share the same version
     // number (e.g. users_migration v1.0.0 and products_migration v1.0.0

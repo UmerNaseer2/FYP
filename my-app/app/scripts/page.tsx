@@ -74,9 +74,11 @@ function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
 }
 
 // Stable string key for a GitHubScript — used wherever a unique ID is needed
-// (deploy status map, selected-version set, React list keys)
+// (deploy status map, target version picker keys, React list keys).
+// Must include schema_name: two different schemas can have the same script_name
+// and version (e.g. staging/user_schema@1.0.0 and production/user_schema@1.0.0).
 function scriptKey(s: GitHubScript): string {
-  return `${s.script_name}@${s.version}`;
+  return `${s.schema_name}@${s.script_name}@${s.version}`;
 }
 
 function getNextVersion(versions: string[], kind: ChangeKind = "patch"): string {
@@ -668,7 +670,7 @@ export default function ScriptsPage() {
                 <div>
                   <h2 className="script-panel__title">Scripts</h2>
                   <p className="script-panel__eyebrow">
-                    Loaded from GitHub · schema: <code>{pushSchema || "public"}</code>
+                    Loaded from GitHub · all schemas
                   </p>
                 </div>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
