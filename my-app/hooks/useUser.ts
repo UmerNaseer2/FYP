@@ -18,13 +18,20 @@ export function useUser() {
       setUser(user);
 
       if (user) {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('profiles')
           .select('role')
           .eq('id', user.id)
           .single();
-        cachedRole = data?.role || 'viewer';
-        setRole(cachedRole);
+        
+        if (error) {
+          console.error('Error fetching role:', error.message);
+          cachedRole = 'viewer';
+          setRole('viewer');
+        } else {
+          cachedRole = data?.role || 'viewer';
+          setRole(cachedRole);
+        }
       } else {
         cachedRole = null;
         setRole(null);
@@ -35,6 +42,7 @@ export function useUser() {
     if (!cachedUser) {
       fetchUser();
     } else {
+      setRole(cachedRole);
       setLoading(false);
     }
   }, [supabase]);
