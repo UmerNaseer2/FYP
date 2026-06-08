@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id SERIAL PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  role TEXT DEFAULT 'viewer',
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO profiles (email, role) 
+VALUES ('102765149@students.swinburne.edu.my', 'admin')
+ON CONFLICT (email) DO UPDATE SET role = 'admin';
+SELECT * FROM profiles;
+
+INSERT INTO profiles (email, role) VALUES 
+('admin1@test.com', 'admin'),
+('viewer1@test.com', 'viewer'),
+('viewer2@test.com', 'viewer');

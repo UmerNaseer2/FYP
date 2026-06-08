@@ -1,5 +1,5 @@
+import ClientProvider from "./clientProvider";
 import "./globals.css";
-import type { ReactNode } from "react";
 
 export const metadata = {
   title: "DB Schema Control",
@@ -9,11 +9,13 @@ export const metadata = {
 export default function RootLayout({
   children,
 }: {
-  children: ReactNode;
+  children: React.ReactNode;
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <ClientProvider>{children}</ClientProvider>
+      </body>
     </html>
   );
 }
