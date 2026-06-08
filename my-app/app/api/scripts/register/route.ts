@@ -1,37 +1,35 @@
-import { NextRequest, NextResponse } from "next/server";
-import pool from "../../../../lib/db";
+import { NextRequest, NextResponse } from 'next/server';
+import { Pool } from 'pg';
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
 
 export async function POST(request: NextRequest) {
   try {
-    const { script_name, version, sql_content, description } = await request.json();
+    const body = await request.json();
+    const { script_name, version, sql_content, description } = body;
 
     if (!script_name || !version || !sql_content) {
       return NextResponse.json(
-        { error: "script_name, version, and sql_content are required." },
+        { error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
     const result = await pool.query(
-      `SELECT * FROM register_script($1, $2, $3, $4)`,
+      `INSERT INTO scripts (script_name, version, sql_content, description)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, script_name, version, sql_content, description, created_at`,
       [script_name, version, sql_content, description || null]
     );
 
-    const newScript = result.rows[0];
-    return NextResponse.json({ success: true, script: newScript }, { status: 201 });
-  } catch (error: unknown) {
-    const message = errorMessage(error);
-    console.error("Register error:", message);
-    if (
-      message.includes("already exists") ||
-      message.includes("cannot be empty")
-    ) {
-      return NextResponse.json({ error: message }, { status: 409 });
-    }
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ success: true, script: result.rows[0] });
+  } catch (error: any) {
+    console.error('Register error:', error.message);
+    return NextResponse.json(
+      { error: error.message || 'Failed to register script' },
+      { status: 500 }
+    );
   }
 }

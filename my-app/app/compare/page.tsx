@@ -1,8 +1,14 @@
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
 import CopyButton from "../../components/CopyButton";
-import SaveScriptButton, { type ChangeKind } from "../../components/SaveScriptButton";
-import { generateMigration, renderMigrationScript } from "../../lib/generate-sql";
+import SaveScriptButton, {
+  type ChangeKind,
+} from "../../components/SaveScriptButton";
+import {
+  generateMigration,
+  renderMigrationScript,
+} from "../../lib/generate-sql";
+import pool from "../../lib/version-db";
 import type {
   CompareTarget,
   ConstraintKind,
@@ -31,6 +37,70 @@ type PageProps = {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 };
 
+type SavedConnection = {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  database_name: string;
+  type: string;
+  username: string;
+  password: string | null;
+  connection_string: string | null;
+};
+
+async function getSavedConnections(): Promise<SavedConnection[]> {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS connections (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        host TEXT NOT NULL,
+        port INTEGER NOT NULL DEFAULT 5432,
+        database_name TEXT NOT NULL DEFAULT 'postgres',
+        type TEXT NOT NULL DEFAULT 'PostgreSQL',
+        username TEXT NOT NULL,
+        password TEXT NOT NULL,
+        connection_string TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    const result = await pool.query(`
+      SELECT id, name, host, port, database_name, type, username, password, connection_string
+      FROM connections
+      WHERE type = 'PostgreSQL'
+      ORDER BY name ASC
+    `);
+
+    return result.rows;
+  } catch (error) {
+    console.error("Failed to load saved connections:", error);
+    return [];
+  }
+}
+
+function buildTargetFromConnection(
+  connection: SavedConnection,
+  side: "a" | "b",
+): CompareTarget {
+  const config = connection.connection_string
+    ? { connectionString: connection.connection_string }
+    : {
+        host: connection.host,
+        port: Number(connection.port) || 5432,
+        database: connection.database_name,
+        user: connection.username,
+        password: String(connection.password ?? ""),
+      };
+
+  return {
+    id: side,
+    config,
+    displayName: `${connection.name} (${connection.database_name})`,
+  };
+}
+
 function envValue(name: string, fallback: string): string {
   const value = process.env[name]?.trim();
   return value && value.length > 0 ? value : fallback;
@@ -38,7 +108,7 @@ function envValue(name: string, fallback: string): string {
 
 function pickValue(
   value: string | string[] | undefined,
-  fallback: string
+  fallback: string,
 ): string {
   if (typeof value === "string" && value.trim().length > 0) {
     return value.trim();
@@ -53,7 +123,9 @@ function getTargetById(targets: CompareTarget[], id: string): CompareTarget {
   return targets.find((target) => target.id === id) ?? targets[0];
 }
 
-function groupConstraintDiffs(diffs: ConstraintDiff[]): Record<ConstraintKind | "FOREIGN KEY", ConstraintDiff[]> {
+function groupConstraintDiffs(
+  diffs: ConstraintDiff[],
+): Record<ConstraintKind | "FOREIGN KEY", ConstraintDiff[]> {
   return {
     "PRIMARY KEY": diffs.filter((diff) => diff.kind === "PRIMARY KEY"),
     UNIQUE: diffs.filter((diff) => diff.kind === "UNIQUE"),
@@ -80,8 +152,8 @@ function renderScoreBar(score: number) {
     score >= 75
       ? "compare-score-bar-fill--high"
       : score >= 60
-      ? "compare-score-bar-fill--medium"
-      : "compare-score-bar-fill--low";
+        ? "compare-score-bar-fill--medium"
+        : "compare-score-bar-fill--low";
 
   return (
     <div className="compare-score-display">
@@ -102,10 +174,30 @@ function renderScoreBar(score: number) {
 }
 
 function renderBreakdown(breakdown: ScoreBreakdown) {
-  const dims: Array<{ label: string; value: number; max: number; hint: string }> = [
-    { label: "Name",         value: breakdown.name,         max: TABLE_DIMENSION_MAX.name,        hint: "How similar the table names are" },
-    { label: "Columns",      value: breakdown.columns ?? 0, max: TABLE_DIMENSION_MAX.columns,     hint: "How well the column structures match" },
-    { label: "Constraints",  value: breakdown.constraints,  max: TABLE_DIMENSION_MAX.constraints, hint: "Keys, foreign keys, and rules overlap" },
+  const dims: Array<{
+    label: string;
+    value: number;
+    max: number;
+    hint: string;
+  }> = [
+    {
+      label: "Name",
+      value: breakdown.name,
+      max: TABLE_DIMENSION_MAX.name,
+      hint: "How similar the table names are",
+    },
+    {
+      label: "Columns",
+      value: breakdown.columns ?? 0,
+      max: TABLE_DIMENSION_MAX.columns,
+      hint: "How well the column structures match",
+    },
+    {
+      label: "Constraints",
+      value: breakdown.constraints,
+      max: TABLE_DIMENSION_MAX.constraints,
+      hint: "Keys, foreign keys, and rules overlap",
+    },
   ];
 
   if (breakdown.relationships !== undefined) {
@@ -122,7 +214,11 @@ function renderBreakdown(breakdown: ScoreBreakdown) {
       {dims.map((dim) => {
         const pct = Math.round((dim.value / dim.max) * 100);
         return (
-          <span key={dim.label} className="compare-breakdown__item" title={dim.hint}>
+          <span
+            key={dim.label}
+            className="compare-breakdown__item"
+            title={dim.hint}
+          >
             <span className="compare-breakdown__label">{dim.label}</span>
             <span className="compare-breakdown__score">{pct}%</span>
           </span>
@@ -202,8 +298,8 @@ function healthBanner(report: CompareReport) {
     return (
       <div className="compare-health-banner compare-health-banner--warning">
         ⚡ Differences detected — {report.summary.changedTables} table
-        {report.summary.changedTables === 1 ? "" : "s"} have structural
-        changes that need to be reviewed before deploying.
+        {report.summary.changedTables === 1 ? "" : "s"} have structural changes
+        that need to be reviewed before deploying.
       </div>
     );
   }
@@ -214,7 +310,12 @@ function healthBanner(report: CompareReport) {
   );
 }
 
-function renderTableList(title: string, description: string, tables: TableSnapshot[], sideClass: string) {
+function renderTableList(
+  title: string,
+  description: string,
+  tables: TableSnapshot[],
+  sideClass: string,
+) {
   return (
     <section className="compare-report-block">
       <div className="compare-report-block__header">
@@ -304,7 +405,7 @@ function renderRenameSection(report: CompareReport) {
 function renderConstraintGroup(
   title: string,
   diffs: ConstraintDiff[],
-  tableMatch: TableMatch
+  tableMatch: TableMatch,
 ) {
   if (diffs.length === 0) {
     return null;
@@ -315,12 +416,13 @@ function renderConstraintGroup(
   return (
     <div className="compare-detail-group">
       <h5 className="compare-detail-group__title">{displayTitle}</h5>
-      {description && (
-        <p className="compare-section-desc">{description}</p>
-      )}
+      {description && <p className="compare-section-desc">{description}</p>}
       <ul className="compare-bullet-list">
         {diffs.map((diff) => (
-          <li key={`${title}-${diff.summary}`} className="compare-bullet-list__item">
+          <li
+            key={`${title}-${diff.summary}`}
+            className="compare-bullet-list__item"
+          >
             {diff.summary}
           </li>
         ))}
@@ -366,7 +468,7 @@ function renderConstraintGroup(
 function renderMatchedTable(tableMatch: TableMatch) {
   const groupedConstraints = groupConstraintDiffs(tableMatch.constraintDiffs);
   const changedColumns = tableMatch.columnMatches.filter(
-    (match) => match.changes.length > 0
+    (match) => match.changes.length > 0,
   );
 
   return (
@@ -429,9 +531,7 @@ function renderMatchedTable(tableMatch: TableMatch) {
 
       <div className="compare-detail-grid">
         <div className="compare-detail-group">
-          <h5 className="compare-detail-group__title">
-            Columns only in A
-          </h5>
+          <h5 className="compare-detail-group__title">Columns only in A</h5>
           <p className="compare-section-desc">
             These columns exist in A but are absent in B — B needs to add them
             to stay in sync.
@@ -446,7 +546,9 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   className="compare-bullet-list__item"
                 >
                   {column.name}{" "}
-                  <span className="compare-column-type">{column.typeDisplay}</span>
+                  <span className="compare-column-type">
+                    {column.typeDisplay}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -454,9 +556,7 @@ function renderMatchedTable(tableMatch: TableMatch) {
         </div>
 
         <div className="compare-detail-group">
-          <h5 className="compare-detail-group__title">
-            Columns only in B
-          </h5>
+          <h5 className="compare-detail-group__title">Columns only in B</h5>
           <p className="compare-section-desc">
             These columns exist in B but are absent in A — A needs to add them
             to stay in sync.
@@ -471,7 +571,9 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   className="compare-bullet-list__item"
                 >
                   {column.name}{" "}
-                  <span className="compare-column-type">{column.typeDisplay}</span>
+                  <span className="compare-column-type">
+                    {column.typeDisplay}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -499,7 +601,8 @@ function renderMatchedTable(tableMatch: TableMatch) {
                   {match.exact ? null : (
                     <>
                       {" "}
-                      <span className="compare-arrow">→</span> {match.right.name}
+                      <span className="compare-arrow">→</span>{" "}
+                      {match.right.name}
                     </>
                   )}
                 </p>
@@ -517,8 +620,8 @@ function renderMatchedTable(tableMatch: TableMatch) {
                           {severity === "breaking"
                             ? "Breaking"
                             : severity === "safe"
-                            ? "Safe"
-                            : "Info"}
+                              ? "Safe"
+                              : "Info"}
                         </span>
                         {change}
                       </li>
@@ -533,7 +636,9 @@ function renderMatchedTable(tableMatch: TableMatch) {
 
       {tableMatch.possibleColumnMatches.length > 0 && (
         <div className="compare-detail-group">
-          <h5 className="compare-detail-group__title">Possible Renamed Columns</h5>
+          <h5 className="compare-detail-group__title">
+            Possible Renamed Columns
+          </h5>
           <p className="compare-section-desc">
             These columns have different names but similar types and positions —
             they may have been renamed.
@@ -558,11 +663,31 @@ function renderMatchedTable(tableMatch: TableMatch) {
         </div>
       )}
 
-      {renderConstraintGroup("Primary Key", groupedConstraints["PRIMARY KEY"], tableMatch)}
-      {renderConstraintGroup("Unique Constraints", groupedConstraints.UNIQUE, tableMatch)}
-      {renderConstraintGroup("Foreign Keys", groupedConstraints["FOREIGN KEY"], tableMatch)}
-      {renderConstraintGroup("Check Constraints", groupedConstraints.CHECK, tableMatch)}
-      {renderConstraintGroup("Exclude Constraints", groupedConstraints.EXCLUDE, tableMatch)}
+      {renderConstraintGroup(
+        "Primary Key",
+        groupedConstraints["PRIMARY KEY"],
+        tableMatch,
+      )}
+      {renderConstraintGroup(
+        "Unique Constraints",
+        groupedConstraints.UNIQUE,
+        tableMatch,
+      )}
+      {renderConstraintGroup(
+        "Foreign Keys",
+        groupedConstraints["FOREIGN KEY"],
+        tableMatch,
+      )}
+      {renderConstraintGroup(
+        "Check Constraints",
+        groupedConstraints.CHECK,
+        tableMatch,
+      )}
+      {renderConstraintGroup(
+        "Exclude Constraints",
+        groupedConstraints.EXCLUDE,
+        tableMatch,
+      )}
     </article>
   );
 }
@@ -570,7 +695,9 @@ function renderMatchedTable(tableMatch: TableMatch) {
 function renderMigrationSection(report: CompareReport) {
   const script = generateMigration(report);
   const sqlText = renderMigrationScript(script);
-  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
+  const breaking = script.statements.filter(
+    (s) => s.severity === "breaking",
+  ).length;
   const safe = script.statements.filter((s) => s.severity === "safe").length;
   const info = script.statements.filter((s) => s.severity === "info").length;
 
@@ -581,17 +708,23 @@ function renderMigrationSection(report: CompareReport) {
   const sourceLabel = `${report.left.database}.${report.left.schema} → ${report.right.database}.${report.right.schema}`;
 
   // Worst-case severity determines the version bump kind
-  const overallKind: ChangeKind = script.statements.some((s) => s.severity === "breaking")
+  const overallKind: ChangeKind = script.statements.some(
+    (s) => s.severity === "breaking",
+  )
     ? "breaking"
-    : script.statements.some((s) => s.severity === "safe" || s.severity === "info")
-    ? "additive"
-    : "patch";
+    : script.statements.some(
+          (s) => s.severity === "safe" || s.severity === "info",
+        )
+      ? "additive"
+      : "patch";
 
   return (
     <div className="compare-card compare-card--spaced">
       <div className="compare-card__header">
         <div>
-          <h2 className="compare-card__title">Migration Script: Right Syncs To Left</h2>
+          <h2 className="compare-card__title">
+            Migration Script: Right Syncs To Left
+          </h2>
           <p className="compare-hint">
             This script modifies only the right/target schema{" "}
             <code className="compare-code">
@@ -602,8 +735,8 @@ function renderMigrationSection(report: CompareReport) {
               {report.left.database}.{report.left.schema}
             </code>
             . Put the newer desired schema on the left and the outdated schema
-            on the right. Review every statement before running — breaking changes are
-            flagged.
+            on the right. Review every statement before running — breaking
+            changes are flagged.
           </p>
         </div>
         <div className="compare-card__actions">
@@ -621,9 +754,9 @@ function renderMigrationSection(report: CompareReport) {
       </div>
 
       <div className="compare-similarity-notice">
-        <strong>Direction check:</strong> generated SQL always updates the
-        right side to match the left side. If the left side is older than the
-        right side, this becomes a downgrade script.
+        <strong>Direction check:</strong> generated SQL always updates the right
+        side to match the left side. If the left side is older than the right
+        side, this becomes a downgrade script.
       </div>
 
       <div className="compare-chip-row">
@@ -659,12 +792,50 @@ function renderMigrationSection(report: CompareReport) {
   );
 }
 
-
 export default async function ComparePage({ searchParams }: PageProps) {
   const params = await searchParams;
+  const savedConnections = await getSavedConnections();
   const resolved = resolveCompareTargets();
 
-  if (!resolved.ok) {
+  const selectedLeftConnectionId = pickValue(
+    params.leftConnection,
+    savedConnections[0]?.id ? String(savedConnections[0].id) : "",
+  );
+  const selectedRightConnectionId = pickValue(
+    params.rightConnection,
+    savedConnections[1]?.id
+      ? String(savedConnections[1].id)
+      : savedConnections[0]?.id
+        ? String(savedConnections[0].id)
+        : "",
+  );
+
+  const leftConnection =
+    savedConnections.find(
+      (connection) => String(connection.id) === selectedLeftConnectionId,
+    ) ?? savedConnections[0];
+
+  const rightConnection =
+    savedConnections.find(
+      (connection) => String(connection.id) === selectedRightConnectionId,
+    ) ??
+    savedConnections[1] ??
+    savedConnections[0];
+
+  let leftTarget: CompareTarget | null = leftConnection
+    ? buildTargetFromConnection(leftConnection, "a")
+    : null;
+
+  let rightTarget: CompareTarget | null = rightConnection
+    ? buildTargetFromConnection(rightConnection, "b")
+    : null;
+
+  if ((!leftTarget || !rightTarget) && resolved.ok) {
+    leftTarget = leftTarget ?? resolved.a;
+    rightTarget = rightTarget ?? resolved.b;
+  }
+
+  if (!leftTarget || !rightTarget) {
     return (
       <div className="db-layout">
         <Sidebar current="Schema Comparison" />
@@ -674,50 +845,45 @@ export default async function ComparePage({ searchParams }: PageProps) {
             text="Live PostgreSQL schema diffs for the current prototype."
           />
           <div className="compare-card">
-            <h2 className="compare-card__title">PostgreSQL Targets</h2>
-            <p className="compare-hint compare-hint--error">{resolved.error}</p>
-            <p className="compare-hint">
-              Configure <code className="compare-code">DATABASE_URL</code> or the
-              pair <code className="compare-code">DATABASE_URL_A</code> /{" "}
-              <code className="compare-code">DATABASE_URL_B</code> to continue.
+            <h2 className="compare-card__title">No Saved Connections Found</h2>
+            <p className="compare-hint compare-hint--error">
+              Please add at least two PostgreSQL connections in the Connections
+              page first.
             </p>
+            {!resolved.ok ? (
+              <p className="compare-hint">{resolved.error}</p>
+            ) : null}
           </div>
         </main>
       </div>
     );
   }
 
-  const targets = [resolved.a, resolved.b];
-  const defaultLeftDb = pickValue(params.leftDb, resolved.a.id);
-  const defaultRightDb = pickValue(params.rightDb, resolved.b.id);
-  const leftTarget = getTargetById(targets, defaultLeftDb);
-  const rightTarget = getTargetById(targets, defaultRightDb);
-
   const [schemasA, schemasB] = await Promise.all([
-    fetchSchemaNames(resolved.a.config),
-    fetchSchemaNames(resolved.b.config),
+    fetchSchemaNames(leftTarget.config),
+    fetchSchemaNames(rightTarget.config),
   ]);
 
   const schemaErrors = [schemasA, schemasB].filter((result) => !result.ok);
   const schemaMap = new Map<string, string[]>();
   if (schemasA.ok) {
-    schemaMap.set(resolved.a.id, schemasA.data);
+    schemaMap.set(leftTarget.id, schemasA.data);
   }
   if (schemasB.ok) {
-    schemaMap.set(resolved.b.id, schemasB.data);
+    schemaMap.set(rightTarget.id, schemasB.data);
   }
 
   const leftSchemaOptions = schemaMap.get(leftTarget.id) ?? [];
   const rightSchemaOptions = schemaMap.get(rightTarget.id) ?? [];
   const leftSchemaFallback =
     leftSchemaOptions.find(
-      (schema) => schema === envValue("COMPARE_SCHEMA_A", "public")
+      (schema) => schema === envValue("COMPARE_SCHEMA_A", "public"),
     ) ??
     leftSchemaOptions[0] ??
     envValue("COMPARE_SCHEMA_A", "public");
   const rightSchemaFallback =
     rightSchemaOptions.find(
-      (schema) => schema === envValue("COMPARE_SCHEMA_B", "public")
+      (schema) => schema === envValue("COMPARE_SCHEMA_B", "public"),
     ) ??
     rightSchemaOptions[0] ??
     envValue("COMPARE_SCHEMA_B", "public");
@@ -728,19 +894,25 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
   if (leftSchemaOptions.length > 0 && !leftSchemaOptions.includes(leftSchema)) {
     selectionErrors.push(
-      `Schema ${leftSchema} was not found in ${leftTarget.displayName}.`
+      `Schema ${leftSchema} was not found in ${leftTarget.displayName}.`,
     );
   }
-  if (rightSchemaOptions.length > 0 && !rightSchemaOptions.includes(rightSchema)) {
+  if (
+    rightSchemaOptions.length > 0 &&
+    !rightSchemaOptions.includes(rightSchema)
+  ) {
     selectionErrors.push(
-      `Schema ${rightSchema} was not found in ${rightTarget.displayName}.`
+      `Schema ${rightSchema} was not found in ${rightTarget.displayName}.`,
     );
   }
 
   let report: CompareReport | null = null;
-  const compareErrors = [...schemaErrors
-    .filter((result): result is { ok: false; error: string } => !result.ok)
-    .map((result) => result.error), ...selectionErrors];
+  const compareErrors = [
+    ...schemaErrors
+      .filter((result): result is { ok: false; error: string } => !result.ok)
+      .map((result) => result.error),
+    ...selectionErrors,
+  ];
 
   if (compareErrors.length === 0) {
     const [leftSnapshot, rightSnapshot] = await Promise.all([
@@ -750,17 +922,43 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
     if (!leftSnapshot.ok) {
       compareErrors.push(
-        `Could not load ${leftTarget.displayName}.${leftSchema}: ${leftSnapshot.error}`
+        `Could not load ${leftTarget.displayName}.${leftSchema}: ${leftSnapshot.error}`,
       );
     }
     if (!rightSnapshot.ok) {
       compareErrors.push(
-        `Could not load ${rightTarget.displayName}.${rightSchema}: ${rightSnapshot.error}`
+        `Could not load ${rightTarget.displayName}.${rightSchema}: ${rightSnapshot.error}`,
       );
     }
 
     if (leftSnapshot.ok && rightSnapshot.ok) {
       report = compareSchemas(leftSnapshot.data, rightSnapshot.data);
+
+      if (pickValue(params.run, "") === "1") {
+        try {
+          await pool.query(`
+            CREATE TABLE IF NOT EXISTS schema_comparisons (
+              id SERIAL PRIMARY KEY,
+              schema_a TEXT NOT NULL,
+              schema_b TEXT NOT NULL,
+              compared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+
+          await pool.query(
+            `
+            INSERT INTO schema_comparisons (schema_a, schema_b)
+            VALUES ($1, $2)
+            `,
+            [
+              `${leftTarget.displayName}.${leftSchema}`,
+              `${rightTarget.displayName}.${rightSchema}`,
+            ],
+          );
+        } catch (error) {
+          console.error("Failed to save comparison history:", error);
+        }
+      }
     }
   }
 
@@ -780,7 +978,8 @@ export default async function ComparePage({ searchParams }: PageProps) {
               <h2 className="compare-card__title">Comparison Setup</h2>
               <p className="compare-hint">
                 Pick the desired source schema on the left and the target schema
-                to update on the right. Generated SQL always syncs right to left.
+                to update on the right. Generated SQL always syncs right to
+                left.
               </p>
             </div>
             <span className="compare-pill compare-pill--neutral">
@@ -789,18 +988,24 @@ export default async function ComparePage({ searchParams }: PageProps) {
           </div>
 
           <form action="/compare" className="compare-form-grid">
+            <input type="hidden" name="run" value="1" />
+
             <div className="compare-form-card">
-              <h3 className="compare-form-card__title">Left Side (A): Source / Desired</h3>
+              <h3 className="compare-form-card__title">
+                Left Side (A): Source / Desired
+              </h3>
               <label className="compare-field">
-                <span className="compare-field__label">Source database target</span>
+                <span className="compare-field__label">
+                  Source saved connection
+                </span>
                 <select
-                  name="leftDb"
-                  defaultValue={leftTarget.id}
+                  name="leftConnection"
+                  defaultValue={leftConnection?.id ?? ""}
                   className="compare-select"
                 >
-                  {targets.map((target) => (
-                    <option key={target.id} value={target.id}>
-                      {target.displayName}
+                  {savedConnections.map((connection) => (
+                    <option key={`left-${connection.id}`} value={connection.id}>
+                      {connection.name} ({connection.database_name})
                     </option>
                   ))}
                 </select>
@@ -822,23 +1027,32 @@ export default async function ComparePage({ searchParams }: PageProps) {
             </div>
 
             <div className="compare-form-card">
-              <h3 className="compare-form-card__title">Right Side (B): Target / Outdated</h3>
+              <h3 className="compare-form-card__title">
+                Right Side (B): Target / Outdated
+              </h3>
               <label className="compare-field">
-                <span className="compare-field__label">Target database to update</span>
+                <span className="compare-field__label">
+                  Target saved connection
+                </span>
                 <select
-                  name="rightDb"
-                  defaultValue={rightTarget.id}
+                  name="rightConnection"
+                  defaultValue={rightConnection?.id ?? ""}
                   className="compare-select"
                 >
-                  {targets.map((target) => (
-                    <option key={target.id} value={target.id}>
-                      {target.displayName}
+                  {savedConnections.map((connection) => (
+                    <option
+                      key={`right-${connection.id}`}
+                      value={connection.id}
+                    >
+                      {connection.name} ({connection.database_name})
                     </option>
                   ))}
                 </select>
               </label>
               <label className="compare-field">
-                <span className="compare-field__label">Target schema to update</span>
+                <span className="compare-field__label">
+                  Target schema to update
+                </span>
                 <select
                   name="rightSchema"
                   defaultValue={rightSchema}
@@ -854,7 +1068,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
             </div>
 
             <div className="compare-form-actions">
-              <button type="submit" className="compare-btn compare-btn--primary">
+              <button
+                type="submit"
+                className="compare-btn compare-btn--primary"
+              >
                 Compare Schemas
               </button>
               <p className="compare-hint compare-hint--tight compare-hint--error">
@@ -862,9 +1079,8 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 database/schema that will receive changes.
               </p>
               <p className="compare-hint compare-hint--tight">
-                Targets come from <code className="compare-code">DATABASE_URL</code>,{" "}
-                <code className="compare-code">DATABASE_URL_A</code>, and{" "}
-                <code className="compare-code">DATABASE_URL_B</code>.
+                Connection options are loaded from the saved records in the
+                Connections page.
               </p>
             </div>
           </form>
@@ -889,7 +1105,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
             <div className="compare-summary-grid">
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Missing from Target (B)</p>
+                <p className="compare-summary-card__label">
+                  Missing from Target (B)
+                </p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.tablesOnlyInA}
                 </h2>
@@ -898,7 +1116,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Extra in Target (B)</p>
+                <p className="compare-summary-card__label">
+                  Extra in Target (B)
+                </p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.tablesOnlyInB}
                 </h2>
@@ -907,7 +1127,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 </p>
               </div>
               <div className="compare-summary-card">
-                <p className="compare-summary-card__label">Tables With Changes</p>
+                <p className="compare-summary-card__label">
+                  Tables With Changes
+                </p>
                 <h2 className="compare-summary-card__value">
                   {report.summary.changedTables}
                 </h2>
@@ -940,10 +1162,15 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 <div>
                   <h2 className="compare-card__title">Comparison Report</h2>
                   <p className="compare-hint">
-                    Comparing <code className="compare-code">{report.left.database}</code>.
-                    <code className="compare-code">{report.left.schema}</code> against{" "}
-                    <code className="compare-code">{report.right.database}</code>.
-                    <code className="compare-code">{report.right.schema}</code>.
+                    Comparing{" "}
+                    <code className="compare-code">{report.left.database}</code>
+                    .<code className="compare-code">{report.left.schema}</code>{" "}
+                    against{" "}
+                    <code className="compare-code">
+                      {report.right.database}
+                    </code>
+                    .<code className="compare-code">{report.right.schema}</code>
+                    .
                   </p>
                 </div>
                 <span className="compare-pill compare-pill--success">
@@ -965,13 +1192,13 @@ export default async function ComparePage({ searchParams }: PageProps) {
                   "Tables Only In A",
                   `These tables exist in ${report.left.database}.${report.left.schema} but haven't been created in ${report.right.database}.${report.right.schema} yet. If B is your production database, this is a gap that needs to be filled.`,
                   report.tablesOnlyInA,
-                  "compare-pill--danger"
+                  "compare-pill--danger",
                 )}
                 {renderTableList(
                   "Tables Only In B",
                   `These tables exist in ${report.right.database}.${report.right.schema} but are absent from ${report.left.database}.${report.left.schema}. They may be new tables added to B that A doesn't know about yet.`,
                   report.tablesOnlyInB,
-                  "compare-pill--info"
+                  "compare-pill--info",
                 )}
               </div>
 
@@ -979,7 +1206,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
               <section className="compare-report-block">
                 <div className="compare-report-block__header">
-                  <h3 className="compare-report-block__title">Matched Table Details</h3>
+                  <h3 className="compare-report-block__title">
+                    Matched Table Details
+                  </h3>
                   <span className="compare-pill compare-pill--neutral">
                     {report.matchedTables.length}
                   </span>
@@ -990,14 +1219,14 @@ export default async function ComparePage({ searchParams }: PageProps) {
                 ) : (
                   <div className="compare-stack">
                     {report.matchedTables.map((tableMatch) =>
-                      renderMatchedTable(tableMatch)
+                      renderMatchedTable(tableMatch),
                     )}
                   </div>
                 )}
               </section>
             </div>
 
-          {renderMigrationSection(report)}
+            {renderMigrationSection(report)}
           </>
         ) : null}
       </main>

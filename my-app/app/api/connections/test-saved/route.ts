@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Pool } from "pg";
-import pool from "../../../../lib/db";
+import pool from "../../../../lib/version-db";
 
 export async function POST(request: NextRequest) {
   let testPool: Pool | null = null;

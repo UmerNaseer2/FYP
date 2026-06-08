@@ -2,7 +2,7 @@ import type { ClientConfig } from "pg";
 
 import Sidebar from "../../components/Sidebar";
 import Topbar from "../../components/Topbar";
-import pool from "../../lib/db";
+import pool from "../../lib/version-db";
 import { fetchSchemaNames } from "../../lib/postgres";
 import {
   fetchSchemaVersionInfo,

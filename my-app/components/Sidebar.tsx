@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
+import { createClient } from "@/lib/supabase/client";
 
 export default function Sidebar({ current }: { current: string }) {
-  const { isAdmin, loading } = useUser();
+  const { user, isAdmin, role, loading } = useUser();
+  const supabase = createClient();
+  const router = useRouter();
 
   const links = [
     { name: "Dashboard", href: "/" },
@@ -13,6 +17,20 @@ export default function Sidebar({ current }: { current: string }) {
     { name: "Version Detection", href: "/versions" },
     { name: "SQL Scripts", href: "/scripts" },
   ];
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push("/login");
+  };
+
+  if (loading) {
+    return (
+      <aside className="db-sidebar">
+        <div className="db-sidebar__title">DB Schema Control</div>
+        <div className="db-sidebar__subtitle">Loading...</div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="db-sidebar">
@@ -42,6 +60,18 @@ export default function Sidebar({ current }: { current: string }) {
           </Link>
         )}
       </nav>
+
+      {user && (
+        <div className="db-sidebar__user-section">
+          <div className={`db-sidebar__user-role db-sidebar__user-role--${role}`}>
+            {role === "admin" ? "👑 Admin" : "👁️ Viewer"}
+          </div>
+          <div className="db-sidebar__user-email">{user.email}</div>
+          <button onClick={handleLogout} className="db-sidebar__logout-btn">
+            Logout
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
