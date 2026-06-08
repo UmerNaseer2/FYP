@@ -1,62 +1,50 @@
-// hooks/useUser.ts
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { User } from '@supabase/supabase-js';
 
-// Cache outside the hook (shared across all components)
+let cachedUser: User | null = null;
 let cachedRole: string | null = null;
-let cachedUserId: string | null = null;
-let fetchPromise: Promise<void> | null = null;
 
 export function useUser() {
   const supabase = createClient();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(cachedUser);
   const [role, setRole] = useState<string | null>(cachedRole);
-  const [loading, setLoading] = useState(!cachedRole);
+  const [loading, setLoading] = useState(!cachedUser);
 
   useEffect(() => {
-    const getUser = async () => {
-      // If already cached, skip fetch
-      if (cachedRole) {
-        setRole(cachedRole);
-        setLoading(false);
-        return;
-      }
+    const fetchUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      cachedUser = user;
+      setUser(user);
 
-      // Prevent multiple simultaneous fetches
-      if (fetchPromise) {
-        await fetchPromise;
-        setRole(cachedRole);
-        setLoading(false);
-        return;
-      }
-
-      fetchPromise = (async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        setUser(user);
-        if (user) {
-          // Only query if user ID changed
-          if (cachedUserId !== user.id || !cachedRole) {
-            const { data } = await supabase
-              .from('profiles')
-              .select('role')
-              .eq('id', user.id)
-              .single();
-            cachedRole = data?.role || 'viewer';
-            cachedUserId = user.id;
-          }
-          setRole(cachedRole);
+      if (user) {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+        
+        if (error) {
+          console.error('Error fetching role:', error.message);
+          cachedRole = 'viewer';
+          setRole('viewer');
         } else {
-          cachedRole = null;
-          setRole(null);
+          cachedRole = data?.role || 'viewer';
+          setRole(cachedRole);
         }
-        setLoading(false);
-      })();
-
-      await fetchPromise;
-      fetchPromise = null;
+      } else {
+        cachedRole = null;
+        setRole(null);
+      }
+      setLoading(false);
     };
 
-    getUser();
+    if (!cachedUser) {
+      fetchUser();
+    } else {
+      setRole(cachedRole);
+      setLoading(false);
+    }
   }, [supabase]);
 
   return { user, role, isAdmin: role === 'admin', loading };
