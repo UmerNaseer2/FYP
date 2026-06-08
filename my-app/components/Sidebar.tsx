@@ -3,11 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
-import { createClient } from "@/lib/supabase/client";
+import { signOut } from "next-auth/react";
 
 export default function Sidebar({ current }: { current: string }) {
   const { user, isAdmin, role, loading } = useUser();
-  const supabase = createClient();
   const router = useRouter();
 
   const links = [
@@ -19,9 +18,8 @@ export default function Sidebar({ current }: { current: string }) {
   ];
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.push("/login");
-  };
+    await signOut({ callbackUrl: "/login" });
+    };
 
   if (loading) {
     return (
