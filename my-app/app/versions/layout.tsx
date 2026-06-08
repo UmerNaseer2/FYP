@@ -1,6 +1,6 @@
 import AuthGuard from "@/components/AuthGuard";
 
-export default function versionlayout({
+export default function VersionsLayout({
   children,
 }: {
   children: React.ReactNode;

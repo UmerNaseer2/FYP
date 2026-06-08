@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { auth } from "@/auth";
 import { Pool } from 'pg';
 
 const pool = new Pool({
@@ -6,6 +7,11 @@ const pool = new Pool({
 });
 
 export async function GET() {
+  const session = await auth();
+  if (!session?.user?.email) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const result = await pool.query(
       'SELECT id, script_name, version, sql_content, description, created_at FROM scripts ORDER BY created_at DESC'
