@@ -12,6 +12,11 @@ export function useUser() {
   const [loading, setLoading] = useState(!cachedUser);
 
   useEffect(() => {
+    // A previous mount already resolved the user — the useState initializers
+    // above have seeded user/role/loading from the module cache, so there is
+    // nothing left to do (and no synchronous setState to run in this effect).
+    if (cachedUser) return;
+
     const fetchUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       cachedUser = user;
@@ -23,7 +28,7 @@ export function useUser() {
           .select('role')
           .eq('id', user.id)
           .single();
-        
+
         if (error) {
           console.error('Error fetching role:', error.message);
           cachedRole = 'viewer';
@@ -39,12 +44,7 @@ export function useUser() {
       setLoading(false);
     };
 
-    if (!cachedUser) {
-      fetchUser();
-    } else {
-      setRole(cachedRole);
-      setLoading(false);
-    }
+    fetchUser();
   }, [supabase]);
 
   return { user, role, isAdmin: role === 'admin', loading };

@@ -1,22 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Pool } from "pg";
-import pool from "../../../../lib/version-db";
+import pool from "@/lib/version-db";
+import { runConnectionTest } from "@/lib/connection-config";
 
+/** Test a saved connection by id (used by the per-row "Test" action). */
 export async function POST(request: NextRequest) {
-  let testPool: Pool | null = null;
-
   try {
     const { id } = await request.json();
 
     if (!id) {
       return NextResponse.json(
-        { error: "Connection ID is required." },
+        { ok: false, error: "Connection ID is required.", sslRequired: false, detail: "" },
         { status: 400 }
       );
     }
 
     const result = await pool.query(
-      `SELECT host, port, database_name, type, username, password, connection_string
+      `SELECT host, port, database_name, type, username, password, connection_string, ssl
        FROM connections
        WHERE id = $1`,
       [id]
@@ -26,50 +25,34 @@ export async function POST(request: NextRequest) {
 
     if (!conn) {
       return NextResponse.json(
-        { error: "Connection not found." },
+        { ok: false, error: "Connection not found.", sslRequired: false, detail: "" },
         { status: 404 }
       );
     }
 
     if (conn.type !== "PostgreSQL") {
       return NextResponse.json(
-        { error: "Only PostgreSQL is supported now." },
+        { ok: false, error: "Only PostgreSQL is supported right now.", sslRequired: false, detail: "" },
         { status: 400 }
       );
     }
 
-    if (conn.connection_string && conn.connection_string.trim() !== "") {
-      testPool = new Pool({
-        connectionString: conn.connection_string.trim(),
-        connectionTimeoutMillis: 10000,
-      });
-    } else {
-      testPool = new Pool({
-        host: conn.host,
-        port: Number(conn.port),
-        database: conn.database_name || "postgres",
-        user: conn.username,
-        password: conn.password,
-        connectionTimeoutMillis: 10000,
-      });
-    }
-
-    await testPool.query("SELECT NOW()");
-
-    return NextResponse.json({
-      success: true,
-      message: "Connection successful.",
+    const testResult = await runConnectionTest({
+      host: conn.host,
+      port: conn.port,
+      database: conn.database_name,
+      user: conn.username,
+      password: conn.password,
+      connectionString: conn.connection_string,
+      ssl: Boolean(conn.ssl),
     });
-  } catch (error) {
-    console.error("Saved test connection error:", error);
 
+    return NextResponse.json(testResult);
+  } catch (error) {
+    console.error("Saved test connection route error:", error);
     return NextResponse.json(
-      { error: "Connection failed. Please check saved details." },
-      { status: 500 }
+      { ok: false, error: "Could not run the test.", sslRequired: false, detail: "" },
+      { status: 200 }
     );
-  } finally {
-    if (testPool) {
-      await testPool.end();
-    }
   }
 }

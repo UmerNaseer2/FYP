@@ -41,7 +41,11 @@ export async function POST(req: NextRequest) {
   }
 
   // Path: <schema>/<script_name>/v<version>.sql
-  const filePath = `${schema_name}/${script_name}/v${version}.sql`;
+  // Encode each segment so names with spaces or odd characters stay valid,
+  // while keeping the slashes that define the folder structure.
+  const filePath = [schema_name, script_name, `v${version}.sql`]
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
   const apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;
   const headers = {
     Authorization: `Bearer ${PAT}`,
@@ -50,12 +54,18 @@ export async function POST(req: NextRequest) {
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  // Check if the file already exists to get its SHA (required for updates)
+  // Check if the file already exists to get its SHA (required for updates).
+  // A missing file or a transient lookup failure both just mean "no SHA" — we
+  // then create the file fresh, so neither should abort the push.
   let existingSha: string | undefined;
-  const checkRes = await fetch(apiUrl, { headers });
-  if (checkRes.ok) {
-    const existing = (await checkRes.json()) as GitHubFileResponse;
-    existingSha = existing.sha;
+  try {
+    const checkRes = await fetch(apiUrl, { headers });
+    if (checkRes.ok) {
+      const existing = (await checkRes.json()) as GitHubFileResponse;
+      existingSha = existing.sha;
+    }
+  } catch {
+    // Network hiccup during the existence check — proceed as a new file.
   }
 
   const commitMessage = description
@@ -68,11 +78,20 @@ export async function POST(req: NextRequest) {
   };
   if (existingSha) putBody.sha = existingSha;
 
-  const putRes = await fetch(apiUrl, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify(putBody),
-  });
+  let putRes: Response;
+  try {
+    putRes = await fetch(apiUrl, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(putBody),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: `Could not reach GitHub. Check your connection and try again. Details: ${message}` },
+      { status: 502 }
+    );
+  }
 
   if (!putRes.ok) {
     const err = await putRes.text();
@@ -82,6 +101,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result = (await putRes.json()) as { content: { html_url: string } };
-  return NextResponse.json({ url: result.content.html_url });
+  // The push itself succeeded; only the URL in the response is best-effort.
+  let htmlUrl: string | null = null;
+  try {
+    const result = (await putRes.json()) as { content?: { html_url?: string } };
+    htmlUrl = result.content?.html_url ?? null;
+  } catch {
+    // Body wasn't the JSON we expected — the file is still saved, so report ok.
+  }
+  return NextResponse.json({ url: htmlUrl });
 }

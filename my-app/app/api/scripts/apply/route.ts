@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "../../../../lib/db";
-import { getPoolForConfig } from "../../../../lib/postgres";
+import pool from "@/lib/version-db";
+import { getPoolForConfig } from "@/lib/postgres";
+import { buildPgConfig } from "@/lib/connection-config";
 
 // Valid values the script_patch table accepts for change_type
 const VALID_CHANGE_TYPES = ["breaking", "additive", "patch", "unknown"] as const;
@@ -129,18 +130,23 @@ export async function POST(request: NextRequest) {
     ? (change_type as ChangeType)
     : "unknown";
 
-  // ─── 4. Look up the saved connection from the local app database ──────────
+  // ─── 4. Look up the saved connection from the app metadata database ───────
+  // version-db is the same pool the Connections screen saves to, so a connection
+  // created in the UI always resolves here. connection_string + ssl are read so
+  // URI and SSL-required hosts (Neon, Supabase, RDS) can be deployed to.
   let connRow: {
     host: string;
     port: number;
     database_name: string;
     username: string;
     password: string;
+    connection_string: string | null;
+    ssl: boolean | null;
   };
 
   try {
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password
+      `SELECT host, port, database_name, username, password, connection_string, ssl
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -163,16 +169,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ─── 5. Build the ClientConfig for the target database ───────────────────
-  const targetConfig = {
-    host: connRow.host,
-    port: Number(connRow.port),
-    database: connRow.database_name,
-    user: connRow.username,
-    password: connRow.password,
-  };
-
-  const targetPool = getPoolForConfig(targetConfig);
+  // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
+  const targetPool = getPoolForConfig(
+    buildPgConfig({
+      host: connRow.host,
+      port: connRow.port,
+      database: connRow.database_name,
+      user: connRow.username,
+      password: connRow.password,
+      connectionString: connRow.connection_string,
+      ssl: Boolean(connRow.ssl),
+    })
+  );
 
   // ─── 6. Connect to the target database ───────────────────────────────────
   let client;

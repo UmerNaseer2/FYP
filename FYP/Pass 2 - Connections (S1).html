@@ -1,0 +1,967 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Schema Studio — Pass 2 · Connections</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* ——— Tokens (from kit) ——— */
+  :root[data-theme="light"] {
+    --bg:#f7f7f8; --surface:#ffffff; --surface-2:#fafafa; --surface-3:#f3f3f5;
+    --border:#e7e7eb; --border-strong:#d4d4d8;
+    --text:#18181b; --text-2:#52525b; --text-3:#8a8a93;
+    --brand:#6366f1; --brand-2:#4f52e0; --brand-soft:#eef0ff; --brand-soft-2:#dde0ff;
+    --sync:#16a34a; --sync-soft:#e6f6ec;
+    --pending:#2563eb; --pending-soft:#e6efff;
+    --drift:#b45309; --drift-soft:#fdf2dc;
+    --break:#dc2626; --break-soft:#fdecec;
+    --shadow-sm: 0 1px 2px rgba(16,16,20,0.04), 0 0 0 1px rgba(16,16,20,0.04);
+    --shadow-md: 0 6px 24px -8px rgba(16,16,20,0.10), 0 2px 6px rgba(16,16,20,0.04);
+    --shadow-lg: 0 24px 60px -20px rgba(16,16,20,0.18), 0 4px 12px rgba(16,16,20,0.05);
+    --shadow-xl: 0 40px 100px -30px rgba(16,16,20,0.25), 0 10px 24px rgba(16,16,20,0.06);
+    --grid: rgba(24,24,27,0.045);
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0c; --surface:#15161a; --surface-2:#1b1c21; --surface-3:#232428;
+    --border:#26272d; --border-strong:#363740;
+    --text:#f3f3f5; --text-2:#b0b0ba; --text-3:#7a7a85;
+    --brand:#7c7fff; --brand-2:#9396ff; --brand-soft:#1d1e34; --brand-soft-2:#272a55;
+    --sync:#4ade80; --sync-soft:#11261a;
+    --pending:#60a5fa; --pending-soft:#0f1f37;
+    --drift:#fbbf24; --drift-soft:#2a1f0a;
+    --break:#f87171; --break-soft:#2a1212;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04);
+    --shadow-md: 0 6px 24px -8px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4);
+    --shadow-lg: 0 24px 60px -20px rgba(0,0,0,0.7), 0 4px 12px rgba(0,0,0,0.4);
+    --shadow-xl: 0 40px 100px -30px rgba(0,0,0,0.85), 0 10px 24px rgba(0,0,0,0.5);
+    --grid: rgba(255,255,255,0.04);
+  }
+  html, body { background: var(--bg); color: var(--text); font-family:'Geist',ui-sans-serif,system-ui; }
+  .mono { font-family:'Geist Mono',ui-monospace,SFMono-Regular; font-feature-settings:"ss01","cv01"; }
+
+  /* ——— Buttons ——— */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px;
+         padding:8px 14px; border-radius:8px; font-weight:500; font-size:13px; line-height:18px;
+         border:1px solid transparent; cursor:pointer; transition: all .14s ease; }
+  .btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .btn-sm { padding:5px 10px; font-size:12px; border-radius:6px; }
+  .btn-xs { padding:3px 8px; font-size:11.5px; border-radius:6px; }
+  .btn-primary    { background:var(--brand); color:#fff; border-color:var(--brand); box-shadow: 0 4px 12px -6px var(--brand); }
+  .btn-primary:hover    { background:var(--brand-2); border-color:var(--brand-2); }
+  .btn-secondary  { background:var(--surface); color:var(--text); border-color:var(--border-strong); }
+  .btn-secondary:hover  { background:var(--surface-3); }
+  .btn-ghost      { background:transparent; color:var(--text-2); border-color:transparent; }
+  .btn-ghost:hover      { background:var(--surface-3); color:var(--text); }
+  .btn-destructive{ background:var(--break); color:#fff; border-color:var(--break); }
+  .btn-destructive:hover{ filter:brightness(.95); }
+  .btn[disabled]{ opacity:.55; cursor:not-allowed; }
+
+  /* ——— Pills ——— */
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px;
+          font-size:11px; line-height:18px; font-weight:500; border:1px solid transparent; white-space:nowrap; }
+  .pill .dot { width:6px; height:6px; border-radius:999px; background:currentColor; }
+  .pill-sync   { color:var(--sync);   background:var(--sync-soft);   border-color:color-mix(in oklab, var(--sync) 30%, transparent); }
+  .pill-pending{ color:var(--pending);background:var(--pending-soft);border-color:color-mix(in oklab, var(--pending) 30%, transparent); }
+  .pill-drift  { color:var(--drift);  background:var(--drift-soft);  border-color:color-mix(in oklab, var(--drift) 38%, transparent); }
+  .pill-break  { color:var(--break);  background:var(--break-soft);  border-color:color-mix(in oklab, var(--break) 35%, transparent); }
+  .pill-neutral{ color:var(--text-2); background:var(--surface-3); border-color:var(--border); }
+  .pill-brand  { color:var(--brand);  background:var(--brand-soft); border-color:color-mix(in oklab, var(--brand) 35%, transparent); }
+  .pill-outline{ color:var(--text-2); background:transparent; border-color:var(--border-strong); }
+
+  /* ——— Surfaces ——— */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-sm); }
+  .panel{ background:var(--surface); border:1px solid var(--border); border-radius:12px; }
+
+  /* ——— Inputs ——— */
+  .input { width:100%; background:var(--surface); border:1px solid var(--border-strong); border-radius:8px;
+           padding:9px 11px; font-size:13px; color:var(--text); transition: border-color .12s ease, box-shadow .12s ease; }
+  .input:focus { outline:none; border-color:var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+  .input.mono { font-family:'Geist Mono',ui-monospace; font-size:12.5px; }
+  .input.with-icon { padding-left:32px; }
+  .label { font-size:12px; color:var(--text-2); font-weight:500; }
+  .help  { font-size:11.5px; color:var(--text-3); line-height:1.5; }
+
+  /* ——— Sidebar nav ——— */
+  .nav-item { display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:8px; color:var(--text-2);
+              font-size:13px; font-weight:500; cursor:pointer; transition:background .12s ease, color .12s ease; white-space:nowrap; }
+  .nav-item .sb-label { white-space:nowrap; }
+  .nav-item:hover { background:var(--surface-3); color:var(--text); }
+  .nav-item.active{ background:var(--brand-soft); color:var(--brand); }
+  .nav-item .ico { width:16px; height:16px; flex:none; }
+  .nav-item .badge { margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:999px; }
+
+  /* ——— Section utilities ——— */
+  .section-title { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-3); }
+  .kbd { font-family:'Geist Mono',ui-monospace; font-size:10.5px; padding:1px 5px; border:1px solid var(--border-strong);
+         border-radius:4px; color:var(--text-2); background:var(--surface-2); }
+  .hsep { width:1px; height:18px; background:var(--border); }
+
+  /* nowrap defaults so layout survives any renderer */
+  .btn, .pill { white-space:nowrap; }
+
+  /* ——— Connections table ——— */
+  .conns thead th { font-size:11px; font-weight:600; color:var(--text-3); text-transform:uppercase; letter-spacing:.06em;
+                    padding:10px 16px; background:var(--surface-2); border-top:1px solid var(--border); border-bottom:1px solid var(--border); text-align:left; }
+  .conns tbody td { padding:14px 16px; border-bottom:1px solid var(--border); vertical-align:middle; white-space:nowrap; }
+  .conns tbody td:first-child { white-space:normal; }
+  .conns tbody tr { transition: background .12s ease; }
+  .conns tbody tr:hover { background:var(--surface-2); }
+  .conns tbody tr:hover .row-actions { opacity:1; transform: translateX(0); }
+  .conns tbody tr.selected { background:var(--brand-soft); }
+  .conns tbody tr.selected td:first-child { box-shadow: inset 2px 0 0 var(--brand); }
+  .row-actions { opacity:0; transform: translateX(4px); transition: opacity .14s ease, transform .14s ease; }
+
+  /* status indicator dot (left of name) */
+  .ind { width:8px; height:8px; border-radius:999px; flex:none; position:relative; }
+  .ind.ok    { background:var(--sync); box-shadow:0 0 0 2px color-mix(in oklab, var(--sync) 20%, transparent); }
+  .ind.warn  { background:var(--drift); box-shadow:0 0 0 2px color-mix(in oklab, var(--drift) 22%, transparent); }
+  .ind.err   { background:var(--break); box-shadow:0 0 0 2px color-mix(in oklab, var(--break) 22%, transparent); }
+  .ind.ok::after { content:""; position:absolute; inset:-3px; border-radius:999px; border:1px solid var(--sync); opacity:.35; animation: pulse 2.4s ease-out infinite; }
+  @keyframes pulse { 0%{ transform: scale(.85); opacity:.5; } 100%{ transform: scale(1.8); opacity:0; } }
+
+  /* mini latency sparkline */
+  .sparkline { display:inline-flex; align-items:flex-end; gap:1px; height:14px; }
+  .sparkline span { width:2px; background: var(--sync); border-radius:1px; opacity:.7; }
+
+  /* ——— Drawer ——— */
+  .scrim { position:fixed; inset:0; z-index:50; background: color-mix(in oklab, #000 38%, transparent);
+           opacity:0; pointer-events:none; transition: opacity .25s ease; backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+  .scrim.open { opacity:1; pointer-events:auto; }
+  .drawer { position:fixed; top:0; right:0; bottom:0; width:520px; max-width:100vw; z-index:60;
+            background:var(--surface); border-left:1px solid var(--border); box-shadow: var(--shadow-xl);
+            transform: translateX(110%); transition: transform .32s cubic-bezier(.2,.7,.2,1); display:flex; flex-direction:column; }
+  .drawer.open { transform: translateX(0); }
+  .drawer-header { padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  .drawer-body { padding:20px; overflow-y:auto; flex:1; }
+  .drawer-footer { padding:14px 20px; border-top:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; background:var(--surface-2); }
+
+  /* segmented control */
+  .seg { display:inline-flex; padding:3px; gap:2px; background:var(--surface-3); border-radius:9px; border:1px solid var(--border); }
+  .seg button { padding:5px 12px; font-size:12.5px; font-weight:500; border-radius:6px; background:transparent; color:var(--text-2); cursor:pointer; border:none; transition: all .12s ease; }
+  .seg button.active { background:var(--surface); color:var(--text); box-shadow: var(--shadow-sm); }
+
+  /* toggle switch */
+  .toggle { width:36px; height:20px; border-radius:999px; background:var(--surface-3); border:1px solid var(--border-strong); position:relative; cursor:pointer; transition: background .15s ease, border-color .15s ease; flex:none; }
+  .toggle .thumb { position:absolute; top:1px; left:1px; width:16px; height:16px; border-radius:999px; background:var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .18s cubic-bezier(.2,.7,.2,1); }
+  .toggle.on { background:var(--brand); border-color:var(--brand); }
+  .toggle.on .thumb { transform: translateX(16px); background:#fff; }
+
+  /* SSL helper card */
+  .ssl-card { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px;
+              border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
+  .ssl-card.on { border-color: color-mix(in oklab, var(--sync) 35%, var(--border)); background: color-mix(in oklab, var(--sync) 6%, var(--surface)); }
+
+  /* test result banners */
+  .test-banner { display:flex; gap:10px; padding:12px; border-radius:10px; font-size:13px; line-height:1.55; align-items:flex-start; }
+  .test-ok   { background: color-mix(in oklab, var(--sync) 10%, var(--surface)); border:1px solid color-mix(in oklab, var(--sync) 30%, transparent); color: var(--sync); }
+  .test-err  { background: color-mix(in oklab, var(--break) 8%, var(--surface)); border:1px solid color-mix(in oklab, var(--break) 30%, transparent); color: var(--break); }
+  .test-load { background: var(--surface-2); border:1px solid var(--border); color: var(--text-2); }
+  .test-banner .body { color:var(--text); }
+  .test-banner .title { font-weight:600; }
+  .test-banner details summary { cursor:pointer; color:var(--text-3); font-size:12px; margin-top:4px; user-select:none; }
+  .test-banner details[open] summary { color:var(--text-2); }
+  .test-banner pre { margin-top:6px; padding:8px 10px; background:var(--surface); border:1px solid var(--border); border-radius:6px;
+                font-family:'Geist Mono',ui-monospace; font-size:11.5px; color:var(--text-2); overflow:auto; }
+
+  /* spinner */
+  .spin { width:14px; height:14px; border-radius:999px; border:2px solid color-mix(in oklab, var(--brand) 25%, transparent); border-top-color:var(--brand); animation: spin .8s linear infinite; flex:none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* modal */
+  .modal-scrim { position:fixed; inset:0; z-index:70; background: color-mix(in oklab, #000 45%, transparent);
+                 opacity:0; pointer-events:none; transition: opacity .2s ease; backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+                 display:grid; place-items:center; padding:24px; }
+  .modal-scrim.open { opacity:1; pointer-events:auto; }
+  .modal { width:100%; max-width:440px; background:var(--surface); border:1px solid var(--border); border-radius:16px;
+           box-shadow: var(--shadow-xl); transform: scale(.96); opacity:0; transition: transform .2s ease, opacity .2s ease; }
+  .modal-scrim.open .modal { transform: scale(1); opacity:1; }
+
+  /* toast */
+  .toast { position:fixed; bottom:24px; left:50%; transform: translateX(-50%) translateY(20px); z-index:80;
+           background:var(--text); color:var(--surface); padding:10px 14px; border-radius:10px; font-size:13px;
+           box-shadow: var(--shadow-lg); opacity:0; transition: opacity .25s ease, transform .25s ease;
+           display:flex; gap:10px; align-items:center; }
+  .toast.show { opacity:1; transform: translateX(-50%) translateY(0); }
+
+  /* tiny pulse on Test result row */
+  @keyframes flash { 0%{background: color-mix(in oklab, var(--sync) 20%, transparent);} 100%{ background: transparent;} }
+  .row-flash { animation: flash 1.2s ease-out; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- ——— Global shell ——— -->
+<div class="grid min-h-screen" style="grid-template-columns: 240px 1fr;" id="shell">
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="flex flex-col" style="background:var(--surface); border-right:1px solid var(--border); position:sticky; top:0; height:100vh;">
+    <div class="h-14 px-4 flex items-center gap-2.5" style="border-bottom:1px solid var(--border);">
+      <div class="w-7 h-7 rounded-lg grid place-items-center flex-none" style="background:var(--brand);">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+      </div>
+      <div class="leading-tight sb-label" style="white-space:nowrap;">
+        <div class="font-semibold text-[13.5px]">Schema Studio</div>
+        <div class="text-[11px] mono" style="color:var(--text-3)">v0.4.2 · main</div>
+      </div>
+    </div>
+
+    <div class="p-3">
+      <div class="section-title px-2 mb-1 sb-label">Workspace</div>
+      <div class="space-y-0.5">
+        <a class="nav-item" href="#" data-screen="Dashboard">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          <span class="sb-label">Dashboard</span>
+          <span class="badge sb-label pill pill-drift !text-[10px] !py-0">1</span>
+        </a>
+        <a class="nav-item" href="#">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v18M16 3v18"/><path d="M3 8h5M3 16h5M16 8h5M16 16h5"/></svg>
+          <span class="sb-label">Compare &amp; Author</span>
+        </a>
+        <a class="nav-item" href="#">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/><path d="M5 19h14"/></svg>
+          <span class="sb-label">Deploy</span>
+        </a>
+        <a class="nav-item active" href="#">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07L11 5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07L13 19"/></svg>
+          <span class="sb-label">Connections</span>
+          <span class="badge sb-label pill pill-brand !text-[10px] !py-0">3</span>
+        </a>
+        <a class="nav-item" href="#">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12c2-3 5-3 7 0s5 3 7 0 5-3 6 0"/><path d="M2 18c2-3 5-3 7 0s5 3 7 0 5-3 6 0"/></svg>
+          <span class="sb-label">Drift</span>
+          <span class="badge sb-label pill pill-drift !text-[10px] !py-0">2</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- mini contextual block: tracked schemas tied to connections -->
+    <div class="px-3 mt-2">
+      <div class="section-title px-2 mb-2">Tracked schemas</div>
+      <div class="space-y-1">
+        <a class="nav-item" href="#" style="padding:6px 10px">
+          <span class="w-1.5 h-1.5 rounded-full" style="background:var(--sync)"></span>
+          <span class="mono text-[12.5px]">public</span>
+          <span class="ml-auto mono text-[10.5px]" style="color:var(--text-3)">v1.4.0</span>
+        </a>
+        <a class="nav-item" href="#" style="padding:6px 10px">
+          <span class="w-1.5 h-1.5 rounded-full" style="background:var(--drift)"></span>
+          <span class="mono text-[12.5px]">finance</span>
+          <span class="ml-auto mono text-[10.5px]" style="color:var(--text-3)">v2.3.0</span>
+        </a>
+        <a class="nav-item" href="#" style="padding:6px 10px">
+          <span class="w-1.5 h-1.5 rounded-full" style="background:var(--pending)"></span>
+          <span class="mono text-[12.5px]">analytics</span>
+          <span class="ml-auto mono text-[10.5px]" style="color:var(--text-3)">v0.9.0</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="mt-auto p-3 space-y-2" style="border-top:1px solid var(--border);">
+      <button id="themeToggle2" class="nav-item w-full">
+        <svg class="ico" id="iconSun2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="ico" id="iconMoon2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span class="sb-label">Theme</span>
+        <span class="ml-auto sb-label text-[11px]" style="color:var(--text-3)" id="themeName">Light</span>
+      </button>
+      <div class="flex items-center gap-2.5 px-2 py-1.5">
+        <div class="w-7 h-7 rounded-full grid place-items-center flex-none text-white text-[11px] font-semibold" style="background:linear-gradient(135deg, var(--brand), #a78bfa);">AK</div>
+        <div class="leading-tight sb-label min-w-0">
+          <div class="text-[12.5px] font-medium truncate">Aarav Kapoor</div>
+          <div class="text-[11px] mono truncate" style="color:var(--text-3)">aarav@studio.dev</div>
+        </div>
+        <button class="ml-auto btn btn-ghost btn-sm sb-label" title="Sign out">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="flex flex-col min-w-0">
+
+    <!-- Top bar -->
+    <div class="h-14 px-6 flex items-center gap-4 sticky top-0 z-20" style="border-bottom:1px solid var(--border); background:color-mix(in oklab, var(--surface) 96%, transparent); backdrop-filter:saturate(140%) blur(6px);">
+      <nav class="flex items-center gap-2 text-[13px]" style="color:var(--text-2);">
+        <span style="color:var(--text-3)">Workspace</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        <span class="font-medium" style="color:var(--text)">Connections</span>
+      </nav>
+      <div class="ml-auto flex items-center gap-2">
+        <div class="relative">
+          <svg class="absolute left-2.5 top-1/2 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-3)"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          <input class="input with-icon" style="padding-top:6px; padding-bottom:6px; width:220px;" placeholder="Search connections…" />
+          <span class="absolute right-2 top-1/2 -translate-y-1/2 kbd">⌘K</span>
+        </div>
+        <span class="hsep"></span>
+        <button id="themeToggle" class="btn btn-secondary btn-sm" title="Toggle theme">
+          <svg id="iconSun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg id="iconMoon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <span id="themeLabel">Dark mode</span>
+        </button>
+        <button id="addBtn" class="btn btn-primary btn-sm" style="white-space:nowrap;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add connection
+        </button>
+      </div>
+    </div>
+
+    <!-- Page header -->
+    <section class="px-8 pt-8 pb-2">
+      <div class="flex items-end justify-between gap-6 flex-wrap">
+        <div>
+          <div class="section-title mb-2">Connections</div>
+          <h1 class="text-[28px] font-semibold tracking-[-0.018em]">Where your databases live.</h1>
+          <p class="text-[13.5px] mt-1.5 max-w-[62ch]" style="color:var(--text-2);">
+            Saved ways to reach your PostgreSQL servers — local or hosted. Test, edit, and connect
+            tracked schemas through these. Credentials are encrypted; passwords are never displayed.
+          </p>
+        </div>
+        <!-- summary tiles -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="card px-4 py-3 min-w-[120px]">
+            <div class="text-[11px]" style="color:var(--text-3);">Total</div>
+            <div class="text-[20px] font-semibold mono mt-0.5">3</div>
+          </div>
+          <div class="card px-4 py-3 min-w-[120px]">
+            <div class="text-[11px]" style="color:var(--text-3);">Healthy</div>
+            <div class="text-[20px] font-semibold mono mt-0.5 flex items-center gap-2"><span class="w-2 h-2 rounded-full" style="background:var(--sync)"></span>3</div>
+          </div>
+          <div class="card px-4 py-3 min-w-[120px]">
+            <div class="text-[11px]" style="color:var(--text-3);">Avg latency</div>
+            <div class="text-[20px] font-semibold mono mt-0.5">14<span class="text-[12px]" style="color:var(--text-3); margin-left:2px;">ms</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Filters -->
+    <section class="px-8 pt-6 pb-3 flex items-center justify-between gap-4 flex-wrap">
+      <div class="flex items-center gap-1.5">
+        <button class="pill pill-brand" data-filter="all"><span class="dot"></span>All <span class="mono ml-1" style="opacity:.7">3</span></button>
+        <button class="pill pill-outline" data-filter="local">Local <span class="mono ml-1" style="opacity:.7">1</span></button>
+        <button class="pill pill-outline" data-filter="online">Online <span class="mono ml-1" style="opacity:.7">2</span></button>
+        <span class="hsep mx-1.5"></span>
+        <button class="pill pill-outline">SSL on <span class="mono ml-1" style="opacity:.7">2</span></button>
+        <button class="pill pill-outline">Recently tested</button>
+      </div>
+      <div class="flex items-center gap-2 text-[12px]" style="color:var(--text-3);">
+        <span>Sort:</span>
+        <button class="btn btn-ghost btn-xs">Last tested ↓</button>
+      </div>
+    </section>
+
+    <!-- Connections table -->
+    <section class="px-8 pb-12">
+      <div class="card overflow-hidden">
+        <table class="conns w-full text-[13px]">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Endpoint</th>
+              <th>User</th>
+              <th>SSL</th>
+              <th>Server</th>
+              <th>Last tested</th>
+              <th class="text-right" style="width:200px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="connRows">
+
+            <!-- Row 1: Local Postgres -->
+            <tr data-name="Local Postgres">
+              <td>
+                <div class="flex items-center gap-3">
+                  <span class="ind ok" aria-hidden="true"></span>
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2" style="flex-wrap:wrap;">
+                      <span class="font-medium" style="white-space:nowrap;">Local Postgres</span>
+                      <span class="pill pill-neutral"><span class="dot" style="background:var(--text-3)"></span>Local</span>
+                    </div>
+                    <div class="mono text-[11.5px] mt-0.5" style="color:var(--text-3);">4 schemas · used by <span style="color:var(--text-2)">public</span></div>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div class="mono text-[12.5px]">localhost<span style="color:var(--text-3)">:5432/</span>appdb</div>
+                <div class="text-[11px] mt-0.5" style="color:var(--text-3);">loopback · IPv4</div>
+              </td>
+              <td><span class="mono text-[12.5px]" style="color:var(--text-2);">postgres</span></td>
+              <td><span class="pill pill-neutral"><span class="dot" style="background:var(--text-3)"></span>off</span></td>
+              <td><span class="mono text-[11.5px]" style="color:var(--text-2);">PostgreSQL 16.2</span></td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sync)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+                  <div class="leading-tight">
+                    <div class="text-[12.5px]">2 min ago</div>
+                    <div class="mono text-[10.5px]" style="color:var(--text-3);">
+                      <span class="sparkline" aria-hidden="true"><span style="height:30%"></span><span style="height:50%"></span><span style="height:40%"></span><span style="height:60%"></span><span style="height:35%"></span><span style="height:45%"></span><span style="height:50%"></span></span>
+                      <span class="ml-1">2.4 ms</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="text-right">
+                <div class="row-actions inline-flex gap-1 justify-end">
+                  <button class="btn btn-ghost btn-sm test-row" data-row="Local Postgres">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12 9 16 19 6"/></svg>
+                    Test
+                  </button>
+                  <button class="btn btn-ghost btn-sm" data-edit="Local Postgres">Edit</button>
+                  <button class="btn btn-ghost btn-sm" data-del="Local Postgres" style="color:var(--break)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- Row 2: Staging — Neon -->
+            <tr data-name="Staging — Neon">
+              <td>
+                <div class="flex items-center gap-3">
+                  <span class="ind ok"></span>
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2" style="flex-wrap:wrap;">
+                      <span class="font-medium" style="white-space:nowrap;">Staging — Neon</span>
+                      <span class="pill pill-brand"><span class="dot"></span>Online</span>
+                    </div>
+                    <div class="mono text-[11.5px] mt-0.5" style="color:var(--text-3);">7 schemas · used by <span style="color:var(--text-2)">analytics</span></div>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div class="mono text-[12.5px] truncate" style="max-width:340px;">ep-cool-meadow-12345.eu-central-1.aws.neon.tech<span style="color:var(--text-3)">:5432/</span>staging</div>
+                <div class="text-[11px] mt-0.5" style="color:var(--text-3);">eu-central-1 · TLS 1.3</div>
+              </td>
+              <td><span class="mono text-[12.5px]" style="color:var(--text-2);">app</span></td>
+              <td><span class="pill pill-sync"><span class="dot"></span>on</span></td>
+              <td><span class="mono text-[11.5px]" style="color:var(--text-2);">PostgreSQL 15.5</span></td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sync)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+                  <div class="leading-tight">
+                    <div class="text-[12.5px]">1 hour ago</div>
+                    <div class="mono text-[10.5px]" style="color:var(--text-3);">
+                      <span class="sparkline" aria-hidden="true"><span style="height:55%"></span><span style="height:65%"></span><span style="height:50%"></span><span style="height:70%"></span><span style="height:60%"></span><span style="height:55%"></span><span style="height:62%"></span></span>
+                      <span class="ml-1">18 ms</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="text-right">
+                <div class="row-actions inline-flex gap-1 justify-end">
+                  <button class="btn btn-ghost btn-sm test-row" data-row="Staging — Neon">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12 9 16 19 6"/></svg>
+                    Test
+                  </button>
+                  <button class="btn btn-ghost btn-sm" data-edit="Staging — Neon">Edit</button>
+                  <button class="btn btn-ghost btn-sm" data-del="Staging — Neon" style="color:var(--break)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+
+            <!-- Row 3: Prod — RDS -->
+            <tr data-name="Prod — RDS">
+              <td>
+                <div class="flex items-center gap-3">
+                  <span class="ind ok"></span>
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2" style="flex-wrap:wrap;">
+                      <span class="font-medium" style="white-space:nowrap;">Prod — RDS</span>
+                      <span class="pill pill-brand"><span class="dot"></span>Online</span>
+                      <span class="pill pill-drift"><span class="dot"></span>drift on finance</span>
+                    </div>
+                    <div class="mono text-[11.5px] mt-0.5" style="color:var(--text-3);">12 schemas · used by <span style="color:var(--text-2)">finance</span></div>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div class="mono text-[12.5px] truncate" style="max-width:340px;">db.prod.internal.example.com<span style="color:var(--text-3)">:5432/</span>core</div>
+                <div class="text-[11px] mt-0.5" style="color:var(--text-3);">vpc-priv · TLS 1.3 · pgBouncer</div>
+              </td>
+              <td><span class="mono text-[12.5px]" style="color:var(--text-2);">release</span></td>
+              <td><span class="pill pill-sync"><span class="dot"></span>on</span></td>
+              <td><span class="mono text-[11.5px]" style="color:var(--text-2);">PostgreSQL 16.1</span></td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sync)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+                  <div class="leading-tight">
+                    <div class="text-[12.5px]">Yesterday</div>
+                    <div class="mono text-[10.5px]" style="color:var(--text-3);">
+                      <span class="sparkline" aria-hidden="true"><span style="height:40%"></span><span style="height:55%"></span><span style="height:48%"></span><span style="height:60%"></span><span style="height:52%"></span><span style="height:58%"></span><span style="height:50%"></span></span>
+                      <span class="ml-1">22 ms</span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="text-right">
+                <div class="row-actions inline-flex gap-1 justify-end">
+                  <button class="btn btn-ghost btn-sm test-row" data-row="Prod — RDS">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12 9 16 19 6"/></svg>
+                    Test
+                  </button>
+                  <button class="btn btn-ghost btn-sm" data-edit="Prod — RDS">Edit</button>
+                  <button class="btn btn-ghost btn-sm" data-del="Prod — RDS" style="color:var(--break)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Hint strip -->
+      <div class="mt-5 flex items-center justify-between text-[12px]" style="color:var(--text-3);">
+        <span>Showing <span class="mono" style="color:var(--text-2);">3 of 3</span> connections.</span>
+        <div class="flex items-center gap-3">
+          <span>Tip:</span>
+          <span><span class="kbd">N</span> new · <span class="kbd">T</span> test selected · <span class="kbd">⌫</span> delete</span>
+        </div>
+      </div>
+    </section>
+
+    <footer class="px-8 pb-8 text-[12px]" style="color:var(--text-3);">Schema Studio · FYP · Pass 2 of 7 — S1 Connections</footer>
+  </div>
+</div>
+
+<!-- ——— Scrim + Drawer ——— -->
+<div class="scrim" id="scrim"></div>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-header">
+    <div class="flex items-center gap-2.5 min-w-0">
+      <div class="w-7 h-7 rounded-lg grid place-items-center flex-none" style="background:var(--brand-soft); color:var(--brand);">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07L11 5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07L13 19"/></svg>
+      </div>
+      <div class="leading-tight min-w-0">
+        <h2 id="drawerTitle" class="text-[14.5px] font-semibold truncate">Add connection</h2>
+        <div id="drawerSub" class="text-[11.5px]" style="color:var(--text-3);">Reach a PostgreSQL server, local or hosted.</div>
+      </div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="drawerClose" aria-label="Close drawer">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+
+  <div class="drawer-body">
+    <!-- Quick start chips -->
+    <div class="mb-5">
+      <div class="label mb-2">Quick start</div>
+      <div class="flex gap-2">
+        <button class="pill pill-outline" data-quick="local">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 21v-4M16 21v-4"/></svg>
+          Local Postgres
+        </button>
+        <button class="pill pill-outline" data-quick="hosted">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/></svg>
+          Hosted (Neon · Supabase · RDS)
+        </button>
+      </div>
+      <div class="help mt-2">Pre-fills the SSL default for you. You can still edit anything below.</div>
+    </div>
+
+    <!-- Name -->
+    <div class="mb-4">
+      <div class="flex items-center justify-between mb-1.5">
+        <label class="label">Friendly name <span style="color:var(--break)">*</span></label>
+        <span class="help">Shown in lists and breadcrumbs.</span>
+      </div>
+      <input class="input" id="fldName" placeholder="e.g. Staging — Neon" />
+    </div>
+
+    <!-- Mode toggle -->
+    <div class="mb-3 flex items-center justify-between">
+      <label class="label">Connection details</label>
+      <div class="seg" id="modeSeg">
+        <button class="active" data-mode="uri">Connection string (URI)</button>
+        <button data-mode="fields">Fields</button>
+      </div>
+    </div>
+
+    <!-- URI mode -->
+    <div id="modeUri" class="space-y-3">
+      <div class="relative">
+        <input class="input mono" id="fldUri" placeholder="postgres://user:pass@host:5432/database?sslmode=require" />
+        <button class="absolute right-1.5 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs" id="pasteBtn" title="Paste">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3"/></svg>
+          Paste
+        </button>
+      </div>
+      <!-- Parsed preview -->
+      <div class="panel p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="section-title">Parsed</span>
+          <span class="text-[11px] mono" id="parsedStatus" style="color:var(--text-3);">awaiting input</span>
+        </div>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-[12.5px]">
+          <div class="flex justify-between"><span style="color:var(--text-3)">host</span><span class="mono" id="pHost" style="color:var(--text-2)">—</span></div>
+          <div class="flex justify-between"><span style="color:var(--text-3)">port</span><span class="mono" id="pPort" style="color:var(--text-2)">—</span></div>
+          <div class="flex justify-between"><span style="color:var(--text-3)">database</span><span class="mono" id="pDb" style="color:var(--text-2)">—</span></div>
+          <div class="flex justify-between"><span style="color:var(--text-3)">user</span><span class="mono" id="pUser" style="color:var(--text-2)">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fields mode (hidden by default) -->
+    <div id="modeFields" class="space-y-3" style="display:none;">
+      <div class="grid grid-cols-[1fr_120px] gap-3">
+        <div>
+          <div class="label mb-1">Host</div>
+          <input class="input mono" id="fldHost" placeholder="db.prod.internal.example.com" />
+        </div>
+        <div>
+          <div class="label mb-1">Port</div>
+          <input class="input mono" id="fldPort" placeholder="5432" value="5432" />
+        </div>
+      </div>
+      <div>
+        <div class="label mb-1">Database</div>
+        <input class="input mono" id="fldDb" placeholder="core" />
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <div class="label mb-1">User</div>
+          <input class="input mono" id="fldUser" placeholder="release" />
+        </div>
+        <div>
+          <div class="label mb-1">Password</div>
+          <div class="relative">
+            <input class="input mono" type="password" id="fldPass" placeholder="••••••••" />
+            <button class="absolute right-1.5 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs" id="pwToggle" type="button" title="Show password">
+              <svg id="pwEye" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SSL -->
+    <div class="mt-6">
+      <div class="label mb-2">Security</div>
+      <div class="ssl-card on" id="sslCard">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-9 h-9 rounded-lg grid place-items-center flex-none" id="sslIconWrap" style="background:var(--sync-soft); color:var(--sync);">
+            <svg id="sslIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div class="min-w-0">
+            <div class="text-[13px] font-medium">SSL / TLS <span id="sslStateLbl" class="mono" style="color:var(--sync); font-weight:500; margin-left:6px;">ON</span></div>
+            <div class="help mt-0.5" id="sslHelp">Required for hosted databases (Supabase, Neon, RDS). Usually off for localhost.</div>
+          </div>
+        </div>
+        <div class="toggle on" id="sslToggle" role="switch" aria-checked="true"><span class="thumb"></span></div>
+      </div>
+    </div>
+
+    <!-- Test result panel -->
+    <div class="mt-6">
+      <div class="flex items-center justify-between mb-2">
+        <div class="label">Test connection</div>
+        <button class="btn btn-secondary btn-sm" id="testBtn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12 9 16 19 6"/></svg>
+          Test now
+        </button>
+      </div>
+
+      <!-- States -->
+      <div id="testStates">
+        <div class="test-banner test-load" data-state="idle">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          <div class="body">
+            <div class="title">Not tested yet</div>
+            <div style="color:var(--text-3)">Click <b>Test now</b> to verify the credentials before saving.</div>
+          </div>
+        </div>
+        <div class="test-banner test-load" data-state="loading" style="display:none;">
+          <span class="spin"></span>
+          <div class="body">
+            <div class="title">Connecting…</div>
+            <div style="color:var(--text-3)" class="mono text-[11.5px]" id="testLog">resolving host · opening tcp · negotiating tls · authenticating</div>
+          </div>
+        </div>
+        <div class="test-banner test-ok" data-state="ok" style="display:none;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <div class="body">
+            <div class="title">Connected. Found <span class="mono">4</span> schemas.</div>
+            <div style="color:var(--text-2);">
+              <span class="mono text-[11.5px]">postgres 15.5 · roundtrip 18ms · ssl tls 1.3</span>
+            </div>
+            <div class="flex gap-1.5 flex-wrap mt-2">
+              <span class="pill pill-neutral mono">public</span>
+              <span class="pill pill-neutral mono">analytics</span>
+              <span class="pill pill-neutral mono">events</span>
+              <span class="pill pill-neutral mono">audit</span>
+            </div>
+          </div>
+        </div>
+        <div class="test-banner test-err" data-state="err" style="display:none;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div class="body">
+            <div class="title">Could not connect.</div>
+            <div style="color:var(--text-2);">SSL required by server — turn <b>SSL on</b> and try again.</div>
+            <details>
+              <summary>Details</summary>
+              <pre>FATAL:  SSL connection is required by the server (28000)
+host: ep-cool-meadow-12345.eu-central-1.aws.neon.tech
+attempted: sslmode=disable</pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-footer">
+    <div class="text-[11.5px] mono" style="color:var(--text-3);">credentials encrypted at rest</div>
+    <div class="flex items-center gap-2">
+      <button class="btn btn-ghost btn-sm" id="drawerCancel">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="saveBtn">Save connection</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ——— Delete confirm modal ——— -->
+<div class="modal-scrim" id="delScrim" role="dialog" aria-modal="true">
+  <div class="modal p-5">
+    <div class="flex items-start gap-3">
+      <div class="w-10 h-10 rounded-full grid place-items-center flex-none" style="background:var(--break-soft); color:var(--break);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </div>
+      <div class="min-w-0">
+        <h3 class="text-[15px] font-semibold tracking-[-0.005em]">Delete <span class="mono" id="delName">Prod — RDS</span>?</h3>
+        <p class="text-[13px] mt-1.5" style="color:var(--text-2);">
+          Tracked schemas that use this connection will lose their connection.
+          <span id="delImpact">The <span class="mono" style="color:var(--text)">finance</span> schema is affected.</span>
+        </p>
+        <div class="mt-3 panel p-3" style="background:var(--surface-2);">
+          <div class="text-[12px] flex items-center justify-between"><span style="color:var(--text-3)">Connection</span><span class="mono" id="delHost" style="color:var(--text-2)">db.prod.internal:5432/core</span></div>
+          <div class="text-[12px] flex items-center justify-between mt-1"><span style="color:var(--text-3)">Tracked schemas</span><span class="mono" style="color:var(--text-2)">1</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-5">
+      <button class="btn btn-ghost btn-sm" id="delCancel">Cancel</button>
+      <button class="btn btn-destructive btn-sm" id="delConfirm">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        Delete connection
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ——— Toast ——— -->
+<div class="toast" id="toast"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg><span id="toastMsg">Saved</span></div>
+
+<script>
+  // ——— Theme ———
+  const root = document.documentElement;
+  function setTheme(mode){
+    root.setAttribute('data-theme', mode);
+    document.getElementById('iconSun').style.display = mode==='dark' ? 'none' : '';
+    document.getElementById('iconMoon').style.display = mode==='dark' ? '' : 'none';
+    document.getElementById('iconSun2').style.display = mode==='dark' ? 'none' : '';
+    document.getElementById('iconMoon2').style.display = mode==='dark' ? '' : 'none';
+    document.getElementById('themeLabel').textContent = mode==='dark' ? 'Light mode' : 'Dark mode';
+    document.getElementById('themeName').textContent = mode==='dark' ? 'Dark' : 'Light';
+    try { localStorage.setItem('ss-theme', mode); } catch(e){}
+  }
+  document.getElementById('themeToggle').addEventListener('click', () => setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark'));
+  document.getElementById('themeToggle2').addEventListener('click', () => setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark'));
+  try { const s = localStorage.getItem('ss-theme'); if (s) setTheme(s); } catch(e){}
+
+  // ——— Drawer ———
+  const scrim = document.getElementById('scrim');
+  const drawer = document.getElementById('drawer');
+  const drawerTitle = document.getElementById('drawerTitle');
+  const drawerSub = document.getElementById('drawerSub');
+  function openDrawer(mode, name){
+    if (mode === 'edit') {
+      drawerTitle.textContent = 'Edit ' + name;
+      drawerSub.textContent = 'Update credentials, re-test, then save.';
+    } else {
+      drawerTitle.textContent = 'Add connection';
+      drawerSub.textContent = 'Reach a PostgreSQL server, local or hosted.';
+    }
+    scrim.classList.add('open'); drawer.classList.add('open'); drawer.setAttribute('aria-hidden','false');
+    setTestState('idle');
+  }
+  function closeDrawer(){
+    scrim.classList.remove('open'); drawer.classList.remove('open'); drawer.setAttribute('aria-hidden','true');
+  }
+  document.getElementById('addBtn').addEventListener('click', () => openDrawer('add'));
+  document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+  document.getElementById('drawerCancel').addEventListener('click', closeDrawer);
+  scrim.addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDrawer(); closeDel(); } });
+
+  document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openDrawer('edit', b.dataset.edit)));
+
+  // ——— Mode segmented control ———
+  document.querySelectorAll('#modeSeg button').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('#modeSeg button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      const isUri = b.dataset.mode === 'uri';
+      document.getElementById('modeUri').style.display = isUri ? '' : 'none';
+      document.getElementById('modeFields').style.display = isUri ? 'none' : '';
+    });
+  });
+
+  // ——— URI parser (live) ———
+  const fldUri = document.getElementById('fldUri');
+  function parseURI(s){
+    if (!s) return null;
+    try {
+      const u = new URL(s.replace(/^postgres(ql)?:/, 'http:'));
+      return { host: u.hostname || '—', port: u.port || '5432', db: (u.pathname || '').replace(/^\//,'') || '—', user: u.username || '—' };
+    } catch (e) { return null; }
+  }
+  function setParsed(p){
+    document.getElementById('pHost').textContent = p ? p.host : '—';
+    document.getElementById('pPort').textContent = p ? p.port : '—';
+    document.getElementById('pDb').textContent   = p ? p.db   : '—';
+    document.getElementById('pUser').textContent = p ? p.user : '—';
+    const lbl = document.getElementById('parsedStatus');
+    lbl.textContent = p ? 'parsed ok' : 'awaiting input';
+    lbl.style.color = p ? 'var(--sync)' : 'var(--text-3)';
+  }
+  fldUri.addEventListener('input', () => setParsed(parseURI(fldUri.value)));
+  fldUri.addEventListener('blur',  () => setParsed(parseURI(fldUri.value)));
+  document.getElementById('pasteBtn').addEventListener('click', () => {
+    // simulated paste of the Neon hosted example
+    fldUri.value = 'postgres://app:••••@ep-cool-meadow-12345.eu-central-1.aws.neon.tech:5432/staging?sslmode=require';
+    setParsed(parseURI(fldUri.value));
+    document.getElementById('fldName').value ||= 'Staging — Neon';
+    setSSL(true);
+  });
+
+  // Quick start chips
+  document.querySelectorAll('[data-quick]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.quick === 'local') {
+      fldUri.value = 'postgres://postgres@localhost:5432/appdb';
+      document.getElementById('fldName').value ||= 'Local Postgres';
+      setSSL(false);
+    } else {
+      fldUri.value = 'postgres://app@ep-example.neon.tech:5432/db?sslmode=require';
+      document.getElementById('fldName').value ||= 'Hosted Postgres';
+      setSSL(true);
+    }
+    setParsed(parseURI(fldUri.value));
+  }));
+
+  // ——— SSL toggle ———
+  const sslToggle = document.getElementById('sslToggle');
+  const sslCard = document.getElementById('sslCard');
+  const sslIconWrap = document.getElementById('sslIconWrap');
+  const sslHelp = document.getElementById('sslHelp');
+  const sslStateLbl = document.getElementById('sslStateLbl');
+  function setSSL(on){
+    sslToggle.classList.toggle('on', !!on);
+    sslToggle.setAttribute('aria-checked', String(!!on));
+    sslCard.classList.toggle('on', !!on);
+    if (on) {
+      sslIconWrap.style.background = 'var(--sync-soft)';
+      sslIconWrap.style.color = 'var(--sync)';
+      sslHelp.textContent = 'Required for hosted databases (Supabase, Neon, RDS).';
+      sslStateLbl.textContent = 'ON'; sslStateLbl.style.color = 'var(--sync)';
+    } else {
+      sslIconWrap.style.background = 'var(--surface-3)';
+      sslIconWrap.style.color = 'var(--text-3)';
+      sslHelp.textContent = 'Usually off for localhost loopback connections.';
+      sslStateLbl.textContent = 'OFF'; sslStateLbl.style.color = 'var(--text-3)';
+    }
+  }
+  sslToggle.addEventListener('click', () => setSSL(!sslToggle.classList.contains('on')));
+
+  // ——— Password visibility ———
+  document.getElementById('pwToggle').addEventListener('click', () => {
+    const inp = document.getElementById('fldPass');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  });
+
+  // ——— Test connection cycle ———
+  const testStates = document.getElementById('testStates');
+  function setTestState(name){
+    testStates.querySelectorAll('[data-state]').forEach(el => el.style.display = el.dataset.state === name ? '' : 'none');
+  }
+  document.getElementById('testBtn').addEventListener('click', () => {
+    setTestState('loading');
+    // 1.6s then result based on SSL (if URI demands sslmode=require but toggle off → err)
+    setTimeout(() => {
+      const ssl = sslToggle.classList.contains('on');
+      const uri = fldUri.value || '';
+      const needsSSL = /sslmode=require/.test(uri);
+      if (needsSSL && !ssl) setTestState('err'); else setTestState('ok');
+    }, 1600);
+  });
+
+  // ——— Save ———
+  function showToast(msg){
+    const t = document.getElementById('toast');
+    document.getElementById('toastMsg').textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1800);
+  }
+  document.getElementById('saveBtn').addEventListener('click', () => {
+    closeDrawer();
+    showToast('Connection saved');
+  });
+
+  // ——— Row test (in-place) ———
+  document.querySelectorAll('.test-row').forEach(b => {
+    b.addEventListener('click', () => {
+      const row = b.closest('tr');
+      const cell = row.querySelector('td:nth-child(6) .leading-tight');
+      const original = cell.innerHTML;
+      cell.innerHTML = '<div class="flex items-center gap-2 text-[12.5px]" style="color:var(--text-2)"><span class="spin"></span> testing…</div>';
+      setTimeout(() => {
+        cell.innerHTML = original.replace(/2 min ago|1 hour ago|Yesterday/, 'just now');
+        row.classList.add('row-flash');
+        setTimeout(() => row.classList.remove('row-flash'), 1300);
+        showToast('Connection healthy · ' + b.dataset.row);
+      }, 1100);
+    });
+  });
+
+  // ——— Delete confirm ———
+  const delScrim = document.getElementById('delScrim');
+  function openDel(name, host, impact){
+    document.getElementById('delName').textContent = name;
+    document.getElementById('delHost').textContent = host;
+    document.getElementById('delImpact').innerHTML = impact;
+    delScrim.classList.add('open');
+  }
+  function closeDel(){ delScrim.classList.remove('open'); }
+  document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
+    const name = b.dataset.del;
+    const map = {
+      'Local Postgres': { host: 'localhost:5432/appdb', impact: 'The <span class="mono" style="color:var(--text)">public</span> schema is affected.' },
+      'Staging — Neon': { host: 'ep-cool-meadow…neon.tech:5432/staging', impact: 'The <span class="mono" style="color:var(--text)">analytics</span> schema is affected.' },
+      'Prod — RDS': { host: 'db.prod.internal:5432/core', impact: 'The <span class="mono" style="color:var(--text)">finance</span> schema is affected.' },
+    };
+    const v = map[name];
+    openDel(name, v.host, v.impact);
+  }));
+  document.getElementById('delCancel').addEventListener('click', closeDel);
+  delScrim.addEventListener('click', e => { if (e.target === delScrim) closeDel(); });
+  document.getElementById('delConfirm').addEventListener('click', () => {
+    closeDel();
+    showToast('Connection deleted');
+  });
+
+  // ——— Filter chips visual selection ———
+  document.querySelectorAll('[data-filter]').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter]').forEach(x => x.classList.replace('pill-brand','pill-outline'));
+      b.classList.replace('pill-outline','pill-brand');
+    });
+  });
+</script>
+</body>
+</html>
