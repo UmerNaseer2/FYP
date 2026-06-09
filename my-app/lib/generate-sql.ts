@@ -9,7 +9,9 @@ import { normalizeSimilarityText } from "./compare-utils";
 
 export type SqlStatementKind =
   | "CREATE_TABLE"
+  | "DROP_TABLE"
   | "ADD_COLUMN"
+  | "DROP_COLUMN"
   | "ALTER_COLUMN_TYPE"
   | "ALTER_COLUMN_NULLABILITY"
   | "ADD_CONSTRAINT"
@@ -268,7 +270,7 @@ function alterStatementsForMatch(
     const constraintName = diff.rightName ?? "";
     if (!constraintName) continue;
     stmts.push({
-      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} DROP CONSTRAINT ${q(constraintName)};`,
+      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} DROP CONSTRAINT IF EXISTS ${q(constraintName)};`,
       description: `Drop ${diff.kind} "${constraintName}" from "${tName}"`,
       kind: "DROP_CONSTRAINT",
       severity: diff.kind === "FOREIGN KEY" || diff.kind === "PRIMARY KEY" ? "breaking" : "info",
@@ -310,6 +312,20 @@ function alterStatementsForMatch(
     });
   }
 
+  // ── 3e. Drop columns that exist in B but not in A ─────────────────────────
+  // Destructive: removes the column and its data. Emitted last (after the
+  // constraint drops above) and with CASCADE + IF EXISTS so it never trips over
+  // a dependent index/constraint and stays idempotent on re-run.
+  for (const col of match.columnsOnlyInB) {
+    stmts.push({
+      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} DROP COLUMN IF EXISTS ${q(col.name)} CASCADE;`,
+      description: `Drop column "${col.name}" from "${tName}" — WARNING: removes the column and all its data`,
+      kind: "DROP_COLUMN",
+      severity: "breaking",
+      tableName: tName,
+    });
+  }
+
   return stmts;
 }
 
@@ -324,34 +340,22 @@ function alterStatementsForMatch(
  *
  *   Phase 1 — Rename tables in B to match A's names
  *   Phase 2 — CREATE TABLE for tables only in A (FK constraints queued for Phase 4)
- *   Phase 3 — ALTER matched tables (column renames → add columns → type/null changes → constraints)
+ *   Phase 3 — ALTER matched tables (renames → adds → type/null → constraints → DROP COLUMN)
  *   Phase 4 — FK constraints for newly created tables (safe to add now that all tables exist)
+ *   Phase 5 — DROP TABLE for tables only in B (destructive, done last)
  *
- * Things we deliberately do NOT generate:
- *   - DROP TABLE for tables only in B  (data-loss risk — surfaced as warnings instead)
- *   - DROP COLUMN for columns only in B  (data-loss risk — surfaced as warnings instead)
+ * This is a COMPLETE sync: it includes the destructive statements (DROP TABLE /
+ * DROP COLUMN) needed to fully match A. They are flagged "breaking" so the user
+ * reviews them before running, but they are no longer held back — a sync that
+ * silently skips removals would leave B different from A.
  */
 export function generateMigration(report: CompareReport): MigrationScript {
   const sourceSchema = report.left.schema;
   const targetSchema = report.right.schema;
   const statements: SqlStatement[] = [];
+  // DROP TABLE / DROP COLUMN are now generated (see Phases 3e and 5), so there
+  // is nothing the migration silently leaves out. Kept as an extension point.
   const warnings: string[] = [];
-
-  // Tables in B not in A — we flag them but don't DROP (irreversible data loss).
-  for (const table of report.tablesOnlyInB) {
-    warnings.push(
-      `Table "${table.name}" exists in B but not in A — not included in migration (review manually).`
-    );
-  }
-
-  // Columns in B not in A, per matched table — same reasoning.
-  for (const match of report.matchedTables) {
-    for (const col of match.columnsOnlyInB) {
-      warnings.push(
-        `Column "${col.name}" in "${match.left.name}" exists in B but not in A — not dropped (review manually).`
-      );
-    }
-  }
 
   // ── Phase 1: Rename tables ────────────────────────────────────────────────
   // Similarity-matched tables have different names in A and B.
@@ -401,6 +405,21 @@ export function generateMigration(report: CompareReport): MigrationScript {
   // ── Phase 4: FK constraints for newly created tables ──────────────────────
   // All tables now exist, so FK references are safe to add.
   statements.push(...fkStatements);
+
+  // ── Phase 5: Drop tables that exist in B but not in A ─────────────────────
+  // Destructive: removes the table and all its data. Done LAST so the additive
+  // and alter work above never trips over a missing table, and any FK that
+  // referenced this table was already dropped in Phase 3. CASCADE clears any
+  // remaining dependents; IF EXISTS keeps it idempotent on re-run.
+  for (const table of report.tablesOnlyInB) {
+    statements.push({
+      sql: `DROP TABLE IF EXISTS ${q(targetSchema)}.${q(table.name)} CASCADE;`,
+      description: `Drop table "${table.name}" (exists in B, not in A) — WARNING: removes the table and all its data`,
+      kind: "DROP_TABLE",
+      severity: "breaking",
+      tableName: table.name,
+    });
+  }
 
   return {
     statements,
