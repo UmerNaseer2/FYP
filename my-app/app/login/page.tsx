@@ -94,7 +94,7 @@ export default function LoginPage() {
           <div className="leading-tight">
             <div className="font-semibold text-[13.5px]">Schema Studio</div>
             <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
-              v2.0.0 · main
+              v2.0.0
             </div>
           </div>
         </div>
@@ -261,7 +261,7 @@ export default function LoginPage() {
                 className="inline-block w-1.5 h-1.5 rounded-full"
                 style={{ background: "var(--sync)" }}
               />
-              <span>v2.0.0 · main</span>
+              <span>v2.0.0</span>
             </div>
           </div>
         </div>
