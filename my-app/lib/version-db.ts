@@ -8,7 +8,7 @@ declare global {
 const connectionString = process.env.DATABASE_URL_A;
 
 if (!connectionString) {
-  // DATABASE_URL_A is the app's own metadata store (saved connections, lineage,
+  // DATABASE_URL_A is the- app's own metadata store (saved connections, lineage,
   // drift). Without it the app can't function, so fail loudly with a message
   // that names where to set it in both environments.
   throw new Error(
