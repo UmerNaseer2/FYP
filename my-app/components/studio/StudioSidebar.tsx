@@ -52,7 +52,7 @@ export function StudioSidebar({
         <div className={`leading-tight ${labelHidden}`}>
           <div className="font-semibold text-[13.5px]">Schema Studio</div>
           <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
-            v2.0.0 · main
+            v2.0.0
           </div>
         </div>
         <button
