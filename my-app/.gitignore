@@ -52,6 +52,9 @@ next-env.d.ts
 # OS cruft
 Thumbs.db
 
+# Playwright MCP scratch (test-run artifacts, not part of the app)
+.playwright-mcp/
+
 # logs (any stray run logs)
 *.log
 

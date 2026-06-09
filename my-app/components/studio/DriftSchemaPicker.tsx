@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { Select } from "@/components/ui/Select";
 
 type DriftStatus = "in_sync" | "drifted" | "unreachable";
 
@@ -28,7 +29,7 @@ function statusPrefix(status: DriftStatus | null): string {
 }
 
 /**
- * The schema selector for the drift detail tab. A plain native <select> that
+ * The schema selector for the drift detail tab. A themed Select that
  * navigates to /drift?tab=detail&schema=<id> on change — the page is a server
  * component, so switching schema is just a new server render with fresh, live
  * drift data. The status prefix is the last *recorded* status (cheap metadata);
@@ -44,24 +45,23 @@ export function DriftSchemaPicker({
   const router = useRouter();
 
   return (
-    <select
-      className="input mono text-[13px]"
+    <Select
+      variant="input"
+      mono
+      ariaLabel="Select a tracked schema"
       style={{ maxWidth: 360 }}
-      value={selectedId ?? ""}
-      onChange={(e) => {
-        const id = e.target.value;
+      value={selectedId != null ? String(selectedId) : ""}
+      placeholder="Select a tracked schema…"
+      options={items.map((it) => {
+        const source = it.label ?? it.connectionName ?? "no connection";
+        return {
+          value: String(it.id),
+          label: `${statusPrefix(it.driftStatus)} · ${it.schemaName} — ${source}`,
+        };
+      })}
+      onChange={(id) => {
         if (id) router.push(`/drift?tab=detail&schema=${id}`);
       }}
-      aria-label="Select a tracked schema"
-    >
-      {items.map((it) => {
-        const source = it.label ?? it.connectionName ?? "no connection";
-        return (
-          <option key={it.id} value={it.id}>
-            {statusPrefix(it.driftStatus)} · {it.schemaName} — {source}
-          </option>
-        );
-      })}
-    </select>
+    />
   );
 }

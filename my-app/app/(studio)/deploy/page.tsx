@@ -19,6 +19,7 @@ import {
   type LedgerEntry,
 } from "@/lib/script-status";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import { Select } from "@/components/ui/Select";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
@@ -855,12 +856,19 @@ export default function DeployPage() {
             <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(3, minmax(0,1fr))" }}>
               <div>
                 <label className="label" htmlFor="dep-conn">Connection</label>
-                <select
+                <Select
+                  variant="input"
                   id="dep-conn"
-                  className="input mt-1"
+                  className="mt-1"
+                  ariaLabel="Connection"
                   value={connectionId}
-                  onChange={(e) => {
-                    setConnectionId(e.target.value);
+                  placeholder="Select a connection…"
+                  options={connections.map((c) => ({
+                    value: String(c.id),
+                    label: `${c.name} — ${c.host}/${c.database_name}`,
+                  }))}
+                  onChange={(value) => {
+                    setConnectionId(value);
                     setSchema("");
                     setScriptGroup("");
                     setPreflightResult(null);
@@ -869,14 +877,7 @@ export default function DeployPage() {
                     resetRun();
                     resetDrift();
                   }}
-                >
-                  <option value="">Select a connection…</option>
-                  {connections.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} — {c.host}/{c.database_name}
-                    </option>
-                  ))}
-                </select>
+                />
                 {connectionsLoaded && connections.length === 0 && (
                   <p className="help mt-1">
                     No connections saved yet. Add one on the Connections page first.
@@ -886,13 +887,23 @@ export default function DeployPage() {
 
               <div>
                 <label className="label" htmlFor="dep-schema">Schema</label>
-                <select
+                <Select
+                  variant="input"
                   id="dep-schema"
-                  className="input mt-1"
+                  className="mt-1"
+                  ariaLabel="Schema"
                   value={schema}
                   disabled={schemasLoading || !connectionId}
-                  onChange={(e) => {
-                    setSchema(e.target.value);
+                  placeholder={
+                    !connectionId
+                      ? "Select a connection first"
+                      : schemasLoading
+                        ? "Loading schemas…"
+                        : "Select a schema…"
+                  }
+                  options={schemas.map((s) => ({ value: s, label: s }))}
+                  onChange={(value) => {
+                    setSchema(value);
                     setScriptGroup("");
                     setPreflightResult(null);
                     setPreflightError(null);
@@ -900,44 +911,30 @@ export default function DeployPage() {
                     resetRun();
                     resetDrift();
                   }}
-                >
-                  <option value="">
-                    {!connectionId
-                      ? "Select a connection first"
-                      : schemasLoading
-                        ? "Loading schemas…"
-                        : "Select a schema…"}
-                  </option>
-                  {schemas.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
+                />
                 {schemasError && <p className="help mt-1" style={{ color: "var(--break)" }}>{schemasError}</p>}
               </div>
 
               <div>
                 <label className="label" htmlFor="dep-group">Script group</label>
-                <select
+                <Select
+                  variant="input"
                   id="dep-group"
-                  className="input mt-1"
+                  className="mt-1"
+                  ariaLabel="Script group"
                   value={scriptGroup}
                   disabled={!schema}
-                  onChange={(e) => {
-                    setScriptGroup(e.target.value);
+                  placeholder={!schema ? "Select a schema first" : "Select a script group…"}
+                  options={schemaScriptNames.map((name) => ({ value: name, label: name }))}
+                  onChange={(value) => {
+                    setScriptGroup(value);
                     setPreflightResult(null);
                     setPreflightError(null);
                     setTargetVersion("");
                     resetRun();
                     resetDrift();
                   }}
-                >
-                  <option value="">
-                    {!schema ? "Select a schema first" : "Select a script group…"}
-                  </option>
-                  {schemaScriptNames.map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
+                />
               </div>
             </div>
 
@@ -1061,18 +1058,18 @@ export default function DeployPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[12px]" style={{ color: "var(--text-3)" }}>Deploy up to</span>
-                        <select
-                          className="input"
+                        <Select
+                          variant="input"
+                          ariaLabel="Deploy up to version"
                           style={{ width: "auto" }}
+                          mono
                           value={targetVersion}
-                          onChange={(e) => setTargetVersion(e.target.value)}
-                        >
-                          {pendingScripts.map((s, i) => (
-                            <option key={scriptKey(s)} value={s.version}>
-                              v{s.version}{i === pendingScripts.length - 1 ? " (latest)" : ""}
-                            </option>
-                          ))}
-                        </select>
+                          options={pendingScripts.map((s, i) => ({
+                            value: s.version,
+                            label: `v${s.version}${i === pendingScripts.length - 1 ? " (latest)" : ""}`,
+                          }))}
+                          onChange={(value) => setTargetVersion(value)}
+                        />
                       </div>
                     </div>
 

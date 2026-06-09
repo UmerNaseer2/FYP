@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import {
   DashboardIcon,
   CompareIcon,
+  EditIcon,
   DeployIcon,
   ConnectionsIcon,
   DriftIcon,
@@ -34,6 +35,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Compare & Author",
     href: "/compare",
     icon: <CompareIcon className="ico" />,
+  },
+  {
+    screen: "Script Editor",
+    label: "Script Editor",
+    href: "/script-editor",
+    icon: <EditIcon className="ico" />,
   },
   {
     screen: "Deploy",

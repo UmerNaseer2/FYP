@@ -14,6 +14,7 @@ import {
   Input,
   type PillTone,
 } from "@/components/ui";
+import { Select } from "@/components/ui/Select";
 import {
   DashboardIcon,
   CheckIcon,
@@ -412,18 +413,17 @@ export default function DashboardPage() {
 
         <div>
           <Label className="mb-1 block">Connection</Label>
-          <select
-            className="input"
+          <Select
+            variant="input"
+            ariaLabel="Connection"
             value={trackConnId}
-            onChange={(e) => void onPickConnection(e.target.value)}
-          >
-            <option value="">Select a connection…</option>
-            {connections.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} — {c.host}/{c.database_name}
-              </option>
-            ))}
-          </select>
+            placeholder="Select a connection…"
+            options={connections.map((c) => ({
+              value: String(c.id),
+              label: `${c.name} — ${c.host}/${c.database_name}`,
+            }))}
+            onChange={(value) => void onPickConnection(value)}
+          />
           {connLoaded && connections.length === 0 && (
             <p className="help mt-1">
               No PostgreSQL connections saved yet. Add one on the Connections page first.
@@ -433,25 +433,21 @@ export default function DashboardPage() {
 
         <div>
           <Label className="mb-1 block">Schema</Label>
-          <select
-            className="input"
+          <Select
+            variant="input"
+            ariaLabel="Schema"
             value={trackSchema}
-            onChange={(e) => setTrackSchema(e.target.value)}
             disabled={!trackConnId || schemaPhase !== "ready"}
-          >
-            <option value="">
-              {schemaPhase === "loading"
+            placeholder={
+              schemaPhase === "loading"
                 ? "Loading schemas…"
                 : schemaPhase === "ready"
                   ? "Select a schema…"
-                  : "Pick a connection first"}
-            </option>
-            {schemaOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+                  : "Pick a connection first"
+            }
+            options={schemaOptions.map((s) => ({ value: s, label: s }))}
+            onChange={(value) => setTrackSchema(value)}
+          />
           {schemaPhase === "error" && schemaError && (
             <p className="help mt-1" style={{ color: "var(--break)" }}>
               {schemaError}

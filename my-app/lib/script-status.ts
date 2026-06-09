@@ -32,6 +32,81 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+// ── Authoring helpers (used by the Script Editor) ───────────────────────────
+
+export type Semver = { major: number; minor: number; patch: number };
+export type BumpLevel = "major" | "minor" | "patch";
+
+/**
+ * Parse a STRICT semver-ish string: 1 to 3 numeric segments, optional leading
+ * "v". "2", "2.1", "v2.1.0" are accepted (missing segments default to 0);
+ * anything with letters, extra segments, or empty parts returns null.
+ */
+export function parseSemver(version: string): Semver | null {
+  const cleaned = (version ?? "").trim().replace(/^v/i, "");
+  if (!/^\d+(\.\d+){0,2}$/.test(cleaned)) return null;
+  const [major = "0", minor = "0", patch = "0"] = cleaned.split(".");
+  return { major: Number(major), minor: Number(minor), patch: Number(patch) };
+}
+
+/** True if `version` is a parseable semver-ish string. */
+export function isValidSemver(version: string): boolean {
+  return parseSemver(version) !== null;
+}
+
+/** Canonical "X.Y.Z" form, e.g. normalizeVersion("v2.1") → "2.1.0". */
+export function normalizeVersion(version: string): string | null {
+  const s = parseSemver(version);
+  return s ? `${s.major}.${s.minor}.${s.patch}` : null;
+}
+
+/**
+ * The next version after `base`, bumped at `level`. A null/blank/invalid base
+ * means "no prior version", so we bump from 0.0.0 (major → 1.0.0, minor →
+ * 0.1.0, patch → 0.0.1). The result is always STRICTLY greater than `base`.
+ */
+export function bumpVersion(base: string | null, level: BumpLevel): string {
+  // Use the tolerant versionParts (not strict parseSemver) so an externally
+  // introduced 4+ segment floor like "1.2.0.3" still bumps from its first three
+  // parts (→ "1.2.1") instead of collapsing to 0.0.0 and landing below the
+  // floor — which would wedge the picker with every preset disabled.
+  const [major = 0, minor = 0, patch = 0] = base ? versionParts(base) : [];
+  if (level === "major") return `${major + 1}.0.0`;
+  if (level === "minor") return `${major}.${minor + 1}.0`;
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+/**
+ * Suggest a bump level by inspecting the SQL. Mirrors the deploy page's
+ * change-kind heuristic so the editor's suggestion matches how the script will
+ * later be classified:
+ *   - "major"  → breaking: DROP / ALTER COLUMN / SET NOT NULL / RENAME
+ *   - "minor"  → additive: CREATE TABLE / ADD COLUMN / ADD CONSTRAINT / CREATE INDEX
+ *   - "patch"  → everything else (data tweaks, comments, defaults, …)
+ */
+export function suggestBumpLevel(sql: string): BumpLevel {
+  const s = (sql ?? "").toLowerCase();
+  if (
+    s.includes("drop table") ||
+    s.includes("drop column") ||
+    s.includes("drop constraint") ||
+    s.includes(" set not null") ||
+    s.includes(" alter column") ||
+    s.includes(" rename ")
+  ) {
+    return "major";
+  }
+  if (
+    s.includes("create table") ||
+    s.includes("add column") ||
+    s.includes("add constraint") ||
+    s.includes("create index")
+  ) {
+    return "minor";
+  }
+  return "patch";
+}
+
 // One applied row, as far as the ledger cares (from script_patch via preflight).
 export type AppliedVersion = {
   version: string;
