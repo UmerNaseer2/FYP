@@ -155,6 +155,51 @@ export function extractBaseType(typeDisplay: string): string {
   return normalized.slice(0, parenIndex).trim();
 }
 
+// Pulls the numeric size/precision parameters out of a type display.
+//   "character varying(100)" → [100]
+//   "numeric(10,2)"          → [10, 2]
+//   "integer"                → null   (no size)
+export function typeSizeParams(typeDisplay: string): number[] | null {
+  const match = typeDisplay.match(/\(([^)]+)\)/);
+  if (!match) return null;
+  const parts = match[1].split(",").map((p) => Number.parseInt(p.trim(), 10));
+  return parts.every((n) => Number.isFinite(n)) ? parts : null;
+}
+
+// True when changing a column FROM `currentType` TO `newType` REDUCES its
+// capacity — a smaller length/precision/scale, or going from unbounded to
+// bounded. Such a change can fail at runtime ("value too long" / "numeric field
+// overflow") or truncate data, so callers treat it as breaking, unlike a
+// widening which is safe. Only meaningful when both share a base type
+// (varchar→varchar, numeric→numeric); a genuine cross-type change is handled
+// separately and returns false here.
+export function isNarrowingType(currentType: string, newType: string): boolean {
+  if (extractBaseType(currentType) !== extractBaseType(newType)) return false;
+
+  const current = typeSizeParams(currentType);
+  const next = typeSizeParams(newType);
+
+  if (current && next) {
+    // numeric/decimal: (precision, scale). Narrowing if it reduces the
+    // fractional scale OR the whole-number capacity (precision − scale) — e.g.
+    // numeric(10,2) → numeric(10,4) keeps precision 10 but drops integer digits
+    // from 8 to 6, which can overflow existing values.
+    if (current.length === 2 && next.length === 2) {
+      const currentIntDigits = current[0] - current[1];
+      const nextIntDigits = next[0] - next[1];
+      return next[1] < current[1] || nextIntDigits < currentIntDigits;
+    }
+    // single-parameter types (varchar/char/bit length): narrowing if shorter.
+    return (next[0] ?? 0) < (current[0] ?? 0);
+  }
+
+  // current bounded → new unbounded  = widening (safe)
+  // current unbounded → new bounded  = narrowing (constrains existing data)
+  if (current && !next) return false;
+  if (!current && next) return true;
+  return false;
+}
+
 // Returns how similar two PostgreSQL column types are as a 0–1 ratio.
 // Giving partial credit for same-family types avoids flagging a
 // varchar(100)→varchar(200) change the same way as an integer→text change,

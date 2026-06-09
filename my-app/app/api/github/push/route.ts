@@ -5,6 +5,7 @@ const REPO = process.env.GITHUB_REPO_NAME;
 const PAT = process.env.GITHUB_PAT;
 
 type PushBody = {
+  database_name: string;
   schema_name: string;
   script_name: string;
   version: string;
@@ -31,19 +32,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { schema_name, script_name, version, sql_content, description } = body;
+  const { database_name, schema_name, script_name, version, sql_content, description } = body;
 
-  if (!schema_name || !script_name || !version || !sql_content) {
+  if (!database_name || !schema_name || !script_name || !version || !sql_content) {
     return NextResponse.json(
-      { error: "schema_name, script_name, version, and sql_content are required." },
+      { error: "database_name, schema_name, script_name, version, and sql_content are required." },
       { status: 400 }
     );
   }
 
-  // Path: <schema>/<script_name>/v<version>.sql
+  // Path: <database_name>/<schema>/<script_name>/v<version>.sql
   // Encode each segment so names with spaces or odd characters stay valid,
   // while keeping the slashes that define the folder structure.
-  const filePath = [schema_name, script_name, `v${version}.sql`]
+  const filePath = [database_name, schema_name, script_name, `v${version}.sql`]
     .map((segment) => encodeURIComponent(segment))
     .join("/");
   const apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;

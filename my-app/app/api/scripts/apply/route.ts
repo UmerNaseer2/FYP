@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import pool from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { containsTransactionControl } from "@/lib/sql-guard";
 
 // Valid values the script_patch table accepts for change_type
 const VALID_CHANGE_TYPES = ["breaking", "additive", "patch", "unknown"] as const;
@@ -17,24 +18,9 @@ function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-// Detect if sql_content contains a bare COMMIT or ROLLBACK statement.
-// These would break our outer transaction wrapper:
-//   - a COMMIT inside our BEGIN would commit early, leaving script_patch
-//     INSERT outside the transaction and unprotected.
-//   - a ROLLBACK would undo the migration SQL before we can record it.
-//
-// Strips line comments, block comments, AND single-quoted string literals
-// before checking, so values like INSERT INTO t VALUES ('ROLLBACK') are
-// treated correctly as data — not as transaction control statements.
-function containsTransactionControl(sql: string): boolean {
-  const stripped = sql
-    .replace(/--[^\n]*/g, " ")           // remove -- line comments
-    .replace(/\/\*[\s\S]*?\*\//g, " ")  // remove /* block comments */
-    .replace(/'([^']|'')*'/g, "''");    // replace 'string literals' with ''
-
-  // Match COMMIT or ROLLBACK as standalone words (word boundary, case-insensitive)
-  return /\b(COMMIT|ROLLBACK)\b/i.test(stripped);
-}
+// Bare COMMIT / ROLLBACK detection lives in lib/sql-guard so the deploy page's
+// client-side pre-check uses the exact same rule (and the dollar-quote-aware
+// stripping) as this server route — see containsTransactionControl import above.
 
 export async function POST(request: NextRequest) {
   // ─── 1. Parse the request body ───────────────────────────────────────────
@@ -47,6 +33,10 @@ export async function POST(request: NextRequest) {
     description?: string;
     change_type?: string;
     schemaName?: string;
+    // The GitHub path the SQL came from (e.g. finance/public/add_invoices/v1.0.0.sql),
+    // recorded so an applied row can point back to its source file. Optional —
+    // applying ad-hoc SQL with no GitHub origin is still allowed.
+    source_ref?: string;
   };
 
   try {
@@ -129,6 +119,9 @@ export async function POST(request: NextRequest) {
   )
     ? (change_type as ChangeType)
     : "unknown";
+
+  // Normalise source_ref — trim, and treat a blank string as "no source".
+  const resolvedSourceRef = body.source_ref?.trim() || null;
 
   // ─── 4. Look up the saved connection from the app metadata database ───────
   // version-db is the same pool the Connections screen saves to, so a connection
@@ -220,18 +213,34 @@ export async function POST(request: NextRequest) {
 
     // 7a. Create the table if it doesn't exist yet.
     //     Includes script_name so fresh installs get the full schema.
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS ${quotedSchema}.script_patch (
-        id          SERIAL PRIMARY KEY,
-        script_name VARCHAR(150) NOT NULL DEFAULT 'unknown',
-        version     VARCHAR(20)  NOT NULL,
-        title       VARCHAR(150),
-        description TEXT,
-        change_type VARCHAR(20)  NOT NULL
-                      CHECK (change_type IN ('breaking', 'additive', 'patch', 'unknown')),
-        applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    //
+    //     `CREATE TABLE IF NOT EXISTS` is NOT concurrency-safe at the catalog
+    //     level: two first-time applies to the same brand-new schema can race
+    //     here, and the loser gets a duplicate-key / "already exists" error even
+    //     though the table now exists. Swallow exactly that race — the goal
+    //     ("ensure the table exists") is met either way, and the real duplicate
+    //     guard is the version check + advisory lock further down.
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${quotedSchema}.script_patch (
+          id          SERIAL PRIMARY KEY,
+          script_name VARCHAR(150) NOT NULL DEFAULT 'unknown',
+          version     VARCHAR(20)  NOT NULL,
+          title       VARCHAR(150),
+          description TEXT,
+          change_type VARCHAR(20)  NOT NULL
+                        CHECK (change_type IN ('breaking', 'additive', 'patch', 'unknown')),
+          source_ref  TEXT,
+          applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    } catch (setupError) {
+      const m = (setupError instanceof Error ? setupError.message : String(setupError)).toLowerCase();
+      if (!m.includes("already exists") && !m.includes("duplicate key")) {
+        throw setupError;
+      }
+      // benign concurrent-creation race — the table exists, carry on.
+    }
 
     // 7b. Add script_name to tables that were created by an older version of
     //     this app (before the column existed).  IF NOT EXISTS makes this safe
@@ -239,6 +248,13 @@ export async function POST(request: NextRequest) {
     await client.query(`
       ALTER TABLE ${quotedSchema}.script_patch
       ADD COLUMN IF NOT EXISTS script_name VARCHAR(150) NOT NULL DEFAULT 'unknown'
+    `);
+
+    // 7b-2. Same back-fill for source_ref, added in a later version. Nullable
+    //       so existing rows (and ad-hoc applies) need no value.
+    await client.query(`
+      ALTER TABLE ${quotedSchema}.script_patch
+      ADD COLUMN IF NOT EXISTS source_ref TEXT
     `);
 
     // 7c. Add a UNIQUE index so the DB itself enforces one row per
@@ -263,6 +279,20 @@ export async function POST(request: NextRequest) {
     // ─── 8. Run the migration inside a transaction ────────────────────────
     await client.query("BEGIN");
     transactionStarted = true;
+
+    // Serialize concurrent applies of the SAME (schema, script_name, version).
+    // The unique index in step 7c is best-effort (it can fail to create on
+    // legacy tables with duplicate 'unknown' versions), so it cannot be the
+    // ONLY guard against a double-apply race. This transaction-scoped advisory
+    // lock makes the duplicate-check + INSERT below atomic regardless: a second
+    // request for the same key blocks here until the first commits/rolls back,
+    // then sees the committed row and returns a clean 409. Different scripts or
+    // versions hash to different keys, so they never block each other. The lock
+    // is released automatically when the transaction ends.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      [schemaName, `${script_name.trim()}|${version.trim()}`]
+    );
 
     // Scope unqualified table names in the migration SQL to the target schema.
     // SET LOCAL lasts only for this transaction — no side effects on the pool.
@@ -307,8 +337,8 @@ export async function POST(request: NextRequest) {
 
     const insertResult = await client.query<{ applied_at: string }>(
       `INSERT INTO ${quotedSchema}.script_patch
-         (script_name, version, title, description, change_type)
-       VALUES ($1, $2, $3, $4, $5)
+         (script_name, version, title, description, change_type, source_ref)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING applied_at`,
       [
         script_name.trim(),
@@ -316,6 +346,7 @@ export async function POST(request: NextRequest) {
         resolvedTitle,
         description?.trim() || null,
         resolvedChangeType,
+        resolvedSourceRef,
       ]
     );
 

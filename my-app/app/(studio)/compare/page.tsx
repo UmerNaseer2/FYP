@@ -484,6 +484,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
               suggestedDescription={`Sync ${report.right.database}.${report.right.schema} to match ${report.left.database}.${report.left.schema}`}
               targetLabel={`${report.right.database}.${report.right.schema}`}
               targetSchema={report.right.schema}
+              targetDatabase={rightConnection?.database_name ?? report.right.database}
               suggestedKind={overallKind}
               counts={{ breaking, safe, info }}
               warnings={script.warnings}

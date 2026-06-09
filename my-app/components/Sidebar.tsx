@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useUser } from "@/hooks/useUser";
+import { useUser, resetUserCache } from "@/hooks/useUser";
 import { createClient } from "@/lib/supabase/client";
 
 export default function Sidebar({ current }: { current: string }) {
@@ -18,6 +18,7 @@ export default function Sidebar({ current }: { current: string }) {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+    resetUserCache();
     router.push("/login");
   };
 

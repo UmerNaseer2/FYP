@@ -196,8 +196,71 @@ export default function ConnectionsPage() {
     };
   }
 
+  // Apply a test-endpoint response to the drawer's result panel (shared by the
+  // "test these fields" and "test the saved connection" paths below).
+  function applyDrawerTestResult(data: {
+    ok?: boolean;
+    version?: string;
+    schemaCount?: number;
+    schemas?: unknown;
+    latencyMs?: number;
+    ssl?: boolean;
+    error?: string;
+    sslRequired?: boolean;
+    detail?: string;
+  }) {
+    if (data.ok) {
+      setDrawerTest({
+        kind: "ok",
+        version: data.version ?? "",
+        schemaCount: data.schemaCount ?? 0,
+        schemas: Array.isArray(data.schemas) ? (data.schemas as string[]) : [],
+        latencyMs: data.latencyMs ?? 0,
+        ssl: Boolean(data.ssl),
+      });
+    } else {
+      setDrawerTest({
+        kind: "err",
+        error: data.error ?? "Could not connect.",
+        sslRequired: Boolean(data.sslRequired),
+        detail: data.detail ?? "",
+      });
+    }
+  }
+
   // ——— Test (in drawer) ———
   async function runDrawerTest() {
+    // URI mode with a blank field:
+    if (fieldMode === "uri" && !form.uri.trim()) {
+      // On EDIT the stored connection string is never echoed back, so test the
+      // saved credentials by id — this is the documented "leave blank to keep
+      // the stored connection string" path, and clicking Test should exercise
+      // the real connection, not a blank one.
+      if (editingId !== null) {
+        setDrawerTest({ kind: "loading" });
+        try {
+          const res = await fetch("/api/connections/test-saved", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: editingId }),
+          });
+          applyDrawerTestResult(await res.json());
+        } catch {
+          setDrawerTest({ kind: "err", error: "Could not run the test.", sslRequired: false, detail: "" });
+        }
+        return;
+      }
+      // On a NEW connection there's nothing to test yet.
+      setDrawerTest({
+        kind: "err",
+        error: "Paste a connection string first.",
+        sslRequired: false,
+        detail: "",
+      });
+      return;
+    }
+
+    // URI typed but not parseable (form.uri is non-blank here).
     if (fieldMode === "uri" && !parsePostgresUri(form.uri)) {
       setDrawerTest({
         kind: "err",
@@ -207,6 +270,7 @@ export default function ConnectionsPage() {
       });
       return;
     }
+
     setDrawerTest({ kind: "loading" });
     const { payload } = buildPayload();
     try {
@@ -215,24 +279,7 @@ export default function ConnectionsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (data.ok) {
-        setDrawerTest({
-          kind: "ok",
-          version: data.version,
-          schemaCount: data.schemaCount,
-          schemas: Array.isArray(data.schemas) ? data.schemas : [],
-          latencyMs: data.latencyMs,
-          ssl: Boolean(data.ssl),
-        });
-      } else {
-        setDrawerTest({
-          kind: "err",
-          error: data.error ?? "Could not connect.",
-          sslRequired: Boolean(data.sslRequired),
-          detail: data.detail ?? "",
-        });
-      }
+      applyDrawerTestResult(await res.json());
     } catch {
       setDrawerTest({ kind: "err", error: "Could not run the test.", sslRequired: false, detail: "" });
     }

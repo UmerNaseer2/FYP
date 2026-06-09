@@ -144,6 +144,62 @@ export function describeDbError(error: unknown): {
   return { message: "Could not connect. Check the connection details and try again.", sslRequired: false, detail };
 }
 
+/**
+ * Guard the connection-TEST endpoints against being used as a server-side
+ * request forgery (SSRF) / internal port scanner. These endpoints dial whatever
+ * host:port the caller names, so without this an outside caller could probe the
+ * server's private network or cloud metadata service.
+ *
+ *   - Cloud metadata + link-local addresses are blocked ALWAYS — they are never
+ *     a real database and are the classic SSRF target.
+ *   - Loopback + RFC1918 private ranges are blocked in PRODUCTION only (so local
+ *     development against a localhost Postgres still works). Set
+ *     ALLOW_PRIVATE_DB_HOSTS=true to opt back in on a trusted/VPC deployment.
+ *
+ * Note: this checks the literal host only; a public hostname that resolves to an
+ * internal IP (DNS rebinding) is not caught here. The real long-term fix is
+ * server-side authentication on these routes.
+ */
+export function checkConnectableHost(
+  host: string | undefined
+): { ok: true } | { ok: false; message: string } {
+  const h = (host ?? "").trim().toLowerCase();
+
+  const alwaysBlocked =
+    h === "metadata.google.internal" ||
+    h.startsWith("169.254.") || // IPv4 link-local, incl. 169.254.169.254 metadata
+    h.startsWith("fe80:") || // IPv6 link-local
+    h === "::" ||
+    h === "0.0.0.0";
+  if (alwaysBlocked) {
+    return { ok: false, message: "That host isn't allowed." };
+  }
+
+  const blockPrivate =
+    process.env.NODE_ENV === "production" &&
+    process.env.ALLOW_PRIVATE_DB_HOSTS !== "true";
+  if (blockPrivate) {
+    const isPrivate =
+      h === "localhost" ||
+      h.endsWith(".localhost") ||
+      h.startsWith("127.") ||
+      h === "::1" ||
+      h.startsWith("10.") ||
+      h.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+      h.endsWith(".internal") ||
+      h.endsWith(".local");
+    if (isPrivate) {
+      return {
+        ok: false,
+        message: "Connections to internal/private hosts are disabled on this server.",
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
 /** Successful test: light, honest facts gathered while the pool was open. */
 export type TestSuccess = {
   ok: true;
@@ -174,7 +230,17 @@ function shortenVersion(version: string): string {
  * facts (version, visible schemas, round-trip latency). Always closes the pool.
  */
 export async function runConnectionTest(input: ConnectionInput): Promise<TestResult> {
-  const pool = new Pool(buildPgConfig(input));
+  const config = buildPgConfig(input);
+
+  // SSRF guard: refuse to dial blocked internal/metadata hosts before opening
+  // a socket. buildPgConfig has already resolved the effective host (whether it
+  // came from loose fields or a connection string).
+  const hostCheck = checkConnectableHost(config.host);
+  if (!hostCheck.ok) {
+    return { ok: false, error: hostCheck.message, sslRequired: false, detail: "" };
+  }
+
+  const pool = new Pool(config);
   const started = Date.now();
 
   try {
