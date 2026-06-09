@@ -1,6 +1,6 @@
 import type { CompareReport, ConstraintDiff, TableMatch } from "./compare-types";
 import type { ColumnSnapshot, ForeignKeySnapshot, TableSnapshot } from "./postgres";
-import { extractBaseType } from "./compare";
+import { extractBaseType, isNarrowingType } from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
 
 // ---------------------------------------------------------------------------
@@ -200,18 +200,37 @@ function alterStatementsForMatch(
     if (leftNorm !== rightNorm) {
       const baseChanged =
         extractBaseType(colMatch.left.typeDisplay) !== extractBaseType(colMatch.right.typeDisplay);
+      // Same base type but a SMALLER size/precision (e.g. varchar(200) →
+      // varchar(100), numeric(10,2) → numeric(6,2)). This is NOT a safe widen:
+      // PostgreSQL rejects the change if any existing value exceeds the new
+      // size, so it is a breaking change that must be flagged.
+      const narrowing =
+        !baseChanged &&
+        isNarrowingType(colMatch.right.typeDisplay, colMatch.left.typeDisplay);
       // USING is needed when PostgreSQL can't cast automatically (cross-type changes).
-      // Same-family changes (e.g. varchar(100) → varchar(200)) don't need it.
+      // Same-family widenings (e.g. varchar(100) → varchar(200)) don't need it.
       const usingSuffix = baseChanged
         ? ` USING ${q(colName)}::${colMatch.left.typeDisplay}`
         : "";
+
+      let description: string;
+      let severity: SqlStatement["severity"];
+      if (baseChanged) {
+        description = `Change type of "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay} (may require data conversion)`;
+        severity = "breaking";
+      } else if (narrowing) {
+        description = `Narrow "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay} — WARNING: will fail if any existing value exceeds the new size`;
+        severity = "breaking";
+      } else {
+        description = `Widen "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay}`;
+        severity = "safe";
+      }
+
       stmts.push({
         sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} TYPE ${colMatch.left.typeDisplay}${usingSuffix};`,
-        description: baseChanged
-          ? `Change type of "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay} (may require data conversion)`
-          : `Widen "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay}`,
+        description,
         kind: "ALTER_COLUMN_TYPE",
-        severity: baseChanged ? "breaking" : "safe",
+        severity,
         tableName: tName,
       });
     }

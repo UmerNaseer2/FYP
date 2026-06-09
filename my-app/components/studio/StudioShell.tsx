@@ -3,7 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { useUser } from "@/hooks/useUser";
+import { useUser, resetUserCache } from "@/hooks/useUser";
 import { useTheme } from "@/hooks/useTheme";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { StudioTopbar } from "./StudioTopbar";
@@ -61,6 +61,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
     try {
       await createClient().auth.signOut();
     } finally {
+      resetUserCache();
       router.push("/login");
     }
   }

@@ -13,6 +13,12 @@ import {
   ChevronRightIcon,
   LogoIcon,
 } from "@/components/ui/icons";
+import {
+  compareVersions,
+  buildVersionLedger,
+  type LedgerEntry,
+} from "@/lib/script-status";
+import { containsTransactionControl } from "@/lib/sql-guard";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
@@ -41,6 +47,7 @@ type ChangeKind = "breaking" | "additive" | "patch";
 
 // A migration script, loaded from the GitHub repo (the source of truth).
 type GitHubScript = {
+  database_name: string;
   schema_name: string;
   script_name: string;
   version: string;
@@ -102,25 +109,8 @@ type DriftResult = {
 // Where the lineage drift check stands for the chosen target.
 type DriftPhase = "idle" | "loading" | "untracked" | "ready" | "error";
 
-// ── Version helpers (copied verbatim from the proven legacy flow) ──────────
-function versionParts(version: string): number[] {
-  return version
-    .replace(/^v/i, "")
-    .split(".")
-    .map((part) => Number.parseInt(part.replace(/\D/g, ""), 10) || 0);
-}
-
-function compareVersions(left: string, right: string): number {
-  const a = versionParts(left);
-  const b = versionParts(right);
-  const length = Math.max(a.length, b.length, 3);
-  for (let index = 0; index < length; index += 1) {
-    const diff = (a[index] ?? 0) - (b[index] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return left.localeCompare(right);
-}
-
+// Version comparison + the Applied/Pending ledger live in lib/script-status so
+// they can be unit-tested in isolation; compareVersions is imported above.
 function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
   return [...scripts].sort((a, b) => compareVersions(a.version, b.version));
 }
@@ -165,15 +155,47 @@ function bumpWord(kind: ChangeKind): "major" | "minor" | "patch" {
   return "patch";
 }
 
-// Mirror the server-side guard in /api/scripts/apply: a bare COMMIT/ROLLBACK
-// would break the per-step transaction wrapper, so apply rejects it. We surface
-// that as an advisory pre-flight failure rather than letting the run 400 later.
-function hasTxnControl(sql: string): boolean {
-  return /\b(commit|rollback)\b/i.test(sql);
-}
+// The COMMIT/ROLLBACK pre-flight check uses the SAME helper as the server apply
+// route (lib/sql-guard), so the advisory warning here can never disagree with
+// what the route actually rejects — including the dollar-quoted-body handling.
 
 function fmtSecs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Short, safe date for the ledger's applied rows. Returns "" for a missing or
+// unparseable timestamp rather than "Invalid Date".
+function fmtDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+// Applied / Pending / Superseded → status pill for the version ledger.
+function ledgerPill(status: LedgerEntry["status"]) {
+  if (status === "applied") {
+    return (
+      <span className="pill pill-sync">
+        <span className="dot" />
+        applied
+      </span>
+    );
+  }
+  if (status === "pending") {
+    return (
+      <span className="pill pill-pending">
+        <span className="dot" />
+        pending
+      </span>
+    );
+  }
+  return (
+    <span className="pill pill-neutral">
+      <span className="dot" style={{ background: "var(--text-3)" }} />
+      superseded
+    </span>
+  );
 }
 
 // Change-kind → status pill.
@@ -378,22 +400,39 @@ export default function DeployPage() {
   }, [connectionId]);
 
   // ── Derived data ─────────────────────────────────────────────────────────
+  const activeConn = useMemo(
+    () => connections.find((c) => String(c.id) === connectionId) ?? null,
+    [connections, connectionId]
+  );
+
+  // Scope the pulled scripts to the selected connection's database. GitHub now
+  // stores scripts under <database_name>/<schema>/..., so a script only belongs
+  // to this deploy if its database_name matches the chosen connection. With no
+  // connection picked yet we don't scope, so nothing is hidden prematurely.
+  const scopedScripts = useMemo(
+    () =>
+      (githubScripts ?? []).filter(
+        (s) => !activeConn || s.database_name === activeConn.database_name
+      ),
+    [githubScripts, activeConn]
+  );
+
   const groupedScripts = useMemo(() => {
-    return (githubScripts ?? []).reduce<Record<string, GitHubScript[]>>((acc, s) => {
+    return scopedScripts.reduce<Record<string, GitHubScript[]>>((acc, s) => {
       (acc[s.script_name] ??= []).push(s);
       return acc;
     }, {});
-  }, [githubScripts]);
+  }, [scopedScripts]);
 
   // Script groups that actually exist in the chosen schema's GitHub folder.
   const schemaScriptNames = useMemo(() => {
-    if (!githubScripts || !schema) return [];
+    if (!schema) return [];
     return Array.from(
       new Set(
-        githubScripts.filter((s) => s.schema_name === schema).map((s) => s.script_name)
+        scopedScripts.filter((s) => s.schema_name === schema).map((s) => s.script_name)
       )
     ).sort();
-  }, [githubScripts, schema]);
+  }, [scopedScripts, schema]);
 
   // Scripts not yet applied to the target — strictly greater than its version.
   const pendingScripts = useMemo<GitHubScript[]>(() => {
@@ -414,6 +453,23 @@ export default function DeployPage() {
     return pendingScripts.filter((s) => compareVersions(s.version, targetVersion) <= 0);
   }, [pendingScripts, targetVersion]);
 
+  // Forward view (Phase 3): every GitHub version of the chosen family labelled
+  // Applied / Pending / Superseded against the target's applied history. Both
+  // inputs are scoped to one (database, schema, script_name) — scopedScripts is
+  // already database-filtered, the schema filter narrows it, and the preflight
+  // timeline is the target DB's script_patch for this exact family — so two
+  // databases sharing a script_name@version can never cross-contaminate.
+  const versionLedger = useMemo<LedgerEntry[]>(() => {
+    if (!scriptGroup || !preflightResult) return [];
+    const familyVersions = (groupedScripts[scriptGroup] ?? [])
+      .filter((s) => s.schema_name === schema)
+      .map((s) => s.version);
+    return buildVersionLedger(familyVersions, preflightResult.timeline);
+  }, [scriptGroup, preflightResult, groupedScripts, schema]);
+
+  const appliedCount = versionLedger.filter((e) => e.status === "applied").length;
+  const pendingCount = versionLedger.filter((e) => e.status === "pending").length;
+
   // Default the target to the latest pending version once pre-flight returns.
   // Re-runs after a partial deploy keep a still-valid pick, else snap to latest.
   useEffect(() => {
@@ -428,11 +484,6 @@ export default function DeployPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingScripts, stage]);
-
-  const activeConn = useMemo(
-    () => connections.find((c) => String(c.id) === connectionId) ?? null,
-    [connections, connectionId]
-  );
 
   // Summary stats for the chosen batch.
   const breakingCount = scriptsUpToTarget.filter(
@@ -449,7 +500,7 @@ export default function DeployPage() {
     );
     return order.filter((b) => present.has(b)).join(" + ") || "—";
   }, [scriptsUpToTarget]);
-  const txnViolationScripts = scriptsUpToTarget.filter((s) => hasTxnControl(s.sql_content));
+  const txnViolationScripts = scriptsUpToTarget.filter((s) => containsTransactionControl(s.sql_content));
   const hasTxnViolation = txnViolationScripts.length > 0;
 
   // ── Data loaders ─────────────────────────────────────────────────────────
@@ -641,6 +692,8 @@ export default function DeployPage() {
             title: script.script_name,
             description: undefined,
             change_type: inferChangeKind(script.sql_content),
+            // Link the applied row back to the GitHub file it came from.
+            source_ref: script.path,
           }),
         });
         const data = (await res.json()) as { success?: boolean; error?: string };
@@ -946,6 +999,42 @@ export default function DeployPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Forward view (Phase 3): every GitHub version of this family,
+                  labelled Applied / Pending / Superseded against the target's
+                  script_patch history. Always shown once pre-flight has run. */}
+              {versionLedger.length > 0 && (
+                <div className="card p-4">
+                  <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                    <div className="section-title">
+                      Version ledger · <span className="mono">{scriptGroup}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="pill pill-sync"><span className="dot" />{appliedCount} applied</span>
+                      <span className="pill pill-pending"><span className="dot" />{pendingCount} pending</span>
+                    </div>
+                  </div>
+                  <div>
+                    {versionLedger.map((entry) => (
+                      <div
+                        key={entry.version}
+                        className="flex items-center justify-between gap-3 py-1.5"
+                        style={{ borderTop: "1px solid var(--border)" }}
+                      >
+                        <span className="mono text-[13px]">v{entry.version}</span>
+                        <div className="flex items-center gap-2.5">
+                          {entry.status === "applied" && entry.appliedAt && (
+                            <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                              {fmtDate(entry.appliedAt)}
+                            </span>
+                          )}
+                          {ledgerPill(entry.status)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {pendingScripts.length === 0 ? (
                 <div className="card p-8 text-center">

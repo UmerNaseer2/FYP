@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { parse as parseConnectionString } from "pg-connection-string";
 
 declare global {
   var __connectionsPgPool: Pool | undefined;
@@ -15,11 +16,29 @@ if (!connectionString) {
   );
 }
 
+// Hosted Postgres (Supabase, Neon, RDS) requires SSL but commonly presents a
+// cert chain the runtime doesn't trust, so accept the cert without local CA
+// verification — the same thing lib/connection-config.ts does for target DBs.
+// Local Postgres (localhost) speaks no SSL, so leave it off there.
+const metadataHost = (() => {
+  try {
+    return parseConnectionString(connectionString).host ?? "";
+  } catch {
+    return "";
+  }
+})();
+const isLocalHost =
+  metadataHost === "" ||
+  metadataHost === "localhost" ||
+  metadataHost === "127.0.0.1" ||
+  metadataHost === "::1";
+
 const pool =
   globalThis.__connectionsPgPool ??
   new Pool({
     connectionString,
     max: 5,
+    ssl: isLocalHost ? false : { rejectUnauthorized: false },
   });
 
 if (process.env.NODE_ENV !== "production") {

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { describeConstraint } from "@/lib/compare";
+import { describeConstraint, isNarrowingType } from "@/lib/compare";
 import type {
   ColumnSnapshot,
   CompareReport,
@@ -79,11 +79,27 @@ function columnBody(col: ColumnSnapshot) {
 
 // ── change-severity → which colour/word a per-column change is ───────────────
 // Mirrors the classifier the SQL generator uses so the diff and the script agree.
+// Change strings read source→target, but the migration rewrites the TARGET to
+// match the SOURCE — so the direction that *looks* relaxing in the text is
+// actually the tightening one. The branches below account for that.
 function changeKindOf(change: string): "breaking" | "safe" | "info" {
   if (change.startsWith("Type changed")) return "breaking";
-  if (change.includes("nullable to not null")) return "breaking";
-  if (change.includes("not null to nullable")) return "safe";
-  if (change.startsWith("Size/precision changed")) return "safe";
+  // "not null to nullable" = source NOT NULL, target nullable → migration ADDs
+  // NOT NULL = breaking. "nullable to not null" → migration DROPs it = safe.
+  if (change.includes("not null to nullable")) return "breaking";
+  if (change.includes("nullable to not null")) return "safe";
+  // "Size/precision changed: <new> → <current>". A shrink is a breaking
+  // narrowing (can overflow existing data); a grow is a safe widen. Reuse the
+  // SQL generator's narrowing check so the pill and the script never disagree.
+  if (change.startsWith("Size/precision changed")) {
+    const m = change.match(/^Size\/precision changed: (.+) → (.+)$/);
+    if (m) {
+      const newType = m[1]; // source — what the column becomes
+      const currentType = m[2]; // target — current type in the DB
+      return isNarrowingType(currentType, newType) ? "breaking" : "safe";
+    }
+    return "safe";
+  }
   if (change.startsWith("Order changed")) return "info";
   if (change.includes("Primary key participation changed")) return "breaking";
   return "info";

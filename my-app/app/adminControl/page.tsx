@@ -56,23 +56,36 @@ export default function AdminControlPage() {
       return;
     }
 
-    const confirmed = confirm(`Are you sure you want to delete ${userEmail}? This action cannot be undone.`);
+    // Be honest about scope: this client can only remove the user's profile/role
+    // row (via Supabase + RLS). It CANNOT delete the underlying auth/SSO account
+    // — that needs a server-side service-role call — so the user can still sign
+    // in via Azure unless they are also removed from the identity provider.
+    const confirmed = confirm(
+      `Remove ${userEmail}'s access?\n\n` +
+        `This deletes their profile and role in this app. It does NOT delete ` +
+        `their Microsoft/SSO login, so they could sign in again unless you also ` +
+        `remove them from your identity provider.`
+    );
     if (!confirmed) return;
 
     setDeleting(userId);
-    
+
     const { error: profileError } = await supabase
       .from("profiles")
       .delete()
       .eq("id", userId);
-    
+
     if (profileError) {
-      alert(`Error deleting user: ${profileError.message}`);
+      alert(`Error removing user: ${profileError.message}`);
       setDeleting(null);
       return;
     }
-    
-    alert(`User ${userEmail} has been removed.`);
+
+    alert(
+      `Removed ${userEmail}'s profile and role.\n\n` +
+        `Their Microsoft/SSO login still exists — remove them from your identity ` +
+        `provider to fully revoke access.`
+    );
     await fetchUsers();
     setDeleting(null);
   };

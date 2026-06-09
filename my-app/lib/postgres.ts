@@ -20,9 +20,22 @@ function poolKey(cfg: ClientConfig): string {
     cfg.database ?? "",
     cfg.user ?? "",
     cfg.password ?? "",
-    // SSL changes the actual connection, so it must not share a pool.
-    cfg.ssl ? "ssl" : "",
+    // Encode the FULL ssl shape, not just on/off: { rejectUnauthorized: false }
+    // (accept any cert) and {} (verify the cert) are different TLS behaviours
+    // for the same host, so they must NOT share a pool — otherwise whichever
+    // pool was created first silently wins for both callers.
+    JSON.stringify(cfg.ssl ?? false),
   ].join("\0");
+}
+
+// Normalize a parsed-from-URL config's SSL so it behaves like the saved-
+// connection path (buildPgConfig): when a URL carries `sslmode=require`,
+// pg-connection-string yields `ssl: {}`, which makes Node verify the cert chain
+// and rejects hosted providers (Neon/Supabase/RDS) that present untrusted
+// chains. We only read schema metadata, so accept the cert instead — matching
+// the Connections screen, which sets { rejectUnauthorized: false }.
+function normalizeCompareSsl(cfg: ClientConfig): ClientConfig {
+  return cfg.ssl ? { ...cfg, ssl: { rejectUnauthorized: false } } : cfg;
 }
 
 export function getPoolForConfig(cfg: ClientConfig): Pool {
@@ -190,8 +203,8 @@ export function resolveCompareTargets():
 
   try {
     if (urlB) {
-      const cfgA = parseIntoClientConfig(urlA);
-      const cfgB = parseIntoClientConfig(urlB);
+      const cfgA = normalizeCompareSsl(parseIntoClientConfig(urlA));
+      const cfgB = normalizeCompareSsl(parseIntoClientConfig(urlB));
       return {
         ok: true,
         a: {
@@ -207,7 +220,7 @@ export function resolveCompareTargets():
       };
     }
 
-    const base = parseIntoClientConfig(urlA);
+    const base = normalizeCompareSsl(parseIntoClientConfig(urlA));
     const dbA = trimEnv("COMPARE_DATABASE_A") || "postgres";
     const dbB = trimEnv("COMPARE_DATABASE_B") || "TEST";
     const cfgA = { ...base, database: dbA };

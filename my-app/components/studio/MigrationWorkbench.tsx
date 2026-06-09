@@ -41,10 +41,16 @@ type Props = {
   /** The schema that the migration actually modifies (right/target). */
   targetLabel: string;
   /**
-   * The bare target schema name (e.g. "public"). Used as the GitHub registry
-   * folder the migration is pushed into: <targetSchema>/<script_name>/v<ver>.sql
+   * The bare target schema name (e.g. "public"). Combined with the target
+   * database below to form the GitHub registry path the migration is pushed
+   * into: <targetDatabase>/<targetSchema>/<script_name>/v<ver>.sql
    */
   targetSchema: string;
+  /**
+   * The target database name (from the connection). Top-level GitHub folder so
+   * one database's scripts never mix with another's.
+   */
+  targetDatabase: string;
   /** Auto-suggested change level from the statement severities. */
   suggestedKind: ChangeKind;
   counts: { breaking: number; safe: number; info: number };
@@ -76,6 +82,7 @@ export function MigrationWorkbench({
   suggestedDescription,
   targetLabel,
   targetSchema,
+  targetDatabase,
   suggestedKind,
   counts,
   warnings,
@@ -148,6 +155,7 @@ export function MigrationWorkbench({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          database_name: targetDatabase,
           schema_name: targetSchema,
           script_name: scriptName,
           version: effectiveVersion,
@@ -162,7 +170,7 @@ export function MigrationWorkbench({
       }
       setPush({
         kind: "ok",
-        message: `v${effectiveVersion} pushed to ${targetSchema}/${scriptName} on GitHub.`,
+        message: `v${effectiveVersion} pushed to ${targetDatabase}/${targetSchema}/${scriptName} on GitHub.`,
         url: data.url ?? null,
       });
     } catch {
@@ -462,7 +470,7 @@ export function MigrationWorkbench({
               <li className="flex gap-2">
                 <span style={{ color: "var(--sync)" }}>●</span>
                 Push this migration to the GitHub registry at{" "}
-                <span className="mono">{targetSchema}/{name.trim() || suggestedName}/v{effectiveVersion}.sql</span>.
+                <span className="mono">{targetDatabase}/{targetSchema}/{name.trim() || suggestedName}/v{effectiveVersion}.sql</span>.
               </li>
               <li className="flex gap-2">
                 <span style={{ color: "var(--sync)" }}>●</span>

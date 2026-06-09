@@ -111,6 +111,43 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // Work out what credential the row would have AFTER this update, and refuse
+    // to save a connection that would end up with neither a password nor a
+    // connection string (otherwise it silently becomes impossible to
+    // authenticate). The POST handler guards this on create; PUT has to read the
+    // existing row first, because a blank password means "keep the stored one"
+    // and `clearConnectionString` wipes any stored URI.
+    const existing = await pool.query(
+      `SELECT password, connection_string FROM connections WHERE id = $1`,
+      [id]
+    );
+
+    if (existing.rows.length === 0) {
+      return NextResponse.json({ error: "Connection not found." }, { status: 404 });
+    }
+
+    const storedPassword = String(existing.rows[0].password ?? "");
+    const storedConnString = String(existing.rows[0].connection_string ?? "");
+
+    // Mirror the CASE logic in the UPDATE below exactly.
+    const effectivePassword = password === "" ? storedPassword : password;
+    const effectiveConnString = clearConnectionString
+      ? ""
+      : connection_string === ""
+        ? storedConnString
+        : connection_string;
+
+    if (!effectivePassword && !effectiveConnString) {
+      return NextResponse.json(
+        {
+          error:
+            "This connection would have no password or connection string. " +
+            "Enter a password (or keep a connection string) before saving.",
+        },
+        { status: 400 }
+      );
+    }
+
     const result = await pool.query(
       `
       UPDATE connections
