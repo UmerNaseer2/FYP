@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import pool from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { compareVersions } from "@/lib/script-status";
 
 // One row from script_patch — what we return to the frontend
 export type PatchEntry = {
@@ -28,18 +29,6 @@ export type PreflightResult = {
 // Safely quote a PostgreSQL identifier (prevents SQL injection)
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
-}
-
-// Convert a semver string to a single comparable number so we can find the
-// highest version applied — regardless of the order scripts were applied in.
-// e.g. "1.3.0" → 1_003_000, "2.0.1" → 2_000_001
-function versionToNumber(v: string): number {
-  const parts = v
-    .replace(/^v/i, "")
-    .split(".")
-    .map((p) => parseInt(p.replace(/\D/g, ""), 10) || 0);
-  while (parts.length < 3) parts.push(0);
-  return (parts[0] ?? 0) * 1_000_000 + (parts[1] ?? 0) * 1_000 + (parts[2] ?? 0);
 }
 
 export async function POST(request: NextRequest) {
@@ -233,14 +222,13 @@ export async function POST(request: NextRequest) {
 
     // ─── 7. Determine the current version ────────────────────────────────
     // "Current" = the highest semver in the (possibly filtered) timeline,
-    // computed via versionToNumber().  We do NOT use applied_at order because
-    // scripts can be applied out of order (e.g. a hotfix for v1.1.x applied
-    // after v1.2.0 was already deployed).
+    // ranked with the same compareVersions used by the rest of the app (so the
+    // applied floor the editor consumes can't disagree with the client). We do
+    // NOT use applied_at order because scripts can be applied out of order
+    // (e.g. a hotfix for v1.1.x applied after v1.2.0 was already deployed).
     const currentVersion = timeline.reduce<string | null>((highest, entry) => {
       if (!highest) return entry.version;
-      return versionToNumber(entry.version) > versionToNumber(highest)
-        ? entry.version
-        : highest;
+      return compareVersions(entry.version, highest) > 0 ? entry.version : highest;
     }, null);
 
     const result: PreflightResult = {

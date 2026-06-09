@@ -14,6 +14,7 @@ import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Select } from "@/components/ui/Select";
 import { CompareIcon, AlertTriangleIcon, ConnectionsIcon } from "@/components/ui/icons";
 
 export const dynamic = "force-dynamic";
@@ -131,34 +132,28 @@ function SourcePicker({
         <span className="text-[10px]" style={{ color: "var(--text-3)" }}>
           {role}
         </span>
-        <select
+        <Select
           name={`${side}Connection`}
-          defaultValue={selectedConnectionId}
-          className="picker-select"
-          aria-label={`${side} connection`}
-        >
-          {connections.map((connection) => (
-            <option key={`${side}-${connection.id}`} value={connection.id}>
-              {connection.name} ({connection.database_name})
-            </option>
-          ))}
-        </select>
-        <select
+          value={selectedConnectionId}
+          ariaLabel={`${side} connection`}
+          placeholder="Select a connection"
+          options={connections.map((connection) => ({
+            value: String(connection.id),
+            label: `${connection.name} (${connection.database_name})`,
+          }))}
+        />
+        <Select
           name={`${side}Schema`}
-          defaultValue={selectedSchema}
-          className="picker-select picker-select--sub"
-          aria-label={`${side} schema`}
-        >
-          {schemaOptions.length === 0 ? (
-            <option value={selectedSchema}>{selectedSchema}</option>
-          ) : (
-            schemaOptions.map((schema) => (
-              <option key={`${side}-schema-${schema}`} value={schema}>
-                {schema}
-              </option>
-            ))
-          )}
-        </select>
+          value={selectedSchema}
+          ariaLabel={`${side} schema`}
+          variant="sub"
+          mono
+          options={
+            schemaOptions.length === 0
+              ? [{ value: selectedSchema, label: selectedSchema }]
+              : schemaOptions.map((schema) => ({ value: schema, label: schema }))
+          }
+        />
       </div>
     </div>
   );

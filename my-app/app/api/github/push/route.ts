@@ -11,6 +11,14 @@ type PushBody = {
   version: string;
   sql_content: string;
   description?: string;
+  /**
+   * Replace an existing file at this version. Defaults to false: a published
+   * version is immutable, so a duplicate is rejected (409) rather than silently
+   * overwritten. The version floor is enforced client-side; this is the
+   * server-side backstop so a stale floor, a second tab/user, or a replayed
+   * request can never clobber a committed migration.
+   */
+  overwrite?: boolean;
 };
 
 type GitHubFileResponse = {
@@ -32,7 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { database_name, schema_name, script_name, version, sql_content, description } = body;
+  const { database_name, schema_name, script_name, version, sql_content, description, overwrite } = body;
 
   if (!database_name || !schema_name || !script_name || !version || !sql_content) {
     return NextResponse.json(
@@ -67,6 +75,22 @@ export async function POST(req: NextRequest) {
     }
   } catch {
     // Network hiccup during the existence check — proceed as a new file.
+  }
+
+  // A file already exists at this version. Versions are immutable, so refuse to
+  // overwrite a committed migration unless an explicit overwrite was requested.
+  // This is the authoritative guard: the client-side version floor can go stale
+  // (a second tab, another user, or a failed registry pull), so the server must
+  // be the one that never silently clobbers history.
+  if (existingSha && !overwrite) {
+    return NextResponse.json(
+      {
+        error:
+          `v${version} already exists for "${script_name}" in ${database_name}/${schema_name}. ` +
+          `Versions are immutable — pick a higher version.`,
+      },
+      { status: 409 }
+    );
   }
 
   const commitMessage = description
