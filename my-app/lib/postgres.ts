@@ -20,6 +20,8 @@ function poolKey(cfg: ClientConfig): string {
     cfg.database ?? "",
     cfg.user ?? "",
     cfg.password ?? "",
+    // SSL changes the actual connection, so it must not share a pool.
+    cfg.ssl ? "ssl" : "",
   ].join("\0");
 }
 

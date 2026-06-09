@@ -1,69 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Pool } from "pg";
+import { runConnectionTest } from "@/lib/connection-config";
 
+/** Test an unsaved connection from the add/edit drawer (fields or URI + SSL). */
 export async function POST(request: NextRequest) {
-  let testPool: Pool | null = null;
-
   try {
     const body = await request.json();
 
     const type = String(body.type ?? "PostgreSQL");
-    const host = String(body.host ?? "localhost").trim();
-    const port = Number(body.port ?? 5432);
-    const database = String(body.database_name ?? "postgres").trim();
-    const username = String(body.username ?? "postgres").trim();
-    const password = String(body.password ?? "").trim();
-    const connectionString = String(body.connection_string ?? "").trim();
-
     if (type !== "PostgreSQL") {
       return NextResponse.json(
-        { error: "Only PostgreSQL is supported now." },
+        { ok: false, error: "Only PostgreSQL is supported right now.", sslRequired: false, detail: "" },
         { status: 400 }
       );
     }
 
-    if (connectionString !== "") {
-      testPool = new Pool({
-        connectionString,
-        connectionTimeoutMillis: 10000,
-      });
-    } else {
-      if (!host || !port || !database || !username || !password) {
-        return NextResponse.json(
-          { error: "Please fill in host, port, database, username, and password." },
-          { status: 400 }
-        );
-      }
-
-      testPool = new Pool({
-        host,
-        port,
-        database,
-        user: username,
-        password,
-        connectionTimeoutMillis: 10000,
-      });
-    }
-
-    await testPool.query("SELECT NOW()");
-
-    return NextResponse.json({
-      success: true,
-      message: "Connection successful.",
+    const result = await runConnectionTest({
+      host: body.host,
+      port: body.port,
+      database: body.database_name,
+      user: body.username,
+      password: body.password,
+      connectionString: body.connection_string,
+      ssl: Boolean(body.ssl),
     });
-  } catch (error) {
-    console.error("Test connection error:", error);
 
+    // Always 200: the drawer reads `ok` and renders the matching banner.
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error("Test connection route error:", error);
     return NextResponse.json(
-      {
-        error:
-          "Connection failed. Please check host, port, database name, username, and password.",
-      },
-      { status: 500 }
+      { ok: false, error: "Could not run the test.", sslRequired: false, detail: "" },
+      { status: 200 }
     );
-  } finally {
-    if (testPool) {
-      await testPool.end();
-    }
   }
 }

@@ -36,12 +36,26 @@ export async function GET() {
   };
 
   // List the root of the repo
-  const rootRes = await fetch(
-    `https://api.github.com/repos/${OWNER}/${REPO}/contents`,
-    { headers }
-  );
+  let rootRes: Response;
+  try {
+    rootRes = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/contents`,
+      { headers }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: `Could not reach GitHub. Check your connection and try again. Details: ${message}` },
+      { status: 502 }
+    );
+  }
 
   if (!rootRes.ok) {
+    // An empty repository returns 404 here — treat that as "no scripts yet"
+    // rather than an error, so the registry just shows up empty.
+    if (rootRes.status === 404) {
+      return NextResponse.json({ scripts: [] });
+    }
     const err = await rootRes.text();
     return NextResponse.json(
       { error: `GitHub API error: ${rootRes.status} — ${err}` },
@@ -49,7 +63,8 @@ export async function GET() {
     );
   }
 
-  const rootItems = (await rootRes.json()) as GitHubItem[];
+  const rootJson = (await rootRes.json()) as GitHubItem[] | unknown;
+  const rootItems = Array.isArray(rootJson) ? (rootJson as GitHubItem[]) : [];
   const dirs = rootItems.filter((item) => item.type === "dir");
 
   const scripts: GitHubScript[] = [];
@@ -60,26 +75,37 @@ export async function GET() {
   // Level 3: script dirs → .sql files
   await Promise.all(
     dirs.map(async (schemaDir) => {
-      // Fetch contents of the schema folder
-      const schemaRes = await fetch(
-        `https://api.github.com/repos/${OWNER}/${REPO}/contents/${schemaDir.path}`,
-        { headers }
-      );
-      if (!schemaRes.ok) return;
-
-      const schemaItems = (await schemaRes.json()) as GitHubItem[];
+      // Fetch contents of the schema folder. A failed dir read (network or a
+      // non-OK status) just skips that folder rather than failing the whole pull.
+      let schemaItems: GitHubItem[];
+      try {
+        const schemaRes = await fetch(
+          `https://api.github.com/repos/${OWNER}/${REPO}/contents/${schemaDir.path}`,
+          { headers }
+        );
+        if (!schemaRes.ok) return;
+        const schemaJson = (await schemaRes.json()) as GitHubItem[] | unknown;
+        schemaItems = Array.isArray(schemaJson) ? (schemaJson as GitHubItem[]) : [];
+      } catch {
+        return;
+      }
       const scriptDirs = schemaItems.filter((item) => item.type === "dir");
 
       // For each script-family dir inside the schema, collect .sql files
       await Promise.all(
         scriptDirs.map(async (scriptDir) => {
-          const scriptRes = await fetch(
-            `https://api.github.com/repos/${OWNER}/${REPO}/contents/${scriptDir.path}`,
-            { headers }
-          );
-          if (!scriptRes.ok) return;
-
-          const files = (await scriptRes.json()) as GitHubItem[];
+          let files: GitHubItem[];
+          try {
+            const scriptRes = await fetch(
+              `https://api.github.com/repos/${OWNER}/${REPO}/contents/${scriptDir.path}`,
+              { headers }
+            );
+            if (!scriptRes.ok) return;
+            const scriptJson = (await scriptRes.json()) as GitHubItem[] | unknown;
+            files = Array.isArray(scriptJson) ? (scriptJson as GitHubItem[]) : [];
+          } catch {
+            return;
+          }
 
           // Fetch each .sql file's content concurrently
           await Promise.all(

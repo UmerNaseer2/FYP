@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Schema Studio — Pass 1 · Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* ——— Tokens (carried from Pass 0) ——— */
+  :root[data-theme="light"] {
+    --bg:#f7f7f8; --surface:#ffffff; --surface-2:#fafafa; --surface-3:#f3f3f5;
+    --border:#e7e7eb; --border-strong:#d4d4d8;
+    --text:#18181b; --text-2:#52525b; --text-3:#8a8a93;
+    --brand:#6366f1; --brand-2:#4f52e0; --brand-soft:#eef0ff; --brand-soft-2:#dde0ff;
+    --sync:#16a34a; --sync-soft:#e6f6ec;
+    --pending:#2563eb; --pending-soft:#e6efff;
+    --drift:#b45309; --drift-soft:#fdf2dc;
+    --break:#dc2626; --break-soft:#fdecec;
+    --shadow-sm: 0 1px 2px rgba(16,16,20,0.04), 0 0 0 1px rgba(16,16,20,0.04);
+    --shadow-md: 0 6px 24px -8px rgba(16,16,20,0.10), 0 2px 6px rgba(16,16,20,0.04);
+    --shadow-lg: 0 32px 80px -24px rgba(80,80,180,0.18), 0 6px 16px rgba(16,16,20,0.05);
+    --grid: rgba(24,24,27,0.045);
+    --wash-1: rgba(99,102,241,0.10);
+    --wash-2: rgba(167,139,250,0.08);
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0c; --surface:#15161a; --surface-2:#1b1c21; --surface-3:#232428;
+    --border:#26272d; --border-strong:#363740;
+    --text:#f3f3f5; --text-2:#b0b0ba; --text-3:#7a7a85;
+    --brand:#7c7fff; --brand-2:#9396ff; --brand-soft:#1d1e34; --brand-soft-2:#272a55;
+    --sync:#4ade80; --sync-soft:#11261a;
+    --pending:#60a5fa; --pending-soft:#0f1f37;
+    --drift:#fbbf24; --drift-soft:#2a1f0a;
+    --break:#f87171; --break-soft:#2a1212;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04);
+    --shadow-md: 0 6px 24px -8px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4);
+    --shadow-lg: 0 32px 80px -24px rgba(0,0,0,0.75), 0 6px 16px rgba(0,0,0,0.45);
+    --grid: rgba(255,255,255,0.04);
+    --wash-1: rgba(124,127,255,0.20);
+    --wash-2: rgba(167,139,250,0.10);
+  }
+  html, body { background: var(--bg); color: var(--text); font-family: 'Geist', ui-sans-serif, system-ui; }
+  .mono { font-family: 'Geist Mono', ui-monospace, SFMono-Regular; font-feature-settings: "ss01","cv01"; }
+
+  /* ——— Buttons (from kit) ——— */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px;
+         padding:8px 14px; border-radius:8px; font-weight:500; font-size:13px; line-height:18px;
+         border:1px solid transparent; cursor:pointer; transition:background .15s ease, border-color .15s ease, color .15s ease, transform .08s ease; }
+  .btn:active { transform: translateY(0.5px); }
+  .btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .btn-sm { padding:5px 10px; font-size:12px; border-radius:6px; }
+  .btn-primary    { background:var(--brand); color:#fff; border-color:var(--brand); box-shadow: 0 4px 12px -6px var(--brand); }
+  .btn-primary:hover    { background:var(--brand-2); border-color:var(--brand-2); }
+  .btn-secondary  { background:var(--surface); color:var(--text); border-color:var(--border-strong); }
+  .btn-secondary:hover  { background:var(--surface-3); }
+  .btn-ghost      { background:transparent; color:var(--text-2); border-color:transparent; }
+  .btn-ghost:hover      { background:var(--surface-3); color:var(--text); }
+  .btn[disabled]  { opacity:.55; cursor:not-allowed; }
+
+  /* ——— Pills (from kit) ——— */
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px;
+          font-size:11px; line-height:18px; font-weight:500; border:1px solid transparent; white-space:nowrap; }
+  .pill .dot { width:6px; height:6px; border-radius:999px; background:currentColor; }
+  .pill-neutral{ color:var(--text-2); background:var(--surface-3); border-color:var(--border); }
+  .pill-brand  { color:var(--brand);  background:var(--brand-soft); border-color:color-mix(in oklab, var(--brand) 35%, transparent); }
+  .pill-break  { color:var(--break);  background:var(--break-soft); border-color:color-mix(in oklab, var(--break) 35%, transparent); }
+
+  /* ——— Card ——— */
+  .auth-card { background:var(--surface); border:1px solid var(--border); border-radius:18px; box-shadow:var(--shadow-lg); }
+
+  /* ——— SSO button ——— */
+  .sso-btn { display:flex; align-items:center; gap:10px; width:100%; padding:12px 14px;
+             background:var(--surface); border:1px solid var(--border-strong); border-radius:10px;
+             color:var(--text); font-size:14px; font-weight:500; cursor:pointer;
+             transition:background .15s ease, border-color .15s ease, box-shadow .15s ease; }
+  .sso-btn:hover    { background:var(--surface-2); border-color:color-mix(in oklab, var(--brand) 40%, var(--border-strong)); box-shadow: 0 0 0 4px var(--brand-soft); }
+  .sso-btn:focus-visible { outline:none; box-shadow: 0 0 0 4px var(--brand-soft); border-color:var(--brand); }
+  .sso-btn[disabled]{ opacity:.65; cursor:wait; }
+  .sso-btn .label { flex:1; text-align:center; }
+  .sso-btn .chev { color:var(--text-3); }
+
+  /* MS quadrant mark (small, recognizable SSO provider icon) */
+  .ms-mark { width:18px; height:18px; display:inline-grid; grid-template-columns:1fr 1fr; gap:2px; flex:none; }
+  .ms-mark span { display:block; border-radius:1px; }
+  .ms-mark .a { background:#F25022; }
+  .ms-mark .b { background:#7FBA00; }
+  .ms-mark .c { background:#00A4EF; }
+  .ms-mark .d { background:#FFB900; }
+
+  /* ——— Spinner ——— */
+  .spin { width:16px; height:16px; border-radius:999px; border:2px solid color-mix(in oklab, var(--brand) 25%, transparent); border-top-color:var(--brand); animation:spin .85s linear infinite; flex:none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ——— Banner ——— */
+  .banner { display:flex; gap:10px; padding:10px 12px; border-radius:10px;
+            background:var(--break-soft); border:1px solid color-mix(in oklab, var(--break) 35%, transparent);
+            color:var(--break); font-size:13px; line-height:1.5; }
+  .banner .ico { flex:none; margin-top:1px; }
+  .banner .body { color:var(--text); }
+  .banner .title { color:var(--break); font-weight:600; font-size:12.5px; }
+  .banner details summary { cursor:pointer; color:var(--text-3); font-size:12px; margin-top:4px; user-select:none; }
+  .banner details[open] summary { color:var(--text-2); }
+  .banner pre { margin-top:6px; padding:8px 10px; background:var(--surface); border:1px solid var(--border); border-radius:6px;
+                font-family:'Geist Mono',ui-monospace; font-size:11.5px; color:var(--text-2); overflow:auto; }
+
+  /* ——— Background composition ——— */
+  .bg-stage {
+    position:fixed; inset:0; z-index:-1; overflow:hidden;
+    background: var(--bg);
+  }
+  .bg-grid {
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(to right, var(--grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 45%, #000 30%, transparent 80%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 45%, #000 30%, transparent 80%);
+  }
+  .bg-wash-a {
+    position:absolute; width:780px; height:780px; left:-180px; top:-220px;
+    background: radial-gradient(circle, var(--wash-1) 0%, transparent 60%);
+    filter: blur(20px);
+  }
+  .bg-wash-b {
+    position:absolute; width:720px; height:720px; right:-200px; bottom:-200px;
+    background: radial-gradient(circle, var(--wash-2) 0%, transparent 60%);
+    filter: blur(20px);
+  }
+
+  /* Decorative diff/SQL strips behind card — quiet, product-flavored, not literal */
+  .deco {
+    position:absolute; font-family:'Geist Mono',ui-monospace; font-size:11px;
+    color:var(--text-3); opacity:.45; user-select:none; pointer-events:none; white-space:nowrap;
+  }
+  :root[data-theme="dark"] .deco { opacity:.32; }
+  .deco .add { color: color-mix(in oklab, var(--sync) 70%, var(--text-3)); }
+  .deco .chg { color: color-mix(in oklab, var(--drift) 70%, var(--text-3)); }
+  .deco .rem { color: color-mix(in oklab, var(--break) 65%, var(--text-3)); }
+
+  /* state switcher (designer-facing) */
+  .state-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
+                font-size:12px; color:var(--text-2); border:1px solid var(--border); background:var(--surface);
+                cursor:pointer; transition: all .12s ease; }
+  .state-chip.active { color:var(--brand); border-color:color-mix(in oklab, var(--brand) 50%, transparent); background:var(--brand-soft); }
+  .state-chip:hover { color:var(--text); }
+
+  /* footer link */
+  .flink { color:var(--text-3); text-decoration:none; }
+  .flink:hover { color:var(--text-2); text-decoration:underline; }
+
+  /* tiny fade swap */
+  @keyframes pop { from { opacity:0; transform: translateY(2px); } to { opacity:1; transform: none; } }
+  .swap > * { animation: pop .25s ease both; }
+</style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- background -->
+  <div class="bg-stage" aria-hidden="true">
+    <div class="bg-grid"></div>
+    <div class="bg-wash-a"></div>
+    <div class="bg-wash-b"></div>
+    <!-- decorative product hints -->
+    <div class="deco" style="top:18%; left:8%;">finance<span style="color:var(--text-3)">@</span>Prod — RDS  <span class="mono">v2.3.0 · 0007</span></div>
+    <div class="deco" style="top:30%; left:6%;"><span class="add">+ invoice_lines.id uuid PRIMARY KEY</span></div>
+    <div class="deco" style="top:34%; left:6%;"><span class="chg">~ amount numeric(10,2) → numeric(12,2)</span></div>
+    <div class="deco" style="bottom:22%; right:7%;">CREATE INDEX invoice_lines_invoice_id_idx</div>
+    <div class="deco" style="bottom:18%; right:7%;"><span class="add">+ ALTER TABLE invoices ALTER COLUMN amount …</span></div>
+    <div class="deco" style="top:14%; right:9%;">analytics<span style="color:var(--text-3)">@</span>Staging — Neon  <span class="mono">v0.9.0 · 0003</span></div>
+  </div>
+
+  <!-- Top bar (minimal, just brand + theme + state chips) -->
+  <header class="px-8 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-7 h-7 rounded-lg grid place-items-center" style="background:var(--brand);">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+      </div>
+      <div class="leading-tight">
+        <div class="font-semibold text-[13.5px]">Schema Studio</div>
+        <div class="text-[11px] mono" style="color:var(--text-3)">Pass 1 · S0 Login</div>
+      </div>
+    </div>
+
+    <!-- designer state switcher -->
+    <div class="hidden md:flex items-center gap-1.5" id="stateSwitch" role="tablist" aria-label="Preview state">
+      <span class="text-[11px] mr-2" style="color:var(--text-3); text-transform:uppercase; letter-spacing:.08em;">Preview state</span>
+      <button class="state-chip active" data-state="default">Default</button>
+      <button class="state-chip" data-state="loading">Redirecting</button>
+      <button class="state-chip" data-state="error">Error</button>
+    </div>
+
+    <button id="themeToggle" class="btn btn-secondary btn-sm" title="Toggle theme">
+      <svg id="iconSun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg id="iconMoon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <span id="themeLabel">Dark mode</span>
+    </button>
+  </header>
+
+  <!-- Login card -->
+  <main class="flex-1 grid place-items-center px-6 pb-10 pt-2">
+    <div class="w-full max-w-[420px] relative">
+
+      <!-- top label -->
+      <div class="flex items-center gap-2 justify-center mb-5">
+        <span class="pill pill-brand"><span class="dot"></span>Single sign-on</span>
+        <span class="pill pill-neutral"><span class="dot" style="background:var(--text-3)"></span><span class="mono">v0.4.2</span></span>
+      </div>
+
+      <article class="auth-card p-8">
+        <!-- brand block -->
+        <div class="flex flex-col items-center text-center">
+          <div class="w-12 h-12 rounded-2xl grid place-items-center mb-4" style="background:var(--brand); box-shadow: 0 8px 24px -10px var(--brand), 0 0 0 6px var(--brand-soft);">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+          </div>
+          <h1 class="text-[24px] font-semibold tracking-[-0.015em]">Welcome to Schema Studio</h1>
+          <p class="text-[13.5px] mt-1.5" style="color:var(--text-2)">Version control for your database schema.</p>
+        </div>
+
+        <!-- divider w/ org hint -->
+        <div class="flex items-center gap-3 my-7">
+          <div class="flex-1 h-px" style="background:var(--border);"></div>
+          <span class="text-[11px]" style="color:var(--text-3); letter-spacing:.06em; text-transform:uppercase;">Sign in with your work account</span>
+          <div class="flex-1 h-px" style="background:var(--border);"></div>
+        </div>
+
+        <!-- state-swappable region -->
+        <div id="ssoRegion" class="swap">
+          <!-- default -->
+          <div data-state="default">
+            <button id="ssoBtn" class="sso-btn" type="button" aria-label="Continue with Microsoft">
+              <span class="ms-mark" aria-hidden="true"><span class="a"></span><span class="b"></span><span class="c"></span><span class="d"></span></span>
+              <span class="label">Continue with Microsoft</span>
+              <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+            <p class="text-[12px] mt-3 text-center" style="color:var(--text-3)">
+              You'll be redirected to your organization's Microsoft sign-in.
+            </p>
+          </div>
+
+          <!-- loading -->
+          <div data-state="loading" style="display:none;">
+            <button class="sso-btn" type="button" disabled aria-busy="true">
+              <span class="spin" aria-hidden="true"></span>
+              <span class="label">Redirecting to Microsoft…</span>
+              <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+            <div class="mt-3 flex items-center justify-center gap-2 text-[12px]" style="color:var(--text-3)">
+              <span class="mono">openid · profile · email · offline_access</span>
+            </div>
+          </div>
+
+          <!-- error -->
+          <div data-state="error" style="display:none;">
+            <div class="banner mb-3" role="alert">
+              <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div class="body">
+                <div class="title">Sign-in failed or was cancelled.</div>
+                <div style="color:var(--text-2)">Try again, or contact your administrator if the problem persists.</div>
+                <details>
+                  <summary>Details</summary>
+                  <pre>AADSTS50011: The redirect URI specified in the request does not match the redirect URIs configured for the application.
+correlation_id: 4f2b8d3a-1c87-4e1a-9c52-2d4b7c3a8f10
+timestamp: 2026-06-08T14:21:09Z</pre>
+                </details>
+              </div>
+            </div>
+            <button id="ssoRetry" class="sso-btn" type="button">
+              <span class="ms-mark" aria-hidden="true"><span class="a"></span><span class="b"></span><span class="c"></span><span class="d"></span></span>
+              <span class="label">Retry with Microsoft</span>
+              <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3.18-6.85"/><polyline points="3 4 3 10 9 10"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- inline help -->
+        <div class="mt-6 pt-5 flex items-center justify-between gap-3 text-[12px]" style="color:var(--text-3); border-top:1px solid var(--border);">
+          <span class="inline-flex items-center gap-2"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Encrypted in transit · enterprise SSO</span>
+          <a href="#" class="flink">Trouble signing in?</a>
+        </div>
+      </article>
+
+      <!-- under-card meta -->
+      <div class="mt-5 flex items-center justify-between gap-4 text-[12px]" style="color:var(--text-3);">
+        <div class="flex items-center gap-3">
+          <a href="#" class="flink">Terms</a>
+          <span style="opacity:.5">·</span>
+          <a href="#" class="flink">Privacy</a>
+          <span style="opacity:.5">·</span>
+          <a href="#" class="flink">Status</a>
+        </div>
+        <div class="inline-flex items-center gap-2 mono">
+          <span class="inline-block w-1.5 h-1.5 rounded-full" style="background:var(--sync)"></span>
+          <span>v0.4.2 · main</span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- bottom strip with context for designer -->
+  <footer class="px-8 pb-8 flex items-center justify-between text-[11.5px]" style="color:var(--text-3);">
+    <span class="mono">Pass 1 / 7 · S0 Login</span>
+    <span>Next: <a href="#" class="flink" style="color:var(--text-2)">Pass 2 — Connections (S1) →</a></span>
+  </footer>
+
+<script>
+  // ——— Theme toggle ———
+  const root = document.documentElement;
+  const sun = document.getElementById('iconSun');
+  const moon = document.getElementById('iconMoon');
+  const label = document.getElementById('themeLabel');
+  function setTheme(mode){
+    root.setAttribute('data-theme', mode);
+    if (mode === 'dark') { sun.style.display='none'; moon.style.display=''; label.textContent='Light mode'; }
+    else                 { sun.style.display='';     moon.style.display='none'; label.textContent='Dark mode'; }
+    try { localStorage.setItem('ss-theme', mode); } catch(e){}
+  }
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+  try { const saved = localStorage.getItem('ss-theme'); if (saved) setTheme(saved); } catch(e){}
+
+  // ——— State switching ———
+  const region = document.getElementById('ssoRegion');
+  const panels = region.querySelectorAll('[data-state]');
+  const chips = document.querySelectorAll('#stateSwitch .state-chip');
+  let timer = null;
+
+  function setState(name){
+    panels.forEach(p => p.style.display = (p.dataset.state === name) ? '' : 'none');
+    chips.forEach(c => c.classList.toggle('active', c.dataset.state === name));
+    // restart fade
+    region.classList.remove('swap'); void region.offsetWidth; region.classList.add('swap');
+    if (timer) { clearTimeout(timer); timer = null; }
+    // Interactive simulation: clicking the SSO button kicks off Loading → Error
+    if (name === 'loading') {
+      timer = setTimeout(() => setState('error'), 2600);
+    }
+    // re-bind handlers after panel swap
+    const ssoBtn = document.getElementById('ssoBtn');
+    if (ssoBtn) ssoBtn.addEventListener('click', () => setState('loading'));
+    const retry = document.getElementById('ssoRetry');
+    if (retry) retry.addEventListener('click', () => setState('loading'));
+  }
+  // wire chips
+  chips.forEach(c => c.addEventListener('click', () => setState(c.dataset.state)));
+  // initial bindings
+  document.getElementById('ssoBtn').addEventListener('click', () => setState('loading'));
+</script>
+</body>
+</html>

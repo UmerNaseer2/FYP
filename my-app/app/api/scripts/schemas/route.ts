@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "../../../../lib/db";
-import { getPoolForConfig } from "../../../../lib/postgres";
+import pool from "@/lib/version-db";
+import { getPoolForConfig } from "@/lib/postgres";
+import { buildPgConfig } from "@/lib/connection-config";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -13,19 +14,24 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // ── 1. Look up the saved connection from the local app database ─────────────
+  // ── 1. Look up the saved connection from the app metadata database ──────────
+  // Same pool the Connections screen saves to (version-db), so any connection the
+  // user created is visible here. We read connection_string + ssl too, so URI and
+  // SSL-required hosts (Neon, Supabase, RDS) work exactly like the rest of the app.
   let connRow: {
     host: string;
     port: number;
     database_name: string;
     username: string;
     password: string;
+    connection_string: string | null;
+    ssl: boolean | null;
     name: string;
   };
 
   try {
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, name
+      `SELECT host, port, database_name, username, password, connection_string, ssl, name
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -47,14 +53,18 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // ── 2. Connect to the target database ──────────────────────────────────────
-  const targetPool = getPoolForConfig({
-    host: connRow.host,
-    port: Number(connRow.port),
-    database: connRow.database_name,
-    user: connRow.username,
-    password: connRow.password,
-  });
+  // ── 2. Connect to the target database (SSL/URI-aware via buildPgConfig) ──────
+  const targetPool = getPoolForConfig(
+    buildPgConfig({
+      host: connRow.host,
+      port: connRow.port,
+      database: connRow.database_name,
+      user: connRow.username,
+      password: connRow.password,
+      connectionString: connRow.connection_string,
+      ssl: Boolean(connRow.ssl),
+    })
+  );
 
   let client;
   try {

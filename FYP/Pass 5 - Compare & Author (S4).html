@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Schema Studio — Pass 5 · Compare &amp; Author</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* ——— Tokens ——— */
+  :root[data-theme="light"] {
+    --bg:#f7f7f8; --surface:#ffffff; --surface-2:#fafafa; --surface-3:#f3f3f5;
+    --border:#e7e7eb; --border-strong:#d4d4d8;
+    --text:#18181b; --text-2:#52525b; --text-3:#8a8a93;
+    --brand:#6366f1; --brand-2:#4f52e0; --brand-soft:#eef0ff; --brand-soft-2:#dde0ff;
+    --sync:#16a34a; --sync-soft:#e6f6ec;
+    --pending:#2563eb; --pending-soft:#e6efff;
+    --drift:#b45309; --drift-2:#92400e; --drift-soft:#fdf2dc;
+    --break:#dc2626; --break-soft:#fdecec;
+    --diff-add-bg:#ecfbf2; --diff-add-bd:#16a34a;
+    --diff-rem-bg:#fdecec; --diff-rem-bd:#dc2626;
+    --diff-chg-bg:#fdf3dc; --diff-chg-bd:#b45309;
+    --shadow-sm: 0 1px 2px rgba(16,16,20,0.04), 0 0 0 1px rgba(16,16,20,0.04);
+    --shadow-md: 0 6px 24px -8px rgba(16,16,20,0.10), 0 2px 6px rgba(16,16,20,0.04);
+    --shadow-lg: 0 24px 60px -20px rgba(16,16,20,0.18), 0 4px 12px rgba(16,16,20,0.05);
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0c; --surface:#15161a; --surface-2:#1b1c21; --surface-3:#232428;
+    --border:#26272d; --border-strong:#363740;
+    --text:#f3f3f5; --text-2:#b0b0ba; --text-3:#7a7a85;
+    --brand:#7c7fff; --brand-2:#9396ff; --brand-soft:#1d1e34; --brand-soft-2:#272a55;
+    --sync:#4ade80; --sync-soft:#11261a;
+    --pending:#60a5fa; --pending-soft:#0f1f37;
+    --drift:#fbbf24; --drift-2:#fcd34d; --drift-soft:#2a1f0a;
+    --break:#f87171; --break-soft:#2a1212;
+    --diff-add-bg:#0f2418; --diff-add-bd:#22c55e;
+    --diff-rem-bg:#2a1414; --diff-rem-bd:#ef4444;
+    --diff-chg-bg:#2b2210; --diff-chg-bd:#fbbf24;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04);
+    --shadow-md: 0 6px 24px -8px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4);
+    --shadow-lg: 0 24px 60px -20px rgba(0,0,0,0.7), 0 4px 12px rgba(0,0,0,0.4);
+  }
+  html, body { background: var(--bg); color: var(--text); font-family:'Geist',ui-sans-serif,system-ui; }
+  .mono { font-family:'Geist Mono',ui-monospace,SFMono-Regular; font-feature-settings:"ss01","cv01"; }
+
+  /* ——— Buttons / pills ——— */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px;
+         padding:8px 14px; border-radius:8px; font-weight:500; font-size:13px; line-height:18px;
+         border:1px solid transparent; cursor:pointer; transition: all .14s ease; white-space:nowrap; }
+  .btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .btn-sm { padding:5px 10px; font-size:12px; border-radius:6px; }
+  .btn-xs { padding:3px 8px; font-size:11.5px; border-radius:6px; }
+  .btn-primary    { background:var(--brand); color:#fff; border-color:var(--brand); box-shadow: 0 4px 12px -6px var(--brand); }
+  .btn-primary:hover    { background:var(--brand-2); border-color:var(--brand-2); }
+  .btn-secondary  { background:var(--surface); color:var(--text); border-color:var(--border-strong); }
+  .btn-secondary:hover  { background:var(--surface-3); }
+  .btn-ghost      { background:transparent; color:var(--text-2); border-color:transparent; }
+  .btn-ghost:hover      { background:var(--surface-3); color:var(--text); }
+  .btn-destructive{ background:var(--break); color:#fff; border-color:var(--break); }
+
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px;
+          font-size:11px; line-height:18px; font-weight:500; border:1px solid transparent; white-space:nowrap; }
+  .pill .dot { width:6px; height:6px; border-radius:999px; background:currentColor; }
+  .pill-sync   { color:var(--sync);   background:var(--sync-soft);   border-color:color-mix(in oklab, var(--sync) 30%, transparent); }
+  .pill-pending{ color:var(--pending);background:var(--pending-soft);border-color:color-mix(in oklab, var(--pending) 30%, transparent); }
+  .pill-drift  { color:var(--drift);  background:var(--drift-soft);  border-color:color-mix(in oklab, var(--drift) 38%, transparent); }
+  .pill-break  { color:var(--break);  background:var(--break-soft);  border-color:color-mix(in oklab, var(--break) 35%, transparent); }
+  .pill-neutral{ color:var(--text-2); background:var(--surface-3); border-color:var(--border); }
+  .pill-brand  { color:var(--brand);  background:var(--brand-soft); border-color:color-mix(in oklab, var(--brand) 35%, transparent); }
+  .pill-outline{ color:var(--text-2); background:transparent; border-color:var(--border-strong); }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-sm); }
+  .panel{ background:var(--surface); border:1px solid var(--border); border-radius:12px; }
+
+  .input { width:100%; background:var(--surface); border:1px solid var(--border-strong); border-radius:8px;
+           padding:9px 11px; font-size:13px; color:var(--text); transition: border-color .12s ease, box-shadow .12s ease; }
+  .input:focus { outline:none; border-color:var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+  .input.mono { font-family:'Geist Mono',ui-monospace; font-size:12.5px; }
+  .label { font-size:12px; color:var(--text-2); font-weight:500; }
+  .help  { font-size:11.5px; color:var(--text-3); line-height:1.5; }
+
+  .nav-item { display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:8px; color:var(--text-2);
+              font-size:13px; font-weight:500; cursor:pointer; transition:background .12s ease, color .12s ease; white-space:nowrap; }
+  .nav-item:hover { background:var(--surface-3); color:var(--text); }
+  .nav-item.active{ background:var(--brand-soft); color:var(--brand); }
+  .nav-item .ico { width:16px; height:16px; flex:none; }
+  .nav-item .badge { margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:999px; }
+
+  .section-title { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-3); white-space:nowrap; }
+  .kbd { font-family:'Geist Mono',ui-monospace; font-size:10.5px; padding:1px 5px; border:1px solid var(--border-strong);
+         border-radius:4px; color:var(--text-2); background:var(--surface-2); }
+  .hsep { width:1px; height:18px; background:var(--border); }
+
+  /* ——— Source picker ——— */
+  .source-bar {
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:14px; display:grid; grid-template-columns: 1fr 36px 1fr auto; gap:12px; align-items:center;
+  }
+  .picker {
+    display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--border-strong); border-radius:10px;
+    background:var(--surface-2); transition: border-color .14s ease, background .14s ease;
+    cursor:pointer; min-width:0;
+  }
+  .picker:hover { border-color: var(--brand); background:var(--surface); }
+  .picker .kind {
+    font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--text-3); padding:2px 6px; border-radius:4px; background:var(--surface); border:1px solid var(--border);
+    white-space:nowrap;
+  }
+  .picker .kind.snap { color:var(--brand); background:var(--brand-soft); border-color: color-mix(in oklab, var(--brand) 28%, transparent); }
+  .picker .kind.live { color:var(--sync); background:var(--sync-soft); border-color: color-mix(in oklab, var(--sync) 28%, transparent); }
+  .picker .body { display:flex; flex-direction:column; min-width:0; }
+  .picker .title { font-size:13.5px; font-weight:500; }
+  .picker .sub { font-family:'Geist Mono',ui-monospace; font-size:11.5px; color:var(--text-3); margin-top:1px; }
+  .swap-btn { width:36px; height:36px; border-radius:999px; background:var(--surface); border:1px solid var(--border-strong);
+              display:grid; place-items:center; color:var(--text-2); cursor:pointer; justify-self:center; transition: all .14s ease; }
+  .swap-btn:hover { color:var(--text); border-color:var(--brand); background:var(--brand-soft); transform: rotate(180deg); }
+
+  /* ——— Diff summary chips ——— */
+  .delta { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:6px; font-family:'Geist Mono',ui-monospace; font-size:11.5px; font-weight:500; }
+  .delta-add { color:var(--sync); background:color-mix(in oklab, var(--sync) 10%, transparent); }
+  .delta-rem { color:var(--break); background:color-mix(in oklab, var(--break) 10%, transparent); }
+  .delta-chg { color:var(--drift); background:color-mix(in oklab, var(--drift) 10%, transparent); }
+
+  /* ——— Diff canvas ——— */
+  .table-group { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .tg-header { display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--surface-2); border-bottom:1px solid var(--border); cursor:pointer; }
+  .tg-header .chev { transition: transform .15s ease; }
+  .tg-header.collapsed .chev { transform: rotate(-90deg); }
+  .tg-header .name { font-family:'Geist Mono',ui-monospace; font-size:13.5px; font-weight:600; }
+
+  .obj-group { padding:8px 14px; border-top:1px solid var(--border); }
+  .obj-group:first-of-type { border-top:none; }
+  .obj-header { display:flex; align-items:center; gap:8px; padding:6px 0; }
+
+  .diff-row { display:flex; align-items:flex-start; gap:10px; padding:7px 12px; border-left:3px solid transparent;
+              font-family:'Geist Mono',ui-monospace; font-size:12px; line-height:1.55; border-radius:0 6px 6px 0;
+              margin: 2px 0; cursor:default; }
+  .diff-row .sign { width:14px; font-weight:700; color:var(--text-3); flex:none; text-align:center; }
+  .diff-row .body { flex:1; min-width:0; }
+  .diff-row .tag { font-size:10.5px; padding:1px 5px; border-radius:4px; color:var(--text-3); background:var(--surface); border:1px solid var(--border);
+                   font-weight:500; margin-right:4px; }
+  .diff-add { background:var(--diff-add-bg); border-left-color:var(--diff-add-bd); }
+  .diff-add .sign { color:var(--diff-add-bd); }
+  .diff-rem { background:var(--diff-rem-bg); border-left-color:var(--diff-rem-bd); }
+  .diff-rem .sign { color:var(--diff-rem-bd); }
+  .diff-chg { background:var(--diff-chg-bg); border-left-color:var(--diff-chg-bd); }
+  .diff-chg .sign { color:var(--diff-chg-bd); }
+  .diff-row s { color:var(--text-3); }
+  .diff-row b { color:var(--text); font-weight:500; }
+
+  /* rename suggestion chip */
+  .rename {
+    margin:6px 0; padding:8px 12px; border-radius:8px;
+    background: color-mix(in oklab, var(--drift) 10%, transparent);
+    border:1px dashed color-mix(in oklab, var(--drift) 45%, transparent);
+    display:flex; align-items:center; gap:10px; font-size:12.5px;
+  }
+  .rename .what { font-family:'Geist Mono',ui-monospace; font-size:11.5px; color:var(--text-2); }
+
+  /* ——— SQL editor (right panel) ——— */
+  .sql { font-family:'Geist Mono',ui-monospace; font-size:12.5px; line-height:1.65; }
+  .sql .kw  { color:#a855f7; }
+  .sql .ty  { color:#0ea5e9; }
+  .sql .str { color:#16a34a; }
+  .sql .num { color:#ea580c; }
+  .sql .cm  { color:var(--text-3); font-style:italic; }
+  :root[data-theme="dark"] .sql .kw { color:#c084fc; }
+  :root[data-theme="dark"] .sql .ty { color:#7dd3fc; }
+  :root[data-theme="dark"] .sql .str{ color:#86efac; }
+  :root[data-theme="dark"] .sql .num{ color:#fdba74; }
+
+  .sql-editor {
+    border:1px solid var(--border); border-radius:10px; overflow:hidden;
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  .sql-editor:focus-within { border-color:var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+  .sql-editor .gutter { user-select:none; color:var(--text-3); padding: 14px 12px; text-align:right;
+                        font-family:'Geist Mono',ui-monospace; font-size:12.5px; background:var(--surface-2); border-right:1px solid var(--border); }
+  .sql-editor pre[contenteditable] { outline:none; padding:14px; flex:1; min-width:0; overflow:auto; background:var(--surface); white-space:pre; }
+
+  /* segmented (change level) */
+  .seg { display:inline-flex; padding:3px; gap:2px; background:var(--surface-3); border-radius:9px; border:1px solid var(--border); }
+  .seg button { padding:6px 12px; font-size:12.5px; font-weight:500; border-radius:6px; background:transparent; color:var(--text-2); cursor:pointer; border:none; transition: all .12s ease; display:inline-flex; align-items:center; gap:6px; }
+  .seg button.active.lvl-additive { background:var(--pending-soft); color:var(--pending); }
+  .seg button.active.lvl-breaking { background:var(--break-soft); color:var(--break); }
+  .seg button.active.lvl-patch    { background:var(--surface); color:var(--text); box-shadow: var(--shadow-sm); }
+  .seg .swatch { width:8px; height:8px; border-radius:999px; }
+  .lvl-breaking .swatch { background:var(--break); }
+  .lvl-additive .swatch { background:var(--pending); }
+  .lvl-patch .swatch    { background:var(--text-3); }
+
+  /* sticky right panel */
+  .sticky-panel { position:sticky; top:74px; }
+
+  /* warning banner inline */
+  .warn-inline { display:flex; gap:10px; padding:10px 12px; border-radius:8px;
+                 background: color-mix(in oklab, var(--drift) 8%, transparent);
+                 border:1px solid color-mix(in oklab, var(--drift) 35%, transparent); font-size:12.5px; color:var(--text); }
+  .warn-inline .ico { color:var(--drift); flex:none; margin-top:1px; }
+
+  /* toast */
+  .toast { position:fixed; bottom:24px; left:50%; transform: translateX(-50%) translateY(20px); z-index:80;
+           background:var(--text); color:var(--surface); padding:10px 14px; border-radius:10px; font-size:13px;
+           box-shadow: var(--shadow-lg); opacity:0; transition: opacity .25s ease, transform .25s ease;
+           display:flex; gap:10px; align-items:center; }
+  .toast.show { opacity:1; transform: translateX(-50%) translateY(0); }
+
+  /* loading bar at top while diffing */
+  .progress { height:2px; background:var(--surface-3); border-radius:1px; overflow:hidden; }
+  .progress .bar { height:100%; width:100%; background: linear-gradient(90deg, transparent, var(--brand), transparent); animation: progress 1.4s ease-in-out infinite; }
+  @keyframes progress { 0%{ transform: translateX(-100%); } 100%{ transform: translateX(100%); } }
+
+  /* table object pill */
+  .obj-name { font-family:'Geist Mono',ui-monospace; font-size:12px; color:var(--text-2); font-weight:500; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div class="grid min-h-screen" style="grid-template-columns: 240px 1fr;">
+
+  <!-- Sidebar -->
+  <aside class="flex flex-col" style="background:var(--surface); border-right:1px solid var(--border); position:sticky; top:0; height:100vh;">
+    <div class="h-14 px-4 flex items-center gap-2.5" style="border-bottom:1px solid var(--border);">
+      <div class="w-7 h-7 rounded-lg grid place-items-center flex-none" style="background:var(--brand);">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+      </div>
+      <div class="leading-tight" style="white-space:nowrap;">
+        <div class="font-semibold text-[13.5px]">Schema Studio</div>
+        <div class="text-[11px] mono" style="color:var(--text-3)">v0.4.2 · main</div>
+      </div>
+    </div>
+    <div class="p-3">
+      <div class="section-title px-2 mb-1">Workspace</div>
+      <div class="space-y-0.5">
+        <a class="nav-item" href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Dashboard</span><span class="badge pill pill-drift !text-[10px] !py-0">1</span></a>
+        <a class="nav-item active" href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v18M16 3v18"/><path d="M3 8h5M3 16h5M16 8h5M16 16h5"/></svg><span>Compare &amp; Author</span></a>
+        <a class="nav-item" href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/><path d="M5 19h14"/></svg><span>Deploy</span></a>
+        <a class="nav-item" href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07L11 5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07L13 19"/></svg><span>Connections</span><span class="badge pill pill-brand !text-[10px] !py-0">3</span></a>
+        <a class="nav-item" href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12c2-3 5-3 7 0s5 3 7 0 5-3 6 0"/><path d="M2 18c2-3 5-3 7 0s5 3 7 0 5-3 6 0"/></svg><span>Drift</span><span class="badge pill pill-drift !text-[10px] !py-0">2</span></a>
+      </div>
+    </div>
+    <div class="px-3 mt-2">
+      <div class="section-title px-2 mb-2">Tracked schemas</div>
+      <div class="space-y-1">
+        <a class="nav-item" href="#" style="padding:6px 10px"><span class="w-1.5 h-1.5 rounded-full flex-none" style="background:var(--sync)"></span><span class="mono text-[12.5px]">public</span><span class="ml-auto mono text-[10.5px]" style="color:var(--text-3)">v1.4.0</span></a>
+        <a class="nav-item" href="#" style="padding:6px 10px"><span class="w-1.5 h-1.5 rounded-full flex-none" style="background:var(--drift)"></span><span class="mono text-[12.5px]">finance</span><span class="ml-auto mono text-[10.5px]" style="color:var(--text-3)">v2.3.0</span></a>
+        <a class="nav-item" href="#" style="padding:6px 10px"><span class="w-1.5 h-1.5 rounded-full flex-none" style="background:var(--pending)"></span><span class="mono text-[12.5px]">analytics</span><span class="ml-auto mono text-[10.5px]" style="color:var(--text-3)">v0.9.0</span></a>
+      </div>
+    </div>
+    <div class="mt-auto p-3 space-y-2" style="border-top:1px solid var(--border);">
+      <button id="themeToggle2" class="nav-item w-full">
+        <svg class="ico" id="iconSun2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="ico" id="iconMoon2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span>Theme</span>
+        <span class="ml-auto text-[11px]" style="color:var(--text-3)" id="themeName">Light</span>
+      </button>
+      <div class="flex items-center gap-2.5 px-2 py-1.5">
+        <div class="w-7 h-7 rounded-full grid place-items-center flex-none text-white text-[11px] font-semibold" style="background:linear-gradient(135deg, var(--brand), #a78bfa);">AK</div>
+        <div class="leading-tight min-w-0" style="white-space:nowrap;">
+          <div class="text-[12.5px] font-medium truncate">Aarav Kapoor</div>
+          <div class="text-[11px] mono truncate" style="color:var(--text-3)">aarav@studio.dev</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="flex flex-col min-w-0">
+
+    <!-- Top bar -->
+    <div class="h-14 px-6 flex items-center gap-4 sticky top-0 z-20" style="border-bottom:1px solid var(--border); background:color-mix(in oklab, var(--surface) 96%, transparent); backdrop-filter:saturate(140%) blur(6px);">
+      <nav class="flex items-center gap-2 text-[13px]" style="color:var(--text-2); min-width:0;">
+        <span style="color:var(--text-3); white-space:nowrap;">Workspace</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        <span class="font-medium" style="color:var(--text); white-space:nowrap;">Compare &amp; Author</span>
+        <span class="pill pill-brand ml-2"><span class="dot"></span>Author</span>
+      </nav>
+      <div class="ml-auto flex items-center gap-2">
+        <button id="themeToggle" class="btn btn-secondary btn-sm">
+          <svg id="iconSun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg id="iconMoon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <span id="themeLabel">Dark mode</span>
+        </button>
+        <span class="hsep"></span>
+        <button class="btn btn-secondary btn-sm" id="historyBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          Recent comparisons
+        </button>
+      </div>
+    </div>
+
+    <!-- Page header + source bar -->
+    <section class="px-8 pt-8 pb-2">
+      <div class="flex items-end justify-between gap-6 mb-4 flex-wrap">
+        <div>
+          <div class="section-title mb-2">Compare &amp; Author</div>
+          <h1 class="text-[28px] font-semibold tracking-[-0.018em]">Turn a diff into editable SQL.</h1>
+          <p class="text-[13.5px] mt-1.5 max-w-[64ch]" style="color:var(--text-2);">
+            Pick two sources — a live schema or a stored snapshot — and we'll surface the differences and
+            generate the migration to bridge them. You can edit the SQL freely before saving.
+          </p>
+        </div>
+      </div>
+
+      <!-- Source selectors -->
+      <div class="source-bar">
+        <button class="picker" id="pickerLeft">
+          <span class="kind snap">SNAPSHOT</span>
+          <div class="body min-w-0">
+            <div class="title flex items-center gap-2" style="white-space:nowrap;">
+              <span class="mono">finance</span><span class="text-[12px]" style="color:var(--text-3);">@</span><span class="mono text-[12.5px]" style="color:var(--text-2);">Prod — RDS</span>
+            </div>
+            <div class="sub" style="white-space:nowrap;">0007 · v2.3.0 (HEAD) · captured 3d ago</div>
+          </div>
+          <svg class="ml-auto" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--text-3);"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <button class="swap-btn" id="swapBtn" title="Swap sides">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        </button>
+        <button class="picker" id="pickerRight">
+          <span class="kind live">LIVE</span>
+          <div class="body min-w-0">
+            <div class="title flex items-center gap-2" style="white-space:nowrap;">
+              <span class="mono">finance</span><span class="text-[12px]" style="color:var(--text-3);">@</span><span class="mono text-[12.5px]" style="color:var(--text-2);">Staging — Neon</span>
+            </div>
+            <div class="sub" style="white-space:nowrap;">live introspection · 22ms · pgver 15.5</div>
+          </div>
+          <svg class="ml-auto" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--text-3);"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <button class="btn btn-primary" id="compareBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Re-compare
+        </button>
+      </div>
+
+      <!-- progress bar (visible briefly when comparing) -->
+      <div class="progress mt-3" id="progress" style="opacity:0;"><div class="bar"></div></div>
+    </section>
+
+    <!-- Diff summary + filter -->
+    <section class="px-8 pt-4 pb-3 flex items-center justify-between gap-3 flex-wrap">
+      <div class="flex items-center gap-2" style="white-space:nowrap;">
+        <span class="section-title">Diff</span>
+        <span class="text-[13px]" style="color:var(--text-2);">
+          <b id="changeTotal">3</b> changes · <b>2 tables</b>
+        </span>
+        <span class="hsep mx-1"></span>
+        <span class="delta delta-add">+ <b>2</b></span>
+        <span class="delta delta-chg">~ <b>1</b></span>
+        <span class="delta delta-rem" style="opacity:.5;">− 0</span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <button class="pill pill-brand"><span class="dot"></span>Only changes</button>
+        <button class="pill pill-outline">Hide additive</button>
+        <button class="pill pill-outline">Group by table</button>
+        <span class="hsep mx-1"></span>
+        <button class="btn btn-ghost btn-xs"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 4l-7 8 7 8M22 4l-7 8 7 8"/></svg> Expand all</button>
+      </div>
+    </section>
+
+    <!-- Two-column body -->
+    <section class="px-8 pb-12 grid gap-6" style="grid-template-columns: minmax(0, 1fr) 480px;">
+
+      <!-- ——— Diff canvas ——— -->
+      <div class="space-y-3">
+
+        <!-- Rename suggestion (full width) -->
+        <div class="rename">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--drift)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+          <div class="flex-1 min-w-0">
+            <div class="text-[12.5px] font-medium" style="white-space:nowrap;">Possible rename detected</div>
+            <div class="what mt-0.5" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><s>invoice_items</s> → <b style="color:var(--text);">invoice_lines</b> · 92% column similarity</div>
+          </div>
+          <div class="flex gap-1 flex-none">
+            <button class="btn btn-secondary btn-xs">Accept</button>
+            <button class="btn btn-ghost btn-xs">Dismiss</button>
+          </div>
+        </div>
+
+        <!-- Table group: invoices (changed column) -->
+        <div class="table-group">
+          <div class="tg-header" data-tg="invoices">
+            <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            <span class="name">invoices</span>
+            <div class="ml-auto flex items-center gap-2">
+              <span class="delta delta-chg">~1</span>
+              <span class="pill pill-pending"><span class="dot"></span>additive</span>
+            </div>
+          </div>
+          <div class="obj-group">
+            <div class="obj-header">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round"><path d="M3 3h18v18H3zM3 9h18M9 3v18"/></svg>
+              <span class="section-title">Columns</span>
+            </div>
+            <div class="diff-row diff-chg">
+              <span class="sign">~</span>
+              <span class="body">
+                <span class="tag">type</span>
+                <b>amount</b> <s>numeric(10,2)</s> → <b>numeric(12,2)</b>
+                <span class="ml-2" style="color:var(--text-3); font-family:inherit;">— widens precision, lossless</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Table group: invoice_lines (new) -->
+        <div class="table-group">
+          <div class="tg-header" data-tg="invoice_lines">
+            <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            <span class="name">invoice_lines</span>
+            <span class="pill pill-sync"><span class="dot"></span>new</span>
+            <div class="ml-auto flex items-center gap-2">
+              <span class="delta delta-add">+5</span>
+              <span class="pill pill-pending"><span class="dot"></span>additive</span>
+            </div>
+          </div>
+          <div class="obj-group">
+            <div class="obj-header">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round"><path d="M3 3h18v18H3zM3 9h18M9 3v18"/></svg>
+              <span class="section-title">Columns</span>
+              <span class="text-[11px] ml-1" style="color:var(--text-3);">4 added</span>
+            </div>
+            <div class="diff-row diff-add"><span class="sign">+</span><span class="body"><span class="tag">column</span><b>id</b> <span style="color:var(--text-3)">uuid</span> <b>NOT NULL</b> <span style="color:var(--text-3)">DEFAULT gen_random_uuid()</span></span></div>
+            <div class="diff-row diff-add"><span class="sign">+</span><span class="body"><span class="tag">column</span><b>invoice_id</b> <span style="color:var(--text-3)">uuid</span> <b>NOT NULL</b></span></div>
+            <div class="diff-row diff-add"><span class="sign">+</span><span class="body"><span class="tag">column</span><b>description</b> <span style="color:var(--text-3)">text</span> <b>NOT NULL</b></span></div>
+            <div class="diff-row diff-add"><span class="sign">+</span><span class="body"><span class="tag">column</span><b>amount</b> <span style="color:var(--text-3)">numeric(12,2)</span> <b>NOT NULL</b> <span style="color:var(--text-3)">DEFAULT 0</span></span></div>
+          </div>
+          <div class="obj-group">
+            <div class="obj-header">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M22 12H2"/></svg>
+              <span class="section-title">Primary key</span>
+            </div>
+            <div class="diff-row diff-add"><span class="sign">+</span><span class="body"><span class="tag">pk</span><b>invoice_lines_pkey</b> ON (<span style="color:var(--text-3)">id</span>)</span></div>
+          </div>
+          <div class="obj-group">
+            <div class="obj-header">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07L11 5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07L13 19"/></svg>
+              <span class="section-title">Foreign keys</span>
+            </div>
+            <div class="diff-row diff-add"><span class="sign">+</span><span class="body"><span class="tag">fk</span><b>invoice_lines_invoice_id_fkey</b> (<span style="color:var(--text-3)">invoice_id</span>) → <b>invoices</b>(<span style="color:var(--text-3)">id</span>) <b>ON DELETE CASCADE</b></span></div>
+          </div>
+        </div>
+
+        <!-- Tables with no changes -->
+        <div class="panel p-3 flex items-center gap-3 text-[12.5px]" style="color:var(--text-3);">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--sync)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span><b style="color:var(--text-2)">12 tables</b> unchanged · <span class="mono">accounts, customers, ledger…</span></span>
+          <button class="ml-auto btn btn-ghost btn-xs">Show all</button>
+        </div>
+      </div>
+
+      <!-- ——— Generated migration draft (sticky) ——— -->
+      <aside>
+        <div class="sticky-panel space-y-4">
+
+          <div class="card overflow-hidden">
+            <!-- header -->
+            <div class="px-5 pt-4 pb-3">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="section-title">Generated migration</span>
+                <span class="pill pill-neutral"><span class="dot" style="background:var(--text-3)"></span>draft</span>
+                <span class="ml-auto text-[11px]" style="color:var(--text-3);">generated <span class="mono" style="color:var(--text-2)">just now</span></span>
+              </div>
+
+              <div class="flex items-baseline gap-2 mb-1">
+                <span class="mono text-[11px]" style="color:var(--text-3);">0008</span>
+                <input class="input mono" id="nameInput" value="widen_amount_and_add_lines" />
+              </div>
+              <textarea class="input mt-2" id="descInput" placeholder="Optional title / description for the changelog…" rows="2" style="resize:none;">Widens invoices.amount precision and introduces an invoice_lines table for line-item detail.</textarea>
+            </div>
+
+            <!-- SQL editor -->
+            <div class="px-5 pb-2">
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center gap-2">
+                  <span class="section-title">SQL</span>
+                  <span class="pill pill-sync"><span class="dot"></span>editable</span>
+                </div>
+                <div class="flex items-center gap-1">
+                  <button class="btn btn-ghost btn-xs" id="regenBtn" title="Regenerate from diff (will discard manual edits)">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Regenerate
+                  </button>
+                  <button class="btn btn-ghost btn-xs" id="copyBtn">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                  </button>
+                </div>
+              </div>
+
+              <div class="sql-editor flex" style="background:var(--surface-2);">
+                <pre class="gutter">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13</pre>
+<pre class="sql" contenteditable="true" spellcheck="false" id="sqlBody"><span class="cm">-- 0008 · widen amount &amp; add invoice_lines</span>
+<span class="kw">ALTER TABLE</span> invoices
+  <span class="kw">ALTER COLUMN</span> amount <span class="kw">TYPE</span> <span class="ty">numeric</span>(<span class="num">12</span>,<span class="num">2</span>);
+
+<span class="kw">CREATE TABLE</span> invoice_lines (
+  id           <span class="ty">uuid</span>        <span class="kw">PRIMARY KEY DEFAULT</span> gen_random_uuid(),
+  invoice_id   <span class="ty">uuid</span>        <span class="kw">NOT NULL REFERENCES</span> invoices(id) <span class="kw">ON DELETE CASCADE</span>,
+  description  <span class="ty">text</span>        <span class="kw">NOT NULL</span>,
+  amount       <span class="ty">numeric</span>(<span class="num">12</span>,<span class="num">2</span>) <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>
+);
+
+<span class="kw">CREATE INDEX</span> invoice_lines_invoice_id_idx
+  <span class="kw">ON</span> invoice_lines(invoice_id);</pre>
+              </div>
+
+              <div class="flex items-center justify-between mt-1.5 text-[11px]" style="color:var(--text-3);">
+                <span>13 lines · UTF-8 · SQL</span>
+                <span id="editStatus" class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full" style="background:var(--text-3)"></span>Unedited</span>
+              </div>
+
+              <!-- guardrail warn (shown when COMMIT/ROLLBACK present) -->
+              <div class="warn-inline mt-3" id="txnWarn" style="display:none;">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <div>
+                  <b>Transaction control isn't allowed.</b> Deploy wraps each migration in its own transaction. Remove <span class="mono">BEGIN</span> / <span class="mono">COMMIT</span> / <span class="mono">ROLLBACK</span>.
+                </div>
+              </div>
+            </div>
+
+            <!-- Classification + derived version -->
+            <div class="px-5 py-4" style="border-top:1px solid var(--border); background:var(--surface-2);">
+              <div class="flex items-center justify-between mb-3">
+                <span class="section-title">Change level</span>
+                <span class="text-[11px]" style="color:var(--text-3);">auto-suggested</span>
+              </div>
+              <div class="seg" id="lvlSeg">
+                <button class="lvl-breaking" data-lvl="breaking"><span class="swatch"></span>breaking</button>
+                <button class="active lvl-additive" data-lvl="additive"><span class="swatch"></span>additive</button>
+                <button class="lvl-patch" data-lvl="patch"><span class="swatch"></span>patch</button>
+              </div>
+
+              <div class="panel p-3 mt-4 flex items-center justify-between" style="background:var(--surface);">
+                <div>
+                  <div class="text-[11px]" style="color:var(--text-3);">Will become</div>
+                  <div class="mono text-[15px] mt-0.5"><span class="font-semibold" id="seqNext">0008</span> · <span class="font-semibold" id="verNext">v2.4.0</span> <span class="text-[12px]" style="color:var(--text-3);" id="bumpLbl">(minor)</span></div>
+                </div>
+                <div class="flex items-center gap-1.5 text-[11.5px]" style="color:var(--text-3);">
+                  <span class="mono">v2.3.0</span>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                  <span class="mono" id="verNext2" style="color:var(--text-2);">v2.4.0</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- footer actions -->
+            <div class="px-5 py-3 flex items-center justify-between gap-2" style="border-top:1px solid var(--border);">
+              <button class="btn btn-ghost btn-sm">Discard</button>
+              <div class="flex items-center gap-2">
+                <button class="btn btn-secondary btn-sm" id="saveBtn">Save to lineage</button>
+                <button class="btn btn-primary btn-sm" id="saveDeployBtn">
+                  Save &amp; deploy
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- secondary card: what this will do summary -->
+          <div class="card p-4">
+            <div class="section-title mb-2">What this will do</div>
+            <ul class="space-y-1.5 text-[12.5px]" style="color:var(--text-2);">
+              <li class="flex gap-2"><span style="color:var(--sync)">●</span>Append migration <span class="mono">0008</span> to <span class="mono">finance</span> lineage.</li>
+              <li class="flex gap-2"><span style="color:var(--sync)">●</span>Write SQL to GitHub <span class="mono">migrations/0008_widen_amount_and_add_lines.sql</span>.</li>
+              <li class="flex gap-2"><span style="color:var(--text-3)">●</span>Re-snapshot the schema at HEAD.</li>
+              <li class="flex gap-2"><span style="color:var(--text-3)">●</span>Run a drift check on each tracked target.</li>
+            </ul>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <footer class="px-8 pb-8 text-[12px]" style="color:var(--text-3);">Schema Studio · FYP · Pass 5 of 7 — S4 Compare &amp; Author</footer>
+  </div>
+</div>
+
+<!-- toast -->
+<div class="toast" id="toast"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg><span id="toastMsg">Done</span></div>
+
+<script>
+  // Theme
+  const root = document.documentElement;
+  function setTheme(mode){
+    root.setAttribute('data-theme', mode);
+    document.getElementById('iconSun').style.display = mode==='dark' ? 'none' : '';
+    document.getElementById('iconMoon').style.display = mode==='dark' ? '' : 'none';
+    document.getElementById('iconSun2').style.display = mode==='dark' ? 'none' : '';
+    document.getElementById('iconMoon2').style.display = mode==='dark' ? '' : 'none';
+    document.getElementById('themeLabel').textContent = mode==='dark' ? 'Light mode' : 'Dark mode';
+    document.getElementById('themeName').textContent = mode==='dark' ? 'Dark' : 'Light';
+    try { localStorage.setItem('ss-theme', mode); } catch(e){}
+  }
+  document.getElementById('themeToggle').addEventListener('click', () => setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark'));
+  document.getElementById('themeToggle2').addEventListener('click', () => setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark'));
+  try { const s = localStorage.getItem('ss-theme'); if (s) setTheme(s); } catch(e){}
+
+  // Re-compare animation
+  document.getElementById('compareBtn').addEventListener('click', () => {
+    const p = document.getElementById('progress');
+    p.style.opacity = 1; p.style.transition = 'opacity .2s ease';
+    setTimeout(() => { p.style.opacity = 0; showToast('Diff refreshed · 3 changes'); }, 1600);
+  });
+
+  // Swap pickers (visual swap)
+  document.getElementById('swapBtn').addEventListener('click', () => {
+    const L = document.getElementById('pickerLeft');
+    const R = document.getElementById('pickerRight');
+    const tmp = L.innerHTML; L.innerHTML = R.innerHTML; R.innerHTML = tmp;
+    showToast('Swapped left ↔ right');
+  });
+
+  // Change level → version preview
+  function bumpVersion(level){
+    // base: v2.3.0
+    const parts = [2,3,0];
+    if (level === 'breaking') { parts[0]++; parts[1]=0; parts[2]=0; }
+    else if (level === 'additive') { parts[1]++; parts[2]=0; }
+    else { parts[2]++; }
+    return 'v' + parts.join('.');
+  }
+  document.querySelectorAll('#lvlSeg button').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('#lvlSeg button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      const v = bumpVersion(b.dataset.lvl);
+      document.getElementById('verNext').textContent = v;
+      document.getElementById('verNext2').textContent = v;
+      const lbl = b.dataset.lvl === 'breaking' ? '(major)' : b.dataset.lvl === 'additive' ? '(minor)' : '(patch)';
+      document.getElementById('bumpLbl').textContent = lbl;
+    });
+  });
+
+  // SQL editor — detect edits + guardrail
+  const sqlBody = document.getElementById('sqlBody');
+  const editStatus = document.getElementById('editStatus');
+  const txnWarn = document.getElementById('txnWarn');
+  const baseText = sqlBody.innerText;
+  sqlBody.addEventListener('input', () => {
+    const t = sqlBody.innerText;
+    const edited = t !== baseText;
+    editStatus.innerHTML = edited
+      ? '<span class="w-1.5 h-1.5 rounded-full" style="background:var(--drift)"></span>Edited'
+      : '<span class="w-1.5 h-1.5 rounded-full" style="background:var(--text-3)"></span>Unedited';
+    txnWarn.style.display = /\b(BEGIN|COMMIT|ROLLBACK)\b/i.test(t) ? '' : 'none';
+  });
+
+  // Regenerate
+  document.getElementById('regenBtn').addEventListener('click', () => {
+    if (sqlBody.innerText !== baseText && !confirm('Regenerate will discard your manual edits. Continue?')) return;
+    sqlBody.innerHTML = sqlBody.innerHTML; // no-op for design; pretend
+    editStatus.innerHTML = '<span class="w-1.5 h-1.5 rounded-full" style="background:var(--text-3)"></span>Unedited';
+    txnWarn.style.display = 'none';
+    showToast('SQL regenerated from diff');
+  });
+
+  document.getElementById('copyBtn').addEventListener('click', () => {
+    navigator.clipboard && navigator.clipboard.writeText(sqlBody.innerText);
+    showToast('SQL copied');
+  });
+
+  document.getElementById('saveBtn').addEventListener('click', () => showToast('Saved 0008 to lineage'));
+  document.getElementById('saveDeployBtn').addEventListener('click', () => showToast('Saved · opening Deploy →'));
+
+  // Collapse table groups
+  document.querySelectorAll('.tg-header').forEach(h => {
+    h.addEventListener('click', () => {
+      h.classList.toggle('collapsed');
+      const groups = h.parentElement.querySelectorAll('.obj-group');
+      const collapsed = h.classList.contains('collapsed');
+      groups.forEach(g => g.style.display = collapsed ? 'none' : '');
+    });
+  });
+
+  // Toast
+  function showToast(msg){
+    const t = document.getElementById('toast');
+    document.getElementById('toastMsg').textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1800);
+  }
+</script>
+</body>
+</html>

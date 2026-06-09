@@ -20,12 +20,6 @@ export default function AdminControlPage() {
   const [updating, setUpdating] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (isAdmin) {
-      fetchUsers();
-    }
-  }, [isAdmin]);
-
   const fetchUsers = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -35,6 +29,14 @@ export default function AdminControlPage() {
     if (!error && data) setUsers(data);
     setLoading(false);
   };
+
+  useEffect(() => {
+    if (isAdmin) {
+      fetchUsers();
+    }
+    // We only want to (re)load the user list when the admin status flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
   const updateRole = async (userId: string, newRole: string) => {
     setUpdating(userId);

@@ -42,3 +42,21 @@ next-env.d.ts
 
 # local assistant/editor settings
 .claude/settings.local.json
+
+# editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS cruft
+Thumbs.db
+
+# logs (any stray run logs)
+*.log
+
+# local-only docs & scratch — internal notes, not needed to build or deploy
+/ARCHITECTURE.md
+/MIGRATION-PLAN.md
+/WIREFLOW.md
+/PLAN-*.md
