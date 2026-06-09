@@ -222,7 +222,12 @@ export function resolveCompareTargets():
 
     const base = normalizeCompareSsl(parseIntoClientConfig(urlA));
     const dbA = trimEnv("COMPARE_DATABASE_A") || "postgres";
-    const dbB = trimEnv("COMPARE_DATABASE_B") || "TEST";
+    // Default the second compare database to the first. A single-database server
+    // (e.g. a Supabase project, which only exposes the "postgres" database)
+    // would otherwise try to reach a non-existent "TEST" database and error. Set
+    // COMPARE_DATABASE_B explicitly to compare two databases on the same server;
+    // for the normal case, compare two real connections from the Connections page.
+    const dbB = trimEnv("COMPARE_DATABASE_B") || dbA;
     const cfgA = { ...base, database: dbA };
     const cfgB = { ...base, database: dbB };
     return {
@@ -236,6 +241,30 @@ export function resolveCompareTargets():
   }
 }
 
+// Schemas that PostgreSQL or a managed provider (Supabase, Neon, RDS) own
+// internally. They are never the target of a user migration, so we hide them
+// from the schema pickers — only the user's own schemas (public + anything they
+// created) should show. Supabase, for example, ships auth/storage/realtime/
+// vault/graphql/extensions in every database.
+export const MANAGED_SCHEMAS = [
+  "auth",
+  "storage",
+  "realtime",
+  "_realtime",
+  "vault",
+  "graphql",
+  "graphql_public",
+  "extensions",
+  "pgbouncer",
+  "pgsodium",
+  "pgsodium_masks",
+  "supabase_migrations",
+  "supabase_functions",
+  "_analytics",
+  "cron",
+  "net",
+];
+
 export async function fetchSchemaNames(
   cfg: ClientConfig
 ): Promise<{ ok: true; data: string[] } | { ok: false; error: string }> {
@@ -247,7 +276,9 @@ export async function fetchSchemaNames(
        FROM information_schema.schemata
        WHERE schema_name <> 'information_schema'
          AND schema_name NOT LIKE 'pg_%'
-       ORDER BY schema_name`
+         AND schema_name <> ALL($1::text[])
+       ORDER BY schema_name`,
+      [MANAGED_SCHEMAS]
     );
 
     return {

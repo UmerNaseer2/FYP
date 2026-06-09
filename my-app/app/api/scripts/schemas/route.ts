@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import pool from "@/lib/version-db";
-import { getPoolForConfig } from "@/lib/postgres";
+import { getPoolForConfig, MANAGED_SCHEMAS } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 
 export async function GET(req: NextRequest) {
@@ -84,13 +84,15 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // ── 3. Query user schemas — exclude Postgres system schemas ───────────────
+    // ── 3. Query user schemas — exclude Postgres + provider-managed schemas ───
     const result = await client.query<{ schema_name: string }>(
       `SELECT schema_name
        FROM information_schema.schemata
        WHERE schema_name NOT LIKE 'pg_%'
          AND schema_name != 'information_schema'
-       ORDER BY schema_name`
+         AND schema_name <> ALL($1::text[])
+       ORDER BY schema_name`,
+      [MANAGED_SCHEMAS]
     );
 
     return NextResponse.json({
