@@ -1,6 +1,6 @@
 import AuthGuard from "@/components/AuthGuard";
 
-export default function CompareLayout({
+export default function ScriptsLayout({
   children,
 }: {
   children: React.ReactNode;

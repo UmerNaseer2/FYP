@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Demo DB State — Script Deployment Tool</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 32px 24px;
+      min-height: 100vh;
+    }
+
+    .page-header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+    .page-header h1 {
+      font-size: 26px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-bottom: 8px;
+    }
+    .page-header p {
+      color: #64748b;
+      font-size: 14px;
+    }
+
+    /* ── Two-column layout ── */
+    .schemas-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      max-width: 1100px;
+      margin: 0 auto 40px;
+    }
+
+    .schema-card {
+      background: #fff;
+      border-radius: 14px;
+      border: 2px solid #e2e8f0;
+      overflow: hidden;
+      box-shadow: 0 4px 14px rgba(15,23,42,0.06);
+    }
+
+    .schema-card__header {
+      padding: 18px 20px 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+
+    .schema-card--staging .schema-card__header { background: #fff7ed; border-bottom: 2px solid #fed7aa; }
+    .schema-card--production .schema-card__header { background: #f0fdf4; border-bottom: 2px solid #bbf7d0; }
+
+    .schema-badge {
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      padding: 4px 10px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .schema-badge--staging    { background: #fed7aa; color: #9a3412; }
+    .schema-badge--production { background: #bbf7d0; color: #14532d; }
+
+    .schema-name {
+      font-size: 20px;
+      font-weight: 800;
+      font-family: "SF Mono", Menlo, monospace;
+    }
+    .schema-card--staging .schema-name    { color: #c2410c; }
+    .schema-card--production .schema-name { color: #15803d; }
+
+    .schema-subtitle {
+      color: #64748b;
+      font-size: 13px;
+      margin-top: 3px;
+    }
+
+    /* version status pill */
+    .schema-version-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .version-label { color: #64748b; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .version-value { font-size: 18px; font-weight: 800; font-family: "SF Mono", Menlo, monospace; }
+    .schema-card--staging .version-value    { color: #ea580c; }
+    .schema-card--production .version-value { color: #16a34a; }
+
+    .pending-pill {
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      margin-left: auto;
+      padding: 4px 10px;
+    }
+    .pending-pill--has  { background: #fee2e2; color: #b91c1c; }
+    .pending-pill--none { background: #dcfce7; color: #166534; }
+
+    /* ── Tables section ── */
+    .section-title {
+      color: #475569;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      padding: 12px 20px 6px;
+      text-transform: uppercase;
+    }
+
+    .tables-list {
+      padding: 0 20px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .table-row {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .table-row__name {
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 5px;
+    }
+    .col-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .col-chip {
+      background: #e2e8f0;
+      border-radius: 4px;
+      color: #475569;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      padding: 2px 6px;
+    }
+    .col-chip--new { background: #dbeafe; color: #1d4ed8; }
+
+    /* ── script_patch history ── */
+    .patch-table-wrap { padding: 0 20px 20px; }
+
+    table {
+      border-collapse: collapse;
+      font-size: 12px;
+      width: 100%;
+    }
+    th {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      padding: 7px 10px;
+      text-align: left;
+      text-transform: uppercase;
+    }
+    td {
+      border: 1px solid #f1f5f9;
+      padding: 8px 10px;
+      color: #374151;
+    }
+    tr:last-child td { border-bottom: 1px solid #e2e8f0; }
+
+    .ver-cell {
+      font-family: "SF Mono", Menlo, monospace;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .kind-badge {
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 7px;
+      white-space: nowrap;
+    }
+    .kind-badge--additive { background: #dcfce7; color: #166534; }
+    .kind-badge--breaking { background: #fee2e2; color: #b91c1c; }
+    .kind-badge--patch    { background: #dbeafe; color: #1d4ed8; }
+
+    /* ── App preview panel ── */
+    .app-preview {
+      background: #f8fafc;
+      border-top: 2px solid #e2e8f0;
+      padding: 16px 20px;
+    }
+    .app-preview__title { font-size: 11px; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+
+    .pending-list { display: flex; flex-direction: column; gap: 6px; }
+    .pending-item {
+      align-items: center;
+      background: #fff;
+      border: 1px solid #dbe4f0;
+      border-left: 3px solid #cbd5e1;
+      border-radius: 7px;
+      display: flex;
+      gap: 8px;
+      padding: 8px 10px;
+    }
+    .pending-item--additive { border-left-color: #22c55e; }
+    .pending-item--breaking { border-left-color: #ef4444; }
+    .pending-ver { font-family: "SF Mono", Menlo, monospace; font-size: 12px; font-weight: 800; }
+    .pending-desc { color: #64748b; font-size: 12px; flex: 1; }
+
+    .up-to-date {
+      align-items: center;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      color: #166534;
+      display: flex;
+      font-size: 13px;
+      font-weight: 600;
+      gap: 7px;
+      padding: 10px 12px;
+    }
+
+    /* ── GitHub section ── */
+    .github-section {
+      background: #fff;
+      border-radius: 14px;
+      border: 2px solid #e2e8f0;
+      box-shadow: 0 4px 14px rgba(15,23,42,0.06);
+      max-width: 1100px;
+      margin: 0 auto 40px;
+      overflow: hidden;
+    }
+    .github-header {
+      background: #0f172a;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 14px 20px;
+    }
+    .github-header span { color: #94a3b8; font-size: 12px; font-weight: 400; margin-left: 10px; }
+    .github-files {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+    }
+    .github-col {
+      padding: 16px 20px;
+      border-right: 1px solid #e2e8f0;
+    }
+    .github-col:last-child { border-right: none; }
+    .github-col-title { font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+    .github-file {
+      align-items: center;
+      display: flex;
+      gap: 8px;
+      padding: 6px 0;
+      font-size: 13px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .github-file:last-child { border-bottom: none; }
+    .github-file__icon { color: #64748b; font-size: 13px; }
+    .github-file__name { font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: #1e293b; }
+    .github-file__kind { margin-left: auto; }
+
+    /* ── Demo steps ── */
+    .steps-section {
+      background: #fff;
+      border-radius: 14px;
+      border: 2px solid #e2e8f0;
+      box-shadow: 0 4px 14px rgba(15,23,42,0.06);
+      max-width: 1100px;
+      margin: 0 auto;
+      overflow: hidden;
+    }
+    .steps-header {
+      background: #1e40af;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 14px 20px;
+    }
+    .steps-body { padding: 20px; }
+    .step {
+      align-items: flex-start;
+      display: flex;
+      gap: 14px;
+      margin-bottom: 16px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .step:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+    .step-num {
+      align-items: center;
+      background: #1e40af;
+      border-radius: 999px;
+      color: #fff;
+      display: flex;
+      flex-shrink: 0;
+      font-size: 12px;
+      font-weight: 800;
+      height: 26px;
+      justify-content: center;
+      width: 26px;
+    }
+    .step-text { font-size: 13px; line-height: 1.55; color: #374151; }
+    .step-text strong { color: #0f172a; }
+    .step-text code { background: #f1f5f9; border-radius: 4px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; padding: 2px 5px; color: #1e40af; }
+
+    @media (max-width: 700px) {
+      .schemas-grid, .github-files { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page-header">
+    <h1>Demo DB State — Script Deployment Tool</h1>
+    <p>Two schemas showing different deployment states. Push 4 SQL scripts to GitHub, run demo-setup.sql on your DB, then test in the app.</p>
+  </div>
+
+  <!-- ── Two schema cards ──────────────────────────────────────────────────── -->
+  <div class="schemas-grid">
+
+    <!-- STAGING -->
+    <div class="schema-card schema-card--staging">
+      <div class="schema-card__header">
+        <div>
+          <div class="schema-badge schema-badge--staging">Needs Update</div>
+          <div class="schema-name">staging</div>
+          <div class="schema-subtitle">3 scripts pending — v2, v3, v4 not yet applied</div>
+        </div>
+      </div>
+
+      <div class="schema-version-row">
+        <span class="version-label">Current version</span>
+        <span class="version-value">v1.0.0</span>
+        <span class="pending-pill pending-pill--has">3 pending</span>
+      </div>
+
+      <div class="section-title">Tables</div>
+      <div class="tables-list">
+        <div class="table-row">
+          <div class="table-row__name">users</div>
+          <div class="col-chips">
+            <span class="col-chip">id</span>
+            <span class="col-chip">username</span>
+            <span class="col-chip">email</span>
+            <span class="col-chip">created_at</span>
+          </div>
+        </div>
+        <div class="table-row">
+          <div class="table-row__name">profiles</div>
+          <div class="col-chips">
+            <span class="col-chip">id</span>
+            <span class="col-chip">user_id</span>
+            <span class="col-chip">full_name</span>
+            <span class="col-chip">bio</span>
+            <span class="col-chip">avatar_url</span>
+          </div>
+        </div>
+        <div class="table-row">
+          <div class="table-row__name">script_patch</div>
+          <div class="col-chips">
+            <span class="col-chip">audit log</span>
+            <span class="col-chip">1 row</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-title">script_patch history</div>
+      <div class="patch-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Version</th><th>Title</th><th>Kind</th><th>Applied</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="ver-cell">v1.0.0</td>
+              <td>Initial schema</td>
+              <td><span class="kind-badge kind-badge--additive">additive</span></td>
+              <td>2025-03-01</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="app-preview">
+        <div class="app-preview__title">What the app shows (Deploy panel)</div>
+        <div class="pending-list">
+          <div class="pending-item pending-item--additive">
+            <span class="pending-ver">v2.0.0</span>
+            <span class="kind-badge kind-badge--additive">additive</span>
+            <span class="pending-desc">Add email_verified column</span>
+          </div>
+          <div class="pending-item pending-item--additive">
+            <span class="pending-ver">v3.0.0</span>
+            <span class="kind-badge kind-badge--additive">additive</span>
+            <span class="pending-desc">Add roles &amp; user_roles tables</span>
+          </div>
+          <div class="pending-item pending-item--breaking">
+            <span class="pending-ver">v4.0.0</span>
+            <span class="kind-badge kind-badge--breaking">breaking</span>
+            <span class="pending-desc">Enforce email uniqueness</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PRODUCTION -->
+    <div class="schema-card schema-card--production">
+      <div class="schema-card__header">
+        <div>
+          <div class="schema-badge schema-badge--production">Up to Date</div>
+          <div class="schema-name">production</div>
+          <div class="schema-subtitle">All 4 versions applied — no pending scripts</div>
+        </div>
+      </div>
+
+      <div class="schema-version-row">
+        <span class="version-label">Current version</span>
+        <span class="version-value">v4.0.0</span>
+        <span class="pending-pill pending-pill--none">✓ up to date</span>
+      </div>
+
+      <div class="section-title">Tables</div>
+      <div class="tables-list">
+        <div class="table-row">
+          <div class="table-row__name">users</div>
+          <div class="col-chips">
+            <span class="col-chip">id</span>
+            <span class="col-chip">username</span>
+            <span class="col-chip">email</span>
+            <span class="col-chip col-chip--new">email_verified</span>
+            <span class="col-chip">created_at</span>
+            <span class="col-chip col-chip--new">UNIQUE email</span>
+          </div>
+        </div>
+        <div class="table-row">
+          <div class="table-row__name">profiles</div>
+          <div class="col-chips">
+            <span class="col-chip">id</span>
+            <span class="col-chip">user_id</span>
+            <span class="col-chip">full_name</span>
+            <span class="col-chip">bio</span>
+            <span class="col-chip">avatar_url</span>
+          </div>
+        </div>
+        <div class="table-row">
+          <div class="table-row__name col-chip--new">roles</div>
+          <div class="col-chips">
+            <span class="col-chip col-chip--new">id</span>
+            <span class="col-chip col-chip--new">name</span>
+          </div>
+        </div>
+        <div class="table-row">
+          <div class="table-row__name col-chip--new">user_roles</div>
+          <div class="col-chips">
+            <span class="col-chip col-chip--new">user_id</span>
+            <span class="col-chip col-chip--new">role_id</span>
+          </div>
+        </div>
+        <div class="table-row">
+          <div class="table-row__name">script_patch</div>
+          <div class="col-chips">
+            <span class="col-chip">audit log</span>
+            <span class="col-chip">4 rows</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-title">script_patch history</div>
+      <div class="patch-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Version</th><th>Title</th><th>Kind</th><th>Applied</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="ver-cell">v1.0.0</td>
+              <td>Initial schema</td>
+              <td><span class="kind-badge kind-badge--additive">additive</span></td>
+              <td>2025-03-01</td>
+            </tr>
+            <tr>
+              <td class="ver-cell">v2.0.0</td>
+              <td>Email verification</td>
+              <td><span class="kind-badge kind-badge--additive">additive</span></td>
+              <td>2025-03-15</td>
+            </tr>
+            <tr>
+              <td class="ver-cell">v3.0.0</td>
+              <td>Role-based access</td>
+              <td><span class="kind-badge kind-badge--additive">additive</span></td>
+              <td>2025-04-01</td>
+            </tr>
+            <tr>
+              <td class="ver-cell">v4.0.0</td>
+              <td>Enforce email uniqueness</td>
+              <td><span class="kind-badge kind-badge--breaking">breaking</span></td>
+              <td>2025-04-20</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="app-preview">
+        <div class="app-preview__title">What the app shows (Deploy panel)</div>
+        <div class="up-to-date">
+          <span>✓</span>
+          <span>This database is already up to date. No pending scripts for "user_schema".</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /schemas-grid -->
+
+  <!-- ── GitHub structure ──────────────────────────────────────────────────── -->
+  <div class="github-section">
+    <div class="github-header">
+      GitHub Repo — SQL Scripts
+      <span>Both schema folders contain the same 4 files</span>
+    </div>
+    <div class="github-files">
+      <div class="github-col">
+        <div class="github-col-title">📁 staging / user_schema</div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v1.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--additive">additive</span></span>
+        </div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v2.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--additive">additive</span></span>
+        </div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v3.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--additive">additive</span></span>
+        </div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v4.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--breaking">breaking</span></span>
+        </div>
+      </div>
+      <div class="github-col">
+        <div class="github-col-title">📁 production / user_schema</div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v1.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--additive">additive</span></span>
+        </div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v2.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--additive">additive</span></span>
+        </div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v3.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--additive">additive</span></span>
+        </div>
+        <div class="github-file">
+          <span class="github-file__icon">📄</span>
+          <span class="github-file__name">v4.0.0.sql</span>
+          <span class="github-file__kind"><span class="kind-badge kind-badge--breaking">breaking</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Demo walkthrough ──────────────────────────────────────────────────── -->
+  <div class="steps-section">
+    <div class="steps-header">Demo Walkthrough — Step by Step</div>
+    <div class="steps-body">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">
+          <strong>Push GitHub scripts.</strong> In the app's Scripts page, use "Push to GitHub" to push
+          the 4 SQL files from <code>demo/github-scripts/</code> into
+          <code>staging/user_schema/</code> and <code>production/user_schema/</code>.
+          (Or paste the SQL directly into GitHub via the web UI.)
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">
+          <strong>Set up the database.</strong> In pgAdmin, run <code>demo-setup.sql</code>.
+          This creates both schemas and pre-fills <code>script_patch</code> —
+          staging at v1.0.0, production at v4.0.0.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">
+          <strong>Demo: staging needs updates.</strong> Open the Deploy panel.
+          Select your connection → <strong>staging</strong> schema → <strong>user_schema</strong> group → Click "Check DB".
+          The app shows current: v1.0.0, pending: v2.0.0, v3.0.0, v4.0.0.
+          Use the target version picker to deploy to <strong>v3.0.0</strong> first.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">
+          <strong>Deploy incrementally.</strong> After deploying to v3.0.0, click "Check DB" again.
+          Only v4.0.0 is pending. Select it and deploy — "all scripts applied" banner appears.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-text">
+          <strong>Demo: production is up to date.</strong> Switch schema to <strong>production</strong> → "Check DB".
+          The app shows current: v4.0.0, pending: none. "Up to date" message appears.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-text">
+          <strong>Reset for another run.</strong> In pgAdmin, run <code>demo-reset.sql</code>
+          (drops both schemas), then re-run <code>demo-setup.sql</code> to restore the starting state.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>
