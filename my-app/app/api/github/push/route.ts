@@ -5,6 +5,7 @@ const REPO = process.env.GITHUB_REPO_NAME;
 const PAT = process.env.GITHUB_PAT;
 
 type PushBody = {
+  schema_name: string;
   script_name: string;
   version: string;
   sql_content: string;
@@ -30,16 +31,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { script_name, version, sql_content, description } = body;
+  const { schema_name, script_name, version, sql_content, description } = body;
 
-  if (!script_name || !version || !sql_content) {
+  if (!schema_name || !script_name || !version || !sql_content) {
     return NextResponse.json(
-      { error: "script_name, version, and sql_content are required." },
+      { error: "schema_name, script_name, version, and sql_content are required." },
       { status: 400 }
     );
   }
 
-  const filePath = `${script_name}/v${version}.sql`;
+  // Path: <schema>/<script_name>/v<version>.sql
+  const filePath = `${schema_name}/${script_name}/v${version}.sql`;
   const apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;
   const headers = {
     Authorization: `Bearer ${PAT}`,
