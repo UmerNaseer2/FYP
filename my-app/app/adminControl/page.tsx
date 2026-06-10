@@ -1,32 +1,34 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import Sidebar from "@/components/Sidebar";
 import Topbar from "@/components/Topbar";
 
 type Profile = {
-  id: string;
+  id: number;
   email: string;
   role: string;
 };
 
 export default function AdminControlPage() {
-  const supabase = createClient();
   const { isAdmin, loading: roleLoading, user: currentUser } = useUser();
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [updating, setUpdating] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState<number | null>(null);
 
   const fetchUsers = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id, email, role")
-      .order("email");
-    if (!error && data) setUsers(data);
+    try {
+      const res = await fetch("/api/admin/users");
+      const data = await res.json();
+      if (res.ok) {
+        setUsers(data.users || []);
+      }
+    } catch (error) {
+      console.error("Failed to fetch users:", error);
+    }
     setLoading(false);
   };
 
@@ -34,32 +36,34 @@ export default function AdminControlPage() {
     if (isAdmin) {
       fetchUsers();
     }
-    // We only want to (re)load the user list when the admin status flips.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
-  const updateRole = async (userId: string, newRole: string) => {
+  const updateRole = async (userId: number, newRole: string) => {
     setUpdating(userId);
-    const { error } = await supabase
-      .from("profiles")
-      .update({ role: newRole })
-      .eq("id", userId);
-    if (!error) {
-      setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, role: newRole }),
+      });
+      if (res.ok) {
+        setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
+      } else {
+        const data = await res.json();
+        console.error("Update failed:", data.error);
+      }
+    } catch (error) {
+      console.error("Error updating role:", error);
     }
     setUpdating(null);
   };
 
-  const deleteUser = async (userId: string, userEmail: string) => {
-    if (currentUser?.id === userId) {
+  const deleteUser = async (userId: number, userEmail: string) => {
+    if (currentUser?.email === userEmail) {
       alert("You cannot delete your own account.");
       return;
     }
 
-    // Be honest about scope: this client can only remove the user's profile/role
-    // row (via Supabase + RLS). It CANNOT delete the underlying auth/SSO account
-    // — that needs a server-side service-role call — so the user can still sign
-    // in via Azure unless they are also removed from the identity provider.
     const confirmed = confirm(
       `Remove ${userEmail}'s access?\n\n` +
         `This deletes their profile and role in this app. It does NOT delete ` +
@@ -69,24 +73,23 @@ export default function AdminControlPage() {
     if (!confirmed) return;
 
     setDeleting(userId);
-
-    const { error: profileError } = await supabase
-      .from("profiles")
-      .delete()
-      .eq("id", userId);
-
-    if (profileError) {
-      alert(`Error removing user: ${profileError.message}`);
-      setDeleting(null);
-      return;
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      if (res.ok) {
+        alert(`Removed ${userEmail}'s profile and role.`);
+        await fetchUsers();
+      } else {
+        const data = await res.json();
+        alert(`Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      alert("Failed to delete user");
     }
-
-    alert(
-      `Removed ${userEmail}'s profile and role.\n\n` +
-        `Their Microsoft/SSO login still exists — remove them from your identity ` +
-        `provider to fully revoke access.`
-    );
-    await fetchUsers();
     setDeleting(null);
   };
 
@@ -145,7 +148,7 @@ export default function AdminControlPage() {
                       <td>
                         <button
                           onClick={() => deleteUser(user.id, user.email)}
-                          disabled={deleting === user.id || currentUser?.id === user.id}
+                          disabled={deleting === user.id || currentUser?.email === user.email}
                           className="admin-delete-btn"
                         >
                           {deleting === user.id ? "..." : "Delete"}

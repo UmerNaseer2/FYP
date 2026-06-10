@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { AuthCallback } from "./AuthCallback";
+import { signIn } from "next-auth/react";
 
 // The dashboard now lives inside the studio shell at /studio. The legacy stats
 // dashboard that used to render here was retired in the Phase 10 cleanup, so the
@@ -16,7 +16,8 @@ export default async function RootPage({
 }) {
   const params = await searchParams;
   if (params.code) {
-    return <AuthCallback />;
+  
+await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
   }
   redirect("/studio");
 }
