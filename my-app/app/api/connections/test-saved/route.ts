@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Pool } from "pg";
-import pool from "../../../../lib/version-db";
+import pool from "@/lib/version-db";
 
 export async function POST(request: NextRequest) {
   let testPool: Pool | null = null;
@@ -16,9 +16,12 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await pool.query(
-      `SELECT host, port, database_name, type, username, password, connection_string
-       FROM connections
-       WHERE id = $1`,
+      `
+      SELECT host, port, database_name, type, username, password,
+             connection_string, ssl_enabled
+      FROM connections
+      WHERE id = $1
+      `,
       [id]
     );
 
@@ -38,21 +41,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (conn.connection_string && conn.connection_string.trim() !== "") {
-      testPool = new Pool({
-        connectionString: conn.connection_string.trim(),
-        connectionTimeoutMillis: 10000,
-      });
-    } else {
-      testPool = new Pool({
-        host: conn.host,
-        port: Number(conn.port),
-        database: conn.database_name || "postgres",
-        user: conn.username,
-        password: conn.password,
-        connectionTimeoutMillis: 10000,
-      });
-    }
+    testPool = new Pool(
+      conn.connection_string
+        ? {
+            connectionString: conn.connection_string.trim(),
+            ssl: conn.ssl_enabled ? { rejectUnauthorized: false } : false,
+            connectionTimeoutMillis: 10000,
+          }
+        : {
+            host: conn.host,
+            port: Number(conn.port),
+            database: conn.database_name,
+            user: conn.username,
+            password: conn.password,
+            ssl: conn.ssl_enabled ? { rejectUnauthorized: false } : false,
+            connectionTimeoutMillis: 10000,
+          }
+    );
 
     await testPool.query("SELECT NOW()");
 
@@ -64,7 +69,7 @@ export async function POST(request: NextRequest) {
     console.error("Saved test connection error:", error);
 
     return NextResponse.json(
-      { error: "Connection failed. Please check saved details." },
+      { error: "Connection failed. Please check saved details and SSL." },
       { status: 500 }
     );
   } finally {

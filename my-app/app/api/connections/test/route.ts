@@ -14,6 +14,7 @@ export async function POST(request: NextRequest) {
     const username = String(body.username ?? "postgres").trim();
     const password = String(body.password ?? "").trim();
     const connectionString = String(body.connection_string ?? "").trim();
+    const ssl_enabled = Boolean(body.ssl_enabled);
 
     if (type !== "PostgreSQL") {
       return NextResponse.json(
@@ -22,28 +23,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (connectionString !== "") {
-      testPool = new Pool({
-        connectionString,
-        connectionTimeoutMillis: 10000,
-      });
-    } else {
-      if (!host || !port || !database || !username || !password) {
-        return NextResponse.json(
-          { error: "Please fill in host, port, database, username, and password." },
-          { status: 400 }
-        );
-      }
-
-      testPool = new Pool({
-        host,
-        port,
-        database,
-        user: username,
-        password,
-        connectionTimeoutMillis: 10000,
-      });
-    }
+    testPool = new Pool(
+      connectionString
+        ? {
+            connectionString,
+            ssl: ssl_enabled ? { rejectUnauthorized: false } : false,
+            connectionTimeoutMillis: 10000,
+          }
+        : {
+            host,
+            port,
+            database,
+            user: username,
+            password,
+            ssl: ssl_enabled ? { rejectUnauthorized: false } : false,
+            connectionTimeoutMillis: 10000,
+          }
+    );
 
     await testPool.query("SELECT NOW()");
 
@@ -57,7 +53,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Connection failed. Please check host, port, database name, username, and password.",
+          "Connection failed. Please check host, port, database name, username, password, and SSL.",
       },
       { status: 500 }
     );

@@ -14,6 +14,8 @@ type Connection = {
   type: string;
   username: string;
   connection_string?: string;
+  db_location?: string;
+  ssl_enabled?: boolean;
 };
 
 export default function ConnectionsPage() {
@@ -32,11 +34,17 @@ export default function ConnectionsPage() {
     username: "postgres",
     password: "",
     connection_string: "",
+    db_location: "local",
+    ssl_enabled: false,
   });
 
   const safeJson = async (res: Response) => {
     const text = await res.text();
-    return text ? JSON.parse(text) : {};
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return {};
+    }
   };
 
   const fetchConnections = async () => {
@@ -63,9 +71,14 @@ export default function ConnectionsPage() {
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
+    const target = e.target;
+
     setForm({
       ...form,
-      [e.target.name]: e.target.value,
+      [target.name]:
+        target instanceof HTMLInputElement && target.type === "checkbox"
+          ? target.checked
+          : target.value,
     });
   };
 
@@ -80,32 +93,30 @@ export default function ConnectionsPage() {
       username: "postgres",
       password: "",
       connection_string: "",
+      db_location: "local",
+      ssl_enabled: false,
     });
   };
 
   const handleSave = async () => {
     setMessage("");
 
-    const method = editingId ? "PUT" : "POST";
-    const body = editingId ? { id: editingId, ...form } : form;
-
     try {
+      const method = editingId ? "PUT" : "POST";
+      const body = editingId ? { id: editingId, ...form } : form;
+
       const res = await fetch("/api/connections", {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 
-      const safeJson = async (res: Response) => {
-        const text = await res.text();
+      const data = await safeJson(res);
 
-        try {
-          return text ? JSON.parse(text) : {};
-        } catch {
-          console.error("API returned HTML instead of JSON:", text);
-          return [];
-        }
-      };
+      if (!res.ok) {
+        setMessage(data.error || "Failed to save connection.");
+        return;
+      }
 
       setMessage(
         editingId
@@ -162,8 +173,7 @@ export default function ConnectionsPage() {
         return;
       }
 
-      setMessage(`${conn.name} connection successful. Opening Version Detection...`);
-
+      setMessage(`${conn.name} connection successful.`);
       router.push(`/versions?connection=${conn.id}`);
     } catch (error) {
       console.error("Quick test error:", error);
@@ -183,6 +193,8 @@ export default function ConnectionsPage() {
       username: conn.username,
       password: "",
       connection_string: conn.connection_string || "",
+      db_location: conn.db_location || "local",
+      ssl_enabled: conn.ssl_enabled || false,
     });
 
     setMessage("Please enter password again before updating.");
@@ -218,10 +230,7 @@ export default function ConnectionsPage() {
       <Sidebar current="Connections" />
 
       <main className="db-main">
-        <Topbar
-          title="Connections"
-          text="Add and manage database connections."
-        />
+        <Topbar title="Connections" text="Add and manage database connections." />
 
         {message && <div className="conn-message">{message}</div>}
 
@@ -239,11 +248,22 @@ export default function ConnectionsPage() {
               className="conn-input"
             />
 
+            <select
+              name="db_location"
+              value={form.db_location}
+              onChange={handleChange}
+              className="conn-select"
+            >
+              <option value="local">Offline / Local Database</option>
+              <option value="cloud">Cloud Database</option>
+              <option value="remote">Online / Remote Database</option>
+            </select>
+
             <input
               name="host"
               value={form.host}
               onChange={handleChange}
-              placeholder="Host"
+              placeholder="Host e.g. localhost or cloud DB host"
               className="conn-input"
             />
 
@@ -273,8 +293,7 @@ export default function ConnectionsPage() {
             </div>
 
             <p className="conn-help-text">
-              PostgreSQL is fully supported. MySQL and SQL Server are prepared
-              for future support.
+              PostgreSQL supports local, cloud, and remote database connections.
             </p>
 
             <input
@@ -309,6 +328,16 @@ export default function ConnectionsPage() {
               placeholder="Connection String (optional)"
               className="conn-input"
             />
+
+            <label className="conn-help-text">
+              <input
+                type="checkbox"
+                name="ssl_enabled"
+                checked={form.ssl_enabled}
+                onChange={handleChange}
+              />{" "}
+              Use SSL for cloud/online database
+            </label>
 
             <div className="conn-btn-group">
               <button
@@ -347,9 +376,11 @@ export default function ConnectionsPage() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Location</th>
                 <th>Type</th>
                 <th>Database</th>
                 <th>Host</th>
+                <th>SSL</th>
                 <th>Username</th>
                 <th>Action</th>
               </tr>
@@ -358,17 +389,19 @@ export default function ConnectionsPage() {
             <tbody>
               {connections.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>No connections saved yet.</td>
+                  <td colSpan={8}>No connections saved yet.</td>
                 </tr>
               ) : (
                 connections.map((conn) => (
                   <tr key={conn.id}>
                     <td>{conn.name}</td>
+                    <td>{conn.db_location || "local"}</td>
                     <td>{conn.type}</td>
                     <td>{conn.database_name}</td>
                     <td>
                       {conn.host}:{conn.port}
                     </td>
+                    <td>{conn.ssl_enabled ? "Yes" : "No"}</td>
                     <td>{conn.username}</td>
                     <td>
                       <button

@@ -20,3 +20,8 @@ ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'postgres',
 ADD COLUMN IF NOT EXISTS connection_string TEXT;
 
 SELECT * FROM connections;
+
+
+ALTER TABLE connections
+ADD COLUMN IF NOT EXISTS db_location TEXT DEFAULT 'local',
+ADD COLUMN IF NOT EXISTS ssl_enabled BOOLEAN DEFAULT false;

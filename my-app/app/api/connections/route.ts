@@ -13,8 +13,16 @@ async function createConnectionsTable() {
       username TEXT NOT NULL,
       password TEXT NOT NULL,
       connection_string TEXT,
+      db_location TEXT DEFAULT 'local',
+      ssl_enabled BOOLEAN DEFAULT false,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE connections
+    ADD COLUMN IF NOT EXISTS db_location TEXT DEFAULT 'local',
+    ADD COLUMN IF NOT EXISTS ssl_enabled BOOLEAN DEFAULT false
   `);
 }
 
@@ -23,7 +31,8 @@ export async function GET() {
     await createConnectionsTable();
 
     const result = await pool.query(`
-      SELECT id, name, host, port, database_name, type, username, password, connection_string
+      SELECT id, name, host, port, database_name, type, username,
+             connection_string, db_location, ssl_enabled
       FROM connections
       ORDER BY id DESC
     `);
@@ -49,6 +58,8 @@ export async function POST(request: NextRequest) {
     const username = String(body.username ?? "postgres").trim();
     const password = String(body.password ?? "").trim();
     const connection_string = String(body.connection_string ?? "").trim();
+    const db_location = String(body.db_location ?? "local").trim();
+    const ssl_enabled = Boolean(body.ssl_enabled);
 
     if (!name || !host || !port || !database_name || !type || !username || !password) {
       return NextResponse.json(
@@ -60,11 +71,22 @@ export async function POST(request: NextRequest) {
     const result = await pool.query(
       `
       INSERT INTO connections
-      (name, host, port, database_name, type, username, password, connection_string)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-      RETURNING id, name, host, port, database_name, type, username, password, connection_string
+      (name, host, port, database_name, type, username, password, connection_string, db_location, ssl_enabled)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING id, name, host, port, database_name, type, username, connection_string, db_location, ssl_enabled
       `,
-      [name, host, port, database_name, type, username, password, connection_string || null]
+      [
+        name,
+        host,
+        port,
+        database_name,
+        type,
+        username,
+        password,
+        connection_string || null,
+        db_location,
+        ssl_enabled,
+      ]
     );
 
     return NextResponse.json(result.rows[0]);
@@ -92,6 +114,8 @@ export async function PUT(request: NextRequest) {
     const username = String(body.username ?? "postgres").trim();
     const password = String(body.password ?? "").trim();
     const connection_string = String(body.connection_string ?? "").trim();
+    const db_location = String(body.db_location ?? "local").trim();
+    const ssl_enabled = Boolean(body.ssl_enabled);
 
     if (!id || !name || !host || !port || !database_name || !type || !username || !password) {
       return NextResponse.json(
@@ -110,11 +134,25 @@ export async function PUT(request: NextRequest) {
           type = $5,
           username = $6,
           password = $7,
-          connection_string = $8
-      WHERE id = $9
-      RETURNING id, name, host, port, database_name, type, username, password, connection_string
+          connection_string = $8,
+          db_location = $9,
+          ssl_enabled = $10
+      WHERE id = $11
+      RETURNING id, name, host, port, database_name, type, username, connection_string, db_location, ssl_enabled
       `,
-      [name, host, port, database_name, type, username, password, connection_string || null, id]
+      [
+        name,
+        host,
+        port,
+        database_name,
+        type,
+        username,
+        password,
+        connection_string || null,
+        db_location,
+        ssl_enabled,
+        id,
+      ]
     );
 
     return NextResponse.json(result.rows[0]);
