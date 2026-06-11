@@ -2660,6 +2660,11 @@ body {
 .nav-item .ico { width:16px; height:16px; flex:none; }
 .nav-item .badge { margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:999px; }
 
+/* Collapsed-sidebar expand control (logo + chevron). */
+.sb-expand { cursor:pointer; transition:background .12s ease; }
+.sb-expand:hover { background:var(--surface-2); }
+.sb-expand:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+
 /* ——— Misc ——— */
 .section-title { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-3); }
 .kbd { font-family:var(--font-geist-mono),ui-monospace; font-size:11px; padding:1px 5px; border:1px solid var(--border-strong);

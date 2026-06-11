@@ -38,30 +38,53 @@ export function StudioSidebar({
       className="flex flex-col"
       style={{ background: "var(--surface)", borderRight: "1px solid var(--border)" }}
     >
-      {/* Brand + collapse */}
+      {/* Brand + collapse. When collapsed the whole brand cell becomes the
+          expand button (logo + a visible expand chevron), since a right-aligned
+          toggle would overflow the 64px rail and get clipped — leaving no way
+          back. */}
       <div
-        className="h-14 px-4 flex items-center gap-2.5"
+        className={`h-14 flex items-center ${collapsed ? "justify-center" : "px-4 gap-2.5"}`}
         style={{ borderBottom: "1px solid var(--border)" }}
       >
-        <div
-          className="w-7 h-7 rounded-lg grid place-items-center flex-none"
-          style={{ background: "var(--brand)", color: "#fff" }}
-        >
-          <LogoIcon size={15} />
-        </div>
-        <div className={`leading-tight ${labelHidden}`}>
-          <div className="font-semibold text-[13.5px]">Schema Studio</div>
-          <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
-            v2.0.0
-          </div>
-        </div>
-        <button
-          className="ml-auto btn btn-ghost btn-sm"
-          title={collapsed ? "Expand" : "Collapse"}
-          onClick={onToggleCollapse}
-        >
-          <ChevronLeftIcon size={14} style={{ transform: collapsed ? "rotate(180deg)" : undefined }} />
-        </button>
+        {collapsed ? (
+          <button
+            className="sb-expand flex items-center gap-1.5 rounded-lg px-1 py-1.5"
+            title="Expand"
+            aria-label="Expand sidebar"
+            onClick={onToggleCollapse}
+          >
+            <span
+              className="w-7 h-7 rounded-lg grid place-items-center flex-none"
+              style={{ background: "var(--brand)", color: "#fff" }}
+            >
+              <LogoIcon size={15} />
+            </span>
+            <ChevronLeftIcon size={14} style={{ transform: "rotate(180deg)", color: "var(--text-3)" }} />
+          </button>
+        ) : (
+          <>
+            <div
+              className="w-7 h-7 rounded-lg grid place-items-center flex-none"
+              style={{ background: "var(--brand)", color: "#fff" }}
+            >
+              <LogoIcon size={15} />
+            </div>
+            <div className="leading-tight">
+              <div className="font-semibold text-[13.5px]">Schema Studio</div>
+              <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
+                v2.0.0
+              </div>
+            </div>
+            <button
+              className="ml-auto btn btn-ghost btn-sm"
+              title="Collapse"
+              aria-label="Collapse sidebar"
+              onClick={onToggleCollapse}
+            >
+              <ChevronLeftIcon size={14} />
+            </button>
+          </>
+        )}
       </div>
 
       {/* Nav */}
