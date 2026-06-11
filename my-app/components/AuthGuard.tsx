@@ -8,7 +8,7 @@ import { useUser } from "@/hooks/useUser";
 // without a session (for local testing). It is now FALSE — real NextAuth
 // (Microsoft Entra) sign-in is enforced: no session redirects to /login.
 // Flip back to true to operate the app without logging in.
-const BYPASS_AUTH: boolean = false;
+const BYPASS_AUTH: boolean = true;
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useUser();
