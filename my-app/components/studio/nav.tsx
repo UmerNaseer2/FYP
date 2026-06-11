@@ -7,6 +7,7 @@ import {
   ConnectionsIcon,
   DriftIcon,
   SchemaMapIcon,
+  VersionSyncIcon,
 } from "@/components/ui/icons";
 
 export type NavItem = {
@@ -48,6 +49,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Deploy",
     href: "/deploy",
     icon: <DeployIcon className="ico" />,
+  },
+  {
+    screen: "Version Sync",
+    label: "Version Sync",
+    href: "/versionsync",
+    icon: <VersionSyncIcon className="ico" />,
   },
   {
     screen: "Connections",
