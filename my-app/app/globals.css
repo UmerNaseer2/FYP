@@ -3123,6 +3123,43 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
 .viz-stage { flex:1; min-height:480px; position:relative; border-top:1px solid var(--border); }
 .viz-stage-fill { height:100%; }
 
+/* Body holds one pane (Single) or two panes + a divider (Side by side). */
+.viz-body { flex:1; min-height:480px; display:flex; border-top:1px solid var(--border); }
+.viz-split__pane { flex:1; min-width:0; display:flex; }
+.viz-pane { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
+/* The second pane carries a left border so the split reads as two surfaces. */
+.viz-split .viz-split__pane + .viz-divider + .viz-split__pane .viz-pane { border-left:1px solid var(--border); }
+
+/* Per-pane picker bar */
+.viz-pane__bar { flex:none; display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;
+                 padding:12px 16px; border-bottom:1px solid var(--border); background:var(--surface-2); }
+.viz-pane__field { display:flex; flex-direction:column; }
+.viz-pane__field--conn { flex:1; min-width:170px; }
+.viz-pane__field--schema { width:172px; }
+.viz-pane__stage { flex:1; min-height:0; position:relative; }
+
+/* Draggable divider between the two panes */
+.viz-divider { flex:none; width:13px; cursor:col-resize; position:relative; display:flex;
+               align-items:center; justify-content:center; background:var(--bg); touch-action:none; }
+.viz-divider::before { content:""; position:absolute; top:0; bottom:0; left:6px; width:1px; background:var(--border);
+                       transition:background .12s ease; }
+.viz-divider:hover::before, .viz-divider:active::before { background:var(--brand); }
+.viz-divider__grip { position:relative; z-index:1; width:4px; height:38px; border-radius:3px;
+                     background:var(--border-strong); transition:background .12s ease; }
+.viz-divider:hover .viz-divider__grip, .viz-divider:active .viz-divider__grip { background:var(--brand); }
+
+/* Mode toggle (Single / Side by side) */
+.viz-mode { display:inline-flex; gap:3px; padding:3px; background:var(--surface-2); border:1px solid var(--border);
+            border-radius:9px; }
+.viz-mode__btn { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:500;
+                 color:var(--text-3); padding:6px 11px; border-radius:6px; border:1px solid transparent;
+                 background:transparent; cursor:pointer; white-space:nowrap;
+                 transition:background .12s ease, color .12s ease, border-color .12s ease; }
+.viz-mode__btn:hover { color:var(--text-2); }
+.viz-mode__btn.is-active { background:var(--surface); color:var(--text); border-color:var(--border);
+                           box-shadow:0 1px 3px rgba(0,0,0,0.16); }
+.viz-mode__btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+
 .viz-canvas { background:var(--bg); }
 
 /* ── Table node ─────────────────────────────────────────────────────────── */

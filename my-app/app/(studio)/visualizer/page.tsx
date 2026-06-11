@@ -1,64 +1,73 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
-import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Skeleton } from "@/components/ui";
-import {
-  SchemaMapIcon,
-  ConnectionsIcon,
-  AlertTriangleIcon,
-  RefreshIcon,
-} from "@/components/ui/icons";
-import type { SchemaSnapshot } from "@/lib/postgres";
+import { SchemaMapIcon, ConnectionsIcon } from "@/components/ui/icons";
+import { VisualizerPane, type VizConnection } from "@/components/studio/visualizer/VisualizerPane";
 
-// The Schema Visualizer: pick a connection + schema, get a live ER diagram of
-// it (tables, columns, keys, FK edges). Introspection happens on demand via
-// GET /api/schema/snapshot; the canvas itself is client-only (React Flow), so
-// it's code-split and skipped during prerender.
+// The Schema Visualizer. "Single" draws one schema; "Side by side" draws two
+// independent panes (e.g. dev vs prod) with a draggable divider between them.
+//
+// Connections are fetched once here and shared with both panes; each pane owns
+// its own schema selection + introspection. The LEFT pane sits at a stable spot
+// in the tree across modes, so toggling Single↔Side-by-side keeps its diagram;
+// the RIGHT pane mounts only in side-by-side.
 
-const SchemaFlow = dynamic(() => import("@/components/studio/visualizer/SchemaFlow"), {
-  ssr: false,
-  loading: () => <CanvasLoading label="Preparing the canvas…" />,
-});
+type Mode = "single" | "split";
 
-type Connection = {
-  id: number;
-  name: string;
-  host: string;
-  database_name: string;
-};
+const MIN_PCT = 26;
+const MAX_PCT = 74;
 
-function CanvasLoading({ label }: { label: string }) {
+function PanelSingleIcon() {
   return (
-    <div className="viz-stage-fill grid place-items-center">
-      <div className="text-center space-y-3" style={{ width: 320 }}>
-        <Skeleton width="100%" height={10} radius={999} />
-        <Skeleton width="72%" height={10} radius={999} className="mx-auto" />
-        <p className="help" style={{ color: "var(--text-3)" }}>{label}</p>
-      </div>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+    </svg>
+  );
+}
+function PanelSplitIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M12 4v16" />
+    </svg>
+  );
+}
+
+function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
+  return (
+    <div className="viz-mode" role="group" aria-label="View mode">
+      <button
+        type="button"
+        className={`viz-mode__btn${mode === "single" ? " is-active" : ""}`}
+        aria-pressed={mode === "single"}
+        onClick={() => onChange("single")}
+      >
+        <PanelSingleIcon /> Single
+      </button>
+      <button
+        type="button"
+        className={`viz-mode__btn${mode === "split" ? " is-active" : ""}`}
+        aria-pressed={mode === "split"}
+        onClick={() => onChange("split")}
+      >
+        <PanelSplitIcon /> Side by side
+      </button>
     </div>
   );
 }
 
 export default function VisualizerPage() {
-  const [connections, setConnections] = useState<Connection[]>([]);
+  const [connections, setConnections] = useState<VizConnection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
-  const [connectionId, setConnectionId] = useState("");
+  const [mode, setMode] = useState<Mode>("single");
+  const [splitPct, setSplitPct] = useState(50);
 
-  const [schemas, setSchemas] = useState<string[]>([]);
-  const [schemasLoading, setSchemasLoading] = useState(false);
-  const [schemasError, setSchemasError] = useState("");
-  const [schema, setSchema] = useState("");
+  const splitRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
 
-  const [snapshot, setSnapshot] = useState<SchemaSnapshot | null>(null);
-  const [snapPhase, setSnapPhase] = useState<"idle" | "loading" | "error" | "ready">("idle");
-  const [snapError, setSnapError] = useState("");
-  const [retry, setRetry] = useState(0);
-
-  // ── Load connections once ──────────────────────────────────────────────--
+  // ── Load connections once, shared by both panes ─────────────────────────--
   useEffect(() => {
     let active = true;
     (async () => {
@@ -67,7 +76,7 @@ export default function VisualizerPage() {
         const data = await res.json();
         if (active && Array.isArray(data)) setConnections(data);
       } catch {
-        /* empty state below guides the user */
+        /* the empty state below guides the user */
       } finally {
         if (active) setConnectionsLoaded(true);
       }
@@ -77,147 +86,52 @@ export default function VisualizerPage() {
     };
   }, []);
 
-  // ── Schemas for the chosen connection ──────────────────────────────────--
-  useEffect(() => {
-    setSchemas([]); // never leave the previous connection's list selectable
-    if (!connectionId) return;
-    let active = true;
-    setSchemasLoading(true);
-    setSchemasError("");
-    (async () => {
-      try {
-        const res = await fetch(`/api/scripts/schemas?connectionId=${connectionId}`, { cache: "no-store" });
-        const data = await res.json();
-        if (!active) return;
-        if (Array.isArray(data?.schemas)) setSchemas(data.schemas);
-        else setSchemasError(data?.error ?? "Could not load schemas.");
-      } catch {
-        if (active) setSchemasError("Could not load schemas. Is the database reachable?");
-      } finally {
-        if (active) setSchemasLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [connectionId]);
-
-  // ── Snapshot for the chosen schema ─────────────────────────────────────--
-  useEffect(() => {
-    setSnapshot(null);
-    setSnapError("");
-    if (!connectionId || !schema) {
-      setSnapPhase("idle");
-      return;
+  // ── Divider drag (pointer-captured, so it tracks outside the handle) ─────--
+  function onDividerDown(e: PointerEvent<HTMLDivElement>) {
+    draggingRef.current = true;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture unavailable — drag still tracks while over the divider */
     }
-    let active = true;
-    setSnapPhase("loading");
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/schema/snapshot?connectionId=${encodeURIComponent(connectionId)}&schema=${encodeURIComponent(schema)}`,
-          { cache: "no-store" },
-        );
-        const data = await res.json();
-        if (!active) return;
-        if (res.ok && data?.snapshot) {
-          setSnapshot(data.snapshot as SchemaSnapshot);
-          setSnapPhase("ready");
-        } else {
-          setSnapError(data?.error ?? "Could not read the schema.");
-          setSnapPhase("error");
-        }
-      } catch {
-        if (active) {
-          setSnapError("Could not reach the server. Try again.");
-          setSnapPhase("error");
-        }
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [connectionId, schema, retry]);
+  }
+  function onDividerMove(e: PointerEvent<HTMLDivElement>) {
+    if (!draggingRef.current || !splitRef.current) return;
+    const rect = splitRef.current.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    setSplitPct(Math.min(MAX_PCT, Math.max(MIN_PCT, pct)));
+  }
+  function onDividerUp(e: PointerEvent<HTMLDivElement>) {
+    draggingRef.current = false;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer already released */
+    }
+  }
+  function resetSplit() {
+    setSplitPct(50);
+  }
+
+  const noConnections = connectionsLoaded && connections.length === 0;
 
   return (
     <div className="viz-page">
-      <div className="px-8 pt-8 pb-4">
-        <div className="flex items-end justify-between gap-4 flex-wrap">
-          <div>
-            <div className="section-title mb-2">Visualizer</div>
-            <h1 className="text-[28px] font-semibold tracking-[-0.018em]">See the schema.</h1>
-            <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-              A live entity-relationship map of any schema — tables, columns, keys, and the
-              foreign-key paths between them, laid out automatically.
-            </p>
-          </div>
-
-          {!connectionsLoaded ? (
-            <div className="flex items-end gap-3 flex-wrap">
-              <div>
-                <label className="label">Connection</label>
-                <Skeleton className="mt-1" width={260} height={38} radius={8} />
-              </div>
-              <div>
-                <label className="label">Schema</label>
-                <Skeleton className="mt-1" width={180} height={38} radius={8} />
-              </div>
-            </div>
-          ) : connections.length > 0 ? (
-            <div className="flex items-end gap-3 flex-wrap">
-              <div>
-                <label className="label" htmlFor="viz-conn">Connection</label>
-                <Select
-                  variant="input"
-                  id="viz-conn"
-                  className="mt-1"
-                  ariaLabel="Connection"
-                  style={{ minWidth: 260 }}
-                  value={connectionId}
-                  placeholder="Select a connection…"
-                  options={connections.map((c) => ({
-                    value: String(c.id),
-                    label: `${c.name} — ${c.host}/${c.database_name}`,
-                  }))}
-                  onChange={(value) => {
-                    setConnectionId(value);
-                    setSchema("");
-                  }}
-                />
-              </div>
-              <div>
-                <label className="label" htmlFor="viz-schema">Schema</label>
-                <Select
-                  variant="input"
-                  id="viz-schema"
-                  className="mt-1"
-                  mono
-                  ariaLabel="Schema"
-                  style={{ minWidth: 180 }}
-                  value={schema}
-                  disabled={schemasLoading || !connectionId}
-                  placeholder={
-                    !connectionId
-                      ? "Select a connection first"
-                      : schemasLoading
-                        ? "Loading schemas…"
-                        : "Select a schema…"
-                  }
-                  options={schemas.map((s) => ({ value: s, label: s }))}
-                  onChange={(value) => setSchema(value)}
-                />
-                {schemasError && (
-                  <p className="help mt-1" style={{ color: "var(--break)" }}>{schemasError}</p>
-                )}
-              </div>
-            </div>
-          ) : null}
+      <div className="px-8 pt-8 pb-4 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="section-title mb-2">Visualizer</div>
+          <h1 className="text-[28px] font-semibold tracking-[-0.018em]">See the schema.</h1>
+          <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
+            A live entity-relationship map of any schema — tables, columns, keys, and the
+            foreign-key paths between them. Switch to side by side to compare two schemas at once.
+          </p>
         </div>
+        {!noConnections && <ModeToggle mode={mode} onChange={setMode} />}
       </div>
 
-      {/* ── Stage ─────────────────────────────────────────────────────────── */}
-      <div className="viz-stage">
-        {connectionsLoaded && connections.length === 0 ? (
+      {noConnections ? (
+        <div className="viz-stage">
           <EmptyState
             icon={<SchemaMapIcon size={22} />}
             title="Add a connection first"
@@ -229,36 +143,38 @@ export default function VisualizerPage() {
               </Link>
             }
           />
-        ) : snapPhase === "idle" ? (
-          <EmptyState
-            icon={<SchemaMapIcon size={22} />}
-            title="Pick a connection and a schema"
-            description="Choose what to map above — the diagram is drawn live from the database, nothing is stored."
-          />
-        ) : snapPhase === "loading" ? (
-          <CanvasLoading label={`Reading ${schema} and laying out the diagram…`} />
-        ) : snapPhase === "error" ? (
-          <EmptyState
-            icon={<AlertTriangleIcon size={22} />}
-            title="Couldn't read the schema"
-            description={snapError}
-            actions={
-              <button className="btn btn-secondary btn-sm" onClick={() => setRetry((n) => n + 1)}>
-                <RefreshIcon size={14} />
-                Try again
-              </button>
-            }
-          />
-        ) : snapshot && snapshot.tables.length === 0 ? (
-          <EmptyState
-            icon={<SchemaMapIcon size={22} />}
-            title="Nothing to draw"
-            description={`Schema "${schema}" has no tables yet.`}
-          />
-        ) : snapshot ? (
-          <SchemaFlow key={`${connectionId}:${schema}:${retry}`} snapshot={snapshot} />
-        ) : null}
-      </div>
+        </div>
+      ) : (
+        <div className={`viz-body${mode === "split" ? " viz-split" : ""}`} ref={splitRef}>
+          {/* Left pane — stable position across modes, so its diagram survives a toggle. */}
+          <div
+            className="viz-split__pane"
+            style={mode === "split" ? { flex: `0 0 ${splitPct}%` } : undefined}
+          >
+            <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} />
+          </div>
+
+          {mode === "split" && (
+            <>
+              <div
+                className="viz-divider"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize panes (double-click to reset)"
+                onPointerDown={onDividerDown}
+                onPointerMove={onDividerMove}
+                onPointerUp={onDividerUp}
+                onDoubleClick={resetSplit}
+              >
+                <span className="viz-divider__grip" />
+              </div>
+              <div className="viz-split__pane" style={{ flex: 1 }}>
+                <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} />
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
