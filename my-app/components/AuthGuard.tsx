@@ -4,11 +4,11 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
 
-// ⚠️ TEMPORARY — auth is bypassed so the app can be operated and tested without
-// a Supabase SSO session. This switches OFF the login gate on every page that
-// uses <AuthGuard> (compare, connections, scripts, versions, adminControl, home).
-// To restore real auth, set BYPASS_AUTH back to false. Nothing else changes.
-const BYPASS_AUTH: boolean = true;
+// Auth gate for every page wrapped in <AuthGuard>. When true, pages render
+// without a session (for local testing). It is now FALSE — real NextAuth
+// (Microsoft Entra) sign-in is enforced: no session redirects to /login.
+// Flip back to true to operate the app without logging in.
+const BYPASS_AUTH: boolean = false;
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useUser();
