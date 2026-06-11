@@ -152,7 +152,18 @@ export default function VisualizerPage() {
             </p>
           </div>
 
-          {connections.length > 0 && (
+          {!connectionsLoaded ? (
+            <div className="flex items-end gap-3 flex-wrap">
+              <div>
+                <label className="label">Connection</label>
+                <Skeleton className="mt-1" width={260} height={38} radius={8} />
+              </div>
+              <div>
+                <label className="label">Schema</label>
+                <Skeleton className="mt-1" width={180} height={38} radius={8} />
+              </div>
+            </div>
+          ) : connections.length > 0 ? (
             <div className="flex items-end gap-3 flex-wrap">
               <div>
                 <label className="label" htmlFor="viz-conn">Connection</label>
@@ -200,7 +211,7 @@ export default function VisualizerPage() {
                 )}
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
