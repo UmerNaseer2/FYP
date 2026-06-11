@@ -6,6 +6,7 @@ import {
   DeployIcon,
   ConnectionsIcon,
   DriftIcon,
+  SchemaMapIcon,
 } from "@/components/ui/icons";
 
 export type NavItem = {
@@ -60,6 +61,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/drift",
     icon: <DriftIcon className="ico" />,
     // No badge: real drift-event counts arrive with the Phase 6/9 drift backend.
+  },
+  {
+    screen: "Visualizer",
+    label: "Visualizer",
+    href: "/visualizer",
+    icon: <SchemaMapIcon className="ico" />,
   },
 ];
 

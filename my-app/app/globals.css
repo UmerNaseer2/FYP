@@ -3097,3 +3097,109 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
 .audit-row { transition: background .12s ease; }
 .audit-row:last-child { border-bottom:none !important; }
 .audit-row:hover { background:var(--surface-2); }
+
+/* ===========================================================================
+   Schema Visualizer (S8) — React Flow canvas + table nodes.
+   All React Flow overrides are scoped under .viz-canvas (two-class selectors)
+   so they beat the library stylesheet regardless of import order.
+   =========================================================================== */
+
+/* Palette — vivid accents that read on both themes, plus canvas chrome. */
+:root {
+  --viz-accent-0:#7c7fff; --viz-accent-1:#4ade80; --viz-accent-2:#60a5fa; --viz-accent-3:#f472b6;
+  --viz-accent-4:#fbbf24; --viz-accent-5:#2dd4bf; --viz-accent-6:#c084fc; --viz-accent-7:#fb923c;
+  --viz-pk:#eab308;
+  --viz-edge:#3d4051;
+  --viz-dot:#232530;
+}
+:root[data-theme="light"] {
+  --viz-edge:#c2c7d3;
+  --viz-dot:#e0e4eb;
+  --viz-pk:#ca8a04;
+}
+
+/* Page scaffold: header row on top, canvas fills the rest of the viewport. */
+.viz-page { height:100%; display:flex; flex-direction:column; }
+.viz-stage { flex:1; min-height:480px; position:relative; border-top:1px solid var(--border); }
+.viz-stage-fill { height:100%; }
+
+.viz-canvas { background:var(--bg); }
+
+/* ── Table node ─────────────────────────────────────────────────────────── */
+.viz-table { width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden;
+             background:var(--surface); border:1px solid var(--border-strong); border-radius:10px;
+             box-shadow:0 2px 10px rgba(0,0,0,0.18); transition:border-color .15s ease, box-shadow .15s ease; }
+.viz-table.is-selected { border-color:var(--brand); box-shadow:0 0 0 1px var(--brand), 0 8px 28px rgba(0,0,0,0.3); }
+.viz-accent-0 { --va:var(--viz-accent-0); } .viz-accent-1 { --va:var(--viz-accent-1); }
+.viz-accent-2 { --va:var(--viz-accent-2); } .viz-accent-3 { --va:var(--viz-accent-3); }
+.viz-accent-4 { --va:var(--viz-accent-4); } .viz-accent-5 { --va:var(--viz-accent-5); }
+.viz-accent-6 { --va:var(--viz-accent-6); } .viz-accent-7 { --va:var(--viz-accent-7); }
+
+.viz-table__header { position:relative; flex:none; height:42px; display:flex; align-items:center; gap:8px;
+                     padding:3px 12px 0; border-bottom:1px solid var(--border); }
+.viz-table__header::before { content:""; position:absolute; top:0; left:0; right:0; height:3px; background:var(--va); }
+.viz-table__name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                   font-size:12.5px; font-weight:600; color:var(--text); }
+.viz-table__count { flex:none; font-size:10px; line-height:1; color:var(--text-3); background:var(--surface-2);
+                    border:1px solid var(--border); border-radius:999px; padding:3px 7px; }
+
+.viz-table__cols { flex:1; padding:3px 0; }
+.viz-table__row { position:relative; height:25px; display:flex; align-items:center; gap:7px; padding:0 12px; }
+.viz-table__row:hover { background:var(--surface-2); }
+.viz-table__ico { flex:none; width:13px; display:inline-flex; justify-content:center; color:transparent; }
+.viz-table__ico.is-pk { color:var(--viz-pk); }
+.viz-table__ico.is-fk { color:var(--brand); }
+.viz-table__col { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                  font-size:11.5px; color:var(--text-2); }
+.viz-table__col.is-required { color:var(--text); font-weight:500; }
+.viz-table__ext { margin-left:4px; font-size:10px; color:var(--drift); }
+.viz-table__type { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                   font-size:10.5px; color:var(--text-3); }
+
+/* Column-level edge anchors: invisible until the table is hovered. */
+.viz-canvas .viz-handle { width:7px; height:7px; min-width:7px; min-height:7px; background:var(--surface);
+                          border:1.5px solid var(--border-strong); opacity:0; transition:opacity .15s ease; }
+.viz-table:hover .viz-handle { opacity:1; }
+
+/* Selection / search emphasis */
+.viz-canvas .react-flow__node { transition:opacity .15s ease; }
+.viz-canvas .react-flow__node.viz-dim { opacity:0.16; }
+.viz-canvas .react-flow__edge { transition:opacity .15s ease; }
+.viz-canvas .react-flow__edge.viz-dim { opacity:0.07; }
+.viz-canvas .react-flow__edge-path { stroke:var(--viz-edge); stroke-width:1.5; }
+.viz-canvas .react-flow__edge.viz-hot .react-flow__edge-path { stroke:var(--brand); stroke-width:2; }
+.viz-canvas .react-flow__edge.selected .react-flow__edge-path { stroke:var(--brand); }
+
+/* Canvas chrome: dots, controls, minimap, attribution */
+.viz-canvas .react-flow__background circle { fill:var(--viz-dot); }
+.viz-canvas .react-flow__controls { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+                                    overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,0.18); }
+.viz-canvas .react-flow__controls-button { background:var(--surface); border-bottom:1px solid var(--border);
+                                           color:var(--text-2); width:26px; height:26px; }
+.viz-canvas .react-flow__controls-button:hover { background:var(--surface-2); color:var(--text); }
+.viz-canvas .react-flow__controls-button svg { fill:currentColor; max-width:11px; max-height:11px; }
+.viz-canvas .react-flow__minimap { background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+                                   overflow:hidden; }
+.viz-canvas .react-flow__minimap svg { background:var(--surface-2); }
+.viz-canvas .react-flow__minimap-mask { fill:color-mix(in oklab, var(--bg) 62%, transparent); }
+.viz-canvas .viz-mini-0 { fill:var(--viz-accent-0); } .viz-canvas .viz-mini-1 { fill:var(--viz-accent-1); }
+.viz-canvas .viz-mini-2 { fill:var(--viz-accent-2); } .viz-canvas .viz-mini-3 { fill:var(--viz-accent-3); }
+.viz-canvas .viz-mini-4 { fill:var(--viz-accent-4); } .viz-canvas .viz-mini-5 { fill:var(--viz-accent-5); }
+.viz-canvas .viz-mini-6 { fill:var(--viz-accent-6); } .viz-canvas .viz-mini-7 { fill:var(--viz-accent-7); }
+.viz-canvas .react-flow__attribution { background:transparent; color:var(--text-3); font-size:9px; }
+.viz-canvas .react-flow__attribution a { color:inherit; }
+
+/* Floating panels */
+.viz-panel { display:flex; align-items:center; gap:8px; margin:14px; }
+.viz-panel--search { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+                     padding:7px 11px; box-shadow:0 4px 16px rgba(0,0,0,0.18); }
+.viz-panel--search:focus-within { border-color:var(--brand); }
+.viz-search-ico { color:var(--text-3); flex:none; }
+.viz-search { width:230px; background:transparent; border:none; outline:none; color:var(--text);
+              font-size:12px; }
+.viz-search::placeholder { color:var(--text-3); }
+.viz-search-count { flex:none; font-size:10.5px; color:var(--text-3); background:var(--surface-2);
+                    border-radius:999px; padding:2px 7px; }
+.viz-panel--stats { gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:420px; }
+.viz-panel--hint { font-size:11px; color:var(--text-3); background:color-mix(in oklab, var(--bg) 72%, transparent);
+                   border-radius:999px; padding:4px 12px; backdrop-filter:blur(4px); }

@@ -79,6 +79,17 @@ export function DriftIcon(props: IconProps) {
   );
 }
 
+export function SchemaMapIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="3" width="8" height="6.5" rx="1.5" />
+      <rect x="13.5" y="14.5" width="8" height="6.5" rx="1.5" />
+      <rect x="13.5" y="3" width="8" height="6.5" rx="1.5" />
+      <path d="M10.5 6.25h3M6.5 9.5v6a2 2 0 0 0 2 2h5M17.5 9.5v5" />
+    </Svg>
+  );
+}
+
 export function SunIcon(props: IconProps) {
   return (
     <Svg {...props}>
