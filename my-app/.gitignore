@@ -40,8 +40,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local assistant/editor settings
-.claude/settings.local.json
+# AI-assistant config + internal docs (whole dir kept local only — never commit)
+.claude/
+CLAUDE.md
+AGENTS.md
 
 # editors / IDEs
 .vscode/
@@ -63,9 +65,13 @@ Thumbs.db
 /MIGRATION-PLAN.md
 /WIREFLOW.md
 /PLAN-*.md
+*-PLAN.md
+*.drawio
+SCHEMA_COMPARISON_FLOWCHART*.md
 
 # local demo / scratch SQL (seed + test data, not part of the app)
 /demo/
+/scripts/demo/
 /seed-demo.cjs
 
 # local presentation artifact (code walkthrough for the FYP demo, not part of the app)

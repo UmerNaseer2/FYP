@@ -1,2 +1,6 @@
 .DS_Store
 node_modules
+
+# internal scratch / AI-assistant files (not part of the app)
+REPO_GUIDE.md
+.claude/
