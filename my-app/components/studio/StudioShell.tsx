@@ -2,37 +2,26 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { signOut } from "next-auth/react";
 import { useUser, resetUserCache } from "@/hooks/useUser";
 import { useTheme } from "@/hooks/useTheme";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { StudioTopbar } from "./StudioTopbar";
 import { NAV_ITEMS, activeNavItem } from "./nav";
 
-// Shown when no one is signed in. Auth is currently bypassed for testing, so
-// this is the honest state during local use — NOT a fabricated person.
+// Shown when no one is signed in.
 const SIGNED_OUT_USER: StudioUser = {
   name: "Guest",
   email: "Not signed in",
   initials: "?",
 };
 
-/** Build a display identity from the real Supabase session (Azure SSO). */
+/** Build a display identity from the NextAuth session. */
 function toStudioUser(authUser: ReturnType<typeof useUser>["user"]): StudioUser {
   if (!authUser) return SIGNED_OUT_USER;
-  const meta = (authUser.user_metadata ?? {}) as Record<string, unknown>;
-  const name =
-    (typeof meta.full_name === "string" && meta.full_name) ||
-    (typeof meta.name === "string" && meta.name) ||
-    authUser.email ||
-    "Signed in";
+  const name = authUser.name || authUser.email || "Signed in";
   const email = authUser.email ?? "";
-  // Initials: first letters of the first two words, else first two of the email.
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  const initials =
-    words.length >= 2
-      ? (words[0][0] + words[1][0]).toUpperCase()
-      : (name || email).slice(0, 2).toUpperCase();
+  const initials = name.slice(0, 2).toUpperCase();
   return { name, email, initials };
 }
 
@@ -44,8 +33,7 @@ type StudioShellProps = {
 
 /**
  * The chrome every Studio screen lives inside: collapsible left nav, top
- * breadcrumb + per-screen action, theme toggle, identity. Owns theme +
- * collapse state; screens render as `children`.
+ * breadcrumb + per-screen action, theme toggle, identity.
  */
 export function StudioShell({ children, user }: StudioShellProps) {
   const pathname = usePathname();
@@ -54,16 +42,12 @@ export function StudioShell({ children, user }: StudioShellProps) {
   const { theme, toggleTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(false);
 
-  // Real identity from the Supabase session; honest signed-out state otherwise.
+  // Real identity from the NextAuth session; honest signed-out state otherwise.
   const studioUser = useMemo(() => user ?? toStudioUser(authUser), [user, authUser]);
 
-  async function signOut() {
-    try {
-      await createClient().auth.signOut();
-    } finally {
-      resetUserCache();
-      router.push("/login");
-    }
+  async function handleSignOut() {
+    resetUserCache();
+    await signOut({ callbackUrl: "/login" });
   }
 
   const active = activeNavItem(pathname);
@@ -84,7 +68,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
         theme={theme}
         onToggleTheme={toggleTheme}
         user={studioUser}
-        onSignOut={signOut}
+        onSignOut={handleSignOut}
       />
 
       <div className="flex flex-col min-w-0">

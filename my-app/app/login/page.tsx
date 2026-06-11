@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { signIn } from "next-auth/react";
 import { useTheme } from "@/hooks/useTheme";
 import {
   LogoIcon,
@@ -12,10 +12,6 @@ import {
   LockIcon,
   AlertCircleIcon,
 } from "@/components/ui/icons";
-
-// Scopes kept exactly as the existing working Azure flow — auth already works,
-// Phase 2 only reskins the screen around it.
-const SCOPES = "email openid profile User.Read";
 
 type Status = "idle" | "redirecting" | "error";
 
@@ -39,18 +35,12 @@ export default function LoginPage() {
   async function handleLogin() {
     setStatus("redirecting");
     setErrorMsg(null);
-    const { error } = await createClient().auth.signInWithOAuth({
-      provider: "azure",
-      options: {
-        scopes: SCOPES,
-        redirectTo: `${window.location.origin}`,
-      },
-    });
-    // On success the browser navigates to Microsoft and this page unloads,
-    // so the "redirecting" state simply stays on screen until that happens.
-    if (error) {
+    try {
+      // Phase 2: Azure SSO via NextAuth (microsoft-entra-id)
+      await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
+    } catch (error: any) {
       console.error(error);
-      setErrorMsg(error.message);
+      setErrorMsg(error.message || "Sign-in failed");
       setStatus("error");
     }
   }
@@ -188,7 +178,7 @@ export default function LoginPage() {
                     className="mt-3 flex items-center justify-center gap-2 text-[12px]"
                     style={{ color: "var(--text-3)" }}
                   >
-                    <span className="mono">{SCOPES}</span>
+                    <span className="mono">openid · profile · email</span>
                   </div>
                 </div>
               )}
