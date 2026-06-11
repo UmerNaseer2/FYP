@@ -231,6 +231,7 @@ export async function POST(request: NextRequest) {
           change_type VARCHAR(20)  NOT NULL
                         CHECK (change_type IN ('breaking', 'additive', 'patch', 'unknown')),
           source_ref  TEXT,
+          sql_content TEXT,
           applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
@@ -255,6 +256,15 @@ export async function POST(request: NextRequest) {
     await client.query(`
       ALTER TABLE ${quotedSchema}.script_patch
       ADD COLUMN IF NOT EXISTS source_ref TEXT
+    `);
+
+    // 7b-3. Back-fill sql_content (added for Version Sync / version replay): the
+    //       exact SQL applied each time, so a behind schema can be brought up to
+    //       an ahead one by replaying its ledger. Nullable — rows applied before
+    //       this column existed simply have no stored script.
+    await client.query(`
+      ALTER TABLE ${quotedSchema}.script_patch
+      ADD COLUMN IF NOT EXISTS sql_content TEXT
     `);
 
     // 7c. Add a UNIQUE index so the DB itself enforces one row per
@@ -337,8 +347,8 @@ export async function POST(request: NextRequest) {
 
     const insertResult = await client.query<{ applied_at: string }>(
       `INSERT INTO ${quotedSchema}.script_patch
-         (script_name, version, title, description, change_type, source_ref)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (script_name, version, title, description, change_type, source_ref, sql_content)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING applied_at`,
       [
         script_name.trim(),
@@ -347,6 +357,7 @@ export async function POST(request: NextRequest) {
         description?.trim() || null,
         resolvedChangeType,
         resolvedSourceRef,
+        sql_content, // the exact SQL just executed — what version replay re-runs
       ]
     );
 

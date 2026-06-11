@@ -90,6 +90,15 @@ export function SchemaMapIcon(props: IconProps) {
   );
 }
 
+export function VersionSyncIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 9h12l-3.5-3.5" />
+      <path d="M20 15H8l3.5 3.5" />
+    </Svg>
+  );
+}
+
 export function SunIcon(props: IconProps) {
   return (
     <Svg {...props}>
