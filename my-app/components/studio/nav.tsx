@@ -8,6 +8,7 @@ import {
   DriftIcon,
   SchemaMapIcon,
   VersionSyncIcon,
+  UsersIcon,
 } from "@/components/ui/icons";
 
 export type NavItem = {
@@ -19,6 +20,8 @@ export type NavItem = {
   icon: ReactNode;
   /** Optional count badge (drift / pending). */
   badge?: string;
+  /** Only shown to admins — the shell filters these on the live session role. */
+  adminOnly?: boolean;
 };
 
 // Phase 1 routes: Dashboard/Deploy/Drift live inside the new shell; Compare &
@@ -74,6 +77,13 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Visualizer",
     href: "/visualizer",
     icon: <SchemaMapIcon className="ico" />,
+  },
+  {
+    screen: "Admin",
+    label: "Admin",
+    href: "/admin",
+    icon: <UsersIcon className="ico" />,
+    adminOnly: true,
   },
 ];
 

@@ -457,7 +457,7 @@ export default function ConnectionsPage() {
           {/* Scroll the table on narrow screens so the Actions column stays
               reachable instead of being clipped by the card. */}
           <div className="overflow-x-auto">
-          <table className="conns text-[13px]">
+          <table className="conns responsive-table text-[13px]">
             <thead>
               <tr>
                 <th>Name</th>
@@ -507,7 +507,7 @@ export default function ConnectionsPage() {
                   return (
                     <tr key={conn.id}>
                       {/* Name */}
-                      <td>
+                      <td data-label="Name">
                         <div className="flex items-center gap-3">
                           <span className={`ind ${dot}`} aria-hidden="true" />
                           <div className="min-w-0">
@@ -535,7 +535,7 @@ export default function ConnectionsPage() {
                         </div>
                       </td>
                       {/* Endpoint */}
-                      <td>
+                      <td data-label="Endpoint">
                         <div className="mono text-[12.5px] truncate" style={{ maxWidth: 320 }}>
                           {conn.host}
                           <span style={{ color: "var(--text-3)" }}>:{conn.port}/</span>
@@ -546,13 +546,13 @@ export default function ConnectionsPage() {
                         </div>
                       </td>
                       {/* User */}
-                      <td>
+                      <td data-label="User">
                         <span className="mono text-[12.5px]" style={{ color: "var(--text-2)" }}>
                           {conn.username || "—"}
                         </span>
                       </td>
                       {/* SSL */}
-                      <td>
+                      <td data-label="SSL">
                         {conn.ssl ? (
                           <span className="pill pill-sync">
                             <span className="dot" />
@@ -566,17 +566,17 @@ export default function ConnectionsPage() {
                         )}
                       </td>
                       {/* Server */}
-                      <td>
+                      <td data-label="Server">
                         <span className="mono text-[11.5px]" style={{ color: "var(--text-2)" }}>
                           {result?.status === "ok" ? result.version : "—"}
                         </span>
                       </td>
                       {/* Last tested */}
-                      <td>
+                      <td data-label="Last tested">
                         <RowTested result={result} />
                       </td>
                       {/* Actions */}
-                      <td style={{ textAlign: "right" }}>
+                      <td className="cell-actions" style={{ textAlign: "right" }}>
                         <div className="row-actions inline-flex gap-1 justify-end">
                           <button
                             className="btn btn-ghost btn-sm"

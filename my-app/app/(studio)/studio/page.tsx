@@ -299,7 +299,7 @@ export default function DashboardPage() {
   );
 
   return (
-    <div className="max-w-[1100px] mx-auto px-8 py-10 space-y-8">
+    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
       {/* Header */}
       <header className="flex items-end justify-between gap-6 flex-wrap">
         <div>

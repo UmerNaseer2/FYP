@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 type DrawerProps = {
   open: boolean;
   onClose: () => void;
-  title: ReactNode;
+  title?: ReactNode;
   /** Small status pill / tag shown next to the title. */
   badge?: ReactNode;
   /** Sticky footer area (e.g. Test / Cancel / Save). */
@@ -14,10 +14,27 @@ type DrawerProps = {
   children: ReactNode;
   /** Panel width. Defaults to 460px. */
   width?: number | string;
+  /** Which edge it slides in from. Defaults to "right". */
+  side?: "left" | "right";
+  /**
+   * Skip the built-in header/footer chrome and render children full-height —
+   * used to host the nav sidebar (which brings its own header/footer) on mobile.
+   */
+  bare?: boolean;
 };
 
-/** Right-side slide-over for add / edit flows. Portaled to <body>. */
-export function Drawer({ open, onClose, title, badge, footer, children, width = 460 }: DrawerProps) {
+/** Slide-over for add / edit flows and the mobile nav. Portaled to <body>. */
+export function Drawer({
+  open,
+  onClose,
+  title,
+  badge,
+  footer,
+  children,
+  width = 460,
+  side = "right",
+  bare = false,
+}: DrawerProps) {
   const [mounted, setMounted] = useState(false);
   // SSR guard: only portal after the client mounts so createPortal never runs
   // against an undefined `document` during server render (e.g. open-on-first-paint).
@@ -33,7 +50,20 @@ export function Drawer({ open, onClose, title, badge, footer, children, width = 
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  // Lock body scroll while open so the page behind doesn't scroll on touch.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
   if (!mounted || !open) return null;
+
+  const edge = side === "left" ? "left-0" : "right-0";
+  const w = typeof width === "number" ? `${width}px` : width;
 
   return createPortal(
     <div className="studio-portal fixed inset-0 z-50">
@@ -45,39 +75,48 @@ export function Drawer({ open, onClose, title, badge, footer, children, width = 
       />
       {/* panel */}
       <div
-        className="panel absolute right-0 top-0 bottom-0 flex flex-col"
+        className={`panel absolute ${edge} top-0 bottom-0 flex flex-col`}
         style={{
-          width: typeof width === "number" ? `${width}px` : width,
+          width: w,
           maxWidth: "94vw",
           borderRadius: 0,
           borderTop: "none",
           borderBottom: "none",
-          borderRight: "none",
+          borderLeft: side === "left" ? "none" : undefined,
+          borderRight: side === "right" ? "none" : undefined,
           boxShadow: "var(--shadow-lg)",
+          // In bare mode the child (the sidebar) owns the surface + borders.
+          ...(bare ? { background: "transparent", border: "none", padding: 0 } : null),
         }}
         role="dialog"
         aria-modal="true"
       >
-        <div
-          className="p-4 flex items-center justify-between"
-          style={{ borderBottom: "1px solid var(--border)" }}
-        >
-          <div className="flex items-center gap-2">
-            <h4 className="text-[14px] font-semibold">{title}</h4>
-            {badge}
-          </div>
-          <button className="btn btn-ghost btn-sm" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-        <div className="p-4 space-y-3 overflow-y-auto flex-1">{children}</div>
-        {footer && (
-          <div
-            className="p-3 flex justify-between gap-2"
-            style={{ borderTop: "1px solid var(--border)", background: "var(--surface)" }}
-          >
-            {footer}
-          </div>
+        {bare ? (
+          children
+        ) : (
+          <>
+            <div
+              className="p-4 flex items-center justify-between"
+              style={{ borderBottom: "1px solid var(--border)" }}
+            >
+              <div className="flex items-center gap-2">
+                <h4 className="text-[14px] font-semibold">{title}</h4>
+                {badge}
+              </div>
+              <button className="btn btn-ghost btn-sm" aria-label="Close" onClick={onClose}>
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-3 overflow-y-auto flex-1">{children}</div>
+            {footer && (
+              <div
+                className="p-3 flex justify-between gap-2"
+                style={{ borderTop: "1px solid var(--border)", background: "var(--surface)" }}
+              >
+                {footer}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>,

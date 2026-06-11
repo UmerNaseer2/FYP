@@ -123,7 +123,7 @@ function Shell({
   // doesn't lose the schema you were looking at.
   const q = schema ? `&schema=${encodeURIComponent(schema)}` : "";
   return (
-    <div className="max-w-[1100px] mx-auto px-8 py-10 space-y-7">
+    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-7">
       <header>
         <div className="flex items-center gap-2">
           <span style={{ color: "var(--text-3)" }}>

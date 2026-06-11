@@ -15,9 +15,20 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
+import type { Viewport } from "next";
+
 export const metadata = {
   title: "DB Schema Control",
   description: "Simple prototype for schema comparison and version control",
+};
+
+// Render at real device width on phones (without this, mobile browsers assume a
+// ~980px page and every responsive rule below is dead). Pinch-zoom left enabled
+// for accessibility.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
 };
 
 export default function RootLayout({

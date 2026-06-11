@@ -246,7 +246,7 @@ export default function VersionSyncPage() {
   const bothReady = source.phase === "ready" && target.phase === "ready";
 
   return (
-    <div className="px-8 py-8 max-w-[1080px]">
+    <div className="px-4 sm:px-8 py-6 sm:py-8 max-w-[1080px]">
       <div className="mb-5">
         <div className="section-title mb-2">Version Sync</div>
         <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Catch a schema up by version.</h1>

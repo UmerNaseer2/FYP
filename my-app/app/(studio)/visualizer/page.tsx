@@ -64,6 +64,18 @@ export default function VisualizerPage() {
   const [mode, setMode] = useState<Mode>("single");
   const [splitPct, setSplitPct] = useState(50);
 
+  // A draggable side-by-side split is unusable on a phone, so force single-pane
+  // (and hide the mode toggle) under the tablet breakpoint.
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const apply = () => setNarrow(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+  const effectiveMode: Mode = narrow ? "single" : mode;
+
   const splitRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
@@ -127,7 +139,7 @@ export default function VisualizerPage() {
             foreign-key paths between them. Switch to side by side to compare two schemas at once.
           </p>
         </div>
-        {!noConnections && <ModeToggle mode={mode} onChange={setMode} />}
+        {!noConnections && !narrow && <ModeToggle mode={mode} onChange={setMode} />}
       </div>
 
       {noConnections ? (
@@ -145,16 +157,16 @@ export default function VisualizerPage() {
           />
         </div>
       ) : (
-        <div className={`viz-body${mode === "split" ? " viz-split" : ""}`} ref={splitRef}>
+        <div className={`viz-body${effectiveMode === "split" ? " viz-split" : ""}`} ref={splitRef}>
           {/* Left pane — stable position across modes, so its diagram survives a toggle. */}
           <div
             className="viz-split__pane"
-            style={mode === "split" ? { flex: `0 0 ${splitPct}%` } : undefined}
+            style={effectiveMode === "split" ? { flex: `0 0 ${splitPct}%` } : undefined}
           >
             <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} />
           </div>
 
-          {mode === "split" && (
+          {effectiveMode === "split" && (
             <>
               <div
                 className="viz-divider"

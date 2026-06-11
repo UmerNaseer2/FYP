@@ -351,7 +351,7 @@ export function MigrationWorkbench({
 
                 {nextVersion ? (
                   <div
-                    className="panel p-3 mt-4 flex items-center justify-between"
+                    className="panel p-3 mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
                     style={{ background: "var(--surface)" }}
                   >
                     <div>
@@ -362,7 +362,7 @@ export function MigrationWorkbench({
                         v{nextVersion}
                       </div>
                     </div>
-                    <span className="help text-right max-w-[200px]">
+                    <span className="help break-words sm:text-right sm:max-w-[200px]">
                       <span className="mono">{targetLabel}</span> is at{" "}
                       <span className="mono">v{targetVersions?.current ?? "?"}</span>; a{" "}
                       {bumpWord} change bumps to this.
@@ -370,7 +370,7 @@ export function MigrationWorkbench({
                   </div>
                 ) : (
                   <div
-                    className="panel p-3 mt-4 flex items-center justify-between"
+                    className="panel p-3 mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
                     style={{ background: "var(--surface)" }}
                   >
                     <div>
@@ -381,7 +381,7 @@ export function MigrationWorkbench({
                         {bumpWord} bump
                       </div>
                     </div>
-                    <span className="help text-right max-w-[200px]">
+                    <span className="help break-words sm:text-right sm:max-w-[200px]">
                       <span className="mono">{targetLabel}</span> isn&apos;t tracked yet —
                       track it to assign exact versions from its lineage.
                     </span>
@@ -469,13 +469,17 @@ export function MigrationWorkbench({
             <ul className="space-y-1.5 text-[12.5px]" style={{ color: "var(--text-2)" }}>
               <li className="flex gap-2">
                 <span style={{ color: "var(--sync)" }}>●</span>
-                Push this migration to the GitHub registry at{" "}
-                <span className="mono">{targetDatabase}/{targetSchema}/{name.trim() || suggestedName}/v{effectiveVersion}.sql</span>.
+                <span className="min-w-0">
+                  Push this migration to the GitHub registry at{" "}
+                  <span className="mono break-all">{targetDatabase}/{targetSchema}/{name.trim() || suggestedName}/v{effectiveVersion}.sql</span>.
+                </span>
               </li>
               <li className="flex gap-2">
                 <span style={{ color: "var(--sync)" }}>●</span>
-                Make it available to apply to a database from{" "}
-                <span className="mono">Deploy</span>.
+                <span className="min-w-0">
+                  Make it available to apply to a database from{" "}
+                  <span className="mono">Deploy</span>.
+                </span>
               </li>
             </ul>
           </div>

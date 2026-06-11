@@ -330,7 +330,7 @@ export default function ScriptEditorPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────--
   return (
-    <div className="p-6 max-w-[1080px]">
+    <div className="p-4 sm:p-6 max-w-[1080px]">
       <div className="mb-4">
         <div className="section-title mb-2">Script Editor</div>
         <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Write a migration script.</h1>
@@ -491,7 +491,7 @@ export default function ScriptEditorPage() {
             <label className="label" htmlFor="se-sql">SQL</label>
             <textarea
               id="se-sql"
-              className="input mono mt-1"
+              className="input mono mt-1 se-textarea"
               style={{ minHeight: 300, lineHeight: 1.6, resize: "vertical" }}
               spellCheck={false}
               placeholder={"ALTER TABLE invoices\n  ADD COLUMN due_date date;"}

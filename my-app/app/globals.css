@@ -12,145 +12,6 @@ body {
   box-sizing: border-box;
 }
 
-/* ===== Layout (shared) ===== */
-.db-layout {
-  display: flex;
-  min-height: 100vh;
-}
-
-.db-main {
-  flex: 1;
-  padding: 24px;
-}
-
-/* ===== Sidebar ===== */
-.db-sidebar {
-  width: 280px;
-  background: #0f172a;
-  color: white;
-  padding: 20px;
-  height: 100vh;
-  position: sticky;
-  top: 0;
-  left: 0;
-  overflow-y: auto;
-  flex-shrink: 0;
-}
-
-.db-sidebar__title {
-  font-size: 20px;
-  font-weight: bold;
-  margin-bottom: 6px;
-}
-
-.db-sidebar__subtitle {
-  font-size: 13px;
-  color: #cbd5e1;
-  margin-bottom: 20px;
-}
-
-.db-sidebar__nav {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.db-sidebar__link {
-  padding: 10px;
-  border-radius: 8px;
-  color: #e2e8f0;
-  text-decoration: none;
-}
-
-.db-sidebar__link:hover {
-  background: #1e293b;
-}
-
-.db-sidebar__link--active {
-  background: #1e293b;
-  color: white;
-  font-weight: bold;
-}
-/* Sidebar user section - better spacing */
-.db-sidebar {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: #0f172a;
-  color: white;
-  padding: 20px;
-  width: 280px; /* fixed width */
-}
-
-.db-sidebar__nav {
-  flex: 1;
-}
-
-.db-sidebar__user-section {
-  margin-top: auto;
-  padding-top: 1rem;
-  border-top: 1px solid #334155;
-}
-
-.db-sidebar__user-email {
-  font-size: 0.7rem;
-  color: #94a3b8;
-  word-break: break-all;
-  margin-bottom: 0.75rem;
-  text-align: center;
-  line-height: 1.3;
-  max-width: 100%;
-  overflow-wrap: break-word;
-}
-
-.db-sidebar__logout-btn {
-  width: 100%;
-  background-color: #dc2626;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.db-sidebar__logout-btn:hover {
-  background-color: #b91c1c;
-}
-.db-layout {
-  display: flex;
-  min-height: 100vh;
-}
-/* ===== Topbar ===== */
-.db-topbar {
-  background: white;
-  padding: 16px;
-  border-radius: 12px;
-  margin-bottom: 20px;
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-}
-
-.db-topbar__title {
-  margin: 0;
-  font-size: 20px;
-}
-
-.db-topbar__text {
-  font-size: 14px;
-  color: #64748b;
-}
-
-.db-topbar__user {
-  background: #0f172a;
-  color: white;
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
 /* ===================================================== */
 /* ===== Connections Page ===== */
 /* ===================================================== */
@@ -2187,121 +2048,9 @@ body {
   border-radius: 0.375rem;
   margin-bottom: 1rem;
 }
-/* ===================================================== */
-/* ===== Admin Control Page ===== */
-/* ===================================================== */
 
-.admin-card {
-  background: white;
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.admin-card__title {
-  font-size: 1.25rem;
-  font-weight: 600;
-  margin-bottom: 1rem;
-  color: #1e293b;
-}
-
-.admin-table-wrapper {
-  overflow-x: auto;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-}
-
-.admin-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 500px;
-  font-size: 0.875rem;
-}
-
-.admin-table th,
-.admin-table td {
-  text-align: left;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.admin-table th {
-  background-color: #f8fafc;
-  font-weight: 600;
-  color: #0f172a;
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.admin-table tr:hover {
-  background-color: #f1f5f9;
-}
-
-.admin-table td:first-child {
-  font-family: monospace;
-  font-size: 0.8rem;
-}
-
-/* Role badges */
-.role-badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.role-badge--admin {
-  background-color: #dcfce7;
-  color: #166534;
-  border: 1px solid #bbf7d0;
-}
-
-.role-badge--viewer {
-  background-color: #f1f5f9;
-  color: #334155;
-  border: 1px solid #e2e8f0;
-}
-
-/* Role select dropdown */
-.admin-select {
-  padding: 6px 10px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background-color: white;
-  font-size: 0.8rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.admin-select:hover {
-  border-color: #2563eb;
-  background-color: #f8fafc;
-}
-
-.admin-select:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background-color: #f1f5f9;
-}
-
-/* Updating indicator */
-.admin-updating {
-  margin-left: 10px;
-  font-size: 0.7rem;
-  color: #2563eb;
-  font-style: italic;
-}
-
-/* Loading and access states */
-.admin-loading,
-.loading-state,
-.access-denied {
+/* Auth loading state (used by AuthGuard's BYPASS_AUTH=false path). */
+.loading-state {
   padding: 2rem;
   text-align: center;
   font-size: 0.9rem;
@@ -2311,163 +2060,11 @@ body {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-.access-denied {
-  background-color: #fee2e2;
-  color: #b91c1c;
-  border: 1px solid #fca5a5;
-  border-radius: 10px;
-  padding: 12px 16px;
-}
-
-/* ===================================================== */
-/* ===== Admin Control Page ===== */
-/* ===================================================== */
-.admin-card {
-  background: #ffffff;
-  border-radius: 18px;
-  padding: 28px;
-  margin-top: 24px;
-  border: 1px solid #dbe4f0;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-}
-
-.admin-card__title {
-  font-size: 24px;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 22px;
-}
-
-.admin-loading,
-.loading-state,
-.access-denied {
+.loading-state {
   padding: 28px;
   font-size: 16px;
   font-weight: 600;
   color: #1e293b;
-}
-
-.access-denied {
-  color: #dc2626;
-}
-
-.admin-table-wrapper {
-  overflow-x: auto;
-  border-radius: 14px;
-  border: 1px solid #dbe4f0;
-}
-
-.admin-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: #ffffff;
-}
-
-.admin-table thead {
-  background: #0f2a55;
-}
-
-.admin-table th {
-  padding: 15px 18px;
-  text-align: left;
-  font-size: 13px;
-  font-weight: 700;
-  color: #ffffff;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.admin-table td {
-  padding: 16px 18px;
-  font-size: 15px;
-  color: #1e293b;
-  border-bottom: 1px solid #edf2f7;
-}
-
-.admin-table tbody tr:hover {
-  background: #f8fbff;
-}
-
-.role-badge {
-  display: inline-block;
-  min-width: 80px;
-  text-align: center;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: capitalize;
-}
-
-.role-badge--admin {
-  background: #dbeafe;
-  color: #0f2a55;
-}
-
-.role-badge--viewer {
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.admin-select {
-  min-width: 120px;
-  padding: 9px 12px;
-  border-radius: 10px;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 500;
-  outline: none;
-  cursor: pointer;
-}
-
-.admin-select:hover {
-  border-color: #0f2a55;
-}
-
-.admin-select:focus {
-  border-color: #0f2a55;
-  box-shadow: 0 0 0 3px rgba(15, 42, 85, 0.15);
-}
-
-.admin-select:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.admin-updating {
-  margin-left: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #64748b;
-}
-
-@media (max-width: 768px) {
-  .admin-card {
-    padding: 18px;
-  }
-
-  .admin-card__title {
-    font-size: 21px;
-  }
-
-  .admin-table th,
-  .admin-table td {
-    padding: 12px;
-    font-size: 13px;
-  }
-
-  .admin-select {
-    width: 100%;
-    margin-top: 6px;
-  }
-
-  .admin-updating {
-    display: block;
-    margin-left: 0;
-    margin-top: 6px;
-  }
 }
 
 /* =====================================================================
@@ -3280,3 +2877,122 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
 .viz-panel--stats { gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:420px; }
 .viz-panel--hint { font-size:11px; color:var(--text-3); background:color-mix(in oklab, var(--bg) 72%, transparent);
                    border-radius:999px; padding:4px 12px; backdrop-filter:blur(4px); }
+
+/* ============================================================================
+   MOBILE RESPONSIVE — self-contained block. Added for the app-wide mobile pass.
+   Breakpoints: 768 (layout/nav), 640 (phone stacking), 520/500/480 (narrow).
+   Note: the shell grid + compare/deploy grids are driven from component state /
+   responsive utility classes because INLINE styles beat media queries.
+   Existing media queries (344,767,2061,2080,2131,2446,2670) are left untouched.
+   ============================================================================ */
+
+/* Compare body: two-column on desktop, stacked + un-stuck on tablet/phone.
+   min-width:0 lets the grid children shrink below their content's intrinsic
+   width (otherwise a wide SQL block forces the column past the viewport). */
+.compare-layout { display:grid; gap:1.5rem; grid-template-columns:minmax(0,1fr) 480px; }
+.compare-layout > * { min-width:0; }
+@media (max-width: 980px) {
+  .compare-layout { grid-template-columns:1fr; }
+  .compare-layout .sticky-panel { position:static; top:auto; }
+}
+/* SQL textarea / code in the workbench must scroll internally, not stretch the page. */
+.compare-layout textarea,
+.compare-layout pre { max-width:100%; }
+
+/* Shared: clamp the custom-select dropdown so it never exceeds the viewport. */
+@media (max-width: 640px) {
+  .ds-select__list { max-width:min(360px, calc(100vw - 24px)); }
+}
+
+@media (max-width: 640px) {
+  /* Topbar: drop the "Workspace ›" prefix on phones to save room. */
+  .crumb-workspace { display:none; }
+
+  /* Compare source bar + summary strip stack. */
+  .source-bar { grid-template-columns:1fr; gap:10px; align-items:stretch; }
+  .source-bar .picker { min-width:0; }
+  .source-bar > button { width:100%; justify-content:center; }
+  .compare-header { flex-direction:column; align-items:flex-start; gap:8px; }
+  .compare-header .ml-auto { margin-left:0; }
+
+  /* Diff rows wrap instead of overflowing. */
+  .diff-row { flex-wrap:wrap; }
+  .diff-row .mono { overflow-wrap:anywhere; word-break:break-word; }
+
+  /* Workbench change-level segmented control wraps. */
+  .seg { width:100%; flex-wrap:wrap; }
+  .seg > * { flex:1 1 84px; }
+
+  /* Deploy stepper: tighten the grid, shrink the circle, hide the per-step
+     sublabel so the three steps fit a phone without overlapping. */
+  .stepper { grid-template-columns: 1fr 16px 1fr 16px 1fr; padding:14px 10px; }
+  .stepper .label .sub { display:none; }
+  .stepper .step { gap:8px; }
+  .stepper .step .n { width:28px; height:28px; }
+  .stepper .label .name { font-size:12.5px; }
+  .step-sep { margin:0 2px; }
+  .mig-row { flex-wrap:wrap; }
+}
+
+/* Version Sync: keep stored SQL + timeline usable on a phone. */
+@media (max-width: 480px) {
+  .vsync-sql { max-height:220px; overflow-x:auto; white-space:pre-wrap; word-break:break-word; }
+  .vsync-node { min-width:64px; }
+}
+
+/* Script Editor: the semver segmented control + textarea. */
+.ver-seg { display:flex; }            /* was inline-flex — let it wrap to container */
+@media (max-width: 560px) {
+  .ver-seg { flex-direction:column; }
+  .ver-seg-btn { min-width:0; width:100%; }
+  .se-textarea { min-height:200px !important; }
+}
+
+/* CSS slide-over drawer (connections / schema detail; distinct from React Drawer). */
+@media (max-width: 560px) {
+  .drawer { width:min(520px, 96vw); }
+  .drawer-footer { flex-direction:column-reverse; align-items:stretch; gap:10px; }
+  .drawer-footer > * { width:100%; }
+  .drawer-footer .btn { justify-content:center; }
+}
+
+/* Visualizer picker bar stacks; the split-mode toggle is hidden on phones
+   (the page also forces single mode under 768 — a draggable split is unusable). */
+@media (max-width: 640px) {
+  .viz-pane__bar { flex-direction:column; align-items:stretch; gap:10px; }
+  .viz-pane__field { min-width:0; width:100%; }
+}
+
+/* Login card + decoration on small screens. */
+@media (max-width: 500px) {
+  .auth-card { padding:24px 18px; }
+  .deco { display:none; }
+}
+
+/* ---- Shared table → card pattern (connections + audit log) -----------------
+   On phones each row linearizes into a card; <td data-label> supplies the field
+   name. Header is kept for screen readers via the clip pattern (not display:none). */
+@media (max-width: 640px) {
+  .responsive-table { min-width:0 !important; display:block; }
+  .responsive-table thead {
+    position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
+  }
+  .responsive-table tbody { display:block; }
+  .responsive-table tr {
+    display:block; border:1px solid var(--border); border-radius:12px;
+    background:var(--surface); padding:10px 12px; margin-bottom:10px;
+  }
+  .responsive-table td {
+    display:flex; justify-content:space-between; align-items:center; gap:12px;
+    padding:5px 0; border:none !important; white-space:normal; text-align:right; width:auto;
+  }
+  .responsive-table td::before {
+    content:attr(data-label); flex:none; text-align:left;
+    font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+    color:var(--text-3);
+  }
+  .responsive-table td.cell-actions { flex-direction:column; align-items:stretch; gap:8px; }
+  .responsive-table td.cell-actions::before { display:none; }
+  .responsive-table td.cell-actions > * { width:100%; }
+}

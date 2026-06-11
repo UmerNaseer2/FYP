@@ -150,7 +150,7 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
         </div>
       ) : (
         <div className="panel p-0 overflow-hidden">
-          <table className="w-full text-[12.5px]" style={{ borderCollapse: "collapse" }}>
+          <table className="responsive-table w-full text-[12.5px]" style={{ borderCollapse: "collapse" }}>
             <thead>
               <tr
                 className="text-left"
@@ -173,12 +173,12 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                     className="cursor-pointer audit-row"
                     style={{ borderBottom: "1px solid var(--border)" }}
                   >
-                    <Td>
+                    <Td label="When">
                       <span className="mono whitespace-nowrap" style={{ color: "var(--text-2)" }}>
                         {timeAgo(r.detectedAt)}
                       </span>
                     </Td>
-                    <Td>
+                    <Td label="Status">
                       <span className="inline-flex items-center gap-1.5">
                         <Pill tone={meta.tone}>{meta.label}</Pill>
                         {r.acknowledgedAt && (
@@ -192,15 +192,15 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                         )}
                       </span>
                     </Td>
-                    <Td>
+                    <Td label="Summary">
                       <span style={{ color: "var(--text-2)" }}>{r.summary ?? "—"}</span>
                     </Td>
-                    <Td>
+                    <Td label="Schema">
                       <span className="mono" style={{ color: "var(--text)" }}>
                         {r.schemaName}
                       </span>
                     </Td>
-                    <Td>
+                    <Td label="Connection">
                       <span className="mono" style={{ color: "var(--text-3)" }}>
                         {r.connectionName ?? "removed"}
                       </span>
@@ -227,6 +227,10 @@ function Th({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Td({ children }: { children: React.ReactNode }) {
-  return <td className="px-4 py-2.5 align-middle">{children}</td>;
+function Td({ children, label }: { children: React.ReactNode; label?: string }) {
+  return (
+    <td className="px-4 py-2.5 align-middle" data-label={label}>
+      {children}
+    </td>
+  );
 }

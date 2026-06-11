@@ -18,6 +18,8 @@ type StudioSidebarProps = {
   onToggleTheme: () => void;
   user: StudioUser;
   onSignOut: () => void;
+  /** Extra classes (e.g. h-full when hosted in the mobile nav drawer). */
+  className?: string;
 };
 
 export function StudioSidebar({
@@ -29,13 +31,14 @@ export function StudioSidebar({
   onToggleTheme,
   user,
   onSignOut,
+  className = "",
 }: StudioSidebarProps) {
   // When collapsed, hide every label-bearing element (the `sb-label` pattern).
   const labelHidden = collapsed ? "hidden" : "";
 
   return (
     <aside
-      className="flex flex-col"
+      className={`flex flex-col ${className}`}
       style={{ background: "var(--surface)", borderRight: "1px solid var(--border)" }}
     >
       {/* Brand + collapse. When collapsed the whole brand cell becomes the

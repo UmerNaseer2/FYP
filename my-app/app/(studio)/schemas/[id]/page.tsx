@@ -101,7 +101,7 @@ export default async function SchemaDetailPage({
 
   if (!detail) {
     return (
-      <div className="max-w-[1100px] mx-auto px-8 py-10">
+      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10">
         <Card className="p-0 overflow-hidden">
           <div style={{ height: 320 }}>
             <EmptyState
@@ -136,7 +136,7 @@ export default async function SchemaDetailPage({
     : null;
 
   return (
-    <div className="max-w-[1100px] mx-auto px-8 py-10 space-y-8">
+    <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
       {/* Back link */}
       <Link
         href="/studio"
@@ -185,7 +185,7 @@ export default async function SchemaDetailPage({
         </div>
 
         {/* Current / HEAD card */}
-        <Card className="px-5 py-4 min-w-[260px]">
+        <Card className="px-5 py-4 w-full sm:min-w-[260px]">
           <div className="flex items-center justify-between mb-1">
             <span className="section-title">Current</span>
             <span className="text-[11px]" style={{ color: "var(--text-3)" }}>

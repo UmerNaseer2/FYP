@@ -386,7 +386,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
   const delta = report ? tallyDelta(report) : null;
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 sm:px-8 py-6 sm:py-8">
       <PageHeader />
 
       {/* Source selectors — plain form-GET, same selection model as before. */}
@@ -434,7 +434,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
       {report && delta && script ? (
         <>
           {/* Diff summary strip */}
-          <div className="flex items-center gap-2 flex-wrap mt-6 mb-3">
+          <div className="compare-header flex items-center gap-2 flex-wrap mt-6 mb-3">
             <span className="section-title">Diff</span>
             <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
               <b>{delta.total}</b> change{delta.total === 1 ? "" : "s"} ·{" "}
@@ -464,11 +464,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
             </span>
           </div>
 
-          {/* Two-column body: diff canvas (left) + migration draft (right, sticky) */}
-          <div
-            className="grid gap-6"
-            style={{ gridTemplateColumns: "minmax(0, 1fr) 480px" }}
-          >
+          {/* Two-column body: diff canvas (left) + migration draft (right, sticky).
+              Stacks under 980px via the .compare-layout rule. */}
+          <div className="compare-layout">
             <DiffReport report={report} />
             <MigrationWorkbench
               initialSql={sqlText}

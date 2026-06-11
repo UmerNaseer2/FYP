@@ -853,7 +853,7 @@ export default function DeployPage() {
           {/* Selection */}
           <div className="card p-5">
             <div className="section-title mb-3">Target</div>
-            <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(3, minmax(0,1fr))" }}>
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
               <div>
                 <label className="label" htmlFor="dep-conn">Connection</label>
                 <Select
@@ -1046,7 +1046,7 @@ export default function DeployPage() {
                   </p>
                 </div>
               ) : (
-                <div className="grid gap-6" style={{ gridTemplateColumns: "minmax(0,1fr) 360px" }}>
+                <div className="grid gap-6 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]">
                   {/* Left: pending list + (stubbed) drift pre-check */}
                   <div className="space-y-4">
                     <div className="flex items-end justify-between gap-3 flex-wrap">
