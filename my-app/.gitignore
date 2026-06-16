@@ -81,3 +81,6 @@ SCHEMA_COMPARISON_FLOWCHART*.md
 /DESIGN.md
 /PRODUCT.md
 /.impeccable/
+
+# Local test-data seeder (no secrets, but not part of the app)
+/seed-test-schemas.cjs
