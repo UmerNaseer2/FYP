@@ -84,3 +84,4 @@ SCHEMA_COMPARISON_FLOWCHART*.md
 
 # Local test-data seeder (no secrets, but not part of the app)
 /seed-test-schemas.cjs
+/SCHEMA_STUDIO_USER_MANUAL.txt
