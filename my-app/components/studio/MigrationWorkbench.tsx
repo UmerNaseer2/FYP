@@ -7,6 +7,7 @@ import {
   RefreshIcon,
   AlertTriangleIcon,
 } from "@/components/ui/icons";
+import { containsTransactionControl } from "@/lib/sql-guard";
 
 // The severity bump a migration represents. It lives here now that the Compare
 // workbench owns the save-to-GitHub flow directly (the old hand-off to the
@@ -42,6 +43,19 @@ type Props = {
    * just will not run. 0 when data loss is armed or nothing is destructive.
    */
   heldBackCount: number;
+  /**
+   * Rendered rollback SQL from renderRollbackScript() — the down script that
+   * undoes initialSql. "" when the schemas already match and there is nothing
+   * to undo.
+   */
+  initialRollbackSql: string;
+  /** Number of statements in the rollback script. */
+  rollbackStatementCount: number;
+  /**
+   * What the rollback cannot put back, from generateRollback(). Shown above the
+   * down script so nobody reads it as a full undo — it restores structure only.
+   */
+  rollbackWarnings: string[];
   suggestedName: string;
   suggestedDescription: string;
   /** The schema that the migration actually modifies (right/target). */
@@ -85,6 +99,9 @@ export function MigrationWorkbench({
   initialSql,
   statementCount,
   heldBackCount,
+  initialRollbackSql,
+  rollbackStatementCount,
+  rollbackWarnings,
   suggestedName,
   suggestedDescription,
   targetLabel,
@@ -98,6 +115,10 @@ export function MigrationWorkbench({
   const [name, setName] = useState(suggestedName);
   const [description, setDescription] = useState(suggestedDescription);
   const [sql, setSql] = useState(initialSql);
+  // The down script is edited and copied independently of the up script. Which
+  // one the editor is showing:
+  const [pane, setPane] = useState<"up" | "down">("up");
+  const [rollbackSql, setRollbackSql] = useState(initialRollbackSql);
   const [level, setLevel] = useState<ChangeKind>(suggestedKind);
   const [copied, setCopied] = useState(false);
   // When the target isn't tracked there's no lineage version to assign, so the
@@ -110,11 +131,25 @@ export function MigrationWorkbench({
     | { kind: "err"; message: string }
   >({ kind: "idle" });
 
-  const edited = sql !== initialSql;
-  // Deploy wraps each migration in its own transaction, so manual BEGIN/COMMIT/
-  // ROLLBACK would conflict. Flag it the moment it appears in the editor.
-  const txnViolation = /\b(BEGIN|COMMIT|ROLLBACK)\b/i.test(sql);
-  const lineCount = sql.split("\n").length;
+  // Everything below reads the pane the user is currently looking at.
+  const showingDown = pane === "down";
+  const activeSql = showingDown ? rollbackSql : sql;
+  const activeInitial = showingDown ? initialRollbackSql : initialSql;
+  const setActiveSql = showingDown ? setRollbackSql : setSql;
+  const activeStatementCount = showingDown ? rollbackStatementCount : statementCount;
+
+  const edited = activeSql !== activeInitial;
+  // Deploy wraps each script in its own transaction, so manual BEGIN/COMMIT/
+  // ROLLBACK would conflict. Same guard the apply route uses, so the two can
+  // never disagree — and it ignores comments, which matters here because the
+  // down script's own header contains the word ROLLBACK.
+  const upTxnViolation = containsTransactionControl(sql);
+  const downTxnViolation = containsTransactionControl(rollbackSql);
+  // The inline warning is about the pane on screen; the push button is disabled
+  // by a violation in either script, because both get saved together.
+  const txnViolation = showingDown ? downTxnViolation : upTxnViolation;
+  const anyTxnViolation = upTxnViolation || downTxnViolation;
+  const lineCount = activeSql.split("\n").length;
   const bumpWord = LEVELS.find((l) => l.kind === level)?.bump ?? "minor";
   // Real next version for the selected level when the target is tracked.
   const nextVersion = targetVersions ? targetVersions[level] : null;
@@ -125,7 +160,7 @@ export function MigrationWorkbench({
 
   async function copySql() {
     try {
-      await navigator.clipboard.writeText(sql);
+      await navigator.clipboard.writeText(activeSql);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -137,7 +172,7 @@ export function MigrationWorkbench({
     if (edited && !window.confirm("Regenerate will discard your manual edits. Continue?")) {
       return;
     }
-    setSql(initialSql);
+    setActiveSql(activeInitial);
   }
 
   // Push the migration straight to the GitHub script registry. The server route
@@ -148,10 +183,12 @@ export function MigrationWorkbench({
       setPush({ kind: "err", message: "Enter a version number first." });
       return;
     }
-    if (txnViolation) {
+    if (anyTxnViolation) {
       setPush({
         kind: "err",
-        message: "Remove BEGIN / COMMIT / ROLLBACK before pushing.",
+        message: `Remove BEGIN / COMMIT / ROLLBACK from the ${
+          upTxnViolation ? "migration" : "rollback"
+        } script before pushing.`,
       });
       return;
     }
@@ -234,12 +271,27 @@ export function MigrationWorkbench({
               {/* SQL editor */}
               <div className="px-5 pb-2">
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="section-title">SQL</span>
-                    <span className="pill pill-sync">
-                      <span className="dot" />
-                      editable
-                    </span>
+                  <div className="seg" role="tablist" aria-label="Script direction">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={!showingDown}
+                      className={showingDown ? "" : "active"}
+                      onClick={() => setPane("up")}
+                      title="The migration that makes the target match the source."
+                    >
+                      Migration
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={showingDown}
+                      className={showingDown ? "active" : ""}
+                      onClick={() => setPane("down")}
+                      title="The down script that undoes the migration."
+                    >
+                      Rollback
+                    </button>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
@@ -258,10 +310,26 @@ export function MigrationWorkbench({
                   </div>
                 </div>
 
+                {showingDown && rollbackWarnings.length > 0 && (
+                  <div className="warn-inline mb-2">
+                    <span className="ico">
+                      <AlertTriangleIcon size={14} />
+                    </span>
+                    <div>
+                      <b>This restores structure, not data.</b>
+                      <ul className="mt-1 space-y-0.5">
+                        {rollbackWarnings.map((w) => (
+                          <li key={w}>· {w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
                 <textarea
                   className="sql-textarea mono"
-                  value={sql}
-                  onChange={(e) => setSql(e.target.value)}
+                  value={activeSql}
+                  onChange={(e) => setActiveSql(e.target.value)}
                   spellCheck={false}
                 />
 
@@ -270,9 +338,9 @@ export function MigrationWorkbench({
                   style={{ color: "var(--text-3)" }}
                 >
                   <span>
-                    {lineCount} lines · {statementCount} statement
-                    {statementCount === 1 ? "" : "s"}
-                    {heldBackCount > 0 && (
+                    {lineCount} lines · {activeStatementCount} statement
+                    {activeStatementCount === 1 ? "" : "s"}
+                    {!showingDown && heldBackCount > 0 && (
                       <>
                         {" "}
                         <span style={{ color: "var(--break)" }}>
@@ -280,7 +348,7 @@ export function MigrationWorkbench({
                         </span>
                       </>
                     )}{" "}
-                    · SQL
+                    · {showingDown ? "rollback SQL" : "SQL"}
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span
@@ -435,7 +503,7 @@ export function MigrationWorkbench({
                     type="button"
                     className="btn btn-primary btn-sm"
                     onClick={pushToGitHub}
-                    disabled={push.kind === "pushing" || txnViolation}
+                    disabled={push.kind === "pushing" || anyTxnViolation}
                   >
                     {push.kind === "pushing" ? "Pushing…" : "Push to GitHub"}
                   </button>

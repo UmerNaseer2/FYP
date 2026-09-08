@@ -1,5 +1,10 @@
 import Link from "next/link";
-import { generateMigration, renderMigrationScript } from "@/lib/generate-sql";
+import {
+  generateMigration,
+  generateRollback,
+  renderMigrationScript,
+  renderRollbackScript,
+} from "@/lib/generate-sql";
 import pool, { ensureConnectionsTable, ensureMetadataSchema } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import type { CompareTarget } from "@/lib/postgres";
@@ -358,6 +363,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
   // Derive the migration + workbench inputs (only when we have a report).
   const script = report ? generateMigration(report, { allowDataLoss }) : null;
   const sqlText = script ? renderMigrationScript(script) : "";
+  // The down script that undoes the migration above. It is built from the same
+  // flag so its header can say whether the drops it is "restoring" ever ran.
+  const rollback = report ? generateRollback(report, { allowDataLoss }) : null;
+  const rollbackText = rollback ? renderRollbackScript(rollback) : "";
   const breaking = script
     ? script.statements.filter((s) => s.severity === "breaking").length
     : 0;
@@ -490,6 +499,9 @@ export default async function ComparePage({ searchParams }: PageProps) {
               initialSql={sqlText}
               statementCount={script.statements.length}
               heldBackCount={allowDataLoss ? 0 : script.destructiveCount}
+              initialRollbackSql={rollbackText}
+              rollbackStatementCount={rollback ? rollback.statements.length : 0}
+              rollbackWarnings={rollback ? rollback.warnings : []}
               suggestedName={`sync_${report.right.schema}_to_${report.left.schema}`
                 .replace(/[^a-z0-9_]/gi, "_")
                 .toLowerCase()}

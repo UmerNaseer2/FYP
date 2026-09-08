@@ -1,6 +1,6 @@
 import type { CompareReport, ConstraintDiff, TableMatch } from "./compare-types";
 import type { ColumnSnapshot, ForeignKeySnapshot, TableSnapshot } from "./postgres";
-import { extractBaseType, isNarrowingType } from "./compare";
+import { compareSchemas, extractBaseType, isNarrowingType } from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,16 @@ export type MigrationOptions = {
    * table or a column. The user opts in explicitly to arm them.
    */
   allowDataLoss?: boolean;
+  /**
+   * Emit `ADD COLUMN IF NOT EXISTS` instead of a bare `ADD COLUMN`.
+   *
+   * Off for a forward migration: if the column is unexpectedly already there,
+   * failing loudly is the right outcome. On for a rollback (generateRollback),
+   * which has to run whether or not the forward script's drops were armed — in
+   * safe mode nothing was dropped, so the restoring statements must be no-ops
+   * rather than errors.
+   */
+  addColumnIfNotExists?: boolean;
 };
 
 export type MigrationScript = {
@@ -184,7 +194,8 @@ function lookupConstraintDef(
 
 function alterStatementsForMatch(
   match: TableMatch,
-  sourceSchema: string
+  sourceSchema: string,
+  addColumnIfNotExists: boolean
 ): { stmts: SqlStatement[]; fkStmts: SqlStatement[] } {
   const stmts: SqlStatement[] = [];
   // New FK ADD CONSTRAINTs are collected here and returned separately so the
@@ -219,7 +230,10 @@ function alterStatementsForMatch(
     // run on an empty table.
     const risky = !col.nullable && col.columnDefault === null;
     stmts.push({
-      sql: `ALTER TABLE ${q(tName)} ADD COLUMN ${buildColumnDef(col)};`,
+      sql:
+        `ALTER TABLE ${q(tName)} ADD COLUMN ` +
+        (addColumnIfNotExists ? "IF NOT EXISTS " : "") +
+        `${buildColumnDef(col)};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
         (risky ? " — WARNING: NOT NULL with no default, will fail on a non-empty table" : ""),
@@ -480,7 +494,7 @@ export function generateMigration(
   for (const table of report.tablesOnlyInA) {
     statements.push({
       sql: buildCreateTable(table),
-      description: `Create table "${table.name}" (exists in A, missing from B)`,
+      description: `Create table "${table.name}"`,
       kind: "CREATE_TABLE",
       severity: "info",
       tableName: table.name,
@@ -503,7 +517,11 @@ export function generateMigration(
   // Each match yields immediate ALTERs plus any new-FK ADDs, which are deferred
   // into the Phase 4 bucket so they run after every table's columns exist.
   for (const match of report.matchedTables) {
-    const { stmts, fkStmts } = alterStatementsForMatch(match, sourceSchema);
+    const { stmts, fkStmts } = alterStatementsForMatch(
+      match,
+      sourceSchema,
+      options.addColumnIfNotExists === true,
+    );
     statements.push(...stmts);
     fkStatements.push(...fkStmts);
   }
@@ -520,7 +538,7 @@ export function generateMigration(
   for (const table of report.tablesOnlyInB) {
     statements.push({
       sql: `DROP TABLE IF EXISTS ${q(table.name)} CASCADE;`,
-      description: `Drop table "${table.name}" (exists in B, not in A) — WARNING: removes the table and all its data`,
+      description: `Drop table "${table.name}" — WARNING: removes the table and all its data`,
       kind: "DROP_TABLE",
       severity: "breaking",
       tableName: table.name,
@@ -610,4 +628,227 @@ export function renderMigrationScript(script: MigrationScript): string {
     .join("\n\n");
 
   return `${headerText}\n\n${body}`;
+}
+
+// ---------------------------------------------------------------------------
+// Rollback / down scripts
+// ---------------------------------------------------------------------------
+
+export type RollbackScript = {
+  /** The statements that undo the forward migration, in runnable order. */
+  statements: SqlStatement[];
+  warnings: string[];
+  /** Label of the schema the rollback runs against — the same target as the migration. */
+  targetSchema: string;
+  /** Label of the schema the migration synced from, for the header only. */
+  sourceSchema: string;
+  /**
+   * Structure the rollback puts back but cannot refill. Tables are bare names;
+   * columns are written "table.column". These are exactly the things the
+   * forward migration's DROP statements removed.
+   */
+  emptyOnRestore: { tables: string[]; columns: string[] };
+  /**
+   * Tables the rollback DROPS because the forward migration created them. Any
+   * row written into one of these since the migration ran is lost.
+   */
+  dropsCreated: string[];
+  /** True when the rollback restores the target exactly, data included. */
+  lossless: boolean;
+  /** Whether the forward migration this undoes had its drops armed. */
+  forwardAllowedDataLoss: boolean;
+};
+
+/**
+ * Build the down script for the migration generateMigration() produces from the
+ * same report.
+ *
+ * Undoing "make the target look like the source" is the same problem as the
+ * migration itself with the two sides swapped, so this runs the comparison
+ * backwards and reuses the whole forward generator on the result instead of
+ * hand-writing an inverse for each of the sixteen statement shapes. A dropped
+ * column comes back as an ADD COLUMN, a created table becomes a DROP TABLE, a
+ * widened type narrows again, a rename renames back.
+ *
+ * Two things a down script genuinely cannot do, both stated in the rendered
+ * header rather than hidden:
+ *
+ *   - It restores structure, never data. A table the migration dropped comes
+ *     back empty; a column comes back full of nulls or its default.
+ *   - Dropping a table the migration created destroys anything written into it
+ *     since. Those drops are armed, because a rollback that leaves half the
+ *     migration in place is not a rollback.
+ *
+ * Pass the same allowDataLoss the forward migration used. It does not change
+ * which statements are emitted — the restoring ones are written idempotently so
+ * they are inert when the forward script never dropped anything — it only
+ * changes what the header claims was lost.
+ */
+export function generateRollback(
+  report: CompareReport,
+  options: MigrationOptions = {},
+): RollbackScript {
+  const forwardAllowedDataLoss = options.allowDataLoss === true;
+
+  // The comparison, backwards: the target's ORIGINAL state becomes the source
+  // to restore, and the post-migration state (which matches the source) becomes
+  // the thing to change.
+  const reverseReport = compareSchemas(report.right, report.left);
+  const inverse = generateMigration(reverseReport, {
+    allowDataLoss: true,
+    addColumnIfNotExists: true,
+  });
+
+  // What the forward migration destroyed, read off the ORIGINAL report so the
+  // header describes the migration the user actually ran.
+  const emptyTables = report.tablesOnlyInB.map((t) => t.name);
+  const emptyColumns: string[] = [];
+  for (const match of report.matchedTables) {
+    for (const col of match.columnsOnlyInB) {
+      emptyColumns.push(`${match.left.name}.${col.name}`);
+    }
+  }
+  const dropsCreated = report.tablesOnlyInA.map((t) => t.name);
+
+  const restoredCount = emptyTables.length + emptyColumns.length;
+  const lossless = restoredCount === 0 && dropsCreated.length === 0;
+
+  const warnings: string[] = [];
+  if (restoredCount > 0 && forwardAllowedDataLoss) {
+    warnings.push(
+      `The rollback recreates ${restoredCount} dropped object${restoredCount === 1 ? "" : "s"} ` +
+        `but cannot restore the rows they held.`,
+    );
+  }
+  if (restoredCount > 0 && !forwardAllowedDataLoss) {
+    warnings.push(
+      `The migration ran in safe mode, so nothing was dropped and the ` +
+        `${restoredCount} restoring statement${restoredCount === 1 ? "" : "s"} ` +
+        `will do nothing.`,
+    );
+  }
+  if (dropsCreated.length > 0) {
+    warnings.push(
+      `The rollback drops ${dropsCreated.length} table${dropsCreated.length === 1 ? "" : "s"} ` +
+        `the migration created. Rows written into ${dropsCreated.length === 1 ? "it" : "them"} since are lost.`,
+    );
+  }
+  const unconfirmed = reverseReport.possibleTableMatches.length;
+  if (unconfirmed > 0) {
+    warnings.push(
+      `The reverse comparison could not confirm ${unconfirmed} table ` +
+        `rename${unconfirmed === 1 ? "" : "s"}. Where it was unsure it emitted a ` +
+        `CREATE plus a DROP instead of a RENAME, so the rollback recreates the ` +
+        `table empty rather than renaming it back. Read those statements before running.`,
+    );
+  }
+
+  return {
+    statements: inverse.statements,
+    warnings,
+    targetSchema: `${report.right.database}.${report.right.schema}`,
+    sourceSchema: `${report.left.database}.${report.left.schema}`,
+    emptyOnRestore: { tables: emptyTables, columns: emptyColumns },
+    dropsCreated,
+    lossless,
+    forwardAllowedDataLoss,
+  };
+}
+
+// Wrap a comma-joined list so a header comment line stays readable.
+function commentList(items: string[], indent: string): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const item of items) {
+    const next = current ? `${current}, ${item}` : item;
+    if (next.length > 64 && current) {
+      lines.push(`${indent}${current}`);
+      current = item;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(`${indent}${current}`);
+  return lines;
+}
+
+/**
+ * Render a rollback as plain SQL.
+ *
+ * Nothing here is ever commented out. A rollback whose statements do not run is
+ * not a rollback, so the honesty lives in the header instead: it says what the
+ * script restores, what it cannot restore, and what it destroys.
+ */
+export function renderRollbackScript(script: RollbackScript): string {
+  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
+  const safe = script.statements.filter((s) => s.severity === "safe").length;
+  const info = script.statements.filter((s) => s.severity === "info").length;
+
+  const header = [
+    `-- ================================================================`,
+    `-- ROLLBACK (down script)`,
+    `-- Undoes the migration ${script.sourceSchema}  →  ${script.targetSchema}`,
+    `-- Runs against: ${script.targetSchema}`,
+    `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
+    `--`,
+  ];
+
+  if (script.statements.length === 0) {
+    header.push(
+      `-- The migration changed nothing, so there is nothing to undo.`,
+      `-- ================================================================`,
+    );
+    return header.join("\n");
+  }
+
+  if (script.lossless) {
+    header.push(
+      `-- This rollback is complete. The migration dropped nothing and created`,
+      `-- nothing, so running this restores the target exactly as it was.`,
+    );
+  } else {
+    header.push(`-- THIS RESTORES STRUCTURE, NOT DATA.`);
+  }
+
+  const { tables, columns } = script.emptyOnRestore;
+  if (tables.length > 0 || columns.length > 0) {
+    if (script.forwardAllowedDataLoss) {
+      header.push(`--`, `-- Recreated EMPTY — the rows they held are gone:`);
+    } else {
+      header.push(
+        `--`,
+        `-- The migration ran in SAFE MODE, so it dropped none of the following.`,
+        `-- These statements are written idempotently and will do nothing unless`,
+        `-- the drops were armed or run by hand:`,
+      );
+    }
+    if (tables.length > 0) {
+      header.push(`--   tables:`, ...commentList(tables, "--     "));
+    }
+    if (columns.length > 0) {
+      header.push(`--   columns:`, ...commentList(columns, "--     "));
+    }
+  }
+
+  if (script.dropsCreated.length > 0) {
+    header.push(
+      `--`,
+      `-- DROPPED — created by the migration, so any row written into them since`,
+      `-- the migration ran is lost:`,
+      ...commentList(script.dropsCreated, "--     "),
+    );
+  }
+
+  header.push(
+    `--`,
+    `-- Run this only if the migration was applied in full. Applying it to a`,
+    `-- target the migration never touched will fail or do nothing.`,
+    `-- ================================================================`,
+  );
+
+  const body = script.statements
+    .map((stmt) => `-- [${stmt.severity.toUpperCase()}] ${stmt.description}\n${stmt.sql}`)
+    .join("\n\n");
+
+  return `${header.join("\n")}\n\n${body}`;
 }
