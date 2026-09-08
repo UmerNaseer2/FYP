@@ -427,6 +427,33 @@ function isNextvalDefault(defaultValue: string | null): boolean {
   return defaultValue !== null && /^\s*nextval\s*\(/i.test(defaultValue);
 }
 
+/**
+ * How a column produces its own values — "serial", an IDENTITY clause, "none" —
+ * or null when the snapshot did not record enough to say.
+ *
+ * A column can generate its own ids two ways, and they look nothing alike in
+ * the catalog: a serial has a nextval default and no identity marker, while an
+ * identity column has a marker and no default at all. Comparing the default
+ * alone made serial-versus-identity read as "default removed", which is not
+ * something any migration statement could ever fix.
+ *
+ * `identity: undefined` means the snapshot predates the field, so it cannot
+ * rule identity out. A nextval default still proves serial in that case; the
+ * absence of one proves nothing, hence null.
+ */
+function describeGenerated(column: ColumnSnapshot): string | null {
+  if (column.identity === undefined) {
+    return isNextvalDefault(column.columnDefault) ? "serial" : null;
+  }
+  if (column.identity) return `GENERATED ${column.identity} AS IDENTITY`;
+  return isNextvalDefault(column.columnDefault) ? "serial" : "none";
+}
+
+/** True when the column's value comes from a sequence or an identity clause. */
+function isGeneratedColumn(column: ColumnSnapshot): boolean {
+  return Boolean(column.identity) || isNextvalDefault(column.columnDefault);
+}
+
 function compareColumnPair(
   leftTable: TableSnapshot,
   leftColumn: ColumnSnapshot,
@@ -464,12 +491,22 @@ function compareColumnPair(
       `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`
     );
   }
+  // How the column generates its own values, compared as one property. Two
+  // serial columns in different schemas have different sequence NAMES in their
+  // defaults, so the raw text always differs — and serial versus identity is a
+  // real change that the default text describes badly.
+  const leftGenerated = describeGenerated(leftColumn);
+  const rightGenerated = describeGenerated(rightColumn);
+  if (leftGenerated !== null && rightGenerated !== null && leftGenerated !== rightGenerated) {
+    changes.push(`Generated values changed from ${leftGenerated} to ${rightGenerated}`);
+  }
+
   // Column default drift. Defaults are already schema-relative (own-schema
-  // qualifier stripped at snapshot time), so a plain text compare is safe. Skip
-  // ONLY when BOTH sides are serial/identity nextval defaults — that pair is pure
-  // sequence-name noise. When exactly one side is serial, it IS a real change
-  // (e.g. source is serial, target has no default) and must be reported.
-  if (!(isNextvalDefault(leftColumn.columnDefault) && isNextvalDefault(rightColumn.columnDefault))) {
+  // qualifier stripped at snapshot time), so a plain text compare is safe. It is
+  // skipped whenever either side generates its own values, because there the
+  // "default" is just the generator showing through and the line above already
+  // reported it.
+  if (!isGeneratedColumn(leftColumn) && !isGeneratedColumn(rightColumn)) {
     const leftDefault = leftColumn.columnDefault?.trim() || null;
     const rightDefault = rightColumn.columnDefault?.trim() || null;
     if (leftDefault !== rightDefault) {

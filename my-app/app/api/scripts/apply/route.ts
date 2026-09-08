@@ -3,7 +3,7 @@ import { requireEditor } from "@/lib/auth-guard";
 import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
-import { containsTransactionControl } from "@/lib/sql-guard";
+import { containsTransactionControl, extractEnumAddValues } from "@/lib/sql-guard";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import {
   louderEnvironment,
@@ -335,6 +335,35 @@ export async function POST(request: NextRequest) {
         "(existing rows may have duplicate versions under 'unknown'). " +
         "Uniqueness is still checked at INSERT time via the SELECT below."
       );
+    }
+
+    // ─── 7d. Add new enum values BEFORE the transaction opens ───────────────
+    //
+    // PostgreSQL will not let a value added by `ALTER TYPE … ADD VALUE` be USED
+    // by another statement in the same transaction — it raises "unsafe use of
+    // new value". Since step 8 runs the whole script as one transaction, a
+    // perfectly correct migration that adds an enum label and then, say, builds
+    // an index whose WHERE clause mentions it would fail halfway through.
+    //
+    // So those statements run first, on their own, in autocommit. Only the
+    // ones written with IF NOT EXISTS qualify, which means the copy left in the
+    // script turns into a no-op instead of an "already exists" error. Nothing
+    // is lost if the migration later rolls back: an enum label nothing
+    // references is inert, and the next run finds it already there.
+    const enumAdditions = extractEnumAddValues(sql_content);
+    if (enumAdditions.length > 0) {
+      // These statements name their type unqualified, so search_path has to
+      // point at the target schema — and this is outside any transaction, so
+      // SET LOCAL is not available and the session setting must be put back by
+      // hand before the client returns to the pool.
+      await client.query(`SET search_path TO ${quotedSchema}`);
+      try {
+        for (const statement of enumAdditions) {
+          await client.query(statement);
+        }
+      } finally {
+        await client.query("RESET search_path");
+      }
     }
 
     // ─── 8. Run the migration inside a transaction ────────────────────────
