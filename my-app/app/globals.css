@@ -2648,6 +2648,20 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
                border:1px solid color-mix(in oklab, var(--drift) 35%, transparent); font-size:12.5px; color:var(--text); }
 .warn-inline .ico { color:var(--drift); flex:none; margin-top:1px; }
 
+/* Production gate — the stop in front of SQL that runs on a live database.
+   Louder than .warn-inline on purpose: that one reports a risk, this one is
+   holding a button down until somebody reads it. */
+.prod-gate { border:1px solid color-mix(in oklab, var(--break) 45%, transparent);
+             border-radius:9px; padding:11px 12px;
+             background: color-mix(in oklab, var(--break) 7%, var(--surface)); }
+.prod-gate__head { display:flex; align-items:center; gap:7px;
+                   font-size:12.5px; font-weight:600; color:var(--break); }
+.prod-gate__head .ico { flex:none; }
+.prod-gate__body { margin-top:6px; font-size:12px; line-height:1.5; color:var(--text-2); }
+.prod-gate__ack { display:flex; align-items:flex-start; gap:8px; margin-top:9px;
+                  font-size:12px; line-height:1.45; color:var(--text); cursor:pointer; }
+.prod-gate__ack input { margin-top:2px; flex:none; accent-color:var(--break); cursor:pointer; }
+
 /* change-level segmented control colours (extends the foundation .seg) */
 .seg .swatch { width:8px; height:8px; border-radius:999px; display:inline-block; flex:none; }
 .seg button { display:inline-flex; align-items:center; gap:6px; }

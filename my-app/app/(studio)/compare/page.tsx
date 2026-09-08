@@ -18,6 +18,7 @@ import { findTrackedSchema, getNextLineageVersion } from "@/lib/lineage-db";
 import {
   environmentRank,
   isProduction,
+  louderEnvironment,
   toEnvironment,
   type Environment,
 } from "@/lib/environments";
@@ -203,20 +204,6 @@ function pickList(value: string | string[] | undefined): string[] {
     return value.map((entry) => entry.trim());
   }
   return [];
-}
-
-/**
- * The environment we should shout about for one target.
- *
- * A target has up to two labels: the connection's (a property of the whole
- * database) and the tracked schema's (set when it was tracked, editable since).
- * They can disagree. We take the louder of the two, because a warning that
- * turns out to be over-cautious costs a moment's attention, and a missing one
- * costs data. "unset" ranks lowest, so an unlabelled schema on a production
- * connection still reads as production.
- */
-function louderEnvironment(a: Environment, b: Environment): Environment {
-  return environmentRank(a) >= environmentRank(b) ? a : b;
 }
 
 /** One target's fully-resolved comparison, or the reason it could not run. */

@@ -20,6 +20,14 @@ import {
 } from "@/lib/script-status";
 import { containsTransactionControl } from "@/lib/sql-guard";
 import { Select } from "@/components/ui/Select";
+import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
+import {
+  isProduction,
+  louderEnvironment,
+  toEnvironment,
+  DEFAULT_ENVIRONMENT,
+  type Environment,
+} from "@/lib/environments";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
@@ -69,6 +77,8 @@ type Connection = {
   port: number;
   database_name: string;
   type: string;
+  /** dev / staging / prod, or "unset" when nobody has labelled it. */
+  environment: Environment;
 };
 
 // One row of the target's applied history.
@@ -318,6 +328,51 @@ function MigRow({
   );
 }
 
+/**
+ * The gate in front of anything that runs SQL on a production database.
+ *
+ * Everything else on this page can be undone or retried. This cannot: the
+ * migration commits on a live database with real rows in it. So a production
+ * target does not just get a louder colour, it gets a stop — the button below
+ * stays disabled until someone reads this and ticks the box.
+ *
+ * The tick is deliberately per-action and short-lived. It is cleared whenever
+ * the target, the schema, the script family or the version range changes, so it
+ * can never be carried from the dev run you meant to the prod run you did not.
+ */
+function ProductionGate({
+  what,
+  acknowledged,
+  onAcknowledge,
+}: {
+  /** What is about to happen, in the user's words. "run 3 migrations", etc. */
+  what: string;
+  acknowledged: boolean;
+  onAcknowledge: (value: boolean) => void;
+}) {
+  return (
+    <div className="prod-gate">
+      <div className="prod-gate__head">
+        <AlertTriangleIcon size={15} className="ico" />
+        <span>Production target</span>
+      </div>
+      <p className="prod-gate__body">
+        This connection is labelled production. Live data is behind it, and a
+        migration that goes wrong here is not something a rollback brings back —
+        a rollback restores structure, not rows.
+      </p>
+      <label className="prod-gate__ack">
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          onChange={(event) => onAcknowledge(event.target.checked)}
+        />
+        <span>I understand, and I mean to {what} against production.</span>
+      </label>
+    </div>
+  );
+}
+
 export default function DeployPage() {
   // ── Selection state ──────────────────────────────────────────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -339,6 +394,18 @@ export default function DeployPage() {
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [targetVersion, setTargetVersion] = useState<string>("");
+
+  // ── Environment of the chosen target ─────────────────────────────────────
+  // The connection carries one label; the tracked schema can carry a louder one
+  // (a prod schema on a box nobody labelled). We learn the schema's only when
+  // the lineage lookup runs, so this starts unset and is filled in by the
+  // pre-flight check — the connection's label alone is enough to warn with in
+  // the meantime.
+  const [schemaEnvironment, setSchemaEnvironment] =
+    useState<Environment>(DEFAULT_ENVIRONMENT);
+  // Ticked in the ProductionGate. One per destructive action, never shared.
+  const [deployAcknowledged, setDeployAcknowledged] = useState(false);
+  const [revertAcknowledged, setRevertAcknowledged] = useState(false);
 
   // ── Drift pre-check (Phase 6 lineage) ────────────────────────────────────
   const [driftPhase, setDriftPhase] = useState<DriftPhase>("idle");
@@ -417,6 +484,15 @@ export default function DeployPage() {
     () => connections.find((c) => String(c.id) === connectionId) ?? null,
     [connections, connectionId]
   );
+
+  // What we warn about. louderEnvironment is the same rule the compare screen
+  // uses, so a target cannot look calmer here — where the SQL actually runs —
+  // than it does there.
+  const targetEnvironment = louderEnvironment(
+    toEnvironment(activeConn?.environment),
+    schemaEnvironment
+  );
+  const targetIsProduction = isProduction(targetEnvironment);
 
   // Scope the pulled scripts to the selected connection's database. GitHub now
   // stores scripts under <database_name>/<schema>/..., so a script only belongs
@@ -514,7 +590,24 @@ export default function DeployPage() {
   useEffect(() => {
     setRevertVersion(null);
     setRevertError(null);
+    setRevertAcknowledged(false);
   }, [connectionId, schema, scriptGroup]);
+
+  // An acknowledgement is for one exact batch against one exact target. Change
+  // any part of what would run and it has to be given again — otherwise a tick
+  // meant for two patch migrations on dev could carry over to a breaking one on
+  // production. targetVersion is in here because it decides how far the run
+  // goes, not just where.
+  useEffect(() => {
+    setDeployAcknowledged(false);
+  }, [connectionId, schema, scriptGroup, targetVersion]);
+
+  // The schema's own label belongs to one (connection, schema) pair. Drop it the
+  // moment that pair changes, so a prod schema's label can never linger over a
+  // dev one picked next.
+  useEffect(() => {
+    setSchemaEnvironment(DEFAULT_ENVIRONMENT);
+  }, [connectionId, schema]);
 
   // Default the target to the latest pending version once pre-flight returns.
   // Re-runs after a partial deploy keep a still-valid pick, else snap to latest.
@@ -623,6 +716,9 @@ export default function DeployPage() {
   async function handleRevert(version: string) {
     const downSql = scriptByVersion.get(version)?.down_sql;
     if (!connectionId || !scriptGroup || !downSql) return;
+    // The disabled button already says this, but a disabled button is a hint,
+    // not a rule — this is the rule.
+    if (targetIsProduction && !revertAcknowledged) return;
 
     setRevertBusy(true);
     setRevertError(null);
@@ -636,6 +732,7 @@ export default function DeployPage() {
           version,
           sql_content: downSql,
           schemaName: schema || "public",
+          acknowledgeProduction: revertAcknowledged,
         }),
       });
       const data = (await res.json()) as { success?: boolean; message?: string; error?: string };
@@ -684,7 +781,12 @@ export default function DeployPage() {
       const lookup = (await lookupRes.json()) as {
         tracked?: boolean;
         trackedSchemaId?: number;
+        environment?: string;
       };
+      // Worth keeping even when the drift check itself can't run: the warning
+      // above the Deploy button needs this, and an untracked schema simply has
+      // no label of its own to add.
+      setSchemaEnvironment(toEnvironment(lookup.environment));
       if (!lookup.tracked || !lookup.trackedSchemaId) {
         setDriftPhase("untracked");
         return;
@@ -739,6 +841,7 @@ export default function DeployPage() {
   async function handleDeploy() {
     const batch = scriptsUpToTarget;
     if (batch.length === 0 || isDeploying) return;
+    if (targetIsProduction && !deployAcknowledged) return;
 
     setRunScripts(batch);
     setRunStatus(
@@ -781,6 +884,7 @@ export default function DeployPage() {
             change_type: inferChangeKind(script.sql_content),
             // Link the applied row back to the GitHub file it came from.
             source_ref: script.path,
+            acknowledgeProduction: deployAcknowledged,
           }),
         });
         const data = (await res.json()) as { success?: boolean; error?: string };
@@ -969,6 +1073,16 @@ export default function DeployPage() {
                     No connections saved yet. Add one on the Connections page first.
                   </p>
                 )}
+                {activeConn && (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <EnvironmentPill environment={targetEnvironment} />
+                    {targetEnvironment === "unset" && (
+                      <span className="help">
+                        Unlabelled — label it on Connections so this page can warn you.
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1062,6 +1176,7 @@ export default function DeployPage() {
                     <span className="mono text-[16px] font-semibold">{preflightResult.schema}</span>
                     <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>@</span>
                     <span className="mono text-[14px]" style={{ color: "var(--text-2)" }}>{activeConn.name}</span>
+                    <EnvironmentPill environment={targetEnvironment} />
                     <span className="pill pill-sync"><span className="dot" />reachable</span>
                   </div>
                   <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
@@ -1132,6 +1247,7 @@ export default function DeployPage() {
                                   }
                                   onClick={() => {
                                     setRevertError(null);
+                                    setRevertAcknowledged(false);
                                     setRevertVersion(confirming ? null : entry.version);
                                   }}
                                 >
@@ -1171,11 +1287,22 @@ export default function DeployPage() {
 
                               {revertError && <pre className="err-pre">{revertError}</pre>}
 
+                              {targetIsProduction && (
+                                <ProductionGate
+                                  what={`roll back v${entry.version}`}
+                                  acknowledged={revertAcknowledged}
+                                  onAcknowledge={setRevertAcknowledged}
+                                />
+                              )}
+
                               <div className="flex items-center gap-2">
                                 <button
                                   type="button"
                                   className="btn btn-destructive btn-sm"
-                                  disabled={revertBusy}
+                                  disabled={
+                                    revertBusy ||
+                                    (targetIsProduction && !revertAcknowledged)
+                                  }
                                   onClick={() => void handleRevert(entry.version)}
                                 >
                                   {revertBusy ? "Rolling back…" : `Roll back v${entry.version}`}
@@ -1287,19 +1414,37 @@ export default function DeployPage() {
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>txn-per-step</span></div>
                       </div>
 
+                      {targetIsProduction && (
+                        <div className="mt-4">
+                          <ProductionGate
+                            what={`run ${scriptsUpToTarget.length} migration${scriptsUpToTarget.length === 1 ? "" : "s"}`}
+                            acknowledged={deployAcknowledged}
+                            onAcknowledge={setDeployAcknowledged}
+                          />
+                        </div>
+                      )}
+
                       <button
                         type="button"
-                        className="btn btn-primary btn-lg w-full mt-5"
-                        disabled={scriptsUpToTarget.length === 0 || hasTxnViolation || isDeploying}
+                        className={`btn btn-lg w-full mt-5 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                        disabled={
+                          scriptsUpToTarget.length === 0 ||
+                          hasTxnViolation ||
+                          isDeploying ||
+                          (targetIsProduction && !deployAcknowledged)
+                        }
                         onClick={handleDeploy}
                       >
                         <DeployIcon size={14} />
                         Deploy {scriptsUpToTarget.length} migration{scriptsUpToTarget.length === 1 ? "" : "s"}
+                        {targetIsProduction ? " to production" : ""}
                       </button>
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
                         {hasTxnViolation
                           ? "Resolve the transaction-control issue below first"
-                          : "Each step commits before the next begins"}
+                          : targetIsProduction && !deployAcknowledged
+                            ? "Tick the box above to enable this"
+                            : "Each step commits before the next begins"}
                       </div>
                     </div>
 
@@ -1307,6 +1452,19 @@ export default function DeployPage() {
                       <div className="section-title mb-3">Pre-flight checklist</div>
                       <ul className="space-y-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
                         <ChecklistItem ok>Target reachable · {activeConn.host}</ChecklistItem>
+                        {targetIsProduction ? (
+                          <ChecklistItem ok={false}>
+                            Environment · production — needs an explicit confirmation
+                          </ChecklistItem>
+                        ) : targetEnvironment === "unset" ? (
+                          <ChecklistItem info>
+                            Environment · unlabelled — nothing here can warn you about this target
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>
+                            Environment · {targetEnvironment}
+                          </ChecklistItem>
+                        )}
                         <ChecklistItem ok>
                           Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">v{preflightResult.currentVersion}</span></> : "fresh — no versions yet"}
                         </ChecklistItem>
@@ -1376,6 +1534,8 @@ export default function DeployPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* Which database this is landing on, while it is landing. */}
+              <EnvironmentPill environment={targetEnvironment} />
               <span className="mono text-[12.5px]" style={{ color: "var(--text-3)" }}>elapsed {fmtSecs(elapsedMs)}</span>
               {isDeploying && (
                 <button type="button" className="btn btn-secondary btn-sm" onClick={requestStop}>

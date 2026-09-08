@@ -71,6 +71,20 @@ export function environmentRank(environment: Environment): number {
 }
 
 /**
+ * The louder of two labels.
+ *
+ * A target has up to two: the connection's (a property of the whole database)
+ * and the tracked schema's (set when it was tracked, editable since). They can
+ * disagree. We take the louder, because a warning that turns out to be
+ * over-cautious costs a moment's attention and a missing one costs data.
+ * "unset" ranks lowest, so an unlabelled schema on a production connection
+ * still reads as production.
+ */
+export function louderEnvironment(a: Environment, b: Environment): Environment {
+  return environmentRank(a) >= environmentRank(b) ? a : b;
+}
+
+/**
  * Does this free text read like a production database?
  *
  * Used only to *suggest* a label in the connection drawer — never to write one.
