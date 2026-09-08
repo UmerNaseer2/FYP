@@ -8,7 +8,7 @@ import {
   BASELINE_VERSION,
   type TrackedSchemaRow,
 } from "@/lib/lineage-db";
-import { toEnvironment, type Environment } from "@/lib/environments";
+import { ENVIRONMENTS, toEnvironment, type Environment } from "@/lib/environments";
 
 /**
  * POST /api/lineage/track
@@ -49,10 +49,20 @@ export async function POST(request: NextRequest) {
     typeof body.label === "string" && body.label.trim().length > 0
       ? body.label.trim()
       : null;
-  // undefined means "inherit from the connection"; anything unrecognised
-  // narrows to "unset" in toEnvironment rather than erroring.
+  // undefined means "inherit from the connection". A value that was sent but
+  // is not one of ours is refused rather than narrowed: "production" would
+  // become "unset", the lowest rank, and a schema the user believes they
+  // labelled live would never warn anybody. Same rule as PATCH /api/lineage.
+  const rawEnvironment =
+    body.environment === undefined ? null : String(body.environment).trim().toLowerCase();
+  if (rawEnvironment !== null && !(ENVIRONMENTS as readonly string[]).includes(rawEnvironment)) {
+    return NextResponse.json(
+      { error: `Environment must be one of: ${ENVIRONMENTS.join(", ")}.` },
+      { status: 400 }
+    );
+  }
   const environmentOverride =
-    body.environment === undefined ? null : toEnvironment(body.environment);
+    rawEnvironment === null ? null : toEnvironment(rawEnvironment);
 
   if (!connectionId || !schemaName) {
     return NextResponse.json(

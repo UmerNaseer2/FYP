@@ -1,5 +1,5 @@
 import { parsePostgresUri } from "./parse-uri";
-import { toEnvironment, type Environment } from "./environments";
+import { ENVIRONMENTS, toEnvironment, type Environment } from "./environments";
 
 /**
  * Validation for a saved connection, shared by the drawer form and the
@@ -171,12 +171,23 @@ export function validateConnection(
   const connection_string = String(draft.connection_string ?? "").trim();
   const rawType = String(draft.type ?? "PostgreSQL").trim();
   const ssl_mode = toSslMode(draft.ssl_mode);
-  // Anything unrecognised narrows to "unset" rather than erroring: an omitted
-  // environment is the normal case for an older client, and "unset" is a
-  // truthful answer to "which environment is this?".
-  const environment = toEnvironment(draft.environment);
+  // An omitted environment is the normal case for an older client, and "unset"
+  // is a truthful answer to "which environment is this?".
+  //
+  // A value that was sent but is not one of ours is a different thing, and it
+  // is not narrowed quietly. "production" instead of "prod" would be stored as
+  // "unset" — the *lowest* rank — so the user would believe they had labelled a
+  // live database and nothing would ever warn them about it. Silence in that
+  // direction is the one failure this whole column exists to prevent.
+  const rawEnvironment = String(draft.environment ?? "").trim();
+  const environment = toEnvironment(rawEnvironment);
 
   const usingUri = connection_string !== "";
+
+  if (rawEnvironment !== "" && rawEnvironment.toLowerCase() !== environment) {
+    errors.environment =
+      `"${rawEnvironment}" is not an environment. Use one of: ${ENVIRONMENTS.join(", ")}.`;
+  }
 
   if (!name) errors.name = "Give this connection a name.";
   else if (name.length > LIMITS.name) errors.name = `Name must be ${LIMITS.name} characters or fewer.`;
