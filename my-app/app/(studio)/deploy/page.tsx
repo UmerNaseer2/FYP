@@ -345,6 +345,14 @@ export default function DeployPage() {
   const [driftResult, setDriftResult] = useState<DriftResult | null>(null);
   const [driftError, setDriftError] = useState<string | null>(null);
 
+  // ── Revert (roll one applied version back off the target) ────────────────
+  // revertVersion is the version whose confirmation panel is open — the button
+  // never fires straight into a rollback, because this is destructive and the
+  // user should read the SQL first.
+  const [revertVersion, setRevertVersion] = useState<string | null>(null);
+  const [revertBusy, setRevertBusy] = useState(false);
+  const [revertError, setRevertError] = useState<string | null>(null);
+
   // ── Stepper + run ────────────────────────────────────────────────────────
   const [stage, setStage] = useState<1 | 2 | 3>(1);
   const [isDeploying, setIsDeploying] = useState(false);
@@ -475,6 +483,39 @@ export default function DeployPage() {
   const appliedCount = versionLedger.filter((e) => e.status === "applied").length;
   const pendingCount = versionLedger.filter((e) => e.status === "pending").length;
 
+  // The newest applied version of this family. It is the ONLY one the Revert
+  // button is offered on: a rollback assumes nothing later has touched the same
+  // structure, so undoing v1.0.0 while v2.0.0 is still applied would run the
+  // wrong undo. The revert route enforces the same rule server-side.
+  const newestApplied = useMemo<string | null>(() => {
+    let newest: string | null = null;
+    for (const entry of versionLedger) {
+      if (entry.status !== "applied") continue;
+      if (newest === null || compareVersions(entry.version, newest) > 0) {
+        newest = entry.version;
+      }
+    }
+    return newest;
+  }, [versionLedger]);
+
+  // Registry entry per version of the chosen family, so a ledger row can reach
+  // its stored rollback (down_sql) without re-scanning the pulled scripts.
+  const scriptByVersion = useMemo(() => {
+    const map = new Map<string, GitHubScript>();
+    for (const s of groupedScripts[scriptGroup] ?? []) {
+      if (s.schema_name === schema) map.set(s.version, s);
+    }
+    return map;
+  }, [groupedScripts, scriptGroup, schema]);
+
+  // Close a stale confirmation panel when the user changes what they're looking
+  // at — a "Roll back v2.0.0" prompt must not survive a switch to another
+  // schema or script family.
+  useEffect(() => {
+    setRevertVersion(null);
+    setRevertError(null);
+  }, [connectionId, schema, scriptGroup]);
+
   // Default the target to the latest pending version once pre-flight returns.
   // Re-runs after a partial deploy keep a still-valid pick, else snap to latest.
   useEffect(() => {
@@ -572,6 +613,47 @@ export default function DeployPage() {
       setPreflightResult(null);
     } finally {
       setPreflightLoading(false);
+    }
+  }
+
+  // Run one version's stored rollback against the target, then re-read the
+  // ledger so the row flips from Applied back to Pending. The server does the
+  // real checking (is it applied, is it the newest); this only refuses to send
+  // a request it already knows is incomplete.
+  async function handleRevert(version: string) {
+    const downSql = scriptByVersion.get(version)?.down_sql;
+    if (!connectionId || !scriptGroup || !downSql) return;
+
+    setRevertBusy(true);
+    setRevertError(null);
+    try {
+      const res = await fetch("/api/scripts/revert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionId: Number(connectionId),
+          script_name: scriptGroup,
+          version,
+          sql_content: downSql,
+          schemaName: schema || "public",
+        }),
+      });
+      const data = (await res.json()) as { success?: boolean; message?: string; error?: string };
+      if (!res.ok || !data.success) {
+        setRevertError(data.error ?? "The rollback failed.");
+        return;
+      }
+      setRevertVersion(null);
+      showToast(`v${version} rolled back`);
+      // The run panel below still describes the deploy that put this version on
+      // the target, so clear it — leaving it up would contradict the ledger.
+      resetRun();
+      setStage(1);
+      await runPreflightCheck(connectionId, schema, scriptGroup);
+    } catch {
+      setRevertError("Network error while running the rollback.");
+    } finally {
+      setRevertBusy(false);
     }
   }
 
@@ -1016,23 +1098,102 @@ export default function DeployPage() {
                     </div>
                   </div>
                   <div>
-                    {versionLedger.map((entry) => (
-                      <div
-                        key={entry.version}
-                        className="flex items-center justify-between gap-3 py-1.5"
-                        style={{ borderTop: "1px solid var(--border)" }}
-                      >
-                        <span className="mono text-[13px]">v{entry.version}</span>
-                        <div className="flex items-center gap-2.5">
-                          {entry.status === "applied" && entry.appliedAt && (
-                            <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                              {fmtDate(entry.appliedAt)}
-                            </span>
+                    {versionLedger.map((entry) => {
+                      // Revert is offered on the newest applied version only —
+                      // see the newestApplied comment above for why.
+                      const canOfferRevert =
+                        entry.status === "applied" && entry.version === newestApplied;
+                      const downSql = scriptByVersion.get(entry.version)?.down_sql ?? null;
+                      const confirming = revertVersion === entry.version;
+                      return (
+                        <div
+                          key={entry.version}
+                          className="py-1.5"
+                          style={{ borderTop: "1px solid var(--border)" }}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="mono text-[13px]">v{entry.version}</span>
+                            <div className="flex items-center gap-2.5">
+                              {entry.status === "applied" && entry.appliedAt && (
+                                <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                                  {fmtDate(entry.appliedAt)}
+                                </span>
+                              )}
+                              {ledgerPill(entry.status)}
+                              {canOfferRevert && (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  disabled={!downSql || revertBusy || isDeploying}
+                                  title={
+                                    downSql
+                                      ? `Run v${entry.version}.down.sql to undo this version`
+                                      : `No rollback stored for v${entry.version}. Versions pushed before rollbacks were saved, or pushed without one, cannot be reverted from here.`
+                                  }
+                                  onClick={() => {
+                                    setRevertError(null);
+                                    setRevertVersion(confirming ? null : entry.version);
+                                  }}
+                                >
+                                  {confirming ? "Close" : "Revert"}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {confirming && downSql && (
+                            <div className="mt-2 mb-1 space-y-2">
+                              <div className="warn-inline">
+                                <AlertTriangleIcon size={14} className="ico" />
+                                <div className="min-w-0">
+                                  <div className="font-semibold">This restores structure, not data.</div>
+                                  <div className="mt-1" style={{ color: "var(--text-2)" }}>
+                                    Running{" "}
+                                    <span className="mono">v{entry.version}.down.sql</span>{" "}
+                                    against <span className="mono">{preflightResult.schema}</span>{" "}
+                                    undoes the structural change and removes v{entry.version} from
+                                    the ledger, so it becomes pending again. Rows this rollback
+                                    drops are gone, and rows the original migration deleted do not
+                                    come back.
+                                  </div>
+                                </div>
+                              </div>
+
+                              <details>
+                                <summary
+                                  className="text-[12px] cursor-pointer select-none"
+                                  style={{ color: "var(--text-3)" }}
+                                >
+                                  Show the rollback SQL ({getSqlLineCount(downSql)} lines)
+                                </summary>
+                                <pre className="err-pre">{downSql}</pre>
+                              </details>
+
+                              {revertError && <pre className="err-pre">{revertError}</pre>}
+
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  className="btn btn-destructive btn-sm"
+                                  disabled={revertBusy}
+                                  onClick={() => void handleRevert(entry.version)}
+                                >
+                                  {revertBusy ? "Rolling back…" : `Roll back v${entry.version}`}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  disabled={revertBusy}
+                                  onClick={() => setRevertVersion(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
                           )}
-                          {ledgerPill(entry.status)}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
