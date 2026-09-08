@@ -26,12 +26,15 @@ import {
  *     a password or a connection string back to the browser.
  *  3. `ssl_mode` is the real setting; the older boolean `ssl` column is written
  *     in step with it so a rollback to an earlier build still behaves.
+ *  4. `environment` is a typed dev / staging / prod label, not free text in the
+ *     name. It is what lets Compare and Deploy say "this target is production"
+ *     before they generate or run anything.
  */
 
 /** Columns safe to return to the browser. */
 const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
                 (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
-                ssl, ssl_mode`;
+                ssl, ssl_mode, environment`;
 
 export async function GET() {
   const gate = await requireViewer();
@@ -103,8 +106,8 @@ export async function POST(request: NextRequest) {
     const result = await pool.query(
       `
       INSERT INTO connections
-      (name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      (name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -118,6 +121,7 @@ export async function POST(request: NextRequest) {
         encryptSecret(value.connection_string) || null,
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
+        value.environment,
       ]
     );
 
@@ -226,8 +230,9 @@ export async function PUT(request: NextRequest) {
             ELSE $9
           END,
           ssl = $10,
-          ssl_mode = $11
-      WHERE id = $12
+          ssl_mode = $11,
+          environment = $12
+      WHERE id = $13
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -243,6 +248,7 @@ export async function PUT(request: NextRequest) {
         encryptSecret(value.connection_string) ?? "",
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
+        value.environment,
         id,
       ]
     );

@@ -4,7 +4,13 @@ import { buildPgConfig } from "./connection-config";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import type { ChangeLevel } from "./version-detection";
-import pool, { ensureConnectionsTable, ensureMetadataSchema } from "./version-db";
+import pool, {
+  addCheckConstraint,
+  ensureConnectionsTable,
+  ensureMetadataSchema,
+  ENVIRONMENT_SQL_LIST,
+} from "./version-db";
+import { DEFAULT_ENVIRONMENT, type Environment } from "./environments";
 
 /**
  * Phase 6 metadata store — "schema lineage".
@@ -32,6 +38,12 @@ export type TrackedSchemaRow = {
   connection_id: number;
   schema_name: string;
   label: string | null;
+  /**
+   * dev / staging / prod for this specific schema. Seeded from the connection
+   * when the schema is first tracked, but stored separately: one server can
+   * legitimately host a staging schema and a production one.
+   */
+  environment: Environment;
   created_at: string;
 };
 
@@ -96,10 +108,23 @@ export async function ensureLineageTables(): Promise<void> {
       connection_id INTEGER NOT NULL,
       schema_name TEXT NOT NULL,
       label TEXT,
+      environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'
+        CHECK (environment IN (${ENVIRONMENT_SQL_LIST})),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE (connection_id, schema_name)
     )
   `);
+
+  // A schema tracked before environments existed comes back as 'unset'. Same
+  // reasoning as on `connections`: we do not guess a label, we ask for one.
+  await pool.query(
+    `ALTER TABLE tracked_schemas ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
+  );
+  await addCheckConstraint(
+    "tracked_schemas",
+    "tracked_schemas_environment_check",
+    `environment IN (${ENVIRONMENT_SQL_LIST})`
+  );
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS snapshots (

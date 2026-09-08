@@ -1,4 +1,5 @@
 import { parsePostgresUri } from "./parse-uri";
+import { toEnvironment, type Environment } from "./environments";
 
 /**
  * Validation for a saved connection, shared by the drawer form and the
@@ -53,6 +54,7 @@ export type ConnectionDraft = {
   password?: unknown;
   connection_string?: unknown;
   ssl_mode?: unknown;
+  environment?: unknown;
 };
 
 /** What a draft looks like once it has been checked and normalised. */
@@ -66,6 +68,7 @@ export type NormalisedConnection = {
   password: string;
   connection_string: string;
   ssl_mode: SslMode;
+  environment: Environment;
 };
 
 /**
@@ -168,6 +171,10 @@ export function validateConnection(
   const connection_string = String(draft.connection_string ?? "").trim();
   const rawType = String(draft.type ?? "PostgreSQL").trim();
   const ssl_mode = toSslMode(draft.ssl_mode);
+  // Anything unrecognised narrows to "unset" rather than erroring: an omitted
+  // environment is the normal case for an older client, and "unset" is a
+  // truthful answer to "which environment is this?".
+  const environment = toEnvironment(draft.environment);
 
   const usingUri = connection_string !== "";
 
@@ -247,6 +254,7 @@ export function validateConnection(
       password,
       connection_string,
       ssl_mode,
+      environment,
     },
   };
 }

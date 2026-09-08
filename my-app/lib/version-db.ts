@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { parse as parseConnectionString } from "pg-connection-string";
+import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "./environments";
 
 declare global {
   var __connectionsPgPool: Pool | undefined;
@@ -61,11 +62,31 @@ export async function ensureMetadataSchema(): Promise<void> {
 }
 
 /**
- * Create (and bring up to date) the `connections` table that stores saved
- * database targets. This is the single source of truth for that table's shape —
- * every reader/writer (the connections API and the Compare page) calls this
- * first so the columns, including `ssl`, are guaranteed to exist consistently.
+ * The environment list as a SQL literal, generated from the TypeScript union in
+ * lib/environments so a new environment can never be valid in one and rejected
+ * by the other. Only ever built from our own constants — no user input.
  */
+export const ENVIRONMENT_SQL_LIST = ENVIRONMENTS.map((e) => `'${e}'`).join(", ");
+
+/**
+ * Add a CHECK constraint, tolerating the (normal) case where it is already
+ * there. `ADD COLUMN IF NOT EXISTS` cannot carry a CHECK onto a table that
+ * already has the column, so every column we add after the fact needs this.
+ */
+export async function addCheckConstraint(
+  table: string,
+  constraintName: string,
+  check: string
+): Promise<void> {
+  try {
+    await pool.query(
+      `ALTER TABLE ${table} ADD CONSTRAINT ${constraintName} CHECK (${check})`
+    );
+  } catch (error) {
+    // 42710 duplicate_object: already added on an earlier boot.
+    if ((error as { code?: string })?.code !== "42710") throw error;
+  }
+}
 
 /**
  * Run a lazy-DDL function at most once per process.
@@ -94,6 +115,12 @@ function once(run: () => Promise<void>): () => Promise<void> {
   };
 }
 
+/**
+ * Create (and bring up to date) the `connections` table that stores saved
+ * database targets. This is the single source of truth for that table's shape —
+ * every reader/writer (the connections API and the Compare page) calls this
+ * first so the columns, including `ssl`, are guaranteed to exist consistently.
+ */
 async function createConnectionsTable(): Promise<void> {
   await ensureMetadataSchema();
   await pool.query(`
@@ -110,6 +137,8 @@ async function createConnectionsTable(): Promise<void> {
       ssl BOOLEAN NOT NULL DEFAULT false,
       ssl_mode TEXT NOT NULL DEFAULT 'disable'
         CHECK (ssl_mode IN ('disable', 'require', 'verify-full')),
+      environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'
+        CHECK (environment IN (${ENVIRONMENT_SQL_LIST})),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -129,18 +158,24 @@ async function createConnectionsTable(): Promise<void> {
   await pool.query(
     `UPDATE connections SET ssl_mode = 'require' WHERE ssl IS TRUE AND ssl_mode = 'disable'`
   );
-  // The CHECK is added separately (and tolerantly) because ADD COLUMN IF NOT
-  // EXISTS cannot carry one onto a table that already has the column.
-  try {
-    await pool.query(
-      `ALTER TABLE connections ADD CONSTRAINT connections_ssl_mode_check
-         CHECK (ssl_mode IN ('disable', 'require', 'verify-full'))`
-    );
-  } catch (error) {
-    // 42710 duplicate_object: the constraint is already there, which is the
-    // normal path on every call after the first.
-    if ((error as { code?: string })?.code !== "42710") throw error;
-  }
+  await addCheckConstraint(
+    "connections",
+    "connections_ssl_mode_check",
+    "ssl_mode IN ('disable', 'require', 'verify-full')"
+  );
+
+  // `environment` is the typed dev / staging / prod label. It is deliberately
+  // NOT guessed from the connection's name: the whole point is that the label
+  // is data the app can trust, and a regex over "Prod — RDS" is not that. Rows
+  // created before this column arrive as 'unset', and the UI asks for a label.
+  await pool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
+  );
+  await addCheckConstraint(
+    "connections",
+    "connections_environment_check",
+    `environment IN (${ENVIRONMENT_SQL_LIST})`
+  );
 }
 
 export const ensureConnectionsTable = once(createConnectionsTable);

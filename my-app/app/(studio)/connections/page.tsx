@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { parsePostgresUri } from "@/lib/parse-uri";
 import {
   DEFAULT_SSL_MODE,
@@ -14,6 +14,16 @@ import {
   type FieldErrors,
   type SslMode,
 } from "@/lib/connection-validate";
+import {
+  DEFAULT_ENVIRONMENT,
+  ENVIRONMENTS,
+  ENVIRONMENT_META,
+  environmentRank,
+  isProduction,
+  looksLikeProduction,
+  toEnvironment,
+  type Environment,
+} from "@/lib/environments";
 import {
   LogoIcon,
   PlusIcon,
@@ -45,6 +55,10 @@ type Connection = {
   // null on rows written before it existed. Read them through connSslMode().
   ssl: boolean;
   ssl_mode?: string | null;
+  // dev / staging / prod. Null on rows written before the column existed; read
+  // it through connEnvironment() so those come back as "unset" rather than
+  // silently looking like a labelled target.
+  environment?: string | null;
 };
 
 /** What DELETE reports when a connection is still in use. */
@@ -60,7 +74,7 @@ type RowResult =
   | { status: "err"; error: string };
 
 type FieldMode = "uri" | "fields";
-type Filter = "all" | "local" | "online" | "ssl";
+type Filter = "all" | "local" | "online" | "ssl" | Environment;
 
 type DrawerTest =
   | { kind: "idle" }
@@ -77,6 +91,7 @@ const EMPTY_FORM = {
   user: "postgres",
   password: "",
   sslMode: DEFAULT_SSL_MODE,
+  environment: DEFAULT_ENVIRONMENT as Environment,
 };
 
 function isLocalHost(host: string): boolean {
@@ -87,6 +102,25 @@ function isLocalHost(host: string): boolean {
 /** The TLS setting for a saved row: ssl_mode when present, else the old boolean. */
 function connSslMode(conn: Connection): SslMode {
   return conn.ssl_mode ? toSslMode(conn.ssl_mode) : sslModeFromLegacyBoolean(conn.ssl);
+}
+
+/** The environment for a saved row. Anything unknown or missing reads "unset". */
+function connEnvironment(conn: Connection): Environment {
+  return toEnvironment(conn.environment);
+}
+
+/** The environment pill used in the table and in the delete dialog. */
+function EnvironmentPill({ environment }: { environment: Environment }) {
+  const meta = ENVIRONMENT_META[environment];
+  return (
+    <span className={`pill ${meta.pill}`} title={meta.help}>
+      <span
+        className="dot"
+        style={environment === "unset" ? { background: "var(--text-3)" } : undefined}
+      />
+      {meta.label}
+    </span>
+  );
 }
 
 const SSL_CHOICES: { mode: SslMode; label: string; help: string }[] = [
@@ -112,6 +146,7 @@ export default function ConnectionsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [groupByEnv, setGroupByEnv] = useState(false);
   const [rowResults, setRowResults] = useState<Record<number, RowResult>>({});
 
   // Drawer (add / edit)
@@ -207,6 +242,7 @@ export default function ConnectionsPage() {
       user: conn.username ?? "postgres",
       password: "", // never prefilled; left blank keeps the stored one
       sslMode: connSslMode(conn),
+      environment: connEnvironment(conn),
     });
     setFormErrors({});
     setFieldMode(hasUri ? "uri" : "fields");
@@ -222,6 +258,9 @@ export default function ConnectionsPage() {
         uri: "postgres://postgres@localhost:5432/postgres",
         name: f.name || "Local Postgres",
         sslMode: "disable",
+        // A loopback Postgres is a development database by definition. Hosted
+        // is left unlabelled on purpose — only the user knows which it is.
+        environment: "dev",
       }));
     } else {
       setForm((f) => ({
@@ -250,6 +289,7 @@ export default function ConnectionsPage() {
       // with it so nothing that still reads the old `ssl` column goes stale.
       ssl: sslModeUsesTls(form.sslMode),
       ssl_mode: form.sslMode,
+      environment: form.environment,
       connection_string: fieldMode === "uri" ? uri : "",
       // In Fields mode the user is defining the target by loose fields, so on
       // save any previously-stored connection string should be cleared (else
@@ -486,12 +526,32 @@ export default function ConnectionsPage() {
     if (filter === "local") return isLocalHost(c.host);
     if (filter === "online") return !isLocalHost(c.host);
     if (filter === "ssl") return sslModeUsesTls(connSslMode(c));
+    if ((ENVIRONMENTS as readonly string[]).includes(filter)) {
+      return connEnvironment(c) === filter;
+    }
     return true;
   });
+
+  // Rows split by environment, riskiest last, empty environments dropped. When
+  // "Group by environment" is off this collapses to a single unheaded group so
+  // the table body renders through exactly one code path either way.
+  const groups: { environment: Environment | null; rows: Connection[] }[] = groupByEnv
+    ? ENVIRONMENTS.slice()
+        .sort((a, b) => environmentRank(a) - environmentRank(b))
+        .map((environment) => ({
+          environment,
+          rows: visible.filter((c) => connEnvironment(c) === environment),
+        }))
+        .filter((group) => group.rows.length > 0)
+    : [{ environment: null, rows: visible }];
 
   const localCount = connections.filter((c) => isLocalHost(c.host)).length;
   const onlineCount = connections.length - localCount;
   const sslCount = connections.filter((c) => sslModeUsesTls(connSslMode(c))).length;
+  const envCount = (environment: Environment) =>
+    connections.filter((c) => connEnvironment(c) === environment).length;
+  const prodCount = envCount("prod");
+  const unlabelledCount = envCount("unset");
   const healthyCount = Object.values(rowResults).filter((r) => r.status === "ok").length;
   const latencies = Object.values(rowResults).flatMap((r) =>
     r.status === "ok" ? [r.latencyMs] : []
@@ -523,8 +583,13 @@ export default function ConnectionsPage() {
               <PlusIcon size={14} />
               Add connection
             </button>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <SummaryTile label="Total" value={String(connections.length)} />
+              <SummaryTile
+                label="Production"
+                value={String(prodCount)}
+                dot={prodCount > 0 ? "var(--break)" : "var(--text-3)"}
+              />
               <SummaryTile
                 label="Healthy"
                 value={String(healthyCount)}
@@ -555,7 +620,49 @@ export default function ConnectionsPage() {
         <FilterPill active={filter === "ssl"} onClick={() => setFilter("ssl")} count={sslCount}>
           SSL on
         </FilterPill>
+        <span className="hsep mx-1.5" />
+        {ENVIRONMENTS.map((environment) => (
+          <FilterPill
+            key={environment}
+            active={filter === environment}
+            onClick={() => setFilter(environment)}
+            count={envCount(environment)}
+          >
+            {ENVIRONMENT_META[environment].label}
+          </FilterPill>
+        ))}
+        <label
+          className="flex items-center gap-2 ml-auto text-[12.5px] cursor-pointer"
+          style={{ color: "var(--text-2)" }}
+        >
+          <input
+            type="checkbox"
+            checked={groupByEnv}
+            onChange={(e) => setGroupByEnv(e.target.checked)}
+          />
+          Group by environment
+        </label>
       </section>
+
+      {/* One nudge, only while something is genuinely unlabelled. An unlabelled
+          target is the state where Compare and Deploy cannot warn about prod. */}
+      {!loading && !loadError && unlabelledCount > 0 && (
+        <section className="px-8 pb-1">
+          <div className="warn-inline">
+            <span className="ico">
+              <InfoIcon size={14} />
+            </span>
+            <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+              <b>
+                {unlabelledCount} connection{unlabelledCount === 1 ? " has" : "s have"} no
+                environment.
+              </b>{" "}
+              Compare and Deploy can only warn you that a target is production once it is
+              labelled — edit each one and pick Dev, Staging or Production.
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ——— Table ——— */}
       <section className="px-8 pb-12">
@@ -567,6 +674,7 @@ export default function ConnectionsPage() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Environment</th>
                 <th>Endpoint</th>
                 <th>User</th>
                 <th>SSL</th>
@@ -578,7 +686,7 @@ export default function ConnectionsPage() {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={7} style={{ color: "var(--text-3)", textAlign: "center" }}>
+                  <td colSpan={8} style={{ color: "var(--text-3)", textAlign: "center" }}>
                     Loading connections…
                   </td>
                 </tr>
@@ -586,7 +694,7 @@ export default function ConnectionsPage() {
 
               {!loading && loadError && (
                 <tr>
-                  <td colSpan={7} style={{ padding: "40px 16px", textAlign: "center" }}>
+                  <td colSpan={8} style={{ padding: "40px 16px", textAlign: "center" }}>
                     <div className="flex flex-col items-center gap-3">
                       <div style={{ color: "var(--break)" }}>{loadError}</div>
                       <div className="help">
@@ -610,7 +718,7 @@ export default function ConnectionsPage() {
 
               {!loading && !loadError && visible.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ padding: "40px 16px", textAlign: "center" }}>
+                  <td colSpan={8} style={{ padding: "40px 16px", textAlign: "center" }}>
                     <div className="flex flex-col items-center gap-3">
                       <div style={{ color: "var(--text-3)" }}>
                         {connections.length === 0
@@ -630,111 +738,132 @@ export default function ConnectionsPage() {
 
               {!loading &&
                 !loadError &&
-                visible.map((conn) => {
-                  const result = rowResults[conn.id];
-                  const dot =
-                    result?.status === "ok" ? "ok" : result?.status === "err" ? "err" : "unknown";
-                  const local = isLocalHost(conn.host);
-                  const sslMode = connSslMode(conn);
-                  return (
-                    <tr key={conn.id}>
-                      {/* Name */}
-                      <td data-label="Name">
-                        <div className="flex items-center gap-3">
-                          <span className={`ind ${dot}`} aria-hidden="true" />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
-                              <span className="font-medium" style={{ whiteSpace: "nowrap" }}>
-                                {conn.name}
-                              </span>
-                              {local ? (
-                                <span className="pill pill-neutral">
-                                  <span className="dot" style={{ background: "var(--text-3)" }} />
-                                  Local
+                groups.map((group) => (
+                  <Fragment key={group.environment ?? "all"}>
+                    {group.environment !== null && (
+                      <tr className="group-head">
+                        <td colSpan={8}>
+                          <div className="flex items-center gap-2">
+                            <EnvironmentPill environment={group.environment} />
+                            <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+                              {group.rows.length} connection
+                              {group.rows.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {group.rows.map((conn) => {
+                    const result = rowResults[conn.id];
+                    const dot =
+                      result?.status === "ok" ? "ok" : result?.status === "err" ? "err" : "unknown";
+                    const local = isLocalHost(conn.host);
+                    const sslMode = connSslMode(conn);
+                    return (
+                      <tr key={conn.id}>
+                        {/* Name */}
+                        <td data-label="Name">
+                          <div className="flex items-center gap-3">
+                            <span className={`ind ${dot}`} aria-hidden="true" />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+                                <span className="font-medium" style={{ whiteSpace: "nowrap" }}>
+                                  {conn.name}
                                 </span>
-                              ) : (
-                                <span className="pill pill-brand">
-                                  <span className="dot" />
-                                  Online
-                                </span>
-                              )}
-                            </div>
-                            <div className="mono text-[11.5px] mt-0.5" style={{ color: "var(--text-3)" }}>
-                              {conn.has_connection_string ? "connection string" : "host & fields"} ·{" "}
-                              <span style={{ color: "var(--text-2)" }}>{conn.database_name}</span>
+                                {local ? (
+                                  <span className="pill pill-neutral">
+                                    <span className="dot" style={{ background: "var(--text-3)" }} />
+                                    Local
+                                  </span>
+                                ) : (
+                                  <span className="pill pill-brand">
+                                    <span className="dot" />
+                                    Online
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mono text-[11.5px] mt-0.5" style={{ color: "var(--text-3)" }}>
+                                {conn.has_connection_string ? "connection string" : "host & fields"} ·{" "}
+                                <span style={{ color: "var(--text-2)" }}>{conn.database_name}</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </td>
-                      {/* Endpoint */}
-                      <td data-label="Endpoint">
-                        <div className="mono text-[12.5px] truncate" style={{ maxWidth: 320 }}>
-                          {conn.host}
-                          <span style={{ color: "var(--text-3)" }}>:{conn.port}/</span>
-                          {conn.database_name}
-                        </div>
-                        <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
-                          {local ? "loopback" : "remote"} · {conn.type}
-                        </div>
-                      </td>
-                      {/* User */}
-                      <td data-label="User">
-                        <span className="mono text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                          {conn.username || "—"}
-                        </span>
-                      </td>
-                      {/* SSL */}
-                      <td data-label="SSL">
-                        {sslMode === "disable" ? (
-                          <span className="pill pill-neutral">
-                            <span className="dot" style={{ background: "var(--text-3)" }} />
-                            off
+                        </td>
+                        {/* Environment */}
+                        <td data-label="Environment">
+                          <EnvironmentPill environment={connEnvironment(conn)} />
+                        </td>
+                        {/* Endpoint */}
+                        <td data-label="Endpoint">
+                          <div className="mono text-[12.5px] truncate" style={{ maxWidth: 320 }}>
+                            {conn.host}
+                            <span style={{ color: "var(--text-3)" }}>:{conn.port}/</span>
+                            {conn.database_name}
+                          </div>
+                          <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
+                            {local ? "loopback" : "remote"} · {conn.type}
+                          </div>
+                        </td>
+                        {/* User */}
+                        <td data-label="User">
+                          <span className="mono text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                            {conn.username || "—"}
                           </span>
-                        ) : (
-                          <span className="pill pill-sync">
-                            <span className="dot" />
-                            {sslMode === "verify-full" ? "verify" : "require"}
+                        </td>
+                        {/* SSL */}
+                        <td data-label="SSL">
+                          {sslMode === "disable" ? (
+                            <span className="pill pill-neutral">
+                              <span className="dot" style={{ background: "var(--text-3)" }} />
+                              off
+                            </span>
+                          ) : (
+                            <span className="pill pill-sync">
+                              <span className="dot" />
+                              {sslMode === "verify-full" ? "verify" : "require"}
+                            </span>
+                          )}
+                        </td>
+                        {/* Server */}
+                        <td data-label="Server">
+                          <span className="mono text-[11.5px]" style={{ color: "var(--text-2)" }}>
+                            {result?.status === "ok" ? result.version : "—"}
                           </span>
-                        )}
-                      </td>
-                      {/* Server */}
-                      <td data-label="Server">
-                        <span className="mono text-[11.5px]" style={{ color: "var(--text-2)" }}>
-                          {result?.status === "ok" ? result.version : "—"}
-                        </span>
-                      </td>
-                      {/* Last tested */}
-                      <td data-label="Last tested">
-                        <RowTested result={result} />
-                      </td>
-                      {/* Actions */}
-                      <td className="cell-actions" style={{ textAlign: "right" }}>
-                        <div className="row-actions inline-flex gap-1 justify-end">
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => testRow(conn)}
-                            disabled={result?.status === "testing"}
-                          >
-                            <CheckIcon size={12} />
-                            Test
-                          </button>
-                          <button className="btn btn-ghost btn-sm" onClick={() => openEdit(conn)}>
-                            <EditIcon size={12} />
-                            Edit
-                          </button>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => openDelete(conn)}
-                            style={{ color: "var(--break)" }}
-                            aria-label={`Delete ${conn.name}`}
-                          >
-                            <TrashIcon size={12} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                        </td>
+                        {/* Last tested */}
+                        <td data-label="Last tested">
+                          <RowTested result={result} />
+                        </td>
+                        {/* Actions */}
+                        <td className="cell-actions" style={{ textAlign: "right" }}>
+                          <div className="row-actions inline-flex gap-1 justify-end">
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => testRow(conn)}
+                              disabled={result?.status === "testing"}
+                            >
+                              <CheckIcon size={12} />
+                              Test
+                            </button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => openEdit(conn)}>
+                              <EditIcon size={12} />
+                              Edit
+                            </button>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => openDelete(conn)}
+                              style={{ color: "var(--break)" }}
+                              aria-label={`Delete ${conn.name}`}
+                            >
+                              <TrashIcon size={12} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                    })}
+                  </Fragment>
+                ))}
             </tbody>
           </table>
           </div>
@@ -808,6 +937,64 @@ export default function ConnectionsPage() {
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             />
             <FieldError message={formErrors.name} />
+          </div>
+
+          {/* Environment — a typed label rather than a word inside the name.
+              This is the field Compare and Deploy read before they touch a
+              database, so "Prod — RDS" in the name above buys you nothing. */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="label">Environment</label>
+              <span className="help">Drives the production warnings.</span>
+            </div>
+            <div className="seg" role="radiogroup" aria-label="Environment" style={{ display: "flex" }}>
+              {ENVIRONMENTS.map((environment) => (
+                <button
+                  key={environment}
+                  className={form.environment === environment ? "active" : ""}
+                  role="radio"
+                  aria-checked={form.environment === environment}
+                  onClick={() => setForm((f) => ({ ...f, environment }))}
+                  type="button"
+                  style={{ flex: 1 }}
+                >
+                  {ENVIRONMENT_META[environment].label}
+                </button>
+              ))}
+            </div>
+            <div className="help mt-1.5">{ENVIRONMENT_META[form.environment].help}</div>
+
+            {isProduction(form.environment) && (
+              <div className="warn-inline mt-2">
+                <span className="ico" style={{ color: "var(--break)" }}>
+                  <AlertTriangleIcon size={14} />
+                </span>
+                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                  Saved as production. Compare and Deploy will call this out before they
+                  generate or run anything against it.
+                </div>
+              </div>
+            )}
+
+            {/* A nudge, never a silent write: the name is a hint about intent,
+                but only the person saving the row actually knows. */}
+            {!isProduction(form.environment) && looksLikeProduction(form.name) && (
+              <div className="warn-inline mt-2">
+                <span className="ico">
+                  <InfoIcon size={14} />
+                </span>
+                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                  The name says production but the label doesn&apos;t.{" "}
+                  <button
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => setForm((f) => ({ ...f, environment: "prod" }))}
+                    type="button"
+                  >
+                    Mark as production
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Mode toggle */}
@@ -1110,6 +1297,12 @@ export default function ConnectionsPage() {
                   <span className="mono" style={{ color: "var(--text-2)" }}>
                     {deleteTarget ? connSslMode(deleteTarget) : ""}
                   </span>
+                </div>
+                <div className="text-[12px] flex items-center justify-between mt-1">
+                  <span style={{ color: "var(--text-3)" }}>Environment</span>
+                  {deleteTarget ? (
+                    <EnvironmentPill environment={connEnvironment(deleteTarget)} />
+                  ) : null}
                 </div>
               </div>
             </div>

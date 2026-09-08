@@ -2412,6 +2412,11 @@ body {
 .conns tbody tr { transition: background .12s ease; }
 .conns tbody tr:hover { background:var(--surface-2); }
 .conns tbody tr:hover .row-actions { opacity:1; transform: translateX(0); }
+/* "Group by environment" header row. Not a data row, so it must not pick up the
+   hover highlight or the card treatment the phone layout gives real rows. */
+.conns tbody tr.group-head:hover { background:var(--surface-3); }
+.conns tbody tr.group-head td { background:var(--surface-3); padding:8px 16px;
+                                border-bottom:1px solid var(--border); }
 .row-actions { opacity:0; transform: translateX(4px); transition: opacity .14s ease, transform .14s ease; }
 
 /* status indicator dot (left of name) */
@@ -3003,4 +3008,8 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
   .responsive-table td.cell-actions { flex-direction:column; align-items:stretch; gap:8px; }
   .responsive-table td.cell-actions::before { display:none; }
   .responsive-table td.cell-actions > * { width:100%; }
+  /* A group header is a label above the cards, not a card of its own. */
+  .responsive-table tr.group-head { border:none; background:transparent; padding:0; margin:14px 0 6px; }
+  .responsive-table tr.group-head td { padding:0; }
+  .responsive-table tr.group-head td::before { display:none; }
 }
