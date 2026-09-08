@@ -27,6 +27,20 @@ import { CheckIcon } from "@/components/ui/icons";
 
 type DiffKind = "add" | "rem" | "chg";
 
+/**
+ * How this view should talk about the drops that making the target match the
+ * source would require.
+ *
+ *   "none"  — no migration script is rendered beside the report (/drift). The
+ *             copy states what a sync would cost and claims nothing else.
+ *   "safe"  — a script is rendered and its DROP statements are commented out.
+ *   "armed" — a script is rendered and its DROP statements will run.
+ *
+ * These map 1:1 onto generateMigration()'s allowDataLoss option — see
+ * lib/generate-sql.ts, which is the only thing that actually emits SQL.
+ */
+type DropMode = "none" | "safe" | "armed";
+
 const SIGN: Record<DiffKind, string> = { add: "+", rem: "−", chg: "~" };
 
 /** One colour-coded diff line with an optional left-hand object tag. */
@@ -253,16 +267,32 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
   );
 }
 
-/** A table that exists only in the target — kept (never auto-dropped), flagged. */
-function ExtraTableCard({ table }: { table: TableSnapshot }) {
+/**
+ * A table that exists only in the target. The migration ALWAYS generates a
+ * `DROP TABLE … CASCADE` for it; the drop mode only decides whether that
+ * statement is armed, commented out, or not rendered here at all.
+ */
+function ExtraTableCard({
+  table,
+  dropMode,
+}: {
+  table: TableSnapshot;
+  dropMode: DropMode;
+}) {
   return (
     <details className="table-group">
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
-        <span className="pill pill-neutral">
+        <span
+          className={`pill ${dropMode === "armed" ? "pill-break" : "pill-neutral"}`}
+        >
           <span className="dot" />
-          only in target
+          {dropMode === "armed"
+            ? "will be dropped"
+            : dropMode === "safe"
+              ? "drop held back"
+              : "only in target"}
         </span>
         <div className="ml-auto">
           <DeltaChips adds={0} chgs={0} rems={table.columns.length} />
@@ -270,16 +300,43 @@ function ExtraTableCard({ table }: { table: TableSnapshot }) {
       </summary>
 
       <div className="obj-group">
-        <ObjHeader label="Columns" note="kept — not dropped automatically" />
+        <ObjHeader
+          label="Columns"
+          note={
+            dropMode === "armed"
+              ? "dropped with the table"
+              : dropMode === "safe"
+                ? "drop is commented out"
+                : "only in the target"
+          }
+        />
         {table.columns.map((col) => (
           <DiffLine key={col.name} kind="rem" tag="column">
             {columnBody(col)}
           </DiffLine>
         ))}
         <p className="help mt-1">
-          This table is only in the target schema. Dropping it could lose data, so
-          the migration leaves it untouched — review and remove it manually if it
-          really is obsolete.
+          This table is only in the target schema, so making the target match
+          the source needs{" "}
+          <span className="mono">DROP TABLE {table.name} CASCADE</span>, which
+          deletes the table and every row in it.{" "}
+          {dropMode === "armed" ? (
+            <>
+              Data loss is armed, so that statement is live in the script below.
+              Untick <b>Allow data loss</b> to hold it back.
+            </>
+          ) : dropMode === "safe" ? (
+            <>
+              That statement is commented out in the script below, so running the
+              script leaves this table alone. Tick <b>Allow data loss</b> to arm
+              it.
+            </>
+          ) : (
+            <>
+              Nothing is dropped by viewing this report — open the comparison in
+              Compare to generate the SQL.
+            </>
+          )}
         </p>
       </div>
     </details>
@@ -287,7 +344,13 @@ function ExtraTableCard({ table }: { table: TableSnapshot }) {
 }
 
 /** A table present in both whose structure differs. */
-function ChangedTableCard({ match }: { match: TableMatch }) {
+function ChangedTableCard({
+  match,
+  dropMode,
+}: {
+  match: TableMatch;
+  dropMode: DropMode;
+}) {
   const tally = matchTally(match);
   const level = matchLevel(match);
   const changedColumns = match.columnMatches.filter((c) => c.changes.length > 0);
@@ -339,7 +402,13 @@ function ChangedTableCard({ match }: { match: TableMatch }) {
           {match.columnsOnlyInB.map((col) => (
             <DiffLine key={`b-${col.name}`} kind="rem" tag="column">
               {columnBody(col)}{" "}
-              <span className="muted">— only in target, kept</span>
+              <span className="muted">
+                {dropMode === "armed"
+                  ? "— only in target · dropped with its data"
+                  : dropMode === "safe"
+                    ? "— only in target · drop is commented out"
+                    : "— only in target · a sync would drop it"}
+              </span>
             </DiffLine>
           ))}
         </div>
@@ -422,10 +491,32 @@ function RenameChip({ candidate }: { candidate: MatchCandidate }) {
 // Public component
 // ---------------------------------------------------------------------------
 
-export function DiffReport({ report }: { report: CompareReport }) {
+export function DiffReport({
+  report,
+  allowDataLoss,
+}: {
+  report: CompareReport;
+  /**
+   * Mirrors the flag handed to generateMigration(). Pass it only on views that
+   * render a migration script beside this report (/compare). Leave it undefined
+   * on read-only views (/drift) so the copy makes no claim about a script.
+   */
+  allowDataLoss?: boolean;
+}) {
+  const dropMode: DropMode =
+    allowDataLoss === undefined ? "none" : allowDataLoss ? "armed" : "safe";
   const changedTables = report.matchedTables.filter((m) => m.hasChanges);
   const unchanged = report.matchedTables.filter((m) => !m.hasChanges);
   const tableRenames = report.possibleTableMatches;
+
+  // Same arithmetic the generator uses: one DROP TABLE per table that is only
+  // in the target, one DROP COLUMN per column that is only in the target.
+  const droppedTables = report.tablesOnlyInB.length;
+  const droppedColumns = report.matchedTables.reduce(
+    (n, m) => n + m.columnsOnlyInB.length,
+    0,
+  );
+  const destructiveCount = droppedTables + droppedColumns;
 
   const anyChanges =
     report.tablesOnlyInA.length > 0 ||
@@ -454,6 +545,40 @@ export function DiffReport({ report }: { report: CompareReport }) {
 
   return (
     <div className="space-y-3">
+      {destructiveCount > 0 && (
+        <div className="banner">
+          <div>
+            <div className="title">
+              {dropMode === "armed"
+                ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} armed`
+                : dropMode === "safe"
+                  ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} held back`
+                  : `Syncing would drop ${destructiveCount} object${destructiveCount === 1 ? "" : "s"}`}
+            </div>
+            <div className="body">
+              Making the target match the source needs{" "}
+              {droppedTables > 0 && (
+                <b>
+                  {droppedTables} table{droppedTables === 1 ? "" : "s"} dropped
+                </b>
+              )}
+              {droppedTables > 0 && droppedColumns > 0 ? " and " : ""}
+              {droppedColumns > 0 && (
+                <b>
+                  {droppedColumns} column{droppedColumns === 1 ? "" : "s"} dropped
+                </b>
+              )}
+              .{" "}
+              {dropMode === "armed"
+                ? "Allow data loss is on, so those statements are live in the script below and the rows they remove cannot be recovered."
+                : dropMode === "safe"
+                  ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss to arm them."
+                  : "Viewing this report changes nothing — open the comparison in Compare to generate that SQL."}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Possible renamed tables (full-width suggestions) */}
       {tableRenames.map((cand) => (
         <RenameChip key={`${cand.leftName}-${cand.rightName}`} candidate={cand} />
@@ -466,12 +591,20 @@ export function DiffReport({ report }: { report: CompareReport }) {
 
       {/* Matched tables with structural changes */}
       {changedTables.map((match) => (
-        <ChangedTableCard key={`chg-${match.left.name}`} match={match} />
+        <ChangedTableCard
+          key={`chg-${match.left.name}`}
+          match={match}
+          dropMode={dropMode}
+        />
       ))}
 
-      {/* Tables only in the target — flagged, never auto-dropped */}
+      {/* Tables only in the target — dropped by the migration when armed */}
       {report.tablesOnlyInB.map((table) => (
-        <ExtraTableCard key={`extra-${table.name}`} table={table} />
+        <ExtraTableCard
+          key={`extra-${table.name}`}
+          table={table}
+          dropMode={dropMode}
+        />
       ))}
 
       {/* Unchanged tables — collapsed summary so the diff stays focused */}

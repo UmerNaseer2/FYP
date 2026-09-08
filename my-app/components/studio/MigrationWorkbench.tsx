@@ -36,6 +36,12 @@ type Props = {
   initialSql: string;
   /** Number of real statements (0 = schemas already in sync). */
   statementCount: number;
+  /**
+   * How many of those statements are commented out because safe mode is on.
+   * They are still counted in statementCount — they exist in the script, they
+   * just will not run. 0 when data loss is armed or nothing is destructive.
+   */
+  heldBackCount: number;
   suggestedName: string;
   suggestedDescription: string;
   /** The schema that the migration actually modifies (right/target). */
@@ -78,6 +84,7 @@ const LEVELS: { kind: ChangeKind; label: string; bump: string }[] = [
 export function MigrationWorkbench({
   initialSql,
   statementCount,
+  heldBackCount,
   suggestedName,
   suggestedDescription,
   targetLabel,
@@ -264,7 +271,16 @@ export function MigrationWorkbench({
                 >
                   <span>
                     {lineCount} lines · {statementCount} statement
-                    {statementCount === 1 ? "" : "s"} · SQL
+                    {statementCount === 1 ? "" : "s"}
+                    {heldBackCount > 0 && (
+                      <>
+                        {" "}
+                        <span style={{ color: "var(--break)" }}>
+                          ({heldBackCount} commented out)
+                        </span>
+                      </>
+                    )}{" "}
+                    · SQL
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span

@@ -350,8 +350,13 @@ export default async function ComparePage({ searchParams }: PageProps) {
     }
   }
 
+  // Safe mode. DROP TABLE / DROP COLUMN are always generated so the diff can
+  // show what a full sync would remove, but they are only armed in the rendered
+  // SQL when the user explicitly ticks "allow data loss" on the form.
+  const allowDataLoss = pickValue(params.allowDataLoss, "") === "1";
+
   // Derive the migration + workbench inputs (only when we have a report).
-  const script = report ? generateMigration(report) : null;
+  const script = report ? generateMigration(report, { allowDataLoss }) : null;
   const sqlText = script ? renderMigrationScript(script) : "";
   const breaking = script
     ? script.statements.filter((s) => s.severity === "breaking").length
@@ -406,6 +411,19 @@ export default async function ComparePage({ searchParams }: PageProps) {
           schemaOptions={rightSchemaOptions}
           selectedSchema={rightSchema}
         />
+        <label
+          className="flex items-center gap-2 self-center text-[12.5px] cursor-pointer"
+          style={{ color: "var(--text-2)" }}
+          title="DROP TABLE and DROP COLUMN are commented out unless this is ticked."
+        >
+          <input
+            type="checkbox"
+            name="allowDataLoss"
+            value="1"
+            defaultChecked={allowDataLoss}
+          />
+          Allow data loss
+        </label>
         <button type="submit" className="btn btn-primary self-center">
           <CompareIcon size={14} />
           Compare
@@ -467,10 +485,11 @@ export default async function ComparePage({ searchParams }: PageProps) {
           {/* Two-column body: diff canvas (left) + migration draft (right, sticky).
               Stacks under 980px via the .compare-layout rule. */}
           <div className="compare-layout">
-            <DiffReport report={report} />
+            <DiffReport report={report} allowDataLoss={allowDataLoss} />
             <MigrationWorkbench
               initialSql={sqlText}
               statementCount={script.statements.length}
+              heldBackCount={allowDataLoss ? 0 : script.destructiveCount}
               suggestedName={`sync_${report.right.schema}_to_${report.left.schema}`
                 .replace(/[^a-z0-9_]/gi, "_")
                 .toLowerCase()}

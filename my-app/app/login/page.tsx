@@ -38,9 +38,9 @@ export default function LoginPage() {
     try {
       // Phase 2: Azure SSO via NextAuth (microsoft-entra-id)
       await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
-      setErrorMsg(error.message || "Sign-in failed");
+      setErrorMsg(error instanceof Error ? error.message : "Sign-in failed");
       setStatus("error");
     }
   }

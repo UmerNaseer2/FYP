@@ -26,6 +26,23 @@ export type SqlStatement = {
   kind: SqlStatementKind;
   severity: "breaking" | "safe" | "info";
   tableName: string;
+  /**
+   * True when running this statement destroys rows that exist only in the
+   * target: DROP TABLE and DROP COLUMN. "breaking" is a wider category — a
+   * rename or a narrowing type change is breaking but does not, on its own,
+   * throw data away. Safe mode (see MigrationOptions) comments out exactly the
+   * statements flagged here.
+   */
+  destructive: boolean;
+};
+
+export type MigrationOptions = {
+  /**
+   * When false (the default) every destructive statement is still generated and
+   * shown, but rendered COMMENTED OUT, so running the script cannot drop a
+   * table or a column. The user opts in explicitly to arm them.
+   */
+  allowDataLoss?: boolean;
 };
 
 export type MigrationScript = {
@@ -33,6 +50,10 @@ export type MigrationScript = {
   warnings: string[];
   sourceSchema: string;
   targetSchema: string;
+  /** Whether destructive statements are armed in the rendered SQL. */
+  allowDataLoss: boolean;
+  /** How many statements would destroy data. */
+  destructiveCount: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -186,6 +207,7 @@ function alterStatementsForMatch(
         kind: "RENAME_COLUMN",
         severity: "breaking",
         tableName: tName,
+        destructive: false,
       });
     }
   }
@@ -204,6 +226,7 @@ function alterStatementsForMatch(
       kind: "ADD_COLUMN",
       severity: risky ? "breaking" : "safe",
       tableName: tName,
+      destructive: false,
     });
   }
 
@@ -249,6 +272,7 @@ function alterStatementsForMatch(
         kind: "ALTER_COLUMN_TYPE",
         severity,
         tableName: tName,
+        destructive: false,
       });
     }
 
@@ -260,6 +284,7 @@ function alterStatementsForMatch(
           kind: "ALTER_COLUMN_NULLABILITY",
           severity: "breaking",
           tableName: tName,
+          destructive: false,
         });
       } else {
         stmts.push({
@@ -268,6 +293,7 @@ function alterStatementsForMatch(
           kind: "ALTER_COLUMN_NULLABILITY",
           severity: "safe",
           tableName: tName,
+          destructive: false,
         });
       }
     }
@@ -291,6 +317,7 @@ function alterStatementsForMatch(
         kind: "ALTER_COLUMN_DEFAULT",
         severity: "info",
         tableName: tName,
+        destructive: false,
       });
     } else if (leftDefault !== rightDefault) {
       // Neither is source-serial (target may be serial → this replaces/drops it).
@@ -301,6 +328,7 @@ function alterStatementsForMatch(
           kind: "ALTER_COLUMN_DEFAULT",
           severity: "safe",
           tableName: tName,
+          destructive: false,
         });
       } else {
         stmts.push({
@@ -309,6 +337,7 @@ function alterStatementsForMatch(
           kind: "ALTER_COLUMN_DEFAULT",
           severity: "safe",
           tableName: tName,
+          destructive: false,
         });
       }
     }
@@ -331,6 +360,7 @@ function alterStatementsForMatch(
       kind: "DROP_CONSTRAINT",
       severity: diff.kind === "FOREIGN KEY" || diff.kind === "PRIMARY KEY" ? "breaking" : "info",
       tableName: tName,
+      destructive: false,
     });
   }
 
@@ -353,6 +383,7 @@ function alterStatementsForMatch(
       kind: "ADD_CONSTRAINT",
       severity: diff.kind === "PRIMARY KEY" ? "breaking" : "info",
       tableName: tName,
+      destructive: false,
     });
   }
 
@@ -366,6 +397,7 @@ function alterStatementsForMatch(
       kind: "ADD_CONSTRAINT",
       severity: "info",
       tableName: tName,
+      destructive: false,
     });
   }
 
@@ -380,6 +412,7 @@ function alterStatementsForMatch(
       kind: "DROP_COLUMN",
       severity: "breaking",
       tableName: tName,
+      destructive: true,
     });
   }
 
@@ -401,16 +434,26 @@ function alterStatementsForMatch(
  *   Phase 4 — FK constraints for newly created tables (safe to add now that all tables exist)
  *   Phase 5 — DROP TABLE for tables only in B (destructive, done last)
  *
- * This is a COMPLETE sync: it includes the destructive statements (DROP TABLE /
- * DROP COLUMN) needed to fully match A. They are flagged "breaking" so the user
- * reviews them before running, but they are no longer held back — a sync that
- * silently skips removals would leave B different from A.
+ * This is a COMPLETE sync: it always GENERATES the destructive statements
+ * (DROP TABLE / DROP COLUMN) needed to fully match A, so the report can show
+ * the user exactly what a full sync would remove. Whether those statements are
+ * ARMED in the rendered SQL is a separate decision:
+ *
+ *   allowDataLoss: false  (default)  destructive statements are rendered
+ *                                    commented out — running the script cannot
+ *                                    drop a table or a column
+ *   allowDataLoss: true              they are rendered live
+ *
+ * Nothing is silently skipped in either mode: renderMigrationScript states how
+ * many statements were held back and how to arm them.
  */
-export function generateMigration(report: CompareReport): MigrationScript {
+export function generateMigration(
+  report: CompareReport,
+  options: MigrationOptions = {},
+): MigrationScript {
+  const allowDataLoss = options.allowDataLoss === true;
   const sourceSchema = report.left.schema;
   const statements: SqlStatement[] = [];
-  // DROP TABLE / DROP COLUMN are now generated (see Phases 3e and 5), so there
-  // is nothing the migration silently leaves out. Kept as an extension point.
   const warnings: string[] = [];
 
   // ── Phase 1: Rename tables ────────────────────────────────────────────────
@@ -424,6 +467,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
         kind: "RENAME_TABLE",
         severity: "breaking",
         tableName: match.right.name,
+        destructive: false,
       });
     }
   }
@@ -440,6 +484,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
       kind: "CREATE_TABLE",
       severity: "info",
       tableName: table.name,
+      destructive: false,
     });
 
     for (const fk of table.foreignKeys) {
@@ -449,6 +494,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
         kind: "ADD_CONSTRAINT",
         severity: "info",
         tableName: table.name,
+        destructive: false,
       });
     }
   }
@@ -478,7 +524,16 @@ export function generateMigration(report: CompareReport): MigrationScript {
       kind: "DROP_TABLE",
       severity: "breaking",
       tableName: table.name,
+      destructive: true,
     });
+  }
+
+  const destructiveCount = statements.filter((s) => s.destructive).length;
+  if (destructiveCount > 0 && !allowDataLoss) {
+    warnings.push(
+      `${destructiveCount} destructive statement${destructiveCount === 1 ? " is" : "s are"} ` +
+        `commented out. Enable "allow data loss" to include ${destructiveCount === 1 ? "it" : "them"}.`,
+    );
   }
 
   return {
@@ -486,34 +541,73 @@ export function generateMigration(report: CompareReport): MigrationScript {
     warnings,
     sourceSchema: `${report.left.database}.${report.left.schema}`,
     targetSchema: `${report.right.database}.${report.right.schema}`,
+    allowDataLoss,
+    destructiveCount,
   };
+}
+
+// Prefix every line of a statement with "-- " so it is inert when executed.
+function commentOut(sql: string): string {
+  return sql
+    .split("\n")
+    .map((line) => `-- ${line}`)
+    .join("\n");
 }
 
 // Render the migration script as a plain SQL text string with inline comments.
 // Each statement is preceded by a comment showing its severity and description.
+//
+// When script.allowDataLoss is false, statements flagged destructive are
+// rendered commented out. This is the single point where a generated script
+// becomes able to destroy data, so the decision is made here and nowhere else.
 export function renderMigrationScript(script: MigrationScript): string {
   const breaking = script.statements.filter((s) => s.severity === "breaking").length;
   const safe = script.statements.filter((s) => s.severity === "safe").length;
   const info = script.statements.filter((s) => s.severity === "info").length;
+  const held = script.allowDataLoss ? 0 : script.destructiveCount;
 
   const header = [
     `-- ================================================================`,
     `-- Migration: ${script.sourceSchema}  →  ${script.targetSchema}`,
     `-- Direction: modifies the RIGHT/TARGET schema to match the LEFT/SOURCE schema`,
     `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
-    `-- ================================================================`,
-  ].join("\n");
+  ];
+
+  if (held > 0) {
+    header.push(
+      `--`,
+      `-- SAFE MODE IS ON. ${held} destructive statement${held === 1 ? "" : "s"} ` +
+        `(DROP TABLE / DROP COLUMN) ${held === 1 ? "is" : "are"} commented out below`,
+      `-- and will NOT run. Each one is marked [NOT EXECUTED]. To apply them,`,
+      `-- re-run the comparison with "allow data loss" enabled, or uncomment them`,
+      `-- by hand in the script editor after checking the data is expendable.`,
+    );
+  } else if (script.destructiveCount > 0) {
+    header.push(
+      `--`,
+      `-- DATA LOSS IS ARMED. ${script.destructiveCount} statement` +
+        `${script.destructiveCount === 1 ? "" : "s"} below will permanently remove`,
+      `-- tables or columns and every row in them. Review each one before running.`,
+    );
+  }
+
+  header.push(`-- ================================================================`);
+  const headerText = header.join("\n");
 
   if (script.statements.length === 0) {
-    return `${header}\n\n-- No changes needed.`;
+    return `${headerText}\n\n-- No changes needed.`;
   }
 
   const body = script.statements
-    .map(
-      (stmt) =>
-        `-- [${stmt.severity.toUpperCase()}] ${stmt.description}\n${stmt.sql}`
-    )
+    .map((stmt) => {
+      const muted = stmt.destructive && !script.allowDataLoss;
+      const tag = muted ? "NOT EXECUTED — " : "";
+      return (
+        `-- [${tag}${stmt.severity.toUpperCase()}] ${stmt.description}\n` +
+        (muted ? commentOut(stmt.sql) : stmt.sql)
+      );
+    })
     .join("\n\n");
 
-  return `${header}\n\n${body}`;
+  return `${headerText}\n\n${body}`;
 }
