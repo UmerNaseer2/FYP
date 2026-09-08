@@ -2,15 +2,22 @@ import type {
   ColumnSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
+  RoutineSnapshot,
   SchemaSnapshot,
+  SequenceSnapshot,
   TableSnapshot,
+  TypeSnapshot,
+  ViewSnapshot,
 } from "./postgres";
 
 import type {
   ColumnMatch,
+  ComparedObjectCategories,
   CompareReport,
   ConstraintDiff,
   MatchCandidate,
+  ObjectDiff,
+  ObjectKind,
   ScoreBreakdown,
   TableMatch,
 } from "./compare-types";
@@ -27,9 +34,12 @@ import {
 // Re-export everything the UI imports from this module
 export type {
   ColumnMatch,
+  ComparedObjectCategories,
   CompareReport,
   ConstraintDiff,
   MatchCandidate,
+  ObjectDiff,
+  ObjectKind,
   ScoreBreakdown,
   TableMatch,
 } from "./compare-types";
@@ -1078,6 +1088,270 @@ function compareConstraints(
 }
 
 // ============================================================================
+// Object diffing (indexes, triggers, views, sequences, types, routines)
+// ============================================================================
+// Everything in this section follows one rule, and it is the important one:
+//
+//   a category is compared only when BOTH snapshots recorded it.
+//
+// These collections are optional on SchemaSnapshot/TableSnapshot because
+// lineage stores snapshots as JSONB and never rewrites a stored row. A snapshot
+// captured before views were recorded has `views: undefined`, which means "I
+// don't know", not "there are none". Reading that as [] would report every view
+// in the live schema as newly added and every tracked schema would show
+// permanent phantom drift. So: undefined on either side -> say nothing.
+
+const OBJECT_KIND_LABEL: Record<ObjectKind, string> = {
+  INDEX: "Index",
+  TRIGGER: "Trigger",
+  VIEW: "View",
+  "MATERIALIZED VIEW": "Materialized view",
+  SEQUENCE: "Sequence",
+  ENUM: "Enum",
+  DOMAIN: "Domain",
+  "COMPOSITE TYPE": "Composite type",
+  "RANGE TYPE": "Range type",
+  FUNCTION: "Function",
+  PROCEDURE: "Procedure",
+};
+
+/**
+ * One schema object flattened into the shape the comparison needs: an identity
+ * to match on, a kind to label it, and a definition to detect a change.
+ */
+type ComparableObject = {
+  /** Identity. Usually the name; a routine's is its signature (overloads). */
+  key: string;
+  kind: ObjectKind;
+  name: string;
+  definition: string;
+  normalizedDefinition: string;
+  table?: string;
+};
+
+function compareObjectLists(
+  left: ComparableObject[],
+  right: ComparableObject[],
+  leftScope: string,
+  rightScope: string
+): ObjectDiff[] {
+  const diffs: ObjectDiff[] = [];
+  const rightByKey = new Map(right.map((obj) => [obj.key, obj]));
+  const matched = new Set<string>();
+
+  for (const obj of left) {
+    const peer = rightByKey.get(obj.key);
+    if (!peer) {
+      diffs.push({
+        kind: obj.kind,
+        name: obj.name,
+        table: obj.table,
+        status: "onlyA",
+        summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${leftScope}.`,
+        leftDefinition: obj.definition,
+      });
+      continue;
+    }
+
+    matched.add(obj.key);
+
+    // The kind check matters for views: turning a view into a materialized view
+    // keeps the name and the SELECT, so a definition-only comparison would
+    // report nothing while the object type changed underneath.
+    if (obj.kind !== peer.kind) {
+      diffs.push({
+        kind: obj.kind,
+        name: obj.name,
+        table: obj.table,
+        status: "changedDefinition",
+        summary:
+          `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} is a ` +
+          `${OBJECT_KIND_LABEL[peer.kind].toLowerCase()} in ${rightScope}.`,
+        leftDefinition: obj.definition,
+        rightDefinition: peer.definition,
+      });
+      continue;
+    }
+
+    if (obj.normalizedDefinition !== peer.normalizedDefinition) {
+      diffs.push({
+        kind: obj.kind,
+        name: obj.name,
+        table: obj.table,
+        status: "changedDefinition",
+        summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} changed definition.`,
+        leftDefinition: obj.definition,
+        rightDefinition: peer.definition,
+      });
+    }
+  }
+
+  for (const obj of right) {
+    if (matched.has(obj.key)) continue;
+    diffs.push({
+      kind: obj.kind,
+      name: obj.name,
+      table: obj.table,
+      status: "onlyB",
+      summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${rightScope}.`,
+      rightDefinition: obj.definition,
+    });
+  }
+
+  return diffs;
+}
+
+function indexObjects(table: TableSnapshot): ComparableObject[] {
+  return (table.indexes ?? []).map((index) => ({
+    key: normalizeIdentifier(index.name),
+    kind: "INDEX" as const,
+    name: index.name,
+    definition: index.definition,
+    normalizedDefinition: index.normalizedDefinition,
+    table: table.name,
+  }));
+}
+
+function triggerObjects(table: TableSnapshot): ComparableObject[] {
+  return (table.triggers ?? []).map((trigger) => ({
+    key: normalizeIdentifier(trigger.name),
+    kind: "TRIGGER" as const,
+    name: trigger.name,
+    definition: trigger.definition,
+    // A disabled trigger and an enabled one with the same body are not the same
+    // thing, and pg_get_triggerdef() does not say which it is.
+    normalizedDefinition: `${trigger.normalizedDefinition}${trigger.enabled ? "" : " [DISABLED]"}`,
+    table: table.name,
+  }));
+}
+
+function viewObjects(views: ViewSnapshot[]): ComparableObject[] {
+  return views.map((view) => ({
+    key: normalizeIdentifier(view.name),
+    kind: view.materialized ? ("MATERIALIZED VIEW" as const) : ("VIEW" as const),
+    name: view.name,
+    definition: view.definition,
+    normalizedDefinition: view.normalizedDefinition,
+  }));
+}
+
+function describeSequence(sequence: SequenceSnapshot): string {
+  return [
+    `AS ${sequence.dataType}`,
+    `START ${sequence.startValue}`,
+    `INCREMENT ${sequence.increment}`,
+    `MINVALUE ${sequence.minValue}`,
+    `MAXVALUE ${sequence.maxValue}`,
+    `CACHE ${sequence.cacheSize}`,
+    sequence.cycles ? "CYCLE" : "NO CYCLE",
+  ].join(" ");
+}
+
+function sequenceObjects(sequences: SequenceSnapshot[]): ComparableObject[] {
+  return (
+    sequences
+      // A sequence owned by a column exists BECAUSE of that column: it is
+      // created by `serial`/IDENTITY and dropped with it. The column is already
+      // compared, so reporting the sequence too would show one added serial
+      // column as two separate differences — and a migration must never emit
+      // CREATE SEQUENCE for it.
+      .filter((sequence) => sequence.ownedByTable === null)
+      .map((sequence) => ({
+        key: normalizeIdentifier(sequence.name),
+        kind: "SEQUENCE" as const,
+        name: sequence.name,
+        definition: describeSequence(sequence),
+        normalizedDefinition: describeSequence(sequence),
+      }))
+  );
+}
+
+function typeObjectKind(type: TypeSnapshot): ObjectKind {
+  if (type.kind === "ENUM") return "ENUM";
+  if (type.kind === "DOMAIN") return "DOMAIN";
+  if (type.kind === "COMPOSITE") return "COMPOSITE TYPE";
+  return "RANGE TYPE";
+}
+
+function typeObjects(types: TypeSnapshot[]): ComparableObject[] {
+  return types.map((type) => ({
+    key: normalizeIdentifier(type.name),
+    kind: typeObjectKind(type),
+    name: type.name,
+    definition: type.definition,
+    normalizedDefinition: type.normalizedDefinition,
+  }));
+}
+
+function routineObjects(routines: RoutineSnapshot[]): ComparableObject[] {
+  return routines.map((routine) => ({
+    // Postgres allows overloads, so the identity is the signature, not the name.
+    key: normalizeIdentifier(routine.signature),
+    kind: routine.kind === "PROCEDURE" ? ("PROCEDURE" as const) : ("FUNCTION" as const),
+    name: routine.signature,
+    definition: routine.definition,
+    normalizedDefinition: routine.normalizedDefinition,
+  }));
+}
+
+/** Indexes and triggers, which belong to one table. */
+function compareTableObjects(left: TableSnapshot, right: TableSnapshot): ObjectDiff[] {
+  const diffs: ObjectDiff[] = [];
+
+  if (left.indexes && right.indexes) {
+    diffs.push(...compareObjectLists(indexObjects(left), indexObjects(right), left.name, right.name));
+  }
+  if (left.triggers && right.triggers) {
+    diffs.push(...compareObjectLists(triggerObjects(left), triggerObjects(right), left.name, right.name));
+  }
+
+  return diffs;
+}
+
+/** Views, sequences, types and routines, which belong to the schema. */
+function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): ObjectDiff[] {
+  const diffs: ObjectDiff[] = [];
+
+  if (left.views && right.views) {
+    diffs.push(...compareObjectLists(viewObjects(left.views), viewObjects(right.views), left.schema, right.schema));
+  }
+  if (left.sequences && right.sequences) {
+    diffs.push(
+      ...compareObjectLists(sequenceObjects(left.sequences), sequenceObjects(right.sequences), left.schema, right.schema)
+    );
+  }
+  if (left.types && right.types) {
+    diffs.push(...compareObjectLists(typeObjects(left.types), typeObjects(right.types), left.schema, right.schema));
+  }
+  if (left.routines && right.routines) {
+    diffs.push(
+      ...compareObjectLists(routineObjects(left.routines), routineObjects(right.routines), left.schema, right.schema)
+    );
+  }
+
+  return diffs;
+}
+
+/**
+ * Which categories were actually compared. A table-scoped category counts as
+ * compared when at least one matched pair of tables recorded it on both sides.
+ */
+function comparedCategories(
+  left: SchemaSnapshot,
+  right: SchemaSnapshot,
+  matchedTables: TableMatch[]
+): ComparedObjectCategories {
+  return {
+    indexes: matchedTables.some((m) => Boolean(m.left.indexes && m.right.indexes)),
+    triggers: matchedTables.some((m) => Boolean(m.left.triggers && m.right.triggers)),
+    views: Boolean(left.views && right.views),
+    sequences: Boolean(left.sequences && right.sequences),
+    types: Boolean(left.types && right.types),
+    routines: Boolean(left.routines && right.routines),
+  };
+}
+
+// ============================================================================
 // Matched-table assembly
 // ============================================================================
 
@@ -1092,6 +1366,7 @@ function compareMatchedTables(
 ): TableMatch {
   const columnResult    = compareColumns(left, right);
   const constraintDiffs = compareConstraints(left, right, leftSchema, rightSchema);
+  const objectDiffs     = compareTableObjects(left, right);
 
   const changedSections = new Set<string>();
   if (columnResult.columnsOnlyInA.length > 0 || columnResult.columnsOnlyInB.length > 0 || columnResult.columnMatches.some((m) => m.changes.length > 0)) changedSections.add("Columns");
@@ -1100,6 +1375,8 @@ function compareMatchedTables(
   if (constraintDiffs.some((d) => d.kind === "FOREIGN KEY"))   changedSections.add("Foreign keys");
   if (constraintDiffs.some((d) => d.kind === "CHECK"))         changedSections.add("Check constraints");
   if (constraintDiffs.some((d) => d.kind === "EXCLUDE"))       changedSections.add("Exclude constraints");
+  if (objectDiffs.some((d) => d.kind === "INDEX"))             changedSections.add("Indexes");
+  if (objectDiffs.some((d) => d.kind === "TRIGGER"))           changedSections.add("Triggers");
   if (!exact)                                                   changedSections.add("Similarity matched");
 
   return {
@@ -1109,13 +1386,18 @@ function compareMatchedTables(
     columnsOnlyInB:       columnResult.columnsOnlyInB,
     possibleColumnMatches: columnResult.possibleColumnMatches,
     constraintDiffs,
+    objectDiffs,
     changedSections: Array.from(changedSections),
     hasChanges:
       !exact ||
       columnResult.columnsOnlyInA.length > 0 ||
       columnResult.columnsOnlyInB.length > 0 ||
       columnResult.columnMatches.some((m) => m.changes.length > 0) ||
-      constraintDiffs.length > 0,
+      constraintDiffs.length > 0 ||
+      // Indexes and triggers count as drift. Nothing in Postgres creates either
+      // behind your back — unlike planner statistics, which is why row counts
+      // are deliberately kept out of this (see compare-data.ts).
+      objectDiffs.length > 0,
   };
 }
 
@@ -1170,6 +1452,12 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
   const likelyRenameCandidates =
     matchedTables.filter((t) => !t.exact).length + similarityResults.possible.length;
 
+  // 3. Objects that belong to the schema rather than to one table.
+  const schemaObjectDiffs = compareSchemaObjects(left, right);
+  const changedObjects =
+    schemaObjectDiffs.length +
+    matchedTables.reduce((sum, t) => sum + t.objectDiffs.length, 0);
+
   return {
     left,
     right,
@@ -1179,6 +1467,10 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
     possibleTableMatches: similarityResults.possible.sort(
       (a, b) => b.score - a.score || a.leftName.localeCompare(b.leftName)
     ),
+    objectDiffs: schemaObjectDiffs.sort(
+      (a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name)
+    ),
+    comparedObjectCategories: comparedCategories(left, right, matchedTables),
     summary: {
       tablesOnlyInA: similarityResults.leftOnly.length,
       tablesOnlyInB: similarityResults.rightOnly.length,
@@ -1186,6 +1478,7 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
       changedConstraints,
       likelyRenameCandidates,
       identicalTables: matchedTables.filter((t) => !t.hasChanges).length,
+      changedObjects,
     },
   };
 }
