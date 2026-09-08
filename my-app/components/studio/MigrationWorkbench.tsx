@@ -204,17 +204,26 @@ export function MigrationWorkbench({
           script_name: scriptName,
           version: effectiveVersion,
           sql_content: sql,
+          // Saved beside it as v<ver>.down.sql so the version can be undone
+          // later from Deploy. Omitted when there is nothing to undo.
+          down_sql: rollbackSql.trim() ? rollbackSql : undefined,
           description: description.trim() || undefined,
         }),
       });
-      const data = (await res.json()) as { url?: string; error?: string };
+      const data = (await res.json()) as {
+        url?: string;
+        rollback_saved?: boolean;
+        error?: string;
+      };
       if (!res.ok) {
         setPush({ kind: "err", message: data.error ?? "Push to GitHub failed." });
         return;
       }
       setPush({
         kind: "ok",
-        message: `v${effectiveVersion} pushed to ${targetDatabase}/${targetSchema}/${scriptName} on GitHub.`,
+        message:
+          `v${effectiveVersion} pushed to ${targetDatabase}/${targetSchema}/${scriptName} on GitHub` +
+          (data.rollback_saved ? ", with its rollback." : "."),
         url: data.url ?? null,
       });
     } catch {
@@ -558,6 +567,16 @@ export function MigrationWorkbench({
                   <span className="mono break-all">{targetDatabase}/{targetSchema}/{name.trim() || suggestedName}/v{effectiveVersion}.sql</span>.
                 </span>
               </li>
+              {rollbackSql.trim() && (
+                <li className="flex gap-2">
+                  <span style={{ color: "var(--sync)" }}>●</span>
+                  <span className="min-w-0">
+                    Save the rollback beside it as{" "}
+                    <span className="mono break-all">v{effectiveVersion}.down.sql</span>, so this
+                    version can be undone later.
+                  </span>
+                </li>
+              )}
               <li className="flex gap-2">
                 <span style={{ color: "var(--sync)" }}>●</span>
                 <span className="min-w-0">

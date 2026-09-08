@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { groupRegistryFiles } from "@/lib/registry-paths";
 
 const OWNER = process.env.GITHUB_REPO_OWNER;
 const REPO = process.env.GITHUB_REPO_NAME;
@@ -19,6 +20,11 @@ export type GitHubScript = {
   version: string;
   path: string;
   sql_content: string;
+  /**
+   * The rollback saved beside this version as v<version>.down.sql. Absent for a
+   * version pushed before rollbacks existed, or pushed without one.
+   */
+  down_sql?: string;
 };
 
 export async function GET() {
@@ -105,39 +111,51 @@ export async function GET() {
             scriptDirs.map(async (scriptDir) => {
               const files = await listDir(scriptDir.path);
 
-              // Fetch each .sql file's content concurrently
+              // A version owns up to two files: v1.2.0.sql (the migration) and
+              // v1.2.0.down.sql (its rollback). Group by version first, so the
+              // rollback is attached to its migration instead of being listed as
+              // a version called "1.2.0.down".
+              const byVersion = groupRegistryFiles(
+                files.filter((file) => file.type === "file"),
+              );
+
+              // Fetch raw content via download_url (server-side, uses GitHub's
+              // pre-authenticated CDN URL — no extra PAT needed here).
+              async function fetchText(url: string): Promise<string> {
+                try {
+                  const res = await fetch(url);
+                  return res.ok ? await res.text() : "";
+                } catch {
+                  return "";
+                }
+              }
+
               await Promise.all(
-                files.map(async (file) => {
-                  if (file.type !== "file" || !file.name.endsWith(".sql")) return;
-                  if (!file.download_url) return;
+                [...byVersion.entries()].map(async ([version, pair]) => {
+                  // A rollback with no migration beside it is the orphan left by
+                  // a push that failed after writing the down file. There is no
+                  // version to attach it to, so it is not a registry entry.
+                  if (!pair.up?.download_url) return;
 
-                  // Filename is like v1.2.0.sql — strip the leading "v" and ".sql"
-                  const version = file.name.replace(/^v/i, "").replace(/\.sql$/i, "");
-
-                  // Fetch raw SQL content via download_url (server-side, uses
-                  // GitHub's pre-authenticated CDN URL — no extra PAT needed here)
-                  let sql_content = "";
-                  try {
-                    const contentRes = await fetch(file.download_url);
-                    if (contentRes.ok) {
-                      sql_content = await contentRes.text();
-                    }
-                  } catch {
-                    // Content fetch failed — include the entry with empty content
-                    // rather than dropping it entirely so the list still shows up
-                  }
+                  const [sql_content, down_sql] = await Promise.all([
+                    fetchText(pair.up.download_url),
+                    pair.down?.download_url
+                      ? fetchText(pair.down.download_url)
+                      : Promise.resolve(""),
+                  ]);
 
                   scripts.push({
                     database_name: databaseDir.name,
                     schema_name: schemaDir.name,
                     script_name: scriptDir.name,
                     version,
-                    path: file.path,
+                    path: pair.up.path,
                     // NOTE: download_url is deliberately NOT returned. For a private
                     // registry repo, GitHub's download_url is a pre-authenticated
                     // raw URL that would let an (unauthenticated) client read the
                     // private file directly. The client already gets sql_content.
                     sql_content,
+                    ...(down_sql ? { down_sql } : {}),
                   });
                 })
               );

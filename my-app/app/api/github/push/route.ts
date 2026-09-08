@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { migrationFileName, rollbackFileName } from "@/lib/registry-paths";
 
 const OWNER = process.env.GITHUB_REPO_OWNER;
 const REPO = process.env.GITHUB_REPO_NAME;
@@ -10,6 +11,12 @@ type PushBody = {
   script_name: string;
   version: string;
   sql_content: string;
+  /**
+   * The rollback (down) script for this version, saved beside it as
+   * v<version>.down.sql. Optional: a caller that has no rollback just omits it
+   * and only the migration file is written.
+   */
+  down_sql?: string;
   description?: string;
   /**
    * Replace an existing file at this version. Defaults to false: a published
@@ -40,7 +47,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { database_name, schema_name, script_name, version, sql_content, description, overwrite } = body;
+  const { database_name, schema_name, script_name, version, sql_content, down_sql, description, overwrite } = body;
 
   if (!database_name || !schema_name || !script_name || !version || !sql_content) {
     return NextResponse.json(
@@ -50,12 +57,17 @@ export async function POST(req: NextRequest) {
   }
 
   // Path: <database_name>/<schema>/<script_name>/v<version>.sql
+  // The rollback, when there is one, sits beside it as v<version>.down.sql.
   // Encode each segment so names with spaces or odd characters stay valid,
   // while keeping the slashes that define the folder structure.
-  const filePath = [database_name, schema_name, script_name, `v${version}.sql`]
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-  const apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;
+  function contentsUrl(fileName: string): string {
+    const filePath = [database_name, schema_name, script_name, fileName]
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    return `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;
+  }
+  const apiUrl = contentsUrl(migrationFileName(version));
+  const downUrl = contentsUrl(rollbackFileName(version));
   const headers = {
     Authorization: `Bearer ${PAT}`,
     Accept: "application/vnd.github+json",
@@ -97,6 +109,50 @@ export async function POST(req: NextRequest) {
     ? `${script_name} v${version}: ${description}`
     : `${script_name} v${version}`;
 
+  // PUT one file, reusing its SHA when it is already there. Returns the response
+  // so the caller decides what a failure means for the push as a whole.
+  async function putFile(url: string, content: string, message: string): Promise<Response> {
+    let sha: string | undefined;
+    try {
+      const check = await fetch(url, { headers });
+      if (check.ok) sha = ((await check.json()) as GitHubFileResponse).sha;
+    } catch {
+      // Lookup failed — treat it as a new file.
+    }
+    const putBody: Record<string, string> = {
+      message,
+      content: Buffer.from(content).toString("base64"),
+    };
+    if (sha) putBody.sha = sha;
+    return fetch(url, { method: "PUT", headers, body: JSON.stringify(putBody) });
+  }
+
+  // The rollback goes first, on purpose. GitHub's contents API has no
+  // transaction, so one of the two writes can fail on its own. Writing the
+  // rollback first means a failure leaves only an orphan v<ver>.down.sql, which
+  // the pull route ignores because no migration sits beside it — nobody sees a
+  // half-published version. The reverse order would publish a migration that
+  // silently cannot be rolled back.
+  if (down_sql) {
+    let downRes: Response;
+    try {
+      downRes = await putFile(downUrl, down_sql, `${commitMessage} (rollback)`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return NextResponse.json(
+        { error: `Could not reach GitHub while saving the rollback. Nothing was published. Details: ${message}` },
+        { status: 502 }
+      );
+    }
+    if (!downRes.ok) {
+      const err = await downRes.text();
+      return NextResponse.json(
+        { error: `GitHub API error saving the rollback: ${downRes.status} — ${err}. Nothing was published.` },
+        { status: 502 }
+      );
+    }
+  }
+
   const putBody: Record<string, string> = {
     message: commitMessage,
     content: Buffer.from(sql_content).toString("base64"),
@@ -134,5 +190,5 @@ export async function POST(req: NextRequest) {
   } catch {
     // Body wasn't the JSON we expected — the file is still saved, so report ok.
   }
-  return NextResponse.json({ url: htmlUrl });
+  return NextResponse.json({ url: htmlUrl, rollback_saved: Boolean(down_sql) });
 }

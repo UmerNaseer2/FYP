@@ -54,6 +54,11 @@ type GitHubScript = {
   version: string;
   path: string;
   sql_content: string;
+  /**
+   * The rollback saved beside this version in the registry (v<ver>.down.sql).
+   * Absent for versions pushed without one.
+   */
+  down_sql?: string;
 };
 
 // A saved connection from /api/connections.
