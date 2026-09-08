@@ -13,7 +13,15 @@ import {
   RefreshIcon,
   InfoIcon,
 } from "@/components/ui/icons";
+import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import { diffLedgers, type LedgerEntry } from "@/lib/version-sync";
+import {
+  isProduction,
+  louderEnvironment,
+  toEnvironment,
+  DEFAULT_ENVIRONMENT,
+  type Environment,
+} from "@/lib/environments";
 
 // Version Sync (version replay). Pick a Source (ahead) and a Target (behind);
 // we diff their applied-script ledgers and show the versions the Target is
@@ -21,7 +29,14 @@ import { diffLedgers, type LedgerEntry } from "@/lib/version-sync";
 // missing scripts to catch the Target up lands in P4; here the run controls are
 // present but inert.
 
-type Connection = { id: number; name: string; host: string; database_name: string };
+type Connection = {
+  id: number;
+  name: string;
+  host: string;
+  database_name: string;
+  /** dev / staging / prod, or "unset" when nobody has labelled it. */
+  environment: Environment;
+};
 type Phase = "idle" | "loading" | "error" | "ready";
 
 const fmtDate = (iso: string) => {
@@ -41,6 +56,11 @@ function useLedgerSource() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  // The tracked schema's own environment label, if this pair is tracked. A
+  // schema can be labelled louder than the connection it lives on (a prod
+  // schema on a box called "shared"), so both halves are needed before this
+  // side can be called production.
+  const [schemaEnvironment, setSchemaEnvironment] = useState<Environment>(DEFAULT_ENVIRONMENT);
 
   useEffect(() => {
     setSchemas([]);
@@ -65,6 +85,28 @@ function useLedgerSource() {
       active = false;
     };
   }, [connectionId]);
+
+  useEffect(() => {
+    setSchemaEnvironment(DEFAULT_ENVIRONMENT);
+    if (!connectionId || !schema) return;
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/lineage/lookup?connectionId=${encodeURIComponent(connectionId)}&schemaName=${encodeURIComponent(schema)}`,
+          { cache: "no-store" },
+        );
+        const data = (await res.json()) as { environment?: string };
+        if (active) setSchemaEnvironment(toEnvironment(data?.environment));
+      } catch {
+        // An unreachable lookup leaves the label unset, which reads as
+        // "nothing here can warn you" rather than as "safe".
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [connectionId, schema]);
 
   useEffect(() => {
     setEntries(null);
@@ -104,7 +146,7 @@ function useLedgerSource() {
 
   return {
     connectionId, setConnectionId, schema, setSchema,
-    schemas, schemasLoading, schemasError,
+    schemas, schemasLoading, schemasError, schemaEnvironment,
     entries, phase, error, retry: () => setRetry((n) => n + 1),
     // Optimistically mark a version as now-applied (after a successful replay),
     // so the diff/timeline update instantly without a re-fetch + loading flash.
@@ -113,6 +155,19 @@ function useLedgerSource() {
 }
 
 type Side = ReturnType<typeof useLedgerSource>;
+
+/**
+ * What environment one side is really pointing at.
+ *
+ * The connection carries a label for the whole database and the tracked schema
+ * carries one of its own; we take the louder, exactly as Deploy does. Both
+ * screens end up running the same SQL through the same route, so they must not
+ * be able to disagree about whether that route is aimed at production.
+ */
+function sideEnvironment(side: Side, connections: Connection[]): Environment {
+  const conn = connections.find((c) => String(c.id) === side.connectionId);
+  return louderEnvironment(toEnvironment(conn?.environment), side.schemaEnvironment);
+}
 
 function changeTone(t: string): string {
   return t === "breaking" ? "pill-break" : t === "additive" ? "pill-sync" : "pill-pending";
@@ -148,6 +203,14 @@ export default function VersionSyncPage() {
     return diffLedgers(source.entries, target.entries);
   }, [source.entries, target.entries]);
 
+  // Only the Target is written to, so only the Target's label gates anything.
+  // The Source still shows its own pill, because replaying prod history onto a
+  // dev box is a very different act from the reverse and the pair is worth
+  // reading at a glance.
+  const sourceEnvironment = sideEnvironment(source, connections);
+  const targetEnvironment = sideEnvironment(target, connections);
+  const targetIsProduction = isProduction(targetEnvironment);
+
   const missingKeys = useMemo(
     () => new Set((diff?.missing ?? []).map(entryKey)),
     [diff],
@@ -180,7 +243,10 @@ export default function VersionSyncPage() {
     setPendingApply(entries);
   }
 
-  async function applyOne(e: LedgerEntry): Promise<{ ok: true } | { ok: false; error: string }> {
+  async function applyOne(
+    e: LedgerEntry,
+    acknowledgeProduction: boolean,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
     try {
       const res = await fetch("/api/scripts/apply", {
         method: "POST",
@@ -193,6 +259,7 @@ export default function VersionSyncPage() {
           sql_content: e.sqlContent ?? "",
           change_type: e.changeType,
           source_ref: `version-sync: replayed from ${source.schema}`,
+          acknowledgeProduction,
         }),
       });
       const data = await res.json();
@@ -205,7 +272,10 @@ export default function VersionSyncPage() {
   // Replay entries onto the Target in order, each in its own transaction (the
   // apply route's safety). Stop on the first failure or unreplayable (no-SQL)
   // entry — earlier successes stay, and the timeline advances as each lands.
-  async function runEntries(entries: LedgerEntry[]) {
+  async function runEntries(entries: LedgerEntry[], acknowledgeProduction: boolean) {
+    // A disabled confirm button is a hint; this is the rule. If the Target is
+    // production and nobody ticked the box, nothing runs.
+    if (targetIsProduction && !acknowledgeProduction) return;
     setApplying(true);
     setApplyError("");
     setApplyDone("");
@@ -217,7 +287,7 @@ export default function VersionSyncPage() {
         break;
       }
       setProgress(`Applying ${e.scriptName} v${e.version}…${entries.length > 1 ? ` (${i + 1}/${entries.length})` : ""}`);
-      const r = await applyOne(e);
+      const r = await applyOne(e, acknowledgeProduction);
       if (!r.ok) {
         setApplyError(`Failed at ${e.scriptName} v${e.version}: ${r.error}`);
         break;
@@ -273,7 +343,14 @@ export default function VersionSyncPage() {
           {/* ── Source → Target pickers ──────────────────────────────────── */}
           <div className="card p-5">
             <div className="vsync-pickers">
-              <SidePicker side={source} label="Source" sub="ahead" connections={connections} loaded={connectionsLoaded} />
+              <SidePicker
+                side={source}
+                label="Source"
+                sub="ahead"
+                connections={connections}
+                loaded={connectionsLoaded}
+                environment={sourceEnvironment}
+              />
               <button
                 type="button"
                 className="vsync-swap btn btn-ghost btn-sm"
@@ -283,7 +360,14 @@ export default function VersionSyncPage() {
               >
                 <VersionSyncIcon size={16} />
               </button>
-              <SidePicker side={target} label="Target" sub="catch up" connections={connections} loaded={connectionsLoaded} />
+              <SidePicker
+                side={target}
+                label="Target"
+                sub="catch up"
+                connections={connections}
+                loaded={connectionsLoaded}
+                environment={targetEnvironment}
+              />
             </div>
           </div>
 
@@ -340,7 +424,14 @@ export default function VersionSyncPage() {
                   source={source}
                   missingKeys={missingKeys}
                   multiFamily={multiFamily}
-                  apply={{ applying, progress, error: applyError, done: applyDone, onRun: requestApply }}
+                  apply={{
+                    applying,
+                    progress,
+                    error: applyError,
+                    done: applyDone,
+                    onRun: requestApply,
+                    targetIsProduction,
+                  }}
                 />
               </>
             ) : null}
@@ -351,22 +442,41 @@ export default function VersionSyncPage() {
       <ConfirmDialog
         open={pendingApply !== null}
         onClose={() => setPendingApply(null)}
-        onConfirm={() => {
+        onConfirm={(acknowledged) => {
           const entries = pendingApply ?? [];
           setPendingApply(null);
-          void runEntries(entries);
+          void runEntries(entries, acknowledged);
         }}
         destructive
-        confirmLabel={pendingApply && pendingApply.length > 1 ? `Apply ${pendingApply.length}` : "Apply"}
+        confirmLabel={
+          pendingApply && pendingApply.length > 1
+            ? `Apply ${pendingApply.length}${targetIsProduction ? " to production" : ""}`
+            : targetIsProduction
+              ? "Apply to production"
+              : "Apply"
+        }
         title={
           pendingApply && pendingApply.length === 1
             ? `Apply ${pendingApply[0].scriptName} v${pendingApply[0].version}?`
             : `Apply ${pendingApply?.length ?? 0} scripts to the Target?`
         }
+        acknowledge={
+          targetIsProduction
+            ? `I understand, and I mean to replay ${pendingApply?.length ?? 0} script${
+                (pendingApply?.length ?? 0) === 1 ? "" : "s"
+              } against production.`
+            : undefined
+        }
         description={
           <>
             This runs on <b className="mono">{target.schema}</b> ({connections.find((c) => String(c.id) === target.connectionId)?.database_name}) —
             a live database — and is recorded in its ledger.
+            {targetIsProduction && (
+              <span className="block mt-2" style={{ color: "var(--break)" }}>
+                The Target is labelled production. A replay that goes wrong here is not
+                something a rollback brings back — a rollback restores structure, not rows.
+              </span>
+            )}
             {diff && diff.diverged.length > 0 && (
               <span className="block mt-2" style={{ color: "var(--drift)" }}>
                 The schemas have diverged, so a replayed script may conflict with the Target&apos;s own changes.
@@ -381,15 +491,17 @@ export default function VersionSyncPage() {
 
 // ── One side's picker (connection + schema) ──────────────────────────────────
 function SidePicker({
-  side, label, sub, connections, loaded,
+  side, label, sub, connections, loaded, environment,
 }: {
   side: Side; label: string; sub: string; connections: Connection[]; loaded: boolean;
+  environment: Environment;
 }) {
   return (
     <div className="vsync-side">
       <div className="vsync-side__head">
         <span className="section-title">{label}</span>
         <span className="vsync-side__sub">{sub}</span>
+        {side.connectionId && <EnvironmentPill environment={environment} className="ml-auto" />}
       </div>
       <div className="space-y-2 mt-2">
         {!loaded ? (
@@ -420,6 +532,11 @@ function SidePicker({
               onChange={(v) => side.setSchema(v)}
             />
             {side.schemasError && <p className="help" style={{ color: "var(--break)" }}>{side.schemasError}</p>}
+            {side.connectionId && environment === "unset" && (
+              <p className="help">
+                Unlabelled — label it on Connections so this page can warn you.
+              </p>
+            )}
           </>
         )}
       </div>
@@ -433,6 +550,8 @@ type ApplyCtl = {
   error: string;
   done: string;
   onRun: (entries: LedgerEntry[]) => void;
+  /** Draw the run buttons red when the Target is live, same as Deploy does. */
+  targetIsProduction: boolean;
 };
 
 // ── The diff result: status, timeline, missing list ──────────────────────────
@@ -577,12 +696,12 @@ function Result({
                 Bump by 1
               </button>
               <button
-                className="btn btn-primary btn-sm"
+                className={`btn btn-sm ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
                 disabled={apply.applying || diff.missing.length === 0}
                 onClick={() => apply.onRun(diff.missing)}
               >
                 {apply.applying ? <RefreshIcon size={13} className="spin-icon" /> : null}
-                Run all
+                Run all{apply.targetIsProduction ? " on production" : ""}
               </button>
             </div>
           </div>

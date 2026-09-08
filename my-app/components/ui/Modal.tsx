@@ -54,18 +54,44 @@ export function Modal({ open, onClose, children, width = 380 }: ModalProps) {
 type ConfirmDialogProps = {
   open: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  /**
+   * Runs when the person confirms. `acknowledged` is true only when this dialog
+   * asked for a tick and got one; callers that never pass `acknowledge` can
+   * ignore the argument entirely.
+   */
+  onConfirm: (acknowledged: boolean) => void;
   title: string;
   description?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   /** Style the confirm button as destructive and show a warning icon. */
   destructive?: boolean;
+  /**
+   * Ask for one more deliberate act before confirming.
+   *
+   * Pass the sentence to put beside the checkbox and the confirm button stays
+   * disabled until it is ticked. Use it for the small set of actions where
+   * "are you sure?" is genuinely not enough — running SQL on a live production
+   * database, say — and leave it off everywhere else, or the tick becomes
+   * furniture people click through without reading.
+   */
+  acknowledge?: ReactNode;
 };
 
 /** Confirm gate for destructive or risky actions. Built on Modal. */
-export function ConfirmDialog({
-  open,
+export function ConfirmDialog({ open, onClose, ...body }: ConfirmDialogProps) {
+  return (
+    <Modal open={open} onClose={onClose}>
+      {/* The contents live in their own component so the acknowledgement tick
+          is created fresh on every opening. Modal renders nothing while it is
+          closed, so ConfirmBody unmounts and there is no stale tick left to
+          carry into the next use — no reset effect needed. */}
+      <ConfirmBody onClose={onClose} {...body} />
+    </Modal>
+  );
+}
+
+function ConfirmBody({
   onClose,
   onConfirm,
   title,
@@ -73,9 +99,13 @@ export function ConfirmDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   destructive = false,
-}: ConfirmDialogProps) {
+  acknowledge,
+}: Omit<ConfirmDialogProps, "open">) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  const blocked = Boolean(acknowledge) && !acknowledged;
+
   return (
-    <Modal open={open} onClose={onClose}>
+    <>
       <div className="flex items-start gap-3">
         {destructive && (
           <div
@@ -94,20 +124,32 @@ export function ConfirmDialog({
           )}
         </div>
       </div>
+      {acknowledge && (
+        <label className="prod-gate__ack">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(event) => setAcknowledged(event.target.checked)}
+          />
+          <span>{acknowledge}</span>
+        </label>
+      )}
       <div className="flex justify-end gap-2 mt-5">
         <button className="btn btn-ghost btn-sm" onClick={onClose}>
           {cancelLabel}
         </button>
         <button
           className={`btn btn-sm ${destructive ? "btn-destructive" : "btn-primary"}`}
+          disabled={blocked}
           onClick={() => {
-            onConfirm();
+            if (blocked) return;
+            onConfirm(acknowledged);
             onClose();
           }}
         >
           {confirmLabel}
         </button>
       </div>
-    </Modal>
+    </>
   );
 }
