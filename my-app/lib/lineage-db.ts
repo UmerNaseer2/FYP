@@ -4,6 +4,7 @@ import { buildPgConfig } from "./connection-config";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import type { ChangeLevel } from "./version-detection";
+import { listSetNamesUsingConnection } from "./comparison-sets";
 import pool, {
   addCheckConstraint,
   ensureConnectionsTable,
@@ -1114,6 +1115,10 @@ export type ConnectionDependents = {
   schemaNames: string[];
   /** Snapshots hanging off those tracked schemas (cascade-deleted with them). */
   snapshots: number;
+  /** Saved comparison sets that use this connection as their source or a target. */
+  comparisonSets: number;
+  /** Their names, for showing in the confirm dialog. */
+  comparisonSetNames: string[];
 };
 
 /**
@@ -1130,13 +1135,25 @@ export async function getConnectionDependents(
 ): Promise<ConnectionDependents> {
   await ensureLineageTables();
 
+  // Saved comparison sets are not lineage, but "what depends on this
+  // connection?" is one question and the dialog asks it once. Counting them
+  // here keeps the route to a single call, and comparison-sets does not import
+  // this module, so the direction stays one way.
+  const comparisonSetNames = await listSetNamesUsingConnection(connectionId);
+
   const tracked = await pool.query<{ id: number; schema_name: string }>(
     `SELECT id, schema_name FROM tracked_schemas WHERE connection_id = $1 ORDER BY schema_name`,
     [connectionId]
   );
 
   if (tracked.rows.length === 0) {
-    return { trackedSchemas: 0, schemaNames: [], snapshots: 0 };
+    return {
+      trackedSchemas: 0,
+      schemaNames: [],
+      snapshots: 0,
+      comparisonSets: comparisonSetNames.length,
+      comparisonSetNames,
+    };
   }
 
   const ids = tracked.rows.map((r) => r.id);
@@ -1149,5 +1166,7 @@ export async function getConnectionDependents(
     trackedSchemas: tracked.rows.length,
     schemaNames: tracked.rows.map((r) => r.schema_name),
     snapshots: Number(snapshots.rows[0]?.count ?? 0),
+    comparisonSets: comparisonSetNames.length,
+    comparisonSetNames,
   };
 }

@@ -206,6 +206,32 @@ function toTarget(row: TargetRow): ComparisonSetTarget {
 }
 
 /** Every saved set, alphabetically, each with its targets in saved order. */
+/**
+ * Names of the saved sets that point at a connection, either as their source or
+ * as one of their targets.
+ *
+ * Deleting a connection does not delete the sets that use it — the foreign keys
+ * are ON DELETE SET NULL and each target keeps the label the connection had —
+ * but the set does lose its way to reach that database. The delete dialog says
+ * so, and this is what it counts.
+ */
+export async function listSetNamesUsingConnection(
+  connectionId: number
+): Promise<string[]> {
+  await ensureComparisonSetTables();
+
+  const result = await pool.query<{ name: string }>(
+    `SELECT DISTINCT s.name
+       FROM comparison_sets s
+       LEFT JOIN comparison_set_targets t ON t.set_id = s.id
+      WHERE s.source_connection_id = $1 OR t.connection_id = $1
+      ORDER BY s.name`,
+    [connectionId]
+  );
+
+  return result.rows.map((r) => r.name);
+}
+
 export async function listComparisonSets(): Promise<ComparisonSet[]> {
   await ensureComparisonSetTables();
 
@@ -316,10 +342,15 @@ export async function saveComparisonSet(
     await client.query("BEGIN");
 
     const upsert = await client.query<{ id: number; created: boolean }>(
+      // The stored label is what names a side after its connection is deleted,
+      // so it must never be blank. A caller that does not send one is not asked
+      // to guess: the connection's current name is right here.
       `INSERT INTO comparison_sets
          (name, source_connection_id, source_connection_label, source_schema,
           allow_data_loss)
-       VALUES ($1, $2, $3, $4, $5)
+       VALUES ($1, $2,
+               COALESCE(NULLIF($3, ''), (SELECT name FROM connections WHERE id = $2), ''),
+               $4, $5)
        ON CONFLICT (lower(name)) DO UPDATE
          SET name = EXCLUDED.name,
              source_connection_id = EXCLUDED.source_connection_id,
@@ -349,7 +380,9 @@ export async function saveComparisonSet(
       await client.query(
         `INSERT INTO comparison_set_targets
            (set_id, position, connection_id, connection_label, schema_name)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3,
+                 COALESCE(NULLIF($4, ''), (SELECT name FROM connections WHERE id = $3), ''),
+                 $5)`,
         [id, position, target.connectionId, target.connectionLabel, target.schema.trim()]
       );
     }

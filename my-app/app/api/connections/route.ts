@@ -293,20 +293,45 @@ export async function DELETE(request: NextRequest) {
 
     // tracked_schemas deliberately has no foreign key to connections (see the
     // note in lib/lineage-db), so deleting a connection silently orphans every
-    // tracked schema, snapshot and drift event that pointed at it. Say what
-    // will be lost and make the caller confirm.
+    // tracked schema, snapshot and drift event that pointed at it. Saved
+    // comparison sets do have one, but it is ON DELETE SET NULL — they survive
+    // and keep the label, they just lose the way to reach the database. Either
+    // way something the user built stops working, so say what and make them
+    // confirm.
     const dependents = await getConnectionDependents(id);
-    if (dependents.trackedSchemas > 0 && body.confirm !== true) {
+    const inUse = dependents.trackedSchemas > 0 || dependents.comparisonSets > 0;
+    if (inUse && body.confirm !== true) {
+      const uses: string[] = [];
+      if (dependents.trackedSchemas > 0) {
+        uses.push(
+          `${dependents.trackedSchemas} tracked schema${dependents.trackedSchemas === 1 ? "" : "s"}`
+        );
+      }
+      if (dependents.comparisonSets > 0) {
+        uses.push(
+          `${dependents.comparisonSets} saved comparison set${dependents.comparisonSets === 1 ? "" : "s"}`
+        );
+      }
+
+      let error = `"${existing.rows[0].name}" is still used by ${uses.join(" and ")}.`;
+      // Only worth a sentence when there is actually history to lose — "removes
+      // 0 snapshots" reads like a bug, not a warning.
+      if (dependents.snapshots > 0) {
+        error +=
+          ` Deleting it also removes ${dependents.snapshots} snapshot` +
+          `${dependents.snapshots === 1 ? "" : "s"} and ` +
+          `${dependents.snapshots === 1 ? "its" : "their"} drift history.`;
+      }
+      if (dependents.comparisonSets > 0) {
+        error +=
+          ` The set${dependents.comparisonSets === 1 ? "" : "s"} will be kept, but ` +
+          `${dependents.comparisonSets === 1 ? "its" : "their"} side pointing here ` +
+          `will need a new connection before ${dependents.comparisonSets === 1 ? "it" : "they"} ` +
+          `can run again.`;
+      }
+
       return NextResponse.json(
-        {
-          error:
-            `"${existing.rows[0].name}" is still used by ${dependents.trackedSchemas} tracked ` +
-            `schema${dependents.trackedSchemas === 1 ? "" : "s"}. Deleting it also removes ` +
-            `${dependents.snapshots} snapshot${dependents.snapshots === 1 ? "" : "s"} and ` +
-            `${dependents.snapshots === 1 ? "its" : "their"} drift history.`,
-          dependents,
-          needsConfirmation: true,
-        },
+        { error, dependents, needsConfirmation: true },
         { status: 409 }
       );
     }

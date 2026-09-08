@@ -67,6 +67,9 @@ type Dependents = {
   trackedSchemas: number;
   schemaNames: string[];
   snapshots: number;
+  /** Saved comparison sets using this connection as their source or a target. */
+  comparisonSets: number;
+  comparisonSetNames: string[];
 };
 
 type RowResult =
@@ -487,7 +490,13 @@ export default function ConnectionsPage() {
 
       if (res.status === 409 && data?.needsConfirmation) {
         setDeleteDependents(
-          data.dependents ?? { trackedSchemas: 0, schemaNames: [], snapshots: 0 }
+          data.dependents ?? {
+            trackedSchemas: 0,
+            schemaNames: [],
+            snapshots: 0,
+            comparisonSets: 0,
+            comparisonSetNames: [],
+          }
         );
         return;
       }
@@ -1253,20 +1262,48 @@ export default function ConnectionsPage() {
                   }}
                 >
                   <div className="text-[12.5px] font-medium" style={{ color: "var(--break)" }}>
-                    Still in use by {deleteDependents.trackedSchemas} tracked schema
-                    {deleteDependents.trackedSchemas === 1 ? "" : "s"}
+                    Still in use
                   </div>
-                  <div className="text-[12px] mt-1" style={{ color: "var(--text-2)" }}>
-                    Deleting it also removes {deleteDependents.snapshots} snapshot
-                    {deleteDependents.snapshots === 1 ? "" : "s"} and their drift history.
-                  </div>
-                  {deleteDependents.schemaNames.length > 0 && (
-                    <div className="mono text-[11.5px] mt-2" style={{ color: "var(--text-3)" }}>
-                      {deleteDependents.schemaNames.slice(0, 6).join(", ")}
-                      {deleteDependents.schemaNames.length > 6
-                        ? `, +${deleteDependents.schemaNames.length - 6} more`
-                        : ""}
-                    </div>
+                  {deleteDependents.trackedSchemas > 0 && (
+                    <>
+                      <div className="text-[12px] mt-1" style={{ color: "var(--text-2)" }}>
+                        {deleteDependents.trackedSchemas} tracked schema
+                        {deleteDependents.trackedSchemas === 1 ? "" : "s"}
+                        {deleteDependents.snapshots > 0
+                          ? ` — deleting it also removes ${deleteDependents.snapshots} snapshot${
+                              deleteDependents.snapshots === 1 ? "" : "s"
+                            } and ${
+                              deleteDependents.snapshots === 1 ? "its" : "their"
+                            } drift history.`
+                          : ", which will lose their way to reach the database."}
+                      </div>
+                      {deleteDependents.schemaNames.length > 0 && (
+                        <div className="mono text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
+                          {deleteDependents.schemaNames.slice(0, 6).join(", ")}
+                          {deleteDependents.schemaNames.length > 6
+                            ? `, +${deleteDependents.schemaNames.length - 6} more`
+                            : ""}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {deleteDependents.comparisonSets > 0 && (
+                    <>
+                      <div className="text-[12px] mt-2" style={{ color: "var(--text-2)" }}>
+                        {deleteDependents.comparisonSets} saved comparison set
+                        {deleteDependents.comparisonSets === 1 ? "" : "s"} — the set
+                        {deleteDependents.comparisonSets === 1 ? " is" : "s are"} kept, but the side
+                        pointing here needs a new connection before it can run again.
+                      </div>
+                      {deleteDependents.comparisonSetNames.length > 0 && (
+                        <div className="mono text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
+                          {deleteDependents.comparisonSetNames.slice(0, 6).join(", ")}
+                          {deleteDependents.comparisonSetNames.length > 6
+                            ? `, +${deleteDependents.comparisonSetNames.length - 6} more`
+                            : ""}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
