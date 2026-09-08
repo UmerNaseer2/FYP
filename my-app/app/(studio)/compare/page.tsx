@@ -24,6 +24,17 @@ import {
 import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
+import {
+  listComparisonSets,
+  markComparisonSetRun,
+  MAX_COMPARISON_TARGETS,
+  type ComparisonSet,
+} from "@/lib/comparison-sets";
+import {
+  ComparisonSetBar,
+  type ComparisonSetOption,
+  type CurrentSelection,
+} from "@/components/studio/ComparisonSetBar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
@@ -44,8 +55,11 @@ export const dynamic = "force-dynamic";
  * more workbench on the page, and past half a dozen the screen stops being
  * readable long before the queries become slow. Saved comparison sets are the
  * answer to "I have twenty databases", not a taller page.
+ *
+ * The number itself lives in lib/comparison-sets because the save endpoint
+ * enforces it too, and a limit only one of them knows about is not a limit.
  */
-const MAX_TARGETS = 6;
+const MAX_TARGETS = MAX_COMPARISON_TARGETS;
 
 type PageProps = {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -91,6 +105,43 @@ async function getSavedConnections(): Promise<SavedConnection[]> {
     console.error("Failed to load saved connections:", error);
     return [];
   }
+}
+
+/**
+ * Saved comparison sets, or an empty list if the table cannot be read.
+ *
+ * Deliberately non-fatal: the sets are a convenience on top of the page, and a
+ * metadata database that is briefly unhappy should cost you the shortcut, not
+ * the ability to compare two schemas.
+ */
+async function getComparisonSets(): Promise<ComparisonSet[]> {
+  try {
+    return await listComparisonSets();
+  } catch (error) {
+    console.error("Failed to read comparison sets:", error);
+    return [];
+  }
+}
+
+/**
+ * Does the selection on screen still match the set it was opened from?
+ *
+ * Used only to decide whether to say "changed since it was saved". Order
+ * matters: a set is an ordered list of targets, and swapping target 1 and
+ * target 2 swaps which migration appears first on the page.
+ */
+function matchesSet(set: ComparisonSet, selection: CurrentSelection): boolean {
+  return (
+    set.sourceConnectionId === selection.sourceConnectionId &&
+    set.sourceSchema === selection.sourceSchema &&
+    set.allowDataLoss === selection.allowDataLoss &&
+    set.targets.length === selection.targets.length &&
+    set.targets.every(
+      (target, index) =>
+        target.connectionId === selection.targets[index].connectionId &&
+        target.schema === selection.targets[index].schema,
+    )
+  );
 }
 
 function buildTargetFromConnection(
@@ -450,7 +501,10 @@ function RunSummary({ outcomes }: { outcomes: TargetOutcome[] }) {
 
 export default async function ComparePage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const savedConnections = await getSavedConnections();
+  const [savedConnections, savedSets] = await Promise.all([
+    getSavedConnections(),
+    getComparisonSets(),
+  ]);
   const resolved = resolveCompareTargets();
 
   // With no saved connections at all we fall back to the .env pair, which is
@@ -493,18 +547,52 @@ export default async function ComparePage({ searchParams }: PageProps) {
   const defaultConnectionId = savedConnections[0]?.id
     ? String(savedConnections[0].id)
     : "";
-  const defaultTargetConnectionId = savedConnections[1]?.id
-    ? String(savedConnections[1].id)
-    : defaultConnectionId;
 
-  const sourceConnectionId = pickValue(
-    params.sourceConnection ?? params.leftConnection,
-    defaultConnectionId,
-  );
+  // `?set=<id>` opens a saved comparison. It only seeds the pickers: the moment
+  // the form is submitted the selects send real values, and those win. A set
+  // that kept overriding them would make the page impossible to edit — you
+  // would change a dropdown, press Compare, and watch it snap back.
+  const activeSet =
+    savedSets.find((set) => String(set.id) === pickValue(params.set, "")) ?? null;
+
   const requestedTargetConnections = pickList(
     params.targetConnection ?? params.rightConnection,
   );
   const requestedTargetSchemas = pickList(params.targetSchema ?? params.rightSchema);
+  const hasExplicitTargets =
+    requestedTargetConnections.length > 0 || requestedTargetSchemas.length > 0;
+
+  const sourceConnectionId = pickValue(
+    params.sourceConnection ?? params.leftConnection,
+    activeSet?.sourceConnectionId
+      ? String(activeSet.sourceConnectionId)
+      : defaultConnectionId,
+  );
+
+  /**
+   * What an unconfigured target falls back to — a fresh "Add target", or a slot
+   * in a saved set whose connection has since been deleted.
+   *
+   * Ordered by environment, not alphabetically. This used to be "the second
+   * connection by name", which on this very fixture data meant a blank target
+   * silently landed on Production: a database nobody chose, sitting under a
+   * generated migration. Production sorts last here, so it is only ever the
+   * default when it is the only thing left to pick.
+   *
+   * The source is excluded because comparing a schema against itself produces
+   * an empty diff and no useful migration. `sort` is stable, so connections in
+   * the same environment keep the alphabetical order the picker shows.
+   */
+  const defaultTargetConnection = savedConnections
+    .filter((connection) => String(connection.id) !== sourceConnectionId)
+    .sort(
+      (a, b) =>
+        environmentRank(toEnvironment(a.environment)) -
+        environmentRank(toEnvironment(b.environment)),
+    )[0];
+  const defaultTargetConnectionId = defaultTargetConnection
+    ? String(defaultTargetConnection.id)
+    : defaultConnectionId;
 
   // Pair the two lists by index. Length is taken from the longer of them: in
   // the .env fallback there is no connection picker to submit, so the schemas
@@ -513,10 +601,18 @@ export default async function ComparePage({ searchParams }: PageProps) {
     requestedTargetConnections.length,
     requestedTargetSchemas.length,
   );
-  let slots = Array.from({ length: slotCount }, (_, index) => ({
-    connectionId: requestedTargetConnections[index] ?? "",
-    schema: requestedTargetSchemas[index] ?? "",
-  }));
+  let slots = hasExplicitTargets
+    ? Array.from({ length: slotCount }, (_, index) => ({
+        connectionId: requestedTargetConnections[index] ?? "",
+        schema: requestedTargetSchemas[index] ?? "",
+      }))
+    : (activeSet?.targets ?? []).map((target) => ({
+        // A deleted connection leaves the slot blank, which falls through to
+        // the default below — the set keeps its shape and the user picks a
+        // replacement, instead of the target vanishing without explanation.
+        connectionId: target.connectionId ? String(target.connectionId) : "",
+        schema: target.schema,
+      }));
 
   // "Remove" submits the index it sits on. The last target is never removable —
   // a comparison with no targets is not a comparison.
@@ -609,7 +705,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
 
   const sourceSchemaInfo = schemasFor(sourceConnection, sourceTarget);
   const sourceSchema = resolveSchema(
-    pickValue(params.sourceSchema ?? params.leftSchema, ""),
+    pickValue(params.sourceSchema ?? params.leftSchema, activeSet?.sourceSchema ?? ""),
     sourceSchemaInfo.options,
     "COMPARE_SCHEMA_A",
   );
@@ -629,7 +725,14 @@ export default async function ComparePage({ searchParams }: PageProps) {
   // The compare itself. One source snapshot, then every target in parallel —
   // a slow or unreachable target holds up only its own section.
   // -------------------------------------------------------------------------
-  const allowDataLoss = pickValue(params.allowDataLoss, "") === "1";
+  // An unticked checkbox submits nothing, so "absent" cannot be told apart from
+  // "never submitted". The same rule as the targets settles it: while the
+  // selection is still the set's, so is this; once the form has been submitted
+  // the checkbox is authoritative.
+  const allowDataLoss =
+    activeSet && !hasExplicitTargets
+      ? activeSet.allowDataLoss
+      : pickValue(params.allowDataLoss, "") === "1";
 
   let sourceError: string | null = sourceSchemaInfo.error
     ? `Could not reach ${sourceTarget.displayName}: ${sourceSchemaInfo.error}`
@@ -655,6 +758,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
       );
     }
   }
+
+  // The sets were read at the top of this render, before we knew whether the
+  // comparison would work, so the stamp written below is not in them yet.
+  let justRanAt: string | null = null;
 
   // Comparison history. One row per target, so a three-target run leaves three
   // entries rather than pretending it was a single two-sided compare.
@@ -683,6 +790,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
     } catch (error) {
       console.error("Failed to save comparison history:", error);
     }
+
+    // A set nobody has run for months is usually a set pointing at a database
+    // that no longer exists, so the picker shows when each one last ran.
+    if (activeSet) justRanAt = await markComparisonSetRun(activeSet.id);
   }
 
   const productionTargets = outcomes.filter((outcome) =>
@@ -690,15 +801,54 @@ export default async function ComparePage({ searchParams }: PageProps) {
   );
   const canAddTarget = !usingEnvFallback && resolvedTargets.length < MAX_TARGETS;
 
+  // What the Save button would write: exactly what is on screen right now.
+  const selection: CurrentSelection = {
+    sourceConnectionId: sourceConnection ? sourceConnection.id : null,
+    sourceConnectionLabel: sourceTarget.displayName,
+    sourceSchema,
+    allowDataLoss,
+    targets: resolvedTargets.map((slot) => ({
+      connectionId: slot.connection ? slot.connection.id : null,
+      connectionLabel: slot.target.displayName,
+      schema: slot.schema,
+    })),
+  };
+
+  const setOptions: ComparisonSetOption[] = savedSets.map((set) => ({
+    id: set.id,
+    name: set.name,
+    targetCount: set.targets.length,
+    hasProduction: set.targets.some((target) => isProduction(target.environment)),
+    hasMissingConnection:
+      set.sourceConnectionId === null ||
+      set.targets.some((target) => target.connectionId === null),
+    lastRunAt: set.id === activeSet?.id && justRanAt ? justRanAt : set.lastRunAt,
+  }));
+
   return (
     <div className="px-4 sm:px-8 py-6 sm:py-8">
       <PageHeader targetCount={resolvedTargets.length} />
+
+      {/* Saved sets sit above the pickers because they change what the pickers
+          show. Its own island, not part of the form below — saving writes to
+          the database, and this page's form is a GET that has to stay safe to
+          reload and share. */}
+      <ComparisonSetBar
+        sets={setOptions}
+        activeSetId={activeSet ? activeSet.id : null}
+        modified={activeSet ? !matchesSet(activeSet, selection) : false}
+        selection={selection}
+        canSave={!usingEnvFallback}
+      />
 
       {/* Selection — plain form-GET. The target pickers repeat one pair of field
           names, so the browser submits them as parallel lists and "add target"
           needs no client state at all. */}
       <form action="/compare" className="source-bar">
         <input type="hidden" name="run" value="1" />
+        {/* Carried through every submit so the bar still knows which set is
+            open after you add a target or press Compare. */}
+        {activeSet && <input type="hidden" name="set" value={String(activeSet.id)} />}
 
         <div className="source-bar__group">
           <div className="source-bar__label">Source · the schema you want</div>

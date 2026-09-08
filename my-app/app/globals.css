@@ -2501,6 +2501,25 @@ body {
    .diff-row/.seg primitives; adds only the screen-specific structures.
    =================================================================== */
 
+/* saved comparison sets — the strip above the pickers. Deliberately lighter
+   than .source-bar: it is a bookmark bar, not part of the selection, and the
+   two sitting on top of each other with the same weight read as one confusing
+   double-height control. */
+.set-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px;
+           padding:9px 12px; margin-bottom:10px; border:1px solid var(--border);
+           border-radius:10px; background:var(--surface-2); }
+.set-bar__side { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
+/* The save half is pushed to the right edge. An explicit modifier rather than
+   :last-of-type, which would land on a note line whenever one is showing. */
+.set-bar__side--end { margin-left:auto; }
+.set-bar__label { font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+                  color:var(--text-3); }
+/* Notes take the whole width so they sit under both halves rather than
+   squeezing the controls when the message is long. */
+.set-bar__note { flex:1 0 100%; display:flex; align-items:center; gap:6px; font-size:12px; }
+.set-bar .input { padding:5px 9px; font-size:12.5px; width:200px; }
+.set-bar .ds-select { min-width:220px; }
+
 /* source picker bar — one source, then as many targets as were added. The
    targets auto-fill into columns so two of them read like the old side-by-side
    layout and six of them still fit on one screen. */
@@ -2932,7 +2951,10 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
   /* Topbar: drop the "Workspace ›" prefix on phones to save room. */
   .crumb-workspace { display:none; }
 
-  /* Compare source bar + summary strip stack. */
+  /* Compare saved-set bar, source bar + summary strip stack. */
+  .set-bar__side--end { margin-left:0; }
+  .set-bar__side { width:100%; }
+  .set-bar .ds-select, .set-bar .input { flex:1; min-width:0; width:auto; }
   .source-bar { gap:12px; }
   .source-bar__grid { grid-template-columns:1fr; }
   .source-bar .picker { min-width:0; }
