@@ -3,6 +3,7 @@ import pool from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 
 // Valid values the script_patch table accepts for change_type
 const VALID_CHANGE_TYPES = ["breaking", "additive", "patch", "unknown"] as const;
@@ -163,17 +164,16 @@ export async function POST(request: NextRequest) {
   }
 
   // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
-  const targetPool = getPoolForConfig(
-    buildPgConfig({
-      host: connRow.host,
-      port: connRow.port,
-      database: connRow.database_name,
-      user: connRow.username,
-      password: connRow.password,
-      connectionString: connRow.connection_string,
-      ssl: Boolean(connRow.ssl),
-    })
-  );
+  const targetConfig = buildPgConfig({
+    host: connRow.host,
+    port: connRow.port,
+    database: connRow.database_name,
+    user: connRow.username,
+    password: connRow.password,
+    connectionString: connRow.connection_string,
+    ssl: Boolean(connRow.ssl),
+  });
+  const targetPool = getPoolForConfig(targetConfig);
 
   // ─── 6. Connect to the target database ───────────────────────────────────
   let client;
@@ -200,6 +200,9 @@ export async function POST(request: NextRequest) {
   // Track whether BEGIN has been issued so the catch block only ROLLBACK-s
   // when there is actually an active transaction to roll back.
   let transactionStarted = false;
+  // Track whether the target-pool client has already been released, so the
+  // finally block doesn't double-release it.
+  let clientReleased = false;
 
   try {
     // ─── 7. Ensure script_patch is ready (OUTSIDE the migration transaction) ─
@@ -304,10 +307,16 @@ export async function POST(request: NextRequest) {
       [schemaName, `${script_name.trim()}|${version.trim()}`]
     );
 
-    // Scope unqualified table names in the migration SQL to the target schema.
-    // SET LOCAL lasts only for this transaction — no side effects on the pool.
+    // Scope unqualified names in the migration SQL to the target schema ONLY.
+    // `public` is deliberately NOT on the path: with it, an unqualified DROP/RENAME/
+    // ALTER of a relation that is absent from the target would fall through and hit
+    // public's same-named table — silent cross-schema data loss, especially on a
+    // Version Sync replay to a schema that lacks the object. Target-only means a
+    // missing relation cleanly no-ops under IF EXISTS instead. Built-in types
+    // resolve via pg_catalog (always implicit); a migration needing a public
+    // extension type must schema-qualify it. SET LOCAL lasts only this transaction.
     await client.query(
-      `SET LOCAL search_path TO ${quotedSchema}, public`
+      `SET LOCAL search_path TO ${quotedSchema}`
     );
 
     // Duplicate check scoped to this script family.
@@ -367,6 +376,40 @@ export async function POST(request: NextRequest) {
 
     const appliedAt = insertResult.rows[0].applied_at;
 
+    // Release the target-pool connection BEFORE the lineage advance below: that
+    // step re-introspects the target (drawing its own connection), so holding this
+    // one meanwhile needlessly occupies a slot on the max-4 pool.
+    client.release();
+    clientReleased = true;
+
+    // ─── 9. Advance lineage for TRACKED schemas (issue #12) ──────────────────
+    // A sanctioned deploy must update the schema's expected baseline; otherwise
+    // the next drift check compares live-vs-stale-snapshot and reports the tool's
+    // own deploy as drift. Strictly best-effort: the migration is already
+    // committed, so a bookkeeping failure here must not fail the response. Skips
+    // itself (no-op) when the schema isn't tracked.
+    try {
+      const lineage = await recordAppliedMigrationToLineage({
+        connectionId,
+        schemaName,
+        targetConfig,
+        changeLevel: resolvedChangeType, // "breaking|additive|patch|unknown" ⊆ ChangeLevel
+        name: `${script_name.trim()} v${version.trim()}`,
+        sqlRef: resolvedSourceRef,
+      });
+      if (lineage.advanced) {
+        console.log(
+          `Apply — lineage advanced to ${lineage.version} (seq ${lineage.seq}) ` +
+          `for tracked schema "${schemaName}".`
+        );
+      }
+    } catch (lineageError) {
+      console.error(
+        "Apply — lineage advance failed (migration already applied, response unaffected):",
+        lineageError
+      );
+    }
+
     return NextResponse.json({
       success: true,
       version: version.trim(),
@@ -391,12 +434,14 @@ export async function POST(request: NextRequest) {
 
     // Catch race-condition duplicates: two concurrent requests for the same
     // (script_name, version) can both pass the SELECT check above but then
-    // race to INSERT.  The second INSERT hits the UNIQUE index and throws a
-    // PostgreSQL "duplicate key" / "unique constraint" error.  Translate that
-    // into a 409 so the caller knows the script WAS applied, just not by this
-    // request — rather than a confusing 500.
-    const lc = message.toLowerCase();
-    if (lc.includes("unique constraint") || lc.includes("duplicate key")) {
+    // race to INSERT.  The second INSERT hits the script_patch UNIQUE index and
+    // throws 23505.  Translate ONLY that into a 409 (the script WAS applied, just
+    // not by this request). A unique violation from the USER'S OWN migration DML
+    // (a different constraint) means the script actually FAILED and rolled back —
+    // it must surface as a 500 with the real message, not a misleading "already
+    // applied".
+    const pgErr = error as { code?: string; constraint?: string };
+    if (pgErr.code === "23505" && pgErr.constraint === "script_patch_name_version_idx") {
       return NextResponse.json(
         {
           success: false,
@@ -414,8 +459,9 @@ export async function POST(request: NextRequest) {
     );
 
   } finally {
-    // Always release — whether we succeeded, failed, or hit the 409 branch.
+    // Always release — whether we succeeded, failed, or hit the 409 branch —
+    // unless the success path already released it before the lineage advance.
     // Without this the pool eventually runs out of connections and hangs.
-    client.release();
+    if (!clientReleased) client.release();
   }
 }

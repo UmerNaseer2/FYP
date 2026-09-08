@@ -5,10 +5,14 @@
 // drift that existed when each screen had its own slightly different regex.
 
 /**
- * Detect a bare COMMIT or ROLLBACK in a migration script. These would break the
- * apply route's outer transaction wrapper, so they are rejected up front.
+ * Detect a bare transaction-control statement in a migration script. Any of these
+ * would break the apply route's outer transaction wrapper (committing partial DDL
+ * with no ledger row, or aborting it), so they are rejected up front.
  *
- * Before scanning, we strip the places those words can legitimately appear so
+ * Covers COMMIT, ROLLBACK, and their SQL synonyms: ABORT (= ROLLBACK), END /
+ * END TRANSACTION / END WORK (= COMMIT), and PREPARE TRANSACTION.
+ *
+ * Before scanning, we strip the places these words can legitimately appear so
  * they are NOT treated as transaction control:
  *   - `-- line comments`
  *   - `/* block comments *​/`
@@ -27,6 +31,15 @@ export function containsTransactionControl(sql: string): boolean {
     .replace(/\$([A-Za-z0-9_]*)\$[\s\S]*?\$\1\$/g, " ") // remove $tag$ … $tag$ bodies
     .replace(/'([^']|'')*'/g, "''"); // replace 'string literals' with ''
 
-  // Match COMMIT or ROLLBACK as standalone words (word boundary, case-insensitive).
-  return /\b(COMMIT|ROLLBACK)\b/i.test(stripped);
+  // COMMIT / ROLLBACK / ABORT as standalone words — none is a normal identifier,
+  // and ABORT is a ROLLBACK synonym.
+  if (/\b(COMMIT|ROLLBACK|ABORT)\b/i.test(stripped)) return true;
+  // END / END TRANSACTION / END WORK is a COMMIT synonym, but END also closes a
+  // CASE expression (and a PL/pgSQL block, already stripped above). Only flag END
+  // at a STATEMENT boundary — start of script or right after a `;` — never
+  // mid-expression, so `CASE … END` is not a false positive.
+  if (/(?:^|;)\s*END(?:\s+(?:TRANSACTION|WORK))?\s*(?:;|$)/i.test(stripped)) return true;
+  // PREPARE TRANSACTION commits work into a prepared transaction.
+  if (/(?:^|;)\s*PREPARE\s+TRANSACTION\b/i.test(stripped)) return true;
+  return false;
 }

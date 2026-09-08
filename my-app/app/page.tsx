@@ -1,23 +1,15 @@
 import { redirect } from "next/navigation";
-import { signIn } from "next-auth/react";
 
-// The dashboard now lives inside the studio shell at /studio. The legacy stats
-// dashboard that used to render here was retired in the Phase 10 cleanup, so the
-// root path normally just forwards to the real dashboard.
+// The dashboard lives inside the studio shell at /studio, so the root path just
+// forwards to it.
 //
-// EXCEPTION: Azure SSO (PKCE) returns the browser here with a `?code=…`. We must
-// NOT redirect in that case — a server-side redirect drops the query string and
-// loses the code before it can be exchanged for a session. Instead we render a
-// small client component that completes the exchange and then forwards in.
-export default async function RootPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
-  const params = await searchParams;
-  if (params.code) {
-  
-await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
-  }
+// NOTE: this is a Server Component. An earlier version tried to complete the
+// Azure SSO PKCE exchange here by calling `signIn(...)` from "next-auth/react"
+// when the browser returned to "/?code=…". That is a CLIENT-only helper — it
+// reaches `window` — so awaiting it in server code threw "window is not defined"
+// and turned every "/?code=…" request into a 500. NextAuth already handles the
+// exchange at its own callback route (/api/auth/callback/[provider]); nothing
+// needs to run here, so we unconditionally forward to the dashboard.
+export default function RootPage() {
   redirect("/studio");
 }

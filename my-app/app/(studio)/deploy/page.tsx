@@ -53,7 +53,6 @@ type GitHubScript = {
   script_name: string;
   version: string;
   path: string;
-  download_url: string;
   sql_content: string;
 };
 

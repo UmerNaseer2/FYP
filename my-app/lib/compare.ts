@@ -99,6 +99,30 @@ const TABLE_MATCH_POSSIBLE_THRESHOLD = 55;
 const COLUMN_MATCH_ACCEPT_THRESHOLD = 50;
 const COLUMN_MATCH_POSSIBLE_THRESHOLD = 40;
 
+// Minimum table-name similarity required to AUTO-ACCEPT a non-exact table match.
+// Structural signals alone (columns 55 + constraints 15) can clear the 70-point
+// accept threshold with near-zero name similarity, which auto-emitted a false
+// `ALTER TABLE … RENAME TO` for two unrelated tables (issue #7). Below the floor a
+// structurally-similar pair is demoted to a review candidate instead of an
+// automatic rename. NOTE: stringSimilarity is edit-distance (Levenshtein) based,
+// so an affix rename (users → application_users) scores far below this even though
+// it's a real rename — tableNameRenameGuard handles that via substring containment.
+const TABLE_NAME_SIMILARITY_FLOOR = 0.3;
+
+// Guard deciding whether a structurally-matched table pair may be AUTO-ACCEPTED as
+// a rename. Passes when the names are edit-distance-similar OR when one name is a
+// non-trivial substring of the other (affix rename). Failing pairs are surfaced as
+// review candidates instead of being auto-renamed OR silently dropped to
+// create+drop — the latter would be destructive data loss on apply.
+function tableNameRenameGuard(a: string, b: string): boolean {
+  const na = normalizeSimilarityText(a);
+  const nb = normalizeSimilarityText(b);
+  const shorter = na.length <= nb.length ? na : nb;
+  const longer = na.length <= nb.length ? nb : na;
+  if (shorter.length >= 4 && longer.includes(shorter)) return true;
+  return stringSimilarity(a, b) >= TABLE_NAME_SIMILARITY_FLOOR;
+}
+
 // --- Derived totals (computed once, reused everywhere) ----------------------
 // Changing a weight above automatically updates these.
 const COLUMN_TOTAL_WEIGHT =
@@ -268,15 +292,58 @@ function primaryKeySignature(constraint: ConstraintSnapshot | null): string {
   return constraint ? columnsAsOrderedSignature(constraint.columns) : "";
 }
 
-function foreignKeyLogicalSignature(foreignKey: ForeignKeySnapshot): string {
+// A foreign key that references a table in ITS OWN schema is logically the same
+// FK no matter which schema the pair lives in. But `referencedSchema` carries the
+// literal schema name (e.g. "dev" vs "staging"), so an intra-schema FK compared
+// across two differently-named schemas would look "changed" purely because of the
+// schema label (issue #8). Collapse a self-schema reference to a "<self>" sentinel
+// so those FKs compare equal, while genuine cross-schema references (to a third
+// schema) keep their real name and still compare honestly.
+function foreignKeyLogicalSignature(
+  foreignKey: ForeignKeySnapshot,
+  ownSchema: string
+): string {
+  const referenced = normalizeIdentifier(foreignKey.referencedSchema ?? "");
+  // Sentinel for "references its own schema". The surrounding spaces make it
+  // impossible to collide with any real schema name: normalizeIdentifier() trims
+  // every referencedSchema, so no trimmed identifier can equal " self " — unlike
+  // the earlier "<self>", which is itself a legal (quoted) schema name.
+  const relativeSchema =
+    referenced.length > 0 && referenced === normalizeIdentifier(ownSchema)
+      ? " self "
+      : referenced;
   return [
     columnsAsOrderedSignature(foreignKey.columns),
-    normalizeIdentifier(foreignKey.referencedSchema ?? ""),
+    relativeSchema,
     normalizeIdentifier(foreignKey.referencedTable ?? ""),
     columnsAsOrderedSignature(foreignKey.referencedColumns),
     normalizeIdentifier(foreignKey.onUpdate),
     normalizeIdentifier(foreignKey.onDelete),
   ].join("->");
+}
+
+// The stored `normalizedDefinition` for an FK comes from pg_get_constraintdef,
+// which schema-qualifies the referenced table (e.g. "REFERENCES dev.author(id)").
+// For a self-schema FK that qualifier is just the owning schema's name and makes
+// two logically identical FKs differ across schemas — so strip it. Cross-schema
+// references keep their qualifier.
+function schemaRelativeFkDefinition(
+  foreignKey: ForeignKeySnapshot,
+  ownSchema: string
+): string {
+  const ref = foreignKey.referencedSchema;
+  if (!ref || normalizeIdentifier(ref) !== normalizeIdentifier(ownSchema)) {
+    return foreignKey.normalizedDefinition;
+  }
+  // Strip ONLY the qualifier that directly follows the REFERENCES keyword, so we
+  // can never mangle a table/column name elsewhere in the definition that happens
+  // to contain the schema name. Handle both quoted and unquoted forms; pg doubles
+  // embedded quotes when it renders a quoted identifier, so quote-double first.
+  const unquoted = ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const quoted = ref.replace(/"/g, '""').replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return foreignKey.normalizedDefinition
+    .replace(new RegExp(`(REFERENCES\\s+)"${quoted}"\\.`, "gi"), "$1")
+    .replace(new RegExp(`(REFERENCES\\s+)${unquoted}\\.`, "gi"), "$1");
 }
 
 function definitionSignature(constraint: ConstraintSnapshot): string {
@@ -341,6 +408,15 @@ function columnOrderSimilarity(
   return Math.max(0, 1 - diff * 2);
 }
 
+// A serial/identity column's default is `nextval('<schema>.<seq>'::regclass)`.
+// The sequence name embeds the schema, so it differs across two schemas being
+// compared even when the columns are logically identical — comparing it would
+// manufacture false "default changed" noise. Such columns are excluded from the
+// default diff (their identity is reproduced via GENERATED ... AS IDENTITY).
+function isNextvalDefault(defaultValue: string | null): boolean {
+  return defaultValue !== null && /^\s*nextval\s*\(/i.test(defaultValue);
+}
+
 function compareColumnPair(
   leftTable: TableSnapshot,
   leftColumn: ColumnSnapshot,
@@ -378,9 +454,24 @@ function compareColumnPair(
       `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`
     );
   }
-  if (leftColumn.ordinalPosition !== rightColumn.ordinalPosition) {
-    changes.push(`Order changed from #${leftColumn.ordinalPosition} to #${rightColumn.ordinalPosition}`);
+  // Column default drift. Defaults are already schema-relative (own-schema
+  // qualifier stripped at snapshot time), so a plain text compare is safe. Skip
+  // ONLY when BOTH sides are serial/identity nextval defaults — that pair is pure
+  // sequence-name noise. When exactly one side is serial, it IS a real change
+  // (e.g. source is serial, target has no default) and must be reported.
+  if (!(isNextvalDefault(leftColumn.columnDefault) && isNextvalDefault(rightColumn.columnDefault))) {
+    const leftDefault = leftColumn.columnDefault?.trim() || null;
+    const rightDefault = rightColumn.columnDefault?.trim() || null;
+    if (leftDefault !== rightDefault) {
+      // left→right, matching the nullability/type wording in this same list.
+      changes.push(`Default changed from ${leftDefault ?? "none"} to ${rightDefault ?? "none"}`);
+    }
   }
+  // NOTE: column ORDER is deliberately NOT recorded as a change. PostgreSQL
+  // cannot reorder columns in place, so no migration statement can resolve it —
+  // counting it as a change made a table report differences forever even after a
+  // full sync (phantom drift, issue #18). Order still influences the match SCORE
+  // via columnOrderSimilarity; it just isn't a reported, "fixable" change.
   if (leftColumn.isPrimaryKey !== rightColumn.isPrimaryKey) {
     changes.push("Primary key participation changed");
   }
@@ -441,7 +532,9 @@ function pairwiseAverageBestScore(
 
 function constraintFamilySimilarity(
   leftTable: TableSnapshot,
-  rightTable: TableSnapshot
+  rightTable: TableSnapshot,
+  leftSchema: string,
+  rightSchema: string
 ): number {
   const primaryKeySimilarity = (() => {
     if (!leftTable.primaryKey && !rightTable.primaryKey) return 1;
@@ -455,8 +548,8 @@ function constraintFamilySimilarity(
   );
 
   const foreignKeySimilarity = setSimilarity(
-    leftTable.foreignKeys.map(foreignKeyLogicalSignature),
-    rightTable.foreignKeys.map(foreignKeyLogicalSignature)
+    leftTable.foreignKeys.map((fk) => foreignKeyLogicalSignature(fk, leftSchema)),
+    rightTable.foreignKeys.map((fk) => foreignKeyLogicalSignature(fk, rightSchema))
   );
 
   const checkSimilarity = setSimilarity(
@@ -592,7 +685,9 @@ function compareTablePair(
   leftTable: TableSnapshot,
   rightTable: TableSnapshot,
   leftIncoming: IncomingForeignKeyMap,
-  rightIncoming: IncomingForeignKeyMap
+  rightIncoming: IncomingForeignKeyMap,
+  leftSchema: string,
+  rightSchema: string
 ): {
   score: number;
   breakdown: ScoreBreakdown;
@@ -602,7 +697,7 @@ function compareTablePair(
   // dimensions contributed. `relationships` is skipped when neither table has
   // any FK relationships — see relationshipSimilarity for the rationale.
   const nameRatio          = stringSimilarity(leftTable.name, rightTable.name);
-  const constraintsRatio   = constraintFamilySimilarity(leftTable, rightTable);
+  const constraintsRatio   = constraintFamilySimilarity(leftTable, rightTable, leftSchema, rightSchema);
   const columnsRatio       = pairwiseAverageBestScore(leftTable, rightTable);
   const relationshipsRatio = relationshipSimilarity(leftTable, rightTable, leftIncoming, rightIncoming);
 
@@ -645,58 +740,109 @@ function getBestMatches<TLeft, TRight>(
   possibleThreshold: number,
   kind: "table" | "column",
   getLeftName: (value: TLeft) => string,
-  getRightName: (value: TRight) => string
+  getRightName: (value: TRight) => string,
+  // Optional extra gate a pair must pass to be AUTO-ACCEPTED (not just clear the
+  // score threshold). Used for tables to require a minimum name similarity, so a
+  // pair that is structurally alike but has unrelated names is surfaced as a
+  // rename *candidate* for review instead of being silently auto-renamed
+  // (issue #7). A pair that clears the score but fails this guard falls through
+  // to the `possible` bucket.
+  acceptGuard?: (left: TLeft, right: TRight) => boolean
 ): {
   accepted: Array<{ left: TLeft; right: TRight; score: number; breakdown: ScoreBreakdown }>;
   possible: MatchCandidate[];
   leftOnly: TLeft[];
   rightOnly: TRight[];
 } {
-  const leftBest  = new Map<number, { index: number; score: number; breakdown: ScoreBreakdown }>();
-  const rightBest = new Map<number, { index: number; score: number; breakdown: ScoreBreakdown }>();
-  const matrix    = new Map<string, { score: number; breakdown: ScoreBreakdown }>();
-
+  // Score every pair once.
+  const matrix = new Map<string, { score: number; breakdown: ScoreBreakdown }>();
   for (let leftIndex = 0; leftIndex < leftItems.length; leftIndex += 1) {
     for (let rightIndex = 0; rightIndex < rightItems.length; rightIndex += 1) {
-      const result = computeScore(leftItems[leftIndex], rightItems[rightIndex]);
-      matrix.set(`${leftIndex}:${rightIndex}`, result);
-
-      const currentLeft = leftBest.get(leftIndex);
-      if (!currentLeft || result.score > currentLeft.score) {
-        leftBest.set(leftIndex, { index: rightIndex, score: result.score, breakdown: result.breakdown });
-      }
-
-      const currentRight = rightBest.get(rightIndex);
-      if (!currentRight || result.score > currentRight.score) {
-        rightBest.set(rightIndex, { index: leftIndex, score: result.score, breakdown: result.breakdown });
-      }
+      matrix.set(`${leftIndex}:${rightIndex}`, computeScore(leftItems[leftIndex], rightItems[rightIndex]));
     }
   }
 
-  const accepted: Array<{ left: TLeft; right: TRight; score: number; breakdown: ScoreBreakdown }> = [];
-  const possible: MatchCandidate[] = [];
   const matchedLeft  = new Set<number>();
   const matchedRight = new Set<number>();
 
-  for (const [leftIndex, match] of leftBest.entries()) {
-    const reverse = rightBest.get(match.index);
-    if (!reverse || reverse.index !== leftIndex) continue;
+  // Pairs the acceptGuard has rejected. They must be EXCLUDED from subsequent
+  // matching rounds: a high-scoring but guard-failing pair (e.g. a structural
+  // clone with an unrelated name) would otherwise stay each side's mutual-best
+  // every round and permanently shadow the real rename, which then gets dropped to
+  // create+drop — destructive data loss. Blocking them lets each side fall through
+  // to its next-best legitimate partner; they still surface as candidates in the
+  // final unfiltered pass.
+  const blocked = new Set<string>();
 
-    if (match.score >= acceptThreshold) {
-      accepted.push({ left: leftItems[leftIndex], right: rightItems[match.index], score: match.score, breakdown: match.breakdown });
-      matchedLeft.add(leftIndex);
-      matchedRight.add(match.index);
-      continue;
+  // Compute the mutual-best pairing over the items not yet matched. A pair is
+  // mutual-best when each side's highest-scoring remaining partner is the other.
+  // When excludeBlocked is set, guard-rejected pairs are ignored so they don't
+  // shadow a side's next-best partner.
+  function mutualBestPairs(excludeBlocked: boolean): Array<{ leftIndex: number; rightIndex: number; score: number; breakdown: ScoreBreakdown }> {
+    const leftBest  = new Map<number, { index: number; score: number; breakdown: ScoreBreakdown }>();
+    const rightBest = new Map<number, { index: number; score: number; breakdown: ScoreBreakdown }>();
+    for (let leftIndex = 0; leftIndex < leftItems.length; leftIndex += 1) {
+      if (matchedLeft.has(leftIndex)) continue;
+      for (let rightIndex = 0; rightIndex < rightItems.length; rightIndex += 1) {
+        if (matchedRight.has(rightIndex)) continue;
+        if (excludeBlocked && blocked.has(`${leftIndex}:${rightIndex}`)) continue;
+        const result = matrix.get(`${leftIndex}:${rightIndex}`)!;
+        const bl = leftBest.get(leftIndex);
+        if (!bl || result.score > bl.score) leftBest.set(leftIndex, { index: rightIndex, score: result.score, breakdown: result.breakdown });
+        const br = rightBest.get(rightIndex);
+        if (!br || result.score > br.score) rightBest.set(rightIndex, { index: leftIndex, score: result.score, breakdown: result.breakdown });
+      }
     }
+    const pairs: Array<{ leftIndex: number; rightIndex: number; score: number; breakdown: ScoreBreakdown }> = [];
+    for (const [leftIndex, best] of leftBest.entries()) {
+      const reverse = rightBest.get(best.index);
+      if (reverse && reverse.index === leftIndex) {
+        pairs.push({ leftIndex, rightIndex: best.index, score: best.score, breakdown: best.breakdown });
+      }
+    }
+    return pairs;
+  }
 
-    if (match.score >= possibleThreshold) {
+  const accepted: Array<{ left: TLeft; right: TRight; score: number; breakdown: ScoreBreakdown }> = [];
+
+  // Iterate over blocked-excluded mutual-best pairs: accept those clearing the
+  // threshold + guard; record guard failures in `blocked`. A single pass collapses
+  // equal twins onto one partner (leaving the other to a spurious create/drop,
+  // issue #14) and lets a blocked clone shadow a real rename; repeating — with
+  // blocked pairs removed — lets each side reach its own legitimate match.
+  // Terminates because every round either matches ≥1 pair or newly blocks ≥1
+  // pair, both of which strictly shrink the remaining search space.
+  for (;;) {
+    const pairs = mutualBestPairs(true);
+    let acceptedThisRound = 0;
+    let blockedThisRound = 0;
+    for (const pair of pairs) {
+      if (pair.score < acceptThreshold) continue;
+      if (acceptGuard && !acceptGuard(leftItems[pair.leftIndex], rightItems[pair.rightIndex])) {
+        const key = `${pair.leftIndex}:${pair.rightIndex}`;
+        if (!blocked.has(key)) { blocked.add(key); blockedThisRound += 1; }
+        continue;
+      }
+      accepted.push({ left: leftItems[pair.leftIndex], right: rightItems[pair.rightIndex], score: pair.score, breakdown: pair.breakdown });
+      matchedLeft.add(pair.leftIndex);
+      matchedRight.add(pair.rightIndex);
+      acceptedThisRound += 1;
+    }
+    if (acceptedThisRound === 0 && blockedThisRound === 0) break;
+  }
+
+  // Final pass WITHOUT blocking, so guard-rejected pairs still surface as review
+  // candidates. The tables themselves stay in leftOnly/rightOnly.
+  const possible: MatchCandidate[] = [];
+  for (const pair of mutualBestPairs(false)) {
+    if (pair.score >= possibleThreshold) {
       possible.push({
         kind,
-        leftName: getLeftName(leftItems[leftIndex]),
-        rightName: getRightName(rightItems[match.index]),
-        score: match.score,
+        leftName: getLeftName(leftItems[pair.leftIndex]),
+        rightName: getRightName(rightItems[pair.rightIndex]),
+        score: pair.score,
         accepted: false,
-        breakdown: match.breakdown,
+        breakdown: pair.breakdown,
       });
     }
   }
@@ -837,23 +983,40 @@ function compareUniqueConstraints(left: TableSnapshot, right: TableSnapshot): Co
   return diffs;
 }
 
-function compareForeignKeys(left: TableSnapshot, right: TableSnapshot): ConstraintDiff[] {
+function compareForeignKeys(
+  left: TableSnapshot,
+  right: TableSnapshot,
+  leftSchema: string,
+  rightSchema: string
+): ConstraintDiff[] {
   const diffs: ConstraintDiff[] = [];
   const rightByName      = new Map(right.foreignKeys.map((fk) => [normalizeIdentifier(fk.name), fk]));
-  const rightBySignature = new Map(right.foreignKeys.map((fk) => [foreignKeyLogicalSignature(fk), fk]));
+  const rightBySignature = new Map(right.foreignKeys.map((fk) => [foreignKeyLogicalSignature(fk, rightSchema), fk]));
   const matchedRight     = new Set<string>();
 
   for (const foreignKey of left.foreignKeys) {
     const byName = rightByName.get(normalizeIdentifier(foreignKey.name));
     if (byName) {
       matchedRight.add(byName.name);
-      if (foreignKeyLogicalSignature(foreignKey) !== foreignKeyLogicalSignature(byName) || foreignKey.normalizedDefinition !== byName.normalizedDefinition) {
+      if (
+        foreignKeyLogicalSignature(foreignKey, leftSchema) !== foreignKeyLogicalSignature(byName, rightSchema) ||
+        schemaRelativeFkDefinition(foreignKey, leftSchema) !== schemaRelativeFkDefinition(byName, rightSchema)
+      ) {
         diffs.push({ kind: "FOREIGN KEY", status: "changedDefinition", summary: `Foreign key ${foreignKey.name} changed definition.`, leftName: foreignKey.name, rightName: byName.name });
       }
       continue;
     }
-    const bySignature = rightBySignature.get(foreignKeyLogicalSignature(foreignKey));
-    if (bySignature) { matchedRight.add(bySignature.name); continue; }
+    const bySignature = rightBySignature.get(foreignKeyLogicalSignature(foreignKey, leftSchema));
+    if (bySignature) {
+      matchedRight.add(bySignature.name);
+      // The logical signature omits DEFERRABLE / MATCH mode, so a signature match
+      // alone can hide a real definition difference. Confirm with the schema-
+      // relative definition and report a change if they still differ.
+      if (schemaRelativeFkDefinition(foreignKey, leftSchema) !== schemaRelativeFkDefinition(bySignature, rightSchema)) {
+        diffs.push({ kind: "FOREIGN KEY", status: "changedDefinition", summary: `Foreign key ${foreignKey.name} changed definition.`, leftName: foreignKey.name, rightName: bySignature.name });
+      }
+      continue;
+    }
     diffs.push({ kind: "FOREIGN KEY", status: "onlyA", summary: `Foreign key ${foreignKey.name} exists only in ${left.name}.`, leftName: foreignKey.name });
   }
 
@@ -899,11 +1062,16 @@ function compareDefinitionConstraints(
   return diffs;
 }
 
-function compareConstraints(left: TableSnapshot, right: TableSnapshot): ConstraintDiff[] {
+function compareConstraints(
+  left: TableSnapshot,
+  right: TableSnapshot,
+  leftSchema: string,
+  rightSchema: string
+): ConstraintDiff[] {
   return [
     ...comparePrimaryKey(left, right),
     ...compareUniqueConstraints(left, right),
-    ...compareForeignKeys(left, right),
+    ...compareForeignKeys(left, right, leftSchema, rightSchema),
     ...compareDefinitionConstraints("CHECK",   left.checkConstraints,   right.checkConstraints,   left.name, right.name),
     ...compareDefinitionConstraints("EXCLUDE", left.excludeConstraints, right.excludeConstraints, left.name, right.name),
   ];
@@ -918,10 +1086,12 @@ function compareMatchedTables(
   right: TableSnapshot,
   score: number,
   exact: boolean,
-  breakdown: ScoreBreakdown
+  breakdown: ScoreBreakdown,
+  leftSchema: string,
+  rightSchema: string
 ): TableMatch {
   const columnResult    = compareColumns(left, right);
-  const constraintDiffs = compareConstraints(left, right);
+  const constraintDiffs = compareConstraints(left, right, leftSchema, rightSchema);
 
   const changedSections = new Set<string>();
   if (columnResult.columnsOnlyInA.length > 0 || columnResult.columnsOnlyInB.length > 0 || columnResult.columnMatches.some((m) => m.changes.length > 0)) changedSections.add("Columns");
@@ -968,9 +1138,9 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
     const rightTable = rightByName.get(normalizeIdentifier(leftTable.name));
     if (!rightTable) continue;
 
-    const scoreResult = compareTablePair(leftTable, rightTable, leftIncoming, rightIncoming);
+    const scoreResult = compareTablePair(leftTable, rightTable, leftIncoming, rightIncoming, left.schema, right.schema);
     matchedRightNames.add(normalizeIdentifier(rightTable.name));
-    matchedTables.push(compareMatchedTables(leftTable, rightTable, scoreResult.score, true, scoreResult.breakdown));
+    matchedTables.push(compareMatchedTables(leftTable, rightTable, scoreResult.score, true, scoreResult.breakdown, left.schema, right.schema));
   }
 
   // 2. Similarity matching on unmatched tables
@@ -980,16 +1150,19 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
   const similarityResults = getBestMatches(
     leftForSimilarity,
     rightForSimilarity,
-    (leftTable, rightTable) => compareTablePair(leftTable, rightTable, leftIncoming, rightIncoming),
+    (leftTable, rightTable) => compareTablePair(leftTable, rightTable, leftIncoming, rightIncoming, left.schema, right.schema),
     TABLE_MATCH_ACCEPT_THRESHOLD,
     TABLE_MATCH_POSSIBLE_THRESHOLD,
     "table",
     (t) => t.name,
-    (t) => t.name
+    (t) => t.name,
+    // Auto-accept a rename only when the names are alike or one contains the
+    // other; otherwise surface it as a review candidate (issue #7).
+    (leftTable, rightTable) => tableNameRenameGuard(leftTable.name, rightTable.name)
   );
 
   for (const match of similarityResults.accepted) {
-    matchedTables.push(compareMatchedTables(match.left, match.right, match.score, false, match.breakdown));
+    matchedTables.push(compareMatchedTables(match.left, match.right, match.score, false, match.breakdown, left.schema, right.schema));
   }
 
   const changedTables        = matchedTables.filter((t) => t.hasChanges).length;

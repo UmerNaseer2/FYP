@@ -14,6 +14,7 @@ export type SqlStatementKind =
   | "DROP_COLUMN"
   | "ALTER_COLUMN_TYPE"
   | "ALTER_COLUMN_NULLABILITY"
+  | "ALTER_COLUMN_DEFAULT"
   | "ADD_CONSTRAINT"
   | "DROP_CONSTRAINT"
   | "RENAME_TABLE"
@@ -76,7 +77,14 @@ function buildColumnDef(col: ColumnSnapshot): string {
 // ALTER TABLE ADD CONSTRAINT statements in Phase 4 so that the order in which
 // tables appear in the script doesn't cause "referenced table doesn't exist yet"
 // errors.
-function buildCreateTable(table: TableSnapshot, schemaName: string): string {
+//
+// The table name is written UNQUALIFIED (no schema prefix). The apply route runs
+// `SET LOCAL search_path TO <targetSchema>` (target-only) before executing, so an
+// unqualified name always resolves to the schema being applied to — at the
+// original apply AND when the stored script is later replayed onto a different
+// schema by Version Sync. A hard-coded schema qualifier would ignore search_path
+// and silently hit the original schema on replay.
+function buildCreateTable(table: TableSnapshot): string {
   const lines: string[] = table.columns.map((col) => `  ${buildColumnDef(col)}`);
 
   if (table.primaryKey) {
@@ -93,28 +101,30 @@ function buildCreateTable(table: TableSnapshot, schemaName: string): string {
   }
 
   return (
-    `CREATE TABLE IF NOT EXISTS ${q(schemaName)}.${q(table.name)} (\n` +
+    `CREATE TABLE IF NOT EXISTS ${q(table.name)} (\n` +
     lines.join(",\n") +
     `\n);`
   );
 }
 
 // Build a FK definition from structured snapshot fields instead of using the
-// raw pg_get_constraintdef string. This lets us rewrite the referenced schema:
-// if the FK pointed at sourceSchema (A), we redirect it to targetSchema (B)
-// so the constraint is valid in its new home.
-function buildFkDef(
-  fk: ForeignKeySnapshot,
-  sourceSchema: string,
-  targetSchema: string
-): string {
+// raw pg_get_constraintdef string.
+function buildFkDef(fk: ForeignKeySnapshot, sourceSchema: string): string {
   const localCols = fk.columns.map(q).join(", ");
-  const refSchema =
-    fk.referencedSchema === sourceSchema ? targetSchema : (fk.referencedSchema ?? targetSchema);
   const refTable = fk.referencedTable ?? "";
   const refCols = fk.referencedColumns.map(q).join(", ");
 
-  let def = `FOREIGN KEY (${localCols}) REFERENCES ${q(refSchema)}.${q(refTable)} (${refCols})`;
+  // A SELF-schema reference (points at the source schema, or unknown) is written
+  // UNQUALIFIED so search_path scopes it to whatever schema the script is applied
+  // to — including a later Version Sync replay onto a different schema (see
+  // buildCreateTable). A GENUINE cross-schema reference — any other named schema,
+  // even one that happens to share the target schema's name — KEEPS its explicit
+  // qualifier so it stays pinned to that schema on replay.
+  const refPrefix =
+    fk.referencedSchema === sourceSchema || fk.referencedSchema == null
+      ? ""
+      : `${q(fk.referencedSchema)}.`;
+  let def = `FOREIGN KEY (${localCols}) REFERENCES ${refPrefix}${q(refTable)} (${refCols})`;
   if (fk.onDelete !== "NO ACTION") def += ` ON DELETE ${fk.onDelete}`;
   if (fk.onUpdate !== "NO ACTION") def += ` ON UPDATE ${fk.onUpdate}`;
   return def;
@@ -153,12 +163,17 @@ function lookupConstraintDef(
 
 function alterStatementsForMatch(
   match: TableMatch,
-  sourceSchema: string,
-  targetSchema: string
-): SqlStatement[] {
+  sourceSchema: string
+): { stmts: SqlStatement[]; fkStmts: SqlStatement[] } {
   const stmts: SqlStatement[] = [];
+  // New FK ADD CONSTRAINTs are collected here and returned separately so the
+  // caller can defer them to Phase 4 — AFTER every table's columns exist. An FK
+  // added inline could reference a column that a later-processed table hasn't
+  // gained yet, aborting the migration (issue #23).
+  const fkStmts: SqlStatement[] = [];
   // After Phase 1 renames, the table in B carries A's name. Use that for all
   // subsequent ALTER TABLE statements so they reference the correct name.
+  // Table names are UNQUALIFIED — search_path scopes them (see buildCreateTable).
   const tName = match.left.name;
 
   // ── 3a. Column renames ────────────────────────────────────────────────────
@@ -166,7 +181,7 @@ function alterStatementsForMatch(
   for (const colMatch of match.columnMatches) {
     if (!colMatch.exact) {
       stmts.push({
-        sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} RENAME COLUMN ${q(colMatch.right.name)} TO ${q(colMatch.left.name)};`,
+        sql: `ALTER TABLE ${q(tName)} RENAME COLUMN ${q(colMatch.right.name)} TO ${q(colMatch.left.name)};`,
         description: `Rename column "${colMatch.right.name}" → "${colMatch.left.name}" in "${tName}" (${colMatch.score}% match — verify this is a rename before running)`,
         kind: "RENAME_COLUMN",
         severity: "breaking",
@@ -182,7 +197,7 @@ function alterStatementsForMatch(
     // run on an empty table.
     const risky = !col.nullable && col.columnDefault === null;
     stmts.push({
-      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ADD COLUMN ${buildColumnDef(col)};`,
+      sql: `ALTER TABLE ${q(tName)} ADD COLUMN ${buildColumnDef(col)};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
         (risky ? " — WARNING: NOT NULL with no default, will fail on a non-empty table" : ""),
@@ -192,7 +207,7 @@ function alterStatementsForMatch(
     });
   }
 
-  // ── 3c. Type and nullability changes on matched columns ───────────────────
+  // ── 3c. Type, nullability and default changes on matched columns ──────────
   for (const colMatch of match.columnMatches) {
     // After a rename (3a), this column is now called colMatch.left.name in B.
     const colName = colMatch.left.name;
@@ -229,7 +244,7 @@ function alterStatementsForMatch(
       }
 
       stmts.push({
-        sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} TYPE ${colMatch.left.typeDisplay}${usingSuffix};`,
+        sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} TYPE ${colMatch.left.typeDisplay}${usingSuffix};`,
         description,
         kind: "ALTER_COLUMN_TYPE",
         severity,
@@ -240,17 +255,58 @@ function alterStatementsForMatch(
     if (colMatch.left.nullable !== colMatch.right.nullable) {
       if (!colMatch.left.nullable) {
         stmts.push({
-          sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} SET NOT NULL;`,
-          description: `Enforce NOT NULL on "${colName}" in "${tName}"`,
+          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET NOT NULL;`,
+          description: `Enforce NOT NULL on "${colName}" in "${tName}" — WARNING: will fail if existing rows contain NULLs; backfill first`,
           kind: "ALTER_COLUMN_NULLABILITY",
           severity: "breaking",
           tableName: tName,
         });
       } else {
         stmts.push({
-          sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ALTER COLUMN ${q(colName)} DROP NOT NULL;`,
+          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP NOT NULL;`,
           description: `Allow nulls on "${colName}" in "${tName}"`,
           kind: "ALTER_COLUMN_NULLABILITY",
+          severity: "safe",
+          tableName: tName,
+        });
+      }
+    }
+
+    // Default value change. Defaults are schema-relative here (own-schema
+    // qualifier stripped at snapshot time), so SET DEFAULT resolves against the
+    // target via search_path.
+    const leftSerial = isNextvalDefault(colMatch.left.columnDefault);
+    const rightSerial = isNextvalDefault(colMatch.right.columnDefault);
+    const leftDefault = colMatch.left.columnDefault?.trim() || null;
+    const rightDefault = colMatch.right.columnDefault?.trim() || null;
+    if (leftSerial && rightSerial) {
+      // Both serial/identity — sequence-name noise only, nothing to emit.
+    } else if (leftSerial) {
+      // Source is serial/identity, target isn't. Synthesizing a sequence + default
+      // + ownership safely is out of scope, so surface it for manual work rather
+      // than emit a SET DEFAULT that points at a sequence the target may not have.
+      stmts.push({
+        sql: `-- MANUAL: "${colName}" in "${tName}" is serial/identity in the source (default ${leftDefault}); add a matching sequence or IDENTITY by hand.`,
+        description: `"${colName}" needs a serial/identity default added manually`,
+        kind: "ALTER_COLUMN_DEFAULT",
+        severity: "info",
+        tableName: tName,
+      });
+    } else if (leftDefault !== rightDefault) {
+      // Neither is source-serial (target may be serial → this replaces/drops it).
+      if (leftDefault === null) {
+        stmts.push({
+          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP DEFAULT;`,
+          description: `Drop default on "${colName}" in "${tName}"`,
+          kind: "ALTER_COLUMN_DEFAULT",
+          severity: "safe",
+          tableName: tName,
+        });
+      } else {
+        stmts.push({
+          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET DEFAULT ${leftDefault};`,
+          description: `Set default on "${colName}" in "${tName}" to ${leftDefault}`,
+          kind: "ALTER_COLUMN_DEFAULT",
           severity: "safe",
           tableName: tName,
         });
@@ -270,7 +326,7 @@ function alterStatementsForMatch(
     const constraintName = diff.rightName ?? "";
     if (!constraintName) continue;
     stmts.push({
-      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} DROP CONSTRAINT IF EXISTS ${q(constraintName)};`,
+      sql: `ALTER TABLE ${q(tName)} DROP CONSTRAINT IF EXISTS ${q(constraintName)};`,
       description: `Drop ${diff.kind} "${constraintName}" from "${tName}"`,
       kind: "DROP_CONSTRAINT",
       severity: diff.kind === "FOREIGN KEY" || diff.kind === "PRIMARY KEY" ? "breaking" : "info",
@@ -278,7 +334,8 @@ function alterStatementsForMatch(
     });
   }
 
-  // Add order: non-FKs first, then FKs (FKs need all referenced tables to exist).
+  // Add order: non-FKs here; FK ADDs are deferred into fkStmts (Phase 4) so they
+  // run after every table's ADD COLUMN across ALL matched/created tables.
   const toAdd = match.constraintDiffs.filter(
     (d) => d.status === "onlyA" || d.status === "changedDefinition"
   );
@@ -291,7 +348,7 @@ function alterStatementsForMatch(
     const found = lookupConstraintDef(match.left, diff.kind, cName);
     if (!found) continue;
     stmts.push({
-      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ADD CONSTRAINT ${q(found.name)} ${found.definition};`,
+      sql: `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(found.name)} ${found.definition};`,
       description: `Add ${diff.kind} "${found.name}" to "${tName}"`,
       kind: "ADD_CONSTRAINT",
       severity: diff.kind === "PRIMARY KEY" ? "breaking" : "info",
@@ -303,8 +360,8 @@ function alterStatementsForMatch(
     const fkName = diff.leftName ?? "";
     const fk = match.left.foreignKeys.find((f) => f.name === fkName);
     if (!fk) continue;
-    stmts.push({
-      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema, targetSchema)};`,
+    fkStmts.push({
+      sql: `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`,
       description: `Add FK "${fk.name}" to "${tName}"`,
       kind: "ADD_CONSTRAINT",
       severity: "info",
@@ -318,7 +375,7 @@ function alterStatementsForMatch(
   // a dependent index/constraint and stays idempotent on re-run.
   for (const col of match.columnsOnlyInB) {
     stmts.push({
-      sql: `ALTER TABLE ${q(targetSchema)}.${q(tName)} DROP COLUMN IF EXISTS ${q(col.name)} CASCADE;`,
+      sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(col.name)} CASCADE;`,
       description: `Drop column "${col.name}" from "${tName}" — WARNING: removes the column and all its data`,
       kind: "DROP_COLUMN",
       severity: "breaking",
@@ -326,7 +383,7 @@ function alterStatementsForMatch(
     });
   }
 
-  return stmts;
+  return { stmts, fkStmts };
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +408,6 @@ function alterStatementsForMatch(
  */
 export function generateMigration(report: CompareReport): MigrationScript {
   const sourceSchema = report.left.schema;
-  const targetSchema = report.right.schema;
   const statements: SqlStatement[] = [];
   // DROP TABLE / DROP COLUMN are now generated (see Phases 3e and 5), so there
   // is nothing the migration silently leaves out. Kept as an extension point.
@@ -363,7 +419,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
   for (const match of report.matchedTables) {
     if (!match.exact) {
       statements.push({
-        sql: `ALTER TABLE ${q(targetSchema)}.${q(match.right.name)} RENAME TO ${q(match.left.name)};`,
+        sql: `ALTER TABLE ${q(match.right.name)} RENAME TO ${q(match.left.name)};`,
         description: `Rename table "${match.right.name}" → "${match.left.name}" (${match.score}% similarity — verify this is a rename and not two unrelated tables)`,
         kind: "RENAME_TABLE",
         severity: "breaking",
@@ -379,7 +435,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
 
   for (const table of report.tablesOnlyInA) {
     statements.push({
-      sql: buildCreateTable(table, targetSchema),
+      sql: buildCreateTable(table),
       description: `Create table "${table.name}" (exists in A, missing from B)`,
       kind: "CREATE_TABLE",
       severity: "info",
@@ -388,7 +444,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
 
     for (const fk of table.foreignKeys) {
       fkStatements.push({
-        sql: `ALTER TABLE ${q(targetSchema)}.${q(table.name)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema, targetSchema)};`,
+        sql: `ALTER TABLE ${q(table.name)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`,
         description: `Add FK "${fk.name}" to "${table.name}"`,
         kind: "ADD_CONSTRAINT",
         severity: "info",
@@ -398,12 +454,16 @@ export function generateMigration(report: CompareReport): MigrationScript {
   }
 
   // ── Phase 3: Alter matched tables ─────────────────────────────────────────
+  // Each match yields immediate ALTERs plus any new-FK ADDs, which are deferred
+  // into the Phase 4 bucket so they run after every table's columns exist.
   for (const match of report.matchedTables) {
-    statements.push(...alterStatementsForMatch(match, sourceSchema, targetSchema));
+    const { stmts, fkStmts } = alterStatementsForMatch(match, sourceSchema);
+    statements.push(...stmts);
+    fkStatements.push(...fkStmts);
   }
 
-  // ── Phase 4: FK constraints for newly created tables ──────────────────────
-  // All tables now exist, so FK references are safe to add.
+  // ── Phase 4: FK constraints (new tables + matched tables) ─────────────────
+  // All tables exist and all columns have been added, so every FK is safe now.
   statements.push(...fkStatements);
 
   // ── Phase 5: Drop tables that exist in B but not in A ─────────────────────
@@ -413,7 +473,7 @@ export function generateMigration(report: CompareReport): MigrationScript {
   // remaining dependents; IF EXISTS keeps it idempotent on re-run.
   for (const table of report.tablesOnlyInB) {
     statements.push({
-      sql: `DROP TABLE IF EXISTS ${q(targetSchema)}.${q(table.name)} CASCADE;`,
+      sql: `DROP TABLE IF EXISTS ${q(table.name)} CASCADE;`,
       description: `Drop table "${table.name}" (exists in B, not in A) — WARNING: removes the table and all its data`,
       kind: "DROP_TABLE",
       severity: "breaking",

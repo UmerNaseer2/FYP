@@ -1,3 +1,4 @@
+import type { ClientConfig } from "pg";
 import { fetchSchemaSnapshot, type SchemaSnapshot } from "./postgres";
 import { buildPgConfig } from "./connection-config";
 import { compareSchemas } from "./compare";
@@ -233,6 +234,112 @@ export async function findTrackedSchema(
     headVersion: r.head_version,
     driftStatus: r.drift_status,
   };
+}
+
+/**
+ * Advance a tracked schema's lineage after a sanctioned deploy/apply.
+ *
+ * Without this, a migration applied through the tool's own pipeline writes only
+ * to the target's `script_patch` ledger and NEVER updates `lineage_migrations` —
+ * so the next drift check compares the live (just-changed) structure against the
+ * stale pre-deploy baseline and reports the tool's own deploy as "drift"
+ * (issue #12). Here we capture the post-apply structure as the new expected
+ * baseline and append a lineage node + in-sync marker.
+ *
+ * Best-effort by contract: the migration has already committed on the target, so
+ * callers MUST treat a thrown error / `advanced:false` as non-fatal and still
+ * report the apply as successful. Returns `advanced:false` (no work) when the
+ * (connection, schema) pair isn't tracked — untracked schemas have no lineage.
+ */
+export async function recordAppliedMigrationToLineage(params: {
+  connectionId: number;
+  schemaName: string;
+  targetConfig: ClientConfig;
+  changeLevel: ChangeLevel;
+  name: string;
+  sqlRef: string | null;
+}): Promise<{ advanced: boolean; reason?: string; seq?: number; version?: string }> {
+  const { connectionId, schemaName, targetConfig, changeLevel, name, sqlRef } = params;
+  await ensureLineageTables();
+
+  // Only tracked schemas have a lineage to advance. Cheap metadata lookup first,
+  // so an apply to an untracked schema skips the extra introspection round-trip.
+  const tracked = await findTrackedSchema(connectionId, schemaName);
+  if (!tracked) return { advanced: false, reason: "not tracked" };
+  const trackedSchemaId = tracked.trackedSchemaId;
+
+  // Only auto-advance when the schema is KNOWN CLEAN: last recorded status is
+  // 'in_sync', or null (freshly tracked, baseline just captured). Any other status
+  // ('drifted', or 'unreachable' — a check that couldn't confirm the state) means
+  // we can't be sure the live structure is only the sanctioned change, so adopting
+  // it as the new baseline could silently absorb unreviewed/unauthorized drift and
+  // mark it in_sync forever. Leave it visible instead; the deploy still applied.
+  if (tracked.driftStatus !== null && tracked.driftStatus !== "in_sync") {
+    return { advanced: false, reason: `not auto-advancing: last drift status is '${tracked.driftStatus}', not in_sync` };
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Serialize lineage writes for this schema so a deploy and a concurrent
+    // rebaseline can't both compute the same next seq and collide on the
+    // UNIQUE (tracked_schema_id, seq) constraint.
+    await client.query(`SELECT pg_advisory_xact_lock($1)`, [trackedSchemaId]);
+
+    // Capture the post-apply structure UNDER the lock, so snapshot recency is
+    // monotonic with seq allocation: two concurrent applies can't interleave such
+    // that a lower-seq entry ends up holding a newer snapshot than HEAD.
+    const live = await fetchSchemaSnapshot(targetConfig, schemaName);
+    if (!live.ok) {
+      await client.query("ROLLBACK");
+      return { advanced: false, reason: `snapshot failed: ${live.error}` };
+    }
+    const tableCount = live.data.tables.length;
+
+    const head = await client.query<{ version: string | null; seq: number | null }>(
+      `SELECT version, seq FROM lineage_migrations
+       WHERE tracked_schema_id = $1 ORDER BY seq DESC LIMIT 1`,
+      [trackedSchemaId]
+    );
+    const headVersion = head.rows[0]?.version ?? null;
+    const headSeq = head.rows[0]?.seq ?? 0;
+    const nextSeq = headSeq + 1;
+    const nextVersion = getNextLineageVersion(headVersion, changeLevel);
+
+    const snap = await client.query<{ id: number }>(
+      `INSERT INTO snapshots (tracked_schema_id, snapshot, table_count, label)
+       VALUES ($1, $2::jsonb, $3, 'deploy') RETURNING id`,
+      [trackedSchemaId, JSON.stringify(live.data), tableCount]
+    );
+    const snapshotId = snap.rows[0].id;
+
+    await client.query(
+      `INSERT INTO lineage_migrations
+         (tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [trackedSchemaId, nextSeq, name.slice(0, 200), changeLevel, nextVersion, sqlRef, snapshotId]
+    );
+
+    const counts = { tablesAdded: 0, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 0 };
+    await client.query(
+      `INSERT INTO drift_events (tracked_schema_id, status, summary, detail, baseline_snapshot_id)
+       VALUES ($1, 'in_sync', $2, $3::jsonb, $4)`,
+      [
+        trackedSchemaId,
+        `Deploy applied — ${buildDriftSummary(nextVersion, counts)}`,
+        JSON.stringify(counts),
+        snapshotId,
+      ]
+    );
+
+    await client.query("COMMIT");
+    return { advanced: true, seq: nextSeq, version: nextVersion };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // ── Schema-detail read model (Phase 8 — /schemas/[id]) ─────────────────────

@@ -53,6 +53,26 @@ function normalizeDefinition(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+// pg_get_expr renders a column DEFAULT with every referenced object schema-
+// qualified when the object's schema isn't on the introspection session's
+// search_path — which it never is here. So `'active'::order_status`,
+// `gen_code()`, and `nextval('s')` come back as `'active'::<schema>.order_status`,
+// `<schema>.gen_code()`, `nextval('<schema>.s'::regclass)`. That qualifier is
+// pure noise when comparing two schemas (the same logical default differs only by
+// schema name), and if emitted into a migration it binds the target column to the
+// SOURCE schema's object. Strip the column's OWN schema qualifier so defaults are
+// stored schema-relative; genuine cross-schema references (a different schema)
+// keep their qualifier. Only strips a qualifier that directly precedes an
+// identifier, in both quoted and unquoted form (pg doubles embedded quotes).
+export function stripSchemaFromExpr(expr: string | null, schema: string): string | null {
+  if (expr === null || !schema) return expr;
+  const unquoted = schema.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const quoted = schema.replace(/"/g, '""').replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return expr
+    .replace(new RegExp(`(^|[^\\w"])"${quoted}"\\.`, "g"), "$1")
+    .replace(new RegExp(`(^|[^\\w"])${unquoted}\\.`, "g"), "$1");
+}
+
 function coerceTextArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
@@ -336,7 +356,7 @@ export async function fetchSchemaSnapshot(
          JOIN pg_class cls
            ON cls.relnamespace = n.oid
           AND cls.relname = c.table_name
-          AND cls.relkind = 'r'
+          AND cls.relkind IN ('r', 'p')
          JOIN pg_attribute a
            ON a.attrelid = cls.oid
           AND a.attname = c.column_name
@@ -429,9 +449,14 @@ export async function fetchSchemaSnapshot(
       table.columns.push({
         name: row.column_name,
         ordinalPosition: row.ordinal_position,
-        typeDisplay: row.type_display,
+        // format_type() schema-qualifies a user-defined type (enum/domain/composite)
+        // whose schema isn't on the introspection search_path, so `dev.order_status`
+        // would falsely differ from `staging.order_status` and a generated ALTER
+        // would pin the column to the SOURCE schema's type. Strip the own-schema
+        // qualifier so types are schema-relative (built-in types are never qualified).
+        typeDisplay: stripSchemaFromExpr(row.type_display, schemaName) ?? row.type_display,
         nullable: row.is_nullable,
-        columnDefault: row.column_default ?? null,
+        columnDefault: stripSchemaFromExpr(row.column_default ?? null, schemaName),
         isPrimaryKey: false,
         uniqueConstraintNames: [],
         foreignKeyConstraintNames: [],
@@ -445,7 +470,11 @@ export async function fetchSchemaSnapshot(
       }
 
       const columns = coerceTextArray(row.columns);
-      const definition = row.definition;
+      // pg_get_constraintdef schema-qualifies user types/functions and the FK's
+      // referenced table. Strip the own-schema qualifier so a CHECK/EXCLUDE/FK is
+      // compared and EMITTED schema-relative (else it falsely differs across two
+      // schemas and pins the constraint to the source schema on apply/replay).
+      const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
       const normalizedDefinition = normalizeDefinition(definition);
 
       if (row.contype === "p") {

@@ -18,7 +18,6 @@ export type GitHubScript = {
   script_name: string;
   version: string;
   path: string;
-  download_url: string;
   sql_content: string;
 };
 
@@ -134,7 +133,10 @@ export async function GET() {
                     script_name: scriptDir.name,
                     version,
                     path: file.path,
-                    download_url: file.download_url,
+                    // NOTE: download_url is deliberately NOT returned. For a private
+                    // registry repo, GitHub's download_url is a pre-authenticated
+                    // raw URL that would let an (unauthenticated) client read the
+                    // private file directly. The client already gets sql_content.
                     sql_content,
                   });
                 })

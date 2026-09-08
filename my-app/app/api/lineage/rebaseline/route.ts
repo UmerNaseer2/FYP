@@ -101,12 +101,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── 3. Current HEAD (for the next seq/version + change-level classification) ─
-  let headVersion: string | null = null;
-  let headSeq = 0;
-  let headSnapshot: SchemaSnapshot | null = null;
+  const tableCount = live.data.tables.length;
+
+  // ── 4. Read HEAD + write snapshot/lineage/event, all under one lock (one txn) ─
+  // The HEAD read is done INSIDE the transaction after taking the same advisory
+  // lock recordAppliedMigrationToLineage uses, so a rebaseline and a concurrent
+  // deploy can't both read the same HEAD seq and collide on UNIQUE(tracked, seq).
+  const client = await pool.connect();
   try {
-    const head = await pool.query<{ version: string; seq: number; snapshot: SchemaSnapshot | null }>(
+    await client.query("BEGIN");
+    await client.query(`SELECT pg_advisory_xact_lock($1)`, [trackedSchemaId]);
+
+    const head = await client.query<{ version: string; seq: number; snapshot: SchemaSnapshot | null }>(
       `SELECT lm.version, lm.seq, s.snapshot
        FROM lineage_migrations lm
        LEFT JOIN snapshots s ON s.id = lm.snapshot_id
@@ -115,27 +121,16 @@ export async function POST(request: NextRequest) {
        LIMIT 1`,
       [trackedSchemaId]
     );
-    if (head.rows.length > 0) {
-      headVersion = head.rows[0].version;
-      headSeq = head.rows[0].seq;
-      headSnapshot = head.rows[0].snapshot;
-    }
-  } catch (error) {
-    console.error("Rebaseline — failed to read lineage HEAD:", error);
-  }
+    const headVersion = head.rows[0]?.version ?? null;
+    const headSeq = head.rows[0]?.seq ?? 0;
+    const headSnapshot = head.rows[0]?.snapshot ?? null;
 
-  // Infer the bump from how the live structure differs from the previous HEAD.
-  const changeLevel = headSnapshot
-    ? summarizeStructuralSeverity(compareSchemas(headSnapshot, live.data)).level
-    : "additive";
-  const nextSeq = headSeq + 1;
-  const nextVersion = getNextLineageVersion(headVersion, changeLevel);
-  const tableCount = live.data.tables.length;
-
-  // ── 4. Write snapshot + lineage entry + in-sync drift event (one txn) ──────
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
+    // Infer the bump from how the live structure differs from the previous HEAD.
+    const changeLevel = headSnapshot
+      ? summarizeStructuralSeverity(compareSchemas(headSnapshot, live.data)).level
+      : "additive";
+    const nextSeq = headSeq + 1;
+    const nextVersion = getNextLineageVersion(headVersion, changeLevel);
 
     const snapResult = await client.query<{ id: number }>(
       `INSERT INTO snapshots (tracked_schema_id, snapshot, table_count, label)
@@ -178,6 +173,16 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Rebaseline — failed to write lineage:", error);
+    // A concurrent writer that beat us to this seq (despite the lock, e.g. a path
+    // that doesn't take it) surfaces as a unique violation — report it as a clean
+    // conflict rather than a generic 500.
+    const code = (error as { code?: string })?.code;
+    if (code === "23505") {
+      return NextResponse.json(
+        { error: "This schema was just re-baselined by another request. Refresh and try again." },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
       { error: "Failed to re-baseline this schema." },
       { status: 500 }
