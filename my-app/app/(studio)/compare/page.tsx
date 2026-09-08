@@ -442,7 +442,7 @@ function PageHeader({ targetCount }: { targetCount: number }) {
       </h1>
       <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
         Pick one <b>source</b> schema and compare it against{" "}
-        {targetCount === 1 ? "a target" : `${targetCount} targets`} at once. Each
+        {targetCount === 1 ? "a target." : `${targetCount} targets at once.`} Each
         target gets its own diff and its own migration, and every generated script
         updates <b>that target</b> to match the source — you can edit it freely
         before saving.
