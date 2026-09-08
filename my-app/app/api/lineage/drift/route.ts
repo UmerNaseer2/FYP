@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireEditor } from "@/lib/auth-guard";
 import pool from "@/lib/version-db";
 import type { CompareReport } from "@/lib/compare-types";
 import {
@@ -33,6 +34,9 @@ export type DriftCheckResult = {
  * 200 — it's a normal state for a tracked schema, not a server error.
  */
 export async function POST(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   let body: { trackedSchemaId?: number };
   try {
     body = await request.json();

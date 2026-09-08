@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireEditor } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl } from "@/lib/sql-guard";
@@ -24,6 +25,9 @@ function quoteIdent(name: string): string {
 // stripping) as this server route — see containsTransactionControl import above.
 
 export async function POST(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   // ─── 1. Parse the request body ───────────────────────────────────────────
   let body: {
     connectionId: number;
@@ -136,11 +140,14 @@ export async function POST(request: NextRequest) {
     password: string;
     connection_string: string | null;
     ssl: boolean | null;
+    ssl_mode: string | null;
   };
 
   try {
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -172,6 +179,7 @@ export async function POST(request: NextRequest) {
     password: connRow.password,
     connectionString: connRow.connection_string,
     ssl: Boolean(connRow.ssl),
+    sslMode: connRow.ssl_mode,
   });
   const targetPool = getPoolForConfig(targetConfig);
 

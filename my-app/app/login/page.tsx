@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useTheme } from "@/hooks/useTheme";
 import {
@@ -14,6 +14,26 @@ import {
 } from "@/components/ui/icons";
 
 type Status = "idle" | "redirecting" | "error";
+
+/**
+ * NextAuth reports a failed sign-in by bouncing the browser back to
+ * /login?error=<code>. The page used to ignore that parameter completely, so a
+ * failure looked like a button that did nothing. These are the codes NextAuth
+ * can send, written out in plain words.
+ */
+const ERROR_MESSAGES: Record<string, string> = {
+  Configuration: "Sign-in is not set up on this server yet.",
+  AccessDenied: "That account is not allowed to use Schema Studio.",
+  Verification: "That sign-in link has expired. Start again.",
+  OAuthSignin: "Could not reach Microsoft to start sign-in.",
+  OAuthCallback: "Microsoft rejected the sign-in response.",
+  OAuthAccountNotLinked: "That email already signed in a different way.",
+  SessionRequired: "Sign in to continue.",
+};
+
+function errorMessage(code: string): string {
+  return ERROR_MESSAGES[code] ?? "Sign-in failed or was cancelled.";
+}
 
 /** Small 2×2 Microsoft brand mark used on the SSO button. */
 function MsMark() {
@@ -31,6 +51,45 @@ export default function LoginPage() {
   const { theme, toggleTheme } = useTheme();
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /** null while we are still asking the server which providers it has. */
+  const [ssoReady, setSsoReady] = useState<boolean | null>(null);
+
+  // One pass on load: ask NextAuth what it can offer, and pick up the error
+  // code a failed sign-in leaves in the URL. Both settle in the same render so
+  // the card never flashes one banner and then swaps to another.
+  //
+  // With the Entra keys absent the provider list comes back empty, and a button
+  // that can only fail is worse than saying plainly that sign-in is not set up.
+  // window.location is read instead of useSearchParams so this page can stay
+  // statically rendered.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSignInState() {
+      const code = new URLSearchParams(window.location.search).get("error");
+
+      let ready = false;
+      try {
+        const res = await fetch("/api/auth/providers");
+        const providers: Record<string, unknown> = res.ok ? await res.json() : {};
+        ready = Boolean(providers["microsoft-entra-id"]);
+      } catch {
+        ready = false;
+      }
+
+      if (cancelled) return;
+      setSsoReady(ready);
+      if (code) {
+        setErrorMsg(errorMessage(code));
+        setStatus("error");
+      }
+    }
+
+    loadSignInState();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleLogin() {
     setStatus("redirecting");
@@ -40,7 +99,7 @@ export default function LoginPage() {
       await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
     } catch (error: unknown) {
       console.error(error);
-      setErrorMsg(error instanceof Error ? error.message : "Sign-in failed");
+      setErrorMsg(error instanceof Error ? error.message : "Sign-in failed.");
       setStatus("error");
     }
   }
@@ -148,8 +207,35 @@ export default function LoginPage() {
             </div>
 
             {/* state-swappable region — `key` remounts it so the fade replays */}
-            <div className="swap" key={status}>
-              {status === "idle" && (
+            <div className="swap" key={ssoReady === false ? "unconfigured" : status}>
+              {ssoReady === false && (
+                <div>
+                  <div className="banner mb-3" role="alert">
+                    <AlertCircleIcon size={16} className="ico" />
+                    <div className="body">
+                      <div className="title">Single sign-on is not set up.</div>
+                      <div style={{ color: "var(--text-2)" }}>
+                        This server has no Microsoft Entra ID credentials, so
+                        there is nothing to sign in against. Whoever runs it
+                        needs to set AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET,
+                        AZURE_AD_TENANT_ID and NEXTAUTH_SECRET, then restart.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="sso-btn"
+                    disabled
+                    aria-label="Continue with Microsoft (unavailable)"
+                  >
+                    <MsMark />
+                    <span className="label">Continue with Microsoft</span>
+                    <ChevronRightIcon size={14} className="chev" />
+                  </button>
+                </div>
+              )}
+
+              {ssoReady !== false && status === "idle" && (
                 <div>
                   <button
                     type="button"
@@ -167,7 +253,7 @@ export default function LoginPage() {
                 </div>
               )}
 
-              {status === "redirecting" && (
+              {ssoReady !== false && status === "redirecting" && (
                 <div>
                   <button type="button" className="sso-btn" disabled aria-busy="true">
                     <span className="spin" aria-hidden="true" />
@@ -183,21 +269,17 @@ export default function LoginPage() {
                 </div>
               )}
 
-              {status === "error" && (
+              {ssoReady !== false && status === "error" && (
                 <div>
                   <div className="banner mb-3" role="alert">
                     <AlertCircleIcon size={16} className="ico" />
                     <div className="body">
-                      <div className="title">Sign-in failed or was cancelled.</div>
+                      <div className="title">
+                        {errorMsg ?? "Sign-in failed or was cancelled."}
+                      </div>
                       <div style={{ color: "var(--text-2)" }}>
                         Try again, or contact your administrator if the problem persists.
                       </div>
-                      {errorMsg && (
-                        <details>
-                          <summary>Details</summary>
-                          <pre>{errorMsg}</pre>
-                        </details>
-                      )}
                     </div>
                   </div>
                   <button

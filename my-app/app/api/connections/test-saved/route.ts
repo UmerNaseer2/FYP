@@ -1,21 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireEditor } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
 
 /** Test a saved connection by id (used by the per-row "Test" action). */
 export async function POST(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   try {
     const { id } = await request.json();
 
-    if (!id) {
+    if (!Number.isInteger(Number(id)) || Number(id) <= 0) {
       return NextResponse.json(
         { ok: false, error: "Connection ID is required.", sslRequired: false, detail: "" },
         { status: 400 }
       );
     }
 
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT host, port, database_name, type, username, password, connection_string, ssl
+      `SELECT host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
        FROM connections
        WHERE id = $1`,
       [id]
@@ -45,6 +51,7 @@ export async function POST(request: NextRequest) {
       password: conn.password,
       connectionString: conn.connection_string,
       ssl: Boolean(conn.ssl),
+      sslMode: conn.ssl_mode,
     });
 
     return NextResponse.json(testResult);

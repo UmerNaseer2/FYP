@@ -4,7 +4,7 @@ import { buildPgConfig } from "./connection-config";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import type { ChangeLevel } from "./version-detection";
-import pool, { ensureMetadataSchema } from "./version-db";
+import pool, { ensureConnectionsTable, ensureMetadataSchema } from "./version-db";
 
 /**
  * Phase 6 metadata store — "schema lineage".
@@ -649,6 +649,7 @@ type TrackedConnRow = {
   password: string | null;
   connection_string: string | null;
   ssl: boolean | null;
+  ssl_mode: string | null;
 };
 
 /**
@@ -663,11 +664,13 @@ export async function computeDriftDetail(
   await ensureLineageTables();
 
   // 1. Tracked schema + its connection (LEFT JOIN — connection may be deleted).
+  // ssl_mode is added lazily, so make sure it exists before selecting it.
+  await ensureConnectionsTable();
   const res = await pool.query<TrackedConnRow>(
     `SELECT
        ts.schema_name, ts.label, ts.connection_id,
        c.name AS connection_name, c.host, c.port, c.database_name, c.type,
-       c.username, c.password, c.connection_string, c.ssl
+       c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
      FROM tracked_schemas ts
      LEFT JOIN connections c ON c.id = ts.connection_id
      WHERE ts.id = $1`,
@@ -741,6 +744,7 @@ export async function computeDriftDetail(
     password: t.password,
     connectionString: t.connection_string,
     ssl: Boolean(t.ssl),
+    sslMode: t.ssl_mode,
   });
   const live = await fetchSchemaSnapshot(cfg, t.schema_name);
   if (!live.ok) {
@@ -1049,4 +1053,50 @@ export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
     driftSummary: r.drift_summary,
     driftCheckedAt: r.drift_checked_at,
   }));
+}
+
+/** What a connection would leave behind if it were deleted right now. */
+export type ConnectionDependents = {
+  /** Tracked schemas pointing at this connection. */
+  trackedSchemas: number;
+  /** Their schema names, for showing in the confirm dialog. */
+  schemaNames: string[];
+  /** Snapshots hanging off those tracked schemas (cascade-deleted with them). */
+  snapshots: number;
+};
+
+/**
+ * Count what depends on a connection, so DELETE can say what it is about to
+ * orphan instead of silently doing it.
+ *
+ * There is deliberately no foreign key from `tracked_schemas` to `connections`
+ * (see ensureLineageTables above) — orphans are a supported state and every
+ * reader LEFT JOINs and degrades to "unreachable". That design decision is kept;
+ * what changes is that the user is now told the number before they confirm.
+ */
+export async function getConnectionDependents(
+  connectionId: number
+): Promise<ConnectionDependents> {
+  await ensureLineageTables();
+
+  const tracked = await pool.query<{ id: number; schema_name: string }>(
+    `SELECT id, schema_name FROM tracked_schemas WHERE connection_id = $1 ORDER BY schema_name`,
+    [connectionId]
+  );
+
+  if (tracked.rows.length === 0) {
+    return { trackedSchemas: 0, schemaNames: [], snapshots: 0 };
+  }
+
+  const ids = tracked.rows.map((r) => r.id);
+  const snapshots = await pool.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM snapshots WHERE tracked_schema_id = ANY($1::int[])`,
+    [ids]
+  );
+
+  return {
+    trackedSchemas: tracked.rows.length,
+    schemaNames: tracked.rows.map((r) => r.schema_name),
+    snapshots: Number(snapshots.rows[0]?.count ?? 0),
+  };
 }

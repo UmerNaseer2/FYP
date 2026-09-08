@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireEditor } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { fetchSchemaSnapshot, type SchemaSnapshot } from "@/lib/postgres";
 import { compareSchemas } from "@/lib/compare";
@@ -22,6 +23,9 @@ import {
  * own — it was captured from the live DB, exactly like the original baseline.
  */
 export async function POST(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   await ensureLineageTables();
 
   let body: { trackedSchemaId?: number };
@@ -48,13 +52,16 @@ export async function POST(request: NextRequest) {
     password: string | null;
     connection_string: string | null;
     ssl: boolean | null;
+    ssl_mode: string | null;
   };
   try {
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
       `SELECT
          ts.schema_name,
          c.name AS connection_name, c.host, c.port, c.database_name, c.type,
-         c.username, c.password, c.connection_string, c.ssl
+         c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
        FROM tracked_schemas ts
        LEFT JOIN connections c ON c.id = ts.connection_id
        WHERE ts.id = $1`,
@@ -89,6 +96,7 @@ export async function POST(request: NextRequest) {
     password: tracked.password,
     connectionString: tracked.connection_string,
     ssl: Boolean(tracked.ssl),
+    sslMode: tracked.ssl_mode,
   });
 
   const live = await fetchSchemaSnapshot(cfg, tracked.schema_name);

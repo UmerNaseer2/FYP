@@ -1,141 +1,203 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import { getConnectionDependents } from "@/lib/lineage-db";
+import { checkConnectableHost } from "@/lib/connection-config";
+import { encryptSecret } from "@/lib/secret-store";
+import {
+  sslModeFromLegacyBoolean,
+  sslModeUsesTls,
+  summariseErrors,
+  toSslMode,
+  validateConnection,
+  type SslMode,
+} from "@/lib/connection-validate";
 
-// The connections table shape is owned by lib/version-db (ensureConnectionsTable)
-// so every reader/writer agrees on its columns, including `ssl`.
-const createConnectionsTable = ensureConnectionsTable;
+/**
+ * Saved database targets — the rows every other feature connects through.
+ *
+ * Three rules hold across all four methods:
+ *
+ *  1. Validation is lib/connection-validate, the SAME module the drawer uses.
+ *     One implementation means the client and the server cannot drift into
+ *     disagreeing about what a valid connection is.
+ *  2. Secrets are encrypted on the way in (lib/secret-store) and decrypted in
+ *     exactly one place on the way out (buildPgConfig). Nothing here ever sends
+ *     a password or a connection string back to the browser.
+ *  3. `ssl_mode` is the real setting; the older boolean `ssl` column is written
+ *     in step with it so a rollback to an earlier build still behaves.
+ */
+
+/** Columns safe to return to the browser. */
+const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
+                (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
+                ssl, ssl_mode`;
 
 export async function GET() {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   try {
-    await createConnectionsTable();
+    await ensureConnectionsTable();
 
     // Never send secrets to the browser. The password and the connection_string
     // (which embeds the password for URI connections) stay server-side; the UI
     // only needs to know *whether* a connection string is stored, via the
     // has_connection_string flag.
     const result = await pool.query(`
-      SELECT id, name, host, port, database_name, type, username,
-             (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
-             ssl
+      SELECT ${PUBLIC_COLUMNS}
       FROM connections
       ORDER BY id DESC
     `);
 
     return NextResponse.json(result.rows);
   } catch (error) {
+    // This used to return `[]` with a 200. That made an unreachable metadata
+    // database look exactly like "you have no connections yet" — the single
+    // most misleading state this screen can be in.
     console.error("GET connections error:", error);
-    return NextResponse.json([], { status: 200 });
-  }
-}
-
-export async function POST(request: NextRequest) {
-  try {
-    await createConnectionsTable();
-
-    const body = await request.json();
-
-    const name = String(body.name ?? "").trim();
-    const host = String(body.host ?? "localhost").trim();
-    // Number("") is 0 and Number("abc") is NaN — neither is a valid port, so
-    // fall back to 5432 for any non-positive/invalid value.
-    const port = Number(body.port) || 5432;
-    const database_name = String(body.database_name ?? "postgres").trim();
-    const type = String(body.type ?? "PostgreSQL").trim();
-    const username = String(body.username ?? "postgres").trim();
-    const password = String(body.password ?? "").trim();
-    const connection_string = String(body.connection_string ?? "").trim();
-    const ssl = Boolean(body.ssl);
-
-    // A connection needs a name plus *some* credential: either a full
-    // connection string, or a password for the loose host/user fields.
-    if (!name || (!connection_string && !password)) {
-      return NextResponse.json(
-        { error: "Add a name and either a connection string or a password." },
-        { status: 400 }
-      );
-    }
-
-    const result = await pool.query(
-      `
-      INSERT INTO connections
-      (name, host, port, database_name, type, username, password, connection_string, ssl)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      RETURNING id, name, host, port, database_name, type, username,
-                (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
-                ssl
-      `,
-      [name, host, port, database_name, type, username, password, connection_string || null, ssl]
-    );
-
-    return NextResponse.json(result.rows[0]);
-  } catch (error) {
-    console.error("POST connection error:", error);
     return NextResponse.json(
-      { error: "Failed to save connection." },
+      { error: "Could not read your saved connections. Is the app database reachable?" },
       { status: 500 }
     );
   }
 }
 
-export async function PUT(request: NextRequest) {
+export async function POST(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
+  let body: Record<string, unknown>;
   try {
-    await createConnectionsTable();
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
+  }
 
-    const body = await request.json();
+  // Accept either the new three-way mode or the old boolean, so an older client
+  // (or a saved bookmarklet/curl) keeps working.
+  const ssl_mode: SslMode =
+    body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""
+      ? toSslMode(body.ssl_mode)
+      : sslModeFromLegacyBoolean(body.ssl);
 
-    const id = Number(body.id);
-    const name = String(body.name ?? "").trim();
-    const host = String(body.host ?? "localhost").trim();
-    // Number("") is 0 and Number("abc") is NaN — neither is a valid port, so
-    // fall back to 5432 for any non-positive/invalid value.
-    const port = Number(body.port) || 5432;
-    const database_name = String(body.database_name ?? "postgres").trim();
-    const type = String(body.type ?? "PostgreSQL").trim();
-    const username = String(body.username ?? "postgres").trim();
-    // Blank password on edit means "keep the stored one" (we never show it).
-    const password = String(body.password ?? "").trim();
-    // Keep-if-blank rule for the connection string: the browser never receives
-    // it back (it embeds the password), so a blank value normally means "leave
-    // the stored connection string untouched", not "clear it".
-    const connection_string = String(body.connection_string ?? "").trim();
-    // …EXCEPT when the editor switched to Fields mode: there the user is
-    // redefining the target by loose host/port/user fields, so any stored URI
-    // must be cleared — otherwise the old URI would still win over the fields.
-    const clearConnectionString = Boolean(body.clear_connection_string);
-    const ssl = Boolean(body.ssl);
+  const checked = validateConnection({ ...body, ssl_mode }, "create");
+  if (!checked.ok) {
+    return NextResponse.json(
+      { error: summariseErrors(checked.errors), errors: checked.errors },
+      { status: 400 }
+    );
+  }
+  const value = checked.value;
 
-    if (!id || !name) {
-      return NextResponse.json(
-        { error: "A connection id and name are required." },
-        { status: 400 }
-      );
-    }
+  // The SSRF guard used to run only on "Test connection", which meant a blocked
+  // host could still be saved and then dialled by Deploy, Drift or Compare.
+  const hostCheck = checkConnectableHost(value.host);
+  if (!hostCheck.ok) {
+    return NextResponse.json({ error: hostCheck.message }, { status: 400 });
+  }
+
+  try {
+    await ensureConnectionsTable();
+
+    const result = await pool.query(
+      `
+      INSERT INTO connections
+      (name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING ${PUBLIC_COLUMNS}
+      `,
+      [
+        value.name,
+        value.host,
+        value.port,
+        value.database_name,
+        value.type,
+        value.username,
+        encryptSecret(value.password) ?? "",
+        encryptSecret(value.connection_string) || null,
+        sslModeUsesTls(value.ssl_mode),
+        value.ssl_mode,
+      ]
+    );
+
+    return NextResponse.json(result.rows[0]);
+  } catch (error) {
+    console.error("POST connection error:", error);
+    return NextResponse.json({ error: "Failed to save connection." }, { status: 500 });
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
+  }
+
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return NextResponse.json({ error: "A connection id is required." }, { status: 400 });
+  }
+
+  const ssl_mode: SslMode =
+    body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""
+      ? toSslMode(body.ssl_mode)
+      : sslModeFromLegacyBoolean(body.ssl);
+
+  // "edit" mode: a blank password means "keep the stored one", so it is not an
+  // error here the way it is on create.
+  const checked = validateConnection({ ...body, ssl_mode }, "edit");
+  if (!checked.ok) {
+    return NextResponse.json(
+      { error: summariseErrors(checked.errors), errors: checked.errors },
+      { status: 400 }
+    );
+  }
+  const value = checked.value;
+
+  const hostCheck = checkConnectableHost(value.host);
+  if (!hostCheck.ok) {
+    return NextResponse.json({ error: hostCheck.message }, { status: 400 });
+  }
+
+  // …EXCEPT when the editor switched to Fields mode: there the user is
+  // redefining the target by loose host/port/user fields, so any stored URI
+  // must be cleared — otherwise the old URI would still win over the fields.
+  const clearConnectionString = Boolean(body.clear_connection_string);
+
+  try {
+    await ensureConnectionsTable();
 
     // Work out what credential the row would have AFTER this update, and refuse
     // to save a connection that would end up with neither a password nor a
     // connection string (otherwise it silently becomes impossible to
-    // authenticate). The POST handler guards this on create; PUT has to read the
-    // existing row first, because a blank password means "keep the stored one"
-    // and `clearConnectionString` wipes any stored URI.
-    const existing = await pool.query(
+    // authenticate). POST guards this on create; PUT has to read the existing
+    // row first, because a blank password means "keep the stored one" and
+    // `clearConnectionString` wipes any stored URI.
+    const existing = await pool.query<{ password: string | null; connection_string: string | null }>(
       `SELECT password, connection_string FROM connections WHERE id = $1`,
       [id]
     );
-
     if (existing.rows.length === 0) {
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
     }
 
+    // These stay encrypted — we only need to know whether they are non-empty.
     const storedPassword = String(existing.rows[0].password ?? "");
     const storedConnString = String(existing.rows[0].connection_string ?? "");
 
     // Mirror the CASE logic in the UPDATE below exactly.
-    const effectivePassword = password === "" ? storedPassword : password;
+    const effectivePassword = value.password === "" ? storedPassword : value.password;
     const effectiveConnString = clearConnectionString
       ? ""
-      : connection_string === ""
+      : value.connection_string === ""
         ? storedConnString
-        : connection_string;
+        : value.connection_string;
 
     if (!effectivePassword && !effectiveConnString) {
       return NextResponse.json(
@@ -163,13 +225,26 @@ export async function PUT(request: NextRequest) {
             WHEN $9 = '' THEN connection_string
             ELSE $9
           END,
-          ssl = $10
-      WHERE id = $11
-      RETURNING id, name, host, port, database_name, type, username,
-                (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
-                ssl
+          ssl = $10,
+          ssl_mode = $11
+      WHERE id = $12
+      RETURNING ${PUBLIC_COLUMNS}
       `,
-      [name, host, port, database_name, type, username, password, clearConnectionString, connection_string, ssl, id]
+      [
+        value.name,
+        value.host,
+        value.port,
+        value.database_name,
+        value.type,
+        value.username,
+        // Encrypt only a value the user actually typed; "" still means "keep".
+        encryptSecret(value.password) ?? "",
+        clearConnectionString,
+        encryptSecret(value.connection_string) ?? "",
+        sslModeUsesTls(value.ssl_mode),
+        value.ssl_mode,
+        id,
+      ]
     );
 
     if (result.rows.length === 0) {
@@ -179,35 +254,62 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(result.rows[0]);
   } catch (error) {
     console.error("PUT connection error:", error);
-    return NextResponse.json(
-      { error: "Failed to update connection." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to update connection." }, { status: 500 });
   }
 }
 
 export async function DELETE(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
+  let body: Record<string, unknown>;
   try {
-    await createConnectionsTable();
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
+  }
 
-    const body = await request.json();
-    const id = Number(body.id);
+  const id = Number(body.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return NextResponse.json({ error: "Connection ID is required." }, { status: 400 });
+  }
 
-    if (!id) {
+  try {
+    await ensureConnectionsTable();
+
+    const existing = await pool.query<{ name: string }>(
+      `SELECT name FROM connections WHERE id = $1`,
+      [id]
+    );
+    if (existing.rows.length === 0) {
+      return NextResponse.json({ error: "Connection not found." }, { status: 404 });
+    }
+
+    // tracked_schemas deliberately has no foreign key to connections (see the
+    // note in lib/lineage-db), so deleting a connection silently orphans every
+    // tracked schema, snapshot and drift event that pointed at it. Say what
+    // will be lost and make the caller confirm.
+    const dependents = await getConnectionDependents(id);
+    if (dependents.trackedSchemas > 0 && body.confirm !== true) {
       return NextResponse.json(
-        { error: "Connection ID is required." },
-        { status: 400 }
+        {
+          error:
+            `"${existing.rows[0].name}" is still used by ${dependents.trackedSchemas} tracked ` +
+            `schema${dependents.trackedSchemas === 1 ? "" : "s"}. Deleting it also removes ` +
+            `${dependents.snapshots} snapshot${dependents.snapshots === 1 ? "" : "s"} and ` +
+            `${dependents.snapshots === 1 ? "its" : "their"} drift history.`,
+          dependents,
+          needsConfirmation: true,
+        },
+        { status: 409 }
       );
     }
 
     await pool.query("DELETE FROM connections WHERE id = $1", [id]);
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, dependents });
   } catch (error) {
     console.error("DELETE connection error:", error);
-    return NextResponse.json(
-      { error: "Failed to delete connection." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to delete connection." }, { status: 500 });
   }
 }

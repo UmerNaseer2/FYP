@@ -7,5 +7,5 @@ import AuthGuard from "@/components/AuthGuard";
  * server-side — the gate here is just the first line.
  */
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard requiredRole="admin">{children}</AuthGuard>;
 }

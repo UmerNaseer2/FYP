@@ -1,7 +1,15 @@
 import { Pool, type PoolConfig } from "pg";
 import { parse as parseConnectionString } from "pg-connection-string";
+import { decryptSecret } from "./secret-store";
+import {
+  sslModeFromLegacyBoolean,
+  sslModeUsesTls,
+  toSslMode,
+  type SslMode,
+} from "./connection-validate";
 
 export { parsePostgresUri, type ParsedUri } from "./parse-uri";
+export type { SslMode };
 
 /**
  * Connection setup for the Connections screen: turn a saved row or a drawer
@@ -21,23 +29,61 @@ export type ConnectionInput = {
   password?: string | null;
   /** A full `postgres://…` URI. When present it wins over the loose fields. */
   connectionString?: string | null;
-  /** Whether to negotiate SSL/TLS with the server. */
+  /**
+   * Legacy on/off flag, kept because the `connections.ssl` column still exists
+   * and older callers still pass it. Used only when `sslMode` is absent.
+   */
   ssl?: boolean | null;
+  /**
+   * How to negotiate TLS: "disable", "require" (encrypt, don't verify the
+   * certificate) or "verify-full" (encrypt and verify). Optional so a call site
+   * that hasn't been updated falls back to the exact legacy boolean behaviour
+   * rather than silently changing what it does.
+   */
+  sslMode?: SslMode | string | null;
 };
 
 const CONNECT_TIMEOUT_MS = 10000;
 
 /**
- * Build a `pg` PoolConfig from saved/form input. SSL is driven *only* by the
- * `ssl` flag (the toggle), so behaviour is predictable regardless of any
- * `sslmode` inside a connection string. When SSL is on we accept the server's
- * certificate without local CA verification — hosted providers (Neon, Supabase,
- * RDS) commonly present chains the app host doesn't trust, and this tool only
- * reads schema metadata.
+ * Work out the effective TLS mode for an input.
+ *
+ * `sslMode` wins when present. When it is absent — an older row, or a call site
+ * that still selects only the `ssl` column — we fall back to the boolean, where
+ * `true` has always meant "encrypt but don't verify", i.e. `require`.
+ */
+export function effectiveSslMode(input: ConnectionInput): SslMode {
+  return input.sslMode !== null && input.sslMode !== undefined && input.sslMode !== ""
+    ? toSslMode(input.sslMode)
+    : sslModeFromLegacyBoolean(input.ssl);
+}
+
+/** Translate a mode into what the `pg` driver wants for its `ssl` option. */
+function sslOptionFor(mode: SslMode): PoolConfig["ssl"] {
+  if (!sslModeUsesTls(mode)) return false;
+  // "require" encrypts the wire but accepts any certificate — hosted providers
+  // (Neon, Supabase, RDS) commonly present chains the app host doesn't trust.
+  // "verify-full" is the strict setting for anyone who can trust the chain.
+  return { rejectUnauthorized: mode === "verify-full" };
+}
+
+/**
+ * Build a `pg` PoolConfig from saved/form input.
+ *
+ * TLS is driven *only* by the resolved mode, so behaviour is predictable
+ * regardless of any `sslmode` inside a connection string.
+ *
+ * Credentials are decrypted here. This function is the single choke point every
+ * consumer of a stored credential passes through (the connections, lineage,
+ * schema, scripts and versionsync routes, the Compare page and
+ * runConnectionTest), which is why encryption at rest can be added without
+ * touching any of them. decryptSecret passes plaintext through unchanged, so
+ * rows written before encryption existed — and values typed straight into the
+ * drawer — keep working.
  */
 export function buildPgConfig(input: ConnectionInput): PoolConfig {
-  const ssl = input.ssl ? { rejectUnauthorized: false } : false;
-  const raw = (input.connectionString ?? "").trim();
+  const ssl = sslOptionFor(effectiveSslMode(input));
+  const raw = (decryptSecret(input.connectionString) ?? "").trim();
 
   if (raw) {
     // Parse ourselves so we control SSL uniformly (don't pass the string
@@ -59,7 +105,7 @@ export function buildPgConfig(input: ConnectionInput): PoolConfig {
     port: Number(input.port ?? 5432) || 5432,
     database: (input.database ?? "postgres").trim() || "postgres",
     user: (input.user ?? "postgres").trim() || "postgres",
-    password: input.password ?? "",
+    password: decryptSecret(input.password) ?? "",
     ssl,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
   };
@@ -207,7 +253,10 @@ export type TestSuccess = {
   schemaCount: number;
   schemas: string[];
   latencyMs: number;
+  /** True when the connection was encrypted. Kept for existing UI callers. */
   ssl: boolean;
+  /** The mode actually used, so the UI can say "require" vs "verify-full". */
+  sslMode: SslMode;
 };
 
 export type TestFailure = {
@@ -230,7 +279,24 @@ function shortenVersion(version: string): string {
  * facts (version, visible schemas, round-trip latency). Always closes the pool.
  */
 export async function runConnectionTest(input: ConnectionInput): Promise<TestResult> {
-  const config = buildPgConfig(input);
+  const sslMode = effectiveSslMode(input);
+
+  let config: PoolConfig;
+  try {
+    config = buildPgConfig(input);
+  } catch (error) {
+    // buildPgConfig throws only when a stored secret can't be decrypted (wrong
+    // or missing APP_ENCRYPTION_KEY). Say that plainly — passing ciphertext to
+    // the driver instead would surface as "password authentication failed" and
+    // send you looking at the wrong problem.
+    console.error("Could not prepare the connection:", error);
+    return {
+      ok: false,
+      error: "This connection's stored credentials can't be read on this server.",
+      sslRequired: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 
   // SSRF guard: refuse to dial blocked internal/metadata hosts before opening
   // a socket. buildPgConfig has already resolved the effective host (whether it
@@ -262,7 +328,8 @@ export async function runConnectionTest(input: ConnectionInput): Promise<TestRes
       schemaCount: schemas.length,
       schemas,
       latencyMs,
-      ssl: Boolean(input.ssl),
+      ssl: sslModeUsesTls(sslMode),
+      sslMode,
     };
   } catch (error) {
     console.error("Connection test failed:", error);

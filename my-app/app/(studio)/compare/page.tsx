@@ -39,6 +39,7 @@ type SavedConnection = {
   password: string | null;
   connection_string: string | null;
   ssl: boolean;
+  ssl_mode: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ async function getSavedConnections(): Promise<SavedConnection[]> {
     await ensureConnectionsTable();
 
     const result = await pool.query(`
-      SELECT id, name, host, port, database_name, type, username, password, connection_string, ssl
+      SELECT id, name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
       FROM connections
       WHERE type = 'PostgreSQL'
       ORDER BY name ASC
@@ -82,6 +83,7 @@ function buildTargetFromConnection(
     password: connection.password,
     connectionString: connection.connection_string,
     ssl: connection.ssl,
+    sslMode: connection.ssl_mode,
   });
 
   return {

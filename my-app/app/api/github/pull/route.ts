@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireViewer } from "@/lib/auth-guard";
 import { groupRegistryFiles } from "@/lib/registry-paths";
 
 const OWNER = process.env.GITHUB_REPO_OWNER;
@@ -28,6 +29,9 @@ export type GitHubScript = {
 };
 
 export async function GET() {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   if (!OWNER || !REPO || !PAT) {
     return NextResponse.json(
       { error: "GitHub env vars not configured." },

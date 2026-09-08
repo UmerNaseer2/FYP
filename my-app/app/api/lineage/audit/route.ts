@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireViewer } from "@/lib/auth-guard";
 import { listDriftEvents, type DriftEventFeedItem } from "@/lib/lineage-db";
 
 /** One row in the audit feed (shape unchanged — now sourced from lib). */
@@ -9,6 +10,9 @@ export type AuditEvent = DriftEventFeedItem;
  * Optional ?trackedSchemaId=N to scope to a single tracked schema.
  */
 export async function GET(request: NextRequest) {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   try {
     const idParam = new URL(request.url).searchParams.get("trackedSchemaId");
     const trackedSchemaId = idParam ? Number(idParam) : null;

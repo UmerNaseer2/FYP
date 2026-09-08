@@ -2049,22 +2049,30 @@ body {
   margin-bottom: 1rem;
 }
 
-/* Auth loading state (used by AuthGuard's BYPASS_AUTH=false path). */
+/* Auth waiting / refused states (AuthGuard, on the BYPASS_AUTH=false path).
+   This was two duplicate rules with hard-coded light colours, so on the dark
+   theme it painted a white slab with near-black text. It uses the design
+   tokens now, so it reads correctly in both themes. */
 .loading-state {
-  padding: 2rem;
+  max-width: 460px;
+  margin: 64px auto;
+  padding: 28px;
   text-align: center;
-  font-size: 0.9rem;
-  color: #475569;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
 }
 
-.loading-state {
-  padding: 28px;
-  font-size: 16px;
+.loading-state .title {
+  font-size: 15px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text);
+}
+
+.loading-state .hint {
+  font-size: 13px;
+  margin-top: 6px;
+  color: var(--text-2);
 }
 
 /* =====================================================================

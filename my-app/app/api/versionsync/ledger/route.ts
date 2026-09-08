@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireViewer } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import type { LedgerEntry } from "@/lib/version-sync";
@@ -23,6 +24,9 @@ function quoteIdent(name: string): string {
 }
 
 export async function GET(request: NextRequest) {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   const params = request.nextUrl.searchParams;
   const connectionId = Number(params.get("connectionId"));
   const schema = (params.get("schema") ?? "").trim();
@@ -43,11 +47,14 @@ export async function GET(request: NextRequest) {
     password: string | null;
     connection_string: string | null;
     ssl: boolean | null;
+    ssl_mode: string | null;
     name: string;
   };
   try {
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, name
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name
        FROM connections WHERE id = $1`,
       [connectionId]
     );
@@ -74,6 +81,7 @@ export async function GET(request: NextRequest) {
       password: connRow.password,
       connectionString: connRow.connection_string,
       ssl: Boolean(connRow.ssl),
+      sslMode: connRow.ssl_mode,
     })
   );
 

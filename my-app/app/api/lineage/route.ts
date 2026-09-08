@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool from "@/lib/version-db";
 import {
   ensureLineageTables,
@@ -11,6 +12,9 @@ export type { TrackedSchemaListItem };
 
 /** GET /api/lineage — list every tracked schema with its lineage HEAD + drift. */
 export async function GET() {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   try {
     const items = await listTrackedSchemas();
     return NextResponse.json(items);
@@ -23,6 +27,9 @@ export async function GET() {
 
 /** DELETE /api/lineage — stop tracking a schema (cascades snapshots/lineage/drift). */
 export async function DELETE(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   try {
     await ensureLineageTables();
 

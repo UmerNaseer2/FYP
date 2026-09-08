@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireEditor } from "@/lib/auth-guard";
 import { migrationFileName, rollbackFileName } from "@/lib/registry-paths";
 
 const OWNER = process.env.GITHUB_REPO_OWNER;
@@ -33,6 +34,9 @@ type GitHubFileResponse = {
 };
 
 export async function POST(req: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   if (!OWNER || !REPO || !PAT) {
     return NextResponse.json(
       { error: "GitHub env vars not configured (GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_PAT)." },

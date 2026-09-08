@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireViewer } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { getPoolForConfig, MANAGED_SCHEMAS } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 
 export async function GET(req: NextRequest) {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   const { searchParams } = new URL(req.url);
   const connectionId = Number(searchParams.get("connectionId"));
 
@@ -26,12 +30,15 @@ export async function GET(req: NextRequest) {
     password: string;
     connection_string: string | null;
     ssl: boolean | null;
+    ssl_mode: string | null;
     name: string;
   };
 
   try {
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, name
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -63,6 +70,7 @@ export async function GET(req: NextRequest) {
       password: connRow.password,
       connectionString: connRow.connection_string,
       ssl: Boolean(connRow.ssl),
+      sslMode: connRow.ssl_mode,
     })
   );
 

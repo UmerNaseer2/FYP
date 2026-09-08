@@ -529,8 +529,9 @@ function Result({
             <div className="title">These schemas have diverged.</div>
             <div className="help mt-0.5">
               The Target has {diff.diverged.length}{" "}
-              {diff.diverged.length === 1 ? "version" : "versions"} the Source doesn&apos;t — they&apos;re on
-              different branches. Review before syncing; nothing is merged automatically.
+              {diff.diverged.length === 1 ? "version" : "versions"}{" "}
+              the Source doesn&apos;t — they&apos;re on different branches.
+              Review before syncing; nothing is merged automatically.
             </div>
             <div className="flex gap-1.5 flex-wrap mt-2">
               {diff.diverged.map((e) => (

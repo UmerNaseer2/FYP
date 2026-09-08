@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireEditor } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { fetchSchemaSnapshot } from "@/lib/postgres";
 import {
@@ -16,6 +17,9 @@ import {
  *   { connectionId: number, schemaName: string, label?: string }
  */
 export async function POST(request: NextRequest) {
+  const gate = await requireEditor();
+  if (!gate.ok) return gate.response;
+
   await ensureLineageTables();
 
   // ── 1. Parse + validate the body ──────────────────────────────────────────
@@ -52,10 +56,13 @@ export async function POST(request: NextRequest) {
     password: string;
     connection_string: string | null;
     ssl: boolean;
+    ssl_mode: string | null;
   };
   try {
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl
+      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -91,6 +98,7 @@ export async function POST(request: NextRequest) {
     password: conn.password,
     connectionString: conn.connection_string,
     ssl: Boolean(conn.ssl),
+    sslMode: conn.ssl_mode,
   });
 
   const snap = await fetchSchemaSnapshot(cfg, schemaName);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool from "@/lib/version-db";
+import { requireViewer } from "@/lib/auth-guard";
+import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { fetchSchemaNames } from "@/lib/postgres";
 
@@ -14,6 +15,9 @@ import { fetchSchemaNames } from "@/lib/postgres";
  * Returns: { schemas: string[] } on success, or { error } with a 4xx/5xx.
  */
 export async function GET(request: NextRequest) {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   const connectionId = Number(
     request.nextUrl.searchParams.get("connectionId") ?? ""
   );
@@ -36,10 +40,13 @@ export async function GET(request: NextRequest) {
     password: string;
     connection_string: string | null;
     ssl: boolean;
+    ssl_mode: string | null;
   };
   try {
+    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl
+      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -75,6 +82,7 @@ export async function GET(request: NextRequest) {
     password: conn.password,
     connectionString: conn.connection_string,
     ssl: Boolean(conn.ssl),
+    sslMode: conn.ssl_mode,
   });
 
   const listed = await fetchSchemaNames(cfg);

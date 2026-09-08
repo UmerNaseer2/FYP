@@ -3,21 +3,34 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
+import { BYPASS_AUTH, roleAtLeast, toRole, type Role } from "@/lib/auth-mode";
 
-// Auth gate for every page wrapped in <AuthGuard>. While this is true, pages
-// render without a session and nothing about roles is enforced.
-//
-// It is TRUE today because the Microsoft Entra keys (AZURE_AD_CLIENT_ID /
-// _SECRET / _TENANT_ID, NEXTAUTH_SECRET) are not configured and the `profiles`
-// table the session callback reads is never created, so a real sign-in cannot
-// complete. Setting those up and creating `profiles` is what flips this to
-// false. Note that this guard is client-side only: server-side protection for
-// the (studio) pages and the API routes still has to be added alongside it.
-const BYPASS_AUTH: boolean = true;
-
-export default function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useUser();
+/**
+ * Client-side gate for the pages wrapped in <AuthGuard>.
+ *
+ * The bypass value used to be a hard-coded const in this file, which meant the
+ * UI and the API routes could disagree about whether auth was on. It now comes
+ * from lib/auth-mode, the same module the edge middleware and the server-side
+ * route gates read, so one environment variable moves all three together.
+ *
+ * This guard is a convenience, not a security boundary — it only decides what
+ * React renders. The real enforcement is middleware.ts (page requests) and
+ * lib/auth-guard.ts (API routes), both of which run before any of this.
+ */
+export default function AuthGuard({
+  children,
+  requiredRole,
+}: {
+  children: React.ReactNode;
+  /** Minimum role for this subtree. Omit for "any signed-in person". */
+  requiredRole?: Role;
+}) {
+  const { user, role, loading } = useUser();
   const router = useRouter();
+
+  const allowed =
+    Boolean(user) &&
+    (!requiredRole || roleAtLeast(toRole(role), requiredRole));
 
   useEffect(() => {
     if (BYPASS_AUTH) return;
@@ -28,8 +41,32 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (BYPASS_AUTH) return <>{children}</>;
 
-  if (loading) return <div className="loading-state">Loading...</div>;
+  if (loading) {
+    return (
+      <div className="loading-state">
+        <div className="title">Checking your access…</div>
+      </div>
+    );
+  }
+
+  // The effect above is already sending them to /login; rendering the page for
+  // a frame first would flash content they are not signed in to see.
   if (!user) return null;
+
+  if (!allowed) {
+    return (
+      <div className="loading-state">
+        <div className="title">
+          You need the &quot;{requiredRole}&quot; role to open this page.
+        </div>
+        <div className="hint">
+          You are signed in as {user.email ?? "an unknown account"}{" "}
+          with the &quot;{toRole(role)}&quot; role. Ask an admin to change it,
+          then reload.
+        </div>
+      </div>
+    );
+  }
 
   return <>{children}</>;
 }

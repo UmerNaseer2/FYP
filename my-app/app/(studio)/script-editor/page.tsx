@@ -480,7 +480,9 @@ export default function ScriptEditorPage() {
             </div>
             {githubError && (
               <p className="help mt-3" style={{ color: "var(--drift)" }}>
-                {githubError} Existing families can&apos;t be listed, but you can still add a new one.
+                {githubError}{" "}
+                Existing families can&apos;t be listed, but you can still add a
+                new one.
               </p>
             )}
           </div>

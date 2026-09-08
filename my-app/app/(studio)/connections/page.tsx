@@ -3,6 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parsePostgresUri } from "@/lib/parse-uri";
 import {
+  DEFAULT_SSL_MODE,
+  PORT_MAX,
+  PORT_MIN,
+  sslModeFromLegacyBoolean,
+  sslModeUsesTls,
+  summariseErrors,
+  toSslMode,
+  validateConnection,
+  type FieldErrors,
+  type SslMode,
+} from "@/lib/connection-validate";
+import {
   LogoIcon,
   PlusIcon,
   XIcon,
@@ -29,7 +41,17 @@ type Connection = {
   // The API never sends the connection string back (it embeds the password);
   // it only tells us whether one is stored so the UI can label/behave correctly.
   has_connection_string?: boolean;
+  // `ssl` is the original boolean column; `ssl_mode` is the real setting and is
+  // null on rows written before it existed. Read them through connSslMode().
   ssl: boolean;
+  ssl_mode?: string | null;
+};
+
+/** What DELETE reports when a connection is still in use. */
+type Dependents = {
+  trackedSchemas: number;
+  schemaNames: string[];
+  snapshots: number;
 };
 
 type RowResult =
@@ -54,7 +76,7 @@ const EMPTY_FORM = {
   database: "postgres",
   user: "postgres",
   password: "",
-  ssl: false,
+  sslMode: DEFAULT_SSL_MODE,
 };
 
 function isLocalHost(host: string): boolean {
@@ -62,9 +84,33 @@ function isLocalHost(host: string): boolean {
   return h === "localhost" || h === "127.0.0.1" || h === "::1";
 }
 
+/** The TLS setting for a saved row: ssl_mode when present, else the old boolean. */
+function connSslMode(conn: Connection): SslMode {
+  return conn.ssl_mode ? toSslMode(conn.ssl_mode) : sslModeFromLegacyBoolean(conn.ssl);
+}
+
+const SSL_CHOICES: { mode: SslMode; label: string; help: string }[] = [
+  {
+    mode: "disable",
+    label: "Off",
+    help: "No encryption. Normal for a localhost loopback connection.",
+  },
+  {
+    mode: "require",
+    label: "Require",
+    help: "Encrypts the link but accepts whatever certificate the server presents. This is what hosted Postgres (Supabase, Neon, RDS) needs.",
+  },
+  {
+    mode: "verify-full",
+    label: "Verify full",
+    help: "Encrypts and checks the certificate chain and hostname. Fails against a self-signed certificate.",
+  },
+];
+
 export default function ConnectionsPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [rowResults, setRowResults] = useState<Record<number, RowResult>>({});
 
@@ -76,9 +122,14 @@ export default function ConnectionsPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [drawerTest, setDrawerTest] = useState<DrawerTest>({ kind: "idle" });
   const [saving, setSaving] = useState(false);
+  const [formErrors, setFormErrors] = useState<FieldErrors>({});
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
+  // Set once the API has told us the connection is still in use; the next press
+  // of Delete carries confirm: true.
+  const [deleteDependents, setDeleteDependents] = useState<Dependents | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Toast
   const [toastMsg, setToastMsg] = useState("");
@@ -96,9 +147,22 @@ export default function ConnectionsPage() {
     try {
       const res = await fetch("/api/connections");
       const data = await res.json();
-      setConnections(Array.isArray(data) ? data : []);
+      // The API answers with an array on success and { error } on failure.
+      // Showing a failure as an empty list would say "you have no connections
+      // yet" to someone whose connections are all still there — the single most
+      // misleading thing this screen can do.
+      if (!res.ok || !Array.isArray(data)) {
+        setConnections([]);
+        setLoadError(
+          typeof data?.error === "string" ? data.error : "Could not read your saved connections."
+        );
+        return;
+      }
+      setConnections(data);
+      setLoadError(null);
     } catch {
       setConnections([]);
+      setLoadError("Could not reach the app server to read your connections.");
     } finally {
       setLoading(false);
     }
@@ -114,6 +178,7 @@ export default function ConnectionsPage() {
       if (e.key !== "Escape") return;
       setDrawerOpen(false);
       setDeleteTarget(null);
+      setDeleteDependents(null);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -123,6 +188,7 @@ export default function ConnectionsPage() {
   function openAdd() {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    setFormErrors({});
     setFieldMode("uri");
     setShowPassword(false);
     setDrawerTest({ kind: "idle" });
@@ -140,8 +206,9 @@ export default function ConnectionsPage() {
       database: conn.database_name ?? "postgres",
       user: conn.username ?? "postgres",
       password: "", // never prefilled; left blank keeps the stored one
-      ssl: Boolean(conn.ssl),
+      sslMode: connSslMode(conn),
     });
+    setFormErrors({});
     setFieldMode(hasUri ? "uri" : "fields");
     setShowPassword(false);
     setDrawerTest({ kind: "idle" });
@@ -154,14 +221,14 @@ export default function ConnectionsPage() {
         ...f,
         uri: "postgres://postgres@localhost:5432/postgres",
         name: f.name || "Local Postgres",
-        ssl: false,
+        sslMode: "disable",
       }));
     } else {
       setForm((f) => ({
         ...f,
         uri: "postgres://user:password@host.neon.tech:5432/dbname?sslmode=require",
         name: f.name || "Hosted Postgres",
-        ssl: true,
+        sslMode: "require",
       }));
     }
     setFieldMode("uri");
@@ -178,21 +245,21 @@ export default function ConnectionsPage() {
     const parsed = fieldMode === "uri" && uri ? parsePostgresUri(uri) : null;
     const fromUri = fieldMode === "uri" && parsed;
     return {
-      parsed,
-      payload: {
-        type: "PostgreSQL",
-        ssl: form.ssl,
-        connection_string: fieldMode === "uri" ? uri : "",
-        // In Fields mode the user is defining the target by loose fields, so on
-        // save any previously-stored connection string should be cleared (else
-        // a stale URI would keep winning over these fields).
-        clear_connection_string: fieldMode === "fields",
-        host: fromUri ? parsed.host : form.host.trim(),
-        port: fromUri ? parsed.port : form.port,
-        database_name: fromUri ? parsed.database : form.database.trim(),
-        username: fromUri ? parsed.user : form.user.trim(),
-        password: fieldMode === "fields" ? form.password : "",
-      },
+      type: "PostgreSQL",
+      // ssl_mode is the setting the server acts on. The boolean is sent in step
+      // with it so nothing that still reads the old `ssl` column goes stale.
+      ssl: sslModeUsesTls(form.sslMode),
+      ssl_mode: form.sslMode,
+      connection_string: fieldMode === "uri" ? uri : "",
+      // In Fields mode the user is defining the target by loose fields, so on
+      // save any previously-stored connection string should be cleared (else
+      // a stale URI would keep winning over these fields).
+      clear_connection_string: fieldMode === "fields",
+      host: fromUri ? parsed.host : form.host.trim(),
+      port: fromUri ? parsed.port : form.port,
+      database_name: fromUri ? parsed.database : form.database.trim(),
+      username: fromUri ? parsed.user : form.user.trim(),
+      password: fieldMode === "fields" ? form.password : "",
     };
   }
 
@@ -272,7 +339,7 @@ export default function ConnectionsPage() {
     }
 
     setDrawerTest({ kind: "loading" });
-    const { payload } = buildPayload();
+    const payload = buildPayload();
     try {
       const res = await fetch("/api/connections/test", {
         method: "POST",
@@ -288,29 +355,31 @@ export default function ConnectionsPage() {
   // ——— Save ———
   async function save() {
     const name = form.name.trim();
-    if (!name) {
-      showToast("Add a friendly name first.");
+    const payload = buildPayload();
+
+    // A brand-new connection in URI mode has no stored string to fall back on,
+    // and the validator would report that as four separate missing fields
+    // instead of the one thing the user actually has to do. When *editing*, a
+    // blank URI is allowed: it keeps the string already saved, and the loose
+    // fields loaded for the row are what gets validated below.
+    if (fieldMode === "uri" && editingId === null && !form.uri.trim()) {
+      setFormErrors({ connection_string: "Paste a connection string first." });
+      showToast("Paste a connection string first.");
       return;
     }
-    const { parsed, payload } = buildPayload();
-    if (fieldMode === "uri") {
-      const uri = form.uri.trim();
-      // When editing, a blank URI is allowed — it keeps the stored connection
-      // string (we never echo it back to prefill the field). Only a brand-new
-      // connection must supply one. When a URI *is* typed, it must be valid.
-      if (!uri) {
-        if (editingId === null) {
-          showToast("Paste a connection string first.");
-          return;
-        }
-      } else if (!parsed || parsed.host === "—") {
-        showToast("That connection string doesn't look valid.");
-        return;
-      }
-    } else if (editingId === null && !form.password.trim()) {
-      showToast("Enter a password.");
+
+    // Exactly the rules /api/connections applies, from the same module — the
+    // drawer cannot accept something the route will reject, or the reverse.
+    const check = validateConnection(
+      { ...payload, name },
+      editingId === null ? "create" : "edit"
+    );
+    if (!check.ok) {
+      setFormErrors(check.errors);
+      showToast(summariseErrors(check.errors) || "Check the highlighted fields.");
       return;
     }
+    setFormErrors({});
 
     setSaving(true);
     try {
@@ -321,6 +390,10 @@ export default function ConnectionsPage() {
       });
       const data = await res.json();
       if (!res.ok) {
+        // The route returns the same field-keyed map, so a rule only it can
+        // check (a duplicate name, a host it refuses to dial) lands on the
+        // field it belongs to rather than in a toast that disappears.
+        if (data?.errors && typeof data.errors === "object") setFormErrors(data.errors);
         showToast(data?.error ?? "Could not save the connection.");
         return;
       }
@@ -361,20 +434,50 @@ export default function ConnectionsPage() {
   }
 
   // ——— Delete ———
+  function openDelete(conn: Connection) {
+    setDeleteTarget(conn);
+    setDeleteDependents(null);
+  }
+
+  function closeDelete() {
+    setDeleteTarget(null);
+    setDeleteDependents(null);
+  }
+
   async function confirmDelete() {
     const target = deleteTarget;
     if (!target) return;
-    setDeleteTarget(null);
+    setDeleting(true);
     try {
-      await fetch("/api/connections", {
+      const res = await fetch("/api/connections", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: target.id }),
+        // First press asks. If the API says the connection is still in use we
+        // show what goes with it, and this second press confirms.
+        body: JSON.stringify({ id: target.id, confirm: deleteDependents !== null }),
       });
+      const data = await res.json().catch(() => null);
+
+      if (res.status === 409 && data?.needsConfirmation) {
+        setDeleteDependents(
+          data.dependents ?? { trackedSchemas: 0, schemaNames: [], snapshots: 0 }
+        );
+        return;
+      }
+      if (!res.ok) {
+        closeDelete();
+        showToast(data?.error ?? "Could not delete the connection.");
+        return;
+      }
+
+      closeDelete();
       showToast("Connection deleted");
       await reload();
     } catch {
+      closeDelete();
       showToast("Could not delete the connection.");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -382,13 +485,13 @@ export default function ConnectionsPage() {
   const visible = connections.filter((c) => {
     if (filter === "local") return isLocalHost(c.host);
     if (filter === "online") return !isLocalHost(c.host);
-    if (filter === "ssl") return Boolean(c.ssl);
+    if (filter === "ssl") return sslModeUsesTls(connSslMode(c));
     return true;
   });
 
   const localCount = connections.filter((c) => isLocalHost(c.host)).length;
   const onlineCount = connections.length - localCount;
-  const sslCount = connections.filter((c) => Boolean(c.ssl)).length;
+  const sslCount = connections.filter((c) => sslModeUsesTls(connSslMode(c))).length;
   const healthyCount = Object.values(rowResults).filter((r) => r.status === "ok").length;
   const latencies = Object.values(rowResults).flatMap((r) =>
     r.status === "ok" ? [r.latencyMs] : []
@@ -397,6 +500,9 @@ export default function ConnectionsPage() {
     latencies.length > 0
       ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
       : null;
+
+  const tlsOn = sslModeUsesTls(form.sslMode);
+  const sslChoice = SSL_CHOICES.find((c) => c.mode === form.sslMode) ?? SSL_CHOICES[0];
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
@@ -478,7 +584,31 @@ export default function ConnectionsPage() {
                 </tr>
               )}
 
-              {!loading && visible.length === 0 && (
+              {!loading && loadError && (
+                <tr>
+                  <td colSpan={7} style={{ padding: "40px 16px", textAlign: "center" }}>
+                    <div className="flex flex-col items-center gap-3">
+                      <div style={{ color: "var(--break)" }}>{loadError}</div>
+                      <div className="help">
+                        Your saved connections are still there — this screen just could not read
+                        them.
+                      </div>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => {
+                          setLoading(true);
+                          reload();
+                        }}
+                        type="button"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )}
+
+              {!loading && !loadError && visible.length === 0 && (
                 <tr>
                   <td colSpan={7} style={{ padding: "40px 16px", textAlign: "center" }}>
                     <div className="flex flex-col items-center gap-3">
@@ -499,11 +629,13 @@ export default function ConnectionsPage() {
               )}
 
               {!loading &&
+                !loadError &&
                 visible.map((conn) => {
                   const result = rowResults[conn.id];
                   const dot =
                     result?.status === "ok" ? "ok" : result?.status === "err" ? "err" : "unknown";
                   const local = isLocalHost(conn.host);
+                  const sslMode = connSslMode(conn);
                   return (
                     <tr key={conn.id}>
                       {/* Name */}
@@ -553,15 +685,15 @@ export default function ConnectionsPage() {
                       </td>
                       {/* SSL */}
                       <td data-label="SSL">
-                        {conn.ssl ? (
-                          <span className="pill pill-sync">
-                            <span className="dot" />
-                            on
-                          </span>
-                        ) : (
+                        {sslMode === "disable" ? (
                           <span className="pill pill-neutral">
                             <span className="dot" style={{ background: "var(--text-3)" }} />
                             off
+                          </span>
+                        ) : (
+                          <span className="pill pill-sync">
+                            <span className="dot" />
+                            {sslMode === "verify-full" ? "verify" : "require"}
                           </span>
                         )}
                       </td>
@@ -592,7 +724,7 @@ export default function ConnectionsPage() {
                           </button>
                           <button
                             className="btn btn-ghost btn-sm"
-                            onClick={() => setDeleteTarget(conn)}
+                            onClick={() => openDelete(conn)}
                             style={{ color: "var(--break)" }}
                             aria-label={`Delete ${conn.name}`}
                           >
@@ -608,7 +740,7 @@ export default function ConnectionsPage() {
           </div>
         </div>
 
-        {!loading && connections.length > 0 && (
+        {!loading && !loadError && connections.length > 0 && (
           <div className="mt-5 text-[12px]" style={{ color: "var(--text-3)" }}>
             Showing{" "}
             <span className="mono" style={{ color: "var(--text-2)" }}>
@@ -675,6 +807,7 @@ export default function ConnectionsPage() {
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             />
+            <FieldError message={formErrors.name} />
           </div>
 
           {/* Mode toggle */}
@@ -683,14 +816,20 @@ export default function ConnectionsPage() {
             <div className="seg">
               <button
                 className={fieldMode === "uri" ? "active" : ""}
-                onClick={() => setFieldMode("uri")}
+                onClick={() => {
+                  setFieldMode("uri");
+                  setFormErrors({});
+                }}
                 type="button"
               >
                 Connection string
               </button>
               <button
                 className={fieldMode === "fields" ? "active" : ""}
-                onClick={() => setFieldMode("fields")}
+                onClick={() => {
+                  setFieldMode("fields");
+                  setFormErrors({});
+                }}
                 type="button"
               >
                 Fields
@@ -726,6 +865,7 @@ export default function ConnectionsPage() {
                   Paste
                 </button>
               </div>
+              <FieldError message={formErrors.connection_string} />
               {editingId !== null && (
                 <div className="help">
                   Leave blank to keep the saved connection string, or paste a new one to replace it.
@@ -747,15 +887,20 @@ export default function ConnectionsPage() {
                     value={form.host}
                     onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))}
                   />
+                  <FieldError message={formErrors.host} />
                 </div>
                 <div>
                   <div className="label mb-1">Port</div>
                   <input
                     className="input mono"
+                    type="number"
+                    min={PORT_MIN}
+                    max={PORT_MAX}
                     placeholder="5432"
                     value={form.port}
                     onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
                   />
+                  <FieldError message={formErrors.port} />
                 </div>
               </div>
               <div>
@@ -766,6 +911,7 @@ export default function ConnectionsPage() {
                   value={form.database}
                   onChange={(e) => setForm((f) => ({ ...f, database: e.target.value }))}
                 />
+                <FieldError message={formErrors.database_name} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -776,6 +922,7 @@ export default function ConnectionsPage() {
                     value={form.user}
                     onChange={(e) => setForm((f) => ({ ...f, user: e.target.value }))}
                   />
+                  <FieldError message={formErrors.username} />
                 </div>
                 <div>
                   <div className="label mb-1">
@@ -803,21 +950,39 @@ export default function ConnectionsPage() {
                       <EyeIcon size={12} />
                     </button>
                   </div>
+                  <FieldError message={formErrors.password} />
                 </div>
               </div>
             </div>
           )}
 
-          {/* SSL */}
+          {/* SSL — three modes, because "on" hid a real difference: `require`
+              encrypts without checking the certificate, `verify-full` checks it. */}
           <div className="mt-6">
-            <div className="label mb-2">Security</div>
-            <div className={`ssl-card ${form.ssl ? "on" : ""}`}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="label">Security</div>
+              <div className="seg" role="radiogroup" aria-label="SSL mode">
+                {SSL_CHOICES.map((choice) => (
+                  <button
+                    key={choice.mode}
+                    className={form.sslMode === choice.mode ? "active" : ""}
+                    role="radio"
+                    aria-checked={form.sslMode === choice.mode}
+                    onClick={() => setForm((f) => ({ ...f, sslMode: choice.mode }))}
+                    type="button"
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className={`ssl-card ${tlsOn ? "on" : ""}`}>
               <div className="flex items-center gap-3 min-w-0">
                 <div
                   className="w-9 h-9 rounded-lg grid place-items-center flex-none"
                   style={{
-                    background: form.ssl ? "var(--sync-soft)" : "var(--surface-3)",
-                    color: form.ssl ? "var(--sync)" : "var(--text-3)",
+                    background: tlsOn ? "var(--sync-soft)" : "var(--surface-3)",
+                    color: tlsOn ? "var(--sync)" : "var(--text-3)",
                   }}
                 >
                   <LockIcon size={16} />
@@ -828,31 +993,17 @@ export default function ConnectionsPage() {
                     <span
                       className="mono"
                       style={{
-                        color: form.ssl ? "var(--sync)" : "var(--text-3)",
+                        color: tlsOn ? "var(--sync)" : "var(--text-3)",
                         fontWeight: 500,
                         marginLeft: 6,
                       }}
                     >
-                      {form.ssl ? "ON" : "OFF"}
+                      {form.sslMode}
                     </span>
                   </div>
-                  <div className="help mt-0.5">
-                    {form.ssl
-                      ? "Required for hosted databases (Supabase, Neon, RDS)."
-                      : "Usually off for localhost loopback connections."}
-                  </div>
+                  <div className="help mt-0.5">{sslChoice.help}</div>
                 </div>
               </div>
-              <button
-                className={`toggle ${form.ssl ? "on" : ""}`}
-                role="switch"
-                aria-checked={form.ssl}
-                aria-label="Toggle SSL"
-                onClick={() => setForm((f) => ({ ...f, ssl: !f.ssl }))}
-                type="button"
-              >
-                <span className="thumb" />
-              </button>
             </div>
           </div>
 
@@ -872,8 +1023,8 @@ export default function ConnectionsPage() {
             </div>
             <DrawerTestBanner
               test={drawerTest}
-              sslOn={form.ssl}
-              onEnableSsl={() => setForm((f) => ({ ...f, ssl: true }))}
+              sslOn={tlsOn}
+              onEnableSsl={() => setForm((f) => ({ ...f, sslMode: "require" }))}
             />
           </div>
         </div>
@@ -899,7 +1050,7 @@ export default function ConnectionsPage() {
         role="dialog"
         aria-modal="true"
         onClick={(e) => {
-          if (e.target === e.currentTarget) setDeleteTarget(null);
+          if (e.target === e.currentTarget) closeDelete();
         }}
       >
         <div className="modal p-5">
@@ -918,6 +1069,33 @@ export default function ConnectionsPage() {
                 This removes the saved connection. Tracked schemas that use it will lose their way to
                 reach the database. This can&apos;t be undone.
               </p>
+
+              {deleteDependents && (
+                <div
+                  className="mt-3 panel p-3"
+                  style={{
+                    background: "var(--break-soft)",
+                    borderColor: "color-mix(in oklab, var(--break) 30%, transparent)",
+                  }}
+                >
+                  <div className="text-[12.5px] font-medium" style={{ color: "var(--break)" }}>
+                    Still in use by {deleteDependents.trackedSchemas} tracked schema
+                    {deleteDependents.trackedSchemas === 1 ? "" : "s"}
+                  </div>
+                  <div className="text-[12px] mt-1" style={{ color: "var(--text-2)" }}>
+                    Deleting it also removes {deleteDependents.snapshots} snapshot
+                    {deleteDependents.snapshots === 1 ? "" : "s"} and their drift history.
+                  </div>
+                  {deleteDependents.schemaNames.length > 0 && (
+                    <div className="mono text-[11.5px] mt-2" style={{ color: "var(--text-3)" }}>
+                      {deleteDependents.schemaNames.slice(0, 6).join(", ")}
+                      {deleteDependents.schemaNames.length > 6
+                        ? `, +${deleteDependents.schemaNames.length - 6} more`
+                        : ""}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="mt-3 panel p-3" style={{ background: "var(--surface-2)" }}>
                 <div className="text-[12px] flex items-center justify-between">
                   <span style={{ color: "var(--text-3)" }}>Connection</span>
@@ -930,19 +1108,28 @@ export default function ConnectionsPage() {
                 <div className="text-[12px] flex items-center justify-between mt-1">
                   <span style={{ color: "var(--text-3)" }}>SSL</span>
                   <span className="mono" style={{ color: "var(--text-2)" }}>
-                    {deleteTarget?.ssl ? "on" : "off"}
+                    {deleteTarget ? connSslMode(deleteTarget) : ""}
                   </span>
                 </div>
               </div>
             </div>
           </div>
           <div className="flex justify-end gap-2 mt-5">
-            <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)} type="button">
+            <button className="btn btn-ghost btn-sm" onClick={closeDelete} type="button">
               Cancel
             </button>
-            <button className="btn btn-destructive btn-sm" onClick={confirmDelete} type="button">
+            <button
+              className="btn btn-destructive btn-sm"
+              onClick={confirmDelete}
+              disabled={deleting}
+              type="button"
+            >
               <TrashIcon size={12} />
-              Delete connection
+              {deleting
+                ? "Deleting…"
+                : deleteDependents
+                  ? "Delete anyway"
+                  : "Delete connection"}
             </button>
           </div>
         </div>
@@ -958,6 +1145,16 @@ export default function ConnectionsPage() {
 }
 
 // ——— Small presentational helpers ———
+
+/** One validation message under the field it belongs to. Renders nothing when clear. */
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return (
+    <div className="text-[11.5px] mt-1" style={{ color: "var(--break)" }}>
+      {message}
+    </div>
+  );
+}
 
 function SummaryTile({
   label,

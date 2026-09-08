@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireViewer } from "@/lib/auth-guard";
 import { findTrackedSchema } from "@/lib/lineage-db";
 
 /**
@@ -9,6 +10,9 @@ import { findTrackedSchema } from "@/lib/lineage-db";
  * Returns `{ tracked: false }` when the pair isn't tracked.
  */
 export async function GET(request: NextRequest) {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
   try {
     const sp = new URL(request.url).searchParams;
     const connectionId = Number(sp.get("connectionId"));
