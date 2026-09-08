@@ -3,10 +3,12 @@ import {
   Pill,
   Card,
   EmptyState,
+  EnvironmentPill,
   Timeline,
   TimelineNode,
   type PillTone,
 } from "@/components/ui";
+import { ENVIRONMENT_META, isProduction } from "@/lib/environments";
 import {
   ChevronLeftIcon,
   CheckIcon,
@@ -16,6 +18,7 @@ import {
   InfoIcon,
 } from "@/components/ui/icons";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
+import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
 import {
   getLineageDetail,
   type LineageNode,
@@ -151,6 +154,7 @@ export default async function SchemaDetailPage({
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             <Pill tone={drift.tone}>{drift.label}</Pill>
+            <EnvironmentPill environment={detail.environment} />
             {connectionGone ? (
               <Pill tone="neutral">Connection removed</Pill>
             ) : (
@@ -212,6 +216,40 @@ export default async function SchemaDetailPage({
           </div>
         </Card>
       </header>
+
+      {/* Environment — editable here because tracking only seeds it from the
+          connection, and a label nobody can correct is a label nobody trusts. */}
+      <Card className="p-4">
+        <div className="grid gap-4 sm:grid-cols-[minmax(0,340px)_1fr] items-start">
+          <SchemaEnvironmentPicker
+            trackedSchemaId={detail.trackedSchemaId}
+            environment={detail.environment}
+          />
+          {isProduction(detail.environment) ? (
+            <div className="warn-inline">
+              <span className="ico" style={{ color: "var(--break)" }}>
+                <AlertTriangleIcon size={14} />
+              </span>
+              <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                <b>Production schema.</b> {ENVIRONMENT_META.prod.help} Compare and Deploy
+                repeat this warning before they generate or run anything against it, and
+                re-baselining here accepts whatever changed outside this app as correct.
+              </div>
+            </div>
+          ) : (
+            <div className="warn-inline">
+              <span className="ico">
+                <InfoIcon size={14} />
+              </span>
+              <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                The environment is a typed field, not a word inside a name. It is what
+                Compare and Deploy read to decide whether to warn you before generating or
+                running SQL against this schema.
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
 
       {/* Drift banner — one honest state at a time */}
       <DriftBanner

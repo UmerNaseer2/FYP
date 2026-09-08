@@ -38,6 +38,7 @@ import {
   AlertTriangleIcon,
   LockIcon,
 } from "@/components/ui/icons";
+import { EnvironmentPill, FilterPill } from "@/components/ui";
 
 // ——— Data shapes ———
 type Connection = {
@@ -107,20 +108,6 @@ function connSslMode(conn: Connection): SslMode {
 /** The environment for a saved row. Anything unknown or missing reads "unset". */
 function connEnvironment(conn: Connection): Environment {
   return toEnvironment(conn.environment);
-}
-
-/** The environment pill used in the table and in the delete dialog. */
-function EnvironmentPill({ environment }: { environment: Environment }) {
-  const meta = ENVIRONMENT_META[environment];
-  return (
-    <span className={`pill ${meta.pill}`} title={meta.help}>
-      <span
-        className="dot"
-        style={environment === "unset" ? { background: "var(--text-3)" } : undefined}
-      />
-      {meta.label}
-    </span>
-  );
 }
 
 const SSL_CHOICES: { mode: SslMode; label: string; help: string }[] = [
@@ -1375,28 +1362,6 @@ function SummaryTile({
         )}
       </div>
     </div>
-  );
-}
-
-function FilterPill({
-  active,
-  count,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  count: number;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button className={`pill ${active ? "pill-brand" : "pill-outline"}`} onClick={onClick} type="button">
-      {active && <span className="dot" />}
-      {children}
-      <span className="mono ml-1" style={{ opacity: 0.7 }}>
-        {count}
-      </span>
-    </button>
   );
 }
 

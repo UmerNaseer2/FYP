@@ -12,8 +12,18 @@ import {
   ConfirmDialog,
   Label,
   Input,
+  EnvironmentPill,
+  FilterPill,
   type PillTone,
 } from "@/components/ui";
+import {
+  DEFAULT_ENVIRONMENT,
+  ENVIRONMENTS,
+  ENVIRONMENT_META,
+  isProduction,
+  toEnvironment,
+  type Environment,
+} from "@/lib/environments";
 import { Select } from "@/components/ui/Select";
 import {
   DashboardIcon,
@@ -42,6 +52,9 @@ type TrackedSchema = {
   connectionId: number;
   schemaName: string;
   label: string | null;
+  // dev / staging / prod. Optional because a response written before the column
+  // existed simply omits it; read it through toEnvironment(), never directly.
+  environment?: string | null;
   createdAt: string;
   connectionName: string | null;
   connectionHost: string | null;
@@ -61,6 +74,7 @@ type ConnectionRow = {
   host: string;
   database_name: string;
   type: string;
+  environment?: string | null;
 };
 
 // ── Small pure helpers ───────────────────────────────────────────────────────
@@ -119,6 +133,9 @@ export default function DashboardPage() {
   const [listPhase, setListPhase] = useState<"loading" | "ready" | "error">("loading");
   const [checkingId, setCheckingId] = useState<number | null>(null);
   const [cardError, setCardError] = useState<{ id: number; msg: string } | null>(null);
+  // "all", or one environment. Filtering the grid is how you answer "what is
+  // actually in production right now?" without reading every card.
+  const [envFilter, setEnvFilter] = useState<"all" | Environment>("all");
 
   // Track-a-schema drawer.
   const [trackOpen, setTrackOpen] = useState(false);
@@ -130,6 +147,10 @@ export default function DashboardPage() {
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [trackSchema, setTrackSchema] = useState("");
   const [trackLabel, setTrackLabel] = useState("");
+  // Seeded from the chosen connection, then editable: one server can host a
+  // staging schema and a production one.
+  const [trackEnv, setTrackEnv] = useState<Environment>(DEFAULT_ENVIRONMENT);
+  const [trackEnvTouched, setTrackEnvTouched] = useState(false);
   const [trackSubmitting, setTrackSubmitting] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
 
@@ -163,6 +184,8 @@ export default function DashboardPage() {
     setSchemaError(null);
     setTrackSchema("");
     setTrackLabel("");
+    setTrackEnv(DEFAULT_ENVIRONMENT);
+    setTrackEnvTouched(false);
     setTrackError(null);
   }
 
@@ -186,6 +209,13 @@ export default function DashboardPage() {
 
   async function onPickConnection(id: string) {
     setTrackConnId(id);
+    // Inherit the connection's environment — the user already said which
+    // environment this server is, so asking again would be asking twice. Once
+    // they change it by hand we stop overwriting their answer.
+    if (!trackEnvTouched) {
+      const picked = connections.find((c) => String(c.id) === id);
+      setTrackEnv(toEnvironment(picked?.environment));
+    }
     setTrackSchema("");
     setSchemaOptions([]);
     setSchemaError(null);
@@ -225,6 +255,7 @@ export default function DashboardPage() {
           connectionId: Number(trackConnId),
           schemaName: trackSchema,
           label: trackLabel.trim() || undefined,
+          environment: trackEnv,
         }),
       });
       const data = await res.json();
@@ -285,10 +316,21 @@ export default function DashboardPage() {
 
   // ── Derived: summary counts + hero-first ordering ──────────────────────────
   const total = items.length;
-  const drifted = items.filter((i) => i.driftStatus === "drifted").length;
-  const inSync = items.filter((i) => i.driftStatus === "in_sync").length;
-  const unreachable = items.filter((i) => i.driftStatus === "unreachable").length;
-  const sorted = [...items].sort(
+  const envCount = (environment: Environment) =>
+    items.filter((i) => toEnvironment(i.environment) === environment).length;
+  const unlabelledCount = envCount("unset");
+
+  const visible =
+    envFilter === "all"
+      ? items
+      : items.filter((i) => toEnvironment(i.environment) === envFilter);
+
+  // The tiles count what is on screen, so they agree with the grid under it.
+  const drifted = visible.filter((i) => i.driftStatus === "drifted").length;
+  const inSync = visible.filter((i) => i.driftStatus === "in_sync").length;
+  const unreachable = visible.filter((i) => i.driftStatus === "unreachable").length;
+  const prodShown = visible.filter((i) => isProduction(toEnvironment(i.environment))).length;
+  const sorted = [...visible].sort(
     (a, b) => sortPriority(a.driftStatus) - sortPriority(b.driftStatus)
   );
 
@@ -322,10 +364,16 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Summary strip — only meaningful once we have data */}
+      {/* Summary strip — only meaningful once we have data. Every tile counts
+          what is on screen, so the strip and the grid can never disagree. */}
       {listPhase === "ready" && total > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <SummaryTile label="Tracked" value={total} />
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <SummaryTile label="Tracked" value={visible.length} />
+          <SummaryTile
+            label="Production"
+            value={prodShown}
+            tone={prodShown > 0 ? "break" : undefined}
+          />
           <SummaryTile label="Drifted" value={drifted} tone={drifted > 0 ? "drift" : undefined} />
           <SummaryTile label="In sync" value={inSync} tone={inSync > 0 ? "sync" : undefined} />
           <SummaryTile
@@ -333,6 +381,49 @@ export default function DashboardPage() {
             value={unreachable}
             tone={unreachable > 0 ? "break" : undefined}
           />
+        </div>
+      )}
+
+      {/* Environment filter — the reason the label is typed rather than a word
+          somebody wrote inside a name. Counts are over everything tracked, so
+          they stay put while you move between filters. */}
+      {listPhase === "ready" && total > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <FilterPill
+            active={envFilter === "all"}
+            onClick={() => setEnvFilter("all")}
+            count={total}
+          >
+            All
+          </FilterPill>
+          <span className="hsep mx-1" />
+          {ENVIRONMENTS.map((environment) => (
+            <FilterPill
+              key={environment}
+              active={envFilter === environment}
+              onClick={() => setEnvFilter(environment)}
+              count={envCount(environment)}
+            >
+              {ENVIRONMENT_META[environment].label}
+            </FilterPill>
+          ))}
+        </div>
+      )}
+
+      {/* Only while something is genuinely unlabelled — that is the state in
+          which nothing downstream can warn you that a target is production. */}
+      {listPhase === "ready" && unlabelledCount > 0 && (
+        <div className="warn-inline">
+          <span className="ico">
+            <AlertCircleIcon size={14} />
+          </span>
+          <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <b>
+              {unlabelledCount} tracked schema{unlabelledCount === 1 ? " has" : "s have"} no
+              environment.
+            </b>{" "}
+            Label them so Compare and Deploy can tell you when a target is production.
+          </div>
         </div>
       )}
 
@@ -369,7 +460,24 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {listPhase === "ready" && total > 0 && (
+      {listPhase === "ready" && total > 0 && sorted.length === 0 && (
+        <Card className="p-0 overflow-hidden">
+          <div style={{ height: 220 }}>
+            <EmptyState
+              icon={<DashboardIcon size={22} />}
+              title={`Nothing tracked in ${ENVIRONMENT_META[envFilter as Environment].label}`}
+              description="Every tracked schema is in another environment."
+              actions={
+                <Button variant="secondary" size="sm" onClick={() => setEnvFilter("all")}>
+                  Show all environments
+                </Button>
+              }
+            />
+          </div>
+        </Card>
+      )}
+
+      {listPhase === "ready" && sorted.length > 0 && (
         <div className="grid md:grid-cols-3 gap-5">
           {sorted.map((item) => (
             <SchemaCard
@@ -458,13 +566,52 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {/* Environment — inherited from the connection, still editable, because
+            one server can host a staging schema and a production one. */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <Label>Environment</Label>
+            <span className="help">
+              {trackEnvTouched ? "Set for this schema" : "Inherited from the connection"}
+            </span>
+          </div>
+          <div
+            className="seg"
+            role="radiogroup"
+            aria-label="Environment"
+            style={{ display: "flex" }}
+          >
+            {ENVIRONMENTS.map((environment) => (
+              <button
+                key={environment}
+                className={trackEnv === environment ? "active" : ""}
+                role="radio"
+                aria-checked={trackEnv === environment}
+                onClick={() => {
+                  setTrackEnv(environment);
+                  setTrackEnvTouched(true);
+                }}
+                type="button"
+                style={{ flex: 1 }}
+              >
+                {ENVIRONMENT_META[environment].label}
+              </button>
+            ))}
+          </div>
+          <p className="help mt-1.5">{ENVIRONMENT_META[trackEnv].help}</p>
+        </div>
+
         <div>
           <Label className="mb-1 block">Label (optional)</Label>
           <Input
-            placeholder="e.g. Prod — RDS"
+            placeholder="e.g. Billing service"
             value={trackLabel}
             onChange={(e) => setTrackLabel(e.target.value)}
           />
+          <p className="help mt-1">
+            A human name for this schema. The environment above is the typed
+            field — don&apos;t write &quot;prod&quot; in here and expect a warning.
+          </p>
         </div>
 
         {trackError && (
@@ -494,6 +641,12 @@ export default function DashboardPage() {
           <>
             <span className="mono">{untrackTarget?.schemaName}</span> and its captured snapshots,
             lineage, and drift history will be removed. This can&apos;t be undone.
+            {untrackTarget && isProduction(toEnvironment(untrackTarget.environment)) && (
+              <span className="block mt-2" style={{ color: "var(--break)" }}>
+                This schema is labelled production. Untracking leaves the live database
+                untouched, but you lose every baseline you could compare it against.
+              </span>
+            )}
           </>
         }
         confirmLabel={untracking ? "Removing…" : "Stop tracking"}
@@ -571,6 +724,7 @@ function SchemaCard({
   onUntrack: () => void;
 }) {
   const meta = driftMeta(item.driftStatus);
+  const environment = toEnvironment(item.environment);
   const connectionGone = item.connectionName === null;
   const source =
     item.label ??
@@ -589,11 +743,14 @@ function SchemaCard({
 
   return (
     <Card className="p-5 relative overflow-hidden flex flex-col" style={heroStyle}>
-      <div className="flex items-center justify-between mb-2">
-        <Pill tone={meta.tone}>
-          {meta.hero && <AlertTriangleIcon size={11} />}
-          {meta.label}
-        </Pill>
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Pill tone={meta.tone}>
+            {meta.hero && <AlertTriangleIcon size={11} />}
+            {meta.label}
+          </Pill>
+          <EnvironmentPill environment={environment} />
+        </div>
         {connectionGone ? (
           <Pill tone="neutral">no connection</Pill>
         ) : (

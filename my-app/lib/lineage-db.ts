@@ -10,7 +10,7 @@ import pool, {
   ensureMetadataSchema,
   ENVIRONMENT_SQL_LIST,
 } from "./version-db";
-import { DEFAULT_ENVIRONMENT, type Environment } from "./environments";
+import { DEFAULT_ENVIRONMENT, toEnvironment, type Environment } from "./environments";
 
 /**
  * Phase 6 metadata store — "schema lineage".
@@ -214,6 +214,8 @@ export type TrackedSchemaHead = {
   headVersion: string | null;
   /** Latest drift result, null until a drift check has run. */
   driftStatus: DriftStatus | null;
+  /** dev / staging / prod — what lets Compare warn before touching this one. */
+  environment: Environment;
 };
 
 /**
@@ -230,11 +232,13 @@ export async function findTrackedSchema(
   await ensureLineageTables();
   const result = await pool.query<{
     id: number;
+    environment: string | null;
     head_version: string | null;
     drift_status: DriftStatus | null;
   }>(
     `SELECT
        ts.id,
+       ts.environment,
        head.version AS head_version,
        drift.status AS drift_status
      FROM tracked_schemas ts
@@ -258,6 +262,7 @@ export async function findTrackedSchema(
     trackedSchemaId: r.id,
     headVersion: r.head_version,
     driftStatus: r.drift_status,
+    environment: toEnvironment(r.environment),
   };
 }
 
@@ -413,6 +418,7 @@ export type LineageDetail = {
   trackedSchemaId: number;
   schemaName: string;
   label: string | null;
+  environment: Environment;
   createdAt: string;
   connection: LineageConnection | null;
   headSeq: number | null;
@@ -474,6 +480,7 @@ export async function getLineageDetail(
     id: number;
     schema_name: string;
     label: string | null;
+    environment: string | null;
     created_at: string;
     connection_id: number;
     connection_name: string | null;
@@ -483,7 +490,7 @@ export async function getLineageDetail(
     connection_type: string | null;
   }>(
     `SELECT
-       ts.id, ts.schema_name, ts.label, ts.created_at, ts.connection_id,
+       ts.id, ts.schema_name, ts.label, ts.environment, ts.created_at, ts.connection_id,
        c.name          AS connection_name,
        c.host          AS connection_host,
        c.port          AS connection_port,
@@ -578,6 +585,7 @@ export async function getLineageDetail(
     trackedSchemaId: ts.id,
     schemaName: ts.schema_name,
     label: ts.label,
+    environment: toEnvironment(ts.environment),
     createdAt: ts.created_at,
     connection,
     headSeq: migrations.length > 0 ? migrations[0].seq : null,
@@ -626,6 +634,7 @@ export type ExpectedRef = {
 type DriftSubject = {
   schemaName: string;
   label: string | null;
+  environment: Environment;
   connection: LineageConnection | null;
 };
 
@@ -664,6 +673,7 @@ export function buildDriftSummary(version: string | null, counts: DriftCounts): 
 type TrackedConnRow = {
   schema_name: string;
   label: string | null;
+  environment: string | null;
   connection_id: number;
   connection_name: string | null;
   host: string | null;
@@ -693,7 +703,7 @@ export async function computeDriftDetail(
   await ensureConnectionsTable();
   const res = await pool.query<TrackedConnRow>(
     `SELECT
-       ts.schema_name, ts.label, ts.connection_id,
+       ts.schema_name, ts.label, ts.environment, ts.connection_id,
        c.name AS connection_name, c.host, c.port, c.database_name, c.type,
        c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
      FROM tracked_schemas ts
@@ -715,7 +725,12 @@ export async function computeDriftDetail(
           type: t.type ?? "",
         }
       : null;
-  const subject: DriftSubject = { schemaName: t.schema_name, label: t.label, connection };
+  const subject: DriftSubject = {
+    schemaName: t.schema_name,
+    label: t.label,
+    environment: toEnvironment(t.environment),
+    connection,
+  };
 
   // 2. The EXPECTED snapshot — lineage HEAD, else the most recent capture.
   let expected: SchemaSnapshot | null = null;
@@ -812,6 +827,7 @@ export type DriftDetailView = {
   trackedSchemaId: number;
   schemaName: string;
   label: string | null;
+  environment: Environment;
   connection: LineageConnection | null;
   /** The lineage entry the live structure was compared against. */
   expected: ExpectedRef;
@@ -866,6 +882,7 @@ export async function getDriftDetail(
     trackedSchemaId,
     schemaName: comp.schemaName,
     label: comp.label,
+    environment: comp.environment,
     connection: comp.connection,
     lastRecorded,
   };
@@ -981,6 +998,12 @@ export type TrackedSchemaListItem = {
   connectionId: number;
   schemaName: string;
   label: string | null;
+  /**
+   * dev / staging / prod for this schema. Read through toEnvironment, so rows
+   * written before the column existed come back "unset" rather than looking
+   * like a target somebody has actually vouched for.
+   */
+  environment: Environment;
   createdAt: string;
   /** Null when the underlying connection has been deleted. */
   connectionName: string | null;
@@ -1001,6 +1024,7 @@ type TrackedListRow = {
   connection_id: number;
   schema_name: string;
   label: string | null;
+  environment: string | null;
   created_at: string;
   connection_name: string | null;
   connection_host: string | null;
@@ -1028,6 +1052,7 @@ export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
       ts.connection_id,
       ts.schema_name,
       ts.label,
+      ts.environment,
       ts.created_at,
       c.name           AS connection_name,
       c.host           AS connection_host,
@@ -1067,6 +1092,7 @@ export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
     connectionId: r.connection_id,
     schemaName: r.schema_name,
     label: r.label,
+    environment: toEnvironment(r.environment),
     createdAt: r.created_at,
     connectionName: r.connection_name,
     connectionHost: r.connection_host,

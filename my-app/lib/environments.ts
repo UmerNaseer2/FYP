@@ -21,31 +21,33 @@ export type Environment = (typeof ENVIRONMENTS)[number];
 export const DEFAULT_ENVIRONMENT: Environment = "unset";
 
 /**
- * How each environment is written on screen. `pill` is an existing class from
- * globals.css so the labels look like every other status pill in the app.
+ * How each environment is written on screen. `tone` is a subset of the design
+ * system's PillTone, spelled out here rather than imported so this module stays
+ * plain data that a route handler or a DDL helper can pull in without dragging
+ * a React component along with it.
  */
 export const ENVIRONMENT_META: Record<
   Environment,
-  { label: string; pill: string; help: string }
+  { label: string; tone: "neutral" | "brand" | "pending" | "break"; help: string }
 > = {
   unset: {
     label: "Unlabelled",
-    pill: "pill-neutral",
+    tone: "neutral",
     help: "No environment set. Nothing can warn you about this target, so label it.",
   },
   dev: {
     label: "Dev",
-    pill: "pill-brand",
+    tone: "brand",
     help: "A development database. Safe to rebuild from scratch.",
   },
   staging: {
     label: "Staging",
-    pill: "pill-pending",
+    tone: "pending",
     help: "A pre-production rehearsal. Treat migrations here as a dry run for prod.",
   },
   prod: {
     label: "Production",
-    pill: "pill-break",
+    tone: "break",
     help: "Live data. Every destructive change here is announced loudly before it runs.",
   },
 };

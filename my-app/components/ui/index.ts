@@ -2,6 +2,8 @@
 export { Button } from "./Button";
 export { Pill } from "./Pill";
 export type { PillTone } from "./Pill";
+export { EnvironmentPill } from "./EnvironmentPill";
+export { FilterPill } from "./FilterPill";
 export { Card } from "./Card";
 export { Panel } from "./Panel";
 export { Input } from "./Input";

@@ -8,13 +8,20 @@ import {
   BASELINE_VERSION,
   type TrackedSchemaRow,
 } from "@/lib/lineage-db";
+import { toEnvironment, type Environment } from "@/lib/environments";
 
 /**
  * POST /api/lineage/track
  *
  * Start tracking a schema. We capture a baseline snapshot of its live structure
  * and record it as lineage seq 1 (version 1.0.0). Body:
- *   { connectionId: number, schemaName: string, label?: string }
+ *   { connectionId: number, schemaName: string, label?: string,
+ *     environment?: "unset" | "dev" | "staging" | "prod" }
+ *
+ * `environment` is inherited from the connection when the body leaves it out,
+ * which is the normal case — the caller already picked the connection, so it
+ * has already said which environment this is. It can still be overridden
+ * because one server can host a staging schema and a production one.
  */
 export async function POST(request: NextRequest) {
   const gate = await requireEditor();
@@ -23,7 +30,12 @@ export async function POST(request: NextRequest) {
   await ensureLineageTables();
 
   // ── 1. Parse + validate the body ──────────────────────────────────────────
-  let body: { connectionId?: number; schemaName?: string; label?: string };
+  let body: {
+    connectionId?: number;
+    schemaName?: string;
+    label?: string;
+    environment?: unknown;
+  };
   try {
     body = await request.json();
   } catch {
@@ -37,6 +49,10 @@ export async function POST(request: NextRequest) {
     typeof body.label === "string" && body.label.trim().length > 0
       ? body.label.trim()
       : null;
+  // undefined means "inherit from the connection"; anything unrecognised
+  // narrows to "unset" in toEnvironment rather than erroring.
+  const environmentOverride =
+    body.environment === undefined ? null : toEnvironment(body.environment);
 
   if (!connectionId || !schemaName) {
     return NextResponse.json(
@@ -57,12 +73,14 @@ export async function POST(request: NextRequest) {
     connection_string: string | null;
     ssl: boolean;
     ssl_mode: string | null;
+    environment: string | null;
   };
   try {
-    // The ssl_mode column is added lazily; make sure it exists before selecting it.
+    // ssl_mode and environment are both added lazily; make sure they exist
+    // before selecting them.
     await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
+      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -120,12 +138,15 @@ export async function POST(request: NextRequest) {
 
     // Insert the tracked schema. If it's already tracked, the UNIQUE constraint
     // makes this insert no-op and we report a clean 409 instead of crashing.
+    const environment: Environment =
+      environmentOverride ?? toEnvironment(conn.environment);
+
     const trackedResult = await client.query<TrackedSchemaRow>(
-      `INSERT INTO tracked_schemas (connection_id, schema_name, label)
-       VALUES ($1, $2, $3)
+      `INSERT INTO tracked_schemas (connection_id, schema_name, label, environment)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (connection_id, schema_name) DO NOTHING
-       RETURNING id, connection_id, schema_name, label, created_at`,
-      [connectionId, schemaName, label]
+       RETURNING id, connection_id, schema_name, label, environment, created_at`,
+      [connectionId, schemaName, label, environment]
     );
 
     if (trackedResult.rows.length === 0) {

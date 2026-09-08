@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Select } from "@/components/ui/Select";
+import { ENVIRONMENT_META, type Environment } from "@/lib/environments";
 
 type DriftStatus = "in_sync" | "drifted" | "unreachable";
 
@@ -10,6 +11,7 @@ export type DriftPickerItem = {
   id: number;
   schemaName: string;
   label: string | null;
+  environment: Environment;
   connectionName: string | null;
   driftStatus: DriftStatus | null;
 };
@@ -54,9 +56,12 @@ export function DriftSchemaPicker({
       placeholder="Select a tracked schema…"
       options={items.map((it) => {
         const source = it.label ?? it.connectionName ?? "no connection";
+        // An <option> is plain text — no room for the coloured pill the rest of
+        // the page uses — so the environment rides along as a word instead.
+        const env = ENVIRONMENT_META[it.environment].label;
         return {
           value: String(it.id),
-          label: `${statusPrefix(it.driftStatus)} · ${it.schemaName} — ${source}`,
+          label: `${statusPrefix(it.driftStatus)} · [${env}] ${it.schemaName} — ${source}`,
         };
       })}
       onChange={(id) => {

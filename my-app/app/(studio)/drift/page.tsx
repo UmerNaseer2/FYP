@@ -4,9 +4,11 @@ import {
   Pill,
   Card,
   EmptyState,
+  EnvironmentPill,
   Skeleton,
   type PillTone,
 } from "@/components/ui";
+import { isProduction } from "@/lib/environments";
 import {
   DriftIcon,
   AlertTriangleIcon,
@@ -305,6 +307,7 @@ async function DetailTab({
     id: t.id,
     schemaName: t.schemaName,
     label: t.label,
+    environment: t.environment,
     connectionName: t.connectionName,
     driftStatus: t.driftStatus,
   }));
@@ -319,7 +322,10 @@ async function DetailTab({
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="section-title mb-1.5">Tracked schema</div>
-          <DriftSchemaPicker items={pickerItems} selectedId={selectedId} />
+          <div className="flex items-center gap-2 flex-wrap">
+            <DriftSchemaPicker items={pickerItems} selectedId={selectedId} />
+            <EnvironmentPill environment={view.environment} />
+          </div>
         </div>
         <div className="text-[12px] text-right" style={{ color: "var(--text-3)" }}>
           {view.connection ? (
@@ -336,6 +342,21 @@ async function DetailTab({
           </div>
         </div>
       </div>
+
+      {/* Production is worth saying out loud whatever the drift state is: the
+          resolution actions below can rewrite this schema's baseline. */}
+      {isProduction(view.environment) && (
+        <div className="warn-inline">
+          <span className="ico" style={{ color: "var(--break)" }}>
+            <AlertTriangleIcon size={14} />
+          </span>
+          <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <b>This is a production schema.</b> Re-baselining accepts the live structure as
+            correct — on production that means whatever changed outside this app becomes the
+            new expected state.
+          </div>
+        </div>
+      )}
 
       {/* Status hero (state-aware) */}
       <DriftHero view={view} compareHref={compareHref} />
