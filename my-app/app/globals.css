@@ -2626,6 +2626,11 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
 .obj-group { padding:8px 14px; border-top:1px solid var(--border); }
 .obj-group:first-of-type { border-top:none; }
 .obj-header { display:flex; align-items:center; gap:8px; padding:6px 0; }
+/* A group that is itself collapsible (the data compare folds its long list of
+   identical tables away). Safari draws its own triangle unless the pseudo-
+   element is hidden as well as list-style, which is why both are here. */
+summary.obj-header { cursor:pointer; list-style:none; user-select:none; }
+summary.obj-header::-webkit-details-marker { display:none; }
 
 /* richer diff-row internals (extends the foundation .diff-row) */
 .diff-row { border-radius:0 6px 6px 0; margin:2px 0; }

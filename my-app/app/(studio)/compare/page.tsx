@@ -14,6 +14,7 @@ import {
   resolveCompareTargets,
 } from "@/lib/postgres";
 import { compareSchemas, type CompareReport } from "@/lib/compare";
+import { compareRowData, type DataCompareReport } from "@/lib/compare-data";
 import { findTrackedSchema, getNextLineageVersion } from "@/lib/lineage-db";
 import {
   environmentRank,
@@ -23,6 +24,7 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
+import { DataCompare } from "@/components/studio/DataCompare";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
 import {
@@ -217,6 +219,8 @@ type TargetOutcome = {
   environment: Environment;
   /** Null when the target could not be read — `error` then says why. */
   report: CompareReport | null;
+  /** Row-level comparison, or null when the run did not ask for one. */
+  data: DataCompareReport | null;
   error: string | null;
   delta: ReturnType<typeof tallyDelta> | null;
   sqlText: string;
@@ -242,7 +246,7 @@ type TargetOutcome = {
  * compare into N+1 introspections instead of 2N.
  */
 async function compareOneTarget(
-  sourceSnapshot: SchemaSnapshot,
+  source: { snapshot: SchemaSnapshot; config: CompareTarget["config"]; schema: string },
   slot: {
     index: number;
     connection: SavedConnection | null;
@@ -252,6 +256,7 @@ async function compareOneTarget(
     schemaListError: string | null;
   },
   allowDataLoss: boolean,
+  compareData: boolean,
 ): Promise<TargetOutcome> {
   const connectionEnvironment = toEnvironment(slot.connection?.environment);
 
@@ -262,6 +267,7 @@ async function compareOneTarget(
     schema: slot.schema,
     schemaOptions: slot.schemaOptions,
     report: null,
+    data: null,
     delta: null,
     sqlText: "",
     rollbackText: "",
@@ -314,7 +320,19 @@ async function compareOneTarget(
     };
   }
 
-  const report = compareSchemas(sourceSnapshot, snapshot.data);
+  const report = compareSchemas(source.snapshot, snapshot.data);
+
+  // Row data is read only when the form asks for it. Every other query on this
+  // page reads catalog metadata; this one reads the tables themselves, which is
+  // not something a page render should do to somebody's production database
+  // because they happened to open a URL.
+  const data = compareData
+    ? await compareRowData(
+        report,
+        { config: source.config, schema: source.schema },
+        { config: slot.target.config, schema: slot.schema },
+      )
+    : null;
 
   // Safe mode. DROP TABLE / DROP COLUMN are always generated so the diff can
   // show what a full sync would remove, but they are only armed in the rendered
@@ -333,6 +351,7 @@ async function compareOneTarget(
     environment,
     error: null,
     report,
+    data,
     delta: tallyDelta(report),
     sqlText: renderMigrationScript(script),
     rollbackText: renderRollbackScript(rollback),
@@ -721,6 +740,11 @@ export default async function ComparePage({ searchParams }: PageProps) {
       ? activeSet.allowDataLoss
       : pickValue(params.allowDataLoss, "") === "1";
 
+  // Row comparison is per-run and never remembered in a saved set: reading a
+  // production table is a decision worth taking again each time, not one a set
+  // loaded from a dropdown can make on the reader's behalf.
+  const compareData = pickValue(params.compareData, "") === "1";
+
   let sourceError: string | null = sourceSchemaInfo.error
     ? `Could not reach ${sourceTarget.displayName}: ${sourceSchemaInfo.error}`
     : null;
@@ -740,7 +764,16 @@ export default async function ComparePage({ searchParams }: PageProps) {
     } else {
       outcomes = await Promise.all(
         resolvedTargets.map((slot) =>
-          compareOneTarget(snapshot.data, slot, allowDataLoss),
+          compareOneTarget(
+            {
+              snapshot: snapshot.data,
+              config: sourceTarget.config,
+              schema: sourceSchema,
+            },
+            slot,
+            allowDataLoss,
+            compareData,
+          ),
         ),
       );
     }
@@ -928,6 +961,19 @@ export default async function ComparePage({ searchParams }: PageProps) {
             />
             Allow data loss
           </label>
+          <label
+            className="flex items-center gap-2 text-[12.5px] cursor-pointer"
+            style={{ color: "var(--text-2)" }}
+            title="Also read the rows of every table and report which ones differ. Slower, and it reads table data rather than just the catalog."
+          >
+            <input
+              type="checkbox"
+              name="compareData"
+              value="1"
+              defaultChecked={compareData}
+            />
+            Compare row data
+          </label>
           <span className="source-bar__spacer" />
           <button type="submit" className="btn btn-primary">
             <CompareIcon size={14} />
@@ -1060,7 +1106,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
               {/* Two-column body: diff canvas (left) + migration draft (right,
                   sticky). Stacks under 980px via the .compare-layout rule. */}
               <div className="compare-layout">
-                <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
+                <div className="space-y-3">
+                  <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
+                  {outcome.data && <DataCompare result={outcome.data} />}
+                </div>
                 <MigrationWorkbench
                   initialSql={outcome.sqlText}
                   statementCount={outcome.statementCount}
