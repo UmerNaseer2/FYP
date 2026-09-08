@@ -85,6 +85,29 @@ export function louderEnvironment(a: Environment, b: Environment): Environment {
 }
 
 /**
+ * Why a run against this target must be refused, or null when it may proceed.
+ *
+ * The screens already put a checkbox in front of anything that touches a live
+ * database, but a disabled button only governs the one path that draws it. The
+ * routes are reachable directly, Deploy and Version Sync both reach them, and a
+ * future screen will too — so the last word belongs on the server, next to the
+ * connection that says which database this actually is.
+ *
+ * The message is written for a person, because it is shown to one: it lands in
+ * the red banner on Deploy the same way a connection failure does.
+ */
+export function productionBlockReason(
+  environment: Environment,
+  acknowledged: boolean
+): string | null {
+  if (!isProduction(environment) || acknowledged) return null;
+  return (
+    "This target is labelled production and the run was not confirmed. " +
+    "Reload the page and tick the production warning before running it."
+  );
+}
+
+/**
  * Does this free text read like a production database?
  *
  * Used only to *suggest* a label in the connection drawer — never to write one.

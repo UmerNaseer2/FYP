@@ -5,7 +5,12 @@ import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl } from "@/lib/sql-guard";
 import { compareVersions } from "@/lib/script-status";
-import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import {
+  louderEnvironment,
+  productionBlockReason,
+  toEnvironment,
+} from "@/lib/environments";
 import type { ChangeLevel } from "@/lib/version-detection";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +60,11 @@ export async function POST(request: NextRequest) {
     /** The rollback SQL to run — v<version>.down.sql from the registry. */
     sql_content: string;
     schemaName?: string;
+    /**
+     * Set by a screen only after somebody has ticked the production warning.
+     * Absent or false against a production target is a refusal, not a default.
+     */
+    acknowledgeProduction?: boolean;
   };
 
   try {
@@ -128,13 +138,14 @@ export async function POST(request: NextRequest) {
     connection_string: string | null;
     ssl: boolean | null;
     ssl_mode: string | null;
+    environment: string | null;
   };
 
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -155,6 +166,30 @@ export async function POST(request: NextRequest) {
       { error: "Could not read saved connection. Is the app database reachable?" },
       { status: 500 }
     );
+  }
+
+  // ─── 4b. Refuse an unconfirmed run against production ─────────────────────
+  //
+  // Same rule and same reasoning as the apply route — see productionBlockReason.
+  // A rollback is not the gentler of the two: it drops what the migration added,
+  // so on a live database it is the one that loses rows.
+  let schemaEnvironment = toEnvironment(null);
+  try {
+    const tracked = await findTrackedSchema(connectionId, schemaName);
+    if (tracked) schemaEnvironment = tracked.environment;
+  } catch (error) {
+    console.error("Revert — could not read the tracked schema's environment:", error);
+  }
+  const targetEnvironment = louderEnvironment(
+    toEnvironment(connRow.environment),
+    schemaEnvironment
+  );
+  const blocked = productionBlockReason(
+    targetEnvironment,
+    body.acknowledgeProduction === true
+  );
+  if (blocked) {
+    return NextResponse.json({ error: blocked, environment: targetEnvironment }, { status: 409 });
   }
 
   // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ─────

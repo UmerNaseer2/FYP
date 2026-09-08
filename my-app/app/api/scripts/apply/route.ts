@@ -4,7 +4,12 @@ import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl } from "@/lib/sql-guard";
-import { recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import {
+  louderEnvironment,
+  productionBlockReason,
+  toEnvironment,
+} from "@/lib/environments";
 
 // Valid values the script_patch table accepts for change_type
 const VALID_CHANGE_TYPES = ["breaking", "additive", "patch", "unknown"] as const;
@@ -42,6 +47,11 @@ export async function POST(request: NextRequest) {
     // recorded so an applied row can point back to its source file. Optional —
     // applying ad-hoc SQL with no GitHub origin is still allowed.
     source_ref?: string;
+    /**
+     * Set by a screen only after somebody has ticked the production warning.
+     * Absent or false against a production target is a refusal, not a default.
+     */
+    acknowledgeProduction?: boolean;
   };
 
   try {
@@ -141,13 +151,14 @@ export async function POST(request: NextRequest) {
     connection_string: string | null;
     ssl: boolean | null;
     ssl_mode: string | null;
+    environment: string | null;
   };
 
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await ensureConnectionsTable();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -168,6 +179,35 @@ export async function POST(request: NextRequest) {
       { error: "Could not read saved connection. Is the app database reachable?" },
       { status: 500 }
     );
+  }
+
+  // ─── 4b. Refuse an unconfirmed run against production ─────────────────────
+  //
+  // Before opening a single connection to the target. The label is the louder of
+  // the connection's and the tracked schema's, the same rule both screens use to
+  // decide whether to show the warning — so what the button demanded and what
+  // this route requires can never drift apart.
+  //
+  // A tracked-schemas read that fails must not quietly downgrade the target to
+  // "unset": that would turn an outage into permission. The connection's own
+  // label still applies, and it is the one that says "prod" in practice.
+  let schemaEnvironment = toEnvironment(null);
+  try {
+    const tracked = await findTrackedSchema(connectionId, schemaName);
+    if (tracked) schemaEnvironment = tracked.environment;
+  } catch (error) {
+    console.error("Apply — could not read the tracked schema's environment:", error);
+  }
+  const targetEnvironment = louderEnvironment(
+    toEnvironment(connRow.environment),
+    schemaEnvironment
+  );
+  const blocked = productionBlockReason(
+    targetEnvironment,
+    body.acknowledgeProduction === true
+  );
+  if (blocked) {
+    return NextResponse.json({ error: blocked, environment: targetEnvironment }, { status: 409 });
   }
 
   // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
