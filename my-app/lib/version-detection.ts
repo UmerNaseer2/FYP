@@ -376,21 +376,31 @@ export function summarizeStructuralSeverity(report: CompareReport): {
   level: ChangeLevel;
   summary: string;
 } {
-  const hasMissingTables =
-    report.tablesOnlyInA.length > 0 || report.tablesOnlyInB.length > 0;
+  // Only the TARGET-only side is breaking: those are the tables a sync drops.
+  // A source-only table is created, which takes nothing away — counting it as
+  // breaking pushed a plain "we added a table" migration to a major bump.
+  const dropsTables = report.tablesOnlyInB.length > 0;
 
+  // Severity now travels with the change itself (lib/compare.ts decides it, and
+  // the migration generator grades its statements with the same rule). This used
+  // to match on the prose instead, and matched the wrong half of it: the
+  // substring "nullable to not null" only appears in the DROP NOT NULL case,
+  // which is the safe one, so the check fired on safe changes and missed the
+  // SET NOT NULL that can actually fail.
   const hasBreakingColumnChanges = report.matchedTables.some((table) =>
     table.columnMatches.some((column) =>
-      column.changes.some(
-        (change) =>
-          change.startsWith("Type changed") ||
-          change.includes("nullable to not null") ||
-          change.includes("Primary key participation changed")
-      )
+      column.changes.some((change) => change.severity === "breaking")
     )
   );
 
-  if (hasMissingTables || hasBreakingColumnChanges) {
+  // Dropping a view, a routine or a type breaks whatever was calling it, and
+  // none of that shows up in the table/column counts above.
+  const dropsObjects = [
+    ...report.objectDiffs,
+    ...report.matchedTables.flatMap((table) => table.objectDiffs),
+  ].some((diff) => diff.status === "onlyB");
+
+  if (dropsTables || hasBreakingColumnChanges || dropsObjects) {
     return {
       level: "breaking",
       summary: "Structural comparison detected breaking changes.",
@@ -398,6 +408,7 @@ export function summarizeStructuralSeverity(report: CompareReport): {
   }
 
   if (
+    report.tablesOnlyInA.length > 0 ||
     report.summary.changedTables > 0 ||
     report.summary.changedConstraints > 0
   ) {

@@ -2638,6 +2638,11 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .diff-row .tag { font-size:10.5px; padding:1px 5px; border-radius:4px; color:var(--text-3); background:var(--surface);
                  border:1px solid var(--border); font-weight:500; margin-right:4px; }
 .diff-row .muted { color:var(--text-3); }
+/* A single per-column change graded "breaking" by the compare engine. The row
+   already carries a table-level pill; this marks WHICH of its changes is the
+   dangerous one, so a narrowing type hiding in a list of harmless renames is
+   visible without opening the SQL. */
+.diff-row .chg-break { color:var(--break); }
 .diff-row s { color:var(--text-3); }
 .diff-row b { color:var(--text); font-weight:500; }
 

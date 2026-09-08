@@ -51,13 +51,50 @@ export type MatchCandidate = {
   breakdown: ScoreBreakdown;
 };
 
+/**
+ * How dangerous a single change is. Shared by the compare engine, the migration
+ * generator and the report so all three grade a change on the same scale.
+ *
+ *   breaking — can fail outright, or removes something other objects rely on
+ *   safe     — always applies cleanly and takes nothing away
+ *   info     — worth listing, but neither of the above
+ */
+export type ChangeSeverity = "breaking" | "safe" | "info";
+
+/** Which property of a column changed. */
+export type ColumnChangeKind =
+  | "type"
+  | "size"
+  | "nullability"
+  | "generated"
+  | "default"
+  | "primaryKey"
+  | "unique"
+  | "foreignKey";
+
+/**
+ * One difference between a matched pair of columns.
+ *
+ * `severity` is decided once, in the compare engine, from the snapshot fields
+ * themselves — the report must never re-derive it by reading `message`. It used
+ * to: DiffReport re-implemented the generator's rules by string-matching this
+ * prose, so rewording a message silently mis-coloured the report, and a message
+ * with no matching branch (a default change, a unique/FK participation change)
+ * quietly graded itself "info". `message` is display text and nothing else.
+ */
+export type ColumnChange = {
+  kind: ColumnChangeKind;
+  severity: ChangeSeverity;
+  message: string;
+};
+
 export type ColumnMatch = {
   left: ColumnSnapshot;
   right: ColumnSnapshot;
   score: number;
   exact: boolean;
   breakdown: ScoreBreakdown;
-  changes: string[];
+  changes: ColumnChange[];
 };
 
 export type ConstraintDiff = {

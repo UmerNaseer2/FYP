@@ -1,4 +1,9 @@
-import type { CompareReport, ConstraintDiff, TableMatch } from "./compare-types";
+import type {
+  ChangeSeverity,
+  CompareReport,
+  ConstraintDiff,
+  TableMatch,
+} from "./compare-types";
 import type {
   ColumnSnapshot,
   ConstraintSnapshot,
@@ -11,7 +16,19 @@ import type {
   TypeSnapshot,
   ViewSnapshot,
 } from "./postgres";
-import { compareSchemas, extractBaseType, isNarrowingType } from "./compare";
+// Severity is NOT decided here. These four helpers live in the compare engine
+// and are the single rule for how dangerous each kind of change is, so the
+// warning on a statement and the pill in the report are one decision instead of
+// two implementations that have to be kept in step by hand.
+import {
+  compareSchemas,
+  constraintChangeSeverity,
+  extractBaseType,
+  generatedChangeSeverity,
+  isNarrowingType,
+  nullabilityChangeSeverity,
+  typeChangeSeverity,
+} from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
 
 // ---------------------------------------------------------------------------
@@ -55,7 +72,7 @@ export type SqlStatement = {
   sql: string;
   description: string;
   kind: SqlStatementKind;
-  severity: "breaking" | "safe" | "info";
+  severity: ChangeSeverity;
   tableName: string;
   /**
    * True when running this statement destroys rows that exist only in the
@@ -1052,17 +1069,17 @@ function alterStatementsForMatch(
         : "";
 
       let description: string;
-      let severity: SqlStatement["severity"];
       if (baseChanged) {
         description = `Change type of "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay} (may require data conversion)`;
-        severity = "breaking";
       } else if (narrowing) {
         description = `Narrow "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay} — WARNING: will fail if any existing value exceeds the new size`;
-        severity = "breaking";
       } else {
         description = `Widen "${colName}" in "${tName}": ${colMatch.right.typeDisplay} → ${colMatch.left.typeDisplay}`;
-        severity = "safe";
       }
+      const severity = typeChangeSeverity(
+        colMatch.left.typeDisplay,
+        colMatch.right.typeDisplay
+      );
 
       stmts.push({
         sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} TYPE ${colMatch.left.typeDisplay}${usingSuffix};`,
@@ -1080,7 +1097,7 @@ function alterStatementsForMatch(
           sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET NOT NULL;`,
           description: `Enforce NOT NULL on "${colName}" in "${tName}" — WARNING: will fail if existing rows contain NULLs; backfill first`,
           kind: "ALTER_COLUMN_NULLABILITY",
-          severity: "breaking",
+          severity: nullabilityChangeSeverity(colMatch.left.nullable),
           tableName: tName,
           destructive: false,
         });
@@ -1089,7 +1106,7 @@ function alterStatementsForMatch(
           sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP NOT NULL;`,
           description: `Allow nulls on "${colName}" in "${tName}"`,
           kind: "ALTER_COLUMN_NULLABILITY",
-          severity: "safe",
+          severity: nullabilityChangeSeverity(colMatch.left.nullable),
           tableName: tName,
           destructive: false,
         });
@@ -1121,7 +1138,7 @@ function alterStatementsForMatch(
           sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET GENERATED ${leftIdentity};`,
           description: `Change "${colName}" in "${tName}" to GENERATED ${leftIdentity} AS IDENTITY`,
           kind: "ALTER_COLUMN_DEFAULT",
-          severity: "safe",
+          severity: generatedChangeSeverity(colMatch.left, colMatch.right),
           tableName: tName,
           destructive: false,
         });
@@ -1144,7 +1161,7 @@ function alterStatementsForMatch(
             `ADD GENERATED ${leftIdentity} AS IDENTITY;`,
           description: `Make "${colName}" in "${tName}" an identity column — WARNING: fails unless the column is NOT NULL`,
           kind: "ALTER_COLUMN_DEFAULT",
-          severity: "breaking",
+          severity: generatedChangeSeverity(colMatch.left, colMatch.right),
           tableName: tName,
           destructive: false,
         });
@@ -1155,7 +1172,7 @@ function alterStatementsForMatch(
             ? `Remove the identity on "${colName}" in "${tName}" so a sequence default can replace it`
             : `Stop "${colName}" in "${tName}" generating its own values`,
           kind: "ALTER_COLUMN_DEFAULT",
-          severity: leftSerial ? "safe" : "breaking",
+          severity: generatedChangeSeverity(colMatch.left, colMatch.right),
           tableName: tName,
           destructive: false,
         });
@@ -1256,7 +1273,7 @@ function alterStatementsForMatch(
       sql: `ALTER TABLE ${q(tName)} DROP CONSTRAINT IF EXISTS ${q(constraintName)};`,
       description: `Drop ${diff.kind} "${constraintName}" from "${tName}"`,
       kind: "DROP_CONSTRAINT",
-      severity: diff.kind === "FOREIGN KEY" || diff.kind === "PRIMARY KEY" ? "breaking" : "info",
+      severity: constraintChangeSeverity(diff.kind, "drop"),
       tableName: tName,
       destructive: false,
     });
@@ -1279,7 +1296,7 @@ function alterStatementsForMatch(
       sql: `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(found.name)} ${found.definition};`,
       description: `Add ${diff.kind} "${found.name}" to "${tName}"`,
       kind: "ADD_CONSTRAINT",
-      severity: diff.kind === "PRIMARY KEY" ? "breaking" : "info",
+      severity: constraintChangeSeverity(diff.kind, "add"),
       tableName: tName,
       destructive: false,
     });
@@ -1293,7 +1310,7 @@ function alterStatementsForMatch(
       sql: `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`,
       description: `Add FK "${fk.name}" to "${tName}"`,
       kind: "ADD_CONSTRAINT",
-      severity: "info",
+      severity: constraintChangeSeverity("FOREIGN KEY", "add"),
       tableName: tName,
       destructive: false,
     });

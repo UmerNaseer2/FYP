@@ -11,6 +11,8 @@ import type {
 } from "./postgres";
 
 import type {
+  ChangeSeverity,
+  ColumnChange,
   ColumnMatch,
   ComparedObjectCategories,
   CompareReport,
@@ -454,6 +456,107 @@ function isGeneratedColumn(column: ColumnSnapshot): boolean {
   return Boolean(column.identity) || isNextvalDefault(column.columnDefault);
 }
 
+// ---------------------------------------------------------------------------
+// Change severity — one rule per kind of change, used by everyone
+//
+// These four functions are the ONLY place a change is graded. The migration
+// generator imports them for the statements it writes, and the compare engine
+// stamps the same answer onto every ColumnChange it reports, so the pill in the
+// report and the warning on the script are the same decision rather than two
+// implementations that happen to agree. Before this, the report re-derived
+// severity by string-matching the generator's wording, and rewording a message
+// was enough to silently mis-colour it.
+//
+// The direction matters and is easy to get backwards: a comparison reads
+// source → target, but the migration rewrites the TARGET to match the SOURCE.
+// So "source is NOT NULL" is what produces a SET NOT NULL, and that is the
+// dangerous direction — not the one the sentence appears to describe.
+// ---------------------------------------------------------------------------
+
+/**
+ * Changing a column's type. A different base type needs a cast that can fail on
+ * real values; a smaller size in the same family is refused outright if any
+ * stored value no longer fits. Growing a size is the one safe case.
+ */
+export function typeChangeSeverity(
+  sourceTypeDisplay: string,
+  targetTypeDisplay: string
+): ChangeSeverity {
+  if (extractBaseType(sourceTypeDisplay) !== extractBaseType(targetTypeDisplay)) {
+    return "breaking";
+  }
+  return isNarrowingType(targetTypeDisplay, sourceTypeDisplay) ? "breaking" : "safe";
+}
+
+/**
+ * Changing a column's nullability. SET NOT NULL fails if the target holds a
+ * single NULL, so it needs a backfill first; DROP NOT NULL always works.
+ */
+export function nullabilityChangeSeverity(sourceNullable: boolean): ChangeSeverity {
+  return sourceNullable ? "safe" : "breaking";
+}
+
+/**
+ * Changing how a column generates its own values — serial, identity, or
+ * neither. ADD GENERATED … AS IDENTITY is refused unless the column is already
+ * NOT NULL, and taking an identity away breaks every insert that relied on it
+ * unless a sequence default replaces it.
+ */
+export function generatedChangeSeverity(
+  source: ColumnSnapshot,
+  target: ColumnSnapshot
+): ChangeSeverity {
+  const sourceIdentity = source.identity ?? null;
+  const targetIdentity = target.identity ?? null;
+  // Both are identity columns and only the flavour differs: SET GENERATED.
+  if (sourceIdentity !== null && targetIdentity !== null) return "safe";
+  // The target gains an identity clause.
+  if (sourceIdentity !== null) return "breaking";
+  // The target loses one. Safe only when a sequence default takes over.
+  if (targetIdentity !== null) {
+    return isNextvalDefault(source.columnDefault) ? "safe" : "breaking";
+  }
+  // Neither side uses an identity clause, so this is a serial appearing or
+  // disappearing — a default change and nothing more.
+  return "safe";
+}
+
+/**
+ * Adding or dropping a table constraint.
+ *
+ * Every ADD is breaking. PostgreSQL validates a new constraint against the rows
+ * already in the table and refuses it if a single row fails, so an ADD can abort
+ * the whole migration on real data — the same reason a narrowing type change is
+ * breaking, and the same grade `CREATE UNIQUE INDEX` already carries elsewhere
+ * in the generator. (ADD used to be graded "info" for everything except a
+ * primary key, which contradicted that unique-index rule for what is, in the
+ * database, the same operation.)
+ *
+ * Dropping is judged differently: it can never fail, so the question is what it
+ * takes away. A primary key or a foreign key is a guarantee other objects were
+ * built on; the rest only relax the table.
+ */
+export function constraintChangeSeverity(
+  kind: ConstraintDiff["kind"],
+  action: "add" | "drop"
+): ChangeSeverity {
+  if (action === "drop") {
+    return kind === "PRIMARY KEY" || kind === "FOREIGN KEY" ? "breaking" : "info";
+  }
+  return "breaking";
+}
+
+/**
+ * The grade for a whole constraint diff. A changed definition is a DROP followed
+ * by an ADD, so it takes the worse of the two.
+ */
+export function constraintDiffSeverity(diff: ConstraintDiff): ChangeSeverity {
+  const actions: Array<"add" | "drop"> =
+    diff.status === "onlyA" ? ["add"] : diff.status === "onlyB" ? ["drop"] : ["drop", "add"];
+  const grades = actions.map((action) => constraintChangeSeverity(diff.kind, action));
+  return grades.includes("breaking") ? "breaking" : grades[0];
+}
+
 function compareColumnPair(
   leftTable: TableSnapshot,
   leftColumn: ColumnSnapshot,
@@ -462,7 +565,7 @@ function compareColumnPair(
 ): {
   score: number;
   breakdown: ScoreBreakdown;
-  changes: string[];
+  changes: ColumnChange[];
 } {
   // Column similarity is split across four categories — the totals are driven
   // by the WEIGHTS.column config at the top of this file, so you can tune them
@@ -481,15 +584,26 @@ function compareColumnPair(
   const constraints = columnConstraintSimilarity(leftTable, leftColumn, rightTable, rightColumn) * WEIGHTS.column.constraints;
   const order       = columnOrderSimilarity(leftTable, leftColumn, rightTable, rightColumn) * WEIGHTS.column.order;
 
-  const changes: string[] = [];
+  const changes: ColumnChange[] = [];
 
   if (normalizeType(leftColumn.typeDisplay) !== normalizeType(rightColumn.typeDisplay)) {
-    changes.push(typeChangeDescription(leftColumn.typeDisplay, rightColumn.typeDisplay));
+    // "size" when only the length/precision moved inside the same base type,
+    // "type" when the base type itself changed — the two read very differently
+    // to someone deciding whether to run the script.
+    const sameBase =
+      extractBaseType(leftColumn.typeDisplay) === extractBaseType(rightColumn.typeDisplay);
+    changes.push({
+      kind: sameBase ? "size" : "type",
+      severity: typeChangeSeverity(leftColumn.typeDisplay, rightColumn.typeDisplay),
+      message: typeChangeDescription(leftColumn.typeDisplay, rightColumn.typeDisplay),
+    });
   }
   if (leftColumn.nullable !== rightColumn.nullable) {
-    changes.push(
-      `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`
-    );
+    changes.push({
+      kind: "nullability",
+      severity: nullabilityChangeSeverity(leftColumn.nullable),
+      message: `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`,
+    });
   }
   // How the column generates its own values, compared as one property. Two
   // serial columns in different schemas have different sequence NAMES in their
@@ -498,7 +612,11 @@ function compareColumnPair(
   const leftGenerated = describeGenerated(leftColumn);
   const rightGenerated = describeGenerated(rightColumn);
   if (leftGenerated !== null && rightGenerated !== null && leftGenerated !== rightGenerated) {
-    changes.push(`Generated values changed from ${leftGenerated} to ${rightGenerated}`);
+    changes.push({
+      kind: "generated",
+      severity: generatedChangeSeverity(leftColumn, rightColumn),
+      message: `Generated values changed from ${leftGenerated} to ${rightGenerated}`,
+    });
   }
 
   // Column default drift. Defaults are already schema-relative (own-schema
@@ -511,7 +629,13 @@ function compareColumnPair(
     const rightDefault = rightColumn.columnDefault?.trim() || null;
     if (leftDefault !== rightDefault) {
       // left→right, matching the nullability/type wording in this same list.
-      changes.push(`Default changed from ${leftDefault ?? "none"} to ${rightDefault ?? "none"}`);
+      changes.push({
+        kind: "default",
+        // SET DEFAULT and DROP DEFAULT both always apply: a default only
+        // affects rows inserted after it, never rows already stored.
+        severity: "safe",
+        message: `Default changed from ${leftDefault ?? "none"} to ${rightDefault ?? "none"}`,
+      });
     }
   }
   // NOTE: column ORDER is deliberately NOT recorded as a change. PostgreSQL
@@ -519,14 +643,39 @@ function compareColumnPair(
   // counting it as a change made a table report differences forever even after a
   // full sync (phantom drift, issue #18). Order still influences the match SCORE
   // via columnOrderSimilarity; it just isn't a reported, "fixable" change.
+  // The three participation flags below are this column's view of a constraint
+  // diff, so they are graded with the same rule the constraint itself gets:
+  // the source having it means the migration ADDs it, the target having it
+  // means the migration DROPs it.
   if (leftColumn.isPrimaryKey !== rightColumn.isPrimaryKey) {
-    changes.push("Primary key participation changed");
+    changes.push({
+      kind: "primaryKey",
+      severity: constraintChangeSeverity(
+        "PRIMARY KEY",
+        leftColumn.isPrimaryKey ? "add" : "drop"
+      ),
+      message: "Primary key participation changed",
+    });
   }
   if (Math.sign(leftColumn.uniqueConstraintNames.length) !== Math.sign(rightColumn.uniqueConstraintNames.length)) {
-    changes.push("Unique constraint participation changed");
+    changes.push({
+      kind: "unique",
+      severity: constraintChangeSeverity(
+        "UNIQUE",
+        leftColumn.uniqueConstraintNames.length > 0 ? "add" : "drop"
+      ),
+      message: "Unique constraint participation changed",
+    });
   }
   if (Math.sign(leftColumn.foreignKeyConstraintNames.length) !== Math.sign(rightColumn.foreignKeyConstraintNames.length)) {
-    changes.push("Foreign key participation changed");
+    changes.push({
+      kind: "foreignKey",
+      severity: constraintChangeSeverity(
+        "FOREIGN KEY",
+        leftColumn.foreignKeyConstraintNames.length > 0 ? "add" : "drop"
+      ),
+      message: "Foreign key participation changed",
+    });
   }
 
   return {

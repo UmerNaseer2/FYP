@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { describeConstraint, isNarrowingType } from "@/lib/compare";
+import { constraintDiffSeverity, describeConstraint } from "@/lib/compare";
 import type {
   ColumnSnapshot,
   CompareReport,
@@ -91,33 +91,13 @@ function columnBody(col: ColumnSnapshot) {
   );
 }
 
-// ── change-severity → which colour/word a per-column change is ───────────────
-// Mirrors the classifier the SQL generator uses so the diff and the script agree.
-// Change strings read source→target, but the migration rewrites the TARGET to
-// match the SOURCE — so the direction that *looks* relaxing in the text is
-// actually the tightening one. The branches below account for that.
-function changeKindOf(change: string): "breaking" | "safe" | "info" {
-  if (change.startsWith("Type changed")) return "breaking";
-  // "not null to nullable" = source NOT NULL, target nullable → migration ADDs
-  // NOT NULL = breaking. "nullable to not null" → migration DROPs it = safe.
-  if (change.includes("not null to nullable")) return "breaking";
-  if (change.includes("nullable to not null")) return "safe";
-  // "Size/precision changed: <new> → <current>". A shrink is a breaking
-  // narrowing (can overflow existing data); a grow is a safe widen. Reuse the
-  // SQL generator's narrowing check so the pill and the script never disagree.
-  if (change.startsWith("Size/precision changed")) {
-    const m = change.match(/^Size\/precision changed: (.+) → (.+)$/);
-    if (m) {
-      const newType = m[1]; // source — what the column becomes
-      const currentType = m[2]; // target — current type in the DB
-      return isNarrowingType(currentType, newType) ? "breaking" : "safe";
-    }
-    return "safe";
-  }
-  if (change.startsWith("Order changed")) return "info";
-  if (change.includes("Primary key participation changed")) return "breaking";
-  return "info";
-}
+// This file used to carry a changeKindOf() that re-derived each change's
+// severity by string-matching the compare engine's prose. It is gone: a
+// ColumnChange now arrives already graded by lib/compare.ts, which is also
+// where the migration generator gets its grades from. Rewording a message can
+// no longer mis-colour the report, and the four changes that had no matching
+// branch at all — default, generated, unique and foreign-key participation —
+// are no longer silently graded "info".
 
 const CONSTRAINT_TAG: Record<ConstraintDiff["kind"], string> = {
   "PRIMARY KEY": "pk",
@@ -151,15 +131,15 @@ function matchTally(match: TableMatch): Tally {
 /** Worst-case severity for a matched table, used for its header pill. */
 function matchLevel(match: TableMatch): "breaking" | "additive" {
   const breakingColumn = match.columnMatches.some(
-    (c) => c.changes.some((ch) => changeKindOf(ch) === "breaking") || !c.exact,
+    (c) => c.changes.some((ch) => ch.severity === "breaking") || !c.exact,
   );
   const breakingNewCol = match.columnsOnlyInA.some(
     (c) => !c.nullable && c.columnDefault === null,
   );
+  // Same rule the generator grades its ADD/DROP CONSTRAINT statements with, so
+  // the pill cannot say "additive" over a statement the script marks breaking.
   const breakingConstraint = match.constraintDiffs.some(
-    (d) =>
-      (d.kind === "PRIMARY KEY" || d.kind === "FOREIGN KEY") &&
-      (d.status === "onlyA" || d.status === "onlyB" || d.status === "changedDefinition"),
+    (d) => constraintDiffSeverity(d) === "breaking",
   );
   return breakingColumn || breakingNewCol || breakingConstraint ? "breaking" : "additive";
 }
@@ -396,7 +376,16 @@ function ChangedTableCard({
           {changedColumns.map((cm) => (
             <DiffLine key={`c-${cm.left.name}`} kind="chg" tag="type">
               <b>{cm.left.name}</b>{" "}
-              <span className="muted">{cm.changes.join("; ")}</span>
+              {/* Each change carries its own grade, so a breaking one stands
+                  out even when it sits in a list of harmless ones. */}
+              {cm.changes.map((ch, i) => (
+                <span key={ch.kind}>
+                  {i > 0 && <span className="muted">; </span>}
+                  <span className={ch.severity === "breaking" ? "chg-break" : "muted"}>
+                    {ch.message}
+                  </span>
+                </span>
+              ))}
             </DiffLine>
           ))}
           {match.columnsOnlyInB.map((col) => (
