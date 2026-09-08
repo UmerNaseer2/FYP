@@ -4,10 +4,15 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
 
-// Auth gate for every page wrapped in <AuthGuard>. When true, pages render
-// without a session (for local testing). It is now FALSE — real NextAuth
-// (Microsoft Entra) sign-in is enforced: no session redirects to /login.
-// Flip back to true to operate the app without logging in.
+// Auth gate for every page wrapped in <AuthGuard>. While this is true, pages
+// render without a session and nothing about roles is enforced.
+//
+// It is TRUE today because the Microsoft Entra keys (AZURE_AD_CLIENT_ID /
+// _SECRET / _TENANT_ID, NEXTAUTH_SECRET) are not configured and the `profiles`
+// table the session callback reads is never created, so a real sign-in cannot
+// complete. Setting those up and creating `profiles` is what flips this to
+// false. Note that this guard is client-side only: server-side protection for
+// the (studio) pages and the API routes still has to be added alongside it.
 const BYPASS_AUTH: boolean = true;
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
