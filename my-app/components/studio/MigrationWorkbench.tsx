@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   ClipboardIcon,
   CheckIcon,
@@ -112,6 +112,10 @@ export function MigrationWorkbench({
   warnings,
   targetVersions,
 }: Props) {
+  // Compare can now show one workbench per target, so a hard-coded field id
+  // would repeat down the page: duplicate ids are invalid HTML and every
+  // <label htmlFor> would focus the first workbench's field instead of its own.
+  const fieldId = useId();
   const [name, setName] = useState(suggestedName);
   const [description, setDescription] = useState(suggestedDescription);
   const [sql, setSql] = useState(initialSql);
@@ -248,11 +252,11 @@ export function MigrationWorkbench({
               </span>
             </div>
 
-            <label className="label" htmlFor="mw-name">
+            <label className="label" htmlFor={`${fieldId}-name`}>
               Migration name
             </label>
             <input
-              id="mw-name"
+              id={`${fieldId}-name`}
               className="input mono mt-1"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -475,8 +479,9 @@ export function MigrationWorkbench({
                       </div>
                     </div>
                     <span className="help break-words sm:text-right sm:max-w-[200px]">
-                      <span className="mono">{targetLabel}</span> isn&apos;t tracked yet —
-                      track it to assign exact versions from its lineage.
+                      <span className="mono">{targetLabel}</span>{" "}
+                      isn&apos;t tracked yet — track it to assign exact versions
+                      from its lineage.
                     </span>
                   </div>
                 )}
@@ -495,11 +500,11 @@ export function MigrationWorkbench({
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <label className="label" htmlFor="mw-version">
+                      <label className="label" htmlFor={`${fieldId}-version`}>
                         Version
                       </label>
                       <input
-                        id="mw-version"
+                        id={`${fieldId}-version`}
                         className="input mono"
                         style={{ width: 110 }}
                         value={manualVersion}

@@ -7,7 +7,7 @@ import {
 } from "@/lib/generate-sql";
 import pool, { ensureConnectionsTable, ensureMetadataSchema } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
-import type { CompareTarget } from "@/lib/postgres";
+import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
 import {
   fetchSchemaNames,
   fetchSchemaSnapshot,
@@ -15,14 +15,37 @@ import {
 } from "@/lib/postgres";
 import { compareSchemas, type CompareReport } from "@/lib/compare";
 import { findTrackedSchema, getNextLineageVersion } from "@/lib/lineage-db";
+import {
+  environmentRank,
+  isProduction,
+  toEnvironment,
+  type Environment,
+} from "@/lib/environments";
 import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Select } from "@/components/ui/Select";
-import { CompareIcon, AlertTriangleIcon, ConnectionsIcon } from "@/components/ui/icons";
+import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
+import {
+  CompareIcon,
+  AlertTriangleIcon,
+  ConnectionsIcon,
+  PlusIcon,
+  XIcon,
+} from "@/components/ui/icons";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * How many targets one comparison may hold.
+ *
+ * Not a technical limit — every target is one more schema introspection and one
+ * more workbench on the page, and past half a dozen the screen stops being
+ * readable long before the queries become slow. Saved comparison sets are the
+ * answer to "I have twenty databases", not a taller page.
+ */
+const MAX_TARGETS = 6;
 
 type PageProps = {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -40,21 +63,24 @@ type SavedConnection = {
   connection_string: string | null;
   ssl: boolean;
   ssl_mode: string | null;
+  environment: string | null;
 };
 
 // ---------------------------------------------------------------------------
-// Engine plumbing — unchanged from the legacy page. The compare itself (form-GET
-// selection, env fallbacks, snapshot fetch, diff) is correctness-critical, so we
-// reuse it verbatim and only swap the presentation underneath.
+// Engine plumbing. The compare itself (form-GET selection, env fallbacks,
+// snapshot fetch, diff) is correctness-critical, so it is unchanged from the
+// two-sided version — it simply runs once per target now instead of once.
 // ---------------------------------------------------------------------------
 
 async function getSavedConnections(): Promise<SavedConnection[]> {
   try {
-    // Shared DDL (lib/version-db) guarantees the `ssl` column exists.
+    // Shared DDL (lib/version-db) guarantees the `ssl` and `environment`
+    // columns exist.
     await ensureConnectionsTable();
 
     const result = await pool.query(`
-      SELECT id, name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
+      SELECT id, name, host, port, database_name, type, username, password,
+             connection_string, ssl, ssl_mode, environment
       FROM connections
       WHERE type = 'PostgreSQL'
       ORDER BY name ASC
@@ -69,7 +95,7 @@ async function getSavedConnections(): Promise<SavedConnection[]> {
 
 function buildTargetFromConnection(
   connection: SavedConnection,
-  side: "a" | "b",
+  id: string,
 ): CompareTarget {
   // Build the target config the same SSL/URI-aware way as every other
   // target-connecting route (Connections test, Deploy, Drift). This is what
@@ -87,7 +113,7 @@ function buildTargetFromConnection(
   });
 
   return {
-    id: side,
+    id,
     config,
     displayName: `${connection.name} (${connection.database_name})`,
   };
@@ -111,48 +137,251 @@ function pickValue(
   return fallback;
 }
 
+/**
+ * Every value of a repeated query parameter, in the order the form submitted
+ * them. The target pickers all share one field name, so `?targetConnection=3
+ * &targetConnection=7` is how "two targets" is spelled in the URL — and because
+ * the connection and schema selects are rendered in step, index i of one list
+ * always belongs with index i of the other.
+ */
+function pickList(value: string | string[] | undefined): string[] {
+  if (typeof value === "string") {
+    return value.trim().length > 0 ? [value.trim()] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => entry.trim());
+  }
+  return [];
+}
+
+/**
+ * The environment we should shout about for one target.
+ *
+ * A target has up to two labels: the connection's (a property of the whole
+ * database) and the tracked schema's (set when it was tracked, editable since).
+ * They can disagree. We take the louder of the two, because a warning that
+ * turns out to be over-cautious costs a moment's attention, and a missing one
+ * costs data. "unset" ranks lowest, so an unlabelled schema on a production
+ * connection still reads as production.
+ */
+function louderEnvironment(a: Environment, b: Environment): Environment {
+  return environmentRank(a) >= environmentRank(b) ? a : b;
+}
+
+/** One target's fully-resolved comparison, or the reason it could not run. */
+type TargetOutcome = {
+  /** Position in the form. Also what the "remove" button submits. */
+  index: number;
+  connection: SavedConnection | null;
+  target: CompareTarget;
+  schema: string;
+  schemaOptions: string[];
+  environment: Environment;
+  /** Null when the target could not be read — `error` then says why. */
+  report: CompareReport | null;
+  error: string | null;
+  delta: ReturnType<typeof tallyDelta> | null;
+  sqlText: string;
+  rollbackText: string;
+  rollbackStatementCount: number;
+  rollbackWarnings: string[];
+  statementCount: number;
+  heldBackCount: number;
+  counts: { breaking: number; safe: number; info: number };
+  overallKind: ChangeKind;
+  warnings: string[];
+  targetVersions:
+    | { current: string | null; breaking: string; additive: string; patch: string }
+    | null;
+};
+
+/**
+ * Diff one target against the already-loaded source snapshot and derive
+ * everything the report and the workbench need.
+ *
+ * The source snapshot is passed in rather than fetched here on purpose: it is
+ * identical for every target, so reading it once and reusing it turns an N-way
+ * compare into N+1 introspections instead of 2N.
+ */
+async function compareOneTarget(
+  sourceSnapshot: SchemaSnapshot,
+  slot: {
+    index: number;
+    connection: SavedConnection | null;
+    target: CompareTarget;
+    schema: string;
+    schemaOptions: string[];
+    schemaListError: string | null;
+  },
+  allowDataLoss: boolean,
+): Promise<TargetOutcome> {
+  const connectionEnvironment = toEnvironment(slot.connection?.environment);
+
+  const empty = {
+    index: slot.index,
+    connection: slot.connection,
+    target: slot.target,
+    schema: slot.schema,
+    schemaOptions: slot.schemaOptions,
+    report: null,
+    delta: null,
+    sqlText: "",
+    rollbackText: "",
+    rollbackStatementCount: 0,
+    rollbackWarnings: [] as string[],
+    statementCount: 0,
+    heldBackCount: 0,
+    counts: { breaking: 0, safe: 0, info: 0 },
+    overallKind: "patch" as ChangeKind,
+    warnings: [] as string[],
+    targetVersions: null,
+  };
+
+  if (slot.schemaListError) {
+    // The driver message on its own ("connect ECONNREFUSED 127.0.0.1:5432") does
+    // not say which of several targets it came from.
+    return {
+      ...empty,
+      environment: connectionEnvironment,
+      error: `Could not reach ${slot.target.displayName}: ${slot.schemaListError}`,
+    };
+  }
+  if (slot.schemaOptions.length > 0 && !slot.schemaOptions.includes(slot.schema)) {
+    return {
+      ...empty,
+      environment: connectionEnvironment,
+      error: `Schema ${slot.schema} was not found in ${slot.target.displayName}.`,
+    };
+  }
+
+  // The lineage head gives us both the schema's own environment label and the
+  // next version number, so ask for it alongside the snapshot rather than after.
+  const [snapshot, head] = await Promise.all([
+    fetchSchemaSnapshot(slot.target.config, slot.schema),
+    slot.connection
+      ? findTrackedSchema(slot.connection.id, slot.schema)
+      : Promise.resolve(null),
+  ]);
+
+  const environment = louderEnvironment(
+    connectionEnvironment,
+    head ? head.environment : "unset",
+  );
+
+  if (!snapshot.ok) {
+    return {
+      ...empty,
+      environment,
+      error: `Could not load ${slot.target.displayName}.${slot.schema}: ${snapshot.error}`,
+    };
+  }
+
+  const report = compareSchemas(sourceSnapshot, snapshot.data);
+
+  // Safe mode. DROP TABLE / DROP COLUMN are always generated so the diff can
+  // show what a full sync would remove, but they are only armed in the rendered
+  // SQL when the user explicitly ticks "allow data loss" on the form.
+  const script = generateMigration(report, { allowDataLoss });
+  // The down script that undoes the migration above. It is built from the same
+  // flag so its header can say whether the drops it is "restoring" ever ran.
+  const rollback = generateRollback(report, { allowDataLoss });
+
+  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
+  const safe = script.statements.filter((s) => s.severity === "safe").length;
+  const info = script.statements.filter((s) => s.severity === "info").length;
+
+  return {
+    ...empty,
+    environment,
+    error: null,
+    report,
+    delta: tallyDelta(report),
+    sqlText: renderMigrationScript(script),
+    rollbackText: renderRollbackScript(rollback),
+    rollbackStatementCount: rollback.statements.length,
+    rollbackWarnings: rollback.warnings,
+    statementCount: script.statements.length,
+    heldBackCount: allowDataLoss ? 0 : script.destructiveCount,
+    counts: { breaking, safe, info },
+    overallKind: breaking > 0 ? "breaking" : safe + info > 0 ? "additive" : "patch",
+    warnings: script.warnings,
+    // When the target schema is tracked, derive the real next version for each
+    // change level from its lineage HEAD. Null when it isn't tracked — the
+    // workbench then shows an honest "track it" message instead of a number.
+    targetVersions: head
+      ? {
+          current: head.headVersion,
+          breaking: getNextLineageVersion(head.headVersion, "breaking"),
+          additive: getNextLineageVersion(head.headVersion, "additive"),
+          patch: getNextLineageVersion(head.headVersion, "patch"),
+        }
+      : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Small presentational pieces
 // ---------------------------------------------------------------------------
 
-/** One LIVE source selector inside the source bar (connection + schema). */
-function SourcePicker({
-  side,
+/**
+ * One LIVE selector (connection + schema) inside the picker bar.
+ *
+ * All the target pickers share the field names `targetConnection` and
+ * `targetSchema`, so the browser submits them as two parallel lists — that is
+ * what makes "add another target" work with a plain <form> and no JavaScript.
+ */
+function SlotPicker({
+  role,
+  fieldPrefix,
   connections,
   selectedConnectionId,
+  fixedConnectionLabel,
   schemaOptions,
   selectedSchema,
+  environment,
 }: {
-  side: "left" | "right";
+  role: string;
+  fieldPrefix: "source" | "target";
   connections: SavedConnection[];
   selectedConnectionId: string;
+  /** Shown instead of a picker when the target came from .env, not a connection. */
+  fixedConnectionLabel?: string;
   schemaOptions: string[];
   selectedSchema: string;
+  environment: Environment;
 }) {
-  const role = side === "left" ? "Source · desired" : "Target · updated";
   return (
     <div className="picker">
       <span className="kind live" title="Live PostgreSQL introspection">
         live
       </span>
       <div className="body">
-        <span className="text-[10px]" style={{ color: "var(--text-3)" }}>
-          {role}
-        </span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px]" style={{ color: "var(--text-3)" }}>
+            {role}
+          </span>
+          <EnvironmentPill environment={environment} />
+        </div>
+        {fixedConnectionLabel ? (
+          <span className="text-[13.5px] font-medium truncate" title={fixedConnectionLabel}>
+            {fixedConnectionLabel}
+          </span>
+        ) : (
+          <Select
+            name={`${fieldPrefix}Connection`}
+            value={selectedConnectionId}
+            ariaLabel={`${role} connection`}
+            placeholder="Select a connection"
+            options={connections.map((connection) => ({
+              value: String(connection.id),
+              label: `${connection.name} (${connection.database_name})`,
+            }))}
+          />
+        )}
         <Select
-          name={`${side}Connection`}
-          value={selectedConnectionId}
-          ariaLabel={`${side} connection`}
-          placeholder="Select a connection"
-          options={connections.map((connection) => ({
-            value: String(connection.id),
-            label: `${connection.name} (${connection.database_name})`,
-          }))}
-        />
-        <Select
-          name={`${side}Schema`}
+          name={`${fieldPrefix}Schema`}
           value={selectedSchema}
-          ariaLabel={`${side} schema`}
+          ariaLabel={`${role} schema`}
           variant="sub"
           mono
           options={
@@ -166,7 +395,7 @@ function SourcePicker({
   );
 }
 
-function PageHeader() {
+function PageHeader({ targetCount }: { targetCount: number }) {
   return (
     <div className="mb-4">
       <div className="section-title mb-2">Compare &amp; Author</div>
@@ -174,11 +403,43 @@ function PageHeader() {
         Turn a diff into editable SQL.
       </h1>
       <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-        Pick two live PostgreSQL sources and we&apos;ll surface the differences and
-        generate the migration to bridge them. The generated SQL always updates the{" "}
-        <b>right / target</b> schema to match the <b>left / source</b> schema — you can
-        edit it freely before saving.
+        Pick one <b>source</b> schema and compare it against{" "}
+        {targetCount === 1 ? "a target" : `${targetCount} targets`} at once. Each
+        target gets its own diff and its own migration, and every generated script
+        updates <b>that target</b> to match the source — you can edit it freely
+        before saving.
       </p>
+    </div>
+  );
+}
+
+/** The one-line "X of Y targets differ" bar above the per-target sections. */
+function RunSummary({ outcomes }: { outcomes: TargetOutcome[] }) {
+  const compared = outcomes.filter((o) => o.delta);
+  const differing = compared.filter((o) => (o.delta?.total ?? 0) > 0).length;
+  const inSync = compared.length - differing;
+  const failed = outcomes.length - compared.length;
+  const production = outcomes.filter((o) => isProduction(o.environment)).length;
+
+  return (
+    <div className="compare-header flex items-center gap-2 flex-wrap mt-6">
+      <span className="section-title">Results</span>
+      <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
+        <b>{outcomes.length}</b> target{outcomes.length === 1 ? "" : "s"}
+      </span>
+      <span style={{ width: 1, height: 18, background: "var(--border)" }} className="mx-1" />
+      <span className="delta delta-chg" style={differing ? undefined : { opacity: 0.5 }}>
+        {differing} differing
+      </span>
+      <span className="delta delta-add" style={inSync ? undefined : { opacity: 0.5 }}>
+        {inSync} in sync
+      </span>
+      {failed > 0 && <span className="delta delta-rem">{failed} unreachable</span>}
+      {production > 0 && (
+        <span className="pill pill-break">
+          {production} production
+        </span>
+      )}
     </div>
   );
 }
@@ -192,46 +453,14 @@ export default async function ComparePage({ searchParams }: PageProps) {
   const savedConnections = await getSavedConnections();
   const resolved = resolveCompareTargets();
 
-  const selectedLeftConnectionId = pickValue(
-    params.leftConnection,
-    savedConnections[0]?.id ? String(savedConnections[0].id) : "",
-  );
-  const selectedRightConnectionId = pickValue(
-    params.rightConnection,
-    savedConnections[1]?.id
-      ? String(savedConnections[1].id)
-      : savedConnections[0]?.id
-        ? String(savedConnections[0].id)
-        : "",
-  );
+  // With no saved connections at all we fall back to the .env pair, which is
+  // fixed at one source and one target — there is nothing to add a target from.
+  const envTargets = resolved.ok ? resolved.targets : [];
+  const usingEnvFallback = savedConnections.length === 0 && envTargets.length >= 2;
 
-  const leftConnection =
-    savedConnections.find(
-      (connection) => String(connection.id) === selectedLeftConnectionId,
-    ) ?? savedConnections[0];
-
-  const rightConnection =
-    savedConnections.find(
-      (connection) => String(connection.id) === selectedRightConnectionId,
-    ) ??
-    savedConnections[1] ??
-    savedConnections[0];
-
-  let leftTarget: CompareTarget | null = leftConnection
-    ? buildTargetFromConnection(leftConnection, "a")
-    : null;
-
-  let rightTarget: CompareTarget | null = rightConnection
-    ? buildTargetFromConnection(rightConnection, "b")
-    : null;
-
-  if ((!leftTarget || !rightTarget) && resolved.ok) {
-    leftTarget = leftTarget ?? resolved.a;
-    rightTarget = rightTarget ?? resolved.b;
-  }
-
-  // No usable pair → friendly empty state pointing at Connections.
-  if (!leftTarget || !rightTarget) {
+  // Nothing to compare with: point at Connections rather than rendering an
+  // empty form that cannot do anything.
+  if (savedConnections.length === 0 && !usingEnvFallback) {
     return (
       <EmptyState
         icon={<CompareIcon size={22} />}
@@ -256,269 +485,475 @@ export default async function ComparePage({ searchParams }: PageProps) {
     );
   }
 
-  const [schemasA, schemasB] = await Promise.all([
-    fetchSchemaNames(leftTarget.config),
-    fetchSchemaNames(rightTarget.config),
-  ]);
+  // -------------------------------------------------------------------------
+  // Selection. `source*` / `target*` are the current parameter names; the older
+  // `left*` / `right*` pair is still honoured because every deep link into this
+  // page from the dashboard, Drift and a schema's detail page uses it.
+  // -------------------------------------------------------------------------
+  const defaultConnectionId = savedConnections[0]?.id
+    ? String(savedConnections[0].id)
+    : "";
+  const defaultTargetConnectionId = savedConnections[1]?.id
+    ? String(savedConnections[1].id)
+    : defaultConnectionId;
 
-  const schemaErrors = [schemasA, schemasB].filter((result) => !result.ok);
-  const schemaMap = new Map<string, string[]>();
-  if (schemasA.ok) {
-    schemaMap.set(leftTarget.id, schemasA.data);
-  }
-  if (schemasB.ok) {
-    schemaMap.set(rightTarget.id, schemasB.data);
-  }
+  const sourceConnectionId = pickValue(
+    params.sourceConnection ?? params.leftConnection,
+    defaultConnectionId,
+  );
+  const requestedTargetConnections = pickList(
+    params.targetConnection ?? params.rightConnection,
+  );
+  const requestedTargetSchemas = pickList(params.targetSchema ?? params.rightSchema);
 
-  const leftSchemaOptions = schemaMap.get(leftTarget.id) ?? [];
-  const rightSchemaOptions = schemaMap.get(rightTarget.id) ?? [];
-  const leftSchemaFallback =
-    leftSchemaOptions.find(
-      (schema) => schema === envValue("COMPARE_SCHEMA_A", "public"),
-    ) ??
-    leftSchemaOptions[0] ??
-    envValue("COMPARE_SCHEMA_A", "public");
-  const rightSchemaFallback =
-    rightSchemaOptions.find(
-      (schema) => schema === envValue("COMPARE_SCHEMA_B", "public"),
-    ) ??
-    rightSchemaOptions[0] ??
-    envValue("COMPARE_SCHEMA_B", "public");
+  // Pair the two lists by index. Length is taken from the longer of them: in
+  // the .env fallback there is no connection picker to submit, so the schemas
+  // arrive on their own and would otherwise be thrown away.
+  const slotCount = Math.max(
+    requestedTargetConnections.length,
+    requestedTargetSchemas.length,
+  );
+  let slots = Array.from({ length: slotCount }, (_, index) => ({
+    connectionId: requestedTargetConnections[index] ?? "",
+    schema: requestedTargetSchemas[index] ?? "",
+  }));
 
-  const leftSchema = pickValue(params.leftSchema, leftSchemaFallback);
-  const rightSchema = pickValue(params.rightSchema, rightSchemaFallback);
-  const selectionErrors: string[] = [];
-
-  if (leftSchemaOptions.length > 0 && !leftSchemaOptions.includes(leftSchema)) {
-    selectionErrors.push(
-      `Schema ${leftSchema} was not found in ${leftTarget.displayName}.`,
-    );
-  }
-  if (rightSchemaOptions.length > 0 && !rightSchemaOptions.includes(rightSchema)) {
-    selectionErrors.push(
-      `Schema ${rightSchema} was not found in ${rightTarget.displayName}.`,
-    );
-  }
-
-  let report: CompareReport | null = null;
-  const compareErrors = [
-    ...schemaErrors
-      .filter((result): result is { ok: false; error: string } => !result.ok)
-      .map((result) => result.error),
-    ...selectionErrors,
-  ];
-
-  if (compareErrors.length === 0) {
-    const [leftSnapshot, rightSnapshot] = await Promise.all([
-      fetchSchemaSnapshot(leftTarget.config, leftSchema),
-      fetchSchemaSnapshot(rightTarget.config, rightSchema),
-    ]);
-
-    if (!leftSnapshot.ok) {
-      compareErrors.push(
-        `Could not load ${leftTarget.displayName}.${leftSchema}: ${leftSnapshot.error}`,
-      );
-    }
-    if (!rightSnapshot.ok) {
-      compareErrors.push(
-        `Could not load ${rightTarget.displayName}.${rightSchema}: ${rightSnapshot.error}`,
-      );
-    }
-
-    if (leftSnapshot.ok && rightSnapshot.ok) {
-      report = compareSchemas(leftSnapshot.data, rightSnapshot.data);
-
-      if (pickValue(params.run, "") === "1") {
-        try {
-          await ensureMetadataSchema();
-          await pool.query(`
-            CREATE TABLE IF NOT EXISTS schema_comparisons (
-              id SERIAL PRIMARY KEY,
-              schema_a TEXT NOT NULL,
-              schema_b TEXT NOT NULL,
-              compared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-          `);
-
-          await pool.query(
-            `
-            INSERT INTO schema_comparisons (schema_a, schema_b)
-            VALUES ($1, $2)
-            `,
-            [
-              `${leftTarget.displayName}.${leftSchema}`,
-              `${rightTarget.displayName}.${rightSchema}`,
-            ],
-          );
-        } catch (error) {
-          console.error("Failed to save comparison history:", error);
-        }
-      }
-    }
+  // "Remove" submits the index it sits on. The last target is never removable —
+  // a comparison with no targets is not a comparison.
+  const removeIndex = Number(pickValue(params.removeTarget, "-1"));
+  if (
+    slots.length > 1 &&
+    Number.isInteger(removeIndex) &&
+    removeIndex >= 0 &&
+    removeIndex < slots.length
+  ) {
+    slots = slots.filter((_, index) => index !== removeIndex);
   }
 
-  // Safe mode. DROP TABLE / DROP COLUMN are always generated so the diff can
-  // show what a full sync would remove, but they are only armed in the rendered
-  // SQL when the user explicitly ticks "allow data loss" on the form.
+  // "Add target" appends an unconfigured slot, which then falls back to the
+  // default connection and that connection's first schema.
+  if (pickValue(params.addTarget, "") === "1" && slots.length < MAX_TARGETS) {
+    slots.push({ connectionId: "", schema: "" });
+  }
+
+  if (slots.length === 0) {
+    slots = [{ connectionId: "", schema: "" }];
+  }
+  slots = slots.slice(0, MAX_TARGETS);
+
+  const findConnection = (id: string) =>
+    savedConnections.find((connection) => String(connection.id) === id) ?? null;
+
+  const sourceConnection = usingEnvFallback
+    ? null
+    : findConnection(sourceConnectionId) ?? savedConnections[0] ?? null;
+
+  const sourceTarget: CompareTarget = sourceConnection
+    ? buildTargetFromConnection(sourceConnection, "source")
+    : envTargets[0];
+
+  const targetSlots = slots.map((slot, index) => {
+    const connection = usingEnvFallback
+      ? null
+      : findConnection(slot.connectionId) ??
+        findConnection(defaultTargetConnectionId) ??
+        savedConnections[0] ??
+        null;
+    return {
+      index,
+      connection,
+      requestedSchema: slot.schema,
+      target: connection
+        ? buildTargetFromConnection(connection, `target-${index}`)
+        : envTargets[1],
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // Schema lists. Two targets on the same connection ask the same question, so
+  // look each distinct database up once and share the answer.
+  // -------------------------------------------------------------------------
+  const configsByKey = new Map<string, CompareTarget>();
+  const keyFor = (connection: SavedConnection | null, target: CompareTarget) =>
+    connection ? `conn:${connection.id}` : `env:${target.id}`;
+
+  configsByKey.set(keyFor(sourceConnection, sourceTarget), sourceTarget);
+  for (const slot of targetSlots) {
+    configsByKey.set(keyFor(slot.connection, slot.target), slot.target);
+  }
+
+  const keys = [...configsByKey.keys()];
+  const schemaResults = await Promise.all(
+    keys.map((key) => fetchSchemaNames(configsByKey.get(key)!.config)),
+  );
+  const schemaLists = new Map(keys.map((key, i) => [key, schemaResults[i]]));
+
+  function schemasFor(connection: SavedConnection | null, target: CompareTarget) {
+    const result = schemaLists.get(keyFor(connection, target));
+    if (!result) return { options: [] as string[], error: null as string | null };
+    return result.ok
+      ? { options: result.data, error: null }
+      : { options: [] as string[], error: result.error };
+  }
+
+  /** Prefer what was asked for, then the configured default, then whatever exists. */
+  function resolveSchema(
+    requested: string,
+    options: string[],
+    envName: string,
+  ): string {
+    if (requested.length > 0) return requested;
+    const preferred = envValue(envName, "public");
+    return options.find((schema) => schema === preferred) ?? options[0] ?? preferred;
+  }
+
+  const sourceSchemaInfo = schemasFor(sourceConnection, sourceTarget);
+  const sourceSchema = resolveSchema(
+    pickValue(params.sourceSchema ?? params.leftSchema, ""),
+    sourceSchemaInfo.options,
+    "COMPARE_SCHEMA_A",
+  );
+  const sourceEnvironment = toEnvironment(sourceConnection?.environment);
+
+  const resolvedTargets = targetSlots.map((slot) => {
+    const info = schemasFor(slot.connection, slot.target);
+    return {
+      ...slot,
+      schemaOptions: info.options,
+      schemaListError: info.error,
+      schema: resolveSchema(slot.requestedSchema, info.options, "COMPARE_SCHEMA_B"),
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // The compare itself. One source snapshot, then every target in parallel —
+  // a slow or unreachable target holds up only its own section.
+  // -------------------------------------------------------------------------
   const allowDataLoss = pickValue(params.allowDataLoss, "") === "1";
 
-  // Derive the migration + workbench inputs (only when we have a report).
-  const script = report ? generateMigration(report, { allowDataLoss }) : null;
-  const sqlText = script ? renderMigrationScript(script) : "";
-  // The down script that undoes the migration above. It is built from the same
-  // flag so its header can say whether the drops it is "restoring" ever ran.
-  const rollback = report ? generateRollback(report, { allowDataLoss }) : null;
-  const rollbackText = rollback ? renderRollbackScript(rollback) : "";
-  const breaking = script
-    ? script.statements.filter((s) => s.severity === "breaking").length
-    : 0;
-  const safe = script
-    ? script.statements.filter((s) => s.severity === "safe").length
-    : 0;
-  const info = script
-    ? script.statements.filter((s) => s.severity === "info").length
-    : 0;
-  const overallKind: ChangeKind =
-    breaking > 0 ? "breaking" : safe + info > 0 ? "additive" : "patch";
+  let sourceError: string | null = sourceSchemaInfo.error
+    ? `Could not reach ${sourceTarget.displayName}: ${sourceSchemaInfo.error}`
+    : null;
+  if (
+    !sourceError &&
+    sourceSchemaInfo.options.length > 0 &&
+    !sourceSchemaInfo.options.includes(sourceSchema)
+  ) {
+    sourceError = `Schema ${sourceSchema} was not found in ${sourceTarget.displayName}.`;
+  }
 
-  // If the target (right) schema is tracked, derive the real next version for
-  // each change level from its lineage HEAD. Null when it isn't tracked — the
-  // workbench then shows an honest "track it" message instead of a number.
-  let targetVersions:
-    | { current: string | null; breaking: string; additive: string; patch: string }
-    | null = null;
-  if (report && script && rightConnection) {
-    const head = await findTrackedSchema(rightConnection.id, rightSchema);
-    if (head) {
-      targetVersions = {
-        current: head.headVersion,
-        breaking: getNextLineageVersion(head.headVersion, "breaking"),
-        additive: getNextLineageVersion(head.headVersion, "additive"),
-        patch: getNextLineageVersion(head.headVersion, "patch"),
-      };
+  let outcomes: TargetOutcome[] = [];
+  if (!sourceError) {
+    const snapshot = await fetchSchemaSnapshot(sourceTarget.config, sourceSchema);
+    if (!snapshot.ok) {
+      sourceError = `Could not load ${sourceTarget.displayName}.${sourceSchema}: ${snapshot.error}`;
+    } else {
+      outcomes = await Promise.all(
+        resolvedTargets.map((slot) =>
+          compareOneTarget(snapshot.data, slot, allowDataLoss),
+        ),
+      );
     }
   }
 
-  const delta = report ? tallyDelta(report) : null;
+  // Comparison history. One row per target, so a three-target run leaves three
+  // entries rather than pretending it was a single two-sided compare.
+  const comparedPairs = outcomes.filter((outcome) => outcome.report);
+  if (pickValue(params.run, "") === "1" && comparedPairs.length > 0) {
+    try {
+      await ensureMetadataSchema();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS schema_comparisons (
+          id SERIAL PRIMARY KEY,
+          schema_a TEXT NOT NULL,
+          schema_b TEXT NOT NULL,
+          compared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      const left = `${sourceTarget.displayName}.${sourceSchema}`;
+      await Promise.all(
+        comparedPairs.map((outcome) =>
+          pool.query(
+            `INSERT INTO schema_comparisons (schema_a, schema_b) VALUES ($1, $2)`,
+            [left, `${outcome.target.displayName}.${outcome.schema}`],
+          ),
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to save comparison history:", error);
+    }
+  }
+
+  const productionTargets = outcomes.filter((outcome) =>
+    isProduction(outcome.environment),
+  );
+  const canAddTarget = !usingEnvFallback && resolvedTargets.length < MAX_TARGETS;
 
   return (
     <div className="px-4 sm:px-8 py-6 sm:py-8">
-      <PageHeader />
+      <PageHeader targetCount={resolvedTargets.length} />
 
-      {/* Source selectors — plain form-GET, same selection model as before. */}
+      {/* Selection — plain form-GET. The target pickers repeat one pair of field
+          names, so the browser submits them as parallel lists and "add target"
+          needs no client state at all. */}
       <form action="/compare" className="source-bar">
         <input type="hidden" name="run" value="1" />
-        <SourcePicker
-          side="left"
-          connections={savedConnections}
-          selectedConnectionId={leftConnection?.id ? String(leftConnection.id) : ""}
-          schemaOptions={leftSchemaOptions}
-          selectedSchema={leftSchema}
-        />
-        <SourcePicker
-          side="right"
-          connections={savedConnections}
-          selectedConnectionId={rightConnection?.id ? String(rightConnection.id) : ""}
-          schemaOptions={rightSchemaOptions}
-          selectedSchema={rightSchema}
-        />
-        <label
-          className="flex items-center gap-2 self-center text-[12.5px] cursor-pointer"
-          style={{ color: "var(--text-2)" }}
-          title="DROP TABLE and DROP COLUMN are commented out unless this is ticked."
-        >
-          <input
-            type="checkbox"
-            name="allowDataLoss"
-            value="1"
-            defaultChecked={allowDataLoss}
-          />
-          Allow data loss
-        </label>
-        <button type="submit" className="btn btn-primary self-center">
-          <CompareIcon size={14} />
-          Compare
-        </button>
+
+        <div className="source-bar__group">
+          <div className="source-bar__label">Source · the schema you want</div>
+          <div className="source-bar__slot">
+            <SlotPicker
+              role="Source · desired"
+              fieldPrefix="source"
+              connections={savedConnections}
+              selectedConnectionId={
+                sourceConnection ? String(sourceConnection.id) : ""
+              }
+              fixedConnectionLabel={
+                usingEnvFallback ? sourceTarget.displayName : undefined
+              }
+              schemaOptions={sourceSchemaInfo.options}
+              selectedSchema={sourceSchema}
+              environment={sourceEnvironment}
+            />
+          </div>
+        </div>
+
+        <div className="source-bar__group">
+          <div className="source-bar__label">
+            {resolvedTargets.length === 1
+              ? "Target · the schema that gets updated"
+              : `${resolvedTargets.length} targets · each gets its own migration`}
+          </div>
+          <div className="source-bar__grid">
+            {resolvedTargets.map((slot, index) => (
+              <div className="source-bar__slot" key={`target-${index}`}>
+                <SlotPicker
+                  role={
+                    resolvedTargets.length === 1
+                      ? "Target · updated"
+                      : `Target ${index + 1} · updated`
+                  }
+                  fieldPrefix="target"
+                  connections={savedConnections}
+                  selectedConnectionId={
+                    slot.connection ? String(slot.connection.id) : ""
+                  }
+                  fixedConnectionLabel={
+                    usingEnvFallback ? slot.target.displayName : undefined
+                  }
+                  schemaOptions={slot.schemaOptions}
+                  selectedSchema={slot.schema}
+                  environment={
+                    outcomes[index]?.environment ??
+                    toEnvironment(slot.connection?.environment)
+                  }
+                />
+                {resolvedTargets.length > 1 && (
+                  <button
+                    type="submit"
+                    name="removeTarget"
+                    value={String(index)}
+                    className="btn btn-ghost btn-icon self-start"
+                    title={`Remove target ${index + 1}`}
+                    aria-label={`Remove target ${index + 1}`}
+                  >
+                    <XIcon size={14} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="source-bar__actions">
+          {canAddTarget ? (
+            <button type="submit" name="addTarget" value="1" className="btn btn-ghost btn-sm">
+              <PlusIcon size={14} />
+              Add target
+            </button>
+          ) : !usingEnvFallback ? (
+            <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
+              {MAX_TARGETS} targets is the maximum for one comparison.
+            </span>
+          ) : null}
+          <label
+            className="flex items-center gap-2 text-[12.5px] cursor-pointer"
+            style={{ color: "var(--text-2)" }}
+            title="DROP TABLE and DROP COLUMN are commented out unless this is ticked."
+          >
+            <input
+              type="checkbox"
+              name="allowDataLoss"
+              value="1"
+              defaultChecked={allowDataLoss}
+            />
+            Allow data loss
+          </label>
+          <span className="source-bar__spacer" />
+          <button type="submit" className="btn btn-primary">
+            <CompareIcon size={14} />
+            Compare
+          </button>
+        </div>
       </form>
 
-      {/* Errors that blocked the compare */}
-      {compareErrors.length > 0 && (
+      {/* A production target is worth saying once at the top, before the reader
+          scrolls into a workbench with a "push to registry" button in it. */}
+      {productionTargets.length > 0 && (
+        <div className="warn-inline mt-4">
+          <span className="ico">
+            <AlertTriangleIcon size={14} />
+          </span>
+          <span>
+            <b>
+              {productionTargets.length === 1
+                ? "One target is production"
+                : `${productionTargets.length} targets are production`}
+              :
+            </b>{" "}
+            {productionTargets
+              .map((outcome) => `${outcome.target.displayName}.${outcome.schema}`)
+              .join(", ")}
+            . Read the generated SQL before you push it — on production a dropped
+            column is not recoverable from this app.
+          </span>
+        </div>
+      )}
+
+      {/* A source we cannot read blocks every target, so it is reported once. */}
+      {sourceError && (
         <div className="warn-inline mt-4" style={{ flexDirection: "column", gap: 6 }}>
           <div className="flex items-center gap-2">
             <span className="ico">
               <AlertTriangleIcon size={14} />
             </span>
-            <b>Unable to compare</b>
+            <b>Unable to read the source schema</b>
           </div>
-          <ul className="space-y-1" style={{ paddingLeft: 22 }}>
-            {compareErrors.map((error) => (
-              <li key={error} className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                {error}
-              </li>
-            ))}
-          </ul>
+          <p className="text-[12.5px]" style={{ color: "var(--text-2)", paddingLeft: 22 }}>
+            {sourceError}
+          </p>
         </div>
       )}
 
-      {report && delta && script ? (
-        <>
-          {/* Diff summary strip */}
-          <div className="compare-header flex items-center gap-2 flex-wrap mt-6 mb-3">
-            <span className="section-title">Diff</span>
-            <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
-              <b>{delta.total}</b> change{delta.total === 1 ? "" : "s"} ·{" "}
-              <b>
-                {delta.tablesTouched} table{delta.tablesTouched === 1 ? "" : "s"}
-              </b>
+      {outcomes.length > 1 && <RunSummary outcomes={outcomes} />}
+
+      {outcomes.map((outcome) => (
+        <section key={`outcome-${outcome.index}`} className="mt-6">
+          {/* Per-target header: what is being compared, and how much differs. */}
+          <div className="compare-header flex items-center gap-2 flex-wrap mb-3">
+            <span className="section-title">
+              {outcomes.length === 1 ? "Diff" : `Target ${outcome.index + 1}`}
             </span>
-            <span style={{ width: 1, height: 18, background: "var(--border)" }} className="mx-1" />
-            <span className="delta delta-add" style={delta.adds ? undefined : { opacity: 0.5 }}>
-              + {delta.adds}
-            </span>
-            <span className="delta delta-chg" style={delta.chgs ? undefined : { opacity: 0.5 }}>
-              ~ {delta.chgs}
-            </span>
-            <span className="delta delta-rem" style={delta.rems ? undefined : { opacity: 0.5 }}>
-              − {delta.rems}
-            </span>
+            <EnvironmentPill environment={outcome.environment} />
+            {outcome.delta ? (
+              <>
+                <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
+                  <b>{outcome.delta.total}</b> change
+                  {outcome.delta.total === 1 ? "" : "s"} ·{" "}
+                  <b>
+                    {outcome.delta.tablesTouched} table
+                    {outcome.delta.tablesTouched === 1 ? "" : "s"}
+                  </b>
+                </span>
+                <span
+                  style={{ width: 1, height: 18, background: "var(--border)" }}
+                  className="mx-1"
+                />
+                <span
+                  className="delta delta-add"
+                  style={outcome.delta.adds ? undefined : { opacity: 0.5 }}
+                >
+                  + {outcome.delta.adds}
+                </span>
+                <span
+                  className="delta delta-chg"
+                  style={outcome.delta.chgs ? undefined : { opacity: 0.5 }}
+                >
+                  ~ {outcome.delta.chgs}
+                </span>
+                <span
+                  className="delta delta-rem"
+                  style={outcome.delta.rems ? undefined : { opacity: 0.5 }}
+                >
+                  − {outcome.delta.rems}
+                </span>
+              </>
+            ) : null}
             <span className="ml-auto text-[12px]" style={{ color: "var(--text-3)" }}>
-              comparing{" "}
               <span className="mono">
-                {report.left.database}.{report.left.schema}
+                {sourceTarget.displayName}.{sourceSchema}
               </span>{" "}
               →{" "}
               <span className="mono">
-                {report.right.database}.{report.right.schema}
+                {outcome.target.displayName}.{outcome.schema}
               </span>
             </span>
           </div>
 
-          {/* Two-column body: diff canvas (left) + migration draft (right, sticky).
-              Stacks under 980px via the .compare-layout rule. */}
-          <div className="compare-layout">
-            <DiffReport report={report} allowDataLoss={allowDataLoss} />
-            <MigrationWorkbench
-              initialSql={sqlText}
-              statementCount={script.statements.length}
-              heldBackCount={allowDataLoss ? 0 : script.destructiveCount}
-              initialRollbackSql={rollbackText}
-              rollbackStatementCount={rollback ? rollback.statements.length : 0}
-              rollbackWarnings={rollback ? rollback.warnings : []}
-              suggestedName={`sync_${report.right.schema}_to_${report.left.schema}`
-                .replace(/[^a-z0-9_]/gi, "_")
-                .toLowerCase()}
-              suggestedDescription={`Sync ${report.right.database}.${report.right.schema} to match ${report.left.database}.${report.left.schema}`}
-              targetLabel={`${report.right.database}.${report.right.schema}`}
-              targetSchema={report.right.schema}
-              targetDatabase={rightConnection?.database_name ?? report.right.database}
-              suggestedKind={overallKind}
-              counts={{ breaking, safe, info }}
-              warnings={script.warnings}
-              targetVersions={targetVersions}
-            />
-          </div>
-        </>
-      ) : null}
+          {outcome.error ? (
+            <div className="warn-inline">
+              <span className="ico">
+                <AlertTriangleIcon size={14} />
+              </span>
+              <span>{outcome.error}</span>
+            </div>
+          ) : outcome.report ? (
+            <>
+              {isProduction(outcome.environment) && (
+                <div className="warn-inline mb-3">
+                  <span className="ico">
+                    <AlertTriangleIcon size={14} />
+                  </span>
+                  <span>
+                    <b>This target is production.</b> The migration below rewrites{" "}
+                    <span className="mono">
+                      {outcome.target.displayName}.{outcome.schema}
+                    </span>
+                    {outcome.counts.breaking > 0
+                      ? ` and contains ${outcome.counts.breaking} breaking statement${
+                          outcome.counts.breaking === 1 ? "" : "s"
+                        }.`
+                      : "."}
+                  </span>
+                </div>
+              )}
+
+              {/* Two-column body: diff canvas (left) + migration draft (right,
+                  sticky). Stacks under 980px via the .compare-layout rule. */}
+              <div className="compare-layout">
+                <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
+                <MigrationWorkbench
+                  initialSql={outcome.sqlText}
+                  statementCount={outcome.statementCount}
+                  heldBackCount={outcome.heldBackCount}
+                  initialRollbackSql={outcome.rollbackText}
+                  rollbackStatementCount={outcome.rollbackStatementCount}
+                  rollbackWarnings={outcome.rollbackWarnings}
+                  // Named after both ends, not just the schemas: with several
+                  // targets on one page they are usually all called "public",
+                  // and three drafts called sync_public_to_public would be
+                  // impossible to tell apart in the registry or in review.
+                  suggestedName={`sync_${outcome.report.right.database}_${outcome.report.right.schema}_from_${outcome.report.left.database}_${outcome.report.left.schema}`
+                    .replace(/[^a-z0-9_]/gi, "_")
+                    .toLowerCase()}
+                  suggestedDescription={`Sync ${outcome.report.right.database}.${outcome.report.right.schema} to match ${outcome.report.left.database}.${outcome.report.left.schema}`}
+                  targetLabel={`${outcome.report.right.database}.${outcome.report.right.schema}`}
+                  targetSchema={outcome.report.right.schema}
+                  targetDatabase={
+                    outcome.connection?.database_name ?? outcome.report.right.database
+                  }
+                  suggestedKind={outcome.overallKind}
+                  counts={outcome.counts}
+                  warnings={outcome.warnings}
+                  targetVersions={outcome.targetVersions}
+                />
+              </div>
+            </>
+          ) : null}
+        </section>
+      ))}
     </div>
   );
 }

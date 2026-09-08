@@ -122,7 +122,16 @@ function formatAction(code: string | null): string {
 }
 
 export type CompareTarget = {
-  id: "a" | "b";
+  /**
+   * A stable id for this target inside one comparison — a React key, and the
+   * key its schema list is cached under while the page builds.
+   *
+   * This used to be the literal union "a" | "b", which made "exactly two sides"
+   * a rule of the type system rather than a property of one screen. Compare now
+   * runs one source against as many targets as you add, so it is a plain
+   * string: "source", "target-0", "target-1", and so on.
+   */
+  id: string;
   config: ClientConfig;
   displayName: string;
 };
@@ -202,13 +211,20 @@ function trimEnv(name: string): string | undefined {
 }
 
 /**
- * Two ways to configure:
+ * The environment-variable fallback for Compare, used when there are no saved
+ * connections yet. Two ways to configure:
+ *
  * 1) DATABASE_URL_A + DATABASE_URL_B — full URLs, possibly different hosts/users.
  * 2) DATABASE_URL (or DATABASE_URL_A) only — same server/user/password; opens
- *    COMPARE_DATABASE_A (default "postgres") and COMPARE_DATABASE_B (default "TEST").
+ *    COMPARE_DATABASE_A (default "postgres") and COMPARE_DATABASE_B (default: A).
+ *
+ * Returns an ordered list instead of a fixed { a, b } pair. Environment
+ * variables still only ever describe two databases, but the caller compares one
+ * source against N targets and should not have to know where the ceiling is:
+ * the first entry is the source, everything after it is a target.
  */
 export function resolveCompareTargets():
-  | { ok: true; a: CompareTarget; b: CompareTarget }
+  | { ok: true; targets: CompareTarget[] }
   | { ok: false; error: string } {
   const urlA = trimEnv("DATABASE_URL_A") || trimEnv("DATABASE_URL");
   const urlB = trimEnv("DATABASE_URL_B");
@@ -227,16 +243,18 @@ export function resolveCompareTargets():
       const cfgB = normalizeCompareSsl(parseIntoClientConfig(urlB));
       return {
         ok: true,
-        a: {
-          id: "a",
-          config: cfgA,
-          displayName: cfgA.database ?? "database A",
-        },
-        b: {
-          id: "b",
-          config: cfgB,
-          displayName: cfgB.database ?? "database B",
-        },
+        targets: [
+          {
+            id: "env-a",
+            config: cfgA,
+            displayName: cfgA.database ?? "database A",
+          },
+          {
+            id: "env-b",
+            config: cfgB,
+            displayName: cfgB.database ?? "database B",
+          },
+        ],
       };
     }
 
@@ -252,8 +270,10 @@ export function resolveCompareTargets():
     const cfgB = { ...base, database: dbB };
     return {
       ok: true,
-      a: { id: "a", config: cfgA, displayName: dbA },
-      b: { id: "b", config: cfgB, displayName: dbB },
+      targets: [
+        { id: "env-a", config: cfgA, displayName: dbA },
+        { id: "env-b", config: cfgB, displayName: dbB },
+      ],
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

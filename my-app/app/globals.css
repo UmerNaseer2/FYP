@@ -2197,6 +2197,7 @@ body {
 .btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
 .btn-sm { padding:5px 10px; font-size:12px; border-radius:6px; }
 .btn-lg { padding:10px 18px; font-size:14px; border-radius:10px; }
+.btn-icon { padding:0; width:30px; height:30px; flex:none; }
 .btn-primary    { background:var(--brand); color:#fff; border-color:var(--brand); box-shadow: 0 4px 12px -6px var(--brand); }
 .btn-primary:hover    { background:var(--brand-2); border-color:var(--brand-2); }
 .btn-secondary  { background:var(--surface); color:var(--text); border-color:var(--border-strong); }
@@ -2500,9 +2501,19 @@ body {
    .diff-row/.seg primitives; adds only the screen-specific structures.
    =================================================================== */
 
-/* source picker bar */
+/* source picker bar — one source, then as many targets as were added. The
+   targets auto-fill into columns so two of them read like the old side-by-side
+   layout and six of them still fit on one screen. */
 .source-bar { background:var(--surface); border:1px solid var(--border); border-radius:14px;
-              padding:14px; display:grid; grid-template-columns: 1fr 1fr auto; gap:12px; align-items:stretch; }
+              padding:14px; display:flex; flex-direction:column; gap:14px; }
+.source-bar__group { display:flex; flex-direction:column; gap:7px; min-width:0; }
+.source-bar__label { font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+                     color:var(--text-3); }
+.source-bar__grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:10px; }
+.source-bar__slot { display:flex; align-items:flex-start; gap:6px; min-width:0; }
+.source-bar__slot > .picker { flex:1; }
+.source-bar__actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.source-bar__spacer { flex:1 1 auto; }
 .picker { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--border-strong);
           border-radius:10px; background:var(--surface-2); min-width:0; }
 .picker .kind { font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--text-3);
@@ -2922,9 +2933,11 @@ details[open] > .tg-header .chev { transform: rotate(0deg); }
   .crumb-workspace { display:none; }
 
   /* Compare source bar + summary strip stack. */
-  .source-bar { grid-template-columns:1fr; gap:10px; align-items:stretch; }
+  .source-bar { gap:12px; }
+  .source-bar__grid { grid-template-columns:1fr; }
   .source-bar .picker { min-width:0; }
-  .source-bar > button { width:100%; justify-content:center; }
+  .source-bar__spacer { display:none; }
+  .source-bar__actions > button[type="submit"]:not(.btn-icon) { width:100%; justify-content:center; }
   .compare-header { flex-direction:column; align-items:flex-start; gap:8px; }
   .compare-header .ml-auto { margin-left:0; }
 
