@@ -1091,7 +1091,45 @@ type ConstraintRow = {
   convalidated: boolean | null;
 };
 
-const COMPARE_IGNORED_TABLES = ["script_patch"];
+// Bookkeeping this tool writes into the schemas it manages. Comparing a target
+// against a baseline must not report our own ledgers as a difference, or the
+// first migration and the first revert each invent drift out of nothing.
+const COMPARE_IGNORED_TABLES = ["script_patch", "script_patch_reverted"];
+
+/**
+ * Strip this tool's own bookkeeping out of a snapshot that was captured before
+ * the ignore list covered it.
+ *
+ * Live snapshots already exclude these — the queries filter them out. Stored
+ * ones do not: a baseline taken while `script_patch_reverted` existed still has
+ * it, so comparing that baseline against a fresh capture would report the table
+ * as dropped and call it drift. Filtering both sides at read time makes an old
+ * baseline agree with a new capture without rewriting anything on disk.
+ */
+export function withoutToolTables(snapshot: SchemaSnapshot): SchemaSnapshot {
+  const ignored = new Set(COMPARE_IGNORED_TABLES);
+  const ownedByIgnored = (owner: string | null | undefined) => {
+    if (!owner) return false;
+    // `owned_by_table` is stored as PostgreSQL renders a regclass, which is
+    // schema-qualified only when the schema is outside the search path.
+    const bare = owner.includes(".") ? owner.slice(owner.lastIndexOf(".") + 1) : owner;
+    return ignored.has(bare.replace(/^"|"$/g, ""));
+  };
+  const ignoredSequences = new Set(
+    (snapshot.sequences ?? [])
+      .filter((seq) => ownedByIgnored(seq.ownedByTable))
+      .map((seq) => seq.name)
+  );
+
+  return {
+    ...snapshot,
+    tables: snapshot.tables.filter((t) => !ignored.has(t.name)),
+    sequences: snapshot.sequences?.filter((s) => !ignoredSequences.has(s.name)),
+    privileges: snapshot.privileges?.filter(
+      (p) => !ignored.has(p.objectName) && !ignoredSequences.has(p.objectName)
+    ),
+  };
+}
 
 function trimEnv(name: string): string | undefined {
   const v = process.env[name]?.trim();
@@ -1734,8 +1772,20 @@ export async function fetchSchemaSnapshot(
         AND d.classid = 'pg_class'::regclass
         AND d.deptype IN ('a', 'i')
        WHERE n.nspname = $1
+         -- A ledger table is hidden from the comparison, so the sequence its
+         -- SERIAL id column owns has to be hidden with it. Otherwise the table
+         -- disappears and script_patch_id_seq is still reported as a new
+         -- object — the same false difference, one level down.
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_depend owned
+            JOIN pg_class owner ON owner.oid = owned.refobjid
+           WHERE owned.objid = c.oid
+             AND owned.classid = 'pg_class'::regclass
+             AND owned.deptype IN ('a', 'i')
+             AND owner.relname = ANY($2)
+         )
        ORDER BY c.relname`,
-      [schemaName]
+      [schemaName, COMPARE_IGNORED_TABLES]
     );
 
     // Every table has a row in pg_type for its own row type; the typrelid check
@@ -1944,6 +1994,16 @@ export async function fetchSchemaSnapshot(
          WHERE n.nspname = $1
            AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
            AND c.relname <> ALL($2)
+           -- And the sequences those hidden tables own — see the note in the
+           -- sequence query above.
+           AND NOT EXISTS (
+             SELECT 1 FROM pg_depend owned
+              JOIN pg_class owner ON owner.oid = owned.refobjid
+             WHERE owned.objid = c.oid
+               AND owned.classid = 'pg_class'::regclass
+               AND owned.deptype IN ('a', 'i')
+               AND owner.relname = ANY($2)
+           )
          UNION ALL
          SELECT
            CASE p.prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END,

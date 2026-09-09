@@ -1,5 +1,9 @@
 import type { ClientConfig } from "pg";
-import { fetchSchemaSnapshot, type SchemaSnapshot } from "./postgres";
+import {
+  fetchSchemaSnapshot,
+  withoutToolTables,
+  type SchemaSnapshot,
+} from "./postgres";
 import { buildPgConfig } from "./connection-config";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
@@ -732,7 +736,7 @@ export async function computeDriftDetail(
     [trackedSchemaId]
   );
   if (head.rows.length > 0) {
-    expected = head.rows[0].snapshot;
+    expected = withoutToolTables(head.rows[0].snapshot);
     ref.version = head.rows[0].version;
     ref.seq = head.rows[0].seq;
     ref.snapshotId = head.rows[0].id;
@@ -744,7 +748,7 @@ export async function computeDriftDetail(
       [trackedSchemaId]
     );
     if (latest.rows.length > 0) {
-      expected = latest.rows[0].snapshot;
+      expected = withoutToolTables(latest.rows[0].snapshot);
       ref.snapshotId = latest.rows[0].id;
     }
   }
