@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
+import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import pool, { ensureConnectionsTable } from "@/lib/version-db";
 import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
@@ -7,6 +8,7 @@ import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl, extractEnumAddValues } from "@/lib/sql-guard";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import {
+  isProduction,
   louderEnvironment,
   productionBlockReason,
   toEnvironment,
@@ -530,6 +532,78 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: blocked, environment: targetEnvironment }, { status: 409 });
   }
 
+  // ─── 4c. Production needs a second person, not a second checkbox ──────────
+  //
+  // The acknowledgement above says "the operator knows this is production". It
+  // does not say anyone else agreed, and it cannot: the same hand ticks it and
+  // presses Deploy. A real run against production therefore also needs an
+  // approval someone ELSE granted — see lib/approvals-db for the rule and the
+  // CHECK constraint that backs it.
+  //
+  // Claimed BEFORE the run, not after. An approval authorises one run, so the
+  // claim is what stops the same approved request being spent twice; taking it
+  // first also means two operators pressing Deploy together cannot both proceed.
+  // If the run does not commit, the claim is handed back in the finally block.
+  //
+  // A dry run is exempt. It writes nothing, and requiring a second person to
+  // rehearse would make the careful path the expensive one — the acknowledgement
+  // above already covers the locks a rehearsal really takes.
+  let claimedApprovalId: number | null = null;
+  if (isProduction(targetEnvironment) && !dryRun) {
+    try {
+      const claimed = await claimApproval({
+        connectionId,
+        schemaName,
+        scripts: queue.map((job) => ({
+          scriptName: job.scriptName,
+          version: job.version,
+          sqlContent: job.sqlContent,
+        })),
+      });
+      if (!claimed) {
+        return NextResponse.json(
+          {
+            error:
+              `This target is labelled production, so the run needs an approval ` +
+              `from someone other than you. Nothing here is approved for these ` +
+              `exact ${queue.length} migration${queue.length === 1 ? "" : "s"} — ` +
+              `request approval on the Deploy screen, or re-request it if the SQL ` +
+              `has changed since it was approved.`,
+            environment: targetEnvironment,
+            needsApproval: true,
+          },
+          { status: 403 }
+        );
+      }
+      claimedApprovalId = claimed.id;
+    } catch (error) {
+      console.error("Apply — could not claim a deploy approval:", error);
+      return NextResponse.json(
+        { error: "Could not check the deploy approval for this production target." },
+        { status: 500 }
+      );
+    }
+  }
+
+  /**
+   * Give a claimed approval back after a run that did not commit.
+   *
+   * Best-effort on purpose: the caller is already returning an error, and
+   * failing to un-claim an approval must not turn a clear message about the
+   * real problem into a confusing one about bookkeeping. The cost of a missed
+   * release is that the second person is asked once more.
+   */
+  async function releaseClaimedApproval(): Promise<void> {
+    if (claimedApprovalId === null) return;
+    const id = claimedApprovalId;
+    claimedApprovalId = null;
+    try {
+      await releaseApproval(id);
+    } catch (error) {
+      console.error("Apply — could not release deploy approval", id, error);
+    }
+  }
+
   // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
   const targetConfig = buildPgConfig({
     host: connRow.host,
@@ -550,6 +624,9 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — could not connect to target DB:", message);
+    // This return is outside the try/finally below, so the claim taken in 4c
+    // would otherwise stay spent on a run that never opened a connection.
+    await releaseClaimedApproval();
     return NextResponse.json(
       {
         error:
@@ -575,6 +652,9 @@ export async function POST(request: NextRequest) {
   // name it instead of reporting the failure against the run as a whole. Null
   // means the run failed outside any single migration (setup, BEGIN, COMMIT).
   let failedJob: ScriptJob | null = null;
+  // Whether the run actually committed. Only a commit spends the production
+  // approval claimed in step 4c; every other outcome gives it back.
+  let runCommitted = false;
 
   try {
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
@@ -792,6 +872,9 @@ export async function POST(request: NextRequest) {
     // Commit — only reaches here if every migration in the run succeeded
     await client.query("COMMIT");
     transactionStarted = false;
+    // The approval has now been spent on a run that really happened, so the
+    // finally block must leave it marked used.
+    runCommitted = true;
 
     // Release the target-pool connection BEFORE the lineage advance below: that
     // step re-introspects the target (drawing its own connection), so holding this
@@ -938,5 +1021,9 @@ export async function POST(request: NextRequest) {
     // unless the success path already released it before the lineage advance.
     // Without this the pool eventually runs out of connections and hangs.
     if (!clientReleased) client.release();
+    // Every exit from here that is not a commit rolled the whole run back, so
+    // the approval was not spent. Hand it back rather than making the second
+    // person read the same migrations again.
+    if (!runCommitted) await releaseClaimedApproval();
   }
 }
