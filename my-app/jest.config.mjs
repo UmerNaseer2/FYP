@@ -19,6 +19,12 @@ const config = {
   // browser environment would only cost start-up time.
   testEnvironment: "node",
   testMatch: ["<rootDir>/tests/**/*.test.ts"],
+  // `next build` writes a second copy of the app — package.json included —
+  // into .next/standalone. Jest crawls the whole project to build its module
+  // map, finds two packages both named "my-app", and warns about a naming
+  // collision on every run. Nothing under .next is a source file, so keep the
+  // crawler out of it.
+  modulePathIgnorePatterns: ["<rootDir>/.next/"],
   // The app's real database modules are never imported by these tests, so
   // there is no connection to leak — but a stray import would hang the run
   // rather than fail it, and a short timeout turns that into a visible error.

@@ -8,6 +8,7 @@ import {
   AlertTriangleIcon,
 } from "@/components/ui/icons";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import { countOf } from "@/lib/plural";
 
 // The severity bump a migration represents. It lives here now that the Compare
 // workbench owns the save-to-GitHub flow directly (the old hand-off to the
@@ -374,8 +375,8 @@ export function MigrationWorkbench({
                   style={{ color: "var(--text-3)" }}
                 >
                   <span>
-                    {lineCount} lines · {activeStatementCount} statement
-                    {activeStatementCount === 1 ? "" : "s"}
+                    {countOf(lineCount, "line")} ·{" "}
+                    {countOf(activeStatementCount, "statement")}
                     {activeManualCount > 0 && (
                       <>
                         {" "}

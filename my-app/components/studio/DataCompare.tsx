@@ -5,6 +5,7 @@ import {
 } from "@/lib/compare-data-summary";
 import { CheckIcon, AlertTriangleIcon } from "@/components/ui/icons";
 import { dropModeFrom } from "@/components/studio/DiffReport";
+import { plural } from "@/lib/plural";
 
 // ---------------------------------------------------------------------------
 // DataCompare — the row-level half of a comparison.
@@ -45,10 +46,6 @@ function formatRows(n: number | null): string {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-function plural(n: number, one: string, many: string): string {
-  return n === 1 ? one : many;
-}
-
 /** One row of the data report, colour-coded like a diff line. */
 function DataRow({
   kind,
@@ -80,10 +77,14 @@ function DataRow({
 
 /** "1,204 → 1,198 rows", or "1,204 rows" when both sides agree. */
 function rowCounts(table: TableDataCompare): string {
-  if (table.leftRows === null) return `${formatRows(table.rightRows)} rows in the target`;
-  if (table.rightRows === null) return `${formatRows(table.leftRows)} rows in the source`;
+  if (table.leftRows === null) {
+    return `${formatRows(table.rightRows)} ${plural(table.rightRows ?? 0, "row")} in the target`;
+  }
+  if (table.rightRows === null) {
+    return `${formatRows(table.leftRows)} ${plural(table.leftRows, "row")} in the source`;
+  }
   if (table.leftRows === table.rightRows) {
-    return `${formatRows(table.leftRows)} ${plural(table.leftRows, "row", "rows")}`;
+    return `${formatRows(table.leftRows)} ${plural(table.leftRows, "row")}`;
   }
   return `${formatRows(table.leftRows)} → ${formatRows(table.rightRows)} rows`;
 }

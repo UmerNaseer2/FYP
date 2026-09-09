@@ -19,6 +19,7 @@ import "@xyflow/react/dist/style.css";
 
 import type { SchemaSnapshot } from "@/lib/postgres";
 import { SearchIcon } from "@/components/ui/icons";
+import { countOf } from "@/lib/plural";
 import { buildGraph, type TableNodeData, type VizGraph } from "./graph";
 import { TableNode } from "./TableNode";
 
@@ -155,8 +156,12 @@ function FlowInner({ snapshot }: { snapshot: SchemaSnapshot }) {
       </Panel>
 
       <Panel position="top-right" className="viz-panel viz-panel--stats">
-        <span className="pill pill-neutral">{graph.stats.tables} tables</span>
-        <span className="pill pill-neutral">{graph.stats.columns} columns</span>
+        <span className="pill pill-neutral">
+          {countOf(graph.stats.tables, "table")}
+        </span>
+        <span className="pill pill-neutral">
+          {countOf(graph.stats.columns, "column")}
+        </span>
         <span className="pill pill-neutral">{graph.stats.foreignKeys} FKs</span>
         {graph.stats.externalForeignKeys > 0 && (
           <span

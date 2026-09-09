@@ -13,6 +13,7 @@ import {
   type PillTone,
 } from "@/components/ui";
 import { ENVIRONMENT_META, isProduction } from "@/lib/environments";
+import { countOf } from "@/lib/plural";
 import {
   ChevronLeftIcon,
   CheckIcon,
@@ -250,7 +251,8 @@ export default function SchemaDetailPage({
             {headSummary && (
               <>
                 {" · "}
-                {headSummary.tableCount} tables · {headSummary.columnCount} columns
+                {countOf(headSummary.tableCount, "table")} ·{" "}
+                {countOf(headSummary.columnCount, "column")}
               </>
             )}
           </div>

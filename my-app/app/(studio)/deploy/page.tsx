@@ -21,6 +21,7 @@ import {
   type LedgerEntry,
 } from "@/lib/script-status";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import {
@@ -1886,7 +1887,7 @@ export default function DeployPage() {
                                   className="text-[12px] cursor-pointer select-none"
                                   style={{ color: "var(--text-3)" }}
                                 >
-                                  Show the rollback SQL ({getSqlLineCount(downSql)} lines)
+                                  Show the rollback SQL ({countOf(getSqlLineCount(downSql), "line")})
                                 </summary>
                                 <pre className="err-pre">{downSql}</pre>
                               </details>
@@ -1984,7 +1985,7 @@ export default function DeployPage() {
                             seq={String(i + 1).padStart(2, "0")}
                             name={script.script_name}
                             kind={kind}
-                            sub={`${from} → v${script.version} · ${getSqlLineCount(script.sql_content)} lines`}
+                            sub={`${from} → v${script.version} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
                             rightPill={bumpWord(kind)}
                             cell={{ status: "queued" }}
                             selected={inRun}

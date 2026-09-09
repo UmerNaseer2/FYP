@@ -93,8 +93,8 @@ my-app/
       schemas/[id]/           lineage detail for one tracked schema
       versionsync/            registry vs ledger vs lineage reconciliation
       visualizer/             React Flow ERD
-      admin/                  role management (see §5 — not currently reachable)
-    api/                      20 route handlers, listed below
+      admin/                  role management — roles, approver list
+    api/                      26 route handlers, listed below
     globals.css               all styling (see §6)
   components/
     ui/                       design-system primitives
@@ -131,14 +131,21 @@ my-app/
 ### API routes
 
 ```
-admin/users              connections              connections/test
-connections/test-saved   auth/[...nextauth]       github/push
-github/pull              schema/snapshot          scripts/apply
-scripts/preflight        scripts/schemas          versionsync/ledger
-lineage                  lineage/acknowledge      lineage/audit
+admin/users              auth/[...nextauth]       compare
+comparison-sets          connections              connections/test
+connections/test-saved   deploy/approvals         deploy/approvals/[id]
+github/pull              github/push              lineage
+lineage/[id]             lineage/acknowledge      lineage/audit
 lineage/drift            lineage/lookup           lineage/rebaseline
-lineage/schemas          lineage/track
+lineage/schemas          lineage/track            schema/snapshot
+scripts/apply            scripts/preflight        scripts/revert
+scripts/schemas          versionsync/ledger
 ```
+
+Every one of them opens with a role gate — `requireViewer`, `requireEditor`,
+`requireApprover` or `requireAdmin` from `lib/auth-guard.ts`. The single
+exception is `auth/[...nextauth]`, which *is* the sign-in endpoint and cannot
+require a session to reach.
 
 ### How the comparison engine works
 
@@ -200,48 +207,52 @@ In each **target database**:
 
 ## 5. Verified state — what works and what does not
 
-Checked against the code on 8 September 2026. Nothing below is deferred; the items
-marked *not built* are the FYP-B work list.
+Checked against the code on 9 September 2026. Nothing below is deferred; the
+items marked *not built* are what is left of the FYP-B work list.
 
 ### Works end to end
 
-Compare with rename detection · migration generation · script review and editing ·
-semver push to the GitHub registry · pull back · pre-flight · transactional apply ·
-`script_patch` ledger · lineage snapshots · drift detection and re-baseline ·
-version-sync reconciliation · the ERD visualizer.
+Compare with rename detection · row-data comparison by count and checksum ·
+migration generation · script review and editing · semver push to the GitHub
+registry · pull back · pre-flight · dry run · approval and the two-person rule ·
+transactional apply · `script_patch` ledger · rollback from a `.down.sql` ·
+lineage snapshots · drift detection and re-baseline · version-sync
+reconciliation · saved comparison sets · comparing one source against up to six
+targets · dev/staging/production labels and their warnings · exporting a diff as
+Markdown, JSON, CSV or PDF · the ERD visualizer.
+
+The compare engine introspects tables, columns, constraints, indexes, triggers,
+views, sequences, types and routines.
 
 ### Switched off or incomplete
 
-- **Authentication is bypassed.** `BYPASS_AUTH` is `true` in
-  `components/AuthGuard.tsx`, so every page renders without a session, and 19 of
-  the 20 API routes never call `auth()`. Only `admin/users` checks a session. The
-  Entra environment keys in §1 are unset and the `profiles` table the session
-  callback reads is never created, so signing in cannot currently succeed.
-  Anyone who can reach the server can read saved connections and apply migrations.
-- **The diff report and the generator disagree.** The report tells the user a
-  target-only table is left untouched; `generate-sql.ts` emits
-  `DROP TABLE … CASCADE` for it. Same for dropped columns.
-- **The compare engine sees tables, columns and constraints only.** Indexes,
-  views, sequences, functions, triggers, enum types, identity columns and comments
-  are never introspected, so they never appear as differences.
-- **Connection passwords are stored in plaintext** in the metadata database, and
-  TLS certificate verification is disabled on target connections.
+- **Authentication is bypassed on purpose, for testing.**
+  `NEXT_PUBLIC_AUTH_BYPASS` is not `"false"`, so `lib/auth-mode.ts` reports the
+  bypass as on and both the UI guard and `lib/auth-guard.ts` let every request
+  through as an admin. The wiring underneath is complete: all 26 API routes
+  except the NextAuth handler itself call `requireViewer` / `requireEditor` /
+  `requireAdmin`, and the `profiles` table is created with the rest of the
+  metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS=false` turns the whole thing
+  on, and then the Entra keys in §1 have to be set for anyone to get in.
+- **`lib/version-detection.ts` is written but not wired to anything.** Only
+  `ChangeLevel` and `summarizeStructuralSeverity` are imported. The other ~370
+  lines detect and read an existing version table in a target — Flyway,
+  Liquibase, a `schema_version` table — which is spec feature 5. It works; no
+  screen calls it.
+- **`schema_comparisons` is written on every compare and never read.** It is a
+  history log with nothing displaying the history.
 - **Snapshots carry no format version**, so snapshots taken before and after a
   change to the snapshot shape compare as drift.
-- **`lib/version-detection.ts` is mostly unreachable.** Only `ChangeLevel` and
-  `summarizeStructuralSeverity` are imported.
-- **`schema_comparisons` is written on every compare and never read.**
+- **TLS verification is relaxed on the `DATABASE_URL_A`/`DATABASE_URL_B`
+  fallback path only.** Saved connections honour their own `ssl_mode`, including
+  `verify-full`; `normalizeCompareSsl` in `lib/postgres.ts` deliberately accepts
+  any certificate for the env-var path, because hosted providers present chains
+  Node will not verify.
 
 ### Not built at all
 
-- Detection of existing version tables in a target (Flyway, Liquibase, Sequelize
-  meta, or custom) — spec feature 5.
 - Query execution analysis, performance suggestions, performance monitoring —
   spec features 8, 9 and 10.
-- Rollback / down-script generation.
-- Data comparison (row counts or checksums), despite the spec title.
-- Exportable difference reports.
-- Comparing more than two schemas at once, and named dev/staging/prod environments.
 
 ### Compliance sheet
 
