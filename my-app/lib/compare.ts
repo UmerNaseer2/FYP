@@ -557,6 +557,49 @@ export function constraintDiffSeverity(diff: ConstraintDiff): ChangeSeverity {
   return grades.includes("breaking") ? "breaking" : grades[0];
 }
 
+/**
+ * How dangerous an index / trigger / view / sequence / type / routine change is.
+ *
+ * Same job constraintChangeSeverity does for constraints, and it exists for the
+ * same reason: the migration generator decides a severity for every statement it
+ * writes, and anything else that grades the same change — the diff canvas, the
+ * export, the version picker — has to reach the same answer or the screen and
+ * the script contradict each other. The rules below are a restatement of what
+ * lib/generate-sql.ts emits, and $SP/objsev.cjs checks the two against each
+ * other on a fixture covering every kind in every state.
+ *
+ *   created            — info. Nothing is taken away.
+ *   dropped            — breaking. Whatever used it stops working. The one
+ *                        exception is a plain index: dropping it changes how
+ *                        fast the table is read and nothing about what it is
+ *                        allowed to hold, so that is safe. A UNIQUE index is
+ *                        not — it is enforcing a rule.
+ *   changed definition — depends on how the generator applies it. A view is
+ *                        DROP … CASCADE'd and rebuilt (breaking, and the cascade
+ *                        is the reason). An index is dropped and recreated, so
+ *                        it inherits the drop's grade. Everything else is
+ *                        replaced in place — CREATE OR REPLACE, ALTER SEQUENCE,
+ *                        ALTER TYPE — and takes nothing away while it happens.
+ *
+ * `uniqueIndex` is only read for INDEX diffs; pass the TARGET's index, since it
+ * is the target's that gets dropped.
+ */
+export function objectDiffSeverity(
+  diff: ObjectDiff,
+  uniqueIndex?: boolean
+): ChangeSeverity {
+  if (diff.status === "onlyA") return "info";
+
+  const dropGrade: ChangeSeverity =
+    diff.kind === "INDEX" ? (uniqueIndex ? "breaking" : "safe") : "breaking";
+
+  if (diff.status === "onlyB") return dropGrade;
+
+  if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") return "breaking";
+  if (diff.kind === "INDEX") return dropGrade;
+  return "info";
+}
+
 function compareColumnPair(
   leftTable: TableSnapshot,
   leftColumn: ColumnSnapshot,

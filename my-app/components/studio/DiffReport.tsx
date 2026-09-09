@@ -1,10 +1,16 @@
 import type { ReactNode } from "react";
-import { constraintDiffSeverity, describeConstraint } from "@/lib/compare";
+import {
+  constraintDiffSeverity,
+  describeConstraint,
+  objectDiffSeverity,
+} from "@/lib/compare";
 import type {
   ColumnSnapshot,
   CompareReport,
   ConstraintDiff,
   MatchCandidate,
+  ObjectDiff,
+  ObjectKind,
   TableMatch,
   TableSnapshot,
 } from "@/lib/compare-types";
@@ -107,6 +113,114 @@ const CONSTRAINT_TAG: Record<ConstraintDiff["kind"], string> = {
   EXCLUDE: "ex",
 };
 
+const OBJECT_TAG: Record<ObjectKind, string> = {
+  INDEX: "index",
+  TRIGGER: "trigger",
+  VIEW: "view",
+  "MATERIALIZED VIEW": "matview",
+  SEQUENCE: "sequence",
+  ENUM: "enum",
+  DOMAIN: "domain",
+  "COMPOSITE TYPE": "type",
+  "RANGE TYPE": "range",
+  FUNCTION: "function",
+  PROCEDURE: "procedure",
+};
+
+/**
+ * Which schema-scoped objects belong under which heading.
+ *
+ * Enums, domains, composite types and range types are four kinds of the same
+ * thing to anyone reading a diff, and splitting them into four one-line
+ * sections would bury the change. Indexes and triggers are absent on purpose —
+ * they hang off a table and are rendered inside that table's card.
+ */
+const SCHEMA_OBJECT_SECTIONS: { label: string; kinds: ObjectKind[] }[] = [
+  { label: "Views", kinds: ["VIEW", "MATERIALIZED VIEW"] },
+  { label: "Sequences", kinds: ["SEQUENCE"] },
+  { label: "Types", kinds: ["ENUM", "DOMAIN", "COMPOSITE TYPE", "RANGE TYPE"] },
+  { label: "Functions", kinds: ["FUNCTION", "PROCEDURE"] },
+];
+
+function objectKindOf(diff: ObjectDiff): DiffKind {
+  return diff.status === "onlyA" ? "add" : diff.status === "onlyB" ? "rem" : "chg";
+}
+
+/**
+ * What the migration would do about this object, in the reader's words.
+ *
+ * ObjectDiff.summary is a full sentence naming the object again ("Index idx_x
+ * exists only in …"), which reads badly on a line that already shows the name
+ * in bold. This is the tail of that sentence and nothing more — display text,
+ * never a severity: the grade comes from objectDiffSeverity, which is the same
+ * function the SQL generator's statements are graded by.
+ */
+function objectNote(diff: ObjectDiff): string {
+  if (diff.status === "onlyA") return "only in source — created";
+  if (diff.status === "onlyB") return "only in target — dropped";
+  if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
+    // CREATE OR REPLACE VIEW refuses any change to the column list, so the
+    // generator drops the view with CASCADE and rebuilds it.
+    return "definition changed — dropped and rebuilt";
+  }
+  // An index cannot be altered in place either, but nothing depends on one, so
+  // the drop takes nothing with it.
+  if (diff.kind === "INDEX") return "definition changed — dropped and recreated";
+  return "definition changed — replaced";
+}
+
+/**
+ * One group of object diff lines under a heading.
+ *
+ * `uniqueIndexes` carries the names of the TARGET's unique indexes, because
+ * that is what objectDiffSeverity needs to tell "this index only made reads
+ * faster" from "this index was enforcing a rule" — and the target's index is
+ * the one a migration drops.
+ */
+function ObjectLines({
+  label,
+  diffs,
+  uniqueIndexes,
+}: {
+  label: string;
+  diffs: ObjectDiff[];
+  uniqueIndexes?: Set<string>;
+}) {
+  if (diffs.length === 0) return null;
+  return (
+    <div className="obj-group">
+      <ObjHeader label={label} />
+      {diffs.map((diff, i) => {
+        const severity = objectDiffSeverity(diff, uniqueIndexes?.has(diff.name));
+        return (
+          <DiffLine
+            key={`${diff.kind}-${diff.name}-${i}`}
+            kind={objectKindOf(diff)}
+            tag={OBJECT_TAG[diff.kind]}
+          >
+            <b>{diff.name}</b>{" "}
+            <span className={severity === "breaking" ? "chg-break" : "muted"}>
+              · {objectNote(diff)}
+              {severity === "breaking" ? " · breaking" : ""}
+            </span>
+          </DiffLine>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The target's unique index names — the input objectDiffSeverity grades on. */
+function uniqueIndexNames(table: TableSnapshot): Set<string> {
+  return new Set(
+    (table.indexes ?? []).filter((ix) => ix.isUnique).map((ix) => ix.name)
+  );
+}
+
+function pickKinds(diffs: ObjectDiff[], kinds: ObjectKind[]): ObjectDiff[] {
+  return diffs.filter((diff) => kinds.includes(diff.kind));
+}
+
 // ---------------------------------------------------------------------------
 // Per-table change accounting
 // ---------------------------------------------------------------------------
@@ -121,10 +235,24 @@ function matchTally(match: TableMatch): Tally {
   const changedConstraints = match.constraintDiffs.filter(
     (d) => d.status === "changedDefinition",
   ).length;
+  // Indexes and triggers count too. They used to be left out, which made a
+  // table whose only change was a dropped index show "+0 ~0 −0" above a card
+  // that then listed the dropped index underneath.
+  const objects = match.objectDiffs;
   return {
-    adds: match.columnsOnlyInA.length + addedConstraints,
-    chgs: changedCols + renamedCols + changedConstraints,
-    rems: match.columnsOnlyInB.length + droppedConstraints,
+    adds:
+      match.columnsOnlyInA.length +
+      addedConstraints +
+      objects.filter((d) => d.status === "onlyA").length,
+    chgs:
+      changedCols +
+      renamedCols +
+      changedConstraints +
+      objects.filter((d) => d.status === "changedDefinition").length,
+    rems:
+      match.columnsOnlyInB.length +
+      droppedConstraints +
+      objects.filter((d) => d.status === "onlyB").length,
   };
 }
 
@@ -141,7 +269,15 @@ function matchLevel(match: TableMatch): "breaking" | "additive" {
   const breakingConstraint = match.constraintDiffs.some(
     (d) => constraintDiffSeverity(d) === "breaking",
   );
-  return breakingColumn || breakingNewCol || breakingConstraint ? "breaking" : "additive";
+  // Dropping a unique index or a trigger is breaking in the script, so the pill
+  // has to say so too.
+  const targetUnique = uniqueIndexNames(match.right);
+  const breakingObject = match.objectDiffs.some(
+    (d) => objectDiffSeverity(d, targetUnique.has(d.name)) === "breaking",
+  );
+  return breakingColumn || breakingNewCol || breakingConstraint || breakingObject
+    ? "breaking"
+    : "additive";
 }
 
 /** Compact `+a ~c −r` chips for a group/table header. */
@@ -197,8 +333,33 @@ function ChevronDown() {
 // Table cards
 // ---------------------------------------------------------------------------
 
-/** A table that exists only in the source — the migration CREATEs it in target. */
+/**
+ * A table that exists only in the source — the migration CREATEs it in target.
+ *
+ * It lists everything that gets created ALONGSIDE the table, not just its
+ * columns: the card used to show columns, the primary key and foreign keys and
+ * stop there, so a new table arriving with four indexes, a trigger and a couple
+ * of CHECK constraints reported "+5" and showed five column lines while the
+ * script below it ran a dozen statements.
+ */
 function NewTableCard({ table }: { table: TableSnapshot }) {
+  // undefined means the snapshot has no record of the category, which is not
+  // the same as the table having none — see ComparedObjectCategories.
+  const indexes = table.indexes ?? [];
+  const triggers = table.triggers ?? [];
+  const otherConstraints = [
+    ...table.uniqueConstraints.map((c) => ({ tag: "uk", constraint: c })),
+    ...table.checkConstraints.map((c) => ({ tag: "ck", constraint: c })),
+    ...table.excludeConstraints.map((c) => ({ tag: "ex", constraint: c })),
+  ];
+  const adds =
+    table.columns.length +
+    (table.primaryKey ? 1 : 0) +
+    table.foreignKeys.length +
+    otherConstraints.length +
+    indexes.length +
+    triggers.length;
+
   return (
     <details className="table-group" open>
       <summary className="tg-header">
@@ -209,7 +370,7 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
           new
         </span>
         <div className="ml-auto">
-          <DeltaChips adds={table.columns.length} chgs={0} rems={0} />
+          <DeltaChips adds={adds} chgs={0} rems={0} />
         </div>
       </summary>
 
@@ -239,6 +400,48 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
             <DiffLine key={fk.name} kind="add" tag="fk">
               <b>{fk.name}</b>{" "}
               <span className="muted">{describeConstraint(fk)}</span>
+            </DiffLine>
+          ))}
+        </div>
+      )}
+
+      {otherConstraints.length > 0 && (
+        <div className="obj-group">
+          <ObjHeader label="Other constraints" />
+          {otherConstraints.map(({ tag, constraint }) => (
+            <DiffLine key={`${tag}-${constraint.name}`} kind="add" tag={tag}>
+              <b>{constraint.name}</b>{" "}
+              <span className="muted">{constraint.definition}</span>
+            </DiffLine>
+          ))}
+        </div>
+      )}
+
+      {indexes.length > 0 && (
+        <div className="obj-group">
+          <ObjHeader label="Indexes" />
+          {indexes.map((index) => (
+            <DiffLine key={index.name} kind="add" tag="index">
+              <b>{index.name}</b>{" "}
+              <span className="muted">
+                {index.isUnique ? "unique · " : ""}
+                {index.definition}
+              </span>
+            </DiffLine>
+          ))}
+        </div>
+      )}
+
+      {triggers.length > 0 && (
+        <div className="obj-group">
+          <ObjHeader label="Triggers" />
+          {triggers.map((trigger) => (
+            <DiffLine key={trigger.name} kind="add" tag="trigger">
+              <b>{trigger.name}</b>{" "}
+              <span className="muted">
+                calls {trigger.functionName}
+                {trigger.enabled ? "" : " · disabled in source"}
+              </span>
             </DiffLine>
           ))}
         </div>
@@ -441,6 +644,70 @@ function ChangedTableCard({
           })}
         </div>
       )}
+
+      {/* Indexes and triggers. The engine has always computed these and the
+          generator has always emitted SQL for them; this card just never drew
+          them, so a table whose only change was a dropped index opened to
+          nothing at all. */}
+      <ObjectLines
+        label="Indexes"
+        diffs={pickKinds(match.objectDiffs, ["INDEX"])}
+        uniqueIndexes={uniqueIndexNames(match.right)}
+      />
+      <ObjectLines
+        label="Triggers"
+        diffs={pickKinds(match.objectDiffs, ["TRIGGER"])}
+      />
+    </details>
+  );
+}
+
+/**
+ * Everything that is not a table: views, sequences, types and functions.
+ *
+ * One card rather than one per object, because these are usually few and a
+ * schema with three changed functions should not push the tables off the
+ * screen. Only categories with something in them get a heading.
+ */
+function SchemaObjectsCard({ diffs }: { diffs: ObjectDiff[] }) {
+  const sections = SCHEMA_OBJECT_SECTIONS.map((section) => ({
+    label: section.label,
+    diffs: pickKinds(diffs, section.kinds),
+  })).filter((section) => section.diffs.length > 0);
+
+  if (sections.length === 0) return null;
+
+  const tally: Tally = {
+    adds: diffs.filter((d) => d.status === "onlyA").length,
+    chgs: diffs.filter((d) => d.status === "changedDefinition").length,
+    rems: diffs.filter((d) => d.status === "onlyB").length,
+  };
+  const breaking = diffs.some((d) => objectDiffSeverity(d) === "breaking");
+
+  return (
+    <details className="table-group" open>
+      <summary className="tg-header">
+        <ChevronDown />
+        <span className="name">Schema objects</span>
+        <LevelPill level={breaking ? "breaking" : "additive"} />
+        <div className="ml-auto">
+          <DeltaChips {...tally} />
+        </div>
+      </summary>
+
+      {sections.map((section) => (
+        <ObjectLines key={section.label} label={section.label} diffs={section.diffs} />
+      ))}
+
+      <div className="obj-group">
+        <p className="help">
+          These belong to the schema rather than to any one table. A dropped view
+          or function is graded breaking because the migration removes it and
+          anything still calling it stops working — a rebuilt view is dropped
+          with <span className="mono">CASCADE</span> first, which can take
+          dependents with it.
+        </p>
+      </div>
     </details>
   );
 }
@@ -505,13 +772,25 @@ export function DiffReport({
     (n, m) => n + m.columnsOnlyInB.length,
     0,
   );
-  const destructiveCount = droppedTables + droppedColumns;
+  // A materialized view holds its own copy of the rows, so dropping one throws
+  // data away exactly like a table does — generate-sql marks those statements
+  // destructive, and this banner has to count them or it under-reports what the
+  // script is about to delete. A plain view is a stored query and holds nothing.
+  const droppedMatviews = report.objectDiffs.filter(
+    (d) => d.kind === "MATERIALIZED VIEW" && d.status === "onlyB",
+  ).length;
+  const destructiveCount = droppedTables + droppedColumns + droppedMatviews;
 
+  // Object differences count as changes. They did not, which meant a schema
+  // whose only difference was a dropped view rendered "Schemas are in sync"
+  // above a script containing DROP VIEW — the same shape of lie as the old
+  // "report says untouched while the generator emits DROP TABLE" bug.
   const anyChanges =
     report.tablesOnlyInA.length > 0 ||
     report.tablesOnlyInB.length > 0 ||
     changedTables.length > 0 ||
-    tableRenames.length > 0;
+    tableRenames.length > 0 ||
+    report.objectDiffs.length > 0;
 
   if (!anyChanges) {
     return (
@@ -557,6 +836,15 @@ export function DiffReport({
                   {droppedColumns} column{droppedColumns === 1 ? "" : "s"} dropped
                 </b>
               )}
+              {droppedMatviews > 0 && (
+                <>
+                  {droppedTables > 0 || droppedColumns > 0 ? " and " : ""}
+                  <b>
+                    {droppedMatviews} materialized view
+                    {droppedMatviews === 1 ? "" : "s"} dropped
+                  </b>
+                </>
+              )}
               .{" "}
               {dropMode === "armed"
                 ? "Allow data loss is on, so those statements are live in the script below and the rows they remove cannot be recovered."
@@ -595,6 +883,10 @@ export function DiffReport({
           dropMode={dropMode}
         />
       ))}
+
+      {/* Views, sequences, types and functions — after the tables, because they
+          are usually consequences of a table change rather than the point. */}
+      <SchemaObjectsCard diffs={report.objectDiffs} />
 
       {/* Unchanged tables — collapsed summary so the diff stays focused */}
       {unchanged.length > 0 && (
@@ -642,6 +934,15 @@ export function tallyDelta(report: CompareReport): {
     adds += t.adds;
     chgs += t.chgs;
     rems += t.rems;
+  }
+
+  // Schema-scoped objects are part of the headline too. Table-scoped ones are
+  // already in matchTally above, so counting report.objectDiffs here and not
+  // every match's would be the only way to avoid counting an index twice.
+  for (const diff of report.objectDiffs) {
+    if (diff.status === "onlyA") adds += 1;
+    else if (diff.status === "onlyB") rems += 1;
+    else chgs += 1;
   }
 
   const tablesTouched =
