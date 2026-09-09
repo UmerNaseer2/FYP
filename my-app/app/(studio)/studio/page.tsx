@@ -342,6 +342,13 @@ export default function DashboardPage() {
   const drifted = visible.filter((i) => i.driftStatus === "drifted").length;
   const inSync = visible.filter((i) => i.driftStatus === "in_sync").length;
   const unreachable = visible.filter((i) => i.driftStatus === "unreachable").length;
+  // The fourth state, and the one every schema starts in. Without a tile of its
+  // own a freshly tracked schema showed as "Tracked 1" over "Drifted 0 · In
+  // sync 0 · Unreachable 0" — three zeros that do not add up to one, which
+  // reads as the dashboard having lost it. Counting it here makes the strip
+  // account for every row: drifted + in sync + unreachable + not checked
+  // is always the tracked count.
+  const notChecked = visible.length - drifted - inSync - unreachable;
   const prodShown = visible.filter((i) => isProduction(toEnvironment(i.environment))).length;
   const sorted = [...visible].sort(
     (a, b) => sortPriority(a.driftStatus) - sortPriority(b.driftStatus)
@@ -380,7 +387,7 @@ export default function DashboardPage() {
       {/* Summary strip — only meaningful once we have data. Every tile counts
           what is on screen, so the strip and the grid can never disagree. */}
       {listPhase === "ready" && total > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           <SummaryTile label="Tracked" value={visible.length} />
           <SummaryTile
             label="Production"
@@ -394,6 +401,7 @@ export default function DashboardPage() {
             value={unreachable}
             tone={unreachable > 0 ? "break" : undefined}
           />
+          <SummaryTile label="Not checked" value={notChecked} />
         </div>
       )}
 
