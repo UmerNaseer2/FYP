@@ -100,6 +100,12 @@ export type DataSection = {
     skipped: number;
     /** Rows a full sync destroys: they live in tables only the target has. */
     rowsAtRiskOfDrop: number;
+    /**
+     * Tables a full sync drops whose rows were never counted. Their rows are
+     * NOT in rowsAtRiskOfDrop, so a reader shown only that number would be told
+     * a smaller loss than the one the migration causes.
+     */
+    unreadDrops: number;
   };
   tables: TableDataCompare[];
 };

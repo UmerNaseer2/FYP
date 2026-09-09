@@ -42,6 +42,16 @@ export type TableDataCompare = {
   columns: string[];
   /** Why it was skipped, or what was left out of an otherwise-good compare. */
   note: string | null;
+  /**
+   * True when a full sync drops this table — whether or not its rows were read.
+   *
+   * `status` alone cannot answer this. A table only the target has is dropped,
+   * but if the run hit its table cap or its time budget before reaching it the
+   * status is "skipped" and the drop disappears from every total. That is the
+   * one fact this module exists to report, so it is recorded separately from
+   * whether the read succeeded.
+   */
+  droppedBySync: boolean;
 };
 
 export type DataCompareReport = {
@@ -177,9 +187,30 @@ type TablePlan = {
  * does not have yet cannot contribute to a comparable checksum. The pairs come
  * from the column matcher, so a renamed column is still compared against its
  * counterpart — the data did not change just because the label did.
+ *
+ * The ORDER matters, because a run stops at a table cap and a time budget and
+ * marks everything after that as skipped. Tables only the TARGET has go first:
+ * they are the ones a sync drops, they are the reason this module exists, and
+ * they cost one count(*) each rather than a checksum over every row. With
+ * matched tables first, a schema with more than sixty of them pushed every drop
+ * past the cap — so nothing was ever counted as at risk, the "rows would be
+ * destroyed" banner never appeared, and the panel written to prevent exactly
+ * that said nothing. Source-only tables go last: they are created empty, so a
+ * missed one costs the reader a row count and no more.
  */
 function planTables(report: CompareReport): TablePlan[] {
   const plans: TablePlan[] = [];
+
+  for (const table of report.tablesOnlyInB) {
+    plans.push({
+      label: table.name,
+      leftTable: null,
+      rightTable: table.name,
+      leftColumns: [],
+      rightColumns: [],
+      ignoredColumns: [],
+    });
+  }
 
   for (const match of report.matchedTables) {
     // Sorted by the source's column name so both sides project their columns in
@@ -210,17 +241,6 @@ function planTables(report: CompareReport): TablePlan[] {
       label: table.name,
       leftTable: table.name,
       rightTable: null,
-      leftColumns: [],
-      rightColumns: [],
-      ignoredColumns: [],
-    });
-  }
-
-  for (const table of report.tablesOnlyInB) {
-    plans.push({
-      label: table.name,
-      leftTable: null,
-      rightTable: table.name,
       leftColumns: [],
       rightColumns: [],
       ignoredColumns: [],
@@ -291,6 +311,9 @@ export async function compareRowData(
           note: overCount
             ? `Not read: only the first ${maxTables} tables are compared in one run.`
             : "Not read: the data compare ran out of its time budget.",
+          // Recorded even though nothing was read: a drop the run never reached
+          // is still a drop, and this is the flag the banner counts.
+          droppedBySync: plan.leftTable === null && plan.rightTable !== null,
         });
         continue;
       }
@@ -323,6 +346,9 @@ async function compareOnePlan(
     rightRows: null as number | null,
     leftChecksum: null as string | null,
     rightChecksum: null as string | null,
+    // Decided from the plan rather than the outcome, so a read that fails does
+    // not quietly stop the table counting as one a sync drops.
+    droppedBySync: plan.leftTable === null && plan.rightTable !== null,
   };
 
   // A table only one side has: the row count is the whole answer, and it is the
@@ -413,8 +439,19 @@ export function summarizeDataCompare(result: DataCompareReport): {
    * A table only the TARGET has is the one the migration drops — the source is
    * the desired state, so anything the target has and the source does not is
    * removed. These rows are the ones no down script can bring back.
+   *
+   * It counts only tables that were actually read. See unreadDrops for the ones
+   * the run never got to, whose rows are destroyed just the same.
    */
   rowsAtRiskOfDrop: number;
+  /**
+   * Tables a full sync drops whose rows were never counted — the run hit its
+   * table cap, its time budget, or could not read them.
+   *
+   * Kept apart from rowsAtRiskOfDrop because there is no number to add: the
+   * honest statement is "and N more, count unknown", not a larger total.
+   */
+  unreadDrops: number;
 } {
   let identical = 0;
   let different = 0;
@@ -422,6 +459,7 @@ export function summarizeDataCompare(result: DataCompareReport): {
   let targetOnly = 0;
   let skipped = 0;
   let rowsAtRiskOfDrop = 0;
+  let unreadDrops = 0;
 
   for (const table of result.tables) {
     if (table.status === "identical") identical += 1;
@@ -430,8 +468,19 @@ export function summarizeDataCompare(result: DataCompareReport): {
     else if (table.status === "targetOnly") {
       targetOnly += 1;
       rowsAtRiskOfDrop += table.rightRows ?? 0;
-    } else skipped += 1;
+    } else {
+      skipped += 1;
+      if (table.droppedBySync) unreadDrops += 1;
+    }
   }
 
-  return { identical, different, sourceOnly, targetOnly, skipped, rowsAtRiskOfDrop };
+  return {
+    identical,
+    different,
+    sourceOnly,
+    targetOnly,
+    skipped,
+    rowsAtRiskOfDrop,
+    unreadDrops,
+  };
 }

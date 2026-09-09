@@ -128,21 +128,51 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
   return (
     <div className="space-y-3">
       {/* The whole reason this feature exists: name the rows a sync destroys,
-          before the reader gets to a button that would destroy them. */}
-      {totals.rowsAtRiskOfDrop > 0 && (
+          before the reader gets to a button that would destroy them.
+
+          It fires on unreadDrops as well, because a dropped table the run never
+          reached is dropped exactly the same. Keying this on the row count
+          alone is what let a schema of more than sixty tables push every drop
+          past the cap and show no banner at all. */}
+      {totals.rowsAtRiskOfDrop + totals.unreadDrops > 0 && (
         <div className="banner">
           <div>
             <div className="title">
-              {formatRows(totals.rowsAtRiskOfDrop)}{" "}
-              {plural(totals.rowsAtRiskOfDrop, "row", "rows")} would be destroyed
+              {totals.rowsAtRiskOfDrop > 0
+                ? `${formatRows(totals.rowsAtRiskOfDrop)} ${plural(
+                    totals.rowsAtRiskOfDrop,
+                    "row",
+                    "rows",
+                  )} would be destroyed`
+                : `${totals.unreadDrops} ${plural(
+                    totals.unreadDrops,
+                    "table is",
+                    "tables are",
+                  )} dropped — row count unknown`}
             </div>
             <div className="body">
-              {targetOnly.length}{" "}
-              {plural(targetOnly.length, "table exists", "tables exist")} only in the
-              target, so a full sync drops{" "}
-              {plural(targetOnly.length, "it", "them")} — and the rows with{" "}
-              {plural(targetOnly.length, "it", "them")}. Nothing in this app can put
-              them back afterwards.
+              {targetOnly.length + totals.unreadDrops}{" "}
+              {plural(
+                targetOnly.length + totals.unreadDrops,
+                "table exists",
+                "tables exist",
+              )}{" "}
+              only in the target, so a full sync drops{" "}
+              {plural(targetOnly.length + totals.unreadDrops, "it", "them")} — and the
+              rows with{" "}
+              {plural(targetOnly.length + totals.unreadDrops, "it", "them")}. Nothing in
+              this app can put them back afterwards.
+              {totals.unreadDrops > 0
+                ? ` ${totals.unreadDrops} of ${plural(
+                    totals.unreadDrops,
+                    "them was",
+                    "them were",
+                  )} not read, so ${plural(
+                    totals.unreadDrops,
+                    "its rows are",
+                    "their rows are",
+                  )} not in the figure above.`
+                : ""}
             </div>
           </div>
         </div>
@@ -167,6 +197,23 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
               <span className="dot" />
               {skipped.length} of {result.tables.length}{" "}
               {plural(result.tables.length, "table", "tables")} not read
+            </span>
+          ) : sourceOnly.length === result.tables.length ? (
+            /* Every table is new, so not one row was compared against anything.
+               This is the tool's most common first run — a populated source
+               against an empty target — and a green "rows match" over it claims
+               a result that nothing produced. */
+            <span className="pill pill-neutral">
+              <span className="dot" />
+              nothing to compare — every table is new
+            </span>
+          ) : sourceOnly.length > 0 ? (
+            /* The rows that WERE compared do match. Naming how many stops the
+               pill from being read as a verdict on the new tables too. */
+            <span className="pill pill-sync">
+              <span className="dot" />
+              rows match in {identical.length}{" "}
+              {plural(identical.length, "shared table", "shared tables")}
             </span>
           ) : (
             <span className="pill pill-sync">

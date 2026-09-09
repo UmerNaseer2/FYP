@@ -205,6 +205,19 @@ export function documentToMarkdown(document: DiffDocument): string {
             "rows back."
         );
       }
+      // Said separately, and even when the count above is zero: a dropped table
+      // the run never read is dropped just the same, and its rows are missing
+      // from that figure rather than added to it.
+      if (totals.unreadDrops > 0) {
+        out.push("");
+        out.push(
+          `⚠️ A further ${totals.unreadDrops} table` +
+            `${totals.unreadDrops === 1 ? " is" : "s are"} dropped by the migration ` +
+            `but ${totals.unreadDrops === 1 ? "was" : "were"} not read, so ` +
+            `${totals.unreadDrops === 1 ? "its rows are" : "their rows are"} not ` +
+            "counted above."
+        );
+      }
       out.push("");
       out.push("| Table | Status | Source rows | Target rows | Note |");
       out.push("| --- | --- | --: | --: | --- |");
