@@ -1637,6 +1637,8 @@ function compareObjectLists(
         // has to be dropped for the new one to take its name, so it is graded
         // as a drop and not as a definition change.
         severity: objectDropSeverity(peer),
+        replaceNeedsDrop: true,
+        dropDestroysData: dropDestroysData(peer),
       });
       continue;
     }
@@ -1657,6 +1659,9 @@ function compareObjectLists(
             : obj.view && peer.view
               ? viewReplaceNeedsDrop(obj.view, peer.view)
               : undefined,
+        // A matview always needs the drop, so a changed one always loses its
+        // rows. A plain view replaced in place is never dropped at all.
+        dropDestroysData: dropDestroysData(peer),
       });
     }
   }
@@ -1671,6 +1676,7 @@ function compareObjectLists(
       summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${rightScope}.`,
       rightDefinition: obj.definition,
       severity: objectDropSeverity(obj),
+      dropDestroysData: dropDestroysData(obj),
     });
   }
 
@@ -1815,6 +1821,17 @@ export function viewOptionsClause(view: ViewSnapshot): string {
 export function viewReplaceNeedsDrop(left: ViewSnapshot, right: ViewSnapshot): boolean {
   if (left.materialized || right.materialized) return true;
   return left.normalizedDefinition !== right.normalizedDefinition;
+}
+
+/**
+ * Whether dropping this object throws stored rows away.
+ *
+ * A materialized view keeps its own copy of the result set, so dropping one
+ * loses data exactly as dropping a table does. Everything else here — a plain
+ * view, an index, a routine — is derived from something that survives.
+ */
+function dropDestroysData(obj: ComparableObject): boolean {
+  return obj.view?.materialized === true;
 }
 
 function viewObjects(views: ViewSnapshot[], withOptions: boolean): ComparableObject[] {

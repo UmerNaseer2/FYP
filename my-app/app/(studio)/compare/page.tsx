@@ -382,7 +382,9 @@ async function compareOneTarget(
     rollbackCounts: tallySeverities(rollback.statements),
     rollbackWarnings: rollback.warnings,
     statementCount: script.statements.length,
-    heldBackCount: allowDataLoss ? 0 : script.destructiveCount,
+    // Not destructiveCount: safe mode also holds back a matview rebuild, which
+    // destroys nothing but does nothing either while the old view is there.
+    heldBackCount: allowDataLoss ? 0 : script.heldBackCount,
     counts: { breaking, safe, info },
     overallKind: breaking > 0 ? "breaking" : safe + info > 0 ? "additive" : "patch",
     warnings: script.warnings,

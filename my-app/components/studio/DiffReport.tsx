@@ -818,9 +818,14 @@ export function DiffReport({
   // data away exactly like a table does — generate-sql marks those statements
   // destructive, and this banner has to count them or it under-reports what the
   // script is about to delete. A plain view is a stored query and holds nothing.
-  const droppedMatviews = report.objectDiffs.filter(
-    (d) => d.kind === "MATERIALIZED VIEW" && d.status === "onlyB",
-  ).length;
+  //
+  // Which diffs those are is the compare engine's answer, not this file's. The
+  // test here used to be `kind === "MATERIALIZED VIEW" && status === "onlyB"`,
+  // which missed a matview whose SELECT changed — dropped and rebuilt, so still
+  // dropped — and missed a plain view in the source that is a matview in the
+  // target, because `kind` is stamped from the SOURCE and reads "VIEW". Both
+  // put a destructive DROP in the script this banner sits above.
+  const droppedMatviews = report.objectDiffs.filter((d) => d.dropDestroysData).length;
   const destructiveCount = droppedTables + droppedColumns + droppedMatviews;
 
   // Object differences count as changes. They did not, which meant a schema
@@ -893,6 +898,19 @@ export function DiffReport({
                 : dropMode === "safe"
                   ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss to arm them."
                   : "Viewing this report changes nothing — open the comparison in Compare to generate that SQL."}
+              {dropMode === "safe" && droppedMatviews > 0 ? (
+                // A matview is rebuilt by CREATE MATERIALIZED VIEW IF NOT
+                // EXISTS, which does nothing while the old one is still there.
+                // The script holds that rebuild back with the drop, so saying
+                // only "deletes nothing" would leave the reader expecting the
+                // new definition to arrive anyway. It does not.
+                <>
+                  {" "}
+                  {droppedMatviews === 1
+                    ? "The rebuild is held back with it, so that view keeps the target's definition and rows until you do."
+                    : "The rebuilds are held back with them, so those views keep the target's definition and rows until you do."}
+                </>
+              ) : null}
             </div>
           </div>
         </div>

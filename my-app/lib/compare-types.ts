@@ -175,6 +175,20 @@ export type ObjectDiff = {
    * See routineReplaceNeedsDrop and viewReplaceNeedsDrop.
    */
   replaceNeedsDrop?: boolean;
+  /**
+   * True when applying the migration drops an object that holds its own copy of
+   * the rows — today that means a materialized view, which stores its result
+   * set the way a table does. A plain view is a stored query and holds nothing.
+   *
+   * The banner that counts what a sync is about to destroy used to look for
+   * `kind === "MATERIALIZED VIEW" && status === "onlyB"`, which missed both a
+   * matview whose SELECT changed (dropped and rebuilt, so still dropped) and a
+   * plain view in the source that is a matview in the target, where `kind` is
+   * stamped from the SOURCE and reads "VIEW". Both cases produce a destructive
+   * DROP in the script, so the banner said nothing while the generator said
+   * "1 destructive statement". Decided here, where both sides are in hand.
+   */
+  dropDestroysData?: boolean;
 };
 
 /**

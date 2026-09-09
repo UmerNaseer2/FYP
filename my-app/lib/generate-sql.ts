@@ -93,6 +93,20 @@ export type SqlStatement = {
    * statements flagged here.
    */
   destructive: boolean;
+  /**
+   * True when this statement only does anything if a destructive DROP earlier
+   * in the script actually ran, so safe mode has to hold it back too.
+   *
+   * The case is a rebuilt materialized view. Safe mode commented out the
+   * `DROP MATERIALIZED VIEW` and left the paired
+   * `CREATE MATERIALIZED VIEW IF NOT EXISTS` live — which found the old matview
+   * still there and did nothing. The script reported success while the target
+   * kept the old definition and the old rows.
+   *
+   * Deliberately not `destructive`: running this destroys nothing, and counting
+   * it in the destructive tally would over-report what the script deletes.
+   */
+  needsArmedDrop?: boolean;
 };
 
 export type MigrationOptions = {
@@ -125,6 +139,14 @@ export type MigrationScript = {
   allowDataLoss: boolean;
   /** How many statements would destroy data. */
   destructiveCount: number;
+  /**
+   * How many statements safe mode comments out. Always at least
+   * `destructiveCount`, and larger when a statement is inert without one of
+   * those drops — a rebuilt materialized view. Kept separate so the "N
+   * destructive statements" wording never counts a statement that destroys
+   * nothing.
+   */
+  heldBackCount: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -407,6 +429,7 @@ function objectStatement(fields: {
   /** The table for an index/trigger; the object's own name otherwise. */
   tableName: string;
   destructive?: boolean;
+  needsArmedDrop?: boolean;
 }): SqlStatement {
   return {
     sql: fields.sql,
@@ -415,6 +438,7 @@ function objectStatement(fields: {
     severity: fields.severity ?? "info",
     tableName: fields.tableName,
     destructive: fields.destructive === true,
+    needsArmedDrop: fields.needsArmedDrop === true,
   };
 }
 
@@ -596,7 +620,12 @@ function dropPolicyStatement(policyName: string, tableName: string, why: string)
 
 // ── Views ──────────────────────────────────────────────────────────────────
 
-function createViewStatement(view: ViewSnapshot): SqlStatement {
+/**
+ * @param afterHeldBackDrop whether this script drops a view of this name with a
+ * statement safe mode comments out, so this one is putting back something that
+ * in safe mode was never taken away.
+ */
+function createViewStatement(view: ViewSnapshot, afterHeldBackDrop: boolean): SqlStatement {
   // pg_get_viewdef already ends in a semicolon and starts with whitespace.
   const body = view.definition.trim();
   // security_invoker, check_option, security_barrier and a matview's storage
@@ -606,9 +635,12 @@ function createViewStatement(view: ViewSnapshot): SqlStatement {
   // statement was only meant to put back after a CASCADE took it.
   const options = viewOptionsClause(view);
   const head = options ? `${q(view.name)} ${options}` : q(view.name);
-  // Both forms are no-ops when the view is already there and already correct.
-  // That matters because this same statement is used to put back a view a
-  // CASCADE *may* have taken: if it survived, running this changes nothing.
+  // Neither form fails when the view is already there. That matters because
+  // this same statement is used to put back a view a CASCADE *may* have taken:
+  // if it survived, running this is harmless.
+  //
+  // The two forms are not equally harmless, though. CREATE OR REPLACE rewrites
+  // whatever it finds; IF NOT EXISTS finds the old matview and does NOTHING.
   const sql = view.materialized
     ? `CREATE MATERIALIZED VIEW IF NOT EXISTS ${head} AS\n${body}`
     : `CREATE OR REPLACE VIEW ${head} AS\n${body}`;
@@ -618,6 +650,12 @@ function createViewStatement(view: ViewSnapshot): SqlStatement {
     description: `Create ${view.materialized ? "materialized view" : "view"} "${view.name}"${note}`,
     kind: "CREATE_VIEW",
     tableName: view.name,
+    // ...which is why a rebuild is held back with a drop safe mode comments
+    // out. The old materialized view is then still sitting there, and this
+    // statement either does nothing (IF NOT EXISTS) or fails outright
+    // ("x is not a view", when the source made it a plain view). Either way
+    // the script must not run it and report success.
+    needsArmedDrop: afterHeldBackDrop,
   });
 }
 
@@ -1128,6 +1166,22 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
   const viewsToCreate: ViewSnapshot[] = [];
   /** Views the script drops by name, so a CASCADE taking them is no surprise. */
   const viewsBeingDropped = new Set<string>();
+  /**
+   * ...of which these are dropped DESTRUCTIVELY, meaning safe mode comments the
+   * drop out. Anything written to put those views back has to be held back with
+   * them: a plain CREATE OR REPLACE VIEW over a surviving materialized view
+   * fails outright ("recent is not a view"), and CREATE MATERIALIZED VIEW IF
+   * NOT EXISTS finds the old one and quietly does nothing.
+   */
+  const heldBackViewDrops = new Set<string>();
+
+  /** Queue a drop and record it in both sets — the only place that does. */
+  function queueViewDrop(view: ViewSnapshot, reason: string) {
+    const statement = dropViewStatement(view, reason);
+    phases.viewDrops.push(statement);
+    viewsBeingDropped.add(view.name);
+    if (statement.destructive) heldBackViewDrops.add(view.name);
+  }
 
   for (const diff of report.objectDiffs) {
     if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
@@ -1147,13 +1201,10 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
         diff.status === "changedDefinition" && diff.replaceNeedsDrop === false;
 
       if (diff.status !== "onlyA" && !onlyOptionsMoved && targetView) {
-        phases.viewDrops.push(
-          dropViewStatement(
-            targetView,
-            diff.status === "onlyB" ? "" : " so it can be rebuilt from the source"
-          )
+        queueViewDrop(
+          targetView,
+          diff.status === "onlyB" ? "" : " so it can be rebuilt from the source"
         );
-        viewsBeingDropped.add(targetView.name);
       }
       if (diff.status !== "onlyB") {
         if (sourceView) viewsToCreate.push(sourceView);
@@ -1268,8 +1319,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     // dropping a view this script cannot recreate is worse than the ALTER
     // failing loudly.
     if (!findByName(leftViews, view.name)) continue;
-    phases.viewDrops.push(dropViewStatement(view, " so a column it reads can change type"));
-    viewsBeingDropped.add(view.name);
+    queueViewDrop(view, " so a column it reads can change type");
     cascadingRelations.add(view.name);
   }
 
@@ -1303,7 +1353,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
 
   // A view built on another view has to be created after it.
   for (const view of sortViewsByDependency(viewsToCreate)) {
-    phases.views.push(createViewStatement(view));
+    phases.views.push(createViewStatement(view, heldBackViewDrops.has(view.name)));
   }
   // ...and dropped before it, which is the same order reversed.
   phases.viewDrops.reverse();
@@ -1926,10 +1976,25 @@ export function generateMigration(
   warnings.push(...objects.warnings);
 
   const destructiveCount = statements.filter((s) => s.destructive).length;
+  const heldBackCount = statements.filter(
+    (s) => s.destructive || s.needsArmedDrop === true,
+  ).length;
   if (destructiveCount > 0 && !allowDataLoss) {
     warnings.push(
       `${destructiveCount} destructive statement${destructiveCount === 1 ? " is" : "s are"} ` +
         `commented out. Enable "allow data loss" to include ${destructiveCount === 1 ? "it" : "them"}.`,
+    );
+  }
+  // A rebuild that is inert without its drop is held back too, and silently
+  // skipping it is what let a safe-mode run report success over a materialized
+  // view that still had the old definition and the old rows.
+  const inertCount = heldBackCount - destructiveCount;
+  if (inertCount > 0 && !allowDataLoss) {
+    warnings.push(
+      `${inertCount} view rebuild${inertCount === 1 ? " is" : "s are"} also commented ` +
+        `out: a rebuild cannot run while the materialized view it replaces is still ` +
+        `there, so ${inertCount === 1 ? "that view keeps" : "those views keep"} the ` +
+        `target's definition and rows until data loss is enabled.`,
     );
   }
 
@@ -1940,6 +2005,7 @@ export function generateMigration(
     targetSchema: `${report.right.database}.${report.right.schema}`,
     allowDataLoss,
     destructiveCount,
+    heldBackCount,
   };
 }
 
@@ -1961,7 +2027,10 @@ export function renderMigrationScript(script: MigrationScript): string {
   const breaking = script.statements.filter((s) => s.severity === "breaking").length;
   const safe = script.statements.filter((s) => s.severity === "safe").length;
   const info = script.statements.filter((s) => s.severity === "info").length;
-  const held = script.allowDataLoss ? 0 : script.destructiveCount;
+  const held = script.allowDataLoss ? 0 : script.heldBackCount;
+  // The held-back set is not all destructive: a rebuilt matview is in there
+  // because it does nothing until its drop runs, not because it deletes.
+  const heldDestructive = script.allowDataLoss ? 0 : script.destructiveCount;
 
   const header = [
     `-- ================================================================`,
@@ -1973,8 +2042,10 @@ export function renderMigrationScript(script: MigrationScript): string {
   if (held > 0) {
     header.push(
       `--`,
-      `-- SAFE MODE IS ON. ${held} destructive statement${held === 1 ? "" : "s"} ` +
-        `(DROP TABLE / DROP COLUMN) ${held === 1 ? "is" : "are"} commented out below`,
+      `-- SAFE MODE IS ON. ${held} statement${held === 1 ? "" : "s"} ` +
+        `(${heldDestructive} destructive` +
+        `${held > heldDestructive ? `, ${held - heldDestructive} inert without ${heldDestructive === 1 ? "it" : "them"}` : ""}) ` +
+        `${held === 1 ? "is" : "are"} commented out below`,
       `-- and will NOT run. Each one is marked [NOT EXECUTED]. To apply them,`,
       `-- re-run the comparison with "allow data loss" enabled, or uncomment them`,
       `-- by hand in the script editor after checking the data is expendable.`,
@@ -1997,7 +2068,7 @@ export function renderMigrationScript(script: MigrationScript): string {
 
   const body = script.statements
     .map((stmt) => {
-      const muted = stmt.destructive && !script.allowDataLoss;
+      const muted = (stmt.destructive || stmt.needsArmedDrop === true) && !script.allowDataLoss;
       const tag = muted ? "NOT EXECUTED — " : "";
       return (
         `-- [${tag}${stmt.severity.toUpperCase()}] ${stmt.description}\n` +
