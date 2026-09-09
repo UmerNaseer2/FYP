@@ -20,13 +20,20 @@ import {
  *
  * Optimistic: the buttons move immediately, and only snap back if the PATCH
  * fails, because a four-button toggle that lags a round trip feels broken.
+ *
+ * The rest of the screen still has to catch up — the header pill and the
+ * production warning read the same field. A screen that fetches its own data
+ * passes `onDone` and reloads it; without one this falls back to
+ * router.refresh(), which is what a server-rendered screen needs.
  */
 export function SchemaEnvironmentPicker({
   trackedSchemaId,
   environment,
+  onDone,
 }: {
   trackedSchemaId: number;
   environment: Environment;
+  onDone?: () => void;
 }) {
   const router = useRouter();
   const [value, setValue] = useState<Environment>(environment);
@@ -51,9 +58,10 @@ export function SchemaEnvironmentPicker({
         setError(data?.error ?? "Could not change the environment.");
         return;
       }
-      // Re-render the server component so the header pill and the production
-      // warning above it agree with the buttons.
-      router.refresh();
+      // Make the header pill and the production warning above agree with the
+      // buttons.
+      if (onDone) onDone();
+      else router.refresh();
     } catch {
       setValue(previous);
       setError("Network error while changing the environment.");

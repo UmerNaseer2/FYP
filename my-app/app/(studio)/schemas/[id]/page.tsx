@@ -1,9 +1,13 @@
+"use client";
+
+import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Pill,
   Card,
   EmptyState,
   EnvironmentPill,
+  Skeleton,
   Timeline,
   TimelineNode,
   type PillTone,
@@ -19,16 +23,14 @@ import {
 } from "@/components/ui/icons";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
-import {
-  getLineageDetail,
-  type LineageNode,
-  type DriftStatus,
+// Types only. `import type` is erased at compile time, so importing the shape
+// of a row does not pull the database module into the client bundle.
+import type {
+  LineageDetail,
+  LineageNode,
+  DriftStatus,
 } from "@/lib/lineage-db";
 import type { ChangeLevel } from "@/lib/version-detection";
-
-// Reads live lineage/drift from the metadata DB on every request — never
-// pre-render or cache it at build time (and don't try to reach the DB then).
-export const dynamic = "force-dynamic";
 
 /**
  * Phase 8 — Schema detail / Lineage timeline.
@@ -39,9 +41,11 @@ export const dynamic = "force-dynamic";
  * plain note — we store snapshots and references, never fabricated SQL text).
  * A drift banner reflects the latest check; the HEAD node is marked.
  *
- * Server component: it reads straight from the lineage store via
- * `getLineageDetail` (mirrors how Compare calls `findTrackedSchema` directly).
- * The only client island is the "Check drift now" button.
+ * Client component: it reads everything through GET /api/lineage/<id> instead
+ * of querying the metadata store while rendering. Keeping the database behind
+ * the API layer means one place reads a tracked schema and one place checks
+ * the permission to read it — and the screen can reload itself after a drift
+ * check or a relabel rather than asking the server to re-render.
  */
 
 // ── Small pure formatters (server-safe, no Date.now → no hydration risk) ─────
@@ -89,18 +93,68 @@ function levelMeta(level: ChangeLevel): { tone: PillTone; label: string } {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default async function SchemaDetailPage({
+export default function SchemaDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
+  const { id } = use(params);
   const trackedSchemaId = Number(id);
 
-  // Invalid id or not tracked → a clean in-shell "not found", never a crash.
-  const detail = Number.isFinite(trackedSchemaId)
-    ? await getLineageDetail(trackedSchemaId)
-    : null;
+  const [detail, setDetail] = useState<LineageDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // One read for the whole screen. It is a useCallback because the drift button
+  // and the environment picker call it again after they write something — this
+  // screen holds its own data, so refreshing the router would show nothing.
+  const load = useCallback(async () => {
+    if (!Number.isInteger(trackedSchemaId) || trackedSchemaId <= 0) {
+      // Invalid id → a clean in-shell "not found", never a crash.
+      setDetail(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch("/api/lineage/" + trackedSchemaId);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
+        setDetail(data as LineageDetail);
+        setError(null);
+      } else {
+        setDetail(null);
+        // A 404 means "not tracked", which the empty state already explains in
+        // full. Anything else is a real failure and its reason belongs on the
+        // screen rather than only in the console.
+        setError(
+          res.status === 404 ? null : data?.error ?? "Could not load this schema."
+        );
+      }
+    } catch {
+      setDetail(null);
+      setError("Network error while loading this schema.");
+    } finally {
+      setLoading(false);
+    }
+  }, [trackedSchemaId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // First paint: the shape of the page, so nothing jumps when the data lands.
+  if (loading) {
+    return (
+      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-6">
+        <Skeleton width={130} height={13} />
+        <Skeleton width={320} height={30} />
+        <Skeleton height={104} radius={14} />
+        <Skeleton height={104} radius={14} />
+        <Skeleton height={220} radius={14} />
+      </div>
+    );
+  }
 
   if (!detail) {
     return (
@@ -109,12 +163,26 @@ export default async function SchemaDetailPage({
           <div style={{ height: 320 }}>
             <EmptyState
               icon={<AlertCircleIcon size={22} />}
-              title="Schema not found"
-              description="This tracked schema doesn't exist — it may have been removed. Head back to the dashboard to see what's tracked."
+              title={error ? "Could not load this schema" : "Schema not found"}
+              description={
+                error ??
+                "This tracked schema doesn't exist — it may have been removed. Head back to the dashboard to see what's tracked."
+              }
               actions={
-                <Link href="/studio" className="btn btn-secondary btn-sm">
-                  <ChevronLeftIcon size={14} /> Back to dashboard
-                </Link>
+                <div className="flex items-center gap-2">
+                  <Link href="/studio" className="btn btn-secondary btn-sm">
+                    <ChevronLeftIcon size={14} /> Back to dashboard
+                  </Link>
+                  {error && (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => void load()}
+                    >
+                      Try again
+                    </button>
+                  )}
+                </div>
               }
             />
           </div>
@@ -224,6 +292,7 @@ export default async function SchemaDetailPage({
           <SchemaEnvironmentPicker
             trackedSchemaId={detail.trackedSchemaId}
             environment={detail.environment}
+            onDone={() => void load()}
           />
           {isProduction(detail.environment) ? (
             <div className="warn-inline">
@@ -260,6 +329,7 @@ export default async function SchemaDetailPage({
         connectionName={detail.connection?.name ?? null}
         trackedSchemaId={detail.trackedSchemaId}
         compareHref={compareHref}
+        onRechecked={() => void load()}
       />
 
       {/* Lineage timeline */}
@@ -305,6 +375,7 @@ function DriftBanner({
   connectionName,
   trackedSchemaId,
   compareHref,
+  onRechecked,
 }: {
   status: DriftStatus | null;
   summary: string | null;
@@ -313,6 +384,7 @@ function DriftBanner({
   connectionName: string | null;
   trackedSchemaId: number;
   compareHref: string | null;
+  onRechecked: () => void;
 }) {
   // Drifted — the loud amber hero state.
   if (status === "drifted") {
@@ -348,7 +420,11 @@ function DriftBanner({
                   <CompareIcon size={13} /> Open expected ↔ actual
                 </Link>
               )}
-              <RecheckDriftButton trackedSchemaId={trackedSchemaId} label="Re-check drift" />
+              <RecheckDriftButton
+                trackedSchemaId={trackedSchemaId}
+                label="Re-check drift"
+                onDone={onRechecked}
+              />
               {detectedAt && (
                 <span
                   className="mono text-[11.5px] ml-auto"
@@ -379,6 +455,7 @@ function DriftBanner({
         }
         detectedAt={detectedAt}
         trackedSchemaId={trackedSchemaId}
+        onRechecked={onRechecked}
       />
     );
   }
@@ -397,6 +474,7 @@ function DriftBanner({
         body={summary ?? "No structural drift was found at the last check."}
         detectedAt={detectedAt}
         trackedSchemaId={trackedSchemaId}
+        onRechecked={onRechecked}
       />
     );
   }
@@ -410,6 +488,7 @@ function DriftBanner({
       body="Run a check to compare the live schema against its lineage baseline."
       detectedAt={null}
       trackedSchemaId={trackedSchemaId}
+      onRechecked={onRechecked}
     />
   );
 }
@@ -422,6 +501,7 @@ function Banner({
   body,
   detectedAt,
   trackedSchemaId,
+  onRechecked,
 }: {
   tone: "sync" | "break" | "neutral";
   icon: React.ReactNode;
@@ -429,6 +509,7 @@ function Banner({
   body: string;
   detectedAt: string | null;
   trackedSchemaId: number;
+  onRechecked: () => void;
 }) {
   const accent =
     tone === "sync" ? "var(--sync)" : tone === "break" ? "var(--break)" : "var(--text-3)";
@@ -454,7 +535,11 @@ function Banner({
             {body}
           </p>
           <div className="flex items-center gap-2 mt-3 flex-wrap">
-            <RecheckDriftButton trackedSchemaId={trackedSchemaId} label="Check drift now" />
+            <RecheckDriftButton
+              trackedSchemaId={trackedSchemaId}
+              label="Check drift now"
+              onDone={onRechecked}
+            />
             {detectedAt && (
               <span className="mono text-[11.5px] ml-auto" style={{ color: "var(--text-3)" }}>
                 last check · {fmtDate(detectedAt)}
