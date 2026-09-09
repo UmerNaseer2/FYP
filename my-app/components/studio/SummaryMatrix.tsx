@@ -1,6 +1,6 @@
 import type { CompareReport } from "@/lib/compare-types";
 import { summaryRows } from "@/lib/compare-summary";
-import type { ReportSides } from "@/components/studio/DiffReport";
+import { dropModeFrom, type ReportSides } from "@/components/studio/DiffReport";
 import { ChevronDownIcon } from "@/components/ui/icons";
 
 // ---------------------------------------------------------------------------
@@ -33,11 +33,20 @@ function Count({ n, tone }: { n: number; tone: "sync" | "add" | "rem" | "chg" })
 export function SummaryMatrix({
   report,
   sides = "source-target",
+  allowDataLoss,
 }: {
   report: CompareReport;
   sides?: ReportSides;
+  /**
+   * Whether the script this board sits above has its drops armed. Undefined on
+   * /drift, where no script is generated at all.
+   */
+  allowDataLoss?: boolean;
 }) {
   const rows = summaryRows(report);
+  // Same switch the diff and the row compare below read, so the header cannot
+  // promise a drop the script has commented out.
+  const dropMode = dropModeFrom(allowDataLoss);
   // The compare engine only knows "left" and "right". /compare's two sides are
   // a source and a target, so left-only is work the migration will do; /drift's
   // are the tracked baseline and the live database, so the SAME column is a
@@ -66,7 +75,9 @@ export function SummaryMatrix({
     <details className="table-group" open>
       <summary className="tg-header">
         <ChevronDownIcon className="chev" size={12} />
-        <span className="name">Summary</span>
+        {/* A heading, not a span, so this board is reachable by heading
+            navigation instead of being one unlabelled stop in the outline. */}
+        <h3 className="name m-0">Summary</h3>
         <span className="ml-auto text-[11px]" style={{ color: "var(--text-3)" }}>
           every object category, not just the ones that changed
         </span>
@@ -85,7 +96,15 @@ export function SummaryMatrix({
                 </th>
                 <th scope="col">
                   {drift ? "Only in the live database" : "Only in target"}
-                  <span className="sub">{drift ? "added since" : "dropped"}</span>
+                  <span className="sub">
+                    {drift
+                      ? "added since"
+                      : dropMode === "armed"
+                        ? "dropped"
+                        : dropMode === "safe"
+                          ? "drop held back"
+                          : "a sync would drop"}
+                  </span>
                 </th>
                 <th scope="col">Changed</th>
               </tr>

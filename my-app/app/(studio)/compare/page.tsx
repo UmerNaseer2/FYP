@@ -76,7 +76,13 @@ function SlotPicker({
 }) {
   return (
     <div className="picker">
-      <span className="kind live" title="Live PostgreSQL introspection">
+      {/* The pill is two letters of jargon. A title alone reaches neither a
+          screen reader nor a touch device, so the name goes on the element. */}
+      <span
+        className="kind live"
+        title="Read live from the server, not from a saved snapshot"
+        aria-label="Read live from the server, not from a saved snapshot"
+      >
         live
       </span>
       <div className="body">
@@ -142,12 +148,16 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
   const compared = outcomes.filter((o) => o.delta);
   const differing = compared.filter((o) => (o.delta?.total ?? 0) > 0).length;
   const inSync = compared.length - differing;
-  const failed = outcomes.length - compared.length;
+  // Counted off the reason, not by subtraction. "Everything without a diff is
+  // unreachable" swept up a server that answered fine and has no schema by that
+  // name, and a target compared with itself, which was never dialled at all.
+  const unreachable = outcomes.filter((o) => o.failure === "unreachable").length;
+  const schemaMissing = outcomes.filter((o) => o.failure === "schema-missing").length;
   const production = outcomes.filter((o) => isProduction(o.environment)).length;
 
   return (
     <div className="compare-header flex items-center gap-2 flex-wrap mt-6">
-      <span className="section-title">Results</span>
+      <h2 className="section-title m-0">Results</h2>
       <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
         <b>{outcomes.length}</b> target{outcomes.length === 1 ? "" : "s"}
       </span>
@@ -158,7 +168,12 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
       <span className="delta delta-add" style={inSync ? undefined : { opacity: 0.5 }}>
         {inSync} in sync
       </span>
-      {failed > 0 && <span className="delta delta-rem">{failed} unreachable</span>}
+      {unreachable > 0 && (
+        <span className="delta delta-rem">{unreachable} unreachable</span>
+      )}
+      {schemaMissing > 0 && (
+        <span className="delta delta-rem">{schemaMissing} schema not found</span>
+      )}
       {production > 0 && (
         <span className="pill pill-break">
           {production} production
@@ -354,6 +369,7 @@ function CompareScreenView({ query }: { query: string }) {
     sourceError,
     allowDataLoss,
     compareData,
+    asked,
   } = screen;
 
   const productionTargets = outcomes.filter((outcome) =>
@@ -371,7 +387,9 @@ function CompareScreenView({ query }: { query: string }) {
       className="px-4 sm:px-8 py-6 sm:py-8"
       // A re-run keeps the current comparison on screen and fades it, rather
       // than dropping back to the skeleton — the numbers below are still the
-      // last true answer until the new one lands.
+      // last true answer until the new one lands. The dim on its own said none
+      // of that, so the strip under the form says it in words too.
+      aria-busy={loading}
       style={loading ? { opacity: 0.55, transition: "opacity 120ms" } : undefined}
     >
       <PageHeader targetCount={resolvedTargets.length} />
@@ -486,33 +504,57 @@ function CompareScreenView({ query }: { query: string }) {
               {maxTargets} targets is the maximum for one comparison.
             </span>
           ) : null}
+          {/* These two decide whether the generated script destroys data and
+              whether the run reads table contents at all, and a hover tooltip
+              was the only place either of them said so — no use on a touch
+              screen, and nothing a screen reader announces. */}
           <label
-            className="flex items-center gap-2 text-[12.5px] cursor-pointer"
+            className="flex items-start gap-2 text-[12.5px] cursor-pointer"
             style={{ color: "var(--text-2)" }}
-            title="DROP TABLE and DROP COLUMN are commented out unless this is ticked. Takes effect on the next Compare."
           >
             <input
               type="checkbox"
               name="allowDataLoss"
               value="1"
+              className="mt-[3px]"
               checked={dataLossBox}
               onChange={(e) => setPendingDataLoss(e.target.checked)}
             />
-            Allow data loss
+            <span className="flex flex-col">
+              Allow data loss
+              <span
+                className="text-[11.5px] max-w-[34ch]"
+                style={{ color: "var(--text-3)" }}
+              >
+                Off, DROP TABLE, DROP COLUMN and any materialized view rebuild
+                that has to drop the view first are written into the script but
+                commented out. Takes effect on the next Compare.
+              </span>
+            </span>
           </label>
           <label
-            className="flex items-center gap-2 text-[12.5px] cursor-pointer"
+            className="flex items-start gap-2 text-[12.5px] cursor-pointer"
             style={{ color: "var(--text-2)" }}
-            title="Also read the rows of every table and report which ones differ. Slower, and it reads table data rather than just the catalog. Takes effect on the next Compare."
           >
             <input
               type="checkbox"
               name="compareData"
               value="1"
+              className="mt-[3px]"
               checked={rowDataBox}
               onChange={(e) => setPendingRowData(e.target.checked)}
             />
-            Compare row data
+            <span className="flex flex-col">
+              Compare row data
+              <span
+                className="text-[11.5px] max-w-[34ch]"
+                style={{ color: "var(--text-3)" }}
+              >
+                Reads the rows of every table and reports which ones differ, not
+                just the catalog — much slower on big tables. Takes effect on the
+                next Compare.
+              </span>
+            </span>
           </label>
           <span className="source-bar__spacer" />
           {/* Said beside the button that applies it, because this is the moment
@@ -533,6 +575,34 @@ function CompareScreenView({ query }: { query: string }) {
         </div>
       </form>
 
+      {/* A re-run leaves the previous diff on screen at 55% opacity, and a dim
+          page is not a message — plenty of readers took it for the current
+          answer being greyed out. This cannot appear on a first load, where
+          `screen` is still null and the skeleton renders instead. */}
+      {loading && (
+        <div className="warn-inline mt-3">
+          <span className="ico">
+            <AlertTriangleIcon size={14} />
+          </span>
+          <span>
+            Re-running the comparison against the live databases — the diff below
+            is the previous result.
+          </span>
+        </div>
+      )}
+
+      {/* A migration generated for a pair nobody chose reads as a
+          recommendation, so a screen nobody asked to run says so and stops. */}
+      {!asked && (
+        <div className="panel mt-6 p-4">
+          <h2 className="section-title m-0">Nothing compared yet</h2>
+          <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
+            These are the defaults, not a result. Press Compare to read both
+            schemas and generate the migration.
+          </p>
+        </div>
+      )}
+
       {/* A production target is worth saying once at the top, before the reader
           scrolls into a workbench with a "push to registry" button in it. */}
       {productionTargets.length > 0 && (
@@ -550,8 +620,9 @@ function CompareScreenView({ query }: { query: string }) {
             {productionTargets
               .map((outcome) => `${outcome.displayName}.${outcome.schema}`)
               .join(", ")}
-            . Read the generated SQL before you push it — on production a dropped
-            column is not recoverable from this app.
+            . Read the generated SQL before you push it — once it runs on
+            production, a dropped column comes back only from a point-in-time
+            restore of the database, not from this app.
           </span>
         </div>
       )}
@@ -577,9 +648,11 @@ function CompareScreenView({ query }: { query: string }) {
         <section key={`outcome-${outcome.index}`} className="mt-6">
           {/* Per-target header: what is being compared, and how much differs. */}
           <div className="compare-header flex items-center gap-2 flex-wrap mb-3">
-            <span className="section-title">
+            {/* A heading rather than a span: with several targets this is the
+                only way to jump between their sections. */}
+            <h2 className="section-title m-0">
               {outcomes.length === 1 ? "Diff" : `Target ${outcome.index + 1}`}
-            </span>
+            </h2>
             <EnvironmentPill environment={outcome.environment} />
             {outcome.delta ? (
               <>
@@ -653,13 +726,21 @@ function CompareScreenView({ query }: { query: string }) {
                   <span className="ico">
                     <AlertTriangleIcon size={14} />
                   </span>
+                  {/* Nothing on /compare can reach the target database — the
+                      only mutating request here is the push to the GitHub
+                      registry. Saying "rewrites production" put the alarm one
+                      screen too early and made the real one, on Deploy, look
+                      like a repeat. */}
                   <span>
-                    <b>This target is production.</b> The migration below rewrites{" "}
+                    <b>This target is production.</b> Nothing on this screen
+                    touches it — Push to GitHub writes the SQL to the registry.
+                    Someone still has to run it from Deploy, and when they do it
+                    rewrites{" "}
                     <span className="mono">
                       {outcome.displayName}.{outcome.schema}
                     </span>
                     {outcome.counts.breaking > 0
-                      ? ` and contains ${outcome.counts.breaking} breaking statement${
+                      ? ` with ${outcome.counts.breaking} breaking statement${
                           outcome.counts.breaking === 1 ? "" : "s"
                         }.`
                       : "."}
@@ -690,7 +771,13 @@ function CompareScreenView({ query }: { query: string }) {
                       shows what changed, so it cannot say "nothing happened to
                       your views" — this can, and it is the answer people scroll
                       the whole page looking for. */}
-                  <SummaryMatrix report={outcome.report} />
+                  {/* Same switch the two widgets below get — without it the
+                      board said "dropped" over a script that has every drop
+                      commented out. */}
+                  <SummaryMatrix
+                    report={outcome.report}
+                    allowDataLoss={allowDataLoss}
+                  />
                   <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
                   {outcome.data && (
                     <DataCompare

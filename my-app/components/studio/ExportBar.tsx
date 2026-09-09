@@ -36,6 +36,19 @@ function downloadText(filename: string, text: string, mime: string) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/**
+ * The theme the page was in before printing, saved for the PAGE and not for one
+ * bar.
+ *
+ * The compare screen renders one export bar per target, so a two-target run
+ * registers two beforeprint handlers. With a per-instance variable the second
+ * one recorded the "light" the first had just written, and its afterprint then
+ * restored that — leaving the whole app stuck in light theme once the print
+ * dialog closed. Whoever saves first is the one who puts it back.
+ */
+let savedTheme: string | null = null;
+let themeIsSaved = false;
+
 export function ExportBar({ doc }: { doc: DiffDocument }) {
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState("");
@@ -53,10 +66,11 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
   //      print costs one attribute.
   //
   // Both are put back on afterprint. useTheme only writes the attribute on
-  // mount and on the toggle button, so nothing else is racing for it.
+  // mount and on the toggle button, so nothing else is racing for it — but a
+  // sibling export bar is, which is why the saved theme lives at module scope
+  // above.
   useEffect(() => {
     let reclose: HTMLDetailsElement[] = [];
-    let previousTheme: string | null = null;
 
     function prepare() {
       reclose = Array.from(
@@ -65,7 +79,10 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
       for (const element of reclose) element.open = true;
 
       const root = window.document.documentElement;
-      previousTheme = root.getAttribute("data-theme");
+      if (!themeIsSaved) {
+        savedTheme = root.getAttribute("data-theme");
+        themeIsSaved = true;
+      }
       root.setAttribute("data-theme", "light");
     }
 
@@ -73,10 +90,12 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
       for (const element of reclose) element.open = false;
       reclose = [];
 
+      if (!themeIsSaved) return;
       const root = window.document.documentElement;
-      if (previousTheme === null) root.removeAttribute("data-theme");
-      else root.setAttribute("data-theme", previousTheme);
-      previousTheme = null;
+      if (savedTheme === null) root.removeAttribute("data-theme");
+      else root.setAttribute("data-theme", savedTheme);
+      savedTheme = null;
+      themeIsSaved = false;
     }
 
     window.addEventListener("beforeprint", prepare);
@@ -144,7 +163,9 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
       </button>
 
       <span className="export-bar__count">
-        {doc.totals.changes} row{doc.totals.changes === 1 ? "" : "s"}
+        {/* "rows" here meant diff entries, four words from a count of database
+            rows — the per-target header on this same screen calls them changes. */}
+        {doc.totals.changes} change{doc.totals.changes === 1 ? "" : "s"}
         {doc.data
           ? ` \u00b7 ${doc.data.tables.length} table${
               doc.data.tables.length === 1 ? "" : "s"

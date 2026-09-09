@@ -483,17 +483,37 @@ function matchLevel(match: TableMatch): "breaking" | "additive" {
     : "additive";
 }
 
-/** Compact `+a ~c −r` chips for a group/table header. */
-function DeltaChips({ adds, chgs, rems }: Tally) {
+/**
+ * Compact `+a ~c −r` chips for a group/table header.
+ *
+ * The symbols carry the whole meaning on screen, so read aloud they were "plus
+ * 3, tilde 1, minus 0" — and the prose legend above the report is a separate
+ * paragraph no screen reader ties to them. Each chip names itself instead, in
+ * the direction this page reads (see ReportSides).
+ */
+function DeltaChips({ adds, chgs, rems, sides }: Tally & { sides: ReportSides }) {
+  const drift = sides === "expected-live";
   return (
     <span className="flex items-center gap-1.5">
-      <span className="delta delta-add" style={adds ? undefined : { opacity: 0.4 }}>
+      <span
+        className="delta delta-add"
+        style={adds ? undefined : { opacity: 0.4 }}
+        aria-label={drift ? `${adds} missing from live` : `${adds} created`}
+      >
         + {adds}
       </span>
-      <span className="delta delta-chg" style={chgs ? undefined : { opacity: 0.4 }}>
+      <span
+        className="delta delta-chg"
+        style={chgs ? undefined : { opacity: 0.4 }}
+        aria-label={`${chgs} altered`}
+      >
         ~ {chgs}
       </span>
-      <span className="delta delta-rem" style={rems ? undefined : { opacity: 0.4 }}>
+      <span
+        className="delta delta-rem"
+        style={rems ? undefined : { opacity: 0.4 }}
+        aria-label={drift ? `${rems} extra in live` : `${rems} dropped`}
+      >
         − {rems}
       </span>
     </span>
@@ -595,7 +615,7 @@ function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSid
           {drift ? "missing" : "new"}
         </span>
         <div className="ml-auto">
-          <DeltaChips adds={adds} chgs={0} rems={0} />
+          <DeltaChips adds={adds} chgs={0} rems={0} sides={sides} />
         </div>
       </summary>
 
@@ -755,7 +775,10 @@ function ExtraTableCard({
 }) {
   const drift = sides === "expected-live";
   return (
-    <details className="table-group">
+    // Open by default, like every other card in this file: this is the only one
+    // whose sync deletes rows, so hiding its explanation behind a click inverts
+    // the page's risk ordering.
+    <details className="table-group" open>
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
@@ -774,7 +797,7 @@ function ExtraTableCard({
                 : "only in target"}
         </span>
         <div className="ml-auto">
-          <DeltaChips adds={0} chgs={0} rems={table.columns.length} />
+          <DeltaChips adds={0} chgs={0} rems={table.columns.length} sides={sides} />
         </div>
       </summary>
 
@@ -847,7 +870,13 @@ function ChangedTableCard({
 }) {
   const tally = matchTally(match);
   const level = matchLevel(match);
-  const changedColumns = match.columnMatches.filter((c) => c.changes.length > 0);
+  // Disjoint on purpose. A column that was renamed AND retyped used to appear
+  // in both lists — two rows for one column, while matchTally (see its comment)
+  // counts it once, so the chip above said ~1 over two rows. The rename row
+  // below carries its changes instead.
+  const changedColumns = match.columnMatches.filter(
+    (c) => c.exact && c.changes.length > 0,
+  );
   const renamedColumns = match.columnMatches.filter((c) => !c.exact);
   const constraintDiffs = match.constraintDiffs;
 
@@ -875,7 +904,7 @@ function ChangedTableCard({
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <DeltaChips {...tally} />
+          <DeltaChips {...tally} sides={sides} />
           <LevelPill level={level} />
         </div>
       </summary>
@@ -953,6 +982,12 @@ function ChangedTableCard({
                 </>
               )}{" "}
               <span className="muted">· {cm.score}% match — verify</span>
+              {cm.changes.length > 0 && (
+                <span className="muted">
+                  {" "}
+                  · {cm.changes.map((ch) => changeText(ch, sides)).join("; ")}
+                </span>
+              )}
             </DiffLine>
           ))}
         </div>
@@ -1043,7 +1078,7 @@ function SchemaObjectsCard({
         <span className="name">Schema objects</span>
         <LevelPill level={breaking ? "breaking" : "additive"} />
         <div className="ml-auto">
-          <DeltaChips {...tally} />
+          <DeltaChips {...tally} sides={sides} />
         </div>
       </summary>
 
@@ -1233,8 +1268,23 @@ export function DiffReport({
         )}
       </p>
 
+      {/* Destructive, breaking and held back are three different gradings of
+          one script, spread across this page and the workbench below it, and
+          nothing said how they relate. One line, only where there is something
+          to explain. */}
+      {sides !== "expected-live" && destructiveCount > 0 && (
+        <p className="help">
+          Two things are graded here. <b>Destructive</b> means a statement deletes
+          data; <b>breaking</b> means it can break something that reads this
+          schema. A statement can be either, both or neither. <b>Held back</b>{" "}
+          means it was generated and then commented out, so it will not run.
+        </p>
+      )}
+
       {destructiveCount > 0 && (
-        <div className="banner">
+        // Same rule as DataCompare.tsx — colour tracks risk, so a script whose
+        // drops are commented out does not spend the loudest signal on the page.
+        <div className={dropMode === "armed" ? "banner" : "warn-inline"}>
           <div>
             <div className="title">
               {sides === "expected-live"

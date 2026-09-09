@@ -18,6 +18,7 @@ import {
   generateMigration,
   generateRollback,
   manualNoteCount,
+  migrationChangeLevel,
   renderMigrationScript,
   renderRollbackScript,
   type SqlStatement,
@@ -172,6 +173,13 @@ export type CompareScreen =
       outcomes: OutcomeView[];
       allowDataLoss: boolean;
       compareData: boolean;
+      /**
+       * Whether somebody actually asked for this comparison — the Compare
+       * button, a saved set, or a deep link that names a target. False on a
+       * bare /compare, where the pickers hold defaults nobody chose and
+       * `outcomes` is deliberately empty.
+       */
+      asked: boolean;
     };
 
 function toConnectionView(connection: SavedConnection): ConnectionView {
@@ -432,6 +440,15 @@ type TargetOutcome = {
   /** Row-level comparison, or null when the run did not ask for one. */
   data: DataCompareReport | null;
   error: string | null;
+  /**
+   * Why there is no report, when there is none.
+   *
+   * `delta === null` used to be the only signal, and the summary bar counted
+   * every one of them as "unreachable" — including a server that answered
+   * perfectly well and simply has no schema by that name, and including a
+   * target compared with itself, which was never dialled at all.
+   */
+  failure: "unreachable" | "schema-missing" | null;
   delta: ReturnType<typeof tallyDelta> | null;
   sqlText: string;
   rollbackText: string;
@@ -521,6 +538,7 @@ async function compareOneTarget(
     sameAsSource: false,
     report: null,
     data: null,
+    failure: null as TargetOutcome["failure"],
     delta: null,
     sqlText: "",
     rollbackText: "",
@@ -552,13 +570,17 @@ async function compareOneTarget(
     return {
       ...empty,
       environment: connectionEnvironment,
+      failure: "unreachable",
       error: `Could not reach ${slot.target.displayName}: ${slot.schemaListError}`,
     };
   }
   if (slot.schemaOptions.length > 0 && !slot.schemaOptions.includes(slot.schema)) {
+    // The server answered — that is how we know which schemas it has. Nothing
+    // here is unreachable.
     return {
       ...empty,
       environment: connectionEnvironment,
+      failure: "schema-missing",
       error: `Schema ${slot.schema} was not found in ${slot.target.displayName}.`,
     };
   }
@@ -577,6 +599,7 @@ async function compareOneTarget(
     return {
       ...empty,
       environment,
+      failure: "unreachable",
       error: `Could not load ${slot.target.displayName}.${slot.schema}: ${snapshot.error}`,
     };
   }
@@ -610,7 +633,21 @@ async function compareOneTarget(
   // flag so its header can say whether the drops it is "restoring" ever ran.
   const rollback = generateRollback(report, { allowDataLoss });
 
-  const { breaking, safe, info } = tallySeverities(script.statements);
+  // The tally grades the run, not the file: safe mode comments its destructive
+  // statements out, so counting them made a script that does nothing advertise
+  // a breaking change and propose a major version bump. Same predicate
+  // migrationChangeLevel uses, so the two cannot disagree.
+  const willRun = script.statements.filter(
+    (s) =>
+      s.kind !== "MANUAL" &&
+      !((s.destructive || s.needsArmedDrop === true) && !allowDataLoss),
+  );
+  const { breaking, safe, info } = tallySeverities(willRun);
+
+  // migrationChangeLevel also answers "unknown", which it never reaches from a
+  // generated script — the workbench has no such level, so fold it into patch.
+  const level = migrationChangeLevel(script);
+  const overallKind: ChangeKind = level === "unknown" ? "patch" : level;
 
   return {
     ...empty,
@@ -631,7 +668,7 @@ async function compareOneTarget(
     manualCount: manualNoteCount(script.statements),
     rollbackManualCount: manualNoteCount(rollback.statements),
     counts: { breaking, safe, info },
-    overallKind: breaking > 0 ? "breaking" : safe + info > 0 ? "additive" : "patch",
+    overallKind,
     warnings: script.warnings,
     // When the target schema is tracked, derive the real next version for each
     // change level from its lineage HEAD. Null when it isn't tracked — the
@@ -702,6 +739,15 @@ export async function runComparison(
   const requestedTargetSchemas = pickList(params.targetSchema ?? params.rightSchema);
   const hasExplicitTargets =
     requestedTargetConnections.length > 0 || requestedTargetSchemas.length > 0;
+
+  // Did anybody actually ask for this comparison?
+  //
+  // A migration generated for a pair nobody chose reads as a recommendation.
+  // Opening a bare /compare used to introspect two live databases picked by
+  // default and lay a script under them. `run=1` is what the Compare button
+  // and every saved-set link add; the deep links from the dashboard, Drift and
+  // a schema's detail page name a target instead, which is a choice too.
+  const asked = pickValue(params.run, "") === "1" || hasExplicitTargets;
 
   const sourceConnectionId = pickValue(
     params.sourceConnection ?? params.leftConnection,
@@ -923,7 +969,10 @@ export async function runComparison(
 
   let outcomes: TargetOutcome[] = [];
   let sourceVersionInfo: VersionDetectionResult | null = null;
-  if (!sourceError) {
+  // No outcomes without `asked`: the schema lists above are what the pickers
+  // need, and going further would open both databases for a question nobody
+  // put. The screen renders the pickers and says so.
+  if (!sourceError && asked) {
     const snapshot = await fetchSchemaSnapshot(sourceTarget.config, sourceSchema);
     if (!snapshot.ok) {
       sourceError = `Could not load ${sourceTarget.displayName}.${sourceSchema}: ${snapshot.error}`;
@@ -1036,5 +1085,6 @@ export async function runComparison(
     outcomes: outcomes.map(toOutcomeView),
     allowDataLoss,
     compareData,
+    asked,
   };
 }
