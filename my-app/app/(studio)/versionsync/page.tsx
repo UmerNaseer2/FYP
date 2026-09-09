@@ -248,10 +248,23 @@ export default function VersionSyncPage() {
     setPendingApply(entries);
   }
 
+  /**
+   * How a failed replay ended, which decides what the banner may claim.
+   *
+   * "refused" is the route turning the request away before it opened a
+   * transaction — an unapproved production target, a missing acknowledgement.
+   * Saying "the transaction rolled back" there describes a transaction that
+   * never existed and hides the actual problem, which is usually one the
+   * reader can fix. "unknown" is the commit that did not report back, or a
+   * reply this page could not read at all; neither of those saw how the run
+   * ended, so neither may say nothing was applied.
+   */
+  type ApplyFailure = "refused" | "rolled-back" | "unknown";
+
   async function applyBatch(
     entries: LedgerEntry[],
     acknowledgeProduction: boolean,
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
+  ): Promise<{ ok: true } | { ok: false; error: string; failure: ApplyFailure }> {
     try {
       const res = await fetch("/api/scripts/apply", {
         method: "POST",
@@ -276,9 +289,13 @@ export default function VersionSyncPage() {
       // HTML, and letting res.json() throw here would report "could not reach
       // the server" about a request that reached it.
       const raw = await res.text();
-      let data: { success?: boolean; error?: string } | null = null;
+      let data: { success?: boolean; error?: string; outcomeUnknown?: boolean } | null = null;
       try {
-        data = JSON.parse(raw) as { success?: boolean; error?: string };
+        data = JSON.parse(raw) as {
+          success?: boolean;
+          error?: string;
+          outcomeUnknown?: boolean;
+        };
       } catch {
         data = null;
       }
@@ -286,14 +303,30 @@ export default function VersionSyncPage() {
       // today, but a caller that reads just the status would silently treat a
       // future soft-failure shape as applied.
       if (!res.ok || !data?.success) {
+        // 4xx here is always the route declining before step 8 — the request
+        // was wrong or unapproved, so no transaction was ever opened. A body
+        // this page could not parse is a proxy or framework error page, which
+        // says nothing about what the database did.
+        const failure: ApplyFailure = data?.outcomeUnknown
+          ? "unknown"
+          : data === null
+            ? "unknown"
+            : res.status >= 400 && res.status < 500
+              ? "refused"
+              : "rolled-back";
         return {
           ok: false,
           error: data?.error ?? `the apply API answered ${res.status}.`,
+          failure,
         };
       }
       return { ok: true };
     } catch {
-      return { ok: false, error: "Could not reach the server." };
+      return {
+        ok: false,
+        error: "Could not reach the server.",
+        failure: "unknown",
+      };
     }
   }
 
@@ -340,7 +373,13 @@ export default function VersionSyncPage() {
 
     if (!result.ok) {
       setApplyError(
-        `Replay failed: ${result.error} Nothing was applied — the transaction rolled back.`
+        `Replay failed: ${result.error} ` +
+        (result.failure === "refused"
+          ? "Nothing ran — the request was turned away before it reached the database."
+          : result.failure === "unknown"
+            ? `Whether it was applied is not known: nothing here saw how the run ` +
+              `ended. Read the ledger on ${target.schema} before trying again.`
+            : "Nothing was applied — the transaction rolled back.")
       );
       return;
     }
@@ -538,6 +577,15 @@ export default function VersionSyncPage() {
               <span className="block mt-2" style={{ color: "var(--break)" }}>
                 The Target is labelled production. A replay that goes wrong here is not
                 something a rollback brings back — a rollback restores structure, not rows.
+              </span>
+            )}
+            {targetIsProduction && (
+              <span className="block mt-2" style={{ color: "var(--break)" }}>
+                Ticking this box is not enough on its own. A production run also needs
+                an approval from someone else, granted for these exact scripts — the
+                same hand cannot both tick and press. Request it on the Deploy screen
+                with this connection and schema selected; without one the replay is
+                refused and nothing runs.
               </span>
             )}
             {diff && diff.diverged.length > 0 && (
@@ -770,7 +818,8 @@ function Result({
           </div>
           <p className="help mb-3" style={{ color: "var(--text-3)" }}>
             The exact scripts already applied to the Source. Running them onto the Target catches it up —
-            one version per transaction, in order; the timeline advances as each lands.
+            in order, and all of them in one transaction, so a replay that fails part way leaves the
+            Target where it started rather than stranded mid-chain.
           </p>
 
           <div className="space-y-3">
