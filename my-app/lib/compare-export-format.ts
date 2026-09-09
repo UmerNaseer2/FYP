@@ -26,6 +26,25 @@ const CSV_HEADERS = [
   "detail",
 ];
 
+/**
+ * Column headings for the category board.
+ *
+ * `status` is the reason this row exists. The Markdown board can spend a
+ * sentence explaining that a category was skipped; a spreadsheet cannot, and
+ * without a word in the row a reader who filters the changes for "View", finds
+ * nothing, and concludes the views match has been told something false by a
+ * file that simply never looked at them.
+ */
+const SUMMARY_CSV_HEADERS = [
+  "category",
+  "status",
+  "in_sync",
+  "added",
+  "changed",
+  "dropped",
+  "manual",
+];
+
 /** Column headings for the row-data block, written only when one was run. */
 const DATA_CSV_HEADERS = [
   "table",
@@ -53,6 +72,25 @@ function csvField(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+/**
+ * What the `status` cell says for one category row.
+ *
+ * Three outcomes, and collapsing any two of them loses the thing the reader
+ * needs: "compared" means the counts beside it are real, "none on either side"
+ * means the counts are real and all zero, and "not compared" means there are no
+ * counts. The two reasons for the last one are kept apart because telling
+ * someone their snapshot is stale, when the truth is that no table matched, is
+ * a wrong instruction and not just a vague one.
+ */
+function summaryStatus(row: DiffDocument["categories"][number]): string {
+  if (!row.compared) {
+    return row.notComparedReason === "noMatchedTables"
+      ? "not compared — no matched tables"
+      : "not compared — this snapshot has no record of them";
+  }
+  return row.absent ? "none on either side" : "compared";
+}
+
 export function documentToCsv(document: DiffDocument): string {
   const lines = [CSV_HEADERS.join(",")];
   for (const row of document.changes) {
@@ -70,10 +108,24 @@ export function documentToCsv(document: DiffDocument): string {
         .join(",")
     );
   }
-  // Row data goes in the same file as a second block after a blank line, not in
-  // a file of its own: someone handed one export should not have to be told
-  // there was a second one. A spreadsheet shows it as more rows, which is why
-  // the block carries its own heading line saying what those rows are.
+  // The category board, and then the row data, go in the same file as further
+  // blocks after a blank line rather than in files of their own: someone handed
+  // one export should not have to be told there were others. A spreadsheet
+  // shows each as more rows, which is why every block carries its own heading
+  // line saying what its rows are.
+  lines.push("");
+  lines.push(SUMMARY_CSV_HEADERS.join(","));
+  for (const row of document.categories) {
+    // Counts are left empty rather than written as zeros on a row nobody
+    // looked at. A zero is a measurement; this is the absence of one.
+    const cells = row.compared
+      ? [row.inSync, row.added, row.changed, row.dropped, row.manual].map(String)
+      : ["", "", "", "", ""];
+    lines.push(
+      [row.label, summaryStatus(row), ...cells].map(csvField).join(",")
+    );
+  }
+
   if (document.data) {
     lines.push("");
     lines.push(DATA_CSV_HEADERS.join(","));
