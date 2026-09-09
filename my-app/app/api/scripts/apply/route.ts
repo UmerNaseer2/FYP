@@ -19,6 +19,38 @@ type ChangeType = (typeof VALID_CHANGE_TYPES)[number];
 // script_patch.version is VARCHAR(20)
 const MAX_VERSION_LENGTH = 20;
 
+/** One migration as a caller sends it — every field still unvalidated. */
+type ScriptInput = {
+  script_name?: string;
+  sql_content?: string;
+  version?: string;
+  title?: string;
+  description?: string;
+  change_type?: string;
+  source_ref?: string;
+};
+
+/** One migration in a run, after validation and normalising. */
+type ScriptJob = {
+  scriptName: string;
+  version: string;
+  sqlContent: string;
+  title: string;
+  description: string | null;
+  changeType: ChangeType;
+  sourceRef: string | null;
+};
+
+/** What happened to one migration in a run, as reported back to the caller. */
+type ScriptOutcome = {
+  script_name: string;
+  version: string;
+  status: "applied" | "rehearsed" | "failed" | "skipped";
+  /** How many statements PostgreSQL ran for it. */
+  statements?: number;
+  error?: string;
+};
+
 /**
  * The part of a node-postgres result the dry-run report reads.
  *
@@ -180,6 +212,74 @@ async function addEnumValuesOutsideTransaction(
   }
 }
 
+/**
+ * Name a run in one phrase, for the messages and for the lineage node.
+ *
+ * A run of one keeps the wording the route has always used, so the screens that
+ * show these messages read exactly as they did before runs of several existed.
+ */
+function describeRun(queue: ScriptJob[]): string {
+  const last = queue[queue.length - 1];
+  const tail = `${last.scriptName} v${last.version}`;
+  return queue.length === 1 ? tail : `${queue.length} migrations (through ${tail})`;
+}
+
+/**
+ * How loud the run is as a whole: the loudest change type any migration in it
+ * carries.
+ *
+ * The lineage advance takes one change level for the whole run, and it decides
+ * how the version bumps. A run holding one breaking migration is a breaking run
+ * — averaging it down to the last script's level would record a minor bump over
+ * a change that broke something. "patch" and "unknown" share a rank because
+ * getNextLineageVersion treats them identically.
+ */
+const CHANGE_TYPE_RANK: Record<ChangeType, number> = {
+  patch: 1,
+  unknown: 1,
+  additive: 2,
+  breaking: 3,
+};
+
+function loudestChangeType(queue: ScriptJob[]): ChangeType {
+  return queue.reduce<ChangeType>(
+    (loudest, job) =>
+      CHANGE_TYPE_RANK[job.changeType] > CHANGE_TYPE_RANK[loudest]
+        ? job.changeType
+        : loudest,
+    "patch"
+  );
+}
+
+/**
+ * Report a run that rolled back: the migration that failed, and every other one
+ * in the run marked skipped.
+ *
+ * Every other one — including the ones that had already run before the failure.
+ * The run is a single transaction, so the ROLLBACK undid those too, and calling
+ * them "applied" would send the reader looking for changes that are not there.
+ */
+function rolledBackOutcomes(
+  queue: ScriptJob[],
+  failed: ScriptJob | null,
+  error: string
+): ScriptOutcome[] {
+  return queue.map((job) =>
+    job === failed
+      ? {
+          script_name: job.scriptName,
+          version: job.version,
+          status: "failed" as const,
+          error,
+        }
+      : {
+          script_name: job.scriptName,
+          version: job.version,
+          status: "skipped" as const,
+        }
+  );
+}
+
 // Bare COMMIT / ROLLBACK detection lives in lib/sql-guard so the deploy page's
 // client-side pre-check uses the exact same rule (and the dollar-quote-aware
 // stripping) as this server route — see containsTransactionControl import above.
@@ -189,15 +289,21 @@ export async function POST(request: NextRequest) {
   if (!gate.ok) return gate.response;
 
   // ─── 1. Parse the request body ───────────────────────────────────────────
+  //
+  // Two shapes are accepted. `scripts: [...]` is a run of several migrations
+  // applied together; the flat single-script fields are the original shape and
+  // still the only one Version Sync's replay sends. Everything below treats the
+  // flat form as a run of one, so there is a single code path from here down.
   let body: {
     connectionId: number;
-    script_name: string;
-    sql_content: string;
-    version: string;
+    schemaName?: string;
+    scripts?: ScriptInput[];
+    script_name?: string;
+    sql_content?: string;
+    version?: string;
     title?: string;
     description?: string;
     change_type?: string;
-    schemaName?: string;
     // The GitHub path the SQL came from (e.g. finance/public/add_invoices/v1.0.0.sql),
     // recorded so an applied row can point back to its source file. Optional —
     // applying ad-hoc SQL with no GitHub origin is still allowed.
@@ -208,12 +314,12 @@ export async function POST(request: NextRequest) {
      */
     acknowledgeProduction?: boolean;
     /**
-     * Run the script and then throw the work away instead of committing it.
+     * Run the scripts and then throw the work away instead of committing it.
      *
      * A rehearsal, not a review: the SQL really executes against the real target
-     * inside a transaction that always ends in ROLLBACK, so what it reports is
+     * inside the transaction that always ends in ROLLBACK, so what it reports is
      * what the database itself said, not what a parser guessed. Nothing is
-     * written — no ledger row, no lineage advance, and none of the setup DDL a
+     * written — no ledger rows, no lineage advance, and none of the setup DDL a
      * real apply does outside the transaction.
      */
     dryRun?: boolean;
@@ -228,15 +334,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const {
-    connectionId,
-    script_name,
-    sql_content,
-    version,
-    title,
-    description,
-    change_type,
-  } = body;
+  const { connectionId } = body;
 
   // schemaName defaults to "public" but also guard against explicit empty string
   const schemaName =
@@ -244,7 +342,12 @@ export async function POST(request: NextRequest) {
       ? body.schemaName.trim()
       : "public";
 
-  // ─── 2. Validate required fields ─────────────────────────────────────────
+  // A dry run rehearses the run and rolls it back. Absent or false means a real
+  // apply — the flag has to be asked for explicitly, so a caller that knows
+  // nothing about it keeps committing exactly as before.
+  const dryRun = body.dryRun === true;
+
+  // ─── 2. Validate every script in the run ─────────────────────────────────
   if (!connectionId) {
     return NextResponse.json(
       { error: "connectionId is required." },
@@ -252,61 +355,101 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!script_name?.trim()) {
+  const rawScripts: ScriptInput[] = Array.isArray(body.scripts)
+    ? body.scripts
+    : [body];
+
+  if (rawScripts.length === 0) {
     return NextResponse.json(
-      { error: "script_name is required." },
+      { error: "scripts must contain at least one migration." },
       { status: 400 }
     );
   }
 
-  if (!sql_content?.trim()) {
-    return NextResponse.json(
-      { error: "sql_content is required and cannot be empty." },
-      { status: 400 }
-    );
+  const queue: ScriptJob[] = [];
+  // Two migrations in one run cannot share a (script_name, version) pair: the
+  // second INSERT would hit the unique index halfway through and take the whole
+  // run down with it. Catching it here says which two, before anything runs.
+  const seenKeys = new Set<string>();
+
+  for (let index = 0; index < rawScripts.length; index++) {
+    const raw = rawScripts[index];
+    // Only a multi-script run needs to say WHICH one is wrong; a run of one has
+    // no ambiguity and the older message is what existing callers expect.
+    const at = rawScripts.length > 1 ? ` (script ${index + 1} of ${rawScripts.length})` : "";
+
+    if (!raw?.script_name?.trim()) {
+      return NextResponse.json(
+        { error: `script_name is required${at}.` },
+        { status: 400 }
+      );
+    }
+    if (!raw.sql_content?.trim()) {
+      return NextResponse.json(
+        { error: `sql_content is required and cannot be empty${at}.` },
+        { status: 400 }
+      );
+    }
+    if (!raw.version?.trim()) {
+      return NextResponse.json(
+        { error: `version is required (e.g. '1.2.0')${at}.` },
+        { status: 400 }
+      );
+    }
+    // script_patch.version is VARCHAR(20) — catch this before hitting the DB
+    if (raw.version.trim().length > MAX_VERSION_LENGTH) {
+      return NextResponse.json(
+        { error: `version must be ${MAX_VERSION_LENGTH} characters or fewer${at}.` },
+        { status: 400 }
+      );
+    }
+
+    // ─── 3. Guard against embedded COMMIT / ROLLBACK in the script ─────────
+    if (containsTransactionControl(raw.sql_content)) {
+      return NextResponse.json(
+        {
+          error:
+            `sql_content must not contain COMMIT or ROLLBACK statements${at}. ` +
+            "The apply route wraps the run in its own transaction automatically.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const scriptName = raw.script_name.trim();
+    const scriptVersion = raw.version.trim();
+    const key = `${scriptName}|${scriptVersion}`;
+    if (seenKeys.has(key)) {
+      return NextResponse.json(
+        {
+          error:
+            `This run lists ${scriptName} v${scriptVersion} twice. ` +
+            "Each migration can appear only once.",
+        },
+        { status: 400 }
+      );
+    }
+    seenKeys.add(key);
+
+    queue.push({
+      scriptName,
+      version: scriptVersion,
+      sqlContent: raw.sql_content,
+      // title is VARCHAR(150) — truncate before INSERT so an over-long title
+      // cannot roll back an otherwise-successful migration.
+      title: (raw.title?.trim() || scriptVersion).slice(0, 150),
+      description: raw.description?.trim() || null,
+      // Normalise change_type — default to "unknown" if missing or invalid.
+      changeType: VALID_CHANGE_TYPES.includes(raw.change_type as ChangeType)
+        ? (raw.change_type as ChangeType)
+        : "unknown",
+      // Normalise source_ref — trim, and treat a blank string as "no source".
+      sourceRef: raw.source_ref?.trim() || null,
+    });
   }
 
-  if (!version?.trim()) {
-    return NextResponse.json(
-      { error: "version is required (e.g. '1.2.0')." },
-      { status: 400 }
-    );
-  }
-
-  // script_patch.version is VARCHAR(20) — catch this before hitting the DB
-  if (version.trim().length > MAX_VERSION_LENGTH) {
-    return NextResponse.json(
-      { error: `version must be ${MAX_VERSION_LENGTH} characters or fewer.` },
-      { status: 400 }
-    );
-  }
-
-  // ─── 3. Guard against embedded COMMIT / ROLLBACK in the script ───────────
-  if (containsTransactionControl(sql_content)) {
-    return NextResponse.json(
-      {
-        error:
-          "sql_content must not contain COMMIT or ROLLBACK statements. " +
-          "The apply route wraps the script in its own transaction automatically.",
-      },
-      { status: 400 }
-    );
-  }
-
-  // Normalise change_type — default to "unknown" if missing or invalid
-  const resolvedChangeType: ChangeType = VALID_CHANGE_TYPES.includes(
-    change_type as ChangeType
-  )
-    ? (change_type as ChangeType)
-    : "unknown";
-
-  // Normalise source_ref — trim, and treat a blank string as "no source".
-  const resolvedSourceRef = body.source_ref?.trim() || null;
-
-  // A dry run rehearses the script and rolls it back. Absent or false means a
-  // real apply — the flag has to be asked for explicitly, so a caller that
-  // knows nothing about it (Version Sync's replay) keeps committing as before.
-  const dryRun = body.dryRun === true;
+  // Used by every message that names the run as a whole.
+  const lastJob = queue[queue.length - 1];
 
   // ─── 4. Look up the saved connection from the app metadata database ───────
   // version-db is the same pool the Connections screen saves to, so a connection
@@ -428,36 +571,42 @@ export async function POST(request: NextRequest) {
   // Track whether the target-pool client has already been released, so the
   // finally block doesn't double-release it.
   let clientReleased = false;
+  // Which migration was running when something threw, so the catch block can
+  // name it instead of reporting the failure against the run as a whole. Null
+  // means the run failed outside any single migration (setup, BEGIN, COMMIT).
+  let failedJob: ScriptJob | null = null;
 
   try {
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
     //
-    // Both of these run OUTSIDE the migration transaction, which is exactly why
-    // a dry run skips them: whatever they do is committed the moment it runs and
-    // no ROLLBACK can take it back. See each function for what it does and why it
-    // has to sit out here.
+    // Both of these run OUTSIDE the run's transaction, which is exactly why a
+    // dry run skips them: whatever they do is committed the moment it runs and
+    // no ROLLBACK can take it back. See each function for what it does and why
+    // it has to sit out here. The enum hoist reads every script in the run at
+    // once, because a value added by script 1 and used by script 3 has the same
+    // problem as one added and used by a single script.
     if (!dryRun) {
       await ensureScriptPatchTable(client, quotedSchema);
-      await addEnumValuesOutsideTransaction(client, quotedSchema, sql_content);
+      await addEnumValuesOutsideTransaction(
+        client,
+        quotedSchema,
+        queue.map((job) => job.sqlContent).join("\n")
+      );
     }
 
-    // ─── 8. Run the migration inside a transaction ────────────────────────
+    // ─── 8. Run every migration inside ONE transaction ──────────────────────
+    //
+    // All of them or none of them. The route used to open a transaction per
+    // script, which meant a run that failed on script 3 left scripts 1 and 2
+    // committed and no way back except a hand-written down script for each. One
+    // transaction around the whole run makes a failure a non-event: PostgreSQL
+    // undoes the DDL as readily as the DML, and the target is exactly as it was.
+    //
+    // The cost is honest and worth naming: the run holds its locks until the
+    // last script commits rather than releasing them step by step, so a long run
+    // blocks other writers for longer than it used to.
     await client.query("BEGIN");
     transactionStarted = true;
-
-    // Serialize concurrent applies of the SAME (schema, script_name, version).
-    // The unique index in step 7c is best-effort (it can fail to create on
-    // legacy tables with duplicate 'unknown' versions), so it cannot be the
-    // ONLY guard against a double-apply race. This transaction-scoped advisory
-    // lock makes the duplicate-check + INSERT below atomic regardless: a second
-    // request for the same key blocks here until the first commits/rolls back,
-    // then sees the committed row and returns a clean 409. Different scripts or
-    // versions hash to different keys, so they never block each other. The lock
-    // is released automatically when the transaction ends.
-    await client.query(
-      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
-      [schemaName, `${script_name.trim()}|${version.trim()}`]
-    );
 
     // Scope unqualified names in the migration SQL to the target schema ONLY.
     // `public` is deliberately NOT on the path: with it, an unqualified DROP/RENAME/
@@ -471,12 +620,6 @@ export async function POST(request: NextRequest) {
       `SET LOCAL search_path TO ${quotedSchema}`
     );
 
-    // Duplicate check scoped to this script family.
-    // Two different script families can legitimately share the same version
-    // number (e.g. users_migration v1.0.0 and products_migration v1.0.0
-    // are completely independent — blocking one because of the other would
-    // be wrong).
-    //
     // A dry run may be rehearsing against a schema that has never been deployed
     // to, where script_patch does not exist yet: a real apply would have created
     // it in step 7 and a dry run deliberately did not. So the dry run asks first
@@ -494,112 +637,161 @@ export async function POST(request: NextRequest) {
       ledgerReady = ledgerProbe.rows[0]?.present === true;
     }
 
-    let alreadyApplied = false;
-    if (ledgerReady) {
-      const duplicateCheck = await client.query<{ id: number }>(
-        `SELECT id
-         FROM ${quotedSchema}.script_patch
-         WHERE script_name = $1
-           AND version     = $2
-         LIMIT 1`,
-        [script_name.trim(), version.trim()]
+    const outcomes: ScriptOutcome[] = [];
+    let lastAppliedAt: string | null = null;
+
+    for (const job of queue) {
+      // Serialize concurrent runs of the SAME (schema, script_name, version).
+      // The unique index in step 7c is best-effort (it can fail to create on
+      // legacy tables with duplicate 'unknown' versions), so it cannot be the
+      // ONLY guard against a double-apply race. This transaction-scoped advisory
+      // lock makes the duplicate-check + INSERT below atomic regardless: a second
+      // request for the same key blocks here until the first commits/rolls back,
+      // then sees the committed row and returns a clean 409. Different scripts or
+      // versions hash to different keys, so they never block each other. The lock
+      // is released automatically when the transaction ends.
+      failedJob = job;
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+        [schemaName, `${job.scriptName}|${job.version}`]
       );
-      alreadyApplied = duplicateCheck.rows.length > 0;
+
+      // Duplicate check scoped to this script family.
+      // Two different script families can legitimately share the same version
+      // number (e.g. users_migration v1.0.0 and products_migration v1.0.0
+      // are completely independent — blocking one because of the other would
+      // be wrong).
+      if (ledgerReady) {
+        const duplicateCheck = await client.query<{ id: number }>(
+          `SELECT id
+           FROM ${quotedSchema}.script_patch
+           WHERE script_name = $1
+             AND version     = $2
+           LIMIT 1`,
+          [job.scriptName, job.version]
+        );
+
+        if (duplicateCheck.rows.length > 0) {
+          // The whole run comes back out. Committing the migrations before this
+          // one and refusing this one would be the partial deploy the single
+          // transaction exists to prevent.
+          await client.query("ROLLBACK");
+          transactionStarted = false;
+          return NextResponse.json(
+            {
+              success: false,
+              dryRun,
+              schema: schemaName,
+              results: rolledBackOutcomes(
+                queue,
+                job,
+                "Already applied to this schema."
+              ),
+              error:
+                `Version ${job.version} of "${job.scriptName}" has already been applied ` +
+                `to schema "${schemaName}". ` +
+                (queue.length > 1
+                  ? "Nothing in this run was applied."
+                  : "Check the script_patch table to confirm."),
+            },
+            { status: 409 }
+          );
+        }
+      }
+
+      // ─── Preconditions passed — run this migration's SQL ─────────────────
+      //
+      // No values array, so this goes over the simple query protocol and
+      // PostgreSQL runs every statement in the string. node-postgres then hands
+      // back one result per statement instead of a single result object, which
+      // is what the statement count below reads.
+      //
+      // A failure here throws to the catch block, which rolls the whole run back
+      // — including every migration already run in this loop.
+      const execution = (await client.query(job.sqlContent)) as unknown as
+        | PgExecResult
+        | PgExecResult[];
+      const statements = Array.isArray(execution) ? execution.length : 1;
+
+      if (dryRun) {
+        outcomes.push({
+          script_name: job.scriptName,
+          version: job.version,
+          status: "rehearsed",
+          statements,
+        });
+        continue;
+      }
+
+      // Record this migration in the audit log.
+      const insertResult = await client.query<{ applied_at: string }>(
+        `INSERT INTO ${quotedSchema}.script_patch
+           (script_name, version, title, description, change_type, source_ref, sql_content)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING applied_at`,
+        [
+          job.scriptName,
+          job.version,
+          job.title,
+          job.description,
+          job.changeType,
+          job.sourceRef,
+          job.sqlContent, // the exact SQL just executed — what version replay re-runs
+        ]
+      );
+      lastAppliedAt = insertResult.rows[0].applied_at;
+
+      outcomes.push({
+        script_name: job.scriptName,
+        version: job.version,
+        status: "applied",
+        statements,
+      });
     }
 
-    if (alreadyApplied) {
-      await client.query("ROLLBACK");
-      transactionStarted = false;
-      return NextResponse.json(
-        {
-          dryRun,
-          error:
-            `Version ${version.trim()} of "${script_name.trim()}" has already been applied ` +
-            `to schema "${schemaName}". Check the script_patch table to confirm.`,
-        },
-        { status: 409 }
-      );
-    }
+    failedJob = null;
 
-    // ─── All preconditions passed — now run the actual migration SQL ──────
+    // ─── 8b. A dry run throws the work away instead of committing it ────────
     //
-    // No values array, so this goes over the simple query protocol and
-    // PostgreSQL runs every statement in the string. node-postgres then hands
-    // back one result per statement instead of a single result object, which is
-    // what the dry-run report below counts.
-    const execution = (await client.query(sql_content)) as unknown as
-      | PgExecResult
-      | PgExecResult[];
-
-    // ─── 8b. A dry run stops here and throws the work away ─────────────────
-    //
-    // Everything above ran against the real target; nothing below it did. The
-    // ROLLBACK undoes the script, the advisory lock is released with the
-    // transaction, and the two steps that would have outlived it — the ledger
-    // INSERT and the lineage advance — are simply never reached.
+    // Everything above ran against the real target; nothing below it does. The
+    // ROLLBACK undoes every script in the run, the advisory locks are released
+    // with the transaction, and the two steps that would have outlived it — the
+    // ledger INSERTs and the lineage advance — are simply never reached.
     if (dryRun) {
       await client.query("ROLLBACK");
       transactionStarted = false;
       client.release();
       clientReleased = true;
 
-      const statements = (Array.isArray(execution) ? execution : [execution]).map(
-        (result) => ({
-          command: result?.command ?? null,
-          rowCount: typeof result?.rowCount === "number" ? result.rowCount : null,
-        })
-      );
-
+      const totalStatements = outcomes.reduce((sum, o) => sum + (o.statements ?? 0), 0);
       return NextResponse.json({
         success: true,
         dryRun: true,
-        version: version.trim(),
+        version: lastJob.version,
         schema: schemaName,
-        statements,
+        results: outcomes,
         // False means script_patch does not exist in this schema yet, so a real
-        // apply would create it and this would be its first row.
+        // apply would create it and this run would write its first rows.
         ledgerReady,
         // A real apply hoists these OUT of the transaction and commits them on
         // their own, because PostgreSQL refuses to let a value added by
         // ALTER TYPE … ADD VALUE be used in the transaction that added it. A dry
         // run cannot do that without leaving the values behind, so it ran them
-        // inline — which is also why a script that USES one of its own new
-        // values fails here and would succeed for real. See the 55P04 branch in
-        // the catch block below.
-        deferredEnumAdditions: extractEnumAddValues(sql_content).length,
+        // inline — which is also why a run that USES one of its own new values
+        // fails here and would succeed for real. See the 55P04 branch below.
+        deferredEnumAdditions: extractEnumAddValues(
+          queue.map((job) => job.sqlContent).join("\n")
+        ).length,
         message:
-          `Dry run of v${version.trim()} completed on schema "${schemaName}" — ` +
-          `${statements.length} statement${statements.length === 1 ? " was" : "s were"} ` +
+          `Dry run of ${describeRun(queue)} completed on schema "${schemaName}" — ` +
+          `${totalStatements} statement${totalStatements === 1 ? " was" : "s were"} ` +
           `run and rolled back. Nothing was written.`,
       });
     }
 
-    // Record this migration in the audit log.
-    // title is VARCHAR(150) — truncate before INSERT to prevent a DB error
-    // from rolling back an otherwise-successful migration.
-    const resolvedTitle = (title?.trim() || version.trim()).slice(0, 150);
-
-    const insertResult = await client.query<{ applied_at: string }>(
-      `INSERT INTO ${quotedSchema}.script_patch
-         (script_name, version, title, description, change_type, source_ref, sql_content)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING applied_at`,
-      [
-        script_name.trim(),
-        version.trim(),
-        resolvedTitle,
-        description?.trim() || null,
-        resolvedChangeType,
-        resolvedSourceRef,
-        sql_content, // the exact SQL just executed — what version replay re-runs
-      ]
-    );
-
-    // Commit — only reaches here if every step above succeeded
+    // Commit — only reaches here if every migration in the run succeeded
     await client.query("COMMIT");
     transactionStarted = false;
-
-    const appliedAt = insertResult.rows[0].applied_at;
 
     // Release the target-pool connection BEFORE the lineage advance below: that
     // step re-introspects the target (drawing its own connection), so holding this
@@ -610,17 +802,24 @@ export async function POST(request: NextRequest) {
     // ─── 9. Advance lineage for TRACKED schemas (issue #12) ──────────────────
     // A sanctioned deploy must update the schema's expected baseline; otherwise
     // the next drift check compares live-vs-stale-snapshot and reports the tool's
-    // own deploy as drift. Strictly best-effort: the migration is already
-    // committed, so a bookkeeping failure here must not fail the response. Skips
-    // itself (no-op) when the schema isn't tracked.
+    // own deploy as drift. Strictly best-effort: the run is already committed, so
+    // a bookkeeping failure here must not fail the response. Skips itself (no-op)
+    // when the schema isn't tracked.
+    //
+    // One advance for the whole run, named after the last migration in it: the
+    // baseline it records is a re-introspection of the target, which already
+    // reflects every script that just committed. Advancing once per script would
+    // write a chain of nodes that all describe the same final state.
     try {
       const lineage = await recordAppliedMigrationToLineage({
         connectionId,
         schemaName,
         targetConfig,
-        changeLevel: resolvedChangeType, // "breaking|additive|patch|unknown" ⊆ ChangeLevel
-        name: `${script_name.trim()} v${version.trim()}`,
-        sqlRef: resolvedSourceRef,
+        // "breaking|additive|patch|unknown" ⊆ ChangeLevel. The loudest level in
+        // the run wins: a run holding one breaking migration is a breaking run.
+        changeLevel: loudestChangeType(queue),
+        name: describeRun(queue),
+        sqlRef: lastJob.sourceRef,
       });
       if (lineage.advanced) {
         console.log(
@@ -630,7 +829,7 @@ export async function POST(request: NextRequest) {
       }
     } catch (lineageError) {
       console.error(
-        "Apply — lineage advance failed (migration already applied, response unaffected):",
+        "Apply — lineage advance failed (run already applied, response unaffected):",
         lineageError
       );
     }
@@ -638,10 +837,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       dryRun: false,
-      version: version.trim(),
-      appliedAt,
+      version: lastJob.version,
+      appliedAt: lastAppliedAt,
       schema: schemaName,
-      message: `Script v${version.trim()} applied successfully to schema "${schemaName}".`,
+      results: outcomes,
+      message:
+        `${describeRun(queue)} applied successfully to schema "${schemaName}".`,
     });
 
   } catch (error) {
@@ -672,13 +873,15 @@ export async function POST(request: NextRequest) {
       dryRun &&
       (pgCode === UNSAFE_NEW_ENUM_VALUE ||
         message.toLowerCase().includes("unsafe use of new value")) &&
-      extractEnumAddValues(sql_content).length > 0
+      extractEnumAddValues(queue.map((job) => job.sqlContent).join("\n")).length > 0
     ) {
       return NextResponse.json(
         {
           success: false,
           dryRun: true,
           dryRunLimitation: true,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, failedJob, message),
           error:
             `Dry run could not rehearse this script: it adds an enum value and then ` +
             `uses it, and PostgreSQL refuses that inside one transaction. A real ` +
@@ -699,19 +902,34 @@ export async function POST(request: NextRequest) {
     // applied".
     const constraint = (error as { constraint?: string }).constraint;
     if (pgCode === "23505" && constraint === "script_patch_name_version_idx") {
+      const raced = failedJob
+        ? `Version ${failedJob.version} of "${failedJob.scriptName}"`
+        : "One of these migrations";
       return NextResponse.json(
         {
           success: false,
+          dryRun,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, failedJob, "Applied by a concurrent request."),
           error:
-            `Version ${version.trim()} of "${script_name.trim()}" was just applied ` +
-            `by a concurrent request. Check the script_patch table to confirm.`,
+            `${raced} was just applied by a concurrent request. ` +
+            (queue.length > 1
+              ? "Nothing in this run was applied. "
+              : "") +
+            `Check the script_patch table to confirm.`,
         },
         { status: 409 }
       );
     }
 
     return NextResponse.json(
-      { success: false, dryRun, error: message },
+      {
+        success: false,
+        dryRun,
+        schema: schemaName,
+        results: rolledBackOutcomes(queue, failedJob, message),
+        error: message,
+      },
       { status: 500 }
     );
 
