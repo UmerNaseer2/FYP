@@ -49,7 +49,15 @@ type ScriptJob = {
 type ScriptOutcome = {
   script_name: string;
   version: string;
-  status: "applied" | "rehearsed" | "failed" | "skipped";
+  /**
+   * "unknown" is the honest answer to exactly one question: the COMMIT itself
+   * threw. Everything else here is something this route watched happen, but a
+   * COMMIT that errors on the client end may still have succeeded on the
+   * server — a dropped connection during the commit looks identical from here
+   * whether the server committed or not. Reporting those rows "skipped" would
+   * be the route asserting something it cannot see.
+   */
+  status: "applied" | "rehearsed" | "failed" | "skipped" | "unknown";
   /** How many statements PostgreSQL ran for it. */
   statements?: number;
   error?: string;
@@ -773,6 +781,10 @@ export async function POST(request: NextRequest) {
   // Whether the run actually committed. Only a commit spends the production
   // approval claimed in step 4c; every other outcome gives it back.
   let runCommitted = false;
+  // Whether COMMIT was issued. Between this going true and runCommitted going
+  // true there is a window where the run's outcome is genuinely unknown to
+  // this process, and the catch block has to say so rather than guess.
+  let commitAttempted = false;
 
   try {
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
@@ -1008,6 +1020,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Commit — only reaches here if every migration in the run succeeded
+    commitAttempted = true;
     await client.query("COMMIT");
     transactionStarted = false;
     // The approval has now been spent on a run that really happened, so the
@@ -1067,6 +1080,16 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
+    // A COMMIT that threw is the one failure this route cannot report on.
+    //
+    // Every other error happened while the transaction was open, so a ROLLBACK
+    // settles it and "nothing was applied" is a fact. Not this one: the server
+    // may have committed and then lost the connection on the way back, in which
+    // case the run IS applied and the ledger has the rows to prove it. From
+    // here the two look the same. Rolling back is still worth attempting below
+    // — it is a no-op if the commit landed — but the answer sent to the screen
+    // has to be "go and look", not a guess in either direction.
+    const commitOutcomeUnknown = commitAttempted && !runCommitted;
     // Only ROLLBACK if we actually issued a BEGIN — otherwise the database
     // is not in a transaction and ROLLBACK would just log a warning.
     if (transactionStarted) {
@@ -1082,6 +1105,31 @@ export async function POST(request: NextRequest) {
       dryRun ? "Apply — dry run failed:" : "Apply — script execution failed:",
       message
     );
+
+    if (commitOutcomeUnknown) {
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          outcomeUnknown: true,
+          schema: schemaName,
+          results: queue.map((job) => ({
+            script_name: job.scriptName,
+            version: job.version,
+            status: "unknown" as const,
+            error: "The commit did not report back.",
+          })),
+          error:
+            `The COMMIT for ${describeRun(queue)} did not report back, so this ` +
+            `run's outcome is not known: PostgreSQL may have committed it and ` +
+            `lost the connection on the way back, or may never have committed ` +
+            `at all. Do not re-run this blindly. Read the script_patch table in ` +
+            `schema "${schemaName}" — a row for v${lastJob.version} means the ` +
+            `run landed and there is nothing left to do. PostgreSQL said: ${message}`,
+        },
+        { status: 500 }
+      );
+    }
 
     // A dry run that tripped over its own enum hoist has to say so, or the
     // reader reasonably concludes the script is broken when it is not. This is
@@ -1185,6 +1233,12 @@ export async function POST(request: NextRequest) {
     // Every exit from here that is not a commit rolled the whole run back, so
     // the approval was not spent. Hand it back rather than making the second
     // person read the same migrations again.
-    if (!runCommitted) await releaseClaimedApproval();
+    //
+    // Except when the COMMIT itself did not report back. The approval may have
+    // been spent on a run that landed, and handing it back would leave a
+    // one-click re-run of migrations that might already be applied sitting
+    // under a screen that has just said it does not know. Keeping it spent
+    // costs the second person one more look and buys a deliberate decision.
+    if (!runCommitted && !commitAttempted) await releaseClaimedApproval();
   }
 }

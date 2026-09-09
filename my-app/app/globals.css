@@ -916,12 +916,19 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .mig-row.failed  .seq-circle { background:var(--break); border-color:var(--break); color:#fff; }
 .mig-row.skipped { opacity:.55; }
 .mig-row.skipped .seq-circle { background:var(--surface-3); border-color:var(--border); color:var(--text-3); }
+/* not known — the commit never reported back. Amber and at full opacity on
+   purpose: a dimmed row reads as "nothing here", and this is the one row on
+   the page that needs the reader to go and look. */
+.mig-row.unknown { background: color-mix(in oklab, var(--drift) 4%, var(--surface));
+                   border-color: color-mix(in oklab, var(--drift) 45%, var(--border)); }
+.mig-row.unknown .seq-circle { background:var(--drift); border-color:var(--drift); color:#fff; }
 
 /* small round status icon at the end of a run row */
 .status-ico { width:18px; height:18px; border-radius:999px; display:grid; place-items:center; flex:none; }
 .status-ico.applied { background:var(--sync); color:#fff; }
 .status-ico.failed  { background:var(--break); color:#fff; }
 .status-ico.skipped { background:var(--surface-3); color:var(--text-3); border:1px solid var(--border); }
+.status-ico.unknown { background:var(--drift); color:#fff; }
 
 /* the SQL a migration row will run — collapsed by default, open for the
    breaking ones, because the checklist asks the reader to attest they read it */

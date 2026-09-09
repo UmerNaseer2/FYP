@@ -121,13 +121,19 @@ type PreflightResult = {
 //
 // "rehearsed" is a dry run's version of "applied": the SQL really executed
 // against the target and then the whole run was rolled back.
+// "unknown" is not a state the run passes through — it is what is left when
+// the answer never arrived: the COMMIT did not report back, or the request
+// itself never completed. Neither "applied" nor "skipped" is a thing this page
+// can claim then, and picking one would send the reader off to do the wrong
+// thing about half the time.
 type RunStatus =
   | "queued"
   | "running"
   | "applied"
   | "rehearsed"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "unknown";
 // `statements` is how many statements PostgreSQL ran for this migration, as the
 // server counted them. There is deliberately no per-migration duration: the run
 // is one request and one transaction, so the only honest timing is the run's.
@@ -137,7 +143,7 @@ type RunCell = { status: RunStatus; error?: string; statements?: number };
 type ApplyOutcome = {
   script_name: string;
   version: string;
-  status: "applied" | "rehearsed" | "failed" | "skipped";
+  status: "applied" | "rehearsed" | "failed" | "skipped" | "unknown";
   statements?: number;
   error?: string;
 };
@@ -149,6 +155,8 @@ type ApplyResponse = {
   message?: string;
   /** Set on a dry run the server could not rehearse — see the 55P04 branch. */
   dryRunLimitation?: boolean;
+  /** Set when the COMMIT did not report back — see the route's catch block. */
+  outcomeUnknown?: boolean;
 };
 
 // ── Phase 6 drift pre-check (lineage) ──────────────────────────────────────
@@ -353,6 +361,16 @@ function RightStatus({ cell }: { cell: RunCell }) {
           <XIcon size={11} />
         </span>
         skipped
+      </span>
+    );
+  }
+  if (cell.status === "unknown") {
+    return (
+      <span className="right-status" style={{ color: "var(--drift)" }}>
+        <span className="status-ico unknown">
+          <AlertTriangleIcon size={11} />
+        </span>
+        not known
       </span>
     );
   }
@@ -1600,9 +1618,15 @@ export default function DeployPage() {
         "Re-check the target before retrying; the run may still have been applied.";
     }
 
-    // Map the server's verdict onto the rows. A migration the server said
-    // nothing about never ran, so it is skipped — including when the whole
-    // request was refused before anything executed.
+    // Map the server's verdict onto the rows.
+    //
+    // Where there is no verdict at all AND the run failed, the row is "not
+    // known" rather than "skipped": the server reporting nothing is not the
+    // server reporting that nothing happened. That is the transport failure
+    // above, and the 502-shaped body the parser could not read — both of which
+    // reach this page from a request that may have run the whole migration.
+    // The banner already says so; the rows used to contradict it.
+    const unreported: RunStatus = outcomes || !failure ? "skipped" : "unknown";
     setRunStatus(() => {
       const next: Record<string, RunCell> = {};
       for (const script of batch) {
@@ -1611,7 +1635,7 @@ export default function DeployPage() {
         );
         next[scriptKey(script)] = outcome
           ? { status: outcome.status, error: outcome.error, statements: outcome.statements }
-          : { status: "skipped" };
+          : { status: unreported };
       }
       return next;
     });
@@ -1662,6 +1686,12 @@ export default function DeployPage() {
     const status = runStatus[scriptKey(s)]?.status;
     return status === "applied" || status === "rehearsed";
   }).length;
+  // "0 of 3 applied" is itself a claim, and on an unknown outcome it is the
+  // wrong one — it reads as "nothing happened", which is the half of the
+  // possibilities the reader must not assume.
+  const runOutcomeUnknown = runScripts.some(
+    (s) => runStatus[scriptKey(s)]?.status === "unknown"
+  );
   const totalStatements = runScripts.reduce(
     (sum, s) => sum + (runStatus[scriptKey(s)]?.statements ?? 0),
     0
@@ -2488,6 +2518,7 @@ export default function DeployPage() {
                 rehearsed: `rehearsed · rolled back with the run${ran}`,
                 failed: `failed · the whole run was rolled back${cell.error ? ` · ${cell.error}` : ""}`,
                 skipped: "skipped · the run rolled back before this one could commit",
+                unknown: "not known · the commit never reported back — read script_patch",
               };
               return (
                 <MigRow
@@ -2506,11 +2537,17 @@ export default function DeployPage() {
 
           <div className="mt-6 flex items-center justify-between text-[12px] flex-wrap gap-2" style={{ color: "var(--text-3)" }}>
             <span>
-              {runProgress} of {runScripts.length} {runIsDryRun ? "rehearsed" : "applied"}
+              {runOutcomeUnknown
+                ? `outcome of ${countOf(runScripts.length, "migration")} not known`
+                : `${runProgress} of ${runScripts.length} ${runIsDryRun ? "rehearsed" : "applied"}`}
               {totalStatements > 0 ? ` · ${fmtStatements(totalStatements)}` : ""} ·{" "}
               <span className="mono">{schema} @ {activeConn?.name}</span>
             </span>
-            <span>one transaction · a failure rolls the whole run back</span>
+            <span>
+              {runOutcomeUnknown
+                ? "one transaction · but nothing here saw how it ended"
+                : "one transaction · a failure rolls the whole run back"}
+            </span>
           </div>
 
           {/* Clean rehearsal — say what it proved, and offer the real thing. */}
