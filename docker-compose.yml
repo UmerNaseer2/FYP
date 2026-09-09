@@ -1,0 +1,69 @@
+# Schema Studio and its metadata database, in two containers.
+#
+#   docker compose up --build
+#   open http://localhost:3000
+#
+# `db` here is the app's OWN store — the saved connections, the lineage and the
+# drift history. It is not a database you compare; those are reached over the
+# network from whatever you register on the Connections screen, and they can be
+# anywhere, including on the host (use host.docker.internal as the hostname).
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
+      POSTGRES_DB: ${POSTGRES_DB:-studio}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Published so you can point psql at it while the stack is running. Drop
+      # this line if you would rather it stayed inside the compose network.
+      - "${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      # The app creates its tables on first use, so it must not start until the
+      # server is actually accepting connections — not merely running.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-studio} -d ${POSTGRES_DB:-studio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ./my-app
+      args:
+        # Inlined into the browser bundle at build time — see the Dockerfile.
+        # Set to "false" and rebuild to require a real sign-in.
+        NEXT_PUBLIC_AUTH_BYPASS: ${NEXT_PUBLIC_AUTH_BYPASS:-true}
+    environment:
+      # The container talks to the database over the compose network, so the
+      # host is the service name and the port is the container's own 5432 —
+      # not whatever it is published as on your machine.
+      DATABASE_URL_A: postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-before-anyone-else-uses-this}
+      # Optional. Set to a 32-byte base64 or hex key to encrypt stored
+      # connection passwords at rest; without it they are stored as typed and
+      # the Connections screen says so.
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      # Optional. Needed only by the Script Editor's push/pull to the GitHub
+      # script registry; the rest of the app works without them.
+      GITHUB_PAT: ${GITHUB_PAT:-}
+      GITHUB_REPO_OWNER: ${GITHUB_REPO_OWNER:-}
+      GITHUB_REPO_NAME: ${GITHUB_REPO_NAME:-}
+      # Optional. Entra ID sign-in; leave unset to run with the bypass.
+      AZURE_AD_CLIENT_ID: ${AZURE_AD_CLIENT_ID:-}
+      AZURE_AD_CLIENT_SECRET: ${AZURE_AD_CLIENT_SECRET:-}
+      AZURE_AD_TENANT_ID: ${AZURE_AD_TENANT_ID:-}
+      # A container reaching a database on the host machine needs a private
+      # address to be allowed. Off by default — see lib/connection-config.ts.
+      ALLOW_PRIVATE_DB_HOSTS: ${ALLOW_PRIVATE_DB_HOSTS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

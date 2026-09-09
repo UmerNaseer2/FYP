@@ -1,0 +1,24 @@
+# Everything the build should not see. Two reasons: a smaller, faster context,
+# and — for the .env rules — making it impossible to bake a local credential
+# into an image by accident.
+.env
+.env.*
+
+node_modules
+.next
+.next-authoff
+out
+build
+
+.git
+.gitignore
+.github
+.claude
+.DS_Store
+
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Local scratch that is never part of a build.
+*.log
