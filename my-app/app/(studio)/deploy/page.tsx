@@ -1873,6 +1873,24 @@ export default function DeployPage() {
                     resetDrift();
                   }}
                 />
+                {/*
+                  This used to be a note beside the Check button, and it required
+                  scriptGroup to be set — which it can never be when the list is
+                  empty, because an empty list is exactly what leaves the picker
+                  on its placeholder. So the one case it was written for was the
+                  one case it never appeared in: the reader opened the picker,
+                  read "No options", and got no explanation of what a script
+                  group is or where one comes from.
+                */}
+                {githubScripts && schema && schemaScriptNames.length === 0 && (
+                  <p className="help mt-1">
+                    No scripts saved for <span className="mono">{schema}</span>{" "}
+                    yet. A script group is one named family of migrations — one
+                    name, many versions — that a schema is carried forward by.
+                    Author one on Compare &amp; Author, or write it by hand in
+                    the Script Editor; it shows up here once it is saved.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1886,9 +1904,6 @@ export default function DeployPage() {
                 {preflightLoading ? <span className="spin" style={{ width: 13, height: 13 }} /> : <RefreshIcon size={13} />}
                 {preflightLoading ? "Checking…" : "Check database"}
               </button>
-              {githubScripts && schema && scriptGroup && schemaScriptNames.length === 0 && (
-                <span className="help">No script groups found in the <span className="mono">{schema}</span> folder on GitHub.</span>
-              )}
             </div>
           </div>
 
