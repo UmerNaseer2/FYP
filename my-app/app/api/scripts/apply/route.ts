@@ -110,7 +110,8 @@ function quoteIdent(name: string): string {
  */
 async function ensureScriptPatchTable(
   client: PoolClient,
-  quotedSchema: string
+  quotedSchema: string,
+  schemaName: string
 ): Promise<void> {
   // 7a. Create the table if it doesn't exist yet.
   //     Includes script_name so fresh installs get the full schema.
@@ -134,7 +135,7 @@ async function ensureScriptPatchTable(
         source_ref  TEXT,
         sql_content TEXT,
         down_sql    TEXT,
-        applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        applied_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
   } catch (setupError) {
@@ -177,6 +178,35 @@ async function ensureScriptPatchTable(
     ALTER TABLE ${quotedSchema}.script_patch
     ADD COLUMN IF NOT EXISTS down_sql TEXT
   `);
+
+  // 7b-5. applied_at used to be TIMESTAMP — a wall clock with the offset
+  //       thrown away. Postgres wrote it by down-casting CURRENT_TIMESTAMP
+  //       through the session's zone, and node-postgres reads a no-zone value
+  //       back as local time in the Node process, so the ledger reported an
+  //       instant that was wrong by however much those two zones differ. On a
+  //       host where both are UTC the two errors cancel, which is why it was
+  //       invisible for so long.
+  //
+  //       No USING clause on purpose: with none, Postgres interprets the stored
+  //       wall clock in the session's zone — the same interpretation that wrote
+  //       it. Naming a zone would silently move every existing row unless it
+  //       happened to match.
+  //
+  //       Guarded by the catalog, not run blindly: ALTER TYPE rewrites the table
+  //       under an ACCESS EXCLUSIVE lock, and this runs at the top of every
+  //       deploy.
+  const appliedAtType = await client.query<{ data_type: string }>(
+    `SELECT data_type FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = 'script_patch'
+        AND column_name = 'applied_at'`,
+    [schemaName]
+  );
+  if (appliedAtType.rows[0]?.data_type === "timestamp without time zone") {
+    await client.query(`
+      ALTER TABLE ${quotedSchema}.script_patch
+      ALTER COLUMN applied_at TYPE TIMESTAMPTZ
+    `);
+  }
 
   // 7c. Add a UNIQUE index so the DB itself enforces one row per
   //     (script_name, version) pair — preventing race-condition duplicates
@@ -754,7 +784,7 @@ export async function POST(request: NextRequest) {
     // once, because a value added by script 1 and used by script 3 has the same
     // problem as one added and used by a single script.
     if (!dryRun) {
-      await ensureScriptPatchTable(client, quotedSchema);
+      await ensureScriptPatchTable(client, quotedSchema, schemaName);
       await addEnumValuesOutsideTransaction(
         client,
         quotedSchema,

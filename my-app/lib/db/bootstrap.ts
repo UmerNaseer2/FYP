@@ -167,8 +167,54 @@ async function backfillOlderTables(): Promise<void> {
 
   // An "expected, I looked at it" marker on a drift event.
   await metadataPool.query(
-    `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMP`
+    `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`
   );
+
+  await alterTimestampColumns();
+}
+
+/**
+ * Six columns that were created as plain TIMESTAMP, moved to TIMESTAMPTZ.
+ *
+ * See the note above the model definitions for why: a no-zone timestamp loses
+ * the offset on the way in and is re-read as local time on the way out, so the
+ * instant a row reports is wrong by whatever the two zones differ by. The models
+ * now declare timestamptz, but `sync()` is CREATE TABLE IF NOT EXISTS and never
+ * alters an existing table — without this, a database that already exists would
+ * keep the old type forever and disagree with a fresh one.
+ *
+ * The conversion has no USING clause on purpose. Postgres reads the stored wall
+ * clock in the session's TimeZone, which is the same interpretation that wrote
+ * it: the values were produced by CURRENT_TIMESTAMP down-cast on this same
+ * server. Naming a zone here would only be right if it happened to match, and
+ * would silently shift every existing row if it did not.
+ *
+ * Guarded by the catalog rather than being blindly re-run: an ALTER TYPE
+ * rewrites the table and takes an ACCESS EXCLUSIVE lock, which is not something
+ * to do on every process boot once the work is done.
+ */
+async function alterTimestampColumns(): Promise<void> {
+  const columns: Array<[table: string, column: string]> = [
+    ["connections", "created_at"],
+    ["tracked_schemas", "created_at"],
+    ["snapshots", "captured_at"],
+    ["lineage_migrations", "created_at"],
+    ["drift_events", "detected_at"],
+    ["drift_events", "acknowledged_at"],
+  ];
+
+  for (const [table, column] of columns) {
+    const found = await metadataPool.query<{ data_type: string }>(
+      `SELECT data_type FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = $1 AND column_name = $2`,
+      [table, column]
+    );
+    if (found.rows[0]?.data_type !== "timestamp without time zone") continue;
+    await metadataPool.query(
+      `ALTER TABLE ${table} ALTER COLUMN ${column} TYPE TIMESTAMPTZ`
+    );
+  }
 }
 
 async function createEverything(): Promise<void> {

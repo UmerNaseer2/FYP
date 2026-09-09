@@ -401,14 +401,34 @@ export async function POST(request: NextRequest) {
           version     VARCHAR(20),
           title       VARCHAR(150),
           change_type VARCHAR(20),
-          applied_at  TIMESTAMP,
-          reverted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          applied_at  TIMESTAMPTZ,
+          reverted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           down_sql    TEXT
         )
       `);
     } catch (setupError) {
       const m = (setupError instanceof Error ? setupError.message : String(setupError)).toLowerCase();
       if (!m.includes("already exists") && !m.includes("duplicate key")) throw setupError;
+    }
+
+    // Both columns were TIMESTAMP in earlier builds — a wall clock with the
+    // offset discarded on write and re-read as local time on the way out, so an
+    // audit table meant to say WHEN something was undone reported an instant
+    // that was wrong by the difference between the database's zone and Node's.
+    // No USING clause: with none, Postgres reads the stored wall clock in the
+    // session's zone, which is the zone that wrote it.
+    const oldTypes = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'script_patch_reverted'
+          AND column_name IN ('applied_at', 'reverted_at')
+          AND data_type = 'timestamp without time zone'`,
+      [schemaName]
+    );
+    for (const { column_name } of oldTypes.rows) {
+      await client.query(
+        `ALTER TABLE ${quotedSchema}.script_patch_reverted
+         ALTER COLUMN ${quoteIdent(column_name)} TYPE TIMESTAMPTZ`
+      );
     }
 
     await client.query(

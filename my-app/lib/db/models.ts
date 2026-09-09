@@ -49,16 +49,22 @@ const NOW = literal("CURRENT_TIMESTAMP");
 const NOW_TZ = literal("now()");
 
 /**
- * A timestamp WITHOUT a time zone.
+ * Every timestamp column below is `DataTypes.DATE`, which Sequelize emits as
+ * TIMESTAMP WITH TIME ZONE on Postgres.
  *
- * `DataTypes.DATE` is timestamptz on Postgres, which is the better column type
- * and is what the newer tables use. The older ones were created as plain
- * TIMESTAMP, and they still hold data; changing the type here would only mean a
- * fresh database and an existing one disagreed about the shape of the same
- * table. So the models record what is actually there, and the split stays
- * visible instead of becoming a surprise.
+ * Six of them used to be plain TIMESTAMP, and a no-zone timestamp is not a
+ * point in time — it is a wall clock with the offset thrown away. Writing one
+ * discards the zone the server happened to be in; reading it back, node-postgres
+ * re-reads that wall clock as LOCAL time in the Node process. With the database
+ * on UTC and Node on UTC+5 every stored time came back five hours early, and
+ * two screens then labelled that wrong instant "UTC". Nothing in the value says
+ * it happened, which is why it survived: on a host where both sides are UTC the
+ * two errors cancel.
+ *
+ * A fresh database and an existing one must not disagree about the same table,
+ * so `alterTimestampColumns` in lib/db/bootstrap.ts converts the older columns
+ * in place. Changing the types here alone would have fixed new installs only.
  */
-const TIMESTAMP = "TIMESTAMP";
 
 // ---------------------------------------------------------------------------
 // Saved database connections.
@@ -109,7 +115,7 @@ Connection.init(
       defaultValue: DEFAULT_ENVIRONMENT,
       validate: { isIn: [ENVIRONMENT_VALUES] },
     },
-    created_at: { type: TIMESTAMP, defaultValue: NOW },
+    created_at: { type: DataTypes.DATE, defaultValue: NOW },
   },
   { sequelize, tableName: "connections" }
 );
@@ -175,7 +181,7 @@ TrackedSchema.init(
       defaultValue: DEFAULT_ENVIRONMENT,
       validate: { isIn: [ENVIRONMENT_VALUES] },
     },
-    created_at: { type: TIMESTAMP, defaultValue: NOW },
+    created_at: { type: DataTypes.DATE, defaultValue: NOW },
   },
   {
     sequelize,
@@ -214,7 +220,7 @@ Snapshot.init(
     snapshot: { type: DataTypes.JSONB, allowNull: false },
     table_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     label: { type: DataTypes.TEXT, allowNull: true },
-    captured_at: { type: TIMESTAMP, defaultValue: NOW },
+    captured_at: { type: DataTypes.DATE, defaultValue: NOW },
   },
   { sequelize, tableName: "snapshots" }
 );
@@ -245,7 +251,7 @@ LineageMigration.init(
     version: { type: DataTypes.TEXT, allowNull: false },
     sql_ref: { type: DataTypes.TEXT, allowNull: true },
     snapshot_id: { type: DataTypes.INTEGER, allowNull: true },
-    created_at: { type: TIMESTAMP, defaultValue: NOW },
+    created_at: { type: DataTypes.DATE, defaultValue: NOW },
   },
   {
     sequelize,
@@ -284,8 +290,8 @@ DriftEvent.init(
     summary: { type: DataTypes.TEXT, allowNull: true },
     detail: { type: DataTypes.JSONB, allowNull: true },
     baseline_snapshot_id: { type: DataTypes.INTEGER, allowNull: true },
-    detected_at: { type: TIMESTAMP, defaultValue: NOW },
-    acknowledged_at: { type: TIMESTAMP, allowNull: true },
+    detected_at: { type: DataTypes.DATE, defaultValue: NOW },
+    acknowledged_at: { type: DataTypes.DATE, allowNull: true },
   },
   { sequelize, tableName: "drift_events" }
 );
