@@ -243,8 +243,8 @@ export default function VersionSyncPage() {
     setPendingApply(entries);
   }
 
-  async function applyOne(
-    e: LedgerEntry,
+  async function applyBatch(
+    entries: LedgerEntry[],
     acknowledgeProduction: boolean,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     try {
@@ -254,50 +254,97 @@ export default function VersionSyncPage() {
         body: JSON.stringify({
           connectionId: Number(target.connectionId),
           schemaName: target.schema,
-          script_name: e.scriptName,
-          version: e.version,
-          sql_content: e.sqlContent ?? "",
-          change_type: e.changeType,
-          source_ref: `version-sync: replayed from ${source.schema}`,
           acknowledgeProduction,
+          scripts: entries.map((e) => ({
+            script_name: e.scriptName,
+            version: e.version,
+            sql_content: e.sqlContent ?? "",
+            change_type: e.changeType,
+            source_ref: `version-sync: replayed from ${source.schema}`,
+          })),
         }),
       });
-      const data = await res.json();
-      return res.ok ? { ok: true } : { ok: false, error: data?.error ?? "Apply failed." };
+      // Read the body as text first: a proxy error or a Next.js error page is
+      // HTML, and letting res.json() throw here would report "could not reach
+      // the server" about a request that reached it.
+      const raw = await res.text();
+      let data: { success?: boolean; error?: string } | null = null;
+      try {
+        data = JSON.parse(raw) as { success?: boolean; error?: string };
+      } catch {
+        data = null;
+      }
+      // `success` as well as the status: the route answers 200 only on success
+      // today, but a caller that reads just the status would silently treat a
+      // future soft-failure shape as applied.
+      if (!res.ok || !data?.success) {
+        return {
+          ok: false,
+          error: data?.error ?? `the apply API answered ${res.status}.`,
+        };
+      }
+      return { ok: true };
     } catch {
       return { ok: false, error: "Could not reach the server." };
     }
   }
 
-  // Replay entries onto the Target in order, each in its own transaction (the
-  // apply route's safety). Stop on the first failure or unreplayable (no-SQL)
-  // entry — earlier successes stay, and the timeline advances as each lands.
+  // Replay entries onto the Target in ONE request, which the apply route runs in
+  // ONE transaction. All of them or none: a replay that failed halfway used to
+  // leave the earlier versions applied and the Target stranded mid-chain, which
+  // is the exact state Version Sync exists to get a schema out of.
+  //
+  // An entry with no stored script cannot be replayed at all, so the run stops
+  // BEFORE it: everything up to that point is sent as one atomic batch and the
+  // gap is reported. Sending the whole list and letting the server discover the
+  // hole would just fail the run.
   async function runEntries(entries: LedgerEntry[], acknowledgeProduction: boolean) {
     // A disabled confirm button is a hint; this is the rule. If the Target is
     // production and nobody ticked the box, nothing runs.
     if (targetIsProduction && !acknowledgeProduction) return;
+
+    const firstGap = entries.findIndex((e) => !e.hasSql);
+    const batch = firstGap === -1 ? entries : entries.slice(0, firstGap);
+    const gap = firstGap === -1 ? null : entries[firstGap];
+
     setApplying(true);
     setApplyError("");
     setApplyDone("");
-    let applied = 0;
-    for (let i = 0; i < entries.length; i += 1) {
-      const e = entries[i];
-      if (!e.hasSql) {
-        setApplyError(`${e.scriptName} v${e.version} has no stored script — stopped after ${applied}.`);
-        break;
-      }
-      setProgress(`Applying ${e.scriptName} v${e.version}…${entries.length > 1 ? ` (${i + 1}/${entries.length})` : ""}`);
-      const r = await applyOne(e, acknowledgeProduction);
-      if (!r.ok) {
-        setApplyError(`Failed at ${e.scriptName} v${e.version}: ${r.error}`);
-        break;
-      }
-      applied += 1;
-      target.appendEntry({ ...e, appliedAt: new Date().toISOString() });
+
+    if (batch.length === 0) {
+      setApplyError(
+        `${gap?.scriptName} v${gap?.version} has no stored script, so there is ` +
+        `nothing that can be replayed.`
+      );
+      setApplying(false);
+      return;
     }
+
+    setProgress(
+      batch.length === 1
+        ? `Applying ${batch[0].scriptName} v${batch[0].version}…`
+        : `Applying ${batch.length} versions in one transaction…`
+    );
+
+    const result = await applyBatch(batch, acknowledgeProduction);
     setProgress("");
     setApplying(false);
-    if (applied > 0) setApplyDone(`Applied ${applied} script${applied === 1 ? "" : "s"} to ${target.schema}.`);
+
+    if (!result.ok) {
+      setApplyError(
+        `Replay failed: ${result.error} Nothing was applied — the transaction rolled back.`
+      );
+      return;
+    }
+
+    const appliedAt = new Date().toISOString();
+    for (const e of batch) target.appendEntry({ ...e, appliedAt });
+    setApplyDone(
+      `Applied ${batch.length} script${batch.length === 1 ? "" : "s"} to ${target.schema}.` +
+      (gap
+        ? ` Stopped before ${gap.scriptName} v${gap.version}, which has no stored script.`
+        : "")
+    );
   }
 
   // Clear any apply feedback when the Source/Target selection changes, so a

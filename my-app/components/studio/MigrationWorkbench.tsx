@@ -166,7 +166,7 @@ export function MigrationWorkbench({
   const activeManualCount = showingDown ? rollbackManualCount : manualCount;
 
   const edited = activeSql !== activeInitial;
-  // Deploy wraps each script in its own transaction, so manual BEGIN/COMMIT/
+  // Deploy wraps the whole run in one transaction, so manual BEGIN/COMMIT/
   // ROLLBACK would conflict. Same guard the apply route uses, so the two can
   // never disagree — and it ignores comments, which matters here because the
   // down script's own header contains the word ROLLBACK.
@@ -424,8 +424,8 @@ export function MigrationWorkbench({
                       <AlertTriangleIcon size={14} />
                     </span>
                     <div>
-                      <b>Transaction control isn&apos;t allowed.</b> Deploy wraps each
-                      migration in its own transaction. Remove <span className="mono">BEGIN</span>{" "}
+                      <b>Transaction control isn&apos;t allowed.</b> Deploy wraps the whole
+                      run in one transaction. Remove <span className="mono">BEGIN</span>{" "}
                       / <span className="mono">COMMIT</span> / <span className="mono">ROLLBACK</span>{" "}
                       before deploying.
                     </div>

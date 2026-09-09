@@ -11,6 +11,7 @@ import {
   DriftIcon,
   InfoIcon,
   ChevronRightIcon,
+  EyeIcon,
   LogoIcon,
 } from "@/components/ui/icons";
 import {
@@ -39,9 +40,10 @@ import {
 //     tells us the current version + applied history.
 //   • pendingScripts = GitHub scripts for (schema, group) whose semver is
 //     greater than the target's current version.
-//   • /api/scripts/apply runs ONE migration inside its own transaction.
-//     We drive it sequentially, stopping on the first failure (earlier steps
-//     stay applied — each is its own committed transaction).
+//   • /api/scripts/apply takes the WHOLE batch in one request and runs it in
+//     one transaction. All of them or none of them — a failure anywhere rolls
+//     the run back, so there is no partial deploy to unwind by hand. The same
+//     call with dryRun rehearses the batch and always ends in ROLLBACK.
 //
 // Honest-stub rule ("stub, don't fake"): two pieces depend on schema snapshots
 // that don't exist until a later phase, so they are shown clearly stubbed and
@@ -101,8 +103,38 @@ type PreflightResult = {
 };
 
 // Live status of a single migration during a run.
-type RunStatus = "queued" | "running" | "applied" | "failed" | "skipped";
-type RunCell = { status: RunStatus; error?: string; ms?: number };
+//
+// "rehearsed" is a dry run's version of "applied": the SQL really executed
+// against the target and then the whole run was rolled back.
+type RunStatus =
+  | "queued"
+  | "running"
+  | "applied"
+  | "rehearsed"
+  | "failed"
+  | "skipped";
+// `statements` is how many statements PostgreSQL ran for this migration, as the
+// server counted them. There is deliberately no per-migration duration: the run
+// is one request and one transaction, so the only honest timing is the run's.
+type RunCell = { status: RunStatus; error?: string; statements?: number };
+
+// What POST /api/scripts/apply reports for one migration in the run.
+type ApplyOutcome = {
+  script_name: string;
+  version: string;
+  status: "applied" | "rehearsed" | "failed" | "skipped";
+  statements?: number;
+  error?: string;
+};
+// The parts of the apply response this page reads.
+type ApplyResponse = {
+  success?: boolean;
+  error?: string;
+  results?: ApplyOutcome[];
+  message?: string;
+  /** Set on a dry run the server could not rehearse — see the 55P04 branch. */
+  dryRunLimitation?: boolean;
+};
 
 // ── Phase 6 drift pre-check (lineage) ──────────────────────────────────────
 // The bits we use from POST /api/lineage/drift. The deploy page shows the
@@ -173,6 +205,11 @@ function bumpWord(kind: ChangeKind): "major" | "minor" | "patch" {
 // The COMMIT/ROLLBACK pre-flight check uses the SAME helper as the server apply
 // route (lib/sql-guard), so the advisory warning here can never disagree with
 // what the route actually rejects — including the dollar-quoted-body handling.
+
+// "1 statement" / "4 statements" — the count PostgreSQL reported for one script.
+function fmtStatements(n: number): string {
+  return `${n} statement${n === 1 ? "" : "s"}`;
+}
 
 function fmtSecs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
@@ -249,13 +286,14 @@ function RightStatus({ cell }: { cell: RunCell }) {
       </span>
     );
   }
-  if (cell.status === "applied") {
+  if (cell.status === "applied" || cell.status === "rehearsed") {
     return (
       <span className="right-status" style={{ color: "var(--sync)" }}>
         <span className="status-ico applied">
           <CheckIcon size={11} />
         </span>
-        applied{cell.ms !== undefined ? ` · ${fmtSecs(cell.ms)}` : ""}
+        {cell.status}
+        {cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : ""}
       </span>
     );
   }
@@ -429,8 +467,14 @@ export default function DeployPage() {
   const [runStatus, setRunStatus] = useState<Record<string, RunCell>>({});
   const [runComplete, setRunComplete] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
+  // True while the run on screen is a rehearsal. Kept separate from the button
+  // that started it so the whole stage-2 view can say so, including after it
+  // finishes and the button is no longer in the picture.
+  const [runIsDryRun, setRunIsDryRun] = useState(false);
+  // A failure that belongs to the run rather than to any one migration — a
+  // rejected request, an unreadable response, a connection that never landed.
+  const [runError, setRunError] = useState<string | null>(null);
 
-  const stopRef = useRef(false);
   const timerRef = useRef<number | null>(null);
   const runStartRef = useRef(0);
 
@@ -641,6 +685,14 @@ export default function DeployPage() {
   }, [scriptsUpToTarget]);
   const txnViolationScripts = scriptsUpToTarget.filter((s) => containsTransactionControl(s.sql_content));
   const hasTxnViolation = txnViolationScripts.length > 0;
+  // What stops a run starting at all. Deploy and Dry run share it: a rehearsal
+  // writes nothing but still executes every statement against the real target,
+  // so the same preconditions apply to both.
+  const runBlocked =
+    scriptsUpToTarget.length === 0 ||
+    hasTxnViolation ||
+    isDeploying ||
+    (targetIsProduction && !deployAcknowledged);
 
   // ── Data loaders ─────────────────────────────────────────────────────────
   async function handlePull() {
@@ -822,7 +874,6 @@ export default function DeployPage() {
   }
 
   function resetRun() {
-    stopRef.current = false;
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -831,25 +882,37 @@ export default function DeployPage() {
     setRunScripts([]);
     setRunStatus({});
     setRunComplete(false);
+    setRunError(null);
+    setRunIsDryRun(false);
     setElapsedMs(0);
   }
 
   // ── The deploy run ───────────────────────────────────────────────────────
-  // Drives /api/scripts/apply once per migration, in ascending order. Each call
-  // is its own transaction on the server, so a failure stops the run with every
-  // earlier step already committed and every later step left untouched.
-  async function handleDeploy() {
+  // One call to /api/scripts/apply carrying the whole batch. The server runs
+  // every migration inside ONE transaction, so the run is all-or-nothing: there
+  // is no state where some of these are applied and the rest are not, and there
+  // is nothing to "stop" partway — by the time a failure is visible here, the
+  // database has already put itself back.
+  //
+  // `dryRun` rehearses instead: the SQL really executes against the target and
+  // the transaction ends in ROLLBACK. Later scripts see the earlier ones' work,
+  // which is why the rehearsal has to be one request too.
+  async function handleRun(dryRun: boolean) {
     const batch = scriptsUpToTarget;
     if (batch.length === 0 || isDeploying) return;
     if (targetIsProduction && !deployAcknowledged) return;
 
     setRunScripts(batch);
+    setRunIsDryRun(dryRun);
+    setRunError(null);
+    // Every migration goes to "running" at once because they really do run
+    // together. Ticking them off one at a time would be a story about a loop
+    // that no longer exists.
     setRunStatus(
-      Object.fromEntries(batch.map((s) => [scriptKey(s), { status: "queued" } as RunCell]))
+      Object.fromEntries(batch.map((s) => [scriptKey(s), { status: "running" } as RunCell]))
     );
     setRunComplete(false);
     setIsDeploying(true);
-    stopRef.current = false;
     setStage(2);
 
     runStartRef.current = performance.now();
@@ -858,106 +921,119 @@ export default function DeployPage() {
       setElapsedMs(performance.now() - runStartRef.current);
     }, 100);
 
-    let anyFailed = false;
-    let stopped = false;
+    let outcomes: ApplyOutcome[] | null = null;
+    let failure: string | null = null;
 
-    for (const script of batch) {
-      const key = scriptKey(script);
-      if (stopRef.current) {
-        stopped = true;
-        break;
-      }
-      setRunStatus((prev) => ({ ...prev, [key]: { status: "running" } }));
-      const startedAt = performance.now();
-      try {
-        const res = await fetch("/api/scripts/apply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            connectionId: Number(connectionId),
-            schemaName: schema || "public",
+    try {
+      const res = await fetch("/api/scripts/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionId: Number(connectionId),
+          schemaName: schema || "public",
+          dryRun,
+          acknowledgeProduction: deployAcknowledged,
+          scripts: batch.map((script) => ({
             script_name: script.script_name,
             sql_content: script.sql_content,
             version: script.version,
             title: script.script_name,
-            description: undefined,
             change_type: inferChangeKind(script.sql_content),
             // Link the applied row back to the GitHub file it came from.
             source_ref: script.path,
-            acknowledgeProduction: deployAcknowledged,
-          }),
-        });
-        const data = (await res.json()) as { success?: boolean; error?: string };
-        const ms = performance.now() - startedAt;
-        if (!res.ok || !data.success) {
-          setRunStatus((prev) => ({
-            ...prev,
-            [key]: { status: "failed", error: data.error ?? "Unknown error from apply API.", ms },
-          }));
-          anyFailed = true;
-          break;
-        }
-        setRunStatus((prev) => ({ ...prev, [key]: { status: "applied", ms } }));
+          })),
+        }),
+      });
+
+      // Read the body as text and parse it separately. A proxy 502 or a Next.js
+      // error page is HTML, and letting res.json() throw inside this try would
+      // drop into the catch below and report "could not reach the server" about
+      // a request that reached it — and, before the run became one transaction,
+      // may well have committed something.
+      const raw = await res.text();
+      let data: ApplyResponse | null = null;
+      try {
+        data = JSON.parse(raw) as ApplyResponse;
       } catch {
-        const ms = performance.now() - startedAt;
-        setRunStatus((prev) => ({
-          ...prev,
-          [key]: { status: "failed", error: "Network error — could not reach /api/scripts/apply.", ms },
-        }));
-        anyFailed = true;
-        break;
+        data = null;
       }
+
+      if (data?.results) outcomes = data.results;
+      if (!res.ok || !data?.success) {
+        failure =
+          data?.error ??
+          `The apply API answered ${res.status} with a response this page could ` +
+          `not read. Re-check the target before retrying.`;
+      }
+    } catch {
+      // A genuine transport failure: the request may or may not have reached the
+      // server, so this must not claim nothing happened.
+      failure =
+        "Could not reach /api/scripts/apply — the request never completed. " +
+        "Re-check the target before retrying; the run may still have been applied.";
     }
 
-    // Anything still queued after a stop/failure becomes "skipped".
-    if (anyFailed || stopped) {
-      setRunStatus((prev) => {
-        const next = { ...prev };
-        for (const k of Object.keys(next)) {
-          if (next[k].status === "queued") next[k] = { status: "skipped" };
-        }
-        return next;
-      });
-    }
+    // Map the server's verdict onto the rows. A migration the server said
+    // nothing about never ran, so it is skipped — including when the whole
+    // request was refused before anything executed.
+    setRunStatus(() => {
+      const next: Record<string, RunCell> = {};
+      for (const script of batch) {
+        const outcome = outcomes?.find(
+          (o) => o.script_name === script.script_name && o.version === script.version
+        );
+        next[scriptKey(script)] = outcome
+          ? { status: outcome.status, error: outcome.error, statements: outcome.statements }
+          : { status: "skipped" };
+      }
+      return next;
+    });
+    setRunError(failure);
 
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    setElapsedMs(performance.now() - runStartRef.current);
     setIsDeploying(false);
     setRunComplete(true);
 
-    // Always re-read the ledger so the current version reflects what truly got
-    // applied — whether the run finished, was stopped, or failed partway.
+    // Always re-read the ledger so the current version reflects what is really
+    // applied — a dry run should leave it exactly where it was, and this is what
+    // proves that on screen rather than asserting it.
     await runPreflightCheck(connectionId, schema, scriptGroup);
     // Re-run the drift check so the Verify step reflects the post-deploy state.
     void runDriftCheck(connectionId, schema);
 
-    if (!anyFailed && !stopped) {
+    if (failure) {
+      showToast(dryRun ? "Dry run failed — nothing was written" : "Deploy failed — nothing was applied");
+    } else if (dryRun) {
+      showToast(`Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed`);
+    } else {
       setStage(3);
       showToast(`Deploy complete · up to v${targetVersion}`);
-    } else if (stopped) {
-      showToast("Stopped — earlier steps stay applied");
-    } else {
-      showToast("Deploy halted — a migration failed");
     }
-  }
-
-  function requestStop() {
-    stopRef.current = true;
-    showToast("Stopping after the current step…");
   }
 
   // ── Stepper helpers ──────────────────────────────────────────────────────
   const appliedScripts = runScripts.filter(
     (s) => runStatus[scriptKey(s)]?.status === "applied"
   );
+  // A clean run: every migration came back applied, or — for a rehearsal —
+  // every one came back rehearsed. Only the first unlocks Verify, because only
+  // the first left anything behind to verify.
   const allApplied =
     runScripts.length > 0 &&
     runScripts.every((s) => runStatus[scriptKey(s)]?.status === "applied");
-  const runProgress = appliedScripts.length;
-  const totalAppliedMs = appliedScripts.reduce(
-    (sum, s) => sum + (runStatus[scriptKey(s)]?.ms ?? 0),
+  const allRehearsed =
+    runScripts.length > 0 &&
+    runScripts.every((s) => runStatus[scriptKey(s)]?.status === "rehearsed");
+  const runProgress = runScripts.filter((s) => {
+    const status = runStatus[scriptKey(s)]?.status;
+    return status === "applied" || status === "rehearsed";
+  }).length;
+  const totalStatements = runScripts.reduce(
+    (sum, s) => sum + (runStatus[scriptKey(s)]?.statements ?? 0),
     0
   );
 
@@ -978,7 +1054,7 @@ export default function DeployPage() {
 
   const STEPS: { n: 1 | 2 | 3; name: string; sub: string }[] = [
     { n: 1, name: "Pre-flight", sub: "checks · pending list" },
-    { n: 2, name: "Run", sub: "transactional · one at a time" },
+    { n: 2, name: "Run", sub: "one transaction · all or nothing" },
     { n: 3, name: "Verify", sub: "ledger re-read" },
   ];
 
@@ -995,8 +1071,8 @@ export default function DeployPage() {
           Bring the database up to a version.
         </h1>
         <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-          Each migration runs in its own transaction. Pick a target connection, schema, and
-          script group, then apply pending migrations one at a time.
+          Pick a target connection, schema and script group, then rehearse or apply the
+          pending migrations. The whole run goes in one transaction — all of them or none.
         </p>
         {pullError && (
           <div className="banner mt-3">
@@ -1411,7 +1487,7 @@ export default function DeployPage() {
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Bump</span><span>{bumps}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Lines of SQL</span><span className="mono">{linesOfSql}</span></div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>txn-per-step</span></div>
+                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>one transaction</span></div>
                       </div>
 
                       {targetIsProduction && (
@@ -1427,24 +1503,31 @@ export default function DeployPage() {
                       <button
                         type="button"
                         className={`btn btn-lg w-full mt-5 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                        disabled={
-                          scriptsUpToTarget.length === 0 ||
-                          hasTxnViolation ||
-                          isDeploying ||
-                          (targetIsProduction && !deployAcknowledged)
-                        }
-                        onClick={handleDeploy}
+                        disabled={runBlocked}
+                        onClick={() => handleRun(false)}
                       >
                         <DeployIcon size={14} />
                         Deploy {scriptsUpToTarget.length} migration{scriptsUpToTarget.length === 1 ? "" : "s"}
                         {targetIsProduction ? " to production" : ""}
+                      </button>
+                      {/* A rehearsal writes nothing, but it really runs the SQL —
+                          including any statement that takes a heavy lock — so it
+                          sits behind the same production confirmation. */}
+                      <button
+                        type="button"
+                        className="btn btn-secondary w-full mt-2"
+                        disabled={runBlocked}
+                        onClick={() => handleRun(true)}
+                      >
+                        <EyeIcon size={14} />
+                        Dry run — execute and roll back
                       </button>
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
                         {hasTxnViolation
                           ? "Resolve the transaction-control issue below first"
                           : targetIsProduction && !deployAcknowledged
                             ? "Tick the box above to enable this"
-                            : "Each step commits before the next begins"}
+                            : "All migrations run in one transaction — all of them or none"}
                       </div>
                     </div>
 
@@ -1527,34 +1610,65 @@ export default function DeployPage() {
             <DeployIcon size={18} />
             <div className="flex-1 min-w-0">
               <div className="text-[14px] font-semibold">
-                {isDeploying ? "Applying migrations…" : runComplete && allApplied ? "Run finished" : "Run halted"}
+                {isDeploying
+                  ? runIsDryRun
+                    ? "Rehearsing migrations…"
+                    : "Applying migrations…"
+                  : allApplied
+                    ? "Run finished"
+                    : allRehearsed
+                      ? "Dry run finished — nothing was written"
+                      : runIsDryRun
+                        ? "Dry run halted"
+                        : "Run halted — nothing was applied"}
               </div>
               <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                Each migration runs in its own transaction. A failure stops the run and rolls that step back.
+                {runIsDryRun
+                  ? "Every migration really runs against the target, inside one transaction that always ends in ROLLBACK."
+                  : "Every migration runs inside one transaction. A failure rolls the whole run back — all of them or none."}
               </div>
             </div>
             <div className="flex items-center gap-2">
               {/* Which database this is landing on, while it is landing. */}
               <EnvironmentPill environment={targetEnvironment} />
-              <span className="mono text-[12.5px]" style={{ color: "var(--text-3)" }}>elapsed {fmtSecs(elapsedMs)}</span>
-              {isDeploying && (
-                <button type="button" className="btn btn-secondary btn-sm" onClick={requestStop}>
-                  Stop
-                </button>
+              {runIsDryRun && (
+                <span className="pill pill-neutral">
+                  <span className="dot" style={{ background: "var(--text-3)" }} />
+                  dry run
+                </span>
               )}
+              <span className="mono text-[12.5px]" style={{ color: "var(--text-3)" }}>elapsed {fmtSecs(elapsedMs)}</span>
             </div>
           </div>
+
+          {/* A failure that belongs to the run, not to any one migration. */}
+          {runError && (
+            <div
+              className="card p-4 mb-5 flex items-start gap-3"
+              style={{
+                borderColor: "color-mix(in oklab, var(--break) 40%, var(--border))",
+                background: "color-mix(in oklab, var(--break) 5%, var(--surface))",
+              }}
+            >
+              <AlertTriangleIcon size={16} />
+              <div className="text-[12.5px] min-w-0" style={{ color: "var(--text-2)" }}>
+                {runError}
+              </div>
+            </div>
+          )}
 
           <div>
             {runScripts.map((script, i) => {
               const kind = inferChangeKind(script.sql_content);
               const cell = runStatus[scriptKey(script)] ?? { status: "queued" };
+              const ran = cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : "";
               const subByStatus: Record<RunStatus, string> = {
                 queued: "queued · waiting",
-                running: "running · in its own transaction",
-                applied: `applied · txn committed${cell.ms !== undefined ? ` · ${fmtSecs(cell.ms)}` : ""}`,
-                failed: "failed · txn rolled back · earlier steps stay applied",
-                skipped: "skipped · run stopped before this step",
+                running: "running · in the run's transaction",
+                applied: `applied · committed with the run${ran}`,
+                rehearsed: `rehearsed · rolled back with the run${ran}`,
+                failed: `failed · the whole run was rolled back${cell.error ? ` · ${cell.error}` : ""}`,
+                skipped: "skipped · the run rolled back before this one could commit",
               };
               return (
                 <MigRow
@@ -1572,14 +1686,52 @@ export default function DeployPage() {
 
           <div className="mt-6 flex items-center justify-between text-[12px] flex-wrap gap-2" style={{ color: "var(--text-3)" }}>
             <span>
-              {runProgress} of {runScripts.length} applied ·{" "}
+              {runProgress} of {runScripts.length} {runIsDryRun ? "rehearsed" : "applied"}
+              {totalStatements > 0 ? ` · ${fmtStatements(totalStatements)}` : ""} ·{" "}
               <span className="mono">{schema} @ {activeConn?.name}</span>
             </span>
-            <span>txn rollback on failure · earlier steps stay applied</span>
+            <span>one transaction · a failure rolls the whole run back</span>
           </div>
 
-          {/* Recovery bar — only after a stop/failure */}
-          {runComplete && !allApplied && (
+          {/* Clean rehearsal — say what it proved, and offer the real thing. */}
+          {runComplete && allRehearsed && (
+            <div
+              className="card p-4 mt-4 flex items-center gap-3 flex-wrap"
+              style={{
+                borderColor: "color-mix(in oklab, var(--sync) 40%, var(--border))",
+                background: "color-mix(in oklab, var(--sync) 5%, var(--surface))",
+              }}
+            >
+              <CheckIcon size={16} />
+              <div className="flex-1 min-w-0">
+                <div className="text-[13.5px] font-semibold">
+                  Rehearsal clean — the target accepted every migration.
+                </div>
+                <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
+                  Then it was rolled back: no ledger rows, no lineage advance, no schema
+                  change. The ledger has been re-read and still reads{" "}
+                  <span className="mono">
+                    {preflightResult?.currentVersion ? `v${preflightResult.currentVersion}` : "no versions yet"}
+                  </span>.
+                </div>
+              </div>
+              <button
+                type="button"
+                className={`btn btn-sm ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                disabled={runBlocked}
+                onClick={() => handleRun(false)}
+              >
+                <DeployIcon size={13} />
+                Deploy for real
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setStage(1)}>
+                Back to Pre-flight
+              </button>
+            </div>
+          )}
+
+          {/* Recovery bar — only after a failed run */}
+          {runComplete && !allApplied && !allRehearsed && (
             <div
               className="card p-4 mt-4 flex items-center gap-3 flex-wrap"
               style={{
@@ -1591,17 +1743,18 @@ export default function DeployPage() {
               <div className="flex-1 min-w-0">
                 <div className="text-[13.5px] font-semibold">Run did not complete.</div>
                 <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
-                  Applied steps stay committed · the failed/stopped step was rolled back · later steps were skipped.
+                  The transaction rolled back, so the target is exactly as it was — including
+                  the migrations listed above the failure. Fix the script and run it again.
                   The ledger has been re-read.
                 </div>
               </div>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                disabled={isDeploying || scriptsUpToTarget.length === 0}
-                onClick={handleDeploy}
+                disabled={runBlocked}
+                onClick={() => handleRun(runIsDryRun)}
               >
-                Retry remaining
+                {runIsDryRun ? "Rehearse again" : "Run again"}
               </button>
               <button type="button" className="btn btn-primary btn-sm" onClick={() => setStage(1)}>
                 Back to Pre-flight
@@ -1641,7 +1794,7 @@ export default function DeployPage() {
                   <ChevronRightIcon size={16} />
                   <span className="vchip ok"><b>v{targetVersion}</b></span>
                   <span className="text-[12px] ml-2" style={{ color: "var(--text-3)" }}>
-                    {fmtSecs(totalAppliedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} · 0 errors
+                    {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
                   </span>
                 </div>
                 <div className="flex gap-2 mt-5 flex-wrap">
@@ -1668,7 +1821,7 @@ export default function DeployPage() {
                     </span>
                     <span className="pill pill-sync">
                       <span className="dot" />
-                      applied · {fmtSecs(runStatus[scriptKey(s)]?.ms ?? 0)}
+                      applied · {fmtStatements(runStatus[scriptKey(s)]?.statements ?? 0)}
                     </span>
                   </div>
                 ))}
