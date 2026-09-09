@@ -689,7 +689,13 @@ export default function ScriptEditorPage() {
                 </div>
               </>
             ) : (
-              <p className="help">Pick a schema and a script family to set the version.</p>
+              // The Save button lives inside this card, so until a family is
+              // picked the page has no visible way to finish — say where it
+              // will appear rather than leaving the reader hunting for it.
+              <p className="help">
+                Pick a schema and a script family above. The version and the Save button
+                appear here once they are set.
+              </p>
             )}
 
             {saveResult && (

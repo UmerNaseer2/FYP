@@ -417,7 +417,8 @@ export default function VersionSyncPage() {
         <p className="text-[13.5px] mt-1.5 max-w-[68ch]" style={{ color: "var(--text-2)" }}>
           Replay the actual scripts already applied to an ahead schema onto a behind one, version by
           version — preserving the lineage (unlike a structural compare, which jumps straight to the
-          end state). Pick a <b>Source</b> (ahead) and a <b>Target</b> (behind) to see what&apos;s missing.
+          end state). Pick a <b>Source</b> (ahead) and a <b>Target</b>{" "}
+          (behind) to see what&apos;s missing.
         </p>
       </div>
 

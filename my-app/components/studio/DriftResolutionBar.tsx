@@ -121,8 +121,9 @@ export function DriftResolutionBar({
         description={
           <>
             This captures the live structure as a new lineage snapshot and marks the schema in
-            sync. It does <b>not</b> revert anything — you&apos;re accepting the current structure
-            as the new expected baseline.
+            sync. It does <b>not</b>{" "}
+            revert anything — you&apos;re accepting the current structure as the
+            new expected baseline.
           </>
         }
         confirmLabel="Re-baseline"

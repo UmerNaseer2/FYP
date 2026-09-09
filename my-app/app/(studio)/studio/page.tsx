@@ -662,8 +662,9 @@ export default function DashboardPage() {
         title="Stop tracking this schema?"
         description={
           <>
-            <span className="mono">{untrackTarget?.schemaName}</span> and its captured snapshots,
-            lineage, and drift history will be removed. This can&apos;t be undone.
+            <span className="mono">{untrackTarget?.schemaName}</span>{" "}
+            and its captured snapshots, lineage, and drift history will be
+            removed. This can&apos;t be undone.
             {untrackTarget && isProduction(toEnvironment(untrackTarget.environment)) && (
               <span className="block mt-2" style={{ color: "var(--break)" }}>
                 This schema is labelled production. Untracking leaves the live database
