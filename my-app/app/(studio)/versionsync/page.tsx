@@ -264,6 +264,9 @@ export default function VersionSyncPage() {
             script_name: e.scriptName,
             version: e.version,
             sql_content: e.sqlContent ?? "",
+            // Carried across so the replayed version is revertable on the
+            // Target too, not just on the Source it came from.
+            down_sql: e.downSql ?? undefined,
             change_type: e.changeType,
             source_ref: `version-sync: replayed from ${source.schema}`,
           })),

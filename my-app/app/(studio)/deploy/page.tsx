@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DeployIcon,
   RefreshIcon,
@@ -97,6 +97,8 @@ type PatchEntry = {
   title: string | null;
   change_type: string;
   applied_at: string;
+  /** Whether the ledger row kept its own rollback. Optional: an older API. */
+  has_down_sql?: boolean;
 };
 
 // What /api/scripts/preflight returns.
@@ -958,6 +960,27 @@ export default function DeployPage() {
     return map;
   }, [groupedScripts, scriptGroup, schema]);
 
+  // Versions whose ledger row carries its own rollback. This is the second
+  // source: a version replayed here by Version Sync has no registry file for
+  // this schema, so scriptByVersion cannot reach it, but the apply route stored
+  // its down script on the row.
+  const storedRollbackVersions = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of preflightResult?.timeline ?? []) {
+      if (row.has_down_sql) set.add(row.version);
+    }
+    return set;
+  }, [preflightResult]);
+
+  // Can this version be rolled back at all — from a registry file, or from the
+  // copy stored beside the applied row?
+  const canRollBack = useCallback(
+    (version: string) =>
+      Boolean(scriptByVersion.get(version)?.down_sql) ||
+      storedRollbackVersions.has(version),
+    [scriptByVersion, storedRollbackVersions]
+  );
+
   // Close a stale confirmation panel when the user changes what they're looking
   // at — a "Roll back v2.0.0" prompt must not survive a switch to another
   // schema or script family.
@@ -1200,8 +1223,10 @@ export default function DeployPage() {
   // real checking (is it applied, is it the newest); this only refuses to send
   // a request it already knows is incomplete.
   async function handleRevert(version: string) {
+    // The registry file when there is one. When there is not, this is left out
+    // of the request and the server runs the copy stored on the ledger row.
     const downSql = scriptByVersion.get(version)?.down_sql;
-    if (!connectionId || !scriptGroup || !downSql) return;
+    if (!connectionId || !scriptGroup || !canRollBack(version)) return;
     // The disabled button already says this, but a disabled button is a hint,
     // not a rule — this is the rule.
     if (targetIsProduction && !revertAcknowledged) return;
@@ -1818,7 +1843,12 @@ export default function DeployPage() {
                       // see the newestApplied comment above for why.
                       const canOfferRevert =
                         entry.status === "applied" && entry.version === newestApplied;
-                      const downSql = scriptByVersion.get(entry.version)?.down_sql ?? null;
+                      const hasRollback = canRollBack(entry.version);
+                      // Only a registry file can be shown here. A rollback that
+                      // lives on the ledger row is run by the server and never
+                      // travels to the browser.
+                      const registryDownSql =
+                        scriptByVersion.get(entry.version)?.down_sql ?? null;
                       const confirming = revertVersion === entry.version;
                       return (
                         <div
@@ -1827,7 +1857,22 @@ export default function DeployPage() {
                           style={{ borderTop: "1px solid var(--border)" }}
                         >
                           <div className="flex items-center justify-between gap-3">
-                            <span className="mono text-[13px]">v{entry.version}</span>
+                            <span className="mono text-[13px]">
+                              v{entry.version}
+                              {!entry.inRegistry && (
+                                <span
+                                  className="ml-2 text-[11px]"
+                                  style={{ color: "var(--text-3)" }}
+                                  title={
+                                    `v${entry.version} is applied to this schema but has no ` +
+                                    `file in the GitHub registry for it — it was applied ` +
+                                    `directly, or replayed here by Version Sync.`
+                                  }
+                                >
+                                  not in registry
+                                </span>
+                              )}
+                            </span>
                             <div className="flex items-center gap-2.5">
                               {entry.status === "applied" && entry.appliedAt && (
                                 <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
@@ -1839,10 +1884,10 @@ export default function DeployPage() {
                                 <button
                                   type="button"
                                   className="btn btn-ghost btn-sm"
-                                  disabled={!downSql || revertBusy || isDeploying}
+                                  disabled={!hasRollback || revertBusy || isDeploying}
                                   title={
-                                    downSql
-                                      ? `Run v${entry.version}.down.sql to undo this version`
+                                    hasRollback
+                                      ? `Run the stored rollback for v${entry.version} to undo this version`
                                       : `No rollback stored for v${entry.version}. Versions pushed before rollbacks were saved, or pushed without one, cannot be reverted from here.`
                                   }
                                   onClick={() => {
@@ -1857,16 +1902,15 @@ export default function DeployPage() {
                             </div>
                           </div>
 
-                          {confirming && downSql && (
+                          {confirming && hasRollback && (
                             <div className="mt-2 mb-1 space-y-2">
                               <div className="warn-inline">
                                 <AlertTriangleIcon size={14} className="ico" />
                                 <div className="min-w-0">
                                   <div className="font-semibold">This restores structure, not data.</div>
                                   <div className="mt-1" style={{ color: "var(--text-2)" }}>
-                                    Running{" "}
-                                    <span className="mono">v{entry.version}.down.sql</span>{" "}
-                                    against <span className="mono">{preflightResult.schema}</span>{" "}
+                                    Running the rollback for v{entry.version} against{" "}
+                                    <span className="mono">{preflightResult.schema}</span>{" "}
                                     undoes the structural change and removes v{entry.version} from
                                     the ledger, so it becomes pending again. Rows this rollback
                                     drops are gone, and rows the original migration deleted do not
@@ -1875,15 +1919,26 @@ export default function DeployPage() {
                                 </div>
                               </div>
 
-                              <details>
-                                <summary
-                                  className="text-[12px] cursor-pointer select-none"
-                                  style={{ color: "var(--text-3)" }}
-                                >
-                                  Show the rollback SQL ({countOf(getSqlLineCount(downSql), "line")})
-                                </summary>
-                                <pre className="err-pre">{downSql}</pre>
-                              </details>
+                              {registryDownSql ? (
+                                <details>
+                                  <summary
+                                    className="text-[12px] cursor-pointer select-none"
+                                    style={{ color: "var(--text-3)" }}
+                                  >
+                                    Show{" "}
+                                    <span className="mono">v{entry.version}.down.sql</span> (
+                                    {countOf(getSqlLineCount(registryDownSql), "line")})
+                                  </summary>
+                                  <pre className="err-pre">{registryDownSql}</pre>
+                                </details>
+                              ) : (
+                                <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                                  This version has no file in the registry for{" "}
+                                  <span className="mono">{preflightResult.schema}</span> — it was
+                                  applied here directly. The rollback recorded with it at that
+                                  time is what runs.
+                                </div>
+                              )}
 
                               {revertError && <pre className="err-pre">{revertError}</pre>}
 

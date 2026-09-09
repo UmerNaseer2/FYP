@@ -114,16 +114,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(body);
     }
 
-    // sql_content may be absent on a script_patch created before P1 and not yet
-    // re-applied. Select NULL for it rather than erroring on a missing column.
-    const colCheck = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM information_schema.columns
-         WHERE table_schema = $1 AND table_name = 'script_patch' AND column_name = 'sql_content'
-       ) AS exists`,
+    // sql_content and down_sql may be absent on a script_patch created by an
+    // older version of this app and not yet re-applied. Select NULL for either
+    // rather than erroring on a missing column.
+    const colCheck = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'script_patch'
+          AND column_name IN ('sql_content', 'down_sql')`,
       [schema]
     );
-    const sqlExpr = colCheck.rows[0]?.exists === true ? "sql_content" : "NULL::text AS sql_content";
+    const present = new Set(colCheck.rows.map((r) => r.column_name));
+    const sqlExpr = present.has("sql_content") ? "sql_content" : "NULL::text AS sql_content";
+    const downExpr = present.has("down_sql") ? "down_sql" : "NULL::text AS down_sql";
 
     const q = quoteIdent(schema);
     const res = await client.query<{
@@ -132,8 +134,9 @@ export async function GET(request: NextRequest) {
       change_type: string;
       applied_at: Date | string;
       sql_content: string | null;
+      down_sql: string | null;
     }>(
-      `SELECT script_name, version, change_type, applied_at, ${sqlExpr}
+      `SELECT script_name, version, change_type, applied_at, ${sqlExpr}, ${downExpr}
        FROM ${q}.script_patch
        ORDER BY applied_at ASC, version ASC`
     );
@@ -147,6 +150,8 @@ export async function GET(request: NextRequest) {
         appliedAt: r.applied_at instanceof Date ? r.applied_at.toISOString() : String(r.applied_at),
         hasSql: sql !== null,
         sqlContent: sql,
+        downSql:
+          typeof r.down_sql === "string" && r.down_sql.length > 0 ? r.down_sql : null,
       };
     });
 

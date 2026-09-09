@@ -57,8 +57,13 @@ export async function POST(request: NextRequest) {
     connectionId: number;
     script_name: string;
     version: string;
-    /** The rollback SQL to run — v<version>.down.sql from the registry. */
-    sql_content: string;
+    /**
+     * The rollback SQL to run — v<version>.down.sql from the registry. Optional:
+     * a version that reached this database without a registry file (a Version
+     * Sync replay) stored its rollback in script_patch.down_sql instead, and
+     * that row is used when this is absent.
+     */
+    sql_content?: string;
     schemaName?: string;
     /**
      * Set by a screen only after somebody has ticked the production warning.
@@ -99,22 +104,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!sql_content?.trim()) {
-    return NextResponse.json(
-      {
-        error:
-          "sql_content is required — this version has no rollback script. " +
-          "Only versions pushed with a v<version>.down.sql can be reverted here.",
-      },
-      { status: 400 }
-    );
-  }
+  // sql_content is deliberately NOT required here — see step 8b, which falls
+  // back to the rollback the apply route stored on the ledger row itself.
 
   // ─── 3. Guard against embedded COMMIT / ROLLBACK in the down script ──────
   // Same rule as apply: this route owns the transaction, so a bare COMMIT
   // inside the script would end it early and leave the ledger DELETE outside
-  // the rollback boundary.
-  if (containsTransactionControl(sql_content)) {
+  // the rollback boundary. The stored fallback is checked the same way once it
+  // is read, since an old row could predate this guard.
+  if (sql_content?.trim() && containsTransactionControl(sql_content)) {
     return NextResponse.json(
       {
         error:
@@ -270,13 +268,26 @@ export async function POST(request: NextRequest) {
     }
 
     // 8b. Was THIS version applied here?
+    //     down_sql is read alongside so a version with no registry file still
+    //     has something to run — see downSql below. The column is added lazily
+    //     by the apply route, so ask the catalog before selecting it.
+    const colCheck = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'script_patch'
+          AND column_name = 'down_sql'`,
+      [schemaName]
+    );
+    const downExpr =
+      colCheck.rows.length > 0 ? "down_sql" : "NULL::text AS down_sql";
+
     const target = await client.query<{
       id: number;
       title: string | null;
       change_type: string | null;
       applied_at: string | null;
+      down_sql: string | null;
     }>(
-      `SELECT id, title, change_type, applied_at
+      `SELECT id, title, change_type, applied_at, ${downExpr}
        FROM ${quotedSchema}.script_patch
        WHERE script_name = $1 AND version = $2
        LIMIT 1`,
@@ -298,6 +309,41 @@ export async function POST(request: NextRequest) {
 
     const row = target.rows[0];
     revertedChangeLevel = asChangeLevel(row.change_type);
+
+    // The rollback to run: the registry file the caller sent, else the one the
+    // apply route recorded on this row. Version Sync replays a version onto a
+    // second schema without writing any file for it, so the stored copy is the
+    // only rollback such a version will ever have.
+    const downSql = sql_content?.trim() ? sql_content : (row.down_sql ?? "");
+
+    if (!downSql.trim()) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+      return NextResponse.json(
+        {
+          error:
+            `v${ver} of "${name}" has no rollback script. It can be reverted ` +
+            `only if it was pushed with a v${ver}.down.sql, or applied with a ` +
+            `rollback recorded alongside it.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // A row written before this guard existed could still hold a COMMIT.
+    if (containsTransactionControl(downSql)) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+      return NextResponse.json(
+        {
+          error:
+            `The stored rollback for v${ver} of "${name}" contains a COMMIT or ` +
+            `ROLLBACK statement, so it cannot be run inside this route's ` +
+            `transaction. Run it by hand, or push a corrected v${ver}.down.sql.`,
+        },
+        { status: 409 }
+      );
+    }
 
     // 8c. Is it the newest applied version of its family?
     //     Rolling back out of order would run this version's undo against
@@ -328,7 +374,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ─── All preconditions passed — now run the rollback SQL ──────────────
-    await client.query(sql_content);
+    await client.query(downSql);
 
     // Copy the row to the audit table, then remove it from the live ledger.
     //
@@ -369,7 +415,7 @@ export async function POST(request: NextRequest) {
       `INSERT INTO ${quotedSchema}.script_patch_reverted
          (script_name, version, title, change_type, applied_at, down_sql)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [name, ver, row.title, row.change_type, row.applied_at, sql_content]
+      [name, ver, row.title, row.change_type, row.applied_at, downSql]
     );
 
     const deleted = await client.query(

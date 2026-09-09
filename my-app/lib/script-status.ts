@@ -119,6 +119,13 @@ export type LedgerEntry = {
   version: string;
   status: LedgerStatus;
   appliedAt: string | null;
+  /**
+   * Whether the GitHub registry holds this version for this schema. False for a
+   * version that reached the database some other way — a Version Sync replay,
+   * or a script applied straight from the editor — which is applied and real,
+   * but has no file here to read or to re-deploy from.
+   */
+  inRegistry: boolean;
 };
 
 /**
@@ -134,6 +141,12 @@ export type LedgerEntry = {
  *                  (so the forward-only deploy will pick it up).
  *   - superseded → in GitHub, not applied, but at/below the current version
  *                  (left behind by an out-of-order apply; not in the run).
+ *
+ * An applied version that GitHub does not have for this schema is still listed,
+ * marked inRegistry: false. Leaving it out used to hide it entirely — a Version
+ * Sync replay lands in script_patch without ever writing a file here, so the
+ * screen showed a stale "current version" and offered to roll back an older one
+ * while a newer one was in fact applied.
  *
  * Returns entries sorted ascending by version.
  */
@@ -158,14 +171,12 @@ export function buildVersionLedger(
     }
   }
 
-  // De-duplicate the GitHub versions, then sort ascending.
-  const seen = new Set<string>();
-  const versions: string[] = [];
-  for (const v of githubVersions) {
-    if (!seen.has(v)) {
-      seen.add(v);
-      versions.push(v);
-    }
+  // De-duplicate the GitHub versions, then add any applied version GitHub does
+  // not have, then sort ascending.
+  const inRegistry = new Set<string>(githubVersions);
+  const versions: string[] = [...inRegistry];
+  for (const version of appliedAtByVersion.keys()) {
+    if (!inRegistry.has(version)) versions.push(version);
   }
   versions.sort(compareVersions);
 
@@ -175,11 +186,12 @@ export function buildVersionLedger(
         version,
         status: "applied" as const,
         appliedAt: appliedAtByVersion.get(version) ?? null,
+        inRegistry: inRegistry.has(version),
       };
     }
     if (current === null || compareVersions(version, current) > 0) {
-      return { version, status: "pending" as const, appliedAt: null };
+      return { version, status: "pending" as const, appliedAt: null, inRegistry: true };
     }
-    return { version, status: "superseded" as const, appliedAt: null };
+    return { version, status: "superseded" as const, appliedAt: null, inRegistry: true };
   });
 }

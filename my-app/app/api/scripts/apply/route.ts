@@ -25,6 +25,7 @@ const MAX_VERSION_LENGTH = 20;
 type ScriptInput = {
   script_name?: string;
   sql_content?: string;
+  down_sql?: string;
   version?: string;
   title?: string;
   description?: string;
@@ -37,6 +38,7 @@ type ScriptJob = {
   scriptName: string;
   version: string;
   sqlContent: string;
+  downSql: string | null;
   title: string;
   description: string | null;
   changeType: ChangeType;
@@ -131,6 +133,7 @@ async function ensureScriptPatchTable(
                       CHECK (change_type IN ('breaking', 'additive', 'patch', 'unknown')),
         source_ref  TEXT,
         sql_content TEXT,
+        down_sql    TEXT,
         applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -164,6 +167,15 @@ async function ensureScriptPatchTable(
   await client.query(`
     ALTER TABLE ${quotedSchema}.script_patch
     ADD COLUMN IF NOT EXISTS sql_content TEXT
+  `);
+
+  // 7b-4. Back-fill down_sql: the script that undoes this one, recorded at
+  //       apply time so the row carries its own rollback. Version Sync replays
+  //       this ledger onto another schema and passes it along, which is what
+  //       makes a replayed version revertable there too.
+  await client.query(`
+    ALTER TABLE ${quotedSchema}.script_patch
+    ADD COLUMN IF NOT EXISTS down_sql TEXT
   `);
 
   // 7c. Add a UNIQUE index so the DB itself enforces one row per
@@ -315,6 +327,7 @@ export async function POST(request: NextRequest) {
     scripts?: ScriptInput[];
     script_name?: string;
     sql_content?: string;
+    down_sql?: string;
     version?: string;
     title?: string;
     description?: string;
@@ -430,6 +443,19 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    // The rollback is stored, not run, but it is stored so the revert route can
+    // run it later — and the revert route opens its own transaction too. Reject
+    // it now rather than at revert time, when the user needs it to work.
+    if (raw.down_sql && containsTransactionControl(raw.down_sql)) {
+      return NextResponse.json(
+        {
+          error:
+            `down_sql must not contain COMMIT or ROLLBACK statements${at}. ` +
+            "The revert runs it in its own transaction.",
+        },
+        { status: 400 }
+      );
+    }
 
     const scriptName = raw.script_name.trim();
     const scriptVersion = raw.version.trim();
@@ -450,6 +476,10 @@ export async function POST(request: NextRequest) {
       scriptName,
       version: scriptVersion,
       sqlContent: raw.sql_content,
+      // Kept beside the SQL that ran so a schema this migration is later
+      // replayed onto — by Version Sync, which reads this ledger — inherits the
+      // rollback instead of becoming permanently non-revertable.
+      downSql: raw.down_sql?.trim() || null,
       // title is VARCHAR(150) — truncate before INSERT so an over-long title
       // cannot roll back an otherwise-successful migration.
       title: (raw.title?.trim() || scriptVersion).slice(0, 150),
@@ -882,8 +912,9 @@ export async function POST(request: NextRequest) {
       // Record this migration in the audit log.
       const insertResult = await client.query<{ applied_at: string }>(
         `INSERT INTO ${quotedSchema}.script_patch
-           (script_name, version, title, description, change_type, source_ref, sql_content)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+           (script_name, version, title, description, change_type, source_ref,
+            sql_content, down_sql)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING applied_at`,
         [
           job.scriptName,
@@ -893,6 +924,7 @@ export async function POST(request: NextRequest) {
           job.changeType,
           job.sourceRef,
           job.sqlContent, // the exact SQL just executed — what version replay re-runs
+          job.downSql, // and the script that undoes it, carried to wherever it is replayed
         ]
       );
       lastAppliedAt = insertResult.rows[0].applied_at;

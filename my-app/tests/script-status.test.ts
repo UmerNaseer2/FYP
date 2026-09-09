@@ -109,4 +109,22 @@ describe("buildVersionLedger", () => {
     const ledger = buildVersionLedger(["1.0.0"], [applied("1.0.0")]);
     expect(ledger[0].appliedAt).toBe("2026-01-01T00:00:00Z");
   });
+
+  // A Version Sync replay lands a version in script_patch without writing any
+  // file to the registry for that schema. Dropping it from the ledger hid it
+  // completely, which is how a stale older version came to look like the newest
+  // applied one and got offered for rollback.
+  it("lists an applied version the registry does not have", () => {
+    const ledger = buildVersionLedger(["1.0.0"], [applied("1.0.0"), applied("2.0.0")]);
+    expect(ledger.map((e) => e.version)).toEqual(["1.0.0", "2.0.0"]);
+    expect(ledger.map((e) => e.status)).toEqual(["applied", "applied"]);
+  });
+
+  it("says which versions the registry actually holds", () => {
+    const ledger = buildVersionLedger(["1.0.0", "1.1.0"], [applied("1.0.0"), applied("2.0.0")]);
+    const byVersion = Object.fromEntries(ledger.map((e) => [e.version, e.inRegistry]));
+    expect(byVersion["1.0.0"]).toBe(true);
+    expect(byVersion["1.1.0"]).toBe(true);
+    expect(byVersion["2.0.0"]).toBe(false);
+  });
 });

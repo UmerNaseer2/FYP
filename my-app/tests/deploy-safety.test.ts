@@ -62,6 +62,7 @@ describe("diffLedgers", () => {
     appliedAt: "2026-01-01T00:00:00Z",
     hasSql: true,
     sqlContent: "SELECT 1;",
+    downSql: null,
     ...over,
   });
 

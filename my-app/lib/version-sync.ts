@@ -19,6 +19,13 @@ export type LedgerEntry = {
   hasSql: boolean;
   /** The applied SQL, if stored (null for legacy rows from before P1). */
   sqlContent: string | null;
+  /**
+   * The rollback recorded with it, if any. Carried through the replay so a
+   * version that arrives on the Target this way is as revertable there as it
+   * is on the Source — without it, replay produced permanently one-way
+   * migrations.
+   */
+  downSql: string | null;
 };
 
 export type LedgerDiff = {

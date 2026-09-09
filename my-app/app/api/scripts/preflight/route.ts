@@ -12,6 +12,12 @@ export type PatchEntry = {
   description: string | null;
   change_type: string;
   applied_at: string;
+  /**
+   * Whether this row stored its own rollback. The SQL itself is deliberately
+   * not sent: Deploy only needs to know whether the Revert button can do
+   * anything, and the revert route reads the script out of the same row.
+   */
+  has_down_sql: boolean;
 };
 
 // The full pre-flight response shape
@@ -186,6 +192,20 @@ export async function POST(request: NextRequest) {
     // believe "users_migration v1.0.0" is already applied (1.0.0 < 2.0.0).
     const quotedSchema = quoteIdent(schemaName);
 
+    // down_sql is added lazily by the apply route, so a script_patch written by
+    // an older build of this tool will not have it. Ask the catalog rather than
+    // letting the SELECT fail on the whole timeline.
+    const colCheck = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'script_patch'
+          AND column_name = 'down_sql'`,
+      [schemaName]
+    );
+    const downExpr =
+      colCheck.rows.length > 0
+        ? "(down_sql IS NOT NULL AND down_sql <> '') AS has_down_sql"
+        : "false AS has_down_sql";
+
     const timelineResult = scriptName
       ? await client.query<PatchEntry>(
           `SELECT
@@ -193,7 +213,8 @@ export async function POST(request: NextRequest) {
              title,
              description,
              change_type,
-             applied_at
+             applied_at,
+             ${downExpr}
            FROM ${quotedSchema}.script_patch
            WHERE script_name = $1
            ORDER BY applied_at DESC`,
@@ -205,7 +226,8 @@ export async function POST(request: NextRequest) {
              title,
              description,
              change_type,
-             applied_at
+             applied_at,
+             ${downExpr}
            FROM ${quotedSchema}.script_patch
            ORDER BY applied_at DESC`
         );
