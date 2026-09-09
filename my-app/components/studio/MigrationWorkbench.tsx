@@ -197,7 +197,12 @@ export function MigrationWorkbench({
   }
 
   function regenerate() {
-    if (edited && !window.confirm("Regenerate will discard your manual edits. Continue?")) {
+    // This restores the generated script for the pane on screen only — the
+    // other pane's edits survive, so the confirm has to say which one it means.
+    const question = showingDown
+      ? "Discard your edits to the rollback script? The migration pane is not affected."
+      : "Discard your edits to the migration script? The rollback pane is not affected.";
+    if (edited && !window.confirm(question)) {
       return;
     }
     setActiveSql(activeInitial);
@@ -286,8 +291,12 @@ export function MigrationWorkbench({
               onChange={(e) => setName(e.target.value)}
               placeholder="migration_name"
             />
+            <label className="label mt-2 block" htmlFor={`${fieldId}-description`}>
+              Description
+            </label>
             <textarea
-              className="input mt-2"
+              id={`${fieldId}-description`}
+              className="input mt-1"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional title / description for the changelog…"
@@ -335,10 +344,10 @@ export function MigrationWorkbench({
                       type="button"
                       className="btn btn-ghost btn-sm"
                       onClick={regenerate}
-                      title="Reset the SQL to the freshly generated version (discards manual edits)"
+                      title="Discard edits in this pane and restore the generated script"
                     >
                       <RefreshIcon size={12} />
-                      Regenerate
+                      Reset
                     </button>
                     <button type="button" className="btn btn-ghost btn-sm" onClick={copySql}>
                       {copied ? <CheckIcon size={12} /> : <ClipboardIcon size={12} />}
@@ -365,6 +374,10 @@ export function MigrationWorkbench({
 
                 <textarea
                   className="sql-textarea mono"
+                  // The tab strip above names the pane visually, but nothing tied
+                  // it to the editor — so the only editable field on the panel
+                  // was announced as an unnamed text box.
+                  aria-label={showingDown ? "Rollback SQL — editable" : "Migration SQL — editable"}
                   value={activeSql}
                   onChange={(e) => setActiveSql(e.target.value)}
                   spellCheck={false}
@@ -389,8 +402,10 @@ export function MigrationWorkbench({
                     {!showingDown && heldBackCount > 0 && (
                       <>
                         {" "}
+                        {/* "held back" is the word the diff report uses for the
+                            same fact — say both so the two pages line up. */}
                         <span style={{ color: "var(--break)" }}>
-                          ({heldBackCount} commented out)
+                          ({heldBackCount} held back — commented out)
                         </span>
                       </>
                     )}{" "}

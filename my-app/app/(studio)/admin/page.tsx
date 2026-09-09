@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useUser } from "@/hooks/useUser";
+import { ROLES } from "@/lib/auth-mode";
 import {
   Button,
   Card,
@@ -14,7 +15,6 @@ import {
 import { Select } from "@/components/ui/Select";
 import {
   UsersIcon,
-  LockIcon,
   RefreshIcon,
   TrashIcon,
   AlertTriangleIcon,
@@ -28,13 +28,16 @@ type Profile = {
   role: string;
 };
 
-const ROLE_OPTIONS = [
-  { value: "viewer", label: "Viewer" },
-  { value: "admin", label: "Admin" },
-];
+// Derived from ROLES so a role added there cannot go missing from this
+// dropdown — "editor" did exactly that.
+const ROLE_OPTIONS = ROLES.map((value) => ({
+  value,
+  label: value[0].toUpperCase() + value.slice(1),
+}));
 
 function roleTone(role: string): PillTone {
-  return role === "admin" ? "brand" : "neutral";
+  // The middle role gets its own colour, so it doesn't read as "not an admin".
+  return role === "admin" ? "brand" : role === "editor" ? "sync" : "neutral";
 }
 
 function initialsOf(email: string): string {
@@ -139,23 +142,9 @@ export default function AdminPage() {
     );
   }
 
-  if (!isAdmin) {
-    return (
-      <div className="max-w-[820px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
-        <AdminHeader onRefresh={null} refreshing={false} count={null} admins={null} />
-        <Card className="p-0 overflow-hidden mt-6">
-          <div style={{ minHeight: 280 }}>
-            <EmptyState
-              icon={<LockIcon size={22} />}
-              title="Admins only"
-              description="You need the admin role to manage users. Ask an existing admin to grant it, then reload."
-            />
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
+  // No "Admins only" branch here: app/(studio)/admin/layout.tsx wraps this page
+  // in <AuthGuard requiredRole="admin">, which shows that message and can name
+  // the signed-in account and its role — this page cannot.
   const adminCount = users.filter((u) => u.role === "admin").length;
 
   return (

@@ -37,8 +37,17 @@ type GitHubScript = {
 };
 
 const BUMP_LEVELS: BumpLevel[] = ["patch", "minor", "major"];
+// Shown on each button, so the person picking a level does not have to already
+// know what semver means.
 const BUMP_DESC: Record<BumpLevel, string> = {
-  patch: "data / fixes",
+  patch: "fixes and data — nothing changes shape",
+  minor: "adds things — existing queries still work",
+  major: "changes or removes things — existing queries can break",
+};
+// The suggestion pill has to read as a phrase mid-sentence, so it needs the
+// short words rather than the whole sentence above.
+const BUMP_SHORT: Record<BumpLevel, string> = {
+  patch: "data or fixes",
   minor: "additive",
   major: "breaking",
 };
@@ -64,6 +73,8 @@ export default function ScriptEditorPage() {
   // The whole GitHub registry (used to derive existing families + saved versions).
   const [githubScripts, setGithubScripts] = useState<GitHubScript[]>([]);
   const [githubError, setGithubError] = useState("");
+  // Starts true: before the pull lands, an empty registry is unknown, not empty.
+  const [githubLoading, setGithubLoading] = useState(true);
 
   const [familyMode, setFamilyMode] = useState<"existing" | "new">("existing");
   const [existingFamily, setExistingFamily] = useState("");
@@ -88,6 +99,10 @@ export default function ScriptEditorPage() {
   const [customVersion, setCustomVersion] = useState("");
 
   const [saving, setSaving] = useState(false);
+  // The SQL as it was last published. Pressing Save again with the identical
+  // script would publish a byte-for-byte copy as the next version, and nothing
+  // downstream would notice — the version differs, so the push isn't a 409.
+  const [savedSql, setSavedSql] = useState<string | null>(null);
   const [saveResult, setSaveResult] = useState<
     | { ok: true; url: string | null; rollbackSaved: boolean }
     | { ok: false; error: string }
@@ -121,6 +136,8 @@ export default function ScriptEditorPage() {
         else if (data?.error) setGithubError(String(data.error));
       } catch {
         if (active) setGithubError("Could not reach the GitHub registry.");
+      } finally {
+        if (active) setGithubLoading(false);
       }
     })();
     return () => {
@@ -286,11 +303,23 @@ export default function ScriptEditorPage() {
   // out while they can still edit, not at deploy time.
   const txnInUp = containsTransactionControl(sql);
   const txnInDown = containsTransactionControl(rollbackSql);
+  // Name the keywords the guard actually rejects (lib/sql-guard.ts) — the old
+  // wording named BEGIN, which it ignores, and left out END and ABORT, which it
+  // blocks.
   const txnError = txnInUp
-    ? "Remove BEGIN / COMMIT / ROLLBACK from the SQL — Deploy runs the script in its own transaction."
+    ? "Remove the transaction statement — COMMIT, ROLLBACK, ABORT, a standalone END, or PREPARE TRANSACTION. Deploy runs the whole script in one transaction of its own, so the script must not open or close one."
     : txnInDown
-      ? "Remove BEGIN / COMMIT / ROLLBACK from the rollback SQL — the revert runs it in its own transaction."
+      ? "Remove the transaction statement — COMMIT, ROLLBACK, ABORT, a standalone END, or PREPARE TRANSACTION. The revert runs the whole script in one transaction of its own, so the script must not open or close one."
       : "";
+
+  // This exact script is already in the registry, so a second press would only
+  // duplicate it under a higher version number.
+  const alreadySaved = savedSql !== null && sql === savedSql;
+
+  // Without the three env vars the pull failed AND the push would fail the same
+  // way, so there is nothing to save into. Keyed off the route's message — see
+  // app/api/github/pull/route.ts — because that response carries no error code.
+  const githubUnconfigured = githubError.startsWith("GitHub env vars not configured");
 
   const canSave =
     !!databaseName &&
@@ -299,6 +328,8 @@ export default function ScriptEditorPage() {
     sql.trim().length > 0 &&
     versionValid &&
     !txnError &&
+    !alreadySaved &&
+    !githubUnconfigured &&
     !saving;
 
   function pickLevel(choice: BumpLevel | "custom") {
@@ -334,6 +365,7 @@ export default function ScriptEditorPage() {
           url: data.url ?? null,
           rollbackSaved: Boolean(data.rollback_saved),
         });
+        setSavedSql(sql);
         // Reflect the new file locally so the floor jumps immediately.
         setGithubScripts((prev) => [
           ...prev,
@@ -405,7 +437,12 @@ export default function ScriptEditorPage() {
         <div className="grid gap-4">
           {/* ── Target ─────────────────────────────────────────────────────── */}
           <div className="card p-5">
-            <div className="section-title mb-3">Target</div>
+            <div className="section-title mb-3">Where this script belongs</div>
+            <p className="help mb-3">
+              Nothing runs against this database. The connection only names the registry
+              folder and lets us read which versions it has already applied, so the new
+              version lands above them. Running the script is done on Deploy.
+            </p>
             <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
               <div>
                 <label className="label" htmlFor="se-conn">Connection</label>
@@ -486,9 +523,11 @@ export default function ScriptEditorPage() {
                     placeholder={
                       !schema
                         ? "Select a schema first"
-                        : existingFamilies.length === 0
-                          ? "No families yet — add one"
-                          : "Select a family…"
+                        : githubLoading
+                          ? "Loading families…"
+                          : existingFamilies.length === 0
+                            ? "No families yet — use + New family"
+                            : "Select a family…"
                     }
                     options={existingFamilies.map((name) => ({ value: name, label: name }))}
                     onChange={(value) => {
@@ -525,10 +564,23 @@ export default function ScriptEditorPage() {
               </div>
             </div>
             {githubError && (
-              <p className="help mt-3" style={{ color: "var(--drift)" }}>
-                {githubError}{" "}
-                Existing families can&apos;t be listed, but you can still add a
-                new one.
+              <p
+                className="help mt-3"
+                style={{ color: githubUnconfigured ? "var(--break)" : "var(--drift)" }}
+              >
+                {githubUnconfigured ? (
+                  <>
+                    The GitHub registry is not configured, so nothing can be listed and
+                    nothing can be saved. Set GITHUB_REPO_OWNER, GITHUB_REPO_NAME and
+                    GITHUB_PAT, then reload.
+                  </>
+                ) : (
+                  <>
+                    {githubError}{" "}
+                    Existing families can&apos;t be listed, but you can still add a new
+                    one.
+                  </>
+                )}
               </p>
             )}
           </div>
@@ -546,6 +598,7 @@ export default function ScriptEditorPage() {
               value={sql}
               onChange={(e) => {
                 setSql(e.target.value);
+                setSavedSql(null);
                 setSaveResult(null);
               }}
             />
@@ -567,7 +620,7 @@ export default function ScriptEditorPage() {
             />
             <p className="help mt-1">
               {rollbackSql.trim()
-                ? "Saved beside the script as the .down.sql file Deploy runs when you revert this version."
+                ? "Saved beside the script as the .down.sql file Deploy runs when you revert this version. It restores structure, not rows — a rollback that drops a column deletes everything written into it since this version landed, and only a point-in-time restore brings that back. Where you can, undo by renaming or leaving the column in place instead of dropping it."
                 : "Without one, Deploy's revert button stays disabled for this version — it will have nothing to run. Write the statements that undo the SQL above."}
             </p>
             {txnError && (
@@ -594,16 +647,16 @@ export default function ScriptEditorPage() {
               <div className="section-title">Version</div>
               <div className="flex items-center gap-2 text-[11.5px]" style={{ color: "var(--text-3)" }}>
                 <span>
-                  applied:{" "}
+                  applied to this database:{" "}
                   <span className="mono" style={{ color: "var(--text-2)" }}>
                     {patchLoading ? "…" : patchFloor ?? "—"}
                   </span>
                 </span>
                 <span>·</span>
                 <span>
-                  saved:{" "}
+                  in the GitHub registry:{" "}
                   <span className="mono" style={{ color: "var(--text-2)" }}>
-                    {githubFloor ?? "—"}
+                    {githubLoading ? "…" : githubFloor ?? "—"}
                   </span>
                 </span>
               </div>
@@ -612,12 +665,23 @@ export default function ScriptEditorPage() {
             {scriptName ? (
               <>
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="pill pill-neutral">
-                    {floor ? <>floor <span className="mono ml-1">{floor}</span></> : "first version"}
+                  <span
+                    className="pill pill-neutral"
+                    title="Every new version must be higher than this — the higher of what this database has applied and what the GitHub registry already holds."
+                  >
+                    {floor ? (
+                      <>above <span className="mono ml-1">{floor}</span></>
+                    ) : (
+                      "first version of this family"
+                    )}
                   </span>
                   {sql.trim() && (
-                    <span className={`pill ${suggestedLevel === "major" ? "pill-break" : suggestedLevel === "minor" ? "pill-sync" : "pill-pending"}`}>
-                      looks {BUMP_DESC[suggestedLevel]} · suggests {suggestedLevel}
+                    <span
+                      className={`pill ${suggestedLevel === "major" ? "pill-break" : suggestedLevel === "minor" ? "pill-sync" : "pill-pending"}`}
+                      title="A scan for words like DROP TABLE and ADD COLUMN. It does not parse your SQL."
+                    >
+                      keyword scan — reads as {BUMP_SHORT[suggestedLevel]}, so{" "}
+                      {suggestedLevel} is suggested
                     </span>
                   )}
                   {patchUnreachable && (
@@ -632,6 +696,9 @@ export default function ScriptEditorPage() {
                       type="button"
                       aria-pressed={effectiveChoice === level}
                       className={`ver-seg-btn${effectiveChoice === level ? " is-active" : ""}`}
+                      // Capped so the sentence below wraps inside the button
+                      // instead of stretching the row wider than the card.
+                      style={{ maxWidth: 200 }}
                       onClick={() => pickLevel(level)}
                     >
                       <span className="ver-seg-label">
@@ -639,6 +706,20 @@ export default function ScriptEditorPage() {
                         {suggestedLevel === level && sql.trim() ? (
                           <span className="ver-seg-suggest">suggested</span>
                         ) : null}
+                      </span>
+                      {/* Inline styling, not a new class — app/globals.css is
+                          owned elsewhere, and this is the only place the line
+                          appears. */}
+                      <span
+                        style={{
+                          fontSize: "10.5px",
+                          color: "var(--text-3)",
+                          lineHeight: 1.3,
+                          textAlign: "left",
+                          whiteSpace: "normal",
+                        }}
+                      >
+                        {BUMP_DESC[level]}
                       </span>
                       <span className="ver-seg-ver mono">{bumpVersion(floor, level)}</span>
                     </button>
@@ -682,6 +763,11 @@ export default function ScriptEditorPage() {
                       {databaseName || "—"}/{schema || "—"}/{scriptName}/v{versionValid ? normalizedVersion : "?"}.sql
                     </span>
                   </div>
+                  {alreadySaved && (
+                    <span className="help">
+                      Already saved. Edit the SQL to save a new version.
+                    </span>
+                  )}
                   <button className="btn btn-primary" disabled={!canSave} onClick={handleSave}>
                     {saving ? <RefreshIcon size={14} className="spin-icon" /> : <CheckIcon size={14} />}
                     {saving ? "Saving…" : "Save to GitHub"}
