@@ -30,6 +30,7 @@ import {
   constraintChangeSeverity,
   describeComputed,
   domainAddedChecks,
+  typeChangeIsAllManual,
   domainNotNullTightens,
   extractBaseType,
   collationChangeSeverity,
@@ -921,18 +922,64 @@ function dropTypeStatement(type: TypeSnapshot): SqlStatement {
 function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatement[] {
   const stmts: SqlStatement[] = [];
 
-  if (left.kind !== right.kind) {
+  // Whether any of this can be run at all is the compare engine's call, and the
+  // report card reads the same answer off the diff — so "has to be replaced by
+  // hand" on screen and a script that runs nothing are one decision. Everything
+  // below the gate writes the statements for the cases it calls scriptable; the
+  // notes are what the gate itself hands back.
+  if (typeChangeIsAllManual(left, right)) {
+    if (left.kind !== right.kind) {
+      return [
+        manualNote(
+          `"${left.name}" is a ${left.kind.toLowerCase()} in the source and a ` +
+            `${right.kind.toLowerCase()} in the target. Changing one into the other means ` +
+            `dropping it, which fails while any column still uses it. Migrate the columns first.`,
+          `"${left.name}" changed type category — needs manual work`,
+          left.name
+        ),
+      ];
+    }
+
+    if (left.kind === "ENUM") {
+      const leftLabels = new Set(left.labels);
+      const removed = right.labels.filter((label) => !leftLabels.has(label));
+      if (removed.length > 0) {
+        return [
+          manualNote(
+            `enum "${left.name}" has ${removed.length} value${removed.length === 1 ? "" : "s"} ` +
+              `the source does not (${removed.map(literal).join(", ")}). PostgreSQL cannot drop ` +
+              `an enum value — recreate the type and repoint every column that uses it, or leave ` +
+              `the extra value${removed.length === 1 ? "" : "s"} in place.`,
+            `Enum "${left.name}" has values that cannot be dropped`,
+            left.name
+          ),
+        ];
+      }
+      // Same labels, different order. Postgres compares enum values by their
+      // stored order, so this changes how the data sorts.
+      return [
+        manualNote(
+          `enum "${left.name}" has the same values in a different order. Postgres sorts by ` +
+            `that order, so this changes comparison results. Reordering needs the type to be ` +
+            `recreated.`,
+          `Enum "${left.name}" values are in a different order`,
+          left.name
+        ),
+      ];
+    }
+
     return [
       manualNote(
-        `"${left.name}" is a ${left.kind.toLowerCase()} in the source and a ` +
-          `${right.kind.toLowerCase()} in the target. Changing one into the other means ` +
-          `dropping it, which fails while any column still uses it. Migrate the columns first.`,
-        `"${left.name}" changed type category — needs manual work`,
+        `"${left.name}" differs. Source: ${left.definition}. Target: ${right.definition}. ` +
+          `Altering it in place needs the columns that use it handled first.`,
+        `"${left.name}" changed and needs manual work`,
         left.name
       ),
     ];
   }
 
+  // Past the gate the kinds match and there is something to run, so only the
+  // scriptable halves of each kind are written from here down.
   if (left.kind === "ENUM") {
     const rightLabels = new Set(right.labels);
     const added = left.labels.filter((label) => !rightLabels.has(label));
@@ -961,19 +1008,9 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
         )
       );
     }
-    // Same labels, different order. Postgres compares enum values by their
-    // stored order, so this changes how the data sorts.
-    if (added.length === 0 && removed.length === 0) {
-      stmts.push(
-        manualNote(
-          `enum "${left.name}" has the same values in a different order. Postgres sorts by ` +
-            `that order, so this changes comparison results. Reordering needs the type to be ` +
-            `recreated.`,
-          `Enum "${left.name}" values are in a different order`,
-          left.name
-        )
-      );
-    }
+    // A reorder — same labels, different order — never reaches here: ADD VALUE
+    // is the only enum ALTER, so it has nothing to run and the gate above
+    // returned its note.
     return stmts;
   }
 
@@ -1039,6 +1076,10 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
     if (stmts.length > 0) return stmts;
   }
 
+  // Unreachable while this function and typeChangeIsAllManual agree: every case
+  // that gets here is one the gate calls all-manual. Kept as the safety net,
+  // because the failure it catches is the worst one this file can produce — a
+  // changed type that generates NOTHING, on a report that says it changed.
   return [
     manualNote(
       `"${left.name}" differs. Source: ${left.definition}. Target: ${right.definition}. ` +

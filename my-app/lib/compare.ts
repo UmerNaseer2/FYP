@@ -1665,14 +1665,62 @@ function objectCreateNeedsManualWork(obj: ComparableObject): boolean | undefined
  * column still uses it, so every column has to be moved off it first — a plan,
  * not a statement.
  *
- * Deliberately not extended to enums or composite types. PostgreSQL does have
- * ALTER for parts of both, so whether a particular change needs a person is
- * the generator's judgement to make, and copying that judgement here is the
- * prose coupling this file keeps removing.
+ * Types are the third case, and they are the awkward one: PostgreSQL has ALTER
+ * for parts of an enum and parts of a domain, so "does this need a person"
+ * depends on WHICH part changed. That question is answered once, by
+ * typeChangeIsAllManual below, and the generator gates on the same function —
+ * so the card that says "has to be replaced by hand" and the script that runs
+ * nothing are one decision instead of two that drift.
  */
-function objectChangeNeedsManualWork(obj: ComparableObject): boolean | undefined {
+function objectChangeNeedsManualWork(
+  obj: ComparableObject,
+  peer: ComparableObject
+): boolean | undefined {
   if (obj.kind === "COLLATION" || obj.kind === "RANGE TYPE") return true;
+  if (obj.type && peer.type) return typeChangeIsAllManual(obj.type, peer.type);
   return undefined;
+}
+
+/**
+ * True when nothing about this type change can be written as a statement — the
+ * script can only leave a note saying what a person has to do.
+ *
+ * The generator calls this too, and it is the gate: everything it writes for a
+ * changed type is written in the branches this returns false for. The cases:
+ *
+ *   - the kind changed (an enum in one schema, a domain in the other). Turning
+ *     one into the other means dropping it, which fails while a column uses it.
+ *   - an enum that gained no value. ADD VALUE is the only enum ALTER there is,
+ *     so a reorder, or values the source does not have, leave nothing to run.
+ *   - a domain whose base type moved. ALTER DOMAIN can change the NOT NULL and
+ *     the named checks and nothing else.
+ *   - a domain where none of those parts is what changed, so there is no ALTER
+ *     to write.
+ *   - a composite type. ALTER TYPE ... ADD/DROP ATTRIBUTE exists, but it fails
+ *     on any type a table column already uses, which is every case worth
+ *     scripting.
+ */
+export function typeChangeIsAllManual(left: TypeSnapshot, right: TypeSnapshot): boolean {
+  if (left.kind !== right.kind) return true;
+
+  if (left.kind === "ENUM") {
+    const rightLabels = new Set(right.labels);
+    return left.labels.every((label) => rightLabels.has(label));
+  }
+
+  if (left.kind === "DOMAIN") {
+    if (left.baseType !== right.baseType) return true;
+    if (left.notNull !== right.notNull) return false;
+    const leftChecks = new Map(left.checks.map((check) => [check.name, check]));
+    const anyDropped = right.checks.some((check) => {
+      const source = leftChecks.get(check.name);
+      return !source || source.expression !== check.expression;
+    });
+    if (anyDropped) return false;
+    return domainAddedChecks(left, right).length === 0;
+  }
+
+  return true;
 }
 
 function compareObjectLists(
@@ -1721,6 +1769,11 @@ function compareObjectLists(
         // has to be dropped for the new one to take its name, so it is graded
         // as a drop and not as a definition change.
         severity: objectDropSeverity(peer),
+        // Which is a thing the script can do for a view, and cannot for a type:
+        // dropping an enum that became a domain fails while any column still
+        // uses it, so the columns have to be moved first. Asked here as well as
+        // below, because this branch is the only one a kind change reaches.
+        needsManualWork: objectChangeNeedsManualWork(obj, peer),
         replaceNeedsDrop: true,
         dropDestroysData: dropDestroysData(peer),
       });
@@ -1737,7 +1790,7 @@ function compareObjectLists(
         leftDefinition: obj.definition,
         rightDefinition: peer.definition,
         severity: objectChangeSeverity(obj, peer),
-        needsManualWork: objectChangeNeedsManualWork(obj),
+        needsManualWork: objectChangeNeedsManualWork(obj, peer),
         replaceNeedsDrop:
           obj.routine && peer.routine
             ? routineReplaceNeedsDrop(obj.routine, peer.routine)
