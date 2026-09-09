@@ -248,11 +248,22 @@ export default function SchemaDetailPage({
                 </span>
               </>
             )}
+            {/*
+              These two counts come from the newest LINEAGE SNAPSHOT, not from
+              the live database — headSummary is migrations[0].snapshot. On a
+              drifted schema they are the numbers as they were captured, which
+              is exactly when a reader is most likely to take them for the
+              current shape. Say which one they are.
+            */}
             {headSummary && (
               <>
                 {" · "}
-                {countOf(headSummary.tableCount, "table")} ·{" "}
-                {countOf(headSummary.columnCount, "column")}
+                <span
+                  title="Counted from the newest lineage snapshot, not read live. After a drift the live schema can differ."
+                >
+                  {countOf(headSummary.tableCount, "table")} ·{" "}
+                  {countOf(headSummary.columnCount, "column")} at HEAD
+                </span>
               </>
             )}
           </div>

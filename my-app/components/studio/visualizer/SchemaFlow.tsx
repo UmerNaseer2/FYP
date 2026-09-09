@@ -162,7 +162,7 @@ function FlowInner({ snapshot }: { snapshot: SchemaSnapshot }) {
         <span className="pill pill-neutral">
           {countOf(graph.stats.columns, "column")}
         </span>
-        <span className="pill pill-neutral">{graph.stats.foreignKeys} FKs</span>
+        <span className="pill pill-neutral">{countOf(graph.stats.foreignKeys, "FK")}</span>
         {graph.stats.externalForeignKeys > 0 && (
           <span
             className="pill pill-drift"
