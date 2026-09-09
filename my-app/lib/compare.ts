@@ -1866,15 +1866,28 @@ function describeSequence(sequence: SequenceSnapshot): string {
   ].join(" ");
 }
 
+/**
+ * Whether this sequence is an object in its own right rather than the machinery
+ * behind a `serial` or IDENTITY column.
+ *
+ * A sequence owned by a column exists BECAUSE of that column: it is created by
+ * `serial`/IDENTITY and dropped with it. The column is already compared, so
+ * reporting the sequence too would show one added serial column as two separate
+ * differences — and a migration must never emit CREATE SEQUENCE for it.
+ *
+ * Exported because the summary matrix has to count the same sequences this
+ * comparison looked at. Counting the raw snapshot length there reported six
+ * serial primary keys as six sequences "in sync" — asserting a comparison that
+ * never ran, and saying it loudest when the target had none of those tables.
+ */
+export function isStandaloneSequence(sequence: SequenceSnapshot): boolean {
+  return sequence.ownedByTable === null;
+}
+
 function sequenceObjects(sequences: SequenceSnapshot[]): ComparableObject[] {
   return (
     sequences
-      // A sequence owned by a column exists BECAUSE of that column: it is
-      // created by `serial`/IDENTITY and dropped with it. The column is already
-      // compared, so reporting the sequence too would show one added serial
-      // column as two separate differences — and a migration must never emit
-      // CREATE SEQUENCE for it.
-      .filter((sequence) => sequence.ownedByTable === null)
+      .filter(isStandaloneSequence)
       .map((sequence) => ({
         key: normalizeIdentifier(sequence.name),
         kind: "SEQUENCE" as const,

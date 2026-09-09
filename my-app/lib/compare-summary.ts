@@ -14,6 +14,7 @@ import type {
   ObjectKind,
   TableSnapshot,
 } from "./compare-types";
+import { isStandaloneSequence } from "./compare";
 
 /** One line of the matrix: a category, and how its objects fared. */
 export type SummaryRow = {
@@ -246,13 +247,19 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   });
 
   const sequences = tallyObjects(report.objectDiffs, ["SEQUENCE"]);
+  // Only sequences the comparison actually looked at. A `serial` or IDENTITY
+  // column owns a sequence, and compare skips those because the column itself
+  // is already compared — so counting the raw snapshot length here reported six
+  // serial primary keys as six sequences "in sync", asserting a comparison that
+  // never ran. The same lengths decide the honest "none on either side" cell,
+  // which a schema of nothing but serial columns could never reach.
+  const leftSequences = (report.left.sequences ?? []).filter(isStandaloneSequence);
+  const rightSequences = (report.right.sequences ?? []).filter(isStandaloneSequence);
   rows.push({
     label: "Sequences",
     compared: categories.sequences,
-    absent:
-      (report.left.sequences?.length ?? 0) === 0 &&
-      (report.right.sequences?.length ?? 0) === 0,
-    inSync: inSyncCount(report.left.sequences?.length ?? 0, sequences.added, sequences.changed),
+    absent: leftSequences.length === 0 && rightSequences.length === 0,
+    inSync: inSyncCount(leftSequences.length, sequences.added, sequences.changed),
     ...sequences,
   });
 
