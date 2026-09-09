@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth-guard";
 import { ROLES, type Role } from "@/lib/auth-mode";
-import pool, { ensureProfilesTable } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 
 /**
  * Manage who can use the app and at what level.
@@ -43,7 +43,7 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    await ensureProfilesTable();
+    await syncMetadataTables();
     const result = await pool.query<UserRow>(
       `SELECT id, email, name, role, created_at, last_seen_at
          FROM profiles
@@ -84,7 +84,7 @@ export async function PUT(request: NextRequest) {
   }
 
   try {
-    await ensureProfilesTable();
+    await syncMetadataTables();
 
     // Demoting the last admin would leave nobody able to promote anyone back,
     // and this screen is the only way to change a role.
@@ -136,7 +136,7 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    await ensureProfilesTable();
+    await syncMetadataTables();
 
     const target = await pool.query<{ email: string; role: string }>(
       `SELECT email, role FROM profiles WHERE id = $1`,

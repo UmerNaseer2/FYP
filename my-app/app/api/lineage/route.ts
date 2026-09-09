@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
-import pool from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import {
-  ensureLineageTables,
   listTrackedSchemas,
   type TrackedSchemaListItem,
 } from "@/lib/lineage-db";
@@ -44,7 +43,7 @@ export async function PATCH(request: NextRequest) {
   if (!gate.ok) return gate.response;
 
   try {
-    await ensureLineageTables();
+    await syncMetadataTables();
 
     const body = await request.json().catch(() => ({}));
     const id = Number(body.id);
@@ -92,7 +91,7 @@ export async function DELETE(request: NextRequest) {
   if (!gate.ok) return gate.response;
 
   try {
-    await ensureLineageTables();
+    await syncMetadataTables();
 
     const body = await request.json().catch(() => ({}));
     const id = Number(body.id);

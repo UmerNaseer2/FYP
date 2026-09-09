@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
-import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getConnectionDependents } from "@/lib/lineage-db";
 import { checkConnectableHost } from "@/lib/connection-config";
 import { encryptSecret } from "@/lib/secret-store";
@@ -41,7 +41,7 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    await ensureConnectionsTable();
+    await syncMetadataTables();
 
     // Never send secrets to the browser. The password and the connection_string
     // (which embeds the password for URI connections) stay server-side; the UI
@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    await ensureConnectionsTable();
+    await syncMetadataTables();
 
     const result = await pool.query(
       `
@@ -175,7 +175,7 @@ export async function PUT(request: NextRequest) {
   const clearConnectionString = Boolean(body.clear_connection_string);
 
   try {
-    await ensureConnectionsTable();
+    await syncMetadataTables();
 
     // Work out what credential the row would have AFTER this update, and refuse
     // to save a connection that would end up with neither a password nor a
@@ -281,7 +281,7 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    await ensureConnectionsTable();
+    await syncMetadataTables();
 
     const existing = await pool.query<{ name: string }>(
       `SELECT name FROM connections WHERE id = $1`,

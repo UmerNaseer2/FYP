@@ -5,20 +5,15 @@ import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import type { ChangeLevel } from "./version-detection";
 import { listSetNamesUsingConnection } from "./comparison-sets";
-import pool, {
-  addCheckConstraint,
-  ensureConnectionsTable,
-  ensureMetadataSchema,
-  ENVIRONMENT_SQL_LIST,
-} from "./version-db";
-import { DEFAULT_ENVIRONMENT, toEnvironment, type Environment } from "./environments";
+import pool, { syncMetadataTables } from "./version-db";
+import { toEnvironment, type Environment } from "./environments";
 
 /**
  * Phase 6 metadata store — "schema lineage".
  *
  * Everything here lives in the SAME Postgres metadata database as `connections`
- * and `schema_comparisons` (the `DATABASE_URL_A` pool from `version-db`), using
- * the same `ensureMetadataSchema()` + `CREATE TABLE IF NOT EXISTS` pattern. We
+ * and `schema_comparisons` (the `DATABASE_URL_A` pool from `version-db`), and
+ * the four tables are declared with the rest of them in lib/db/models.ts. We
  * deliberately do NOT introduce a separate Supabase data layer — Supabase is
  * only the auth provider in this app, and keeping all app metadata in one place
  * is simpler and less error-prone.
@@ -86,96 +81,6 @@ export type DriftEventRow = {
   acknowledged_at: string | null;
 };
 
-// ── Schema setup ──────────────────────────────────────────────────────────
-
-/**
- * Create the lineage tables if they don't exist. Idempotent and cheap, so call
- * it at the top of every lineage route (mirrors how the connections route calls
- * `createConnectionsTable()`).
- *
- * Note: we intentionally do NOT add a hard foreign key from `tracked_schemas`
- * to `connections`. Connections are hard-deleted elsewhere, and we don't want
- * the create order of the two tables to matter; instead the list query
- * LEFT JOINs `connections` and surfaces a removed connection as "unreachable".
- * The internal foreign keys (everything → tracked_schemas) DO cascade, so
- * untracking a schema cleanly removes its snapshots, lineage and drift events.
- */
-export async function ensureLineageTables(): Promise<void> {
-  await ensureMetadataSchema();
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS tracked_schemas (
-      id SERIAL PRIMARY KEY,
-      connection_id INTEGER NOT NULL,
-      schema_name TEXT NOT NULL,
-      label TEXT,
-      environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'
-        CHECK (environment IN (${ENVIRONMENT_SQL_LIST})),
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE (connection_id, schema_name)
-    )
-  `);
-
-  // A schema tracked before environments existed comes back as 'unset'. Same
-  // reasoning as on `connections`: we do not guess a label, we ask for one.
-  await pool.query(
-    `ALTER TABLE tracked_schemas ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
-  );
-  await addCheckConstraint(
-    "tracked_schemas",
-    "tracked_schemas_environment_check",
-    `environment IN (${ENVIRONMENT_SQL_LIST})`
-  );
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS snapshots (
-      id SERIAL PRIMARY KEY,
-      tracked_schema_id INTEGER NOT NULL
-        REFERENCES tracked_schemas(id) ON DELETE CASCADE,
-      snapshot JSONB NOT NULL,
-      table_count INTEGER NOT NULL DEFAULT 0,
-      label TEXT,
-      captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS lineage_migrations (
-      id SERIAL PRIMARY KEY,
-      tracked_schema_id INTEGER NOT NULL
-        REFERENCES tracked_schemas(id) ON DELETE CASCADE,
-      seq INTEGER NOT NULL,
-      name TEXT NOT NULL,
-      change_level TEXT NOT NULL,
-      version TEXT NOT NULL,
-      sql_ref TEXT,
-      snapshot_id INTEGER REFERENCES snapshots(id) ON DELETE SET NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE (tracked_schema_id, seq)
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS drift_events (
-      id SERIAL PRIMARY KEY,
-      tracked_schema_id INTEGER NOT NULL
-        REFERENCES tracked_schemas(id) ON DELETE CASCADE,
-      status TEXT NOT NULL,
-      summary TEXT,
-      detail JSONB,
-      baseline_snapshot_id INTEGER REFERENCES snapshots(id) ON DELETE SET NULL,
-      detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Phase 9 — an additive "acknowledged" marker on a drift event. Run as a
-  // separate ADD COLUMN IF NOT EXISTS so existing drift_events tables pick it up
-  // without a migration; it stays idempotent and cheap alongside the creates.
-  await pool.query(
-    `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMP`
-  );
-}
-
 // ── Pure helpers ──────────────────────────────────────────────────────────
 
 /** The version a brand-new baseline (lineage seq 1) starts at. */
@@ -230,7 +135,7 @@ export async function findTrackedSchema(
   connectionId: number,
   schemaName: string
 ): Promise<TrackedSchemaHead | null> {
-  await ensureLineageTables();
+  await syncMetadataTables();
   const result = await pool.query<{
     id: number;
     environment: string | null;
@@ -291,7 +196,7 @@ export async function recordAppliedMigrationToLineage(params: {
   sqlRef: string | null;
 }): Promise<{ advanced: boolean; reason?: string; seq?: number; version?: string }> {
   const { connectionId, schemaName, targetConfig, changeLevel, name, sqlRef } = params;
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   // Only tracked schemas have a lineage to advance. Cheap metadata lookup first,
   // so an apply to an untracked schema skips the extra introspection round-trip.
@@ -518,7 +423,7 @@ function countRecorded(items: unknown): number | null {
 export async function getLineageDetail(
   trackedSchemaId: number
 ): Promise<LineageDetail | null> {
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   // ── 1. The tracked schema + its connection (LEFT JOIN: may be deleted) ─────
   const head = await pool.query<{
@@ -741,11 +646,11 @@ type TrackedConnRow = {
 export async function computeDriftDetail(
   trackedSchemaId: number
 ): Promise<DriftComputation> {
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   // 1. Tracked schema + its connection (LEFT JOIN — connection may be deleted).
   // ssl_mode is added lazily, so make sure it exists before selecting it.
-  await ensureConnectionsTable();
+  await syncMetadataTables();
   const res = await pool.query<TrackedConnRow>(
     `SELECT
        ts.schema_name, ts.label, ts.environment, ts.connection_id,
@@ -1001,7 +906,7 @@ export async function listDriftEvents(
   trackedSchemaId?: number | null,
   limit = 200
 ): Promise<DriftEventFeedItem[]> {
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   const scoped = typeof trackedSchemaId === "number" && Number.isFinite(trackedSchemaId);
   const where = scoped ? "WHERE de.tracked_schema_id = $1" : "";
@@ -1089,7 +994,7 @@ type TrackedListRow = {
  * drift row. Read-only; safe from a server component or an API route.
  */
 export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   const result = await pool.query<TrackedListRow>(`
     SELECT
@@ -1170,14 +1075,14 @@ export type ConnectionDependents = {
  * orphan instead of silently doing it.
  *
  * There is deliberately no foreign key from `tracked_schemas` to `connections`
- * (see ensureLineageTables above) — orphans are a supported state and every
+ * (see lib/db/models.ts) — orphans are a supported state and every
  * reader LEFT JOINs and degrades to "unreachable". That design decision is kept;
  * what changes is that the user is now told the number before they confirm.
  */
 export async function getConnectionDependents(
   connectionId: number
 ): Promise<ConnectionDependents> {
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   // Saved comparison sets are not lineage, but "what depends on this
   // connection?" is one question and the dialog asks it once. Counting them

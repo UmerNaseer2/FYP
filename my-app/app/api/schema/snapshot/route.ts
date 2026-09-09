@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireViewer } from "@/lib/auth-guard";
-import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import { fetchSchemaSnapshot } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
 
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
-    await ensureConnectionsTable();
+    await syncMetadataTables();
     const result = await pool.query(
       `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name
        FROM connections

@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
-import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { fetchSchemaSnapshot, type SchemaSnapshot } from "@/lib/postgres";
 import { compareSchemas } from "@/lib/compare";
 import { summarizeStructuralSeverity } from "@/lib/version-detection";
 import {
-  ensureLineageTables,
   getNextLineageVersion,
   buildDriftSummary,
 } from "@/lib/lineage-db";
@@ -26,7 +25,7 @@ export async function POST(request: NextRequest) {
   const gate = await requireEditor();
   if (!gate.ok) return gate.response;
 
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   let body: { trackedSchemaId?: number };
   try {
@@ -56,7 +55,7 @@ export async function POST(request: NextRequest) {
   };
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
-    await ensureConnectionsTable();
+    await syncMetadataTables();
     const result = await pool.query(
       `SELECT
          ts.schema_name,

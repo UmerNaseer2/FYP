@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
-import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { fetchSchemaSnapshot } from "@/lib/postgres";
 import {
-  ensureLineageTables,
   BASELINE_VERSION,
   type TrackedSchemaRow,
 } from "@/lib/lineage-db";
@@ -27,7 +26,7 @@ export async function POST(request: NextRequest) {
   const gate = await requireEditor();
   if (!gate.ok) return gate.response;
 
-  await ensureLineageTables();
+  await syncMetadataTables();
 
   // ── 1. Parse + validate the body ──────────────────────────────────────────
   let body: {
@@ -88,7 +87,7 @@ export async function POST(request: NextRequest) {
   try {
     // ssl_mode and environment are both added lazily; make sure they exist
     // before selecting them.
-    await ensureConnectionsTable();
+    await syncMetadataTables();
     const result = await pool.query(
       `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment
        FROM connections

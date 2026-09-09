@@ -101,6 +101,7 @@ my-app/
     studio/                   feature components (DiffReport, MigrationWorkbench, …)
     studio/visualizer/        ERD panes and nodes
   lib/                        all domain logic — see the table below
+    db/                       Sequelize instance, models, one-time schema sync
   hooks/                      useUser and friends
   scripts/                    seed-test-schemas.cjs
   auth.ts                     NextAuth v5 config (Microsoft Entra provider)
@@ -117,7 +118,10 @@ my-app/
 | `lib/generate-sql.ts` | Migration generator, five ordered phases |
 | `lib/sql-guard.ts` | Destructive-statement detection |
 | `lib/lineage-db.ts` | `tracked_schemas`, `snapshots`, `lineage_migrations`, `drift_events` |
-| `lib/version-db.ts` | Metadata-database pool and the `connections` table |
+| `lib/db/sequelize.ts` | The one Sequelize instance, plus a `pg.Pool`-shaped adapter over its pool |
+| `lib/db/models.ts` | All ten metadata tables as Sequelize models |
+| `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
+| `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
 | `lib/version-sync.ts` | Ledger reconciliation helpers |
 | `lib/version-detection.ts` | Change-level severity; most of this file is unreachable (§5) |
@@ -155,7 +159,8 @@ creates, alters, deferred foreign keys, then destructive drops last.
 
 ## 4. Data model
 
-In the **metadata database** (`DATABASE_URL_A`):
+In the **metadata database** (`DATABASE_URL_A`) — ten tables, all declared as
+Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 
 | Table | Holds |
 | --- | --- |
@@ -164,6 +169,26 @@ In the **metadata database** (`DATABASE_URL_A`):
 | `snapshots` | Point-in-time catalog snapshots of a tracked schema |
 | `lineage_migrations` | Which migration was applied to which tracked schema |
 | `drift_events` | Detected drift, plus acknowledgement state |
+| `schema_comparisons` | One row per comparison run, for the recent-activity feed |
+| `profiles` | Signed-in users and their role; the first to sign in becomes `admin` |
+| `comparison_sets` | A saved source schema plus its list of targets |
+| `comparison_set_targets` | One target of a saved set, in a fixed slot |
+| `deploy_approvals` | Approval requests, decisions, and the two-person record |
+
+### Which database layer talks to what
+
+Two very different kinds of database work happen here, and only one of them
+belongs to an ORM:
+
+- **This app's own database** — the ten tables above. A fixed schema the app
+  owns, so Sequelize defines it, creates it, and does the reading and writing.
+  Queries that are genuinely SQL rather than CRUD still run through
+  `metadataPool`, which borrows a connection from Sequelize's pool: one pool,
+  not two competing for the same connection limit.
+- **The databases being compared and deployed to.** Arbitrary schemas the app
+  has never seen, read out of `pg_catalog` and changed with generated DDL.
+  There is nothing for an ORM to model, so `lib/postgres.ts` keeps talking to
+  them with the `pg` driver directly.
 
 In each **target database**:
 
@@ -223,12 +248,12 @@ version-sync reconciliation · the ERD visualizer.
 | Required | State |
 | --- | --- |
 | Next.js | met — 16.2.2, App Router, React 19.2.4, TypeScript 5 |
-| PostgreSQL with Sequelize | **not met** — raw `pg` driver, no Sequelize |
+| PostgreSQL with Sequelize | met — Sequelize owns the metadata database (§4); the `pg` driver stays for target introspection |
 | Microsoft OAuth via NextAuth | wired in `auth.ts`, disabled by `BYPASS_AUTH` |
-| fetch / axios with UI ↔ API separation | mostly met; `/compare` does its work in a server component |
+| fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
-| Docker | **not met** — no Dockerfile |
-| Jest unit tests on all pages | **not met** — no test runner, no tests |
+| Docker | met — multi-stage `Dockerfile` on the Next.js standalone output, plus `.dockerignore` |
+| Jest unit tests | met — 113 tests over the six domain modules; the pages themselves are covered by route tests, not render tests |
 
 ---
 

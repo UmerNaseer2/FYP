@@ -1,214 +1,25 @@
-import { Pool } from "pg";
-import { parse as parseConnectionString } from "pg-connection-string";
-import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "./environments";
-
-declare global {
-  var __connectionsPgPool: Pool | undefined;
-}
-
-const connectionString = process.env.DATABASE_URL_A;
-
-if (!connectionString) {
-  // DATABASE_URL_A is the- app's own metadata store (saved connections, lineage,
-  // drift). Without it the app can't function, so fail loudly with a message
-  // that names where to set it in both environments.
-  throw new Error(
-    "DATABASE_URL_A is not set. Add it to your environment — .env.local for local dev, or your Vercel project's Environment Variables for deployment."
-  );
-}
-
-// Hosted Postgres (Supabase, Neon, RDS) requires SSL but commonly presents a
-// cert chain the runtime doesn't trust, so accept the cert without local CA
-// verification — the same thing lib/connection-config.ts does for target DBs.
-// Local Postgres (localhost) speaks no SSL, so leave it off there.
-const metadataHost = (() => {
-  try {
-    return parseConnectionString(connectionString).host ?? "";
-  } catch {
-    return "";
-  }
-})();
-const isLocalHost =
-  metadataHost === "" ||
-  metadataHost === "localhost" ||
-  metadataHost === "127.0.0.1" ||
-  metadataHost === "::1";
-
-const pool =
-  globalThis.__connectionsPgPool ??
-  new Pool({
-    connectionString,
-    max: 5,
-    ssl: isLocalHost ? false : { rejectUnauthorized: false },
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__connectionsPgPool = pool;
-}
+import { fn, col, where as whereFn } from "sequelize";
+import { metadataPool } from "./db/sequelize";
+import { Profile as ProfileModel } from "./db/models";
+import { syncMetadataTables } from "./db/bootstrap";
 
 /**
- * Make sure the `public` schema exists before we create our metadata tables
- * (connections, schema_comparisons, …) in it.
+ * The app's own database — the one place that hands out a connection to it.
  *
- * Our tables are created unqualified, so they land in whatever the search_path
- * points at — normally `public`. Some target databases have had `public`
- * dropped (e.g. ones set up with only custom comparison schemas); there, an
- * unqualified `CREATE TABLE` fails with "no schema has been selected to create
- * in" (Postgres error 3F000). Re-creating it is idempotent and cheap, so call
- * this once right before any `CREATE TABLE IF NOT EXISTS …` on this pool.
- */
-export async function ensureMetadataSchema(): Promise<void> {
-  await pool.query("CREATE SCHEMA IF NOT EXISTS public");
-}
-
-/**
- * The environment list as a SQL literal, generated from the TypeScript union in
- * lib/environments so a new environment can never be valid in one and rejected
- * by the other. Only ever built from our own constants — no user input.
- */
-export const ENVIRONMENT_SQL_LIST = ENVIRONMENTS.map((e) => `'${e}'`).join(", ");
-
-/**
- * Add a CHECK constraint, tolerating the (normal) case where it is already
- * there. `ADD COLUMN IF NOT EXISTS` cannot carry a CHECK onto a table that
- * already has the column, so every column we add after the fact needs this.
- */
-export async function addCheckConstraint(
-  table: string,
-  constraintName: string,
-  check: string
-): Promise<void> {
-  try {
-    await pool.query(
-      `ALTER TABLE ${table} ADD CONSTRAINT ${constraintName} CHECK (${check})`
-    );
-  } catch (error) {
-    // 42710 duplicate_object: already added on an earlier boot.
-    if ((error as { code?: string })?.code !== "42710") throw error;
-  }
-}
-
-/**
- * Run a lazy-DDL function at most once per process.
+ * `pool` is not a `pg.Pool` any more: it is a thin, pg-shaped view over
+ * Sequelize's pool (lib/db/sequelize.ts). Keeping the shape means the metadata
+ * reads that are genuinely SQL — a recursive walk up a lineage, an advisory
+ * lock, an aggregate feed — stay written as SQL and still run on the same
+ * single pool as the model calls, instead of a second pool competing for the
+ * same connection limit.
  *
- * The `connections` table is read by ten routes, and each has to be sure the
- * columns it selects exist before it selects them — otherwise the first person
- * to open Deploy on a database created by an older build hits "column ssl_mode
- * does not exist". Without this memo that guarantee would cost a handful of DDL
- * round-trips on every request; with it, the first request in a process pays
- * and the rest are free.
- *
- * A failure is deliberately NOT cached: the next caller retries, so a database
- * that was briefly unreachable heals itself instead of staying broken until the
- * server restarts.
+ * The tables themselves are defined in lib/db/models.ts and created by
+ * `syncMetadataTables()`, re-exported here so every caller reaches the metadata
+ * store through one module.
  */
-function once(run: () => Promise<void>): () => Promise<void> {
-  let inFlight: Promise<void> | null = null;
-  return () => {
-    if (!inFlight) {
-      inFlight = run().catch((error) => {
-        inFlight = null;
-        throw error;
-      });
-    }
-    return inFlight;
-  };
-}
+const pool = metadataPool;
 
-/**
- * Create (and bring up to date) the `connections` table that stores saved
- * database targets. This is the single source of truth for that table's shape —
- * every reader/writer (the connections API and the Compare page) calls this
- * first so the columns, including `ssl`, are guaranteed to exist consistently.
- */
-async function createConnectionsTable(): Promise<void> {
-  await ensureMetadataSchema();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS connections (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      host TEXT NOT NULL,
-      port INTEGER NOT NULL DEFAULT 5432,
-      database_name TEXT NOT NULL DEFAULT 'postgres',
-      type TEXT NOT NULL DEFAULT 'PostgreSQL',
-      username TEXT NOT NULL,
-      password TEXT NOT NULL,
-      connection_string TEXT,
-      ssl BOOLEAN NOT NULL DEFAULT false,
-      ssl_mode TEXT NOT NULL DEFAULT 'disable'
-        CHECK (ssl_mode IN ('disable', 'require', 'verify-full')),
-      environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'
-        CHECK (environment IN (${ENVIRONMENT_SQL_LIST})),
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  // Bring older tables (created before SSL support) up to date.
-  await pool.query(
-    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS ssl BOOLEAN NOT NULL DEFAULT false`
-  );
-
-  // `ssl_mode` replaces the boolean with a three-way choice (disable / require /
-  // verify-full). The boolean is kept in step on every write so a rollback to an
-  // older build still reads the right thing; `ssl_mode` is what the driver uses.
-  await pool.query(
-    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS ssl_mode TEXT NOT NULL DEFAULT 'disable'`
-  );
-  // Backfill: ssl = true meant "encrypt but don't verify the certificate",
-  // which is exactly `require`. Only touches rows still on the default.
-  await pool.query(
-    `UPDATE connections SET ssl_mode = 'require' WHERE ssl IS TRUE AND ssl_mode = 'disable'`
-  );
-  await addCheckConstraint(
-    "connections",
-    "connections_ssl_mode_check",
-    "ssl_mode IN ('disable', 'require', 'verify-full')"
-  );
-
-  // `environment` is the typed dev / staging / prod label. It is deliberately
-  // NOT guessed from the connection's name: the whole point is that the label
-  // is data the app can trust, and a regex over "Prod — RDS" is not that. Rows
-  // created before this column arrive as 'unset', and the UI asks for a label.
-  await pool.query(
-    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
-  );
-  await addCheckConstraint(
-    "connections",
-    "connections_environment_check",
-    `environment IN (${ENVIRONMENT_SQL_LIST})`
-  );
-}
-
-export const ensureConnectionsTable = once(createConnectionsTable);
-
-/**
- * Create the `profiles` table that backs sign-in and role checks.
- *
- * This table is the reason auth could not be switched on before: the NextAuth
- * session callback read it, nothing ever created it, and the repo carries no
- * .sql files. It follows the same lazy-DDL idiom as `connections` above, so it
- * appears the first time anyone signs in or an admin lists users.
- */
-async function createProfilesTable(): Promise<void> {
-  await ensureMetadataSchema();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS profiles (
-      id SERIAL PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      name TEXT,
-      role TEXT NOT NULL DEFAULT 'viewer'
-        CHECK (role IN ('viewer', 'editor', 'admin')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_seen_at TIMESTAMPTZ
-    )
-  `);
-  // Email lookups happen on every session read, so index them. UNIQUE already
-  // provides the index; this is belt-and-braces for tables created by hand.
-  await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS profiles_email_key_idx ON profiles (lower(email))`
-  );
-}
-
-export const ensureProfilesTable = once(createProfilesTable);
+export { syncMetadataTables } from "./db/bootstrap";
 
 /** A row from `profiles`, as the session callback and the admin screen see it. */
 export type Profile = {
@@ -218,6 +29,19 @@ export type Profile = {
   role: string;
 };
 
+function toProfile(row: ProfileModel): Profile {
+  return { id: row.id, email: row.email, name: row.name ?? null, role: row.role };
+}
+
+/**
+ * Match an email case-insensitively, through the `profiles_email_key_idx`
+ * functional index. Sign-in providers are not consistent about the case they
+ * hand back, and "Umer@x" and "umer@x" are the same person.
+ */
+function sameEmail(normalised: string) {
+  return whereFn(fn("lower", col("email")), normalised);
+}
+
 /**
  * Look up (or create) the profile for someone who has just authenticated.
  *
@@ -226,44 +50,40 @@ export type Profile = {
  * subsequent sign-in gets `viewer` and has to be promoted from the admin screen.
  */
 export async function upsertProfile(email: string, name: string | null): Promise<Profile> {
-  await ensureProfilesTable();
+  await syncMetadataTables();
 
   const normalised = email.trim().toLowerCase();
 
-  const existing = await pool.query<Profile>(
-    `UPDATE profiles
-        SET last_seen_at = now(),
-            name = COALESCE($2, name)
-      WHERE lower(email) = $1
-      RETURNING id, email, name, role`,
-    [normalised, name]
-  );
-  if (existing.rows.length > 0) return existing.rows[0];
+  const existing = await ProfileModel.findOne({ where: sameEmail(normalised) });
+  if (existing) {
+    existing.last_seen_at = new Date();
+    // Only overwrite the name when the provider actually sent one, so a
+    // sign-in that omits it does not blank out a name we already had.
+    if (name !== null) existing.name = name;
+    await existing.save();
+    return toProfile(existing);
+  }
 
-  const isFirstUser = await pool.query<{ count: string }>(
-    `SELECT count(*)::text AS count FROM profiles`
-  );
-  const role = isFirstUser.rows[0]?.count === "0" ? "admin" : "viewer";
+  const role = (await ProfileModel.count()) === 0 ? "admin" : "viewer";
 
-  // ON CONFLICT covers two people signing in at the same moment.
-  const created = await pool.query<Profile>(
-    `INSERT INTO profiles (email, name, role, last_seen_at)
-     VALUES ($1, $2, $3, now())
-     ON CONFLICT (email) DO UPDATE SET last_seen_at = now()
-     RETURNING id, email, name, role`,
-    [normalised, name, role]
-  );
-  return created.rows[0];
+  // findOrCreate rather than create: two people signing in at the same moment
+  // would otherwise race, and the loser would see a unique-violation error page
+  // instead of their account.
+  const [created] = await ProfileModel.findOrCreate({
+    where: { email: normalised },
+    defaults: { email: normalised, name, role, last_seen_at: new Date() },
+  });
+  return toProfile(created);
 }
 
 /** Read just the role for an email. Returns null when there is no profile. */
 export async function getProfileRole(email: string): Promise<string | null> {
-  await ensureProfilesTable();
-  const result = await pool.query<{ role: string }>(
-    `SELECT role FROM profiles WHERE lower(email) = $1`,
-    [email.trim().toLowerCase()]
-  );
-  return result.rows[0]?.role ?? null;
+  await syncMetadataTables();
+  const row = await ProfileModel.findOne({
+    where: sameEmail(email.trim().toLowerCase()),
+    attributes: ["role"],
+  });
+  return row?.role ?? null;
 }
 
 export default pool;

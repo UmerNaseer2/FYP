@@ -1,7 +1,4 @@
-import pool, {
-  ensureConnectionsTable,
-  ensureMetadataSchema,
-} from "./version-db";
+import pool, { syncMetadataTables } from "./version-db";
 import { toEnvironment, type Environment } from "./environments";
 
 /**
@@ -17,7 +14,7 @@ import { toEnvironment, type Environment } from "./environments";
  * pretends a comparison was run.
  *
  * Lives in the same metadata database as `connections` and the lineage tables,
- * created with the same lazy `CREATE TABLE IF NOT EXISTS` idiom.
+ * and is declared with them as a Sequelize model in `lib/db/models.ts`.
  */
 
 /**
@@ -62,74 +59,6 @@ export type ComparisonSet = {
   lastRunAt: string | null;
   targets: ComparisonSetTarget[];
 };
-
-// ── Schema ────────────────────────────────────────────────────────────────
-
-let ddlInFlight: Promise<void> | null = null;
-
-async function createComparisonSetTables(): Promise<void> {
-  await ensureMetadataSchema();
-  // The targets reference `connections`, so that table has to exist (and be up
-  // to date) before the foreign key can be declared.
-  await ensureConnectionsTable();
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS comparison_sets (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      source_connection_id INTEGER REFERENCES connections(id) ON DELETE SET NULL,
-      source_connection_label TEXT NOT NULL DEFAULT '',
-      source_schema TEXT NOT NULL,
-      allow_data_loss BOOLEAN NOT NULL DEFAULT false,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_run_at TIMESTAMPTZ
-    )
-  `);
-
-  // Names are how a set is identified on screen, so two sets called "Nightly"
-  // would be indistinguishable in the picker. Case-insensitive, because
-  // "Nightly" and "nightly" are the same set to everyone except a byte
-  // comparison. This index is also what the save upsert conflicts on.
-  await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS comparison_sets_name_key
-       ON comparison_sets (lower(name))`
-  );
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS comparison_set_targets (
-      id SERIAL PRIMARY KEY,
-      set_id INTEGER NOT NULL REFERENCES comparison_sets(id) ON DELETE CASCADE,
-      position INTEGER NOT NULL,
-      connection_id INTEGER REFERENCES connections(id) ON DELETE SET NULL,
-      connection_label TEXT NOT NULL DEFAULT '',
-      schema_name TEXT NOT NULL
-    )
-  `);
-
-  // Order is part of the data: target 1 and target 2 keep the columns they had
-  // when the set was saved, so re-opening a set looks the same every time.
-  await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS comparison_set_targets_position_key
-       ON comparison_set_targets (set_id, position)`
-  );
-}
-
-/**
- * Create the tables at most once per process, retrying after a failure so a
- * briefly unreachable database heals itself. Same reasoning as `once()` in
- * lib/version-db — spelled out here because this module owns two tables and an
- * index, and paying for that DDL on every page render would be silly.
- */
-export function ensureComparisonSetTables(): Promise<void> {
-  if (!ddlInFlight) {
-    ddlInFlight = createComparisonSetTables().catch((error) => {
-      ddlInFlight = null;
-      throw error;
-    });
-  }
-  return ddlInFlight;
-}
 
 // ── Reads ─────────────────────────────────────────────────────────────────
 
@@ -218,7 +147,7 @@ function toTarget(row: TargetRow): ComparisonSetTarget {
 export async function listSetNamesUsingConnection(
   connectionId: number
 ): Promise<string[]> {
-  await ensureComparisonSetTables();
+  await syncMetadataTables();
 
   const result = await pool.query<{ name: string }>(
     `SELECT DISTINCT s.name
@@ -233,7 +162,7 @@ export async function listSetNamesUsingConnection(
 }
 
 export async function listComparisonSets(): Promise<ComparisonSet[]> {
-  await ensureComparisonSetTables();
+  await syncMetadataTables();
 
   // Two plain queries stitched in JS rather than one query with a JSON
   // aggregate: there are never many sets, and this stays readable.
@@ -255,7 +184,7 @@ export async function listComparisonSets(): Promise<ComparisonSet[]> {
 /** One set by id, or null if it has been deleted since the link was made. */
 export async function getComparisonSet(id: number): Promise<ComparisonSet | null> {
   if (!Number.isInteger(id) || id <= 0) return null;
-  await ensureComparisonSetTables();
+  await syncMetadataTables();
 
   const sets = await pool.query<SetRow>(`${SET_SELECT} WHERE s.id = $1`, [id]);
   if (sets.rows.length === 0) return null;
@@ -334,7 +263,7 @@ export async function saveComparisonSet(
   const problem = validate(input);
   if (problem) return { ok: false, error: problem };
 
-  await ensureComparisonSetTables();
+  await syncMetadataTables();
 
   const name = input.name.trim();
   const client = await pool.connect();
@@ -404,7 +333,7 @@ export async function saveComparisonSet(
 /** Delete a set. Its targets go with it through ON DELETE CASCADE. */
 export async function deleteComparisonSet(id: number): Promise<boolean> {
   if (!Number.isInteger(id) || id <= 0) return false;
-  await ensureComparisonSetTables();
+  await syncMetadataTables();
   const result = await pool.query(`DELETE FROM comparison_sets WHERE id = $1`, [id]);
   return (result.rowCount ?? 0) > 0;
 }
@@ -425,7 +354,7 @@ export async function deleteComparisonSet(id: number): Promise<boolean> {
 export async function markComparisonSetRun(id: number): Promise<string | null> {
   if (!Number.isInteger(id) || id <= 0) return null;
   try {
-    await ensureComparisonSetTables();
+    await syncMetadataTables();
     const result = await pool.query<{ last_run_at: string }>(
       `UPDATE comparison_sets SET last_run_at = now() WHERE id = $1
        RETURNING last_run_at`,

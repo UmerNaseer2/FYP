@@ -22,7 +22,7 @@ import {
   renderRollbackScript,
   type SqlStatement,
 } from "@/lib/generate-sql";
-import pool, { ensureConnectionsTable, ensureMetadataSchema } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
 import {
@@ -199,7 +199,7 @@ async function getSavedConnections(): Promise<SavedConnection[]> {
   try {
     // Shared DDL (lib/version-db) guarantees the `ssl` and `environment`
     // columns exist.
-    await ensureConnectionsTable();
+    await syncMetadataTables();
 
     const result = await pool.query(`
       SELECT id, name, host, port, database_name, type, username, password,
@@ -789,15 +789,7 @@ export async function runComparison(
   const comparedPairs = outcomes.filter((outcome) => outcome.report);
   if (record && comparedPairs.length > 0) {
     try {
-      await ensureMetadataSchema();
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS schema_comparisons (
-          id SERIAL PRIMARY KEY,
-          schema_a TEXT NOT NULL,
-          schema_b TEXT NOT NULL,
-          compared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+      await syncMetadataTables();
 
       const left = `${sourceTarget.displayName}.${sourceSchema}`;
       await Promise.all(

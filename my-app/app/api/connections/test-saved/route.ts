@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
-import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
 
 /** Test a saved connection by id (used by the per-row "Test" action). */
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     }
 
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
-    await ensureConnectionsTable();
+    await syncMetadataTables();
     const result = await pool.query(
       `SELECT host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
        FROM connections

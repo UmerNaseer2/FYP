@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import pool, { ensureMetadataSchema } from "./version-db";
+import pool, { syncMetadataTables } from "./version-db";
 import { fingerprintBody, type ApprovalScript } from "./approval-fingerprint";
 
 export type { ApprovalScript };
@@ -56,69 +56,6 @@ const COLUMNS = `id, connection_id, schema_name, script_name, target_version,
   run_fingerprint, migration_count, breaking_count, requested_by, requested_at,
   status, decided_by, decided_at, self_approved, note, used_at`;
 
-let tableReady: Promise<void> | null = null;
-
-/**
- * Create the approvals table. Same lazy-DDL idiom as the rest of the metadata
- * store: the repo carries no .sql files, so every table is created by the first
- * request that needs it.
- */
-export function ensureApprovalsTable(): Promise<void> {
-  if (!tableReady) {
-    tableReady = createApprovalsTable().catch((error) => {
-      // Not cached on failure — the next caller retries rather than inheriting
-      // a permanently broken promise from one bad boot.
-      tableReady = null;
-      throw error;
-    });
-  }
-  return tableReady;
-}
-
-async function createApprovalsTable(): Promise<void> {
-  await ensureMetadataSchema();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS deploy_approvals (
-      id SERIAL PRIMARY KEY,
-      connection_id INTEGER NOT NULL,
-      schema_name TEXT NOT NULL,
-      script_name TEXT NOT NULL,
-      target_version TEXT NOT NULL,
-      run_fingerprint TEXT NOT NULL,
-      migration_count INTEGER NOT NULL,
-      breaking_count INTEGER NOT NULL DEFAULT 0,
-      requested_by TEXT NOT NULL,
-      requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'rejected', 'used')),
-      decided_by TEXT,
-      decided_at TIMESTAMPTZ,
-      self_approved BOOLEAN NOT NULL DEFAULT false,
-      note TEXT,
-      used_at TIMESTAMPTZ,
-      -- The two-person rule, in the database.
-      --
-      -- A route that forgets to compare the two emails cannot create a
-      -- self-approved row by accident; it gets an error instead. The one
-      -- exception is flagged, not hidden: self_approved is set only while the
-      -- auth bypass is on, when the app has exactly one principal and the rule
-      -- is unsatisfiable. An audit can then tell the two apart by reading one
-      -- column.
-      CONSTRAINT deploy_approvals_two_person_check CHECK (
-        decided_by IS NULL
-        OR self_approved
-        OR lower(decided_by) <> lower(requested_by)
-      )
-    )
-  `);
-  // Finding the approval that covers a run is the hot path — the apply route
-  // does it on every production deploy.
-  await pool.query(
-    `CREATE INDEX IF NOT EXISTS deploy_approvals_target_idx
-       ON deploy_approvals (connection_id, schema_name, script_name, status)`
-  );
-}
-
 /**
  * Hash the exact SQL of a run.
  *
@@ -140,7 +77,7 @@ export async function createApprovalRequest(input: {
   requestedBy: string;
   note: string | null;
 }): Promise<DeployApproval> {
-  await ensureApprovalsTable();
+  await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts);
 
   // An identical request that is still open is the same request. Returning it
@@ -182,7 +119,7 @@ export async function listApprovals(
   schemaName: string,
   scriptName: string | null
 ): Promise<DeployApproval[]> {
-  await ensureApprovalsTable();
+  await syncMetadataTables();
   const result = await pool.query<DeployApproval>(
     `SELECT ${COLUMNS} FROM deploy_approvals
       WHERE connection_id = $1 AND schema_name = $2
@@ -226,7 +163,7 @@ export async function decideApproval(input: {
   selfApproved: boolean;
   note: string | null;
 }): Promise<DeployApproval | null> {
-  await ensureApprovalsTable();
+  await syncMetadataTables();
   const result = await pool.query<DeployApproval>(
     `UPDATE deploy_approvals
         SET status = $2, decided_by = $3, decided_at = now(),
@@ -246,7 +183,7 @@ export async function decideApproval(input: {
 
 /** Read one approval by id, or null when there is no such row. */
 export async function getApproval(id: number): Promise<DeployApproval | null> {
-  await ensureApprovalsTable();
+  await syncMetadataTables();
   const result = await pool.query<DeployApproval>(
     `SELECT ${COLUMNS} FROM deploy_approvals WHERE id = $1`,
     [id]
@@ -268,7 +205,7 @@ export async function claimApproval(input: {
   schemaName: string;
   scripts: ApprovalScript[];
 }): Promise<DeployApproval | null> {
-  await ensureApprovalsTable();
+  await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts);
   const result = await pool.query<DeployApproval>(
     `UPDATE deploy_approvals
