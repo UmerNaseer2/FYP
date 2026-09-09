@@ -235,11 +235,11 @@ function collateSuffix(col: ColumnSnapshot): string {
   return col.collation ? ` COLLATE ${col.collation}` : "";
 }
 
-function buildColumnDef(col: ColumnSnapshot): string {
+function buildColumnDef(col: ColumnSnapshot, omitNotNull = false): string {
   // An IDENTITY column in the source stays an IDENTITY column. Identity is
   // restricted to integer types, which have no collation, so none is written.
   if (col.identity) {
-    const notNull = col.nullable ? "" : " NOT NULL";
+    const notNull = col.nullable || omitNotNull ? "" : " NOT NULL";
     return (
       `${q(col.name)} ${col.typeDisplay} ` +
       `GENERATED ${col.identity} AS IDENTITY${identityOptionsSuffix(col)}${notNull}`
@@ -260,7 +260,7 @@ function buildColumnDef(col: ColumnSnapshot): string {
       ? serialTypeFor(col.typeDisplay)
       : null;
   if (serialType) {
-    return `${q(col.name)} ${serialType}${col.nullable ? "" : " NOT NULL"}`;
+    return `${q(col.name)} ${serialType}${col.nullable || omitNotNull ? "" : " NOT NULL"}`;
   }
 
   let def = `${q(col.name)} ${col.typeDisplay}${collateSuffix(col)}`;
@@ -269,12 +269,51 @@ function buildColumnDef(col: ColumnSnapshot): string {
   // "cannot use column reference in DEFAULT expression".
   if (col.generated) {
     def += ` GENERATED ALWAYS AS (${col.generated.expression}) ${col.generated.storage}`;
-    if (!col.nullable) def += " NOT NULL";
+    if (!col.nullable && !omitNotNull) def += " NOT NULL";
     return def;
   }
-  if (!col.nullable) def += " NOT NULL";
+  if (!col.nullable && !omitNotNull) def += " NOT NULL";
   if (col.columnDefault !== null) def += ` DEFAULT ${col.columnDefault}`;
   return def;
+}
+
+/**
+ * Put NOT NULL back on a column that was just added without it.
+ *
+ * On an empty table this is the whole restore and it simply runs. On a table
+ * with rows there is no value to give the new column, so no statement can put
+ * the constraint back — and failing the script over it would mean the column
+ * itself never came back either. The DO block takes the outcome that loses
+ * least: the column is restored, the constraint is not, and PostgreSQL prints
+ * exactly what to run once the rows have been backfilled.
+ */
+function restoreNotNullStatement(col: ColumnSnapshot, tableName: string): SqlStatement {
+  const setNotNull = `ALTER TABLE ${q(tableName)} ALTER COLUMN ${q(col.name)} SET NOT NULL;`;
+  const notice =
+    `Column ${q(col.name)} on ${q(tableName)} was restored WITHOUT its NOT NULL: ` +
+    `the table already holds rows and the column has no default. ` +
+    `Backfill it, then run: ${setNotNull}`;
+
+  return {
+    sql: [
+      `DO $$`,
+      `BEGIN`,
+      `  IF EXISTS (SELECT 1 FROM ${q(tableName)} LIMIT 1) THEN`,
+      `    RAISE NOTICE ${literal(notice)};`,
+      `  ELSE`,
+      `    ${setNotNull}`,
+      `  END IF;`,
+      `END`,
+      `$$;`,
+    ].join("\n"),
+    description:
+      `Restore NOT NULL on "${col.name}" in "${tableName}" — applied only if the ` +
+      `table is empty, since there is no value for existing rows`,
+    kind: "ALTER_COLUMN_NULLABILITY",
+    severity: "breaking",
+    tableName,
+    destructive: false,
+  };
 }
 
 // Build a full CREATE TABLE statement for a table that is missing from B.
@@ -2478,12 +2517,16 @@ function alterStatementsForMatch(
 
   // ── b. Add columns that exist in A but are absent from B ─────────────────
   for (const col of match.columnsOnlyInA) {
-    // NOT NULL + no default will fail on a non-empty table because PostgreSQL
-    // can't fill existing rows. Flag it so the user knows to add a DEFAULT or
-    // run on an empty table.
-    // A computed column fills its own rows from the expression, so NOT NULL with
-    // no default — which is what every generated column looks like — is fine.
-    const risky = !col.nullable && col.columnDefault === null && !col.generated;
+    // NOT NULL with no default is the one shape PostgreSQL cannot add to a
+    // table that already has rows: there is no value to put in them. Writing it
+    // as one ALTER TABLE ADD COLUMN … NOT NULL makes the whole script abort,
+    // which matters most on a rollback — restoring a column the migration
+    // dropped would be impossible on any table holding data.
+    //
+    // A computed column fills its own rows from its expression, and an identity
+    // column fills them from its sequence, so neither is risky.
+    const risky =
+      !col.nullable && col.columnDefault === null && !col.generated && !col.identity;
     // Same sequence-first, ownership-after shape a new table uses for a tuned
     // serial column — see tunedSerialStatements.
     const tunedSerial = tunedSerialStatements(col, tName);
@@ -2492,15 +2535,16 @@ function alterStatementsForMatch(
       sql:
         `ALTER TABLE ${q(tName)} ADD COLUMN ` +
         (addColumnIfNotExists ? "IF NOT EXISTS " : "") +
-        `${buildColumnDef(col)};`,
+        `${buildColumnDef(col, risky)};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
-        (risky ? " — WARNING: NOT NULL with no default, will fail on a non-empty table" : ""),
+        (risky ? " — added nullable; the next statement puts NOT NULL back" : ""),
       kind: "ADD_COLUMN",
-      severity: risky ? "breaking" : "safe",
+      severity: "safe",
       tableName: tName,
       destructive: false,
     });
+    if (risky) stmts.push(restoreNotNullStatement(col, tName));
     stmts.push(...tunedSerial.after);
   }
 
@@ -3421,6 +3465,14 @@ export type RollbackScript = {
    * are the columns where it cannot restore the value.
    */
   truncatingTypeChanges: string[];
+  /**
+   * Columns the migration dropped that were NOT NULL with no default, written
+   * "table.column". The down script re-adds each one, but PostgreSQL has no
+   * value to put in the rows that are already there, so on a non-empty table
+   * the column comes back nullable and the constraint has to be re-applied by
+   * hand after a backfill.
+   */
+  nullableOnRestore: string[];
   /** True when the rollback restores the target exactly, data included. */
   lossless: boolean;
   /** Whether the forward migration this undoes had its drops armed. */
@@ -3615,6 +3667,16 @@ export function generateRollback(
   // target came back exactly as it was. It does not: the down script restores
   // the type, never the values a truncating cast already threw away.
   const truncatingTypeChanges = truncatingTypeChangeLabels(report);
+  // Restoring one of these gives the column back but not its NOT NULL — see the
+  // DO block restoreNotNullStatement writes.
+  const nullableOnRestore: string[] = [];
+  for (const match of report.matchedTables) {
+    for (const col of match.columnsOnlyInB) {
+      if (!col.nullable && col.columnDefault === null && !col.generated && !col.identity) {
+        nullableOnRestore.push(`${match.left.name}.${col.name}`);
+      }
+    }
+  }
   const lossless =
     restoredCount === 0 &&
     destroyedCount === 0 &&
@@ -3656,6 +3718,16 @@ export function generateRollback(
     );
   }
 
+  if (nullableOnRestore.length > 0) {
+    const n = nullableOnRestore.length;
+    warnings.push(
+      `${n} restored column${n === 1 ? "" : "s"} had NOT NULL and no default. ` +
+        `On a table that already holds rows there is no value to give them, so ` +
+        `${n === 1 ? "it comes" : "they come"} back nullable and the script prints ` +
+        `the ALTER to run once you have backfilled ${n === 1 ? "it" : "them"}.`,
+    );
+  }
+
   const unconfirmed = reverseReport.possibleTableMatches.length;
   if (unconfirmed > 0) {
     warnings.push(
@@ -3674,6 +3746,7 @@ export function generateRollback(
     emptyOnRestore: { tables: emptyTables, columns: emptyColumns },
     dropsCreated,
     truncatingTypeChanges,
+    nullableOnRestore,
     lossless,
     forwardAllowedDataLoss,
   };
@@ -3786,6 +3859,17 @@ export function renderRollbackScript(script: RollbackScript): string {
       `-- not be undone — the down script gives each column its old type back,`,
       `-- holding whatever the cast left behind:`,
       ...script.truncatingTypeChanges.map((label) => `--     ${label}`),
+    );
+  }
+
+  if (script.nullableOnRestore.length > 0) {
+    header.push(
+      `--`,
+      `-- COLUMN RESTORED, NOT NULL NOT. These columns had NOT NULL and no`,
+      `-- default, and there is no value to give rows that already exist — so on`,
+      `-- a non-empty table each comes back nullable and prints the ALTER to run`,
+      `-- after you backfill it:`,
+      ...script.nullableOnRestore.map((label) => `--     ${label}`),
     );
   }
 

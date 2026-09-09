@@ -248,3 +248,54 @@ describe("generateRollback — truncating type changes", () => {
     expect(sql).toMatch(/reading\.value: timestamp without time zone → date/);
   });
 });
+
+/**
+ * A dropped NOT NULL column with no default is the one restore PostgreSQL
+ * cannot perform on a table that already holds rows: there is no value to put
+ * in them. Writing it as a single `ADD COLUMN … NOT NULL` made the whole
+ * rollback abort, so the column did not come back either.
+ */
+describe("generateRollback — restoring a NOT NULL column with no default", () => {
+  const before = schema([
+    table("orders", [
+      column("id", { nullable: false }),
+      column("note", { typeDisplay: "text", nullable: false }),
+    ]),
+  ]);
+  const after = schema([table("orders", [column("id", { nullable: false })])]);
+
+  /** The migration that drops "note", and the rollback that puts it back. */
+  function rollback() {
+    return generateRollback(compareSchemas(after, before), { allowDataLoss: true });
+  }
+
+  it("adds the column back without NOT NULL, so the statement can run", () => {
+    const sql = renderRollbackScript(rollback());
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS "note" text;/);
+  });
+
+  it("re-applies NOT NULL only when the table turns out to be empty", () => {
+    const sql = renderRollbackScript(rollback());
+    expect(sql).toMatch(/IF EXISTS \(SELECT 1 FROM "orders" LIMIT 1\) THEN/);
+    expect(sql).toMatch(/RAISE NOTICE/);
+    expect(sql).toMatch(/ALTER COLUMN "note" SET NOT NULL;/);
+  });
+
+  it("names the column in the script header instead of leaving it to a description", () => {
+    const script = rollback();
+    expect(script.nullableOnRestore).toEqual(["orders.note"]);
+    expect(renderRollbackScript(script)).toContain("orders.note");
+  });
+
+  it("leaves a column that has a default alone", () => {
+    const withDefault = schema([
+      table("orders", [
+        column("id", { nullable: false }),
+        column("note", { typeDisplay: "text", nullable: false, columnDefault: "''" }),
+      ]),
+    ]);
+    const script = generateRollback(compareSchemas(after, withDefault), { allowDataLoss: true });
+    expect(script.nullableOnRestore).toEqual([]);
+    expect(renderRollbackScript(script)).toMatch(/"note" text NOT NULL DEFAULT ''/);
+  });
+});
