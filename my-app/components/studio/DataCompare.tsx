@@ -152,16 +152,26 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
         <summary className="tg-header">
           <ChevronDown />
           <span className="name">Row data</span>
-          {different.length + targetOnly.length === 0 ? (
-            <span className="pill pill-sync">
-              <span className="dot" />
-              rows match
-            </span>
-          ) : (
+          {different.length + targetOnly.length > 0 ? (
             <span className="pill pill-drift">
               <span className="dot" />
               {different.length + targetOnly.length}{" "}
               {plural(different.length + targetOnly.length, "table differs", "tables differ")}
+            </span>
+          ) : skipped.length > 0 ? (
+            /* Not green. A skipped table is one nobody read — it timed out, or
+               it had no column both sides could be hashed on. Saying "rows
+               match" over it claims a result that was never obtained, which is
+               the one thing this panel exists to avoid. */
+            <span className="pill pill-neutral">
+              <span className="dot" />
+              {skipped.length} of {result.tables.length}{" "}
+              {plural(result.tables.length, "table", "tables")} not read
+            </span>
+          ) : (
+            <span className="pill pill-sync">
+              <span className="dot" />
+              rows match
             </span>
           )}
           <span className="ml-auto text-[11px]" style={{ color: "var(--text-3)" }}>
@@ -245,8 +255,8 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
           <details className="obj-group">
             <summary className="obj-header">
               <span className="section-title">
-                {identical.length} {plural(identical.length, "table", "tables")} hold
-                identical rows
+                {identical.length} {plural(identical.length, "table", "tables")}{" "}
+                {plural(identical.length, "holds", "hold")} identical rows
               </span>
               <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
                 click to list
