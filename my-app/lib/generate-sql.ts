@@ -2,6 +2,7 @@ import type {
   ChangeSeverity,
   CompareReport,
   ConstraintDiff,
+  ObjectDiff,
   TableMatch,
 } from "./compare-types";
 import type {
@@ -1898,15 +1899,51 @@ export type RollbackScript = {
    */
   emptyOnRestore: { tables: string[]; columns: string[] };
   /**
-   * Tables the rollback DROPS because the forward migration created them. Any
-   * row written into one of these since the migration ran is lost.
+   * What the rollback DROPS because the forward migration created it.
+   *
+   * Tables and columns are kept apart from the rest because only they can hold
+   * rows written since the migration ran — a column is written "table.column".
+   * `objects` (views, sequences, types, routines, indexes, triggers, policies)
+   * are dropped too, but they carry no rows of their own, so removing them puts
+   * the target back exactly as it was.
+   *
+   * Created columns used to be counted nowhere at all, which is how an add-only
+   * migration produced a down script promising it "restores the target exactly
+   * as it was" two lines above an armed DROP COLUMN ... CASCADE.
    */
-  dropsCreated: string[];
+  dropsCreated: { tables: string[]; columns: string[]; objects: string[] };
   /** True when the rollback restores the target exactly, data included. */
   lossless: boolean;
   /** Whether the forward migration this undoes had its drops armed. */
   forwardAllowedDataLoss: boolean;
 };
+
+/**
+ * Everything besides tables and columns that the forward migration creates, and
+ * the rollback therefore drops, labelled the way the report names it.
+ *
+ * "onlyA" means the object exists in the source and not in the target, so the
+ * forward migration is what brings it into being.
+ */
+function createdObjectLabels(report: CompareReport): string[] {
+  const labels: string[] = [];
+
+  function add(diff: ObjectDiff) {
+    if (diff.status !== "onlyA") return;
+    const kind = diff.kind.toLowerCase();
+    labels.push(
+      diff.table ? `${kind} ${diff.name} on ${diff.table}` : `${kind} ${diff.name}`,
+    );
+  }
+
+  for (const diff of report.objectDiffs) add(diff);
+  for (const match of report.matchedTables) {
+    // Indexes and triggers on a brand-new table are not listed separately —
+    // they go away with the table, which is already named in dropsCreated.
+    for (const diff of match.objectDiffs) add(diff);
+  }
+  return labels;
+}
 
 /**
  * Build the down script for the migration generateMigration() produces from the
@@ -1957,10 +1994,29 @@ export function generateRollback(
       emptyColumns.push(`${match.left.name}.${col.name}`);
     }
   }
-  const dropsCreated = report.tablesOnlyInA.map((t) => t.name);
+  // What the forward migration CREATED, and the rollback therefore drops. Named
+  // by the post-migration name (match.left) because that is what the target is
+  // called by the time this script runs.
+  const droppedTables = report.tablesOnlyInA.map((t) => t.name);
+  const droppedColumns: string[] = [];
+  for (const match of report.matchedTables) {
+    for (const col of match.columnsOnlyInA) {
+      droppedColumns.push(`${match.left.name}.${col.name}`);
+    }
+  }
+  const droppedObjects = createdObjectLabels(report);
+  const dropsCreated = {
+    tables: droppedTables,
+    columns: droppedColumns,
+    objects: droppedObjects,
+  };
 
   const restoredCount = emptyTables.length + emptyColumns.length;
-  const lossless = restoredCount === 0 && dropsCreated.length === 0;
+  // Only tables and columns count against losslessness. Dropping a view or an
+  // index the migration created restores the target exactly; dropping a table
+  // or a column it created destroys whatever was written into it since.
+  const destroyedCount = droppedTables.length + droppedColumns.length;
+  const lossless = restoredCount === 0 && destroyedCount === 0;
 
   const warnings: string[] = [];
   if (restoredCount > 0 && forwardAllowedDataLoss) {
@@ -1976,10 +2032,17 @@ export function generateRollback(
         `will do nothing.`,
     );
   }
-  if (dropsCreated.length > 0) {
+  if (destroyedCount > 0) {
+    const parts: string[] = [];
+    if (droppedTables.length > 0) {
+      parts.push(`${droppedTables.length} table${droppedTables.length === 1 ? "" : "s"}`);
+    }
+    if (droppedColumns.length > 0) {
+      parts.push(`${droppedColumns.length} column${droppedColumns.length === 1 ? "" : "s"}`);
+    }
     warnings.push(
-      `The rollback drops ${dropsCreated.length} table${dropsCreated.length === 1 ? "" : "s"} ` +
-        `the migration created. Rows written into ${dropsCreated.length === 1 ? "it" : "them"} since are lost.`,
+      `The rollback drops ${parts.join(" and ")} the migration created. Rows ` +
+        `written into ${destroyedCount === 1 ? "it" : "them"} since are lost.`,
     );
   }
   const unconfirmed = reverseReport.possibleTableMatches.length;
@@ -2052,8 +2115,9 @@ export function renderRollbackScript(script: RollbackScript): string {
 
   if (script.lossless) {
     header.push(
-      `-- This rollback is complete. The migration dropped nothing and created`,
-      `-- nothing, so running this restores the target exactly as it was.`,
+      `-- This rollback is complete. Nothing it recreates comes back empty, and`,
+      `-- nothing it removes can hold rows written since the migration ran, so`,
+      `-- running it restores the target exactly as it was.`,
     );
   } else {
     header.push(`-- THIS RESTORES STRUCTURE, NOT DATA.`);
@@ -2079,12 +2143,27 @@ export function renderRollbackScript(script: RollbackScript): string {
     }
   }
 
-  if (script.dropsCreated.length > 0) {
+  const created = script.dropsCreated;
+  if (created.tables.length > 0 || created.columns.length > 0) {
     header.push(
       `--`,
       `-- DROPPED — created by the migration, so any row written into them since`,
       `-- the migration ran is lost:`,
-      ...commentList(script.dropsCreated, "--     "),
+    );
+    if (created.tables.length > 0) {
+      header.push(`--   tables:`, ...commentList(created.tables, "--     "));
+    }
+    if (created.columns.length > 0) {
+      header.push(`--   columns:`, ...commentList(created.columns, "--     "));
+    }
+  }
+
+  if (created.objects.length > 0) {
+    header.push(
+      `--`,
+      `-- Also dropped — created by the migration and holding no rows of their`,
+      `-- own, so removing them puts the target back as it was:`,
+      ...commentList(created.objects, "--     "),
     );
   }
 

@@ -4,6 +4,7 @@ import {
   generateRollback,
   renderMigrationScript,
   renderRollbackScript,
+  type SqlStatement,
 } from "@/lib/generate-sql";
 import pool, { ensureConnectionsTable, ensureMetadataSchema } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -229,6 +230,7 @@ type TargetOutcome = {
   sqlText: string;
   rollbackText: string;
   rollbackStatementCount: number;
+  rollbackCounts: { breaking: number; safe: number; info: number };
   rollbackWarnings: string[];
   statementCount: number;
   heldBackCount: number;
@@ -248,6 +250,25 @@ type TargetOutcome = {
  * identical for every target, so reading it once and reusing it turns an N-way
  * compare into N+1 introspections instead of 2N.
  */
+/**
+ * Count a script's statements by severity.
+ *
+ * Shared by the migration and its rollback because the two do not grade alike —
+ * a safe ADD COLUMN reverses into a breaking DROP COLUMN — and the workbench
+ * needs a separate tally for each tab.
+ */
+function tallySeverities(statements: SqlStatement[]): {
+  breaking: number;
+  safe: number;
+  info: number;
+} {
+  return {
+    breaking: statements.filter((s) => s.severity === "breaking").length,
+    safe: statements.filter((s) => s.severity === "safe").length,
+    info: statements.filter((s) => s.severity === "info").length,
+  };
+}
+
 async function compareOneTarget(
   source: { snapshot: SchemaSnapshot; config: CompareTarget["config"]; schema: string },
   slot: {
@@ -275,6 +296,7 @@ async function compareOneTarget(
     sqlText: "",
     rollbackText: "",
     rollbackStatementCount: 0,
+    rollbackCounts: { breaking: 0, safe: 0, info: 0 },
     rollbackWarnings: [] as string[],
     statementCount: 0,
     heldBackCount: 0,
@@ -345,9 +367,7 @@ async function compareOneTarget(
   // flag so its header can say whether the drops it is "restoring" ever ran.
   const rollback = generateRollback(report, { allowDataLoss });
 
-  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
-  const safe = script.statements.filter((s) => s.severity === "safe").length;
-  const info = script.statements.filter((s) => s.severity === "info").length;
+  const { breaking, safe, info } = tallySeverities(script.statements);
 
   return {
     ...empty,
@@ -359,6 +379,7 @@ async function compareOneTarget(
     sqlText: renderMigrationScript(script),
     rollbackText: renderRollbackScript(rollback),
     rollbackStatementCount: rollback.statements.length,
+    rollbackCounts: tallySeverities(rollback.statements),
     rollbackWarnings: rollback.warnings,
     statementCount: script.statements.length,
     heldBackCount: allowDataLoss ? 0 : script.destructiveCount,
@@ -1128,6 +1149,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
                   heldBackCount={outcome.heldBackCount}
                   initialRollbackSql={outcome.rollbackText}
                   rollbackStatementCount={outcome.rollbackStatementCount}
+                  rollbackCounts={outcome.rollbackCounts}
                   rollbackWarnings={outcome.rollbackWarnings}
                   // Named after both ends, not just the schemas: with several
                   // targets on one page they are usually all called "public",

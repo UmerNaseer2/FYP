@@ -52,6 +52,15 @@ type Props = {
   /** Number of statements in the rollback script. */
   rollbackStatementCount: number;
   /**
+   * Severity tally for the rollback's own statements.
+   *
+   * Kept apart from `counts` because the two scripts do not grade alike: a
+   * migration whose single statement is a safe ADD COLUMN has a rollback whose
+   * single statement is a breaking DROP COLUMN. The tally used to show the
+   * forward numbers on both tabs, so that rollback read "0 breaking · 1 safe".
+   */
+  rollbackCounts: { breaking: number; safe: number; info: number };
+  /**
    * What the rollback cannot put back, from generateRollback(). Shown above the
    * down script so nobody reads it as a full undo — it restores structure only.
    */
@@ -101,6 +110,7 @@ export function MigrationWorkbench({
   heldBackCount,
   initialRollbackSql,
   rollbackStatementCount,
+  rollbackCounts,
   rollbackWarnings,
   suggestedName,
   suggestedDescription,
@@ -141,6 +151,7 @@ export function MigrationWorkbench({
   const activeInitial = showingDown ? initialRollbackSql : initialSql;
   const setActiveSql = showingDown ? setRollbackSql : setSql;
   const activeStatementCount = showingDown ? rollbackStatementCount : statementCount;
+  const activeCounts = showingDown ? rollbackCounts : counts;
 
   const edited = activeSql !== activeInitial;
   // Deploy wraps each script in its own transaction, so manual BEGIN/COMMIT/
@@ -374,14 +385,14 @@ export function MigrationWorkbench({
 
                 {/* Severity tally from the generator */}
                 <div className="flex items-center gap-1.5 mt-3">
-                  <span className="delta delta-rem" style={counts.breaking ? undefined : { opacity: 0.45 }}>
-                    {counts.breaking} breaking
+                  <span className="delta delta-rem" style={activeCounts.breaking ? undefined : { opacity: 0.45 }}>
+                    {activeCounts.breaking} breaking
                   </span>
-                  <span className="delta delta-add" style={counts.safe ? undefined : { opacity: 0.45 }}>
-                    {counts.safe} safe
+                  <span className="delta delta-add" style={activeCounts.safe ? undefined : { opacity: 0.45 }}>
+                    {activeCounts.safe} safe
                   </span>
-                  <span className="delta delta-chg" style={counts.info ? undefined : { opacity: 0.45 }}>
-                    {counts.info} info
+                  <span className="delta delta-chg" style={activeCounts.info ? undefined : { opacity: 0.45 }}>
+                    {activeCounts.info} info
                   </span>
                 </div>
 
