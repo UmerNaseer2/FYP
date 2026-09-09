@@ -617,7 +617,20 @@ function CompareScreenView({ query }: { query: string }) {
             </span>
           </div>
 
-          {outcome.error ? (
+          {outcome.sameAsSource ? (
+            <div className="warn-inline">
+              <span className="ico">
+                <AlertTriangleIcon size={14} />
+              </span>
+              <span>
+                Both sides are <span className="mono">{outcome.schema}</span> on{" "}
+                <span className="mono">{outcome.displayName}</span> — the same schema.
+                A schema always matches itself, so there is nothing here to report and
+                nothing to migrate. Pick a different schema or connection on the right,
+                then press Compare.
+              </span>
+            </div>
+          ) : outcome.error ? (
             <div className="warn-inline">
               <span className="ico">
                 <AlertTriangleIcon size={14} />

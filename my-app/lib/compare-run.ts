@@ -418,6 +418,15 @@ type TargetOutcome = {
   schema: string;
   schemaOptions: string[];
   environment: Environment;
+  /**
+   * The target names the same database AND the same schema as the source.
+   *
+   * Comparing a schema with itself always answers "identical", and rendering
+   * that as a report — 0 changes, 0 tables, everything in sync — reads as a
+   * finding about two databases. It is not one; it is the question not having
+   * been asked yet. The screen says so instead, and no snapshot is taken.
+   */
+  sameAsSource: boolean;
   /** Null when the target could not be read — `error` then says why. */
   report: CompareReport | null;
   /** Row-level comparison, or null when the run did not ask for one. */
@@ -495,6 +504,7 @@ async function compareOneTarget(
     schema: string;
     schemaOptions: string[];
     schemaListError: string | null;
+    onSourceConnection: boolean;
   },
   head: TrackedSchemaHead | null,
   allowDataLoss: boolean,
@@ -508,6 +518,7 @@ async function compareOneTarget(
     target: slot.target,
     schema: slot.schema,
     schemaOptions: slot.schemaOptions,
+    sameAsSource: false,
     report: null,
     data: null,
     delta: null,
@@ -527,6 +538,13 @@ async function compareOneTarget(
     detectedVersion: null,
     versionVerdict: null,
   };
+
+  // Asked before anything is read. A schema against itself has no answer worth
+  // fetching, and the "0 changes" it would produce is the one result on this
+  // screen a reader can act on wrongly — it looks like two databases agreeing.
+  if (slot.onSourceConnection && slot.schema === source.schema) {
+    return { ...empty, sameAsSource: true, environment: connectionEnvironment, error: null };
+  }
 
   if (slot.schemaListError) {
     // The driver message on its own ("connect ECONNREFUSED 127.0.0.1:5432") does
@@ -815,15 +833,34 @@ export async function runComparison(
       : { options: [] as string[], error: result.error };
   }
 
-  /** Prefer what was asked for, then the configured default, then whatever exists. */
+  /**
+   * Prefer what was asked for, then the configured default, then whatever exists.
+   *
+   * `avoid` names a schema this side should not land on by accident — the
+   * source's, when the target sits on the same connection. Without it a project
+   * with one saved connection opened Compare with both sides defaulted to the
+   * same schema and rendered "0 changes · 0 tables", which reads as a finding
+   * about two databases rather than what it was: the tool comparing something
+   * with itself because nobody had chosen yet. It only steers the DEFAULT — an
+   * explicitly requested schema is always honoured, including when it is the
+   * same on both sides, because that is then a choice somebody made.
+   */
   function resolveSchema(
     requested: string,
     options: string[],
     envName: string,
+    avoid?: string,
   ): string {
     if (requested.length > 0) return requested;
     const preferred = envValue(envName, "public");
-    return options.find((schema) => schema === preferred) ?? options[0] ?? preferred;
+    const candidates =
+      avoid === undefined ? options : options.filter((schema) => schema !== avoid);
+    return (
+      candidates.find((schema) => schema === preferred) ??
+      candidates[0] ??
+      options[0] ??
+      preferred
+    );
   }
 
   const sourceSchemaInfo = schemasFor(sourceConnection, sourceTarget);
@@ -836,11 +873,22 @@ export async function runComparison(
 
   const resolvedTargets = targetSlots.map((slot) => {
     const info = schemasFor(slot.connection, slot.target);
+    // Only a target on the SAME database has the source's schema to avoid. On a
+    // different one, a schema of the same name is a perfectly ordinary thing to
+    // compare — dev.public against prod.public is the tool's whole point.
+    const onSourceConnection =
+      keyFor(slot.connection, slot.target) === keyFor(sourceConnection, sourceTarget);
     return {
       ...slot,
       schemaOptions: info.options,
       schemaListError: info.error,
-      schema: resolveSchema(slot.requestedSchema, info.options, "COMPARE_SCHEMA_B"),
+      schema: resolveSchema(
+        slot.requestedSchema,
+        info.options,
+        "COMPARE_SCHEMA_B",
+        onSourceConnection ? sourceSchema : undefined,
+      ),
+      onSourceConnection,
     };
   });
 
