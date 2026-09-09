@@ -1449,6 +1449,19 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
   for (const table of report.tablesOnlyInB) cascadingRelations.add(table.name);
   for (const match of report.matchedTables) {
     if (match.columnsOnlyInB.length > 0) cascadingRelations.add(match.right.name);
+    // A changed GENERATED ALWAYS AS (...) expression is another DROP COLUMN
+    // CASCADE, even though the column comes straight back: PostgreSQL cannot
+    // change a generated column in place, so the only portable answer is to
+    // rebuild it. The CASCADE is just as wide as any other, and this table was
+    // in none of the sets above — it is matched, it lost no column, and it is
+    // not a view — so the walk below never saw the victims and nothing put them
+    // back. Same test as the branch that emits the statement.
+    const rebuildsComputed = match.columnMatches.some((col) => {
+      const before = describeComputed(col.right);
+      const after = describeComputed(col.left);
+      return before !== null && after !== null && before !== after;
+    });
+    if (rebuildsComputed) cascadingRelations.add(match.right.name);
   }
   // A view the script drops by name cascades as well. A second view built on
   // that one is usually byte-identical in both schemas, so the comparator says
@@ -1591,7 +1604,11 @@ function alterStatementsForMatch(
   match: TableMatch,
   sourceSchema: string,
   addColumnIfNotExists: boolean,
-  sourceSequences: SequenceSnapshot[] | undefined
+  sourceSequences: SequenceSnapshot[] | undefined,
+  // The target's views, only so a DROP ... CASCADE below can name what it takes
+  // with it. `undefined` means the snapshot never recorded views, in which case
+  // the statement says nothing rather than claiming there are none.
+  targetViews: ViewSnapshot[] | undefined
 ): { stmts: SqlStatement[]; fkStmts: SqlStatement[] } {
   const stmts: SqlStatement[] = [];
   // New FK ADD CONSTRAINTs are collected here and returned separately so the
@@ -1659,12 +1676,20 @@ function alterStatementsForMatch(
     const leftComputed = describeComputed(colMatch.left);
     const rightComputed = describeComputed(colMatch.right);
     if (leftComputed !== null && rightComputed !== null && leftComputed !== rightComputed) {
+      // Name them. "CASCADE takes any view built on it" tells the reader a rule;
+      // this tells them which of their views it is about to remove, and the
+      // caller has already queued the source's copy of each for rebuild.
+      const alsoDropped = targetViews
+        ? viewsCascadedBy(targetViews, new Set([match.right.name])).map((v) => v.name)
+        : [];
+      const cascadeNote =
+        alsoDropped.length > 0 ? `; CASCADE also drops ${alsoDropped.join(", ")}` : "";
       stmts.push({
         sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(colName)} CASCADE;`,
         description:
           `Drop column "${colName}" from "${tName}" so it can be rebuilt — ` +
           "WARNING: PostgreSQL cannot change a generated column in place, and " +
-          "CASCADE takes any index or view built on it",
+          `CASCADE takes any index or view built on it${cascadeNote}`,
         kind: "DROP_COLUMN",
         severity: computedChangeSeverity(),
         tableName: tName,
@@ -2142,6 +2167,7 @@ export function generateMigration(
       sourceSchema,
       options.addColumnIfNotExists === true,
       report.left.sequences,
+      report.right.views,
     );
     // Safe mode comments a materialized view's drop out, and the retype it was
     // dropped for has to be held back with it — see ObjectPhases.retypeBlockedBy.
