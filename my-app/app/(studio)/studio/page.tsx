@@ -33,6 +33,7 @@ import {
   RefreshIcon,
   PlusIcon,
   TrashIcon,
+  ConnectionsIcon,
 } from "@/components/ui/icons";
 
 /**
@@ -76,6 +77,9 @@ type ConnectionRow = {
   type: string;
   environment?: string | null;
 };
+
+/** Where the saved-connections fetch has got to. */
+type ConnPhase = { kind: "idle" } | { kind: "loading" } | { kind: "ready" } | { kind: "error" };
 
 // ── Small pure helpers ───────────────────────────────────────────────────────
 
@@ -140,8 +144,7 @@ export default function DashboardPage() {
   // Track-a-schema drawer.
   const [trackOpen, setTrackOpen] = useState(false);
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
-  const [connLoaded, setConnLoaded] = useState(false);
-  const [connFailed, setConnFailed] = useState(false);
+  const [connPhase, setConnPhase] = useState<ConnPhase>({ kind: "idle" });
   const [trackConnId, setTrackConnId] = useState("");
   const [schemaOptions, setSchemaOptions] = useState<string[]>([]);
   const [schemaPhase, setSchemaPhase] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -155,9 +158,9 @@ export default function DashboardPage() {
   const [trackSubmitting, setTrackSubmitting] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
 
-  // Untrack confirm.
+  // Untrack confirm. No "removing" flag — ConfirmDialog closes on confirm, so
+  // a busy label on its button could never be seen.
   const [untrackTarget, setUntrackTarget] = useState<TrackedSchema | null>(null);
-  const [untracking, setUntracking] = useState(false);
 
   // ── Load the list ──────────────────────────────────────────────────────────
   const loadList = useCallback(async () => {
@@ -185,6 +188,32 @@ export default function DashboardPage() {
     void loadList();
   }, [loadList]);
 
+  // ── Load the saved connections ─────────────────────────────────────────────
+  // On mount as well as on every drawer open: the dashboard has to know whether
+  // tracking is even possible before it offers "Track a schema" as the only
+  // thing a first-time user can press.
+  const loadConnections = useCallback(async () => {
+    setConnPhase({ kind: "loading" });
+    try {
+      const res = await fetch("/api/connections", { cache: "no-store" });
+      const data = res.ok ? await res.json() : null;
+      if (!Array.isArray(data)) {
+        setConnections([]);
+        setConnPhase({ kind: "error" });
+        return;
+      }
+      setConnections(data.filter((c: ConnectionRow) => c.type === "PostgreSQL"));
+      setConnPhase({ kind: "ready" });
+    } catch {
+      setConnections([]);
+      setConnPhase({ kind: "error" });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConnections();
+  }, [loadConnections]);
+
   // ── Track flow ─────────────────────────────────────────────────────────────
   function resetTrackForm() {
     setTrackConnId("");
@@ -198,26 +227,13 @@ export default function DashboardPage() {
     setTrackError(null);
   }
 
-  async function openTrack() {
+  function openTrack() {
     resetTrackForm();
     setTrackOpen(true);
-    // Pull the connection list fresh each time the drawer opens.
-    try {
-      const res = await fetch("/api/connections", { cache: "no-store" });
-      const data = res.ok ? await res.json() : null;
-      if (!Array.isArray(data)) {
-        setConnections([]);
-        setConnFailed(true);
-        return;
-      }
-      setConnections(data.filter((c: ConnectionRow) => c.type === "PostgreSQL"));
-      setConnFailed(false);
-    } catch {
-      setConnections([]);
-      setConnFailed(true);
-    } finally {
-      setConnLoaded(true);
-    }
+    // Pull the connection list fresh each time the drawer opens — one may have
+    // been saved on the Connections page since this dashboard loaded. It also
+    // clears a previous failure, so reopening the drawer is the retry.
+    void loadConnections();
   }
 
   async function onPickConnection(id: string) {
@@ -311,19 +327,32 @@ export default function DashboardPage() {
 
   async function confirmUntrack() {
     if (!untrackTarget) return;
-    setUntracking(true);
+    // ConfirmDialog closes itself the moment you press confirm, so the failure
+    // has to land on the card — the dialog is gone before the fetch resolves,
+    // and a schema that is still tracked looks exactly like one that was
+    // removed.
+    const target = untrackTarget;
     try {
-      await fetch("/api/lineage", {
+      const res = await fetch("/api/lineage", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: untrackTarget.id }),
+        body: JSON.stringify({ id: target.id }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setCardError({
+          id: target.id,
+          msg: data?.error ?? "Could not stop tracking this schema.",
+        });
+        setUntrackTarget(null);
+        return;
+      }
+      setCardError(null);
       setUntrackTarget(null);
       await loadList();
     } catch {
-      // Keep the dialog open on a hard failure so the user can retry.
-    } finally {
-      setUntracking(false);
+      setCardError({ id: target.id, msg: "Network error while untracking the schema." });
+      setUntrackTarget(null);
     }
   }
 
@@ -388,7 +417,9 @@ export default function DashboardPage() {
           what is on screen, so the strip and the grid can never disagree. */}
       {listPhase === "ready" && total > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <SummaryTile label="Tracked" value={visible.length} />
+          {/* "Tracked" is a property of the schema; with a filter on, this tile
+              counts the view while the All pill below still counts everything. */}
+          <SummaryTile label={envFilter === "all" ? "Tracked" : "Showing"} value={visible.length} />
           <SummaryTile
             label="Production"
             value={prodShown}
@@ -468,18 +499,45 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {listPhase === "ready" && total === 0 && (
-        <Card className="p-0 overflow-hidden">
-          <div style={{ height: 320 }}>
-            <EmptyState
-              icon={<DashboardIcon size={22} />}
-              title="Nothing tracked yet"
-              description="Track a schema to capture a baseline and watch it for drift against its lineage."
-              actions={trackButton}
-            />
-          </div>
-        </Card>
-      )}
+      {/* Two first-run states, not one. Offering "Track a schema" to somebody
+          with no saved connection sends them into a drawer whose only option is
+          an empty list — the fetch is on mount now so we can tell them first.
+          The error phase deliberately falls through to the card below rather
+          than claiming they have no connections. */}
+      {listPhase === "ready" &&
+        total === 0 &&
+        connPhase.kind === "ready" &&
+        connections.length === 0 && (
+          <Card className="p-0 overflow-hidden">
+            <div style={{ height: 320 }}>
+              <EmptyState
+                icon={<ConnectionsIcon size={22} />}
+                title="Add a connection first"
+                description="Schema Studio watches schemas on a PostgreSQL server you have saved. Save one connection, then come back and track a schema on it."
+                actions={
+                  <Link href="/connections" className="btn btn-primary btn-sm">
+                    <PlusIcon size={14} /> Add a connection
+                  </Link>
+                }
+              />
+            </div>
+          </Card>
+        )}
+
+      {listPhase === "ready" &&
+        total === 0 &&
+        !(connPhase.kind === "ready" && connections.length === 0) && (
+          <Card className="p-0 overflow-hidden">
+            <div style={{ height: 320 }}>
+              <EmptyState
+                icon={<DashboardIcon size={22} />}
+                title="Nothing tracked yet"
+                description="Tracking a schema records what it looks like today as version v1.0.0, so Schema Studio can tell you later when the live database has moved away from it."
+                actions={trackButton}
+              />
+            </div>
+          </Card>
+        )}
 
       {listPhase === "ready" && total > 0 && sorted.length === 0 && (
         <Card className="p-0 overflow-hidden">
@@ -546,18 +604,31 @@ export default function DashboardPage() {
             variant="input"
             ariaLabel="Connection"
             value={trackConnId}
-            placeholder="Select a connection…"
+            disabled={connPhase.kind !== "ready"}
+            placeholder={
+              connPhase.kind === "loading" ? "Loading connections…" : "Select a connection…"
+            }
             options={connections.map((c) => ({
               value: String(c.id),
               label: `${c.name} — ${c.host}/${c.database_name}`,
             }))}
             onChange={(value) => void onPickConnection(value)}
           />
-          {connLoaded && connections.length === 0 && (
+          {/* Only once the fetch has settled — while it is in flight the Select
+              is disabled and says so, and an empty list means nothing yet. */}
+          {connPhase.kind === "error" && (
+            <p className="help mt-1" style={{ color: "var(--break)" }}>
+              Could not read your saved connections. Close this and press “Track a
+              schema” again.
+            </p>
+          )}
+          {connPhase.kind === "ready" && connections.length === 0 && (
             <p className="help mt-1">
-              {connFailed
-                ? "Could not read your saved connections. Reload the page to try again."
-                : "No PostgreSQL connections saved yet. Add one on the Connections page first."}
+              No PostgreSQL connections saved yet.{" "}
+              <Link href="/connections" style={{ color: "var(--brand)" }}>
+                Add one on the Connections page
+              </Link>
+              .
             </p>
           )}
         </div>
@@ -673,7 +744,7 @@ export default function DashboardPage() {
             )}
           </>
         }
-        confirmLabel={untracking ? "Removing…" : "Stop tracking"}
+        confirmLabel="Stop tracking"
       />
     </div>
   );
@@ -779,7 +850,7 @@ function SchemaCard({
           <Pill tone="neutral">no connection</Pill>
         ) : (
           <Pill tone="neutral" dot={false}>
-            {item.migrationCount} in lineage
+            {item.migrationCount} version{item.migrationCount === 1 ? "" : "s"}
           </Pill>
         )}
       </div>
@@ -794,8 +865,12 @@ function SchemaCard({
       <div className="mt-4 flex items-baseline gap-2">
         <span className="mono text-[18px] font-semibold">{item.headVersion ?? "—"}</span>
         {item.headSeq !== null && (
-          <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
-            · {String(item.headSeq).padStart(4, "0")} head
+          <span
+            className="mono text-[12px]"
+            style={{ color: "var(--text-3)" }}
+            title="The newest version recorded for this schema"
+          >
+            · seq {String(item.headSeq).padStart(4, "0")} — latest
           </span>
         )}
       </div>
@@ -833,7 +908,11 @@ function SchemaCard({
 
       {/* Actions */}
       <div className="mt-4 pt-4 flex items-center gap-2 flex-wrap" style={{ borderTop: "1px solid var(--border)" }}>
-        <Link href={`/schemas/${item.id}`} className="btn btn-secondary btn-sm">
+        <Link
+          href={`/schemas/${item.id}`}
+          className="btn btn-secondary btn-sm"
+          aria-label={`Open ${item.schemaName}`}
+        >
           Open
         </Link>
         <Button
@@ -861,7 +940,7 @@ function SchemaCard({
         <button
           type="button"
           className="btn btn-ghost btn-sm ml-auto"
-          aria-label="Stop tracking"
+          aria-label={`Stop tracking ${item.schemaName}`}
           onClick={onUntrack}
         >
           <TrashIcon size={14} />

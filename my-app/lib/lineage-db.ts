@@ -261,7 +261,13 @@ export async function recordAppliedMigrationToLineage(params: {
       [trackedSchemaId, nextSeq, name.slice(0, 200), changeLevel, nextVersion, sqlRef, snapshotId]
     );
 
-    const counts = { tablesAdded: 0, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 0 };
+    const counts: DriftCounts = {
+      tablesAdded: 0,
+      tablesRemoved: 0,
+      tablesChanged: 0,
+      constraintsChanged: 0,
+      objectsChanged: 0,
+    };
     await client.query(
       `INSERT INTO drift_events (tracked_schema_id, status, summary, detail, baseline_snapshot_id)
        VALUES ($1, 'in_sync', $2, $3::jsonb, $4)`,
@@ -576,6 +582,10 @@ export type DriftCounts = {
   tablesRemoved: number;
   tablesChanged: number;
   constraintsChanged: number;
+  /** Views, functions, sequences, types, extensions and grants that differ. */
+  // Optional because drift_events rows written before this field existed are
+  // still in the database as JSONB — read it as `?? 0`, never directly.
+  objectsChanged?: number;
 };
 
 /** Which lineage entry a drift check compared against. */
@@ -609,8 +619,13 @@ export type DriftComputation =
 
 /** Turn a version + counts into the one-line summary stored on a drift event. */
 export function buildDriftSummary(version: string | null, counts: DriftCounts): string {
+  const objectsChanged = counts.objectsChanged ?? 0;
   const total =
-    counts.tablesAdded + counts.tablesRemoved + counts.tablesChanged + counts.constraintsChanged;
+    counts.tablesAdded +
+    counts.tablesRemoved +
+    counts.tablesChanged +
+    counts.constraintsChanged +
+    objectsChanged;
   if (total === 0) {
     return version
       ? `In sync with v${version} — no structural drift.`
@@ -621,6 +636,7 @@ export function buildDriftSummary(version: string | null, counts: DriftCounts): 
   if (counts.tablesRemoved) parts.push(`${counts.tablesRemoved} table(s) removed`);
   if (counts.tablesChanged) parts.push(`${counts.tablesChanged} table(s) changed`);
   if (counts.constraintsChanged) parts.push(`${counts.constraintsChanged} constraint(s) changed`);
+  if (objectsChanged) parts.push(`${objectsChanged} view/function/grant change(s)`);
   return `Drift vs v${version ?? "?"}: ${parts.join(", ")}.`;
 }
 
@@ -759,12 +775,16 @@ export async function computeDriftDetail(
     tablesRemoved: s.tablesOnlyInA,
     tablesChanged: s.changedTables,
     constraintsChanged: s.changedConstraints,
+    objectsChanged: report.objectDiffs.length,
   };
+  // A dropped view is drift. Counting only tables and constraints let the hero
+  // say "matches v3" directly above a card listing the view that went missing.
   const drifted =
     counts.tablesAdded > 0 ||
     counts.tablesRemoved > 0 ||
     counts.tablesChanged > 0 ||
-    counts.constraintsChanged > 0;
+    counts.constraintsChanged > 0 ||
+    (counts.objectsChanged ?? 0) > 0;
 
   return {
     kind: "ok",

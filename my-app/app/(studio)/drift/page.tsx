@@ -355,9 +355,14 @@ function Tab({
   children: React.ReactNode;
 }) {
   return (
+    // active was styling only — a screen reader heard two identical links and
+    // no clue which tab was open, so aria-current and a weight change carry it.
     <Link
       href={href}
-      className="text-[13.5px] px-3.5 py-2.5 -mb-px font-medium transition-colors"
+      aria-current={active ? "page" : undefined}
+      className={`text-[13.5px] px-3.5 py-2.5 -mb-px transition-colors ${
+        active ? "font-semibold" : "font-medium"
+      }`}
       style={{
         borderBottom: active ? "2px solid var(--brand)" : "2px solid transparent",
         color: active ? "var(--text)" : "var(--text-3)",
@@ -762,13 +767,21 @@ function CountTiles({
 }) {
   const t = report ? tallyDelta(report) : null;
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
       <CountTile label="Tables added" value={counts.tablesAdded} accent="var(--sync)" />
       <CountTile label="Tables removed" value={counts.tablesRemoved} accent="var(--break)" />
       <CountTile label="Tables changed" value={counts.tablesChanged} accent="var(--drift)" />
       <CountTile
         label="Constraints changed"
         value={counts.constraintsChanged}
+        accent="var(--drift)"
+      />
+      {/* Views, functions and grants are drift too — without this tile the four
+          zeros above sat directly over a diff card listing a dropped view. The
+          `?? 0` is for drift events stored before the field existed. */}
+      <CountTile
+        label="Objects changed"
+        value={counts.objectsChanged ?? 0}
         accent="var(--drift)"
         note={t ? `${t.total} total diffs` : undefined}
       />
