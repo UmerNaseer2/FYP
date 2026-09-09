@@ -39,6 +39,16 @@ type Connection = {
 };
 type Phase = "idle" | "loading" | "error" | "ready";
 
+/** A confirmed-but-not-yet-run replay: exactly what the dialog is promising. */
+type PendingApply = {
+  /** The versions that will be sent — the selection up to the first gap. */
+  runnable: LedgerEntry[];
+  /** The first version with no stored SQL, when the batch stops before one. */
+  stoppedBefore: LedgerEntry | null;
+  /** How many versions after that gap stay missing. */
+  skipped: number;
+};
+
 const fmtDate = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
@@ -239,25 +249,45 @@ export default function VersionSyncPage() {
   const [progress, setProgress] = useState("");
   const [applyError, setApplyError] = useState("");
   const [applyDone, setApplyDone] = useState("");
-  const [pendingApply, setPendingApply] = useState<LedgerEntry[] | null>(null);
+  const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
 
+  // The confirm dialog has to promise the number of scripts that will actually
+  // run, so the batch is cut here rather than inside runEntries: a version with
+  // no stored SQL stops the run before it, and the dialog used to count the
+  // whole selection — including the versions the run could never reach.
   function requestApply(entries: LedgerEntry[]) {
     if (entries.length === 0) return;
+    const firstGap = entries.findIndex((e) => !e.hasSql);
+    const runnable = firstGap === -1 ? entries : entries.slice(0, firstGap);
+    const gap = firstGap === -1 ? null : entries[firstGap];
+    if (runnable.length === 0) {
+      setApplyDone("");
+      setApplyError(
+        `${gap?.scriptName} v${gap?.version} has no stored script, so there is ` +
+        `nothing that can be replayed.`
+      );
+      return;
+    }
     setApplyError("");
     setApplyDone("");
-    setPendingApply(entries);
+    setPendingApply({
+      runnable,
+      stoppedBefore: gap,
+      skipped: firstGap === -1 ? 0 : entries.length - firstGap - 1,
+    });
   }
 
   /**
    * How a failed replay ended, which decides what the banner may claim.
    *
-   * "refused" is the route turning the request away before it opened a
-   * transaction — an unapproved production target, a missing acknowledgement.
-   * Saying "the transaction rolled back" there describes a transaction that
-   * never existed and hides the actual problem, which is usually one the
-   * reader can fix. "unknown" is the commit that did not report back, or a
-   * reply this page could not read at all; neither of those saw how the run
-   * ended, so neither may say nothing was applied.
+   * "refused" is the run ending before any script SQL was sent — an
+   * unapproved production target, a missing acknowledgement, a target that
+   * could not be connected to, a schema that does not exist. Saying "the
+   * transaction rolled back" there describes a transaction that never existed
+   * and hides the actual problem, which is usually one the reader can fix.
+   * "unknown" is the commit that did not report back, or a reply this page
+   * could not read at all; neither of those saw how the run ended, so neither
+   * may say nothing was applied.
    */
   type ApplyFailure = "refused" | "rolled-back" | "unknown";
 
@@ -289,12 +319,18 @@ export default function VersionSyncPage() {
       // HTML, and letting res.json() throw here would report "could not reach
       // the server" about a request that reached it.
       const raw = await res.text();
-      let data: { success?: boolean; error?: string; outcomeUnknown?: boolean } | null = null;
+      let data: {
+        success?: boolean;
+        error?: string;
+        outcomeUnknown?: boolean;
+        results?: unknown;
+      } | null = null;
       try {
         data = JSON.parse(raw) as {
           success?: boolean;
           error?: string;
           outcomeUnknown?: boolean;
+          results?: unknown;
         };
       } catch {
         data = null;
@@ -303,17 +339,25 @@ export default function VersionSyncPage() {
       // today, but a caller that reads just the status would silently treat a
       // future soft-failure shape as applied.
       if (!res.ok || !data?.success) {
-        // 4xx here is always the route declining before step 8 — the request
-        // was wrong or unapproved, so no transaction was ever opened. A body
-        // this page could not parse is a proxy or framework error page, which
-        // says nothing about what the database did.
+        // 4xx here is always the route declining before it opened a
+        // transaction — the request was wrong or unapproved. A body this page
+        // could not parse is a proxy or framework error page, which says
+        // nothing about what the database did.
+        //
+        // The status alone cannot separate the 5xx cases: the apply route
+        // answers 503 both for a target it could not connect to (nothing ran)
+        // and for a lock timeout inside the transaction (rolled back). It only
+        // puts a per-script `results` array in a failure body once it has a
+        // queue to report on, so a 5xx without one never got as far as running
+        // the scripts.
+        const reachedTheRun = res.status >= 500 && Array.isArray(data?.results);
         const failure: ApplyFailure = data?.outcomeUnknown
           ? "unknown"
           : data === null
             ? "unknown"
-            : res.status >= 400 && res.status < 500
-              ? "refused"
-              : "rolled-back";
+            : reachedTheRun
+              ? "rolled-back"
+              : "refused";
         return {
           ok: false,
           error: data?.error ?? `the apply API answered ${res.status}.`,
@@ -338,28 +382,21 @@ export default function VersionSyncPage() {
   // An entry with no stored script cannot be replayed at all, so the run stops
   // BEFORE it: everything up to that point is sent as one atomic batch and the
   // gap is reported. Sending the whole list and letting the server discover the
-  // hole would just fail the run.
-  async function runEntries(entries: LedgerEntry[], acknowledgeProduction: boolean) {
+  // hole would just fail the run. requestApply does that cut, so the confirm
+  // dialog and this run agree on how many scripts are involved.
+  async function runEntries(pending: PendingApply, acknowledgeProduction: boolean) {
     // A disabled confirm button is a hint; this is the rule. If the Target is
     // production and nobody ticked the box, nothing runs.
     if (targetIsProduction && !acknowledgeProduction) return;
 
-    const firstGap = entries.findIndex((e) => !e.hasSql);
-    const batch = firstGap === -1 ? entries : entries.slice(0, firstGap);
-    const gap = firstGap === -1 ? null : entries[firstGap];
+    // Already cut to the runnable versions by requestApply, so what runs here
+    // is exactly what the dialog counted.
+    const batch = pending.runnable;
+    const gap = pending.stoppedBefore;
 
     setApplying(true);
     setApplyError("");
     setApplyDone("");
-
-    if (batch.length === 0) {
-      setApplyError(
-        `${gap?.scriptName} v${gap?.version} has no stored script, so there is ` +
-        `nothing that can be replayed.`
-      );
-      setApplying(false);
-      return;
-    }
 
     setProgress(
       batch.length === 1
@@ -375,7 +412,7 @@ export default function VersionSyncPage() {
       setApplyError(
         `Replay failed: ${result.error} ` +
         (result.failure === "refused"
-          ? "Nothing ran — the request was turned away before it reached the database."
+          ? "Nothing ran — the replay stopped before any SQL was sent."
           : result.failure === "unknown"
             ? `Whether it was applied is not known: nothing here saw how the run ` +
               `ended. Read the ledger on ${target.schema} before trying again.`
@@ -417,7 +454,8 @@ export default function VersionSyncPage() {
         <p className="text-[13.5px] mt-1.5 max-w-[68ch]" style={{ color: "var(--text-2)" }}>
           Replay the actual scripts already applied to an ahead schema onto a behind one, version by
           version — preserving the lineage (unlike a structural compare, which jumps straight to the
-          end state). Pick a <b>Source</b> (ahead) and a <b>Target</b>{" "}
+          end state). A replay writes to the target&apos;s ledger only, never to the GitHub
+          registry. Pick a <b>Source</b> (ahead) and a <b>Target</b>{" "}
           (behind) to see what&apos;s missing.
         </p>
       </div>
@@ -425,6 +463,7 @@ export default function VersionSyncPage() {
       {noConnections ? (
         connectionsFailed ? (
           <EmptyState
+            tone="break"
             icon={<VersionSyncIcon size={22} />}
             title="Could not load your connections"
             description="The saved connections could not be read just now. Reload the page to try again."
@@ -546,34 +585,50 @@ export default function VersionSyncPage() {
         open={pendingApply !== null}
         onClose={() => setPendingApply(null)}
         onConfirm={(acknowledged) => {
-          const entries = pendingApply ?? [];
+          const pending = pendingApply;
           setPendingApply(null);
-          void runEntries(entries, acknowledged);
+          if (pending) void runEntries(pending, acknowledged);
         }}
         destructive
         confirmLabel={
-          pendingApply && pendingApply.length > 1
-            ? `Apply ${pendingApply.length}${targetIsProduction ? " to production" : ""}`
+          pendingApply && pendingApply.runnable.length > 1
+            ? `Apply ${pendingApply.runnable.length}${targetIsProduction ? " to production" : ""}`
             : targetIsProduction
               ? "Apply to production"
               : "Apply"
         }
         title={
-          pendingApply && pendingApply.length === 1
-            ? `Apply ${pendingApply[0].scriptName} v${pendingApply[0].version}?`
-            : `Apply ${pendingApply?.length ?? 0} scripts to the Target?`
+          pendingApply && pendingApply.runnable.length === 1
+            ? `Apply ${pendingApply.runnable[0].scriptName} v${pendingApply.runnable[0].version}?`
+            : `Apply ${pendingApply?.runnable.length ?? 0} scripts to the Target?`
         }
         acknowledge={
           targetIsProduction
-            ? `I understand, and I mean to replay ${pendingApply?.length ?? 0} script${
-                (pendingApply?.length ?? 0) === 1 ? "" : "s"
+            ? `I understand, and I mean to replay ${pendingApply?.runnable.length ?? 0} script${
+                (pendingApply?.runnable.length ?? 0) === 1 ? "" : "s"
               } against production.`
             : undefined
         }
         description={
           <>
             This runs on <b className="mono">{target.schema}</b> ({connections.find((c) => String(c.id) === target.connectionId)?.database_name}) —
-            a live database — and is recorded in its ledger.
+            a live database — and is recorded in that schema&apos;s own applied-script ledger. It
+            does not add anything to the GitHub registry, so these versions will show on Deploy as
+            applied with no registry file behind them.
+            {pendingApply?.stoppedBefore && (
+              <span className="block mt-2">
+                This stops before{" "}
+                <b className="mono">
+                  {pendingApply.stoppedBefore.scriptName} v{pendingApply.stoppedBefore.version}
+                </b>{" "}
+                — that version has no stored script
+                {pendingApply.skipped > 0
+                  ? `, so the ${pendingApply.skipped} version${
+                      pendingApply.skipped === 1 ? "" : "s"
+                    } after it cannot be replayed either.`
+                  : ", so it stays missing."}
+              </span>
+            )}
             {targetIsProduction && (
               <span className="block mt-2" style={{ color: "var(--break)" }}>
                 The Target is labelled production. A replay that goes wrong here is not
@@ -611,7 +666,7 @@ function SidePicker({
   return (
     <div className="vsync-side">
       <div className="vsync-side__head">
-        <span className="section-title">{label}</span>
+        <h2 className="section-title">{label}</h2>
         <span className="vsync-side__sub">{sub}</span>
         {side.connectionId && <EnvironmentPill environment={environment} className="ml-auto" />}
       </div>
@@ -737,14 +792,25 @@ function Result({
           </div>
         </div>
       ) : (
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="pill pill-pending">
-            {diff.missing.length} {diff.missing.length === 1 ? "version" : "versions"} behind
-          </span>
-          {diff.missingWithoutSql > 0 && (
-            <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
-              {diff.missingWithoutSql} without stored SQL
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="pill pill-pending">
+              {diff.missing.length} {diff.missing.length === 1 ? "version" : "versions"} behind
             </span>
+            {diff.missingWithoutSql > 0 && (
+              <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
+                {diff.missingWithoutSql} without stored SQL
+              </span>
+            )}
+          </div>
+          {/* The pill's title attribute is the only place this used to be
+              explained, and a span cannot be focused to read it — so the
+              consequence (the run stops early) is on screen instead. */}
+          {diff.missingWithoutSql > 0 && (
+            <p className="help mt-2">
+              {diff.missingWithoutSql} of these were applied before this tool stored SQL, so they
+              cannot be replayed. A run stops at the first one — the versions after it stay missing.
+            </p>
           )}
         </div>
       )}
@@ -764,11 +830,19 @@ function Result({
               the Source doesn&apos;t — they&apos;re on different branches.
               Review before syncing; nothing is merged automatically.
             </div>
-            <div className="flex gap-1.5 flex-wrap mt-2">
-              {diff.diverged.map((e) => (
-                <span key={entryKey(e)} className="pill pill-neutral mono">{e.scriptName} v{e.version}</span>
-              ))}
-            </div>
+            {/* "Review before syncing" needs something to review — a bare
+                pill per version showed the name and nothing else, so the
+                stored script is one click away here. */}
+            {diff.diverged.map((e) => (
+              <details key={entryKey(e)} className="mt-1">
+                <summary className="help">
+                  {e.scriptName} v{e.version} — {e.changeType}
+                </summary>
+                <pre className="vsync-sql mono mt-2">
+                  {e.sqlContent ?? "No stored script for this version."}
+                </pre>
+              </details>
+            ))}
           </div>
         </div>
       )}
@@ -776,7 +850,7 @@ function Result({
       {/* Timeline */}
       {!sourceEmpty && (
         <div>
-          <div className="section-title mb-2">Source timeline</div>
+          <h2 className="section-title mb-2">Source timeline</h2>
           <div className="vsync-rail">
             {sourceEntries.map((e) => {
               const missing = missingKeys.has(entryKey(e));
@@ -797,15 +871,16 @@ function Result({
       {diff.missing.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-            <div className="section-title">To apply ({diff.missing.length})</div>
+            <h2 className="section-title">To apply ({diff.missing.length})</h2>
             <div className="flex items-center gap-2">
+              {/* Not "Bump by 1" — the Script Editor's version bump means
+                  changing a version number, and this runs one script. */}
               <button
                 className="btn btn-secondary btn-sm"
                 disabled={apply.applying || !diff.missing[0]?.hasSql}
-                title="Apply just the next missing version"
                 onClick={() => apply.onRun([diff.missing[0]])}
               >
-                Bump by 1
+                Run next only
               </button>
               <button
                 className={`btn btn-sm ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
@@ -820,7 +895,8 @@ function Result({
           <p className="help mb-3" style={{ color: "var(--text-3)" }}>
             The exact scripts already applied to the Source. Running them onto the Target catches it up —
             in order, and all of them in one transaction, so a replay that fails part way leaves the
-            Target where it started rather than stranded mid-chain.
+            Target where it started rather than stranded mid-chain. Run next only applies the first
+            missing version; Run all sends the rest as one transaction.
           </p>
 
           <div className="space-y-3">

@@ -163,6 +163,7 @@ export default function SchemaDetailPage({
         <Card className="p-0 overflow-hidden">
           <div style={{ height: 320 }}>
             <EmptyState
+              tone="break"
               icon={<AlertCircleIcon size={22} />}
               title={error ? "Could not load this schema" : "Schema not found"}
               description={
@@ -420,17 +421,24 @@ function DriftBanner({
           </span>
           <div className="flex-1 min-w-0">
             <h3 className="text-[15px] font-semibold tracking-[-0.005em]">
-              This database has drifted from{" "}
-              {headVersion ? <span className="mono">v{headVersion}</span> : "its lineage"}.
+              The live schema has drifted from{" "}
+              {headVersion ? <span className="mono">v{headVersion}</span> : "its baseline"}.
             </h3>
             <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
               {summary ??
-                "The live schema differs from its expected snapshot — changes may have been applied out-of-band."}
+                "The live schema differs from its baseline — changes may have been applied out-of-band."}
             </p>
             <div className="flex items-center gap-2 mt-3 flex-wrap">
+              {/* Compare only ever runs on two live databases, so this link
+                  cannot show the baseline snapshot — it used to promise
+                  "expected ↔ actual", which is a view that lives on /drift. */}
               {compareHref && (
-                <Link href={compareHref} className="btn btn-secondary btn-sm">
-                  <CompareIcon size={13} /> Open expected ↔ actual
+                <Link
+                  href={compareHref}
+                  className="btn btn-secondary btn-sm"
+                  title="Opens Compare with this database as the target. Compare works on two live databases — the expected snapshot is not one of them."
+                >
+                  <CompareIcon size={13} /> Open in Compare
                 </Link>
               )}
               <RecheckDriftButton
@@ -482,7 +490,7 @@ function DriftBanner({
         title={
           headVersion
             ? `Live schema matches v${headVersion}.`
-            : "Live schema matches its lineage."
+            : "Live schema matches its baseline."
         }
         body={summary ?? "No structural drift was found at the last check."}
         detectedAt={detectedAt}
@@ -498,7 +506,7 @@ function DriftBanner({
       tone="neutral"
       icon={<InfoIcon size={16} />}
       title="No drift check has run yet."
-      body="Run a check to compare the live schema against its lineage baseline."
+      body="Run a check to compare the live schema against its baseline."
       detectedAt={null}
       trackedSchemaId={trackedSchemaId}
       onRechecked={onRechecked}
