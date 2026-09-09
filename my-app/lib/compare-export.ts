@@ -50,6 +50,7 @@ export type ChangeCategory =
   | "Sequence"
   | "Type"
   | "Collation"
+  | "Extension"
   | "Function"
   | "Row security"
   | "Partitioning";
@@ -179,6 +180,7 @@ const OBJECT_CATEGORY: Record<ObjectKind, ChangeCategory> = {
   "ROW SECURITY": "Row security",
   PARTITIONING: "Partitioning",
   COLLATION: "Collation",
+  EXTENSION: "Extension",
 };
 
 /**
@@ -196,6 +198,7 @@ const SUMMARY_LABEL_CATEGORY: Record<string, ChangeCategory | undefined> = {
   Sequences: "Sequence",
   "Enums & types": "Type",
   Collations: "Collation",
+  Extensions: "Extension",
   Functions: "Function",
   "Row security": "Row security",
   Partitioning: "Partitioning",

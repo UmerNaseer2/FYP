@@ -745,6 +745,32 @@ export type RoutineSnapshot = {
 };
 
 /**
+ * An extension installed INTO this schema.
+ *
+ * Schema-scoped like everything else here: an extension has a namespace
+ * (pg_extension.extnamespace), and the one installed into the schema being
+ * compared is the one that belongs to it. An extension living in some other
+ * schema of the same database is that schema's business.
+ *
+ * Worth capturing because everything an extension brings with it is
+ * deliberately filtered out of this snapshot — its types, its collations and
+ * its functions all carry a pg_depend row of deptype 'e' and are skipped, on
+ * the grounds that they are installed rather than authored. That is the right
+ * call, but without the extension itself the skipping was silent: a schema
+ * with `CREATE EXTENSION citext` and an `email citext` column compared clean
+ * against a schema with neither, and the generated migration stopped on
+ * `type "citext" does not exist`.
+ */
+export type ExtensionSnapshot = {
+  name: string;
+  /** pg_extension.extversion, e.g. "1.6". A string — versions are not numbers. */
+  version: string;
+  /** A one-line human-readable rendering; this is what the comparator diffs. */
+  definition: string;
+  normalizedDefinition: string;
+};
+
+/**
  * How a table relates to other tables it shares its rows or its shape with.
  *
  * Declarative partitioning and old-style INHERITS are both recorded here
@@ -841,6 +867,8 @@ export type SchemaSnapshot = {
   collations?: CollationSnapshot[];
   /** Functions and procedures. See the optionality note above. */
   routines?: RoutineSnapshot[];
+  /** Extensions installed into this schema. See the optionality note above. */
+  extensions?: ExtensionSnapshot[];
 };
 
 type ConstraintRow = {
@@ -1123,6 +1151,11 @@ export async function fetchSchemaSnapshot(
     raw: Record<string, unknown>;
   };
 
+  type ExtensionRow = {
+    name: string;
+    version: string;
+  };
+
   type RoutineRow = {
     name: string;
     kind: "function" | "procedure";
@@ -1134,14 +1167,14 @@ export async function fetchSchemaSnapshot(
     returns: string | null;
   };
 
-  // Eleven catalog queries now describe one schema, and they have to agree with
+  // Twelve catalog queries now describe one schema, and they have to agree with
   // each other: a table that appears in the table list but whose columns were
   // read a moment later, after someone dropped it, produces a snapshot that
   // claims a table with no columns.
   //
   // The previous three queries ran on three separate pooled connections via
   // Promise.all, so each saw its own MVCC snapshot and the assembly loops
-  // papered over the mismatch with `if (!table) continue`. Eleven of those would
+  // papered over the mismatch with `if (!table) continue`. Twelve of those would
   // also overflow the pool's `max: 4` and start queueing anyway, so there is no
   // parallelism left to lose. One connection inside a REPEATABLE READ READ ONLY
   // transaction is both consistent and cheaper on the pool: every query below
@@ -1484,7 +1517,9 @@ export async function fetchSchemaSnapshot(
     // Every table has a row in pg_type for its own row type; the typrelid check
     // removes those. The pg_depend check removes types owned by an extension
     // (pgcrypto, postgis), which are installed, not authored, and would
-    // otherwise diff against any schema without that extension.
+    // otherwise diff against any schema without that extension. The extension
+    // is captured on its own below, so skipping them here no longer means the
+    // difference goes unnoticed — CREATE EXTENSION brings all of them back.
     const typeResult = await client.query<TypeRow>(
       `SELECT
          t.typname AS name,
@@ -1559,6 +1594,20 @@ export async function fetchSchemaSnapshot(
             WHERE dep.objid = t.oid AND dep.deptype = 'e'
          )
        ORDER BY t.typname`,
+      [schemaName]
+    );
+
+    // No filtering beyond the namespace. Everything else in this snapshot skips
+    // what an extension owns; the extension itself is the one thing that has to
+    // survive, because it is what puts all of that back.
+    const extensionResult = await client.query<ExtensionRow>(
+      `SELECT
+         e.extname AS name,
+         e.extversion AS version
+       FROM pg_extension e
+       JOIN pg_namespace n ON n.oid = e.extnamespace
+       WHERE n.nspname = $1
+       ORDER BY e.extname`,
       [schemaName]
     );
 
@@ -2110,6 +2159,18 @@ export async function fetchSchemaSnapshot(
       } satisfies CollationSnapshot;
     });
 
+    const extensions: ExtensionSnapshot[] = extensionResult.rows.map((row) => {
+      // Worded as the tail of the statement that installs it, so the line in
+      // the report and the SQL that fixes it read the same way.
+      const definition = `version ${row.version}`;
+      return {
+        name: row.name,
+        version: row.version,
+        definition,
+        normalizedDefinition: normalizeDefinition(definition),
+      } satisfies ExtensionSnapshot;
+    });
+
     const routines: RoutineSnapshot[] = routineResult.rows.map((row) => {
       const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
       const identityArguments = stripSchemaFromExpr(row.args, schemaName) ?? row.args;
@@ -2139,6 +2200,7 @@ export async function fetchSchemaSnapshot(
     sequences.sort((a, b) => a.name.localeCompare(b.name));
     types.sort((a, b) => a.name.localeCompare(b.name));
     collations.sort((a, b) => a.name.localeCompare(b.name));
+    extensions.sort((a, b) => a.name.localeCompare(b.name));
     routines.sort((a, b) => a.signature.localeCompare(b.signature));
 
     return {
@@ -2154,6 +2216,7 @@ export async function fetchSchemaSnapshot(
         types,
         collations,
         routines,
+        extensions,
       },
     };
   } catch (e) {

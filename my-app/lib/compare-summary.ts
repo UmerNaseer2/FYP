@@ -374,6 +374,22 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     ...collations,
   });
 
+  const extensions = tallyObjects(report.objectDiffs, ["EXTENSION"]);
+  rows.push({
+    label: "Extensions",
+    compared: categories.extensions,
+    notComparedReason: reasonFor("extensions"),
+    absent:
+      (report.left.extensions?.length ?? 0) === 0 &&
+      (report.right.extensions?.length ?? 0) === 0,
+    inSync: inSyncCount(
+      report.left.extensions?.length ?? 0,
+      extensions.added,
+      extensions.changed
+    ),
+    ...extensions,
+  });
+
   const routines = tallyObjects(report.objectDiffs, ROUTINE_KINDS);
   rows.push({
     label: "Functions",

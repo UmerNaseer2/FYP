@@ -9,6 +9,7 @@ import type {
   CollationSnapshot,
   ColumnSnapshot,
   ConstraintSnapshot,
+  ExtensionSnapshot,
   ForeignKeySnapshot,
   IndexSnapshot,
   PolicySnapshot,
@@ -38,6 +39,7 @@ import {
   generatedChangeSeverity,
   isNarrowingType,
   nullabilityChangeSeverity,
+  extensionUpdateIsForward,
   sequenceBoundsComparable,
   sequenceOptionsChangeSeverity,
   typeChangeSeverity,
@@ -81,6 +83,9 @@ export type SqlStatementKind =
   | "ALTER_TYPE"
   | "CREATE_COLLATION"
   | "DROP_COLLATION"
+  | "CREATE_EXTENSION"
+  | "DROP_EXTENSION"
+  | "ALTER_EXTENSION"
   | "CREATE_ROUTINE"
   | "DROP_ROUTINE"
   /**
@@ -1069,6 +1074,48 @@ function tunedSerialStatements(
 // ── Types: enums, domains, composites, ranges ──────────────────────────────
 
 /**
+ * CREATE EXTENSION for an extension the target does not have.
+ *
+ * The version is pinned. Leaving it off installs whatever version the target
+ * server happens to ship, which would apply cleanly and leave the two schemas
+ * still different — the same silent divergence this whole comparison exists to
+ * find. Pinning turns that into "extension X has no installation script for
+ * version Y" on the line that caused it, which is a thing somebody can read
+ * and decide about.
+ *
+ * No `WITH SCHEMA`, for the same reason nothing else here carries a schema
+ * qualifier: the apply route runs `SET LOCAL search_path TO <targetSchema>`
+ * first, so the extension lands in the schema being applied to — including on
+ * a later replay onto a different schema, which a hard-coded name would miss.
+ */
+function createExtensionStatement(
+  extension: ExtensionSnapshot,
+  idempotent: boolean
+): SqlStatement {
+  const exists = idempotent ? " IF NOT EXISTS" : "";
+  return objectStatement({
+    sql:
+      `CREATE EXTENSION${exists} ${q(extension.name)} ` +
+      `VERSION ${literal(extension.version)};`,
+    description: `Install extension "${extension.name}" ${extension.definition}`,
+    kind: "CREATE_EXTENSION",
+    tableName: extension.name,
+  });
+}
+
+function dropExtensionStatement(extension: ExtensionSnapshot): SqlStatement {
+  return objectStatement({
+    sql: `DROP EXTENSION IF EXISTS ${q(extension.name)};`,
+    description:
+      `Drop extension "${extension.name}" — WARNING: takes its types, ` +
+      "operators and functions with it, and fails while anything still uses one",
+    kind: "DROP_EXTENSION",
+    severity: "breaking",
+    tableName: extension.name,
+  });
+}
+
+/**
  * CREATE COLLATION, written from the snapshot's fields rather than its one-line
  * definition, so the sentence in the report and the SQL can be worded
  * independently of each other.
@@ -1403,7 +1450,16 @@ function dropRoutineStatement(routine: RoutineSnapshot, reason = ""): SqlStateme
  */
 type ObjectPhases = {
   /**
-   * Collations — before everything, including the types below.
+   * Extensions — before everything, including the collations below.
+   *
+   * An extension installs types, operators, functions and sometimes collations
+   * of its own, and the snapshot deliberately records none of them (they are
+   * installed, not authored). So the extension is the only thing that puts them
+   * there, and nothing that might name one can be written until it exists.
+   */
+  extensions: SqlStatement[];
+  /**
+   * Collations — before everything else, including the types below.
    *
    * A column, a domain and an index can all name a collation, so nothing that
    * might name one can be written until it exists.
@@ -1464,6 +1520,15 @@ type ObjectPhases = {
    */
   collationDrops: SqlStatement[];
   /**
+   * Extension drops — after even the collation drops.
+   *
+   * DROP EXTENSION carries no CASCADE here, and an extension holds everything
+   * it installed: a column on one of its types, an index on one of its
+   * operator classes, a collation it shipped. All of those have to be gone
+   * first, and the collation drops above are the last of them.
+   */
+  extensionDrops: SqlStatement[];
+  /**
    * Tables whose ALTER COLUMN ... TYPE cannot run while safe mode holds a
    * materialized view's drop back, keyed by the table's name in the SOURCE and
    * listing the views in the way.
@@ -1489,6 +1554,7 @@ function findByName<T extends { name: string }>(items: T[] | undefined, name: st
  */
 function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases {
   const phases: ObjectPhases = {
+    extensions: [],
     collations: [],
     beforeTables: [],
     routines: [],
@@ -1501,6 +1567,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     routineDrops: [],
     afterTables: [],
     collationDrops: [],
+    extensionDrops: [],
     retypeBlockedBy: new Map(),
     warnings: [],
   };
@@ -1683,6 +1750,48 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
       } else {
         const source = findByName(report.left.sequences, diff.name);
         if (source) phases.beforeTables.push(alterSequenceStatement(source));
+      }
+      continue;
+    }
+
+    if (diff.kind === "EXTENSION") {
+      const source = findByName(report.left.extensions, diff.name);
+      const target = findByName(report.right.extensions, diff.name);
+      if (diff.status === "onlyA") {
+        if (source) phases.extensions.push(createExtensionStatement(source, idempotent));
+      } else if (diff.status === "onlyB") {
+        if (target) phases.extensionDrops.push(dropExtensionStatement(target));
+      } else if (source && target) {
+        // ALTER EXTENSION ... UPDATE runs the little upgrade scripts the
+        // extension's author shipped, and almost nobody ships the ones that go
+        // back down. extensionUpdateIsForward is the single answer to whether
+        // there is a path — the report reads the same one off the diff, so the
+        // card and the script cannot say different things.
+        if (extensionUpdateIsForward(source.version, target.version)) {
+          phases.extensions.push(
+            objectStatement({
+              sql: `ALTER EXTENSION ${q(source.name)} UPDATE TO ${literal(source.version)};`,
+              description:
+                `Update extension "${source.name}" from ${target.definition} ` +
+                `to ${source.definition}`,
+              kind: "ALTER_EXTENSION",
+              tableName: source.name,
+            })
+          );
+        } else {
+          phases.extensions.push(
+            manualNote(
+              `extension "${source.name}" is ${target.definition} in the target and ` +
+                `${source.definition} in the source, and ALTER EXTENSION ... UPDATE ` +
+                "only goes forwards. Moving back a version means dropping the " +
+                "extension and installing the older one, which takes every type, " +
+                "operator and function it owns with it — so everything using one " +
+                "has to come off first.",
+              `Extension "${source.name}" needs moving by hand`,
+              source.name
+            )
+          );
+        }
       }
       continue;
     }
@@ -2553,6 +2662,13 @@ export function generateMigration(
   const objects = objectPhases(report, options.addColumnIfNotExists === true);
   const rightViews = report.right.views ?? [];
 
+  // ── Extensions ────────────────────────────────────────────────────────────
+  // Ahead of everything. An extension brings its own types, operators,
+  // functions and sometimes collations, none of which the snapshot records on
+  // their own — so a column, a domain or an index that names one of them has
+  // nothing to name until the extension is installed.
+  statements.push(...objects.extensions);
+
   // ── Collations ────────────────────────────────────────────────────────────
   // Ahead of the types below as well as the tables: a domain can be declared
   // COLLATE "x" exactly the way a column can.
@@ -2730,6 +2846,13 @@ export function generateMigration(
   // After the type drops, not with them: a domain can carry a collation, so
   // the collation outlives the domain by exactly one statement.
   statements.push(...objects.collationDrops);
+
+  // ── Extensions that are no longer used ────────────────────────────────────
+  // The very last thing. DROP EXTENSION carries no CASCADE and an extension
+  // holds everything it installed — a column on one of its types, an index on
+  // one of its operator classes, a collation it shipped. The drops above are
+  // what clear the way.
+  statements.push(...objects.extensionDrops);
 
   warnings.push(...objects.warnings);
 

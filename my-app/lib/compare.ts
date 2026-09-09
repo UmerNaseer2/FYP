@@ -1,6 +1,7 @@
 import type {
   CollationSnapshot,
   ColumnSnapshot,
+  ExtensionSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
   IndexSnapshot,
@@ -1664,6 +1665,7 @@ const OBJECT_KIND_LABEL: Record<ObjectKind, string> = {
   "ROW SECURITY": "Row security on",
   PARTITIONING: "Partitioning of",
   COLLATION: "Collation",
+  EXTENSION: "Extension",
 };
 
 /**
@@ -1692,6 +1694,8 @@ type ComparableObject = {
   view?: ViewSnapshot;
   /** Carried for a collation: the generator writes CREATE from the fields. */
   collation?: CollationSnapshot;
+  /** Carried for an extension: the generator writes its version into the SQL. */
+  extension?: ExtensionSnapshot;
 };
 
 /**
@@ -1733,6 +1737,7 @@ function objectDropSeverity(obj: ComparableObject): ChangeSeverity {
  *               may hold. See domainChangeSeverity.
  *   routine   — CREATE OR REPLACE, unless the signature moved and it has to be
  *               dropped first. See routineReplaceNeedsDrop.
+ *   extension — ALTER EXTENSION … UPDATE, which takes nothing away.
  *   the rest  — replaced in place (ALTER SEQUENCE, ALTER TYPE, CREATE TRIGGER
  *               after a drop) and nothing is taken away while it happens.
  */
@@ -1755,6 +1760,12 @@ function objectChangeSeverity(
   // dropped and recreated, which fails outright while any column still uses
   // it, and re-sorts every index over those columns once it is done.
   if (source.kind === "COLLATION") return "breaking";
+  // An extension whose version moved. Graded the same way a replaced function
+  // is, and for the same reason: nothing is dropped and no column changes its
+  // type — what changes is the behaviour of the routines the extension brought
+  // with it. Whether the move is even applicable is a separate question the
+  // generator answers, since ALTER EXTENSION ... UPDATE only goes forwards.
+  if (source.kind === "EXTENSION") return "info";
   if (source.kind === "INDEX") {
     return objectDropSeverity(target) === "breaking" ||
       objectCreateSeverity(source) === "breaking"
@@ -1808,8 +1819,48 @@ function objectChangeNeedsManualWork(
   peer: ComparableObject
 ): boolean | undefined {
   if (obj.kind === "COLLATION" || obj.kind === "RANGE TYPE") return true;
+  if (obj.extension && peer.extension) {
+    return !extensionUpdateIsForward(obj.extension.version, peer.extension.version);
+  }
   if (obj.type && peer.type) return typeChangeIsAllManual(obj.type, peer.type);
   return undefined;
+}
+
+/**
+ * Whether `ALTER EXTENSION ... UPDATE TO` can get the target from the version it
+ * has to the one the source has.
+ *
+ * It only goes forwards. An extension is upgraded by running the little SQL
+ * scripts its author shipped — pgcrypto--1.2--1.3.sql and so on — and almost
+ * nobody ships the reverse ones, so asking PostgreSQL to go back a version
+ * fails with "extension X has no update path". The generator writes a MANUAL
+ * note instead of a statement in that case, and the report reads this same
+ * answer off the diff rather than guessing from the text.
+ *
+ * Versions are compared segment by segment as numbers where both segments are
+ * numbers, and give up where either is not — "1.10" is after "1.9", but
+ * "2.1-beta" against "2.1-rc" is nobody's arithmetic. A version this cannot
+ * order is treated as NOT forward, which costs a note where a statement might
+ * have worked and never the other way around.
+ *
+ * A side that runs out of segments is read as 0, so "1.2.1" is after "1.2" and
+ * "1.2" is the same version as "1.2.0". Reading the missing one as empty text
+ * instead made a patch release unorderable against the release it patched — the
+ * single commonest bump there is.
+ */
+export function extensionUpdateIsForward(source: string, target: string): boolean {
+  const left = source.split(".");
+  const right = target.split(".");
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const a = left[i] ?? "0";
+    const b = right[i] ?? "0";
+    if (a === b) continue;
+    if (/^\d+$/.test(a) && /^\d+$/.test(b)) return Number(a) > Number(b);
+    return false;
+  }
+  // Every segment matched, so the two versions are the same and there is
+  // nothing to update — which is not a forward move.
+  return false;
 }
 
 /**
@@ -2219,6 +2270,17 @@ function collationObjects(collations: CollationSnapshot[]): ComparableObject[] {
   }));
 }
 
+function extensionObjects(extensions: ExtensionSnapshot[]): ComparableObject[] {
+  return extensions.map((extension) => ({
+    key: normalizeIdentifier(extension.name),
+    kind: "EXTENSION" as const,
+    name: extension.name,
+    definition: extension.definition,
+    normalizedDefinition: extension.normalizedDefinition,
+    extension,
+  }));
+}
+
 function routineObjects(routines: RoutineSnapshot[]): ComparableObject[] {
   return routines.map((routine) => ({
     // Postgres allows overloads, so the identity is the signature, not the name.
@@ -2327,11 +2389,29 @@ function compareViewRelationObjects(
   return diffs;
 }
 
-/** Views, sequences, types, collations and routines, which belong to the schema. */
+/**
+ * Views, sequences, types, collations, extensions and routines, which belong to
+ * the schema.
+ */
 function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): ObjectDiff[] {
   const diffs: ObjectDiff[] = [];
 
-  // First in the list on purpose. A column, a domain and an index can all name
+  // Ahead of even the collations. An extension installs types, collations and
+  // functions of its own, and every one of those is deliberately skipped by the
+  // snapshot — so the extension is the only record that they exist, and the
+  // statement that installs it has to come before anything that might name one.
+  if (left.extensions && right.extensions) {
+    diffs.push(
+      ...compareObjectLists(
+        extensionObjects(left.extensions),
+        extensionObjects(right.extensions),
+        left.schema,
+        right.schema
+      )
+    );
+  }
+
+  // Second in the list on purpose. A column, a domain and an index can all name
   // a collation, so the statement that creates one has to come before them —
   // and the generator emits object statements in the order they arrive here.
   if (left.collations && right.collations) {
@@ -2462,6 +2542,7 @@ function comparedCategories(
     sequences: schemaScoped("sequences", Boolean(left.sequences && right.sequences)),
     types: schemaScoped("types", Boolean(left.types && right.types)),
     collations: schemaScoped("collations", Boolean(left.collations && right.collations)),
+    extensions: schemaScoped("extensions", Boolean(left.extensions && right.extensions)),
     routines: schemaScoped("routines", Boolean(left.routines && right.routines)),
     rowSecurity: tableScoped("rowSecurity", (m) =>
       Boolean(m.left.rowSecurity && m.right.rowSecurity)

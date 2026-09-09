@@ -146,6 +146,7 @@ const OBJECT_TAG: Record<ObjectKind, string> = {
   "ROW SECURITY": "rls",
   PARTITIONING: "partitioning",
   COLLATION: "collation",
+  EXTENSION: "extension",
 };
 
 /**
@@ -165,6 +166,7 @@ const SCHEMA_OBJECT_SECTIONS: { label: string; kinds: ObjectKind[] }[] = [
   { label: "Indexes and triggers on views", kinds: ["INDEX", "TRIGGER"] },
   { label: "Sequences", kinds: ["SEQUENCE"] },
   { label: "Types", kinds: ["ENUM", "DOMAIN", "COMPOSITE TYPE", "RANGE TYPE"] },
+  { label: "Extensions", kinds: ["EXTENSION"] },
   { label: "Collations", kinds: ["COLLATION"] },
   { label: "Functions", kinds: ["FUNCTION", "PROCEDURE"] },
 ];
@@ -183,6 +185,20 @@ function objectKindOf(diff: ObjectDiff): DiffKind {
  * function the SQL generator's statements are graded by.
  */
 function objectNote(diff: ObjectDiff): string {
+  if (diff.kind === "EXTENSION" && diff.status === "changedDefinition") {
+    // The version each side is on is the whole content of this line, so print
+    // both rather than the word "changed". Whether ALTER EXTENSION can get from
+    // one to the other is the compare engine's answer, read off the diff — the
+    // same answer the generator gates its statement on. Ahead of the general
+    // by-hand line below because that one says "replaced", and an extension
+    // that cannot be updated is not replaced by anything.
+    const versions =
+      `${diff.rightDefinition ?? "?"} in the target, ` +
+      `${diff.leftDefinition ?? "?"} in the source`;
+    return diff.needsManualWork === true
+      ? `${versions} — no update path, has to be moved by hand`
+      : `${versions} — updated`;
+  }
   // Set by the compare engine wherever no statement can carry the change. Read
   // rather than re-decided so this line and the generator's MANUAL note come
   // from one answer: a range type the snapshot cannot describe well enough to

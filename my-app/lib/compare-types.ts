@@ -7,6 +7,7 @@
 import type {
   CollationSnapshot,
   ColumnSnapshot,
+  ExtensionSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
   IndexSnapshot,
@@ -27,6 +28,7 @@ import type {
 export type {
   CollationSnapshot,
   ColumnSnapshot,
+  ExtensionSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
   IndexSnapshot,
@@ -142,6 +144,7 @@ export type ObjectKind =
   | "COMPOSITE TYPE"
   | "RANGE TYPE"
   | "COLLATION"
+  | "EXTENSION"
   | "FUNCTION"
   | "PROCEDURE"
   | "POLICY"
@@ -225,6 +228,7 @@ export type ObjectCategoryKey =
   | "sequences"
   | "types"
   | "collations"
+  | "extensions"
   | "routines"
   | "rowSecurity"
   | "partitioning";
@@ -259,6 +263,7 @@ export type ComparedObjectCategories = {
   sequences: boolean;
   types: boolean;
   collations: boolean;
+  extensions: boolean;
   routines: boolean;
   rowSecurity: boolean;
   partitioning: boolean;
