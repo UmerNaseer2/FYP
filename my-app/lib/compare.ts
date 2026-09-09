@@ -112,15 +112,6 @@ const WEIGHTS = {
   },
 } as const;
 
-// Exported so the UI can display each dimension as a % of its maximum.
-// If you change WEIGHTS.table above, this updates automatically.
-export const TABLE_DIMENSION_MAX = {
-  name:          WEIGHTS.table.name,
-  constraints:   WEIGHTS.table.constraints,
-  columns:       WEIGHTS.table.columns,
-  relationships: WEIGHTS.table.relationships,
-} as const;
-
 // --- Match thresholds -------------------------------------------------------
 // A pair scoring at or above the accept threshold is a confident match.
 // Between accept and possible, it shows up as a rename candidate for review.
@@ -180,7 +171,6 @@ type ColumnConstraintState = {
 };
 
 type ConstraintLike = ConstraintSnapshot | ForeignKeySnapshot;
-type MatchDecision = "accepted" | "possible";
 
 type IncomingForeignKey = {
   referringTable: string;
@@ -302,10 +292,6 @@ export function typeChangeDescription(
 // ============================================================================
 // Constraint signature helpers
 // ============================================================================
-
-function matchDecision(score: number, acceptedThreshold: number): MatchDecision {
-  return score >= acceptedThreshold ? "accepted" : "possible";
-}
 
 function columnsAsOrderedSignature(columns: string[]): string {
   return columns.map((column) => normalizeIdentifier(column)).join("|");
@@ -2810,13 +2796,8 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
 }
 
 // ============================================================================
-// UI helper exports (used by page.tsx)
+// UI helper exports
 // ============================================================================
-
-export function summarizeColumns(columns: ColumnSnapshot[]): string {
-  if (columns.length === 0) return "None";
-  return columns.map((col) => `${col.name} (${col.typeDisplay})`).join(", ");
-}
 
 export function describeConstraint(constraint: ConstraintLike): string {
   if (constraint.kind === "FOREIGN KEY") {
@@ -2826,17 +2807,4 @@ export function describeConstraint(constraint: ConstraintLike): string {
     return `${constraint.name}: ${constraint.columns.join(", ")}`;
   }
   return `${constraint.name}: ${constraint.definition}`;
-}
-
-export function describeTableMatch(tableMatch: TableMatch): string {
-  if (tableMatch.exact) {
-    if (!tableMatch.hasChanges && tableMatch.score === 100) {
-      return "Exact table name match with identical structure.";
-    }
-    return `Matched by exact table name. Structural similarity score: ${tableMatch.score}%.`;
-  }
-
-  const decision  = matchDecision(tableMatch.score, TABLE_MATCH_ACCEPT_THRESHOLD);
-  const qualifier = decision === "accepted" ? "Accepted similarity match" : "Possible similarity match";
-  return `${qualifier} at ${tableMatch.score}%.`;
 }

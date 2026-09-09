@@ -3,7 +3,6 @@ import {
   createDecipheriv,
   randomBytes,
   scryptSync,
-  timingSafeEqual,
 } from "node:crypto";
 
 /**
@@ -95,11 +94,6 @@ function resolveKey(): ResolvedKey {
   return cached;
 }
 
-/** Which key the process is using. For diagnostics only — never returns key material. */
-export function secretKeyStatus(): KeySource {
-  return resolveKey().source;
-}
-
 /** True when a stored value is in the encrypted envelope format. */
 export function isEncrypted(value: string | null | undefined): boolean {
   return typeof value === "string" && value.startsWith(PREFIX);
@@ -174,15 +168,4 @@ export function decryptSecret(stored: string | null | undefined): string | null 
         "The key has probably changed since the connection was saved — re-enter its password."
     );
   }
-}
-
-/**
- * Constant-time string comparison. Used where a secret is compared to a value
- * the caller supplied, so the comparison cannot be timed.
- */
-export function secretsMatch(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
 }
