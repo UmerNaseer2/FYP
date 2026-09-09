@@ -7,6 +7,7 @@ import type {
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
+  SequenceOptions,
   SequenceSnapshot,
   TablePartitioning,
   TableSnapshot,
@@ -575,6 +576,109 @@ export function generatedChangeSeverity(
 }
 
 /**
+ * The settings that differ between two sequences, worded for a reader.
+ *
+ * Only the ones that actually moved, because that is the whole point: a column
+ * where nothing but CACHE changed should not print six clauses of which five
+ * say the same thing twice.
+ */
+export function sequenceOptionDifferences(
+  source: SequenceOptions,
+  target: SequenceOptions
+): string[] {
+  const parts: string[] = [];
+  if (source.startValue !== target.startValue) {
+    parts.push(`START WITH ${target.startValue} to ${source.startValue}`);
+  }
+  if (source.increment !== target.increment) {
+    parts.push(`INCREMENT BY ${target.increment} to ${source.increment}`);
+  }
+  if (sequenceBoundsComparable(source, target)) {
+    if (source.minValue !== target.minValue) {
+      parts.push(`MINVALUE ${target.minValue} to ${source.minValue}`);
+    }
+    if (source.maxValue !== target.maxValue) {
+      parts.push(`MAXVALUE ${target.maxValue} to ${source.maxValue}`);
+    }
+  }
+  if (source.cycles !== target.cycles) {
+    parts.push(source.cycles ? "NO CYCLE to CYCLE" : "CYCLE to NO CYCLE");
+  }
+  if (source.cacheSize !== target.cacheSize) {
+    parts.push(`CACHE ${target.cacheSize} to ${source.cacheSize}`);
+  }
+  return parts;
+}
+
+/**
+ * Whether the two sequences' MINVALUE and MAXVALUE are worth comparing.
+ *
+ * They are not once the underlying type differs. A sequence left on its default
+ * bounds takes them from its type — integer stops at 2147483647, bigint at
+ * 9223372036854775807 — so widening the column from integer to bigint moves
+ * MAXVALUE without anybody having chosen anything. Reporting that as a second
+ * difference puts a line about sequence bounds directly under the line about
+ * the type change that caused it, and the generator would then emit a MAXVALUE
+ * clause restating what ALTER COLUMN ... TYPE already did.
+ */
+export function sequenceBoundsComparable(
+  source: SequenceOptions,
+  target: SequenceOptions
+): boolean {
+  return source.dataType === target.dataType;
+}
+
+/**
+ * Parse a sequence bound, or null when it is not a plain integer.
+ *
+ * These arrive as strings because a bigint sequence runs past what a JavaScript
+ * number can hold exactly — MAXVALUE on a bigint sequence is 9223372036854775807
+ * and Number() rounds it. BigInt keeps it, and null means "could not tell",
+ * which the caller grades as the dangerous answer rather than the convenient
+ * one.
+ */
+function sequenceBound(value: string): bigint | null {
+  try {
+    return BigInt(value.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Moving the settings of the sequence behind an identity or serial column.
+ *
+ * Narrowing a bound is the dangerous one: PostgreSQL refuses "MINVALUE (5000)
+ * must be less than MAXVALUE (1000)" and "START value (200) cannot be greater
+ * than MAXVALUE (50)", so a migration that tightens either bound can abort on
+ * the real sequence even though it applied to an empty test copy. Widening
+ * cannot fail, and INCREMENT, CACHE, CYCLE and START only decide what the
+ * sequence hands out next.
+ */
+export function sequenceOptionsChangeSeverity(
+  source: SequenceOptions,
+  target: SequenceOptions
+): ChangeSeverity {
+  const narrows = (from: string, to: string, tighter: (a: bigint, b: bigint) => boolean) => {
+    const a = sequenceBound(from);
+    const b = sequenceBound(to);
+    if (a === null || b === null) return from !== to;
+    return tighter(b, a);
+  };
+  // Bounds that moved only because the type did are not a tightening anybody
+  // asked for — see sequenceBoundsComparable.
+  if (!sequenceBoundsComparable(source, target)) return "safe";
+  // The target's MINVALUE rising, or its MAXVALUE falling, is the tightening.
+  if (narrows(target.minValue, source.minValue, (next, now) => next > now)) {
+    return "breaking";
+  }
+  if (narrows(target.maxValue, source.maxValue, (next, now) => next < now)) {
+    return "breaking";
+  }
+  return "safe";
+}
+
+/**
  * Gaining, losing or changing a GENERATED ALWAYS AS (…) clause. Always breaking,
  * and the reason is the same in all three directions: PostgreSQL has no ALTER
  * that turns a stored column into a computed one, a computed one back into a
@@ -850,6 +954,30 @@ function compareColumnPair(
       severity: generatedChangeSeverity(leftColumn, rightColumn),
       message: `Generated values changed from ${leftGenerated} to ${rightGenerated}`,
     });
+  }
+
+  // The settings of the sequence behind an identity or serial column. Compared
+  // separately from the line above, which says WHICH kind of generator the
+  // column has; this says how that generator is configured, and the two move
+  // independently.
+  //
+  // Both sides have to have recorded it AND both have to have a sequence: an
+  // `undefined` is a snapshot with no record, and a `null` on one side alone is
+  // the column gaining or losing its generator, which the line above already
+  // reported in full.
+  const leftSequence = leftColumn.sequenceOptions;
+  const rightSequence = rightColumn.sequenceOptions;
+  if (leftSequence && rightSequence) {
+    const moved = sequenceOptionDifferences(leftSequence, rightSequence);
+    if (moved.length > 0) {
+      changes.push({
+        kind: "sequenceOptions",
+        severity: sequenceOptionsChangeSeverity(leftSequence, rightSequence),
+        // right→left like every other message in this list: the target's
+        // setting first, the source's second.
+        message: `Sequence settings changed — ${moved.join(", ")}`,
+      });
+    }
   }
 
   // Column default drift. Defaults are already schema-relative (own-schema

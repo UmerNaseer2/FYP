@@ -248,6 +248,23 @@ export type ColumnSnapshot = {
    */
   identity?: "ALWAYS" | "BY DEFAULT" | null;
   /**
+   * The settings of the sequence this column draws its values from — an
+   * identity column's, or the one behind a `serial` — and null for a column
+   * that draws from no sequence at all.
+   *
+   * The sequence itself is in `SchemaSnapshot.sequences`, but the comparison
+   * skips every sequence a column owns: it is created by the column and dropped
+   * with it, so reporting it as well would show one added serial column as two
+   * differences. The settings were therefore captured and then thrown away, and
+   * `START WITH 100 INCREMENT BY 5` against `START WITH 1 INCREMENT BY 1` — the
+   * difference between two shards handing out interleaved ids and both handing
+   * out the same ones — compared as an exact match.
+   *
+   * Optional for the usual reason: a snapshot captured before this app read
+   * them has no record, which is not the same as a column having none.
+   */
+  sequenceOptions?: SequenceOptions | null;
+  /**
    * The column's own collation, ready to go straight after the type in DDL —
    * `"C"`, `"und-x-icu"`, `"ci"` — or null when it uses its type's default.
    *
@@ -524,14 +541,17 @@ export type ViewSnapshot = {
 };
 
 /**
- * A sequence. Numeric fields are strings because Postgres returns int8 as a
- * string and we never do arithmetic on them — only equality.
+ * The knobs a sequence hands out numbers by. Numeric fields are strings because
+ * Postgres returns int8 as a string and we never do arithmetic on them — only
+ * equality, and the odd BigInt comparison of a bound.
  *
- * `ownedByTable` matters for generation: a sequence owned by a serial column is
- * created by the column's type, so emitting CREATE SEQUENCE for it would fail.
+ * Split out from the sequence itself because they are not only a sequence's:
+ * `GENERATED ALWAYS AS IDENTITY (START WITH 100 INCREMENT BY 5)` and a `serial`
+ * column whose sequence was later ALTERed both configure exactly these, and a
+ * column that draws its values from a sequence carries them in
+ * ColumnSnapshot.sequenceOptions.
  */
-export type SequenceSnapshot = {
-  name: string;
+export type SequenceOptions = {
   dataType: string;
   startValue: string;
   increment: string;
@@ -539,6 +559,16 @@ export type SequenceSnapshot = {
   maxValue: string;
   cycles: boolean;
   cacheSize: string;
+};
+
+/**
+ * A sequence: its settings, plus who it belongs to.
+ *
+ * `ownedByTable` matters for generation: a sequence owned by a serial column is
+ * created by the column's type, so emitting CREATE SEQUENCE for it would fail.
+ */
+export type SequenceSnapshot = SequenceOptions & {
+  name: string;
   ownedByTable: string | null;
   ownedByColumn: string | null;
 };
@@ -1714,6 +1744,9 @@ export async function fetchSchemaSnapshot(
         identity:
           row.identity === "a" ? "ALWAYS" : row.identity === "d" ? "BY DEFAULT" : null,
         collation: formatCollation(row.collation_schema, row.collation_name, schemaName),
+        // Filled in below, once the sequences have been read. null here means
+        // "no sequence behind this column", which is true of most of them.
+        sequenceOptions: null,
         isPrimaryKey: false,
         uniqueConstraintNames: [],
         foreignKeyConstraintNames: [],
@@ -1913,6 +1946,29 @@ export async function fetchSchemaSnapshot(
       ownedByTable: stripSchemaFromExpr(row.owned_by_table, schemaName),
       ownedByColumn: row.owned_by_column,
     }));
+
+    // Hand each owned sequence's settings to the column that owns it.
+    //
+    // Done here rather than in the column loop because the sequences are only
+    // read now. A column owns at most one sequence, so there is nothing to
+    // merge — the last writer would be the only writer either way.
+    for (const sequence of sequences) {
+      if (sequence.ownedByTable === null || sequence.ownedByColumn === null) {
+        continue;
+      }
+      const owner = tablesByName.get(sequence.ownedByTable);
+      const column = owner?.columns.find((c) => c.name === sequence.ownedByColumn);
+      if (!column) continue;
+      column.sequenceOptions = {
+        dataType: sequence.dataType,
+        startValue: sequence.startValue,
+        increment: sequence.increment,
+        minValue: sequence.minValue,
+        maxValue: sequence.maxValue,
+        cycles: sequence.cycles,
+        cacheSize: sequence.cacheSize,
+      };
+    }
 
     const types: TypeSnapshot[] = typeResult.rows.map((row) => {
       const labels = coerceTextArray(row.enum_labels);

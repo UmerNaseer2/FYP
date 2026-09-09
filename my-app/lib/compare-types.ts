@@ -14,6 +14,7 @@ import type {
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
+  SequenceOptions,
   SequenceSnapshot,
   TablePartitioning,
   TableSnapshot,
@@ -33,6 +34,7 @@ export type {
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
+  SequenceOptions,
   SequenceSnapshot,
   TablePartitioning,
   TableSnapshot,
@@ -76,6 +78,7 @@ export type ColumnChangeKind =
   | "nullability"
   | "collation"
   | "generated"
+  | "sequenceOptions"
   | "computed"
   | "default"
   | "primaryKey"
