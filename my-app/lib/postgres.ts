@@ -532,6 +532,48 @@ export type DomainCheck = {
   expression: string;
 };
 
+/**
+ * The parts of a range type that CREATE TYPE ... AS RANGE names, beyond the
+ * subtype.
+ *
+ * Optional on the snapshot, and deliberately kept out of `definition` unless
+ * one of them was actually chosen: a range with none of them reads exactly as
+ * it did before any of this was captured, so a snapshot stored back then still
+ * compares equal to a fresh one instead of reporting drift that never happened.
+ */
+export type RangeDetails = {
+  /**
+   * The subtype's B-tree operator class, but only when it is NOT that type's
+   * default. The default is what CREATE TYPE picks on its own, so writing it
+   * out would say nothing and would change the definition of every range type
+   * already recorded.
+   */
+  subtypeOpclass: string | null;
+  /** The collation the bounds are compared with, when the range names one. */
+  collation: string | null;
+  /** The canonical function, or null. See needsManualCreate. */
+  canonical: string | null;
+  /** The subtype_diff function, schema-qualified only when it has to be. */
+  subtypeDiff: string | null;
+  /**
+   * The multirange type's name, but only when it is not the `<range>_multirange`
+   * PostgreSQL would have chosen. Null on a server older than 14, which has no
+   * multiranges at all.
+   */
+  multirangeName: string | null;
+  /**
+   * True when this range cannot be created from the snapshot alone.
+   *
+   * Two things put it there. A canonical function takes and returns the range
+   * type itself, so it cannot exist until the type does — that pair needs a
+   * shell type and three statements in a particular order. And a subtype_diff
+   * this schema owns is a function the generator writes out after the tables,
+   * long after the type that would name it. Either way the CREATE TYPE would
+   * stop the migration, so the generator writes a note instead of a statement.
+   */
+  needsManualCreate: boolean;
+};
+
 export type TypeSnapshot = {
   name: string;
   kind: TypeKind;
@@ -551,10 +593,33 @@ export type TypeSnapshot = {
   checks: DomainCheck[];
   /** COMPOSITE only: "field type" pairs in attribute order. */
   attributes: string[];
+  /**
+   * RANGE only. Undefined on a snapshot captured before ranges were recorded
+   * in this detail, which is not the same as a range with no options — see the
+   * optionality note on SchemaSnapshot.
+   */
+  rangeDetails?: RangeDetails;
   /** A one-line human-readable rendering; this is what the comparator diffs. */
   definition: string;
   normalizedDefinition: string;
 };
+
+/**
+ * Whether a range type can be written out as a real CREATE TYPE statement.
+ *
+ * Read by the compare engine, so the report can say "has to be created by
+ * hand", and by the migration generator, so it knows what to write. One
+ * function rather than the same test in both places: the sentence on screen
+ * and the SQL underneath cannot disagree if they ask the same question.
+ *
+ * A snapshot captured before range types were recorded in this detail has no
+ * rangeDetails at all, and the answer for it is the same one: not from here.
+ */
+export function rangeTypeIsCreatable(type: TypeSnapshot): boolean {
+  if (type.kind !== "RANGE") return false;
+  if (type.rangeDetails === undefined) return false;
+  return !type.rangeDetails.needsManualCreate;
+}
 
 /**
  * Which library decides how a collation sorts and compares.
@@ -974,6 +1039,13 @@ export async function fetchSchemaSnapshot(
     enum_labels: string[] | null;
     base_type: string | null;
     range_subtype: string | null;
+    range_opclass: string | null;
+    range_opclass_is_default: boolean | null;
+    range_collation: string | null;
+    range_canonical: string | null;
+    range_subtype_diff: string | null;
+    range_subtype_diff_schema: string | null;
+    range_multirange: string | null;
     domain_not_null: boolean | null;
     domain_checks: DomainCheck[] | string | null;
     composite_fields: string[] | null;
@@ -1373,6 +1445,18 @@ export async function fetchSchemaSnapshot(
            SELECT format_type(r.rngsubtype, NULL)
              FROM pg_range r WHERE r.rngtypid = t.oid
          ) END AS range_subtype,
+         opc.opcname AS range_opclass,
+         opc.opcdefault AS range_opclass_is_default,
+         rco.collname AS range_collation,
+         canp.proname AS range_canonical,
+         diffp.proname AS range_subtype_diff,
+         diffn.nspname AS range_subtype_diff_schema,
+         -- rngmultitypid arrived in PostgreSQL 14, so it is read out of the
+         -- row as JSON rather than named in a join: on an older server the key
+         -- is simply absent, where naming the column would fail the query.
+         (SELECT mt.typname FROM pg_type mt
+           WHERE mt.oid::text = (to_jsonb(rng) ->> 'rngmultitypid')
+         ) AS range_multirange,
          CASE WHEN t.typtype = 'd' THEN t.typnotnull END AS domain_not_null,
          CASE WHEN t.typtype = 'd' THEN (
            SELECT json_agg(json_build_object(
@@ -1398,6 +1482,13 @@ export async function fetchSchemaSnapshot(
          ) END AS composite_fields
        FROM pg_type t
        JOIN pg_namespace n ON n.oid = t.typnamespace
+       -- All five outer joins are for range types and stay NULL for the rest.
+       LEFT JOIN pg_range rng ON rng.rngtypid = t.oid
+       LEFT JOIN pg_opclass opc ON opc.oid = rng.rngsubopc
+       LEFT JOIN pg_collation rco ON rco.oid = rng.rngcollation
+       LEFT JOIN pg_proc canp ON canp.oid = rng.rngcanonical
+       LEFT JOIN pg_proc diffp ON diffp.oid = rng.rngsubdiff
+       LEFT JOIN pg_namespace diffn ON diffn.oid = diffp.pronamespace
        WHERE n.nspname = $1
          AND t.typtype IN ('e', 'd', 'c', 'r')
          AND NOT EXISTS (
@@ -1461,9 +1552,17 @@ export async function fetchSchemaSnapshot(
        JOIN pg_language l ON l.oid = p.prolang
        WHERE n.nspname = $1
          AND p.prokind IN ('f', 'p')
+         -- 'e' is an extension's function. 'i' is one PostgreSQL made itself
+         -- as part of another object: CREATE TYPE ... AS RANGE quietly adds
+         -- five or six LANGUAGE internal constructors, and capturing those
+         -- made the migration try to CREATE OR REPLACE them — against a type
+         -- it had decided not to create — so it stopped on "type does not
+         -- exist". They come back on their own with the type.
          AND NOT EXISTS (
            SELECT 1 FROM pg_depend dep
-            WHERE dep.objid = p.oid AND dep.deptype = 'e'
+            WHERE dep.objid = p.oid
+              AND dep.classid = 'pg_proc'::regclass
+              AND dep.deptype IN ('e', 'i')
          )
        ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)`,
       [schemaName]
@@ -1781,6 +1880,37 @@ export async function fetchSchemaSnapshot(
       const baseType = stripSchemaFromExpr(baseTypeRaw, schemaName);
       const notNull = row.domain_not_null === true;
 
+      // Only a range type has any of this, and only the options someone
+      // actually chose are kept: the default operator class is what CREATE
+      // TYPE picks anyway, so recording it would add a phrase to the
+      // definition of every range type already stored.
+      let rangeDetails: RangeDetails | undefined;
+      if (row.kind === "range") {
+        const diffSchema = row.range_subtype_diff_schema;
+        rangeDetails = {
+          subtypeOpclass: row.range_opclass_is_default ? null : row.range_opclass,
+          collation: row.range_collation,
+          canonical: row.range_canonical,
+          // Left bare when it is a built-in or lives in this schema, and
+          // qualified when it does not — the same rule the rest of the file
+          // applies to expressions, so the text reads the way it would be
+          // written back out.
+          subtypeDiff:
+            row.range_subtype_diff === null
+              ? null
+              : diffSchema === schemaName || diffSchema === "pg_catalog"
+                ? row.range_subtype_diff
+                : `${diffSchema}.${row.range_subtype_diff}`,
+          multirangeName:
+            row.range_multirange !== null &&
+            row.range_multirange !== `${row.name}_multirange`
+              ? row.range_multirange
+              : null,
+          needsManualCreate:
+            row.range_canonical !== null || diffSchema === schemaName,
+        };
+      }
+
       // One readable line per type, because that is what the comparator diffs
       // and what the report shows. An enum's labels are ordered: Postgres
       // compares enum values by that order, so reordering them is a real change.
@@ -1795,7 +1925,26 @@ export async function fetchSchemaSnapshot(
       } else if (row.kind === "composite") {
         definition = `COMPOSITE (${attributes.join(", ")})`;
       } else {
-        definition = `RANGE (${baseType ?? "?"})`;
+        // The subtype alone when nothing else was chosen, which is what this
+        // line said before any of the rest was captured — so a stored snapshot
+        // still matches a fresh one rather than reporting drift.
+        const parts = [baseType ?? "?"];
+        if (rangeDetails?.subtypeOpclass) {
+          parts.push(`subtype_opclass = ${rangeDetails.subtypeOpclass}`);
+        }
+        if (rangeDetails?.collation) {
+          parts.push(`collation = "${rangeDetails.collation}"`);
+        }
+        if (rangeDetails?.canonical) {
+          parts.push(`canonical = ${rangeDetails.canonical}`);
+        }
+        if (rangeDetails?.subtypeDiff) {
+          parts.push(`subtype_diff = ${rangeDetails.subtypeDiff}`);
+        }
+        if (rangeDetails?.multirangeName) {
+          parts.push(`multirange_type_name = ${rangeDetails.multirangeName}`);
+        }
+        definition = `RANGE (${parts.join(", ")})`;
       }
 
       return {
@@ -1813,6 +1962,7 @@ export async function fetchSchemaSnapshot(
         notNull,
         checks,
         attributes,
+        rangeDetails,
         definition,
         normalizedDefinition: normalizeDefinition(definition),
       } satisfies TypeSnapshot;

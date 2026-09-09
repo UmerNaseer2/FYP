@@ -40,6 +40,9 @@ import {
   viewOptionsClause,
 } from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
+// The compare engine asks this same question when it decides whether to tell
+// the reader a range type has to be created by hand.
+import { rangeTypeIsCreatable } from "./postgres";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -870,10 +873,31 @@ function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
       tableName: type.name,
     });
   }
-  // A range type needs its subtype's operator class, collation and canonical
-  // function to round-trip, and the snapshot records only the subtype. Guessing
-  // the rest would produce a type that looks right and sorts wrong.
-  return null;
+  // Everything left is a range type. It is written out only when the snapshot
+  // recorded enough of it — see rangeTypeIsCreatable, which the compare engine
+  // asks the same question of so the report and this agree. When it did not,
+  // the caller writes a note instead.
+  if (!rangeTypeIsCreatable(type)) return null;
+  const range = type.rangeDetails;
+  if (!range) return null;
+  const options = [`subtype = ${type.baseType ?? "text"}`];
+  // Only the options that are not the default were recorded, so each one here
+  // is something someone chose. Anything missing is PostgreSQL's own choice,
+  // which it will make again.
+  if (range.subtypeOpclass !== null) {
+    options.push(`subtype_opclass = ${q(range.subtypeOpclass)}`);
+  }
+  if (range.collation !== null) options.push(`collation = ${q(range.collation)}`);
+  if (range.subtypeDiff !== null) options.push(`subtype_diff = ${range.subtypeDiff}`);
+  if (range.multirangeName !== null) {
+    options.push(`multirange_type_name = ${q(range.multirangeName)}`);
+  }
+  return objectStatement({
+    sql: `CREATE TYPE ${q(type.name)} AS RANGE (${options.join(", ")});`,
+    description: `Create range type "${type.name}"`,
+    kind: "CREATE_TYPE",
+    tableName: type.name,
+  });
 }
 
 function dropTypeStatement(type: TypeSnapshot): SqlStatement {
@@ -1377,11 +1401,25 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
       if (create) {
         phases.beforeTables.push(create);
       } else {
+        // Only a range type gets here: every other kind of type is written
+        // out above. Which of the three reasons applies decides the sentence,
+        // because "create it by hand" without saying why is not much help.
+        const range = sourceType.rangeDetails;
+        const why =
+          range === undefined
+            ? "this snapshot was captured before ranges were recorded in that much " +
+              "detail — re-capture the source schema and the statement will be written"
+            : range.canonical !== null
+              ? `it has a canonical function (${range.canonical}), which takes and ` +
+                "returns the range type itself: create a shell type, create the " +
+                "function against it, then define the range"
+              : `its subtype_diff function (${range.subtypeDiff ?? "?"}) belongs to this ` +
+                "schema, and this script creates functions after the tables — create " +
+                "that function first, then the type";
         phases.beforeTables.push(
           manualNote(
-            `range type "${sourceType.name}" (${sourceType.definition}) has to be created by ` +
-              `hand — a range needs its subtype's operator class and canonical function, and ` +
-              `the snapshot records only the subtype.`,
+            `range type "${sourceType.name}" (${sourceType.definition}) has to be created ` +
+              `by hand: ${why}.`,
             `Range type "${sourceType.name}" needs creating by hand`,
             sourceType.name
           )
