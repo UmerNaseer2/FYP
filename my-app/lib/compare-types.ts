@@ -193,6 +193,21 @@ export type ObjectDiff = {
    * "1 destructive statement". Decided here, where both sides are in hand.
    */
   dropDestroysData?: boolean;
+  /**
+   * True when no statement can carry this change, so a person has to plan it.
+   *
+   * Set only where the answer is certain from the snapshot or from PostgreSQL
+   * itself, never by restating what the generator happens to do today: a range
+   * type the snapshot cannot describe well enough to create (asked through
+   * rangeTypeIsCreatable, which is also what the generator asks), and a changed
+   * collation or range type, neither of which PostgreSQL has any ALTER for.
+   *
+   * `undefined` is NOT a promise that the script has a runnable statement — it
+   * only means this was not one of the cases decided here. The report used to
+   * print "only in source — created" over a range type the script could do
+   * nothing but describe; this is what stops that sentence being written.
+   */
+  needsManualWork?: boolean;
 };
 
 /** The categories the matrix has a row for, named the way the report names them. */

@@ -164,6 +164,16 @@ function objectKindOf(diff: ObjectDiff): DiffKind {
  * function the SQL generator's statements are graded by.
  */
 function objectNote(diff: ObjectDiff): string {
+  // Set by the compare engine wherever no statement can carry the change. Read
+  // rather than re-decided so this line and the generator's MANUAL note come
+  // from one answer: a range type the snapshot cannot describe well enough to
+  // create used to be drawn as "only in source — created" while the script
+  // could do nothing but describe it.
+  if (diff.needsManualWork === true) {
+    return diff.status === "onlyA"
+      ? "only in source — has to be created by hand"
+      : "definition changed — has to be replaced by hand";
+  }
   if (diff.status === "onlyA") return "only in source — created";
   if (diff.status === "onlyB") return "only in target — dropped";
   if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
@@ -192,12 +202,6 @@ function objectNote(diff: ObjectDiff): string {
     // No ALTER turns a plain table into a partitioned one or moves a partition
     // to a different parent, so saying what each side is beats saying "changed".
     return `${diff.rightDefinition ?? "?"} in the target, ${diff.leftDefinition ?? "?"} in the source`;
-  }
-  if (diff.kind === "COLLATION") {
-    // There is no ALTER COLLATION that changes how one sorts, and dropping it
-    // fails while a single column still uses it. The generator writes a
-    // MANUAL note for exactly that reason, so the report says the same thing.
-    return "definition changed — has to be replaced by hand";
   }
   return "definition changed — replaced";
 }

@@ -12,6 +12,10 @@ import type {
   ViewSnapshot,
 } from "./postgres";
 
+// The one question "can this range type be written out as a statement" is
+// asked of, so the sentence on screen and the SQL underneath cannot disagree.
+import { rangeTypeIsCreatable } from "./postgres";
+
 import type {
   ChangeSeverity,
   ColumnChange,
@@ -1635,6 +1639,42 @@ function objectChangeSeverity(
   return "info";
 }
 
+/**
+ * Whether creating this object is something a person has to do by hand.
+ *
+ * Only a range type can be, and only when the snapshot does not describe it
+ * well enough to write CREATE TYPE ... AS RANGE. rangeTypeIsCreatable is the
+ * one place that decides it, and lib/generate-sql.ts asks the same function —
+ * so the line on screen and the statement in the script cannot say different
+ * things about the same type.
+ */
+function objectCreateNeedsManualWork(obj: ComparableObject): boolean | undefined {
+  if (obj.kind !== "RANGE TYPE") return undefined;
+  if (!obj.type) return undefined;
+  return rangeTypeIsCreatable(obj.type) ? undefined : true;
+}
+
+/**
+ * Whether changing this object is something a person has to do by hand.
+ *
+ * Two kinds, both because PostgreSQL offers no ALTER that does it — not
+ * because of anything this app chose. A collation's provider and locale are
+ * fixed at CREATE (the grammar has RENAME, OWNER and REFRESH VERSION and
+ * nothing else), and a range type's subtype and options are fixed the same
+ * way. Either one has to be dropped to be changed, which fails while a single
+ * column still uses it, so every column has to be moved off it first — a plan,
+ * not a statement.
+ *
+ * Deliberately not extended to enums or composite types. PostgreSQL does have
+ * ALTER for parts of both, so whether a particular change needs a person is
+ * the generator's judgement to make, and copying that judgement here is the
+ * prose coupling this file keeps removing.
+ */
+function objectChangeNeedsManualWork(obj: ComparableObject): boolean | undefined {
+  if (obj.kind === "COLLATION" || obj.kind === "RANGE TYPE") return true;
+  return undefined;
+}
+
 function compareObjectLists(
   left: ComparableObject[],
   right: ComparableObject[],
@@ -1656,6 +1696,7 @@ function compareObjectLists(
         summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${leftScope}.`,
         leftDefinition: obj.definition,
         severity: objectCreateSeverity(obj),
+        needsManualWork: objectCreateNeedsManualWork(obj),
       });
       continue;
     }
@@ -1696,6 +1737,7 @@ function compareObjectLists(
         leftDefinition: obj.definition,
         rightDefinition: peer.definition,
         severity: objectChangeSeverity(obj, peer),
+        needsManualWork: objectChangeNeedsManualWork(obj),
         replaceNeedsDrop:
           obj.routine && peer.routine
             ? routineReplaceNeedsDrop(obj.routine, peer.routine)
