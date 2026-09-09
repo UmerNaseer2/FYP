@@ -22,7 +22,9 @@ import type {
 // two implementations that have to be kept in step by hand.
 import {
   compareSchemas,
+  computedChangeSeverity,
   constraintChangeSeverity,
+  describeComputed,
   domainAddedChecks,
   domainNotNullTightens,
   extractBaseType,
@@ -171,6 +173,14 @@ function buildColumnDef(col: ColumnSnapshot): string {
   }
 
   let def = `${q(col.name)} ${col.typeDisplay}`;
+  // A computed column carries its expression instead of a default, never as
+  // well as one — writing DEFAULT (price * qty) is what PostgreSQL refuses with
+  // "cannot use column reference in DEFAULT expression".
+  if (col.generated) {
+    def += ` GENERATED ALWAYS AS (${col.generated.expression}) ${col.generated.storage}`;
+    if (!col.nullable) def += " NOT NULL";
+    return def;
+  }
   if (!col.nullable) def += " NOT NULL";
   if (col.columnDefault !== null) def += ` DEFAULT ${col.columnDefault}`;
   return def;
@@ -1114,7 +1124,9 @@ function alterStatementsForMatch(
     // NOT NULL + no default will fail on a non-empty table because PostgreSQL
     // can't fill existing rows. Flag it so the user knows to add a DEFAULT or
     // run on an empty table.
-    const risky = !col.nullable && col.columnDefault === null;
+    // A computed column fills its own rows from the expression, so NOT NULL with
+    // no default — which is what every generated column looks like — is fine.
+    const risky = !col.nullable && col.columnDefault === null && !col.generated;
     stmts.push({
       sql:
         `ALTER TABLE ${q(tName)} ADD COLUMN ` +
@@ -1136,6 +1148,47 @@ function alterStatementsForMatch(
     const colName = colMatch.left.name;
     const leftNorm = normalizeType(colMatch.left.typeDisplay);
     const rightNorm = normalizeType(colMatch.right.typeDisplay);
+
+    // ── A GENERATED ALWAYS AS (…) clause appearing, going, or changing ──────
+    // There is no ALTER for this. PostgreSQL cannot turn a stored column into a
+    // computed one or back, and SET EXPRESSION only exists from version 17, so
+    // the portable answer for all three directions is to rebuild the column.
+    // It runs before everything else this loop emits and then skips the rest:
+    // a SET DEFAULT or a SET NOT NULL aimed at a column that is about to be
+    // dropped is at best wasted and at worst rejected.
+    const leftComputed = describeComputed(colMatch.left);
+    const rightComputed = describeComputed(colMatch.right);
+    if (leftComputed !== null && rightComputed !== null && leftComputed !== rightComputed) {
+      stmts.push({
+        sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(colName)} CASCADE;`,
+        description:
+          `Drop column "${colName}" from "${tName}" so it can be rebuilt — ` +
+          "WARNING: PostgreSQL cannot change a generated column in place, and " +
+          "CASCADE takes any index or view built on it",
+        kind: "DROP_COLUMN",
+        severity: computedChangeSeverity(),
+        tableName: tName,
+        // Not armed behind "allow data loss": every value in a generated column
+        // is recomputed from the other columns the moment it comes back, so
+        // nothing a user typed is lost. What CASCADE removes alongside it is
+        // real, which is why the description says so and the grade is breaking.
+        destructive: false,
+      });
+      stmts.push({
+        sql:
+          `ALTER TABLE ${q(tName)} ADD COLUMN ` +
+          (addColumnIfNotExists ? "IF NOT EXISTS " : "") +
+          `${buildColumnDef(colMatch.left)};`,
+        description: colMatch.left.generated
+          ? `Rebuild "${colName}" in "${tName}" as ${leftComputed}`
+          : `Rebuild "${colName}" in "${tName}" as an ordinary column`,
+        kind: "ADD_COLUMN",
+        severity: computedChangeSeverity(),
+        tableName: tName,
+        destructive: false,
+      });
+      continue;
+    }
 
     if (leftNorm !== rightNorm) {
       const baseChanged =

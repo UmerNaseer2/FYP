@@ -451,9 +451,35 @@ function describeGenerated(column: ColumnSnapshot): string | null {
   return isNextvalDefault(column.columnDefault) ? "serial" : "none";
 }
 
-/** True when the column's value comes from a sequence or an identity clause. */
+/**
+ * True when the column's value comes from a sequence, an identity clause or a
+ * generation expression — anything but a plain DEFAULT, in other words.
+ *
+ * Used to suppress the default line. A computed column has no default at all
+ * (the expression is moved out of columnDefault at capture), so without this a
+ * table where one side computes a column and the other stores it would report
+ * "Default changed from none to …" on top of the real change.
+ */
 function isGeneratedColumn(column: ColumnSnapshot): boolean {
-  return Boolean(column.identity) || isNextvalDefault(column.columnDefault);
+  return (
+    Boolean(column.identity) ||
+    Boolean(column.generated) ||
+    isNextvalDefault(column.columnDefault)
+  );
+}
+
+/**
+ * The GENERATED ALWAYS AS (…) clause as one comparable string, or null when the
+ * snapshot predates the field and so cannot say whether there is one.
+ *
+ * Both the expression and the storage word are in it: STORED and VIRTUAL are
+ * different columns as far as DDL is concerned, and swapping one for the other
+ * needs the same drop-and-recreate a changed expression does.
+ */
+export function describeComputed(column: ColumnSnapshot): string | null {
+  if (column.generated === undefined) return null;
+  if (!column.generated) return "none";
+  return `GENERATED ALWAYS AS (${column.generated.expression}) ${column.generated.storage}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +548,19 @@ export function generatedChangeSeverity(
 }
 
 /**
+ * Gaining, losing or changing a GENERATED ALWAYS AS (…) clause. Always breaking,
+ * and the reason is the same in all three directions: PostgreSQL has no ALTER
+ * that turns a stored column into a computed one, a computed one back into a
+ * stored one, or one expression into another (SET EXPRESSION arrived in
+ * PostgreSQL 17 and this tool supports older servers). The only portable way
+ * through is to drop the column and add it back, which takes every index and
+ * view built on it with it.
+ */
+export function computedChangeSeverity(): ChangeSeverity {
+  return "breaking";
+}
+
+/**
  * Adding or dropping a table constraint.
  *
  * Every ADD is breaking. PostgreSQL validates a new constraint against the rows
@@ -578,6 +617,10 @@ export function constraintDiffSeverity(diff: ConstraintDiff): ChangeSeverity {
  * copy.
  */
 export function addedColumnSeverity(column: ColumnSnapshot): ChangeSeverity {
+  // A computed column has nothing to backfill — PostgreSQL evaluates the
+  // expression for every existing row — so NOT NULL with no default, which is
+  // what a generated column looks like on paper, is not a failure here.
+  if (column.generated) return "safe";
   return !column.nullable && column.columnDefault === null ? "breaking" : "safe";
 }
 
@@ -737,6 +780,21 @@ function compareColumnPair(
       message: `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`,
     });
   }
+  // Computed columns first, because a column that gains or loses a GENERATED
+  // ALWAYS AS clause is rebuilt rather than altered, and that outranks anything
+  // else this loop could say about it.
+  const leftComputed = describeComputed(leftColumn);
+  const rightComputed = describeComputed(rightColumn);
+  if (leftComputed !== null && rightComputed !== null && leftComputed !== rightComputed) {
+    changes.push({
+      kind: "computed",
+      severity: computedChangeSeverity(),
+      // left→right, matching the nullability, type and default wording in this
+      // same list: the source is stated first, the target second.
+      message: `Generated column changed from ${leftComputed} to ${rightComputed}`,
+    });
+  }
+
   // How the column generates its own values, compared as one property. Two
   // serial columns in different schemas have different sequence NAMES in their
   // defaults, so the raw text always differs — and serial versus identity is a

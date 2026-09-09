@@ -67,6 +67,7 @@ export type ColumnChangeKind =
   | "size"
   | "nullability"
   | "generated"
+  | "computed"
   | "default"
   | "primaryKey"
   | "unique"

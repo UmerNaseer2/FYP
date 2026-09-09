@@ -166,12 +166,46 @@ export type CompareTarget = {
   displayName: string;
 };
 
+/**
+ * A column whose value PostgreSQL computes rather than stores what you wrote.
+ *
+ * This is `GENERATED ALWAYS AS (expr) STORED`, not an identity column and not a
+ * serial — those two are recorded on ColumnSnapshot.identity and in the default
+ * respectively. It is a separate field because the expression lives in
+ * pg_attrdef, exactly where an ordinary DEFAULT lives, so reading the default
+ * alone cannot tell the two apart: a generated column captured as a DEFAULT is
+ * re-emitted as `DEFAULT (price * qty)`, which PostgreSQL rejects with "cannot
+ * use column reference in DEFAULT expression" and aborts the whole migration.
+ */
+export type GeneratedColumn = {
+  /**
+   * STORED writes the computed value to disk. VIRTUAL (PostgreSQL 18+) computes
+   * it on every read. The word is carried through rather than assumed because
+   * the two are not interchangeable in DDL.
+   */
+  storage: "STORED" | "VIRTUAL";
+  /** The expression, schema-relative, as it goes back inside GENERATED ALWAYS AS (…). */
+  expression: string;
+};
+
 export type ColumnSnapshot = {
   name: string;
   ordinalPosition: number;
   typeDisplay: string;
   nullable: boolean;
   columnDefault: string | null;
+  /**
+   * The generation expression when this is a computed column, null otherwise.
+   *
+   * When this is set, columnDefault is null even though the catalog stores the
+   * expression in pg_attrdef — the two are mutually exclusive in SQL and
+   * splitting them here is what stops the generator writing DEFAULT.
+   *
+   * Optional: a snapshot stored before this field existed says nothing about
+   * generated columns rather than claiming there are none, and its computed
+   * columns are still sitting in columnDefault where they were captured.
+   */
+  generated?: GeneratedColumn | null;
   /**
    * An identity column's flavour, or null for an ordinary column.
    *
@@ -580,6 +614,8 @@ export async function fetchSchemaSnapshot(
     column_default: string | null;
     /** pg_attribute.attidentity: 'a' ALWAYS, 'd' BY DEFAULT, '' not identity. */
     identity: string | null;
+    /** pg_attribute.attgenerated: 's' STORED, 'v' VIRTUAL, '' not generated. */
+    generated: string | null;
   };
 
   type IndexRow = {
@@ -684,7 +720,8 @@ export async function fetchSchemaSnapshot(
            pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_display,
            (c.is_nullable = 'YES') AS is_nullable,
            pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
-           a.attidentity AS identity
+           a.attidentity AS identity,
+           a.attgenerated AS generated
          FROM information_schema.columns c
          JOIN pg_namespace n
            ON n.nspname = c.table_schema
@@ -1002,6 +1039,12 @@ export async function fetchSchemaSnapshot(
         continue;
       }
 
+      const columnExpression = stripSchemaFromExpr(row.column_default ?? null, schemaName);
+      // 'v' only ever appears on PostgreSQL 18 and up; older servers return ''
+      // for every column, which reads as "not generated" and is correct there.
+      const generatedStorage =
+        row.generated === "s" ? "STORED" : row.generated === "v" ? "VIRTUAL" : null;
+
       table.columns.push({
         name: row.column_name,
         ordinalPosition: row.ordinal_position,
@@ -1012,7 +1055,15 @@ export async function fetchSchemaSnapshot(
         // qualifier so types are schema-relative (built-in types are never qualified).
         typeDisplay: stripSchemaFromExpr(row.type_display, schemaName) ?? row.type_display,
         nullable: row.is_nullable,
-        columnDefault: stripSchemaFromExpr(row.column_default ?? null, schemaName),
+        // A generated column keeps its expression in pg_attrdef, the same place a
+        // DEFAULT lives, so the two are separated HERE and nowhere else. Leaving
+        // it in columnDefault is what made every migration touching a generated
+        // column emit `DEFAULT (price * qty)` and abort.
+        columnDefault: generatedStorage === null ? columnExpression : null,
+        generated:
+          generatedStorage === null
+            ? null
+            : { storage: generatedStorage, expression: columnExpression ?? "" },
         identity:
           row.identity === "a" ? "ALWAYS" : row.identity === "d" ? "BY DEFAULT" : null,
         isPrimaryKey: false,
