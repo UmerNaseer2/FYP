@@ -2218,6 +2218,22 @@ function commentOut(sql: string): string {
 // Render the migration script as a plain SQL text string with inline comments.
 // Each statement is preceded by a comment showing its severity and description.
 //
+/**
+ * How many of these "statements" are notes rather than SQL.
+ *
+ * A MANUAL statement is a comment describing work no statement can do — a
+ * collation that has to be dropped and rebuilt with its columns moved off it,
+ * a range type whose canonical function needs a shell type first. It is in the
+ * list because the reader has to see it, and it is graded like anything else,
+ * so "8 statements" counted it as work the script performs. It performs none.
+ *
+ * Exported so the two rendered headers and the count under the editor all
+ * arrive at the same number from the same rule.
+ */
+export function manualNoteCount(statements: SqlStatement[]): number {
+  return statements.filter((s) => s.kind === "MANUAL").length;
+}
+
 // When script.allowDataLoss is false, statements flagged destructive are
 // rendered commented out. This is the single point where a generated script
 // becomes able to destroy data, so the decision is made here and nowhere else.
@@ -2236,6 +2252,15 @@ export function renderMigrationScript(script: MigrationScript): string {
     `-- Direction: modifies the RIGHT/TARGET schema to match the LEFT/SOURCE schema`,
     `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
   ];
+
+  const notes = manualNoteCount(script.statements);
+  if (notes > 0) {
+    header.push(
+      `-- ${notes} of ${notes === 1 ? "those is a MANUAL note" : "those are MANUAL notes"}: ` +
+        `${notes === 1 ? "it describes" : "they describe"} work no statement can do, and ` +
+        `${notes === 1 ? "runs" : "run"} nothing.`,
+    );
+  }
 
   if (held > 0) {
     header.push(
@@ -2500,8 +2525,17 @@ export function renderRollbackScript(script: RollbackScript): string {
     `-- Undoes the migration ${script.sourceSchema}  →  ${script.targetSchema}`,
     `-- Runs against: ${script.targetSchema}`,
     `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
-    `--`,
   ];
+
+  const notes = manualNoteCount(script.statements);
+  if (notes > 0) {
+    header.push(
+      `-- ${notes} of ${notes === 1 ? "those is a MANUAL note" : "those are MANUAL notes"}: ` +
+        `${notes === 1 ? "it describes" : "they describe"} work no statement can do, and ` +
+        `${notes === 1 ? "runs" : "run"} nothing.`,
+    );
+  }
+  header.push(`--`);
 
   if (script.statements.length === 0) {
     header.push(

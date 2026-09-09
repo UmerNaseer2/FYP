@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   generateMigration,
   generateRollback,
+  manualNoteCount,
   renderMigrationScript,
   renderRollbackScript,
   type SqlStatement,
@@ -234,6 +235,13 @@ type TargetOutcome = {
   rollbackWarnings: string[];
   statementCount: number;
   heldBackCount: number;
+  /**
+   * How many of those statements are MANUAL notes — comments describing work
+   * no statement can do. Counted in statementCount, because they are in the
+   * script and the reader has to see them, but they run nothing.
+   */
+  manualCount: number;
+  rollbackManualCount: number;
   counts: { breaking: number; safe: number; info: number };
   overallKind: ChangeKind;
   warnings: string[];
@@ -300,6 +308,8 @@ async function compareOneTarget(
     rollbackWarnings: [] as string[],
     statementCount: 0,
     heldBackCount: 0,
+    manualCount: 0,
+    rollbackManualCount: 0,
     counts: { breaking: 0, safe: 0, info: 0 },
     overallKind: "patch" as ChangeKind,
     warnings: [] as string[],
@@ -385,6 +395,8 @@ async function compareOneTarget(
     // Not destructiveCount: safe mode also holds back a matview rebuild, which
     // destroys nothing but does nothing either while the old view is there.
     heldBackCount: allowDataLoss ? 0 : script.heldBackCount,
+    manualCount: manualNoteCount(script.statements),
+    rollbackManualCount: manualNoteCount(rollback.statements),
     counts: { breaking, safe, info },
     overallKind: breaking > 0 ? "breaking" : safe + info > 0 ? "additive" : "patch",
     warnings: script.warnings,
@@ -1149,6 +1161,8 @@ export default async function ComparePage({ searchParams }: PageProps) {
                   initialSql={outcome.sqlText}
                   statementCount={outcome.statementCount}
                   heldBackCount={outcome.heldBackCount}
+                  manualCount={outcome.manualCount}
+                  rollbackManualCount={outcome.rollbackManualCount}
                   initialRollbackSql={outcome.rollbackText}
                   rollbackStatementCount={outcome.rollbackStatementCount}
                   rollbackCounts={outcome.rollbackCounts}

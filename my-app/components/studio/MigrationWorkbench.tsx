@@ -44,6 +44,15 @@ type Props = {
    */
   heldBackCount: number;
   /**
+   * How many of those statements are MANUAL notes: comments describing work no
+   * statement can do — a collation that has to be dropped with its columns
+   * moved off it first, a range type the snapshot cannot describe well enough
+   * to create. They are counted in statementCount because they are in the
+   * script, but running the script performs none of them.
+   */
+  manualCount: number;
+  rollbackManualCount: number;
+  /**
    * Rendered rollback SQL from renderRollbackScript() — the down script that
    * undoes initialSql. "" when the schemas already match and there is nothing
    * to undo.
@@ -108,6 +117,8 @@ export function MigrationWorkbench({
   initialSql,
   statementCount,
   heldBackCount,
+  manualCount,
+  rollbackManualCount,
   initialRollbackSql,
   rollbackStatementCount,
   rollbackCounts,
@@ -152,6 +163,7 @@ export function MigrationWorkbench({
   const setActiveSql = showingDown ? setRollbackSql : setSql;
   const activeStatementCount = showingDown ? rollbackStatementCount : statementCount;
   const activeCounts = showingDown ? rollbackCounts : counts;
+  const activeManualCount = showingDown ? rollbackManualCount : manualCount;
 
   const edited = activeSql !== activeInitial;
   // Deploy wraps each script in its own transaction, so manual BEGIN/COMMIT/
@@ -364,6 +376,15 @@ export function MigrationWorkbench({
                   <span>
                     {lineCount} lines · {activeStatementCount} statement
                     {activeStatementCount === 1 ? "" : "s"}
+                    {activeManualCount > 0 && (
+                      <>
+                        {" "}
+                        <span style={{ color: "var(--drift)" }}>
+                          ({activeManualCount} {activeManualCount === 1 ? "note" : "notes"},
+                          nothing to run)
+                        </span>
+                      </>
+                    )}
                     {!showingDown && heldBackCount > 0 && (
                       <>
                         {" "}
