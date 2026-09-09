@@ -11,6 +11,7 @@ import {
   AlertTriangleIcon,
   RefreshIcon,
 } from "@/components/ui/icons";
+import { containsTransactionControl } from "@/lib/sql-guard";
 import {
   bumpVersion,
   compareVersions,
@@ -70,6 +71,10 @@ export default function ScriptEditorPage() {
 
   // ── Script + version ────────────────────────────────────────────────────--
   const [sql, setSql] = useState("");
+  // The script that undoes this one. Optional, because not every change can be
+  // undone by SQL — but Deploy's revert button is gated on its existence, so a
+  // script saved without one can never be reverted from the app.
+  const [rollbackSql, setRollbackSql] = useState("");
   const [description, setDescription] = useState("");
 
   // Highest version already APPLIED for this family (from the target's
@@ -83,7 +88,11 @@ export default function ScriptEditorPage() {
   const [customVersion, setCustomVersion] = useState("");
 
   const [saving, setSaving] = useState(false);
-  const [saveResult, setSaveResult] = useState<{ ok: true; url: string | null } | { ok: false; error: string } | null>(null);
+  const [saveResult, setSaveResult] = useState<
+    | { ok: true; url: string | null; rollbackSaved: boolean }
+    | { ok: false; error: string }
+    | null
+  >(null);
 
   // ── Load connections + the GitHub registry once ─────────────────────────---
   useEffect(() => {
@@ -272,8 +281,25 @@ export default function ScriptEditorPage() {
       ? existingFamilies.find((f) => f.toLowerCase() === scriptName.toLowerCase() && f !== scriptName) ?? null
       : null;
 
+  // The apply and revert routes both reject a script that opens or closes its
+  // own transaction — they run one themselves. Catch it here so the user finds
+  // out while they can still edit, not at deploy time.
+  const txnInUp = containsTransactionControl(sql);
+  const txnInDown = containsTransactionControl(rollbackSql);
+  const txnError = txnInUp
+    ? "Remove BEGIN / COMMIT / ROLLBACK from the SQL — Deploy runs the script in its own transaction."
+    : txnInDown
+      ? "Remove BEGIN / COMMIT / ROLLBACK from the rollback SQL — the revert runs it in its own transaction."
+      : "";
+
   const canSave =
-    !!databaseName && !!schema && familyValid && sql.trim().length > 0 && versionValid && !saving;
+    !!databaseName &&
+    !!schema &&
+    familyValid &&
+    sql.trim().length > 0 &&
+    versionValid &&
+    !txnError &&
+    !saving;
 
   function pickLevel(choice: BumpLevel | "custom") {
     setVersionChoice(choice);
@@ -295,12 +321,19 @@ export default function ScriptEditorPage() {
           script_name: scriptName,
           version: normalizedVersion,
           sql_content: sql,
+          // Saved beside the script as v<ver>.down.sql. Without it Deploy has
+          // nothing to run, and the version is revertable only by hand.
+          down_sql: rollbackSql.trim() ? rollbackSql : undefined,
           description: description.trim() || undefined,
         }),
       });
       const data = await res.json();
       if (res.ok) {
-        setSaveResult({ ok: true, url: data.url ?? null });
+        setSaveResult({
+          ok: true,
+          url: data.url ?? null,
+          rollbackSaved: Boolean(data.rollback_saved),
+        });
         // Reflect the new file locally so the floor jumps immediately.
         setGithubScripts((prev) => [
           ...prev,
@@ -516,6 +549,30 @@ export default function ScriptEditorPage() {
                 setSaveResult(null);
               }}
             />
+            <label className="label mt-3 block" htmlFor="se-down">
+              Rollback SQL{" "}
+              <span style={{ color: "var(--text-3)" }}>(optional, but see below)</span>
+            </label>
+            <textarea
+              id="se-down"
+              className="input mono mt-1 se-textarea"
+              style={{ minHeight: 160, lineHeight: 1.6, resize: "vertical" }}
+              spellCheck={false}
+              placeholder={"ALTER TABLE invoices\n  DROP COLUMN due_date;"}
+              value={rollbackSql}
+              onChange={(e) => {
+                setRollbackSql(e.target.value);
+                setSaveResult(null);
+              }}
+            />
+            <p className="help mt-1">
+              {rollbackSql.trim()
+                ? "Saved beside the script as the .down.sql file Deploy runs when you revert this version."
+                : "Without one, Deploy's revert button stays disabled for this version — it will have nothing to run. Write the statements that undo the SQL above."}
+            </p>
+            {txnError && (
+              <p className="help mt-1" style={{ color: "var(--break)" }}>{txnError}</p>
+            )}
             <label className="label mt-3 block" htmlFor="se-desc">
               Description <span style={{ color: "var(--text-3)" }}>(optional, used as the commit message)</span>
             </label>
@@ -648,7 +705,11 @@ export default function ScriptEditorPage() {
                 <div className="body">
                   {saveResult.ok ? (
                     <>
-                      <div className="title" style={{ color: "var(--sync)" }}>Saved to GitHub.</div>
+                      <div className="title" style={{ color: "var(--sync)" }}>
+                        {saveResult.rollbackSaved
+                          ? "Saved to GitHub, with its rollback."
+                          : "Saved to GitHub. No rollback — this version cannot be reverted from Deploy."}
+                      </div>
                       {saveResult.url && (
                         <a href={saveResult.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--text-2)" }}>
                           View the file on GitHub →
