@@ -15,7 +15,7 @@
 // or one from an older version has no stamp — but it runs on a masked copy with
 // every comment, literal and quoted identifier blanked out.
 import { maskNonCode } from "./sql-guard";
-import { normalizeChangeLevel, type ChangeLevel } from "./version-detection";
+import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
 
 /**
  * The header line the generator writes and this module reads back.

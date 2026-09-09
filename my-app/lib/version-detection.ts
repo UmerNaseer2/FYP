@@ -1,8 +1,16 @@
 import type { ClientConfig } from "pg";
 import { getPoolForConfig } from "./postgres";
 import type { CompareReport } from "./compare-types";
+// Both live in change-level.ts, which imports nothing. This module opens
+// database connections, so anything that reaches for the grading vocabulary
+// through here drags `pg` along with it — which is exactly how the deploy
+// screen, a client component, ended up asking the browser to resolve `dns`.
+import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
 
-export type ChangeLevel = "breaking" | "additive" | "patch" | "unknown";
+// Re-exported so callers that already read them from here keep working.
+export { normalizeChangeLevel };
+export type { ChangeLevel };
+
 
 /** How a schema numbers itself: dotted semver, or a plain running number. */
 export type VersionScheme = "semver" | "numeric";
@@ -144,60 +152,6 @@ function parseVersion(value: string | null): ParsedVersion | null {
   return digits ? { scheme: "numeric", value: Number(digits) } : null;
 }
 
-/**
- * Build a whole-word matcher for one set of words.
- *
- * Whole words on purpose. This used to be a plain `text.includes("add")`, which
- * graded any migration whose description mentioned an *address* column as
- * additive, and `includes("drop")` did the same to "dropdown". A word boundary
- * is the difference between reading the description and pattern-matching it.
- *
- * The endings are spelled out below rather than derived from a suffix rule.
- * English is not regular enough for one — "create" loses its e in "creating",
- * "drop" doubles its p in "dropped" — and a list anybody can read and extend
- * beats a rule that has to be trusted.
- */
-function wordMatcher(words: string[]): RegExp {
-  return new RegExp(`\\b(?:${words.join("|")})\\b`, "i");
-}
-
-const BREAKING_WORDS = wordMatcher([
-  "breaking",
-  "major",
-  "drop", "drops", "dropped", "dropping",
-  "remove", "removes", "removed", "removing", "removal",
-  "delete", "deletes", "deleted", "deleting", "deletion",
-]);
-
-const ADDITIVE_WORDS = wordMatcher([
-  "additive",
-  "minor",
-  "add", "adds", "added", "adding", "addition",
-  "create", "creates", "created", "creating", "creation",
-]);
-
-const PATCH_WORDS = wordMatcher([
-  "patch", "patches", "patched",
-  "fix", "fixes", "fixed",
-  "small",
-]);
-
-/**
- * Grade one piece of text as breaking / additive / patch.
- *
- * Exported because it is the whole rule for how a foreign version table gets
- * colour-coded on the Compare screen, and a rule that reads prose deserves to
- * be pinned down by name rather than only through a database.
- */
-export function normalizeChangeLevel(value: unknown): ChangeLevel {
-  const text = String(value ?? "");
-
-  if (BREAKING_WORDS.test(text)) return "breaking";
-  if (ADDITIVE_WORDS.test(text)) return "additive";
-  if (PATCH_WORDS.test(text)) return "patch";
-
-  return "unknown";
-}
 
 function inferChangeLevel(
   row: Record<string, unknown>,
