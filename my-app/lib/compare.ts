@@ -533,15 +533,24 @@ export function generatedChangeSeverity(
  * database, the same operation.)
  *
  * Dropping is judged differently: it can never fail, so the question is what it
- * takes away. A primary key or a foreign key is a guarantee other objects were
- * built on; the rest only relax the table.
+ * takes away. A primary key, a unique constraint or a foreign key is a
+ * guarantee something else was built on — a foreign key can only point at a
+ * primary or unique key, and `INSERT … ON CONFLICT (col)` needs one to exist —
+ * so losing it breaks SQL that used to run. A CHECK or an EXCLUDE constraint
+ * cannot be referenced by anything; dropping one only lets more data in.
+ *
+ * UNIQUE being in that list is also what keeps this in step with the generator,
+ * which grades DROP INDEX on a unique index breaking. The two are the same
+ * operation as far as the data is concerned, and they used to disagree.
  */
 export function constraintChangeSeverity(
   kind: ConstraintDiff["kind"],
   action: "add" | "drop"
 ): ChangeSeverity {
   if (action === "drop") {
-    return kind === "PRIMARY KEY" || kind === "FOREIGN KEY" ? "breaking" : "info";
+    return kind === "PRIMARY KEY" || kind === "UNIQUE" || kind === "FOREIGN KEY"
+      ? "breaking"
+      : "info";
   }
   return "breaking";
 }
@@ -594,46 +603,90 @@ export function columnMatchSeverity(match: ColumnMatch): ChangeSeverity {
 }
 
 /**
+ * A changed domain, graded the way the generator grades what it emits for one.
+ *
+ * ALTER DOMAIN … SET NOT NULL and ALTER DOMAIN … ADD CONSTRAINT are both
+ * checked against every row of every column that uses the domain, so either can
+ * abort the migration on real data — the same reason every ADD CONSTRAINT on a
+ * table is breaking. Dropping a check, or dropping NOT NULL, only widens what
+ * the columns may hold and cannot fail.
+ *
+ * generate-sql.ts builds its ALTER DOMAIN statements from the two helpers this
+ * calls, so the grade on screen and the grade on the statement are one answer.
+ */
+export function domainNotNullTightens(
+  source: TypeSnapshot,
+  target: TypeSnapshot
+): boolean {
+  return source.notNull && !target.notNull;
+}
+
+/**
+ * The domain checks the migration has to ADD: the ones the source has that the
+ * target either lacks or spells differently. A check whose expression changed
+ * counts, because ALTER DOMAIN has no "replace" — it is a drop and an add.
+ */
+export function domainAddedChecks(
+  source: TypeSnapshot,
+  target: TypeSnapshot
+): TypeSnapshot["checks"] {
+  const targetChecks = new Map(target.checks.map((check) => [check.name, check.expression]));
+  return source.checks.filter((check) => targetChecks.get(check.name) !== check.expression);
+}
+
+export function domainChangeSeverity(
+  source: TypeSnapshot,
+  target: TypeSnapshot
+): ChangeSeverity {
+  if (domainNotNullTightens(source, target)) return "breaking";
+  // "safe" and not "info": what is left is a DROP CONSTRAINT or a DROP NOT
+  // NULL, which is what the generator grades those statements, and the two
+  // have to say the same word.
+  return domainAddedChecks(source, target).length > 0 ? "breaking" : "safe";
+}
+
+/**
+ * Whether a changed routine has to be dropped before it can be created again.
+ *
+ * pg_get_functiondef() hands back a CREATE OR REPLACE statement, which is why
+ * one string covers both "missing" and "changed" — but PostgreSQL refuses a
+ * replacement that changes the return type ("cannot change return type of
+ * existing function") or renames an argument ("cannot change name of input
+ * parameter"). Either way the migration stops on a line the report had graded
+ * as a harmless replacement.
+ *
+ * Argument NAMES are compared, not the whole argument text: adding a default to
+ * a parameter is allowed by CREATE OR REPLACE, and treating that as a rename
+ * would emit a DROP that fails whenever a view or a trigger uses the function.
+ * `argumentNames` is optional, so a snapshot taken before it was recorded says
+ * nothing rather than guessing.
+ */
+export function routineReplaceNeedsDrop(
+  source: RoutineSnapshot,
+  target: RoutineSnapshot
+): boolean {
+  if (source.returnType !== target.returnType) return true;
+  if (source.argumentNames === undefined || target.argumentNames === undefined) return false;
+  return source.argumentNames.join(",") !== target.argumentNames.join(",");
+}
+
+/**
  * How dangerous an index / trigger / view / sequence / type / routine change is.
  *
  * Same job constraintChangeSeverity does for constraints, and it exists for the
  * same reason: the migration generator decides a severity for every statement it
  * writes, and anything else that grades the same change — the diff canvas, the
  * export, the version picker — has to reach the same answer or the screen and
- * the script contradict each other. The rules below are a restatement of what
- * lib/generate-sql.ts emits, and $SP/objsev.cjs checks the two against each
- * other on a fixture covering every kind in every state.
+ * the script contradict each other.
  *
- *   created            — info. Nothing is taken away.
- *   dropped            — breaking. Whatever used it stops working. The one
- *                        exception is a plain index: dropping it changes how
- *                        fast the table is read and nothing about what it is
- *                        allowed to hold, so that is safe. A UNIQUE index is
- *                        not — it is enforcing a rule.
- *   changed definition — depends on how the generator applies it. A view is
- *                        DROP … CASCADE'd and rebuilt (breaking, and the cascade
- *                        is the reason). An index is dropped and recreated, so
- *                        it inherits the drop's grade. Everything else is
- *                        replaced in place — CREATE OR REPLACE, ALTER SEQUENCE,
- *                        ALTER TYPE — and takes nothing away while it happens.
- *
- * `uniqueIndex` is only read for INDEX diffs; pass the TARGET's index, since it
- * is the target's that gets dropped.
+ * The answer itself is worked out in compareObjectLists below, where both sides
+ * of the change are still in hand; this only reads it. It used to be recomputed
+ * here from the diff plus a `Set` of unique index names that every caller had to
+ * assemble — and a created unique index was graded from the target's set, which
+ * by definition does not contain it.
  */
-export function objectDiffSeverity(
-  diff: ObjectDiff,
-  uniqueIndex?: boolean
-): ChangeSeverity {
-  if (diff.status === "onlyA") return "info";
-
-  const dropGrade: ChangeSeverity =
-    diff.kind === "INDEX" ? (uniqueIndex ? "breaking" : "safe") : "breaking";
-
-  if (diff.status === "onlyB") return dropGrade;
-
-  if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") return "breaking";
-  if (diff.kind === "INDEX") return dropGrade;
-  return "info";
+export function objectDiffSeverity(diff: ObjectDiff): ChangeSeverity {
+  return diff.severity;
 }
 
 function compareColumnPair(
@@ -1392,7 +1445,74 @@ type ComparableObject = {
   definition: string;
   normalizedDefinition: string;
   table?: string;
+  /**
+   * True for a UNIQUE index. It is the one index whose loss changes what the
+   * table is allowed to hold rather than only how fast it is read, and the one
+   * whose creation can fail on rows that are already there.
+   */
+  enforcesUniqueness?: boolean;
+  /** Carried for a domain: grading a changed one needs both sides. */
+  type?: TypeSnapshot;
+  /** Carried for a function or procedure, for the same reason. */
+  routine?: RoutineSnapshot;
 };
+
+/**
+ * How dangerous it is to create this object.
+ *
+ * Almost always nothing is taken away, so almost always "info". A unique index
+ * is the exception: PostgreSQL builds it against the rows already in the table
+ * and refuses it if two of them collide, so it can abort the migration exactly
+ * the way ADD CONSTRAINT can — and constraintChangeSeverity grades every ADD
+ * breaking for that reason.
+ */
+function objectCreateSeverity(obj: ComparableObject): ChangeSeverity {
+  return obj.kind === "INDEX" && obj.enforcesUniqueness === true ? "breaking" : "info";
+}
+
+/**
+ * How dangerous it is to drop this object.
+ *
+ * Breaking, because whatever used it stops working — except a plain index,
+ * which only made reads faster.
+ */
+function objectDropSeverity(obj: ComparableObject): ChangeSeverity {
+  if (obj.kind !== "INDEX") return "breaking";
+  return obj.enforcesUniqueness === true ? "breaking" : "safe";
+}
+
+/**
+ * How dangerous it is to change this object's definition, which depends
+ * entirely on how the generator applies the change:
+ *
+ *   view      — DROP … CASCADE and rebuild. The cascade is the reason.
+ *   index     — dropped and recreated, so it takes the worse of the two.
+ *   domain    — ALTER DOMAIN, breaking only when it tightens what the columns
+ *               may hold. See domainChangeSeverity.
+ *   routine   — CREATE OR REPLACE, unless the signature moved and it has to be
+ *               dropped first. See routineReplaceNeedsDrop.
+ *   the rest  — replaced in place (ALTER SEQUENCE, ALTER TYPE, CREATE TRIGGER
+ *               after a drop) and nothing is taken away while it happens.
+ */
+function objectChangeSeverity(
+  source: ComparableObject,
+  target: ComparableObject
+): ChangeSeverity {
+  if (source.kind === "VIEW" || source.kind === "MATERIALIZED VIEW") return "breaking";
+  if (source.kind === "INDEX") {
+    return objectDropSeverity(target) === "breaking" ||
+      objectCreateSeverity(source) === "breaking"
+      ? "breaking"
+      : "safe";
+  }
+  if (source.kind === "DOMAIN" && source.type && target.type) {
+    return domainChangeSeverity(source.type, target.type);
+  }
+  if (source.routine && target.routine) {
+    return routineReplaceNeedsDrop(source.routine, target.routine) ? "breaking" : "info";
+  }
+  return "info";
+}
 
 function compareObjectLists(
   left: ComparableObject[],
@@ -1414,6 +1534,7 @@ function compareObjectLists(
         status: "onlyA",
         summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${leftScope}.`,
         leftDefinition: obj.definition,
+        severity: objectCreateSeverity(obj),
       });
       continue;
     }
@@ -1434,6 +1555,10 @@ function compareObjectLists(
           `${OBJECT_KIND_LABEL[peer.kind].toLowerCase()} in ${rightScope}.`,
         leftDefinition: obj.definition,
         rightDefinition: peer.definition,
+        // A view that became a materialized view, or the reverse. The old one
+        // has to be dropped for the new one to take its name, so it is graded
+        // as a drop and not as a definition change.
+        severity: objectDropSeverity(peer),
       });
       continue;
     }
@@ -1447,6 +1572,11 @@ function compareObjectLists(
         summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} changed definition.`,
         leftDefinition: obj.definition,
         rightDefinition: peer.definition,
+        severity: objectChangeSeverity(obj, peer),
+        replaceNeedsDrop:
+          obj.routine && peer.routine
+            ? routineReplaceNeedsDrop(obj.routine, peer.routine)
+            : undefined,
       });
     }
   }
@@ -1460,6 +1590,7 @@ function compareObjectLists(
       status: "onlyB",
       summary: `${OBJECT_KIND_LABEL[obj.kind]} ${obj.name} exists only in ${rightScope}.`,
       rightDefinition: obj.definition,
+      severity: objectDropSeverity(obj),
     });
   }
 
@@ -1474,6 +1605,7 @@ function indexObjects(table: TableSnapshot): ComparableObject[] {
     definition: index.definition,
     normalizedDefinition: index.normalizedDefinition,
     table: table.name,
+    enforcesUniqueness: index.isUnique,
   }));
 }
 
@@ -1545,6 +1677,7 @@ function typeObjects(types: TypeSnapshot[]): ComparableObject[] {
     name: type.name,
     definition: type.definition,
     normalizedDefinition: type.normalizedDefinition,
+    type,
   }));
 }
 
@@ -1556,6 +1689,7 @@ function routineObjects(routines: RoutineSnapshot[]): ComparableObject[] {
     name: routine.signature,
     definition: routine.definition,
     normalizedDefinition: routine.normalizedDefinition,
+    routine,
   }));
 }
 

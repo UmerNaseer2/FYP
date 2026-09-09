@@ -36,7 +36,6 @@ import type {
   CompareReport,
   ObjectDiff,
   ObjectKind,
-  TableSnapshot,
 } from "./compare-types";
 
 /** The heading a row files under. Deliberately the matrix's own vocabulary. */
@@ -172,13 +171,6 @@ function objectVerdict(diff: ObjectDiff): ChangeVerdict {
   return "changed";
 }
 
-/** The target's unique index names — what objectDiffSeverity grades an index on. */
-function uniqueIndexNames(table: TableSnapshot): Set<string> {
-  return new Set(
-    (table.indexes ?? []).filter((index) => index.isUnique).map((index) => index.name)
-  );
-}
-
 /** A column in one line: enough to tell two similar columns apart. */
 function describeColumn(column: ColumnSnapshot): string {
   const parts = [column.typeDisplay];
@@ -292,14 +284,13 @@ export function buildDiffDocument(
     }
 
     // Indexes and triggers hang off the table, so they carry its name.
-    const targetUnique = uniqueIndexNames(match.right);
     for (const diff of match.objectDiffs) {
       changes.push({
         category: OBJECT_CATEGORY[diff.kind],
         table: diff.table ?? tableName,
         object: diff.name,
         change: objectVerdict(diff),
-        severity: objectDiffSeverity(diff, targetUnique.has(diff.name)),
+        severity: objectDiffSeverity(diff),
         detail: diff.summary,
       });
     }
@@ -312,7 +303,6 @@ export function buildDiffDocument(
       table: diff.table ?? "",
       object: diff.name,
       change: objectVerdict(diff),
-      // No unique-index flag: a schema-scoped diff is never an index.
       severity: objectDiffSeverity(diff),
       detail: diff.summary,
     });

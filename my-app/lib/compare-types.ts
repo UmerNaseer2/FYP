@@ -142,6 +142,24 @@ export type ObjectDiff = {
   rightDefinition?: string;
   /** Set for table-scoped objects (indexes, triggers): the table they hang off. */
   table?: string;
+  /**
+   * How dangerous this change is, decided where both sides were still in hand.
+   *
+   * A unique index, a domain that gained a CHECK and a function whose return
+   * type moved all look like ordinary definition changes in the text. The
+   * report used to restate the generator's rules to tell them apart, from a
+   * `Set` of index names each caller had to assemble itself — and one of them
+   * assembled it from the wrong side. Deciding it once, at construction, is
+   * what stops the pill on screen and the warning on the statement from
+   * drifting apart. Read it through objectDiffSeverity().
+   */
+  severity: ChangeSeverity;
+  /**
+   * CREATE OR REPLACE cannot carry this routine change — PostgreSQL rejects a
+   * replacement that changes the return type or renames an argument, so the old
+   * one has to be dropped first. See routineReplaceNeedsDrop.
+   */
+  replaceNeedsDrop?: boolean;
 };
 
 /**

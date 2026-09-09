@@ -23,6 +23,8 @@ import type {
 import {
   compareSchemas,
   constraintChangeSeverity,
+  domainAddedChecks,
+  domainNotNullTightens,
   extractBaseType,
   generatedChangeSeverity,
   isNarrowingType,
@@ -338,8 +340,15 @@ function createIndexStatement(
 ): SqlStatement {
   return objectStatement({
     sql: indexCreateSql(index, idempotent),
-    description: `Create index "${index.name}" on "${tableName}"`,
+    // A unique index is built against the rows already in the table and refused
+    // if two of them collide, so it can abort the migration on real data — the
+    // same reason every ADD CONSTRAINT is breaking. A plain index cannot fail
+    // that way, so it stays informational.
+    description: index.isUnique
+      ? `Create unique index "${index.name}" on "${tableName}" — WARNING: fails if any two rows already collide`
+      : `Create index "${index.name}" on "${tableName}"`,
     kind: "CREATE_INDEX",
+    severity: index.isUnique ? "breaking" : "info",
     tableName,
   });
 }
@@ -656,17 +665,23 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
   // base type is the one thing ALTER DOMAIN cannot change, so that still falls
   // through to the manual note below.
   if (left.kind === "DOMAIN" && left.baseType === right.baseType) {
+    // The two tests below are the compare engine's, not a second copy of them:
+    // domainChangeSeverity grades a changed domain "breaking" out of exactly
+    // these, so the pill on the report and the warning on the statement cannot
+    // drift. (They used to: the report graded every changed type "info" while
+    // the script marked the SET NOT NULL below breaking.)
     if (left.notNull !== right.notNull) {
+      const tightens = domainNotNullTightens(left, right);
       stmts.push(
         objectStatement({
-          sql: left.notNull
+          sql: tightens
             ? `ALTER DOMAIN ${q(left.name)} SET NOT NULL;`
             : `ALTER DOMAIN ${q(left.name)} DROP NOT NULL;`,
-          description: left.notNull
+          description: tightens
             ? `Make domain "${left.name}" NOT NULL — WARNING: fails if any column using it holds a null`
             : `Allow nulls in domain "${left.name}"`,
           kind: "ALTER_TYPE",
-          severity: left.notNull ? "breaking" : "safe",
+          severity: tightens ? "breaking" : "safe",
           tableName: left.name,
         })
       );
@@ -675,7 +690,6 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
     // Match checks by name. A check whose name is the same but whose expression
     // changed has to be dropped and re-added: ALTER DOMAIN has no "replace".
     const leftChecks = new Map(left.checks.map((check) => [check.name, check]));
-    const rightChecks = new Map(right.checks.map((check) => [check.name, check]));
 
     for (const check of right.checks) {
       const source = leftChecks.get(check.name);
@@ -691,9 +705,7 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
       );
     }
 
-    for (const check of left.checks) {
-      const target = rightChecks.get(check.name);
-      if (target && target.expression === check.expression) continue;
+    for (const check of domainAddedChecks(left, right)) {
       stmts.push(
         objectStatement({
           sql: `ALTER DOMAIN ${q(left.name)} ADD CONSTRAINT ${q(check.name)} ${check.expression};`,
@@ -733,12 +745,14 @@ function createRoutineStatement(routine: RoutineSnapshot): SqlStatement {
   });
 }
 
-function dropRoutineStatement(routine: RoutineSnapshot): SqlStatement {
+function dropRoutineStatement(routine: RoutineSnapshot, reason = ""): SqlStatement {
   return objectStatement({
     sql:
       `DROP ${routine.kind} IF EXISTS ${q(routine.name)}` +
       `(${routine.identityArguments});`,
-    description: `Drop ${routine.kind.toLowerCase()} "${routine.signature}" — WARNING: anything calling it breaks`,
+    description:
+      `Drop ${routine.kind.toLowerCase()} "${routine.signature}"${reason}` +
+      ` — WARNING: anything calling it breaks`,
     kind: "DROP_ROUTINE",
     severity: "breaking",
     tableName: routine.name,
@@ -906,6 +920,17 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
       if (diff.status === "onlyB") {
         if (target) phases.routineDrops.push(dropRoutineStatement(target));
       } else if (source) {
+        // pg_get_functiondef() hands back a CREATE OR REPLACE, which normally
+        // covers "changed" as well as "missing". It does not when the return
+        // type moved or an argument was renamed: PostgreSQL refuses the replace
+        // outright and the migration stops on a line the report had called a
+        // harmless swap. compareSchemas works that out — see
+        // routineReplaceNeedsDrop — and says so on the diff.
+        if (target && diff.replaceNeedsDrop === true) {
+          phases.routines.push(
+            dropRoutineStatement(target, " so it can be recreated with its new signature")
+          );
+        }
         phases.routines.push(createRoutineStatement(source));
       }
       continue;

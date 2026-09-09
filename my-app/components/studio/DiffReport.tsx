@@ -175,26 +175,24 @@ function objectNote(diff: ObjectDiff): string {
 /**
  * One group of object diff lines under a heading.
  *
- * `uniqueIndexes` carries the names of the TARGET's unique indexes, because
- * that is what objectDiffSeverity needs to tell "this index only made reads
- * faster" from "this index was enforcing a rule" — and the target's index is
- * the one a migration drops.
+ * The grade comes off the diff itself. This component used to hand
+ * objectDiffSeverity a Set of the target's unique index names that each caller
+ * assembled by hand, which is how a created unique index — present only in the
+ * source, so never in that Set — came to be drawn as a harmless addition.
  */
 function ObjectLines({
   label,
   diffs,
-  uniqueIndexes,
 }: {
   label: string;
   diffs: ObjectDiff[];
-  uniqueIndexes?: Set<string>;
 }) {
   if (diffs.length === 0) return null;
   return (
     <div className="obj-group">
       <ObjHeader label={label} />
       {diffs.map((diff, i) => {
-        const severity = objectDiffSeverity(diff, uniqueIndexes?.has(diff.name));
+        const severity = objectDiffSeverity(diff);
         return (
           <DiffLine
             key={`${diff.kind}-${diff.name}-${i}`}
@@ -210,13 +208,6 @@ function ObjectLines({
         );
       })}
     </div>
-  );
-}
-
-/** The target's unique index names — the input objectDiffSeverity grades on. */
-function uniqueIndexNames(table: TableSnapshot): Set<string> {
-  return new Set(
-    (table.indexes ?? []).filter((ix) => ix.isUnique).map((ix) => ix.name)
   );
 }
 
@@ -290,9 +281,8 @@ function matchLevel(match: TableMatch): "breaking" | "additive" {
   );
   // Dropping a unique index or a trigger is breaking in the script, so the pill
   // has to say so too.
-  const targetUnique = uniqueIndexNames(match.right);
   const breakingObject = match.objectDiffs.some(
-    (d) => objectDiffSeverity(d, targetUnique.has(d.name)) === "breaking",
+    (d) => objectDiffSeverity(d) === "breaking",
   );
   return breakingColumn ||
     breakingNewCol ||
@@ -672,15 +662,8 @@ function ChangedTableCard({
           generator has always emitted SQL for them; this card just never drew
           them, so a table whose only change was a dropped index opened to
           nothing at all. */}
-      <ObjectLines
-        label="Indexes"
-        diffs={pickKinds(match.objectDiffs, ["INDEX"])}
-        uniqueIndexes={uniqueIndexNames(match.right)}
-      />
-      <ObjectLines
-        label="Triggers"
-        diffs={pickKinds(match.objectDiffs, ["TRIGGER"])}
-      />
+      <ObjectLines label="Indexes" diffs={pickKinds(match.objectDiffs, ["INDEX"])} />
+      <ObjectLines label="Triggers" diffs={pickKinds(match.objectDiffs, ["TRIGGER"])} />
     </details>
   );
 }

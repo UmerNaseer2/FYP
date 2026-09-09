@@ -351,6 +351,16 @@ export type RoutineSnapshot = {
   identityArguments: string;
   signature: string;
   returnType: string | null;
+  /**
+   * Every argument name, in order — including OUT parameters and the columns of
+   * a RETURNS TABLE, because renaming any of them is refused by CREATE OR
+   * REPLACE just as loudly as changing the return type.
+   *
+   * Optional on purpose — see the note on SchemaSnapshot. `undefined` means the
+   * snapshot was captured before names were recorded; `[]` means no argument
+   * has one. An unnamed argument alongside named ones is an empty string.
+   */
+  argumentNames?: string[];
   language: string;
   definition: string;
   normalizedDefinition: string;
@@ -626,6 +636,8 @@ export async function fetchSchemaSnapshot(
     name: string;
     kind: "function" | "procedure";
     args: string;
+    arg_types: string | null;
+    arg_names: string[] | null;
     definition: string;
     language: string;
     returns: string | null;
@@ -899,7 +911,13 @@ export async function fetchSchemaSnapshot(
                     'name', con.conname,
                     'expression', pg_get_constraintdef(con.oid)
                   ) ORDER BY con.conname)
-             FROM pg_constraint con WHERE con.contypid = t.oid
+             -- contype 'c' only. PostgreSQL 17 records a domain's NOT NULL in
+             -- pg_constraint as well as in typnotnull, and picking it up here
+             -- made the generator emit both SET NOT NULL and an
+             -- ADD CONSTRAINT ... NOT NULL for the same domain — the second of
+             -- which is not valid syntax before 17.
+             FROM pg_constraint con
+            WHERE con.contypid = t.oid AND con.contype = 'c'
          ) END AS domain_checks,
          CASE WHEN t.typtype = 'c' THEN (
            SELECT array_agg(quote_ident(a.attname) || ' ' ||
@@ -933,6 +951,17 @@ export async function fetchSchemaSnapshot(
          p.proname AS name,
          CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END AS kind,
          pg_get_function_identity_arguments(p.oid) AS args,
+         -- The argument TYPES on their own. pg_get_function_identity_arguments
+         -- above prints the names too ("a integer"), and building the identity
+         -- out of that made a function whose argument was renamed look like one
+         -- function added and a different one dropped — so the script created
+         -- it before dropping it and PostgreSQL refused the whole migration.
+         (SELECT string_agg(format_type(u.t, NULL), ', ' ORDER BY u.ord)
+            FROM unnest(p.proargtypes) WITH ORDINALITY AS u(t, ord)) AS arg_types,
+         -- proargnames rather than the printed argument list: it is already an
+         -- array, so no parsing, and it stays clear of DEFAULT expressions —
+         -- adding a default is something CREATE OR REPLACE is happy with.
+         p.proargnames AS arg_names,
          pg_get_functiondef(p.oid) AS definition,
          l.lanname AS language,
          pg_get_function_result(p.oid) AS returns
@@ -1219,13 +1248,22 @@ export async function fetchSchemaSnapshot(
     const routines: RoutineSnapshot[] = routineResult.rows.map((row) => {
       const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
       const identityArguments = stripSchemaFromExpr(row.args, schemaName) ?? row.args;
+      // A function with no arguments has no rows to aggregate, so the subquery
+      // hands back NULL rather than an empty string.
+      const argumentTypes = stripSchemaFromExpr(row.arg_types ?? "", schemaName) ?? "";
       return {
         name: row.name,
         kind: row.kind === "procedure" ? "PROCEDURE" : "FUNCTION",
         identityArguments,
-        // Postgres allows overloads, so the name alone is not an identity.
-        signature: `${row.name}(${identityArguments})`,
+        // Postgres allows overloads, so the name alone is not an identity — but
+        // the argument NAMES are not part of it either. Two functions cannot
+        // differ by those alone, so a rename has to read as one function that
+        // changed, not as two.
+        signature: `${row.name}(${argumentTypes})`,
         returnType: stripSchemaFromExpr(row.returns, schemaName),
+        // NULL means no argument is named at all, which is a recorded fact and
+        // not a missing one — hence [] rather than undefined.
+        argumentNames: row.arg_names ?? [],
         language: row.language,
         definition,
         normalizedDefinition: normalizeDefinition(definition),
