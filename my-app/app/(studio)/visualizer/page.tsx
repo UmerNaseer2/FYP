@@ -181,11 +181,27 @@ export default function VisualizerPage() {
 
           {effectiveMode === "split" && (
             <>
+              {/* A separator with pointer handlers and no tabIndex reads as
+                  decoration — the only control over the split was mouse-only. */}
               <div
                 className="viz-divider"
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize panes (double-click to reset)"
+                aria-label="Resize panes"
+                title="Drag to resize · double-click to reset"
+                tabIndex={0}
+                aria-valuenow={Math.round(splitPct)}
+                aria-valuemin={MIN_PCT}
+                aria-valuemax={MAX_PCT}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowLeft") setSplitPct((p) => Math.max(MIN_PCT, p - 2));
+                  else if (e.key === "ArrowRight") setSplitPct((p) => Math.min(MAX_PCT, p + 2));
+                  else if (e.key === "Home") setSplitPct(MIN_PCT);
+                  else if (e.key === "End") setSplitPct(MAX_PCT);
+                  else if (e.key === "Enter") resetSplit();
+                  else return;
+                  e.preventDefault();
+                }}
                 onPointerDown={onDividerDown}
                 onPointerMove={onDividerMove}
                 onPointerUp={onDividerUp}

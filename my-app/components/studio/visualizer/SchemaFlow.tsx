@@ -49,6 +49,10 @@ function toFlowEdges(graph: VizGraph): Edge[] {
     target: e.target,
     sourceHandle: e.sourceHandle,
     targetHandle: e.targetHandle,
+    // The FK constraint name was collected by buildGraph and then dropped here,
+    // so nothing ever drew it. `label` is what React Flow renders on the edge.
+    label: e.label,
+    labelShowBg: true,
     data: { fkName: e.label },
   }));
 }
@@ -163,6 +167,11 @@ function FlowInner({ snapshot }: { snapshot: SchemaSnapshot }) {
           {countOf(graph.stats.columns, "column")}
         </span>
         <span className="pill pill-neutral">{countOf(graph.stats.foreignKeys, "FK")}</span>
+        {/* The heavier column weight was carrying nullability with nothing on
+            screen to decode it. */}
+        <span className="pill pill-neutral" title="Columns drawn in the stronger weight are NOT NULL.">
+          bold = NOT NULL
+        </span>
         {graph.stats.externalForeignKeys > 0 && (
           <span
             className="pill pill-drift"

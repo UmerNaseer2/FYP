@@ -302,14 +302,26 @@ export default function ConnectionsPage() {
         environment: "dev",
       }));
     } else {
+      // A pill that fills the field with words like "dbname" gets a green
+      // "parsed ok" from the panel below — which reads as approval of an
+      // address that does not exist. The input's own placeholder shows the
+      // shape instead.
       setForm((f) => ({
         ...f,
-        uri: "postgres://user:password@host.neon.tech:5432/dbname?sslmode=require",
+        uri: "",
         name: f.name || "Hosted Postgres",
         sslMode: "require",
       }));
     }
     setFieldMode("uri");
+    setDrawerTest({ kind: "idle" });
+  }
+
+  // A tested result describes one exact set of credentials — the moment any of
+  // them change it is describing something that is no longer on screen. Every
+  // edit to a field the test actually dials goes through here.
+  function editConnectionField(patch: Partial<typeof form>) {
+    setForm((f) => ({ ...f, ...patch }));
     setDrawerTest({ kind: "idle" });
   }
 
@@ -488,6 +500,16 @@ export default function ConnectionsPage() {
       // second toast a moment later only competes with it.
       if (drawerTest.kind === "ok" && typeof data?.id === "number") {
         void testRow(data as Connection, true);
+      } else if (editingId !== null) {
+        // The route clears the stored test when the target moves — this map has
+        // to give way too, or the row keeps a green light the server has
+        // already withdrawn.
+        const id = editingId;
+        setRowResults((r) => {
+          const next = { ...r };
+          delete next[id];
+          return next;
+        });
       }
     } catch {
       showToast("Could not save the connection.");
@@ -650,9 +672,11 @@ export default function ConnectionsPage() {
    * keeps the heading, the explanation and the button, and drops the rest.
    *
    * Loading counts as first-run for the same reason: the counters would be
-   * showing zeros they have not read yet.
+   * showing zeros they have not read yet. So does a failed load — the list
+   * could not be read, so "Total 0" three inches above "your connections are
+   * still there" is the page arguing with itself.
    */
-  const isFirstRun = !loadError && connections.length === 0;
+  const noCountsToShow = loadError !== null || connections.length === 0;
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
@@ -673,7 +697,7 @@ export default function ConnectionsPage() {
               <PlusIcon size={14} />
               Add connection
             </button>
-            {!isFirstRun && (
+            {!noCountsToShow && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <SummaryTile label="Total" value={String(connections.length)} />
               <SummaryTile
@@ -713,7 +737,7 @@ export default function ConnectionsPage() {
       </section>
 
       {/* ——— Filters ——— */}
-      {!isFirstRun && (
+      {!noCountsToShow && (
       <section className="px-8 pt-6 pb-3 flex items-center gap-1.5 flex-wrap">
         <FilterPill active={filter === "all"} onClick={() => setFilter("all")} count={connections.length}>
           All
@@ -782,7 +806,7 @@ export default function ConnectionsPage() {
           <table className="conns responsive-table text-[13px]">
             {/* Eight column headings over one line of "none yet" label nothing.
                 They come back the moment there is a row to head. */}
-            {!isFirstRun && (
+            {!noCountsToShow && (
             <thead>
               <tr>
                 <th>Name</th>
@@ -855,6 +879,18 @@ export default function ConnectionsPage() {
                             Add your first connection
                           </button>
                         </>
+                      )}
+                      {/* Filtered down to nothing is a different dead end from
+                          having nothing: the rows exist, the filter is hiding
+                          them, so offer the way back. */}
+                      {connections.length > 0 && (
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setFilter("all")}
+                          type="button"
+                        >
+                          Show all connections
+                        </button>
                       )}
                     </div>
                   </td>
@@ -1061,7 +1097,10 @@ export default function ConnectionsPage() {
                 Hosted (Neon · Supabase · RDS)
               </button>
             </div>
-            <div className="help mt-2">Pre-fills the SSL default. You can still edit anything below.</div>
+            <div className="help mt-2">
+              Pre-fills the SSL mode each one needs. Hosted leaves the connection
+              string to you — paste your own below.
+            </div>
           </div>
 
           {/* Name */}
@@ -1148,6 +1187,9 @@ export default function ConnectionsPage() {
                 onClick={() => {
                   setFieldMode("uri");
                   setFormErrors({});
+                  // The other mode builds a different payload, so the verdict
+                  // above no longer describes what is on screen.
+                  setDrawerTest({ kind: "idle" });
                 }}
                 type="button"
               >
@@ -1158,6 +1200,7 @@ export default function ConnectionsPage() {
                 onClick={() => {
                   setFieldMode("fields");
                   setFormErrors({});
+                  setDrawerTest({ kind: "idle" });
                 }}
                 type="button"
               >
@@ -1175,7 +1218,7 @@ export default function ConnectionsPage() {
                   style={{ paddingRight: 70 }}
                   placeholder="postgres://user:pass@host:5432/database?sslmode=require"
                   value={form.uri}
-                  onChange={(e) => setForm((f) => ({ ...f, uri: e.target.value }))}
+                  onChange={(e) => editConnectionField({ uri: e.target.value })}
                 />
                 <button
                   className="btn btn-ghost btn-xs"
@@ -1183,7 +1226,7 @@ export default function ConnectionsPage() {
                   onClick={async () => {
                     try {
                       const text = await navigator.clipboard.readText();
-                      if (text) setForm((f) => ({ ...f, uri: text.trim() }));
+                      if (text) editConnectionField({ uri: text.trim() });
                     } catch {
                       showToast("Clipboard not available — paste manually.");
                     }
@@ -1214,7 +1257,7 @@ export default function ConnectionsPage() {
                     className="input mono"
                     placeholder="db.example.com"
                     value={form.host}
-                    onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))}
+                    onChange={(e) => editConnectionField({ host: e.target.value })}
                   />
                   <FieldError message={formErrors.host} />
                 </div>
@@ -1227,7 +1270,7 @@ export default function ConnectionsPage() {
                     max={PORT_MAX}
                     placeholder="5432"
                     value={form.port}
-                    onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
+                    onChange={(e) => editConnectionField({ port: e.target.value })}
                   />
                   <FieldError message={formErrors.port} />
                 </div>
@@ -1238,7 +1281,7 @@ export default function ConnectionsPage() {
                   className="input mono"
                   placeholder="postgres"
                   value={form.database}
-                  onChange={(e) => setForm((f) => ({ ...f, database: e.target.value }))}
+                  onChange={(e) => editConnectionField({ database: e.target.value })}
                 />
                 <FieldError message={formErrors.database_name} />
               </div>
@@ -1249,7 +1292,7 @@ export default function ConnectionsPage() {
                     className="input mono"
                     placeholder="postgres"
                     value={form.user}
-                    onChange={(e) => setForm((f) => ({ ...f, user: e.target.value }))}
+                    onChange={(e) => editConnectionField({ user: e.target.value })}
                   />
                   <FieldError message={formErrors.username} />
                 </div>
@@ -1267,7 +1310,7 @@ export default function ConnectionsPage() {
                       type={showPassword ? "text" : "password"}
                       placeholder="••••••••"
                       value={form.password}
-                      onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                      onChange={(e) => editConnectionField({ password: e.target.value })}
                     />
                     <button
                       className="btn btn-ghost btn-xs"
@@ -1297,7 +1340,7 @@ export default function ConnectionsPage() {
                     className={form.sslMode === choice.mode ? "active" : ""}
                     role="radio"
                     aria-checked={form.sslMode === choice.mode}
-                    onClick={() => setForm((f) => ({ ...f, sslMode: choice.mode }))}
+                    onClick={() => editConnectionField({ sslMode: choice.mode })}
                     type="button"
                   >
                     {choice.label}
@@ -1353,7 +1396,7 @@ export default function ConnectionsPage() {
             <DrawerTestBanner
               test={drawerTest}
               sslOn={tlsOn}
-              onEnableSsl={() => setForm((f) => ({ ...f, sslMode: "require" }))}
+              onEnableSsl={() => editConnectionField({ sslMode: "require" })}
             />
           </div>
         </div>
@@ -1608,15 +1651,20 @@ function RowTested({ result }: { result?: RowResult }) {
 
 function UriPreview({ uri }: { uri: string }) {
   const parsed = parsePostgresUri(uri);
+  // Empty and unparseable are different answers — saying "awaiting input" over a
+  // field the user has already filled tells them the opposite of what happened,
+  // and Test then calls the same string invalid.
+  const empty = !uri.trim();
+  const status = empty ? "awaiting input" : parsed ? "parsed ok" : "doesn't look valid";
   return (
     <div className="panel p-3">
       <div className="flex items-center justify-between mb-2">
         <span className="section-title">Parsed</span>
         <span
           className="text-[11px] mono"
-          style={{ color: parsed ? "var(--sync)" : "var(--text-3)" }}
+          style={{ color: parsed ? "var(--sync)" : empty ? "var(--text-3)" : "var(--break)" }}
         >
-          {parsed ? "parsed ok" : "awaiting input"}
+          {status}
         </span>
       </div>
       <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[12.5px]">

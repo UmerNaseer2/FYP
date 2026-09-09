@@ -63,7 +63,13 @@ export const TableNode = memo(function TableNode({ data, selected }: NodeProps<T
             >
               {col.isPrimaryKey ? <KeyIcon /> : col.isForeignKey ? <LinkIcon /> : null}
             </span>
-            <span className={`viz-table__col mono${col.nullable ? "" : " is-required"}`} title={col.name}>
+            {/* Weight alone is not a legible signal, and it was the only one —
+                the title said the column name, which the reader can already
+                see. */}
+            <span
+              className={`viz-table__col mono${col.nullable ? "" : " is-required"}`}
+              title={col.nullable ? `${col.name} — nullable` : `${col.name} — NOT NULL`}
+            >
               {col.name}
               {col.externalRef ? <span className="viz-table__ext" aria-hidden="true">↗</span> : null}
             </span>
