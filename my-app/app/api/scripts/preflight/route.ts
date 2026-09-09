@@ -13,11 +13,14 @@ export type PatchEntry = {
   change_type: string;
   applied_at: string;
   /**
-   * Whether this row stored its own rollback. The SQL itself is deliberately
-   * not sent: Deploy only needs to know whether the Revert button can do
-   * anything, and the revert route reads the script out of the same row.
+   * Whether this row stored its own rollback, and the rollback itself.
+   * Deploy asks the user to confirm a revert before running it, and a
+   * confirmation you cannot read is not one you can give — so the SQL that
+   * will actually run has to travel with the flag. The revert route still
+   * reads the script out of the row itself and never trusts this copy.
    */
   has_down_sql: boolean;
+  down_sql: string | null;
 };
 
 // The full pre-flight response shape
@@ -203,8 +206,8 @@ export async function POST(request: NextRequest) {
     );
     const downExpr =
       colCheck.rows.length > 0
-        ? "(down_sql IS NOT NULL AND down_sql <> '') AS has_down_sql"
-        : "false AS has_down_sql";
+        ? "down_sql, (down_sql IS NOT NULL AND down_sql <> '') AS has_down_sql"
+        : "NULL::text AS down_sql, false AS has_down_sql";
 
     const timelineResult = scriptName
       ? await client.query<PatchEntry>(

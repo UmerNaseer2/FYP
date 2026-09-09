@@ -104,6 +104,8 @@ type PatchEntry = {
   applied_at: string;
   /** Whether the ledger row kept its own rollback. Optional: an older API. */
   has_down_sql?: boolean;
+  /** The rollback stored on the row. Optional for the same reason. */
+  down_sql?: string | null;
 };
 
 // What /api/scripts/preflight returns.
@@ -126,8 +128,13 @@ type PreflightResult = {
 // itself never completed. Neither "applied" nor "skipped" is a thing this page
 // can claim then, and picking one would send the reader off to do the wrong
 // thing about half the time.
+// "not-in-run" is a pending row the chosen target version stops short of. It
+// is not a run state at all — the run never reaches it — but the pending list
+// draws the same rows, and calling those "queued" promised the reader a run
+// they had not asked for.
 type RunStatus =
   | "queued"
+  | "not-in-run"
   | "running"
   | "applied"
   | "rehearsed"
@@ -374,10 +381,16 @@ function RightStatus({ cell }: { cell: RunCell }) {
       </span>
     );
   }
-  // queued
+  if (cell.status === "not-in-run") {
+    return <span className="right-status">not in this run</span>;
+  }
+  // queued — waiting to run is not a warning, so it gets a dot, not an alert.
   return (
     <span className="right-status">
-      <AlertCircleIcon size={12} />
+      <span
+        className="w-[6px] h-[6px] rounded-full inline-block flex-none"
+        style={{ background: "var(--text-3)" }}
+      />
       queued
     </span>
   );
@@ -478,7 +491,8 @@ function ProductionGate({
       <p className="prod-gate__body">
         This connection is labelled production. Live data is behind it, and a
         migration that goes wrong here is not something a rollback brings back —
-        a rollback restores structure, not rows.
+        a rollback restores structure, not rows. If you need the rows back, you
+        need a backup from before this run.
       </p>
       <label className="prod-gate__ack">
         <input
@@ -567,6 +581,7 @@ function ApprovalPanel({
   hashError,
   loading,
   error,
+  unreadable,
   busy,
   approved,
   pending,
@@ -586,6 +601,8 @@ function ApprovalPanel({
   hashError: string | null;
   loading: boolean;
   error: string | null;
+  /** The list could not be read at all — not the same as "there are none". */
+  unreadable: boolean;
   busy: boolean;
   /** The approval that covers this exact run, if there is one. */
   approved: ApprovalRow | null;
@@ -629,6 +646,30 @@ function ApprovalPanel({
               ? "Reading the approvals for this target…"
               : "Working out which approval covers this run…"}
         </p>
+      </div>
+    );
+  }
+
+  // An unreadable list is not an empty one — the same rule this page already
+  // states for connections. Falling through to "Needs a second person" reports
+  // the approval state as read when nothing managed to read it.
+  if (unreadable) {
+    return (
+      <div className="appr appr--wait">
+        <div className="appr__head">
+          <UsersIcon size={15} className="ico" />
+          <span>Approval state unknown</span>
+        </div>
+        <p className="appr__body">
+          The approvals for this target could not be read, so this page cannot
+          say whether this run is cleared. The server checks again when you
+          press Deploy, and refuses the run if nothing covers it.
+        </p>
+        {error && (
+          <p className="appr__meta" style={{ color: "var(--break)" }}>
+            {error}
+          </p>
+        )}
       </div>
     );
   }
@@ -695,13 +736,19 @@ function ApprovalPanel({
             </p>
           ) : (
             <>
+              {/* A placeholder is not a name: it vanishes on the first
+                  keystroke, and this note is read back later as audit copy. */}
               <input
                 className="input mt-2"
                 style={{ fontSize: "12px" }}
+                aria-label="Note for the approval record"
                 placeholder="Optional note for the record"
                 value={note}
                 onChange={(event) => onNoteChange(event.target.value)}
               />
+              <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
+                Stored with the approval and shown in the audit log.
+              </p>
               <div className="appr__actions">
                 <button
                   type="button"
@@ -744,10 +791,14 @@ function ApprovalPanel({
           <input
             className="input mt-2"
             style={{ fontSize: "12px" }}
+            aria-label="Note for the record — shown to whoever approves this"
             placeholder="Optional note for the approver"
             value={note}
             onChange={(event) => onNoteChange(event.target.value)}
           />
+          <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
+            Whoever approves this will see it.
+          </p>
           <div className="appr__actions">
             <button
               type="button"
@@ -807,6 +858,10 @@ export default function DeployPage() {
   // the meantime.
   const [schemaEnvironment, setSchemaEnvironment] =
     useState<Environment>(DEFAULT_ENVIRONMENT);
+  // True when the lineage lookup failed, so the schema's own label was never
+  // read. The pill then shows only the connection's label, which is the quieter
+  // of the two — the page has to say that rather than let it pass as the answer.
+  const [environmentUnknown, setEnvironmentUnknown] = useState(false);
   // Ticked in the ProductionGate. One per destructive action, never shared.
   const [deployAcknowledged, setDeployAcknowledged] = useState(false);
   const [revertAcknowledged, setRevertAcknowledged] = useState(false);
@@ -852,6 +907,8 @@ export default function DeployPage() {
   // The exact ordered batch captured at run start — the run/verify lists render
   // from this, so a post-run preflight refresh can't reshuffle them.
   const [runScripts, setRunScripts] = useState<GitHubScript[]>([]);
+  // Where the run started from, captured before it starts. See handleRun.
+  const [runFromVersion, setRunFromVersion] = useState<string>("");
   const [runStatus, setRunStatus] = useState<Record<string, RunCell>>({});
   const [runComplete, setRunComplete] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -867,15 +924,17 @@ export default function DeployPage() {
   const runStartRef = useRef(0);
 
   // ── Toast ────────────────────────────────────────────────────────────────
-  const [toastMsg, setToastMsg] = useState("");
-  const [toastShow, setToastShow] = useState(false);
+  // The toast carries failures as well as successes, so it has to know which
+  // it is holding — a green tick over "Deploy failed" reads as the opposite of
+  // what happened. It is mounted only while it is on screen, so the aria-live
+  // announcement fires once per run instead of sitting invisible in the DOM.
+  const [toast, setToast] = useState<{ kind: "ok" | "bad"; msg: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  function showToast(msg: string) {
-    setToastMsg(msg);
-    setToastShow(true);
+  function showToast(msg: string, kind: "ok" | "bad" = "ok") {
+    setToast({ kind, msg });
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToastShow(false), 1900);
+    toastTimer.current = window.setTimeout(() => setToast(null), 1900);
   }
 
   // ── Load connections + GitHub scripts on mount ───────────────────────────
@@ -1018,16 +1077,17 @@ export default function DeployPage() {
     return map;
   }, [groupedScripts, scriptGroup, schema]);
 
-  // Versions whose ledger row carries its own rollback. This is the second
-  // source: a version replayed here by Version Sync has no registry file for
-  // this schema, so scriptByVersion cannot reach it, but the apply route stored
-  // its down script on the row.
-  const storedRollbackVersions = useMemo(() => {
-    const set = new Set<string>();
+  // Versions whose ledger row carries its own rollback, and the script itself.
+  // This is the second source: a version replayed here by Version Sync has no
+  // registry file for this schema, so scriptByVersion cannot reach it, but the
+  // apply route stored its down script on the row. The SQL is kept, not just
+  // the flag, because the confirmation below has to show what will run.
+  const storedRollbacks = useMemo(() => {
+    const map = new Map<string, string | null>();
     for (const row of preflightResult?.timeline ?? []) {
-      if (row.has_down_sql) set.add(row.version);
+      if (row.has_down_sql) map.set(row.version, row.down_sql ?? null);
     }
-    return set;
+    return map;
   }, [preflightResult]);
 
   // Can this version be rolled back at all — from a registry file, or from the
@@ -1035,8 +1095,8 @@ export default function DeployPage() {
   const canRollBack = useCallback(
     (version: string) =>
       Boolean(scriptByVersion.get(version)?.down_sql) ||
-      storedRollbackVersions.has(version),
-    [scriptByVersion, storedRollbackVersions]
+      storedRollbacks.has(version),
+    [scriptByVersion, storedRollbacks]
   );
 
   // Close a stale confirmation panel when the user changes what they're looking
@@ -1428,7 +1488,10 @@ export default function DeployPage() {
         return;
       }
       setApprovalNote("");
-      showToast(decision === "approve" ? "Run approved" : "Run rejected");
+      showToast(
+        decision === "approve" ? "Run approved" : "Run rejected",
+        decision === "approve" ? "ok" : "bad"
+      );
     } catch {
       setApprovalError("Network error recording the decision.");
     } finally {
@@ -1441,6 +1504,7 @@ export default function DeployPage() {
     setDriftPhase("idle");
     setDriftResult(null);
     setDriftError(null);
+    setEnvironmentUnknown(false);
     // An acknowledgement belongs to one drift result. Dropping it here means a
     // fresh check always has to be read again, rather than inheriting a tick
     // given for a report that no longer exists.
@@ -1461,6 +1525,7 @@ export default function DeployPage() {
     setDriftError(null);
     setDriftResult(null);
     setDriftAcknowledged(false);
+    setEnvironmentUnknown(false);
     try {
       const lookupRes = await fetch(
         `/api/lineage/lookup?connectionId=${encodeURIComponent(id)}&schemaName=${encodeURIComponent(sch)}`,
@@ -1471,6 +1536,7 @@ export default function DeployPage() {
       // metadata database would quietly remove both warnings.
       if (!lookupRes.ok) {
         setDriftPhase("error");
+        setEnvironmentUnknown(true);
         return;
       }
       const lookup = (await lookupRes.json()) as {
@@ -1548,6 +1614,9 @@ export default function DeployPage() {
     if (dryRun ? runBlocked : deployBlocked) return;
 
     setRunScripts(batch);
+    // The ledger is re-read before Verify shows, so the live current version is
+    // already the new one — the arrow has to remember where the run started.
+    setRunFromVersion(currentLabel);
     setRunIsDryRun(dryRun);
     setRunError(null);
     // Every migration goes to "running" at once because they really do run
@@ -1613,9 +1682,12 @@ export default function DeployPage() {
     } catch {
       // A genuine transport failure: the request may or may not have reached the
       // server, so this must not claim nothing happened.
+      // The route path is an implementation detail; the reader needs the button
+      // that answers the question instead.
       failure =
-        "Could not reach /api/scripts/apply — the request never completed. " +
-        "Re-check the target before retrying; the run may still have been applied.";
+        "The request to the server never completed, so this page cannot say " +
+        "whether the migrations ran. Go back to Pre-flight and press Check " +
+        "database to read what the target actually has before you retry.";
     }
 
     // Map the server's verdict onto the rows.
@@ -1626,7 +1698,11 @@ export default function DeployPage() {
     // above, and the 502-shaped body the parser could not read — both of which
     // reach this page from a request that may have run the whole migration.
     // The banner already says so; the rows used to contradict it.
-    const unreported: RunStatus = outcomes || !failure ? "skipped" : "unknown";
+    // One name, because three surfaces need the same answer: the rows, the
+    // toast, and the recovery bar. A failure with no verdict at all is the one
+    // case where "nothing was applied" is a guess.
+    const outcomeUnknown = !outcomes && Boolean(failure);
+    const unreported: RunStatus = outcomeUnknown ? "unknown" : "skipped";
     setRunStatus(() => {
       const next: Record<string, RunCell> = {};
       for (const script of batch) {
@@ -1660,7 +1736,14 @@ export default function DeployPage() {
     setApprovalReloadKey((key) => key + 1);
 
     if (failure) {
-      showToast(dryRun ? "Dry run failed — nothing was written" : "Deploy failed — nothing was applied");
+      showToast(
+        outcomeUnknown
+          ? "Deploy outcome not known — check the target before retrying"
+          : dryRun
+            ? "Dry run failed — nothing was written"
+            : "Deploy failed — nothing was applied",
+        "bad"
+      );
     } else if (dryRun) {
       showToast(`Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed`);
     } else {
@@ -1718,14 +1801,19 @@ export default function DeployPage() {
     { n: 3, name: "Verify", sub: "ledger re-read" },
   ];
 
-  const currentLabel = preflightResult?.currentVersion
-    ? `v${preflightResult.currentVersion}`
-    : "fresh";
+  // A version we asked for is not a version we read — never print one as the
+  // other. A failed ledger read leaves preflightResult null, and "fresh" there
+  // would be a claim about the target that nothing has checked.
+  const currentLabel = !preflightResult
+    ? "unknown"
+    : preflightResult.currentVersion
+      ? `v${preflightResult.currentVersion}`
+      : "fresh";
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
       {/* ——— Page header ——— */}
-      <section className="px-8 pt-8 pb-2">
+      <section className="px-4 sm:px-8 pt-8 pb-2">
         <div className="section-title mb-2">Deploy</div>
         <h1 className="text-[28px] font-semibold tracking-[-0.018em]">
           Bring the database up to a version.
@@ -1745,7 +1833,7 @@ export default function DeployPage() {
       </section>
 
       {/* ——— Stepper ——— */}
-      <section className="px-8 pt-6 pb-4">
+      <section className="px-4 sm:px-8 pt-6 pb-4">
         <div className="stepper">
           {STEPS.map((s, i) => (
             <Fragment key={s.n}>
@@ -1775,7 +1863,7 @@ export default function DeployPage() {
 
       {/* ═══════════════════ STAGE 1 — PRE-FLIGHT ═══════════════════ */}
       {stage === 1 && (
-        <section className="px-8 pb-12 space-y-6">
+        <section className="px-4 sm:px-8 pb-12 space-y-6">
           {/* Selection */}
           <div className="card p-5">
             <div className="section-title mb-3">Target</div>
@@ -1817,6 +1905,14 @@ export default function DeployPage() {
                     {targetEnvironment === "unset" && (
                       <span className="help">
                         Unlabelled — label it on Connections so this page can warn you.
+                      </span>
+                    )}
+                    {environmentUnknown && (
+                      <span className="help" style={{ color: "var(--drift)" }}>
+                        {"This schema's own label could not be read, so the target " +
+                          "may be production even though this reads " +
+                          targetEnvironment +
+                          ". Press Check database again before you run anything."}
                       </span>
                     )}
                   </div>
@@ -1972,11 +2068,18 @@ export default function DeployPage() {
                       const canOfferRevert =
                         entry.status === "applied" && entry.version === newestApplied;
                       const hasRollback = canRollBack(entry.version);
-                      // Only a registry file can be shown here. A rollback that
-                      // lives on the ledger row is run by the server and never
-                      // travels to the browser.
+                      // Two places a rollback can live: a file in the registry,
+                      // or the copy the apply route stored on the ledger row.
+                      // Whichever one the revert route will run is the one that
+                      // has to be readable here — a confirmation you cannot read
+                      // is not a confirmation.
                       const registryDownSql =
                         scriptByVersion.get(entry.version)?.down_sql ?? null;
+                      const storedDownSql = storedRollbacks.get(entry.version) ?? null;
+                      const shownDownSql = registryDownSql ?? storedDownSql;
+                      const downSqlLabel = registryDownSql
+                        ? `v${entry.version}.down.sql`
+                        : "the rollback stored with this version";
                       const confirming = revertVersion === entry.version;
                       return (
                         <div
@@ -1998,6 +2101,11 @@ export default function DeployPage() {
                                   }
                                 >
                                   not in registry
+                                </span>
+                              )}
+                              {!entry.inRegistry && (
+                                <span className="help ml-2">
+                                  applied directly, or replayed here by Version Sync
                                 </span>
                               )}
                             </span>
@@ -2030,6 +2138,16 @@ export default function DeployPage() {
                             </div>
                           </div>
 
+                          {/* A disabled control swallows its own tooltip in most
+                              browsers — no hover, no focus, nothing for a screen
+                              reader — so the reason has to be on the page. */}
+                          {canOfferRevert && !hasRollback && (
+                            <div className="help mt-1">
+                              No rollback stored — v{entry.version} cannot be undone
+                              from here.
+                            </div>
+                          )}
+
                           {confirming && hasRollback && (
                             <div className="mt-2 mb-1 space-y-2">
                               <div className="warn-inline">
@@ -2042,29 +2160,39 @@ export default function DeployPage() {
                                     undoes the structural change and removes v{entry.version} from
                                     the ledger, so it becomes pending again. Rows this rollback
                                     drops are gone, and rows the original migration deleted do not
-                                    come back.
+                                    come back. A backup from before the original migration is the
+                                    only way to get them back.
                                   </div>
                                 </div>
                               </div>
 
-                              {registryDownSql ? (
+                              {shownDownSql ? (
                                 <details>
                                   <summary
                                     className="text-[12px] cursor-pointer select-none"
                                     style={{ color: "var(--text-3)" }}
                                   >
-                                    Show{" "}
-                                    <span className="mono">v{entry.version}.down.sql</span> (
-                                    {countOf(getSqlLineCount(registryDownSql), "line")})
+                                    Show <span className="mono">{downSqlLabel}</span> (
+                                    {countOf(getSqlLineCount(shownDownSql), "line")})
                                   </summary>
-                                  <pre className="err-pre">{registryDownSql}</pre>
+                                  {!registryDownSql && (
+                                    <div
+                                      className="text-[12px] mt-1"
+                                      style={{ color: "var(--text-3)" }}
+                                    >
+                                      This version has no file in the registry for{" "}
+                                      <span className="mono">{preflightResult.schema}</span> — it
+                                      was applied here directly, so this is the copy recorded
+                                      beside the applied row.
+                                    </div>
+                                  )}
+                                  <pre className="err-pre">{shownDownSql}</pre>
                                 </details>
                               ) : (
                                 <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                                  This version has no file in the registry for{" "}
-                                  <span className="mono">{preflightResult.schema}</span> — it was
-                                  applied here directly. The rollback recorded with it at that
-                                  time is what runs.
+                                  The rollback for this version is recorded on the target and
+                                  could not be read back here, so it cannot be shown before it
+                                  runs.
                                 </div>
                               )}
 
@@ -2077,6 +2205,14 @@ export default function DeployPage() {
                                   onAcknowledge={setRevertAcknowledged}
                                 />
                               )}
+
+                              {/* The deploy path needs two people and this one
+                                  does not — say so, rather than letting the
+                                  ledger row imply the same rule. */}
+                              <div className="text-[12px]" style={{ color: "var(--drift)" }}>
+                                Unlike a deploy, a rollback does not ask for a second
+                                person. Once you press this it runs.
+                              </div>
 
                               <div className="flex items-center gap-2">
                                 <button
@@ -2163,7 +2299,7 @@ export default function DeployPage() {
                             kind={kind}
                             sub={`${from} → v${script.version} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
                             rightPill={bumpWord(kind)}
-                            cell={{ status: "queued" }}
+                            cell={{ status: inRun ? "queued" : "not-in-run" }}
                             selected={inRun}
                             sql={script.sql_content}
                             sqlOpen={inRun && kind === "breaking"}
@@ -2191,7 +2327,16 @@ export default function DeployPage() {
                         <ChevronRightIcon size={16} />
                         <span className="vchip next"><b>{targetVersion ? `v${targetVersion}` : "—"}</b></span>
                       </div>
-                      <div className="grid grid-cols-2 gap-y-2 gap-x-4 mt-4 text-[12.5px]">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-2 gap-x-4 mt-4 text-[12.5px]">
+                        {/* The target is named at the top of the page, which is
+                            not where the button is. */}
+                        <div className="flex justify-between col-span-2">
+                          <span style={{ color: "var(--text-3)" }}>Target</span>
+                          <span className="mono">{schema} @ {activeConn.name}</span>
+                        </div>
+                        <div className="col-span-2 text-[11px] mono" style={{ color: "var(--text-3)" }}>
+                          {activeConn.host}:{activeConn.port}/{activeConn.database_name}
+                        </div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Migrations</span><span className="mono">{scriptsUpToTarget.length}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Bump</span><span>{bumps}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
@@ -2212,14 +2357,17 @@ export default function DeployPage() {
                             tone="break"
                             title={`${breakingCount} breaking migration${breakingCount === 1 ? "" : "s"}`}
                             body={
+                              // "Breaking" grades a contract break, not data loss —
+                              // a rename is breaking and loses nothing. The rows
+                              // question belongs to the deletes-rows gate below,
+                              // which asks its own tick and names its own backup.
                               "A breaking migration drops or rewrites structure that is " +
                               "already there. Anything reading the old shape — an app, a " +
-                              "view, a report — stops working the moment this commits, and " +
-                              "the rollback restores the structure, not the rows that were " +
-                              "in it. The breaking ones in the list on the left are open " +
-                              "already, showing the statements they will run."
+                              "view, a report — stops working the moment this commits. The " +
+                              "breaking ones in the list on the left are open already, " +
+                              "showing the statements they will run."
                             }
-                            ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what they remove.`}
+                            ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`}
                             acknowledged={breakingAcknowledged}
                             onAcknowledge={setBreakingAcknowledged}
                           />
@@ -2302,6 +2450,7 @@ export default function DeployPage() {
                             hashError={hashError}
                             loading={approvalsLoading}
                             error={approvalError}
+                            unreadable={approvalError !== null && approvals.length === 0}
                             busy={approvalBusy}
                             approved={approvedRun}
                             pending={pendingRun}
@@ -2317,9 +2466,12 @@ export default function DeployPage() {
                         )}
                       </div>
 
+                      <div className="flex items-center justify-end mt-5">
+                        <EnvironmentPill environment={targetEnvironment} />
+                      </div>
                       <button
                         type="button"
-                        className={`btn btn-lg w-full mt-5 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
+                        className={`btn btn-lg w-full mt-2 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
                         disabled={deployBlocked}
                         onClick={() => handleRun(false)}
                       >
@@ -2341,7 +2493,8 @@ export default function DeployPage() {
                       </button>
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
                         {hasTxnViolation
-                          ? "Resolve the transaction-control issue below first"
+                          ? "Remove the COMMIT or ROLLBACK from the versions named in " +
+                            "the checklist, then pull again"
                           : unacknowledgedGates
                             ? "Tick every box above to enable this"
                             : targetIsProduction && !approvedRun
@@ -2375,8 +2528,14 @@ export default function DeployPage() {
                           Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">v{preflightResult.currentVersion}</span></> : "fresh — no versions yet"}
                         </ChecklistItem>
                         <ChecklistItem ok={!hasTxnViolation}>
+                          {/* A count leaves the reader to open every script and
+                              hunt. The versions are already in scope — name them,
+                              and state the rule the apply route enforces. */}
                           {hasTxnViolation
-                            ? `Transaction control found in ${txnViolationScripts.length} script${txnViolationScripts.length === 1 ? "" : "s"}`
+                            ? `COMMIT or ROLLBACK found in ${txnViolationScripts
+                                .map((s) => `v${s.version}`)
+                                .join(", ")} — the run is already one transaction, so ` +
+                              "remove them from the SQL"
                             : "No transaction-control in SQL"}
                         </ChecklistItem>
                         {breakingCount > 0 ? (
@@ -2405,17 +2564,28 @@ export default function DeployPage() {
                             transaction · not undone by a rollback
                           </ChecklistItem>
                         )}
-                        {targetIsProduction && (
-                          <ChecklistItem ok={Boolean(approvedRun)}>
-                            {approvedRun
-                              ? `Approved by ${approvedRun.decided_by ?? "a second person"}`
-                              : pendingRun
-                                ? "Approval requested · waiting for a second person"
-                                : "Approval · not requested yet"}
-                          </ChecklistItem>
-                        )}
+                        {targetIsProduction &&
+                          (approvalError && !approvedRun ? (
+                            // "not requested yet" would be a reading of a list
+                            // this page never managed to read.
+                            <ChecklistItem info>Approval · could not be read</ChecklistItem>
+                          ) : (
+                            <ChecklistItem ok={Boolean(approvedRun)}>
+                              {approvedRun
+                                ? `Approved by ${approvedRun.decided_by ?? "a second person"}`
+                                : pendingRun
+                                  ? "Approval requested · waiting for a second person"
+                                  : "Approval · not requested yet"}
+                            </ChecklistItem>
+                          ))}
                         {preflightResult.needsInit ? (
-                          <ChecklistItem info>Ledger table will be created on first deploy</ChecklistItem>
+                          <ChecklistItem info>
+                            {/* The apply route creates it before BEGIN, so it is
+                                not covered by the run's rollback either. */}
+                            Ledger table will be created on first deploy — it is
+                            created before the transaction opens, so it stays even if
+                            the run fails
+                          </ChecklistItem>
                         ) : (
                           <ChecklistItem ok>Ledger table present · <span className="mono">script_patch</span></ChecklistItem>
                         )}
@@ -2463,7 +2633,7 @@ export default function DeployPage() {
 
       {/* ═══════════════════ STAGE 2 — RUN ═══════════════════ */}
       {stage === 2 && (
-        <section className="px-8 pb-12">
+        <section className="px-4 sm:px-8 pb-12">
           <div
             className="card p-5 mb-5 flex items-center gap-3 flex-wrap"
             style={{
@@ -2474,22 +2644,34 @@ export default function DeployPage() {
             <DeployIcon size={18} />
             <div className="flex-1 min-w-0">
               <div className="text-[14px] font-semibold">
+                {/* "nothing was applied" is a verdict, and on an unknown outcome
+                    it is the wrong one — it used to sit directly above an error
+                    saying the run may still have landed. */}
                 {isDeploying
                   ? runIsDryRun
                     ? "Rehearsing migrations…"
                     : "Applying migrations…"
-                  : allApplied
-                    ? "Run finished"
-                    : allRehearsed
-                      ? "Dry run finished — nothing was written"
-                      : runIsDryRun
-                        ? "Dry run halted"
-                        : "Run halted — nothing was applied"}
+                  : runOutcomeUnknown
+                    ? "Run outcome not known — check the target before retrying"
+                    : allApplied
+                      ? "Run finished"
+                      : allRehearsed
+                        ? "Dry run finished — nothing was written"
+                        : runIsDryRun
+                          ? "Dry run halted"
+                          : "Run halted — nothing was applied"}
               </div>
               <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                {/* The enum values are lifted out and committed before the
+                    transaction opens, so the unqualified promise is false for
+                    exactly this run — the same exception the gate above states. */}
                 {runIsDryRun
                   ? "Every migration really runs against the target, inside one transaction that always ends in ROLLBACK."
-                  : "Every migration runs inside one transaction. A failure rolls the whole run back — all of them or none."}
+                  : enumAdditions.length > 0
+                    ? "Every migration runs inside one transaction. A failure rolls " +
+                      "the whole run back — all of them or none, apart from the enum " +
+                      "values that were committed first."
+                    : "Every migration runs inside one transaction. A failure rolls the whole run back — all of them or none."}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2528,10 +2710,15 @@ export default function DeployPage() {
               const ran = cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : "";
               const subByStatus: Record<RunStatus, string> = {
                 queued: "queued · waiting",
+                // Only the pending list can produce this one; stage 2 renders
+                // the captured batch, and everything in it is in the run.
+                "not-in-run": "not in this run",
                 running: "running · in the run's transaction",
                 applied: `applied · committed with the run${ran}`,
                 rehearsed: `rehearsed · rolled back with the run${ran}`,
-                failed: `failed · the whole run was rolled back${cell.error ? ` · ${cell.error}` : ""}`,
+                // The row says what happened; the err-pre below says what
+                // Postgres said — one each, not both twice.
+                failed: "failed · the whole run was rolled back",
                 skipped: "skipped · the run rolled back before this one could commit",
                 unknown: "not known · the commit never reported back — read script_patch",
               };
@@ -2619,11 +2806,22 @@ export default function DeployPage() {
             >
               <AlertCircleIcon size={16} />
               <div className="flex-1 min-w-0">
-                <div className="text-[13.5px] font-semibold">Run did not complete.</div>
+                <div className="text-[13.5px] font-semibold">
+                  {runOutcomeUnknown ? "Run outcome not known." : "Run did not complete."}
+                </div>
                 <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
-                  The transaction rolled back, so the target is exactly as it was — including
-                  the migrations listed above the failure. Fix the script and run it again.
-                  The ledger has been re-read.
+                  {/* Only a response we actually read licenses the claim that
+                      nothing changed. "Fix the script" is gone too — a lock
+                      timeout and a duplicate version have no script to fix, and
+                      the server's own instruction is already in the card above. */}
+                  {runOutcomeUnknown
+                    ? "This page never saw the run finish, so it cannot say what the " +
+                      "target has now. Press Check database on Pre-flight and read the " +
+                      "ledger before you run this again."
+                    : "The run rolled back, so none of the migrations above are " +
+                      "applied. Anything that had to commit before the transaction " +
+                      "opened is still there — the ledger table on a first deploy, and " +
+                      "any enum value listed on Pre-flight. The ledger has been re-read."}
                 </div>
               </div>
               <button
@@ -2644,7 +2842,16 @@ export default function DeployPage() {
 
       {/* ═══════════════════ STAGE 3 — VERIFY ═══════════════════ */}
       {stage === 3 && (
-        <section className="px-8 pb-12">
+        <section className="px-4 sm:px-8 pb-12">
+          {/* The ledger re-read is the only thing that knows what the target
+              reports now. When it failed, its error belongs on this stage too —
+              until now it only ever rendered on Pre-flight. */}
+          {preflightError && (
+            <div className="banner mb-4">
+              <span className="ico"><AlertCircleIcon size={16} /></span>
+              <span>{preflightError}</span>
+            </div>
+          )}
           <div className="verify-hero">
             <div className="ring" />
             <div className="relative flex items-start gap-5 flex-wrap">
@@ -2658,17 +2865,27 @@ export default function DeployPage() {
                 <h2 className="text-[26px] font-semibold tracking-[-0.015em] mt-1">
                   Migrations applied to the target.
                 </h2>
-                <p className="text-[14px] mt-2" style={{ color: "var(--text-2)" }}>
-                  <span className="mono" style={{ color: "var(--text)" }}>{schema}</span> on{" "}
-                  <span className="mono" style={{ color: "var(--text)" }}>{activeConn?.name}</span>{" "}
-                  now reports{" "}
-                  <span className="mono" style={{ color: "var(--text)" }}>
-                    v{preflightResult?.currentVersion ?? targetVersion}
-                  </span>{" "}
-                  in its migration ledger.
-                </p>
+                {preflightResult ? (
+                  <p className="text-[14px] mt-2" style={{ color: "var(--text-2)" }}>
+                    <span className="mono" style={{ color: "var(--text)" }}>{schema}</span> on{" "}
+                    <span className="mono" style={{ color: "var(--text)" }}>{activeConn?.name}</span>{" "}
+                    now reports{" "}
+                    <span className="mono" style={{ color: "var(--text)" }}>
+                      {preflightResult.currentVersion
+                        ? `v${preflightResult.currentVersion}`
+                        : "no versions yet"}
+                    </span>{" "}
+                    in its migration ledger.
+                  </p>
+                ) : (
+                  <p className="text-[14px] mt-2" style={{ color: "var(--text-2)" }}>
+                    The deploy committed, but the ledger could not be read back
+                    afterwards — this page cannot confirm what the target now
+                    reports.
+                  </p>
+                )}
                 <div className="vline mt-4">
-                  <span className="vchip">{currentLabel}</span>
+                  <span className="vchip">{runFromVersion}</span>
                   <ChevronRightIcon size={16} />
                   <span className="vchip ok"><b>v{targetVersion}</b></span>
                   <span className="text-[12px] ml-2" style={{ color: "var(--text-3)" }}>
@@ -2687,7 +2904,7 @@ export default function DeployPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-5 mt-5">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
             <div className="card p-5">
               <div className="section-title mb-3">What was applied</div>
               <div className="space-y-1">
@@ -2721,15 +2938,17 @@ export default function DeployPage() {
         </section>
       )}
 
-      <footer className="px-8 pb-8 text-[12px]" style={{ color: "var(--text-3)" }}>
+      <footer className="px-4 sm:px-8 pb-8 text-[12px]" style={{ color: "var(--text-3)" }}>
         Schema Studio · Deploy (S5)
       </footer>
 
       {/* Toast */}
-      <div className={`toast${toastShow ? " show" : ""}`}>
-        <CheckIcon size={14} />
-        <span>{toastMsg}</span>
-      </div>
+      {toast && (
+        <div className="toast show" role="status" aria-live="polite">
+          {toast.kind === "ok" ? <CheckIcon size={14} /> : <AlertTriangleIcon size={14} />}
+          <span>{toast.msg}</span>
+        </div>
+      )}
     </div>
   );
 }
