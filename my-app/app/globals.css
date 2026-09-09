@@ -981,6 +981,11 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .audit-row { transition: background .12s ease; }
 .audit-row:last-child { border-bottom:none !important; }
 .audit-row:hover { background:var(--surface-2); }
+/* The row's real link. It carries the row's whole hit target for the keyboard,
+   so it must show focus even though it is styled as plain text. */
+.audit-row__link { text-decoration:none; border-radius:4px; }
+.audit-row__link:hover { text-decoration:underline; }
+.audit-row__link:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
 
 /* ===========================================================================
    Schema Visualizer (S8) — React Flow canvas + table nodes.

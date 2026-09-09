@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Pill, type PillTone } from "@/components/ui";
 import { CheckIcon, SearchIcon } from "@/components/ui/icons";
@@ -162,10 +163,17 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
             <tbody>
               {filtered.map((r) => {
                 const meta = statusMeta(r.status);
+                const href = `/drift?tab=detail&schema=${r.trackedSchemaId}`;
                 return (
                   <tr
                     key={r.id}
-                    onClick={() => router.push(`/drift?tab=detail&schema=${r.trackedSchemaId}`)}
+                    // The row click is a convenience for the mouse. The thing
+                    // that actually navigates is the link in the Schema cell,
+                    // because a <tr> cannot be focused, activated with Enter,
+                    // opened in a new tab, or announced as a link — and a row
+                    // that only responds to a mouse is a row a keyboard user
+                    // cannot open at all.
+                    onClick={() => router.push(href)}
                     className="cursor-pointer audit-row"
                     style={{ borderBottom: "1px solid var(--border)" }}
                   >
@@ -192,9 +200,21 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                       <span style={{ color: "var(--text-2)" }}>{r.summary ?? "—"}</span>
                     </Td>
                     <Td label="Schema">
-                      <span className="mono" style={{ color: "var(--text)" }}>
+                      <Link
+                        href={href}
+                        className="mono audit-row__link"
+                        style={{ color: "var(--text)" }}
+                        // The row already navigates; letting the click through
+                        // would ask the router for the same page twice.
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {r.schemaName}
-                      </span>
+                        <span className="sr-only">
+                          {` — open the drift detail for this check, ${meta.label.toLowerCase()} ${timeAgo(
+                            r.detectedAt
+                          )}`}
+                        </span>
+                      </Link>
                     </Td>
                     <Td label="Connection">
                       <span className="mono" style={{ color: "var(--text-3)" }}>
