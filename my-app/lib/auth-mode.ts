@@ -3,7 +3,7 @@
  *
  * This module is deliberately isomorphic — no "use client", no "use server", no
  * node-only imports — so the client guard (components/AuthGuard.tsx), the edge
- * middleware and the server route gate (lib/auth-guard.ts) all read the SAME
+ * proxy and the server route gate (lib/auth-guard.ts) all read the SAME
  * value. Before this existed the bypass was a hard-coded const inside a client
  * component, which meant the API routes were open whether or not the UI was.
  *
@@ -13,7 +13,7 @@
  *
  *     NEXT_PUBLIC_AUTH_BYPASS=false
  *
- * Everything needed for that flip is built: middleware, per-route role gates,
+ * Everything needed for that flip is built: the edge proxy, per-route role gates,
  * the `profiles` table and its bootstrap. The only outstanding prerequisites are
  * the four secrets (AZURE_AD_CLIENT_ID / _SECRET / _TENANT_ID, NEXTAUTH_SECRET).
  */

@@ -4,9 +4,13 @@ import { authConfig, authUsable } from "./auth.config";
 import { BYPASS_AUTH } from "./lib/auth-mode";
 
 /**
- * Edge middleware: the first line of defence for both pages and API routes.
+ * The edge proxy: the first line of defence for both pages and API routes.
  *
- * The project had no middleware at all, so the only thing standing between an
+ * Next.js used to call this file middleware.ts and now calls it proxy.ts —
+ * same hook, same position in the request path, renamed in Next 16. Nothing
+ * about what it does changed with the name.
+ *
+ * The project had no such file at all, so the only thing standing between an
  * anonymous request and the whole API was a client-side React guard — which a
  * route handler never runs. This closes that at the edge, before any handler is
  * reached.
@@ -17,7 +21,7 @@ import { BYPASS_AUTH } from "./lib/auth-mode";
  * in the node runtime. Both read the same BYPASS_AUTH switch.
  */
 
-type EdgeMiddleware = (request: NextRequest) => Response | Promise<Response>;
+type EdgeHandler = (request: NextRequest) => Response | Promise<Response>;
 
 /**
  * Built on first use rather than at import time. NextAuth needs NEXTAUTH_SECRET,
@@ -25,9 +29,9 @@ type EdgeMiddleware = (request: NextRequest) => Response | Promise<Response>;
  * path — which is the one path that is supposed to work without any auth
  * configuration at all.
  */
-let enforce: EdgeMiddleware | null = null;
+let enforce: EdgeHandler | null = null;
 
-function getEnforcer(): EdgeMiddleware {
+function getEnforcer(): EdgeHandler {
   if (!enforce) {
     enforce = NextAuth(authConfig).auth((request) => {
       if (request.auth) return NextResponse.next();
@@ -44,7 +48,7 @@ function getEnforcer(): EdgeMiddleware {
         request.nextUrl.pathname + request.nextUrl.search
       );
       return NextResponse.redirect(loginUrl);
-    }) as unknown as EdgeMiddleware;
+    }) as unknown as EdgeHandler;
   }
   return enforce;
 }
@@ -68,7 +72,7 @@ function notConfigured(request: NextRequest): Response {
   return NextResponse.redirect(loginUrl);
 }
 
-export default function middleware(request: NextRequest) {
+export default function proxy(request: NextRequest) {
   if (BYPASS_AUTH) return NextResponse.next();
   if (!authUsable) return notConfigured(request);
   return getEnforcer()(request);

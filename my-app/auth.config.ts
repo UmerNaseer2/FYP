@@ -4,13 +4,13 @@ import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 /**
  * The edge-safe half of the NextAuth configuration.
  *
- * middleware.ts runs on the edge runtime, where `pg` cannot load. So the config
- * is split: everything the middleware needs (providers, pages, the JWT shape)
+ * proxy.ts runs on the edge runtime, where `pg` cannot load. So the config
+ * is split: everything the edge proxy needs (providers, pages, the JWT shape)
  * lives here with no node-only imports, and the database-backed callbacks live
  * in auth.ts, which only ever runs in the node runtime.
  *
  * This is the standard NextAuth v5 split — without it, importing `auth` into
- * middleware pulls the Postgres driver into the edge bundle and the whole app
+ * the proxy pulls the Postgres driver into the edge bundle and the whole app
  * fails to build.
  */
 
@@ -42,7 +42,7 @@ export const secretConfigured = Boolean(process.env.NEXTAUTH_SECRET);
  * True when a real sign-in could actually complete: somewhere to sign in to,
  * and a secret to sign the resulting session with. When this is false the
  * NextAuth routes cannot run at all, and callers answer for them instead of
- * letting them throw — see app/api/auth/[...nextauth]/route.ts and middleware.
+ * letting them throw — see app/api/auth/[...nextauth]/route.ts and proxy.ts.
  */
 export const authUsable = entraConfigured && secretConfigured;
 
@@ -63,7 +63,7 @@ export const authConfig = {
   session: { strategy: "jwt" },
   callbacks: {
     /**
-     * Consulted by middleware for page requests. Roles are NOT checked here —
+     * Consulted by the edge proxy for page requests. Roles are NOT checked here —
      * the edge runtime cannot reach the database, so this only answers "is there
      * a session at all". Role enforcement happens in lib/auth-guard.ts, on the
      * node side, where the profile row is readable.

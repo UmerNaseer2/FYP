@@ -10,11 +10,11 @@ import { BYPASS_AUTH, roleAtLeast, toRole, type Role } from "@/lib/auth-mode";
  *
  * The bypass value used to be a hard-coded const in this file, which meant the
  * UI and the API routes could disagree about whether auth was on. It now comes
- * from lib/auth-mode, the same module the edge middleware and the server-side
+ * from lib/auth-mode, the same module the edge proxy and the server-side
  * route gates read, so one environment variable moves all three together.
  *
  * This guard is a convenience, not a security boundary — it only decides what
- * React renders. The real enforcement is middleware.ts (page requests) and
+ * React renders. The real enforcement is proxy.ts (page requests) and
  * lib/auth-guard.ts (API routes), both of which run before any of this.
  */
 export default function AuthGuard({
