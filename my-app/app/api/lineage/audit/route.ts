@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireViewer } from "@/lib/auth-guard";
-import { listDriftEvents, type DriftEventFeedItem } from "@/lib/lineage-db";
-
-/** One row in the audit feed (shape unchanged — now sourced from lib). */
-export type AuditEvent = DriftEventFeedItem;
+import { listDriftEvents } from "@/lib/lineage-db";
 
 /** Rows returned when no ?limit is given — the same default lib/lineage-db uses. */
 const DEFAULT_LIMIT = 200;

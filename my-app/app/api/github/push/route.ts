@@ -19,14 +19,6 @@ type PushBody = {
    */
   down_sql?: string;
   description?: string;
-  /**
-   * Replace an existing file at this version. Defaults to false: a published
-   * version is immutable, so a duplicate is rejected (409) rather than silently
-   * overwritten. The version floor is enforced client-side; this is the
-   * server-side backstop so a stale floor, a second tab/user, or a replayed
-   * request can never clobber a committed migration.
-   */
-  overwrite?: boolean;
 };
 
 type GitHubFileResponse = {
@@ -51,7 +43,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { database_name, schema_name, script_name, version, sql_content, down_sql, description, overwrite } = body;
+  const { database_name, schema_name, script_name, version, sql_content, down_sql, description } = body;
 
   if (!database_name || !schema_name || !script_name || !version || !sql_content) {
     return NextResponse.json(
@@ -79,26 +71,22 @@ export async function POST(req: NextRequest) {
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  // Check if the file already exists to get its SHA (required for updates).
-  // A missing file or a transient lookup failure both just mean "no SHA" — we
-  // then create the file fresh, so neither should abort the push.
-  let existingSha: string | undefined;
+  // Is this version already published? A missing file and a transient lookup
+  // failure both mean "no" — the push then creates the file fresh, so neither
+  // should abort it.
+  let alreadyPublished = false;
   try {
     const checkRes = await fetch(apiUrl, { headers });
-    if (checkRes.ok) {
-      const existing = (await checkRes.json()) as GitHubFileResponse;
-      existingSha = existing.sha;
-    }
+    if (checkRes.ok) alreadyPublished = true;
   } catch {
     // Network hiccup during the existence check — proceed as a new file.
   }
 
-  // A file already exists at this version. Versions are immutable, so refuse to
-  // overwrite a committed migration unless an explicit overwrite was requested.
-  // This is the authoritative guard: the client-side version floor can go stale
-  // (a second tab, another user, or a failed registry pull), so the server must
-  // be the one that never silently clobbers history.
-  if (existingSha && !overwrite) {
+  // A published version is immutable, full stop. This is the authoritative
+  // guard: the client-side version floor can go stale (a second tab, another
+  // user, or a failed registry pull), so the server has to be the one that
+  // never silently clobbers history.
+  if (alreadyPublished) {
     return NextResponse.json(
       {
         error:
@@ -161,7 +149,6 @@ export async function POST(req: NextRequest) {
     message: commitMessage,
     content: Buffer.from(sql_content).toString("base64"),
   };
-  if (existingSha) putBody.sha = existingSha;
 
   let putRes: Response;
   try {

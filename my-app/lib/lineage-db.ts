@@ -47,43 +47,7 @@ export type TrackedSchemaRow = {
   created_at: string;
 };
 
-export type SnapshotRow = {
-  id: number;
-  tracked_schema_id: number;
-  snapshot: SchemaSnapshot;
-  table_count: number;
-  label: string | null;
-  captured_at: string;
-};
-
-export type LineageMigrationRow = {
-  id: number;
-  tracked_schema_id: number;
-  seq: number;
-  name: string;
-  change_level: ChangeLevel;
-  version: string;
-  /** Reference to the SQL (e.g. a GitHub script path) — not the SQL itself. */
-  sql_ref: string | null;
-  /** The snapshot that represents the schema AFTER this migration. */
-  snapshot_id: number | null;
-  created_at: string;
-};
-
 export type DriftStatus = "in_sync" | "drifted" | "unreachable";
-
-export type DriftEventRow = {
-  id: number;
-  tracked_schema_id: number;
-  status: DriftStatus;
-  summary: string | null;
-  /** Compact delta counts (added/removed/changed) — for the audit feed. */
-  detail: unknown;
-  baseline_snapshot_id: number | null;
-  detected_at: string;
-  /** Set when a human marks this drift event reviewed (Phase 9). Null otherwise. */
-  acknowledged_at: string | null;
-};
 
 // ── Pure helpers ──────────────────────────────────────────────────────────
 

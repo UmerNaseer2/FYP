@@ -374,10 +374,7 @@ function definitionSignature(constraint: ConstraintSnapshot): string {
 // Column scoring
 // ============================================================================
 
-function getColumnState(
-  table: TableSnapshot,
-  column: ColumnSnapshot
-): ColumnConstraintState {
+function getColumnState(column: ColumnSnapshot): ColumnConstraintState {
   return {
     nullable: column.nullable,
     primaryKey: column.isPrimaryKey,
@@ -387,13 +384,11 @@ function getColumnState(
 }
 
 function columnConstraintSimilarity(
-  leftTable: TableSnapshot,
   leftColumn: ColumnSnapshot,
-  rightTable: TableSnapshot,
   rightColumn: ColumnSnapshot
 ): number {
-  const left = getColumnState(leftTable, leftColumn);
-  const right = getColumnState(rightTable, rightColumn);
+  const left = getColumnState(leftColumn);
+  const right = getColumnState(rightColumn);
   let points = 0;
 
   if (left.nullable === right.nullable)                                        points += WEIGHTS.columnConstraint.nullable;
@@ -881,7 +876,7 @@ function compareColumnPair(
   // cosmetic and should not drag down the overall match score.
   const name        = stringSimilarity(leftColumn.name, rightColumn.name) * WEIGHTS.column.name;
   const type        = typeScore(leftColumn.typeDisplay, rightColumn.typeDisplay);
-  const constraints = columnConstraintSimilarity(leftTable, leftColumn, rightTable, rightColumn) * WEIGHTS.column.constraints;
+  const constraints = columnConstraintSimilarity(leftColumn, rightColumn) * WEIGHTS.column.constraints;
   const order       = columnOrderSimilarity(leftTable, leftColumn, rightTable, rightColumn) * WEIGHTS.column.order;
 
   const changes: ColumnChange[] = [];
