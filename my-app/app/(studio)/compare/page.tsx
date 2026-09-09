@@ -235,6 +235,21 @@ function CompareScreenView({ query }: { query: string }) {
   // the same run being recorded twice when React re-runs this effect.
   const recorded = useRef<string | null>(null);
 
+  // The two run options are the only fields in the picker bar that change what
+  // the diff SAYS rather than which schemas it reads, and this is a plain GET
+  // form: ticking a box changes nothing until Compare is pressed. The report
+  // below meanwhile says "Untick Allow data loss to hold it back", so a reader
+  // who did exactly that watched the page keep insisting the drop was armed.
+  //
+  // null means "not touched since this comparison ran", which is not the same
+  // as false — the value that produced what is on screen can come from a saved
+  // set rather than from the query string, so it is read off `screen` and not
+  // re-derived here. Pressing Compare submits the form, which changes the
+  // query, which remounts this component with a fresh key — so these go back
+  // to null on their own and there is nothing to reset.
+  const [pendingDataLoss, setPendingDataLoss] = useState<boolean | null>(null);
+  const [pendingRowData, setPendingRowData] = useState<boolean | null>(null);
+
   // One run of the comparison. Everything it needs is in the query string, so
   // it is sent verbatim and the server decides what it means — two places
   // parsing "?targetConnection=3&targetConnection=7" would eventually disagree.
@@ -335,6 +350,12 @@ function CompareScreenView({ query }: { query: string }) {
   const productionTargets = outcomes.filter((outcome) =>
     isProduction(outcome.environment),
   );
+
+  // What the boxes show, versus what the comparison on screen was actually run
+  // with. They differ only while a tick is waiting for the next Compare.
+  const dataLossBox = pendingDataLoss ?? allowDataLoss;
+  const rowDataBox = pendingRowData ?? compareData;
+  const optionsPending = dataLossBox !== allowDataLoss || rowDataBox !== compareData;
 
   return (
     <div
@@ -459,30 +480,43 @@ function CompareScreenView({ query }: { query: string }) {
           <label
             className="flex items-center gap-2 text-[12.5px] cursor-pointer"
             style={{ color: "var(--text-2)" }}
-            title="DROP TABLE and DROP COLUMN are commented out unless this is ticked."
+            title="DROP TABLE and DROP COLUMN are commented out unless this is ticked. Takes effect on the next Compare."
           >
             <input
               type="checkbox"
               name="allowDataLoss"
               value="1"
-              defaultChecked={allowDataLoss}
+              checked={dataLossBox}
+              onChange={(e) => setPendingDataLoss(e.target.checked)}
             />
             Allow data loss
           </label>
           <label
             className="flex items-center gap-2 text-[12.5px] cursor-pointer"
             style={{ color: "var(--text-2)" }}
-            title="Also read the rows of every table and report which ones differ. Slower, and it reads table data rather than just the catalog."
+            title="Also read the rows of every table and report which ones differ. Slower, and it reads table data rather than just the catalog. Takes effect on the next Compare."
           >
             <input
               type="checkbox"
               name="compareData"
               value="1"
-              defaultChecked={compareData}
+              checked={rowDataBox}
+              onChange={(e) => setPendingRowData(e.target.checked)}
             />
             Compare row data
           </label>
           <span className="source-bar__spacer" />
+          {/* Said beside the button that applies it, because this is the moment
+              the reader is deciding whether anything more is needed. */}
+          {optionsPending && (
+            <span
+              className="text-[12px] flex items-center gap-1.5"
+              style={{ color: "var(--drift)" }}
+            >
+              <AlertTriangleIcon size={13} />
+              Not applied yet — press Compare.
+            </span>
+          )}
           <button type="submit" className="btn btn-primary">
             <CompareIcon size={14} />
             Compare

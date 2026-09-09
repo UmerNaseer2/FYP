@@ -813,13 +813,14 @@ function ExtraTableCard({
             {dropMode === "armed" ? (
               <>
                 Data loss is armed, so that statement is live in the script
-                below. Untick <b>Allow data loss</b> to hold it back.
+                below. Untick <b>Allow data loss</b> and press <b>Compare</b>{" "}
+                again to hold it back.
               </>
             ) : dropMode === "safe" ? (
               <>
                 That statement is commented out in the script below, so running
                 the script leaves this table alone. Tick <b>Allow data loss</b>{" "}
-                to arm it.
+                and press <b>Compare</b> again to arm it.
               </>
             ) : (
               <>
@@ -1274,7 +1275,7 @@ export function DiffReport({
                 : dropMode === "armed"
                   ? "Allow data loss is on, so those statements are live in the script below and the rows they remove cannot be recovered."
                   : dropMode === "safe"
-                    ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss to arm them."
+                    ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss and press Compare again to arm them."
                     : "Viewing this report changes nothing — open the comparison in Compare to generate that SQL."}
               {sides !== "expected-live" && dropMode === "safe" && droppedMatviews > 0 ? (
                 // A matview is rebuilt by CREATE MATERIALIZED VIEW IF NOT
