@@ -45,6 +45,7 @@ import {
   sequenceBoundsComparable,
   sequenceOptionsChangeSeverity,
   typeChangeSeverity,
+  typeSizeParams,
   viewOptionsClause,
 } from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
@@ -3381,6 +3382,12 @@ export type RollbackScript = {
    * as it was" two lines above an armed DROP COLUMN ... CASCADE.
    */
   dropsCreated: { tables: string[]; columns: string[]; objects: string[] };
+  /**
+   * Columns whose type the migration changed in a way no cast can undo, written
+   * "table.column: old → new". The down script still restores the type; these
+   * are the columns where it cannot restore the value.
+   */
+  truncatingTypeChanges: string[];
   /** True when the rollback restores the target exactly, data included. */
   lossless: boolean;
   /** Whether the forward migration this undoes had its drops armed. */
@@ -3410,6 +3417,88 @@ function createdObjectLabels(report: CompareReport): string[] {
     // Indexes and triggers on a brand-new table are not listed separately —
     // they go away with the table, which is already named in dropsCreated.
     for (const diff of match.objectDiffs) add(diff);
+  }
+  return labels;
+}
+
+/**
+ * Type changes that a cast can walk in one direction without losing anything.
+ *
+ * Each chain reads narrow-to-wide: every value of an earlier entry is
+ * representable in every later one, so casting forward along a chain keeps the
+ * value and casting back returns it unchanged. Chains only, no cross-links —
+ * anything not listed here is treated as lossy, which is the safe answer for a
+ * header that makes an absolute claim.
+ */
+const WIDENING_TYPE_CHAINS: string[][] = [
+  ["smallint", "integer", "bigint", "numeric"],
+  ["real", "double precision"],
+  // A date is midnight, so it survives the trip into a timestamp and back. The
+  // reverse is the defect this whole check exists for.
+  ["date", "timestamp without time zone"],
+  ["date", "timestamp with time zone"],
+  // bpchar pads with spaces, varchar and text keep them; casting back re-pads
+  // to the same stored value.
+  ["character", "character varying", "text"],
+];
+
+/**
+ * True when the FORWARD migration's change of a column's type keeps every value
+ * the target already held, so the rollback's cast back returns the original.
+ *
+ * The rollback undoes an ALTER COLUMN TYPE by casting the other way. That
+ * restores the type; it cannot restore the value, because the forward cast has
+ * already run and kept only what the new type could hold. timestamp → date is
+ * the plain case: the time of day is gone before the down script exists, and
+ * casting back to timestamp yields midnight. numeric(10,4) → numeric(10,2) is
+ * the quiet one — it rounds, and nothing errors.
+ *
+ * So this answers "is the forward cast widening", and anything it cannot prove
+ * is widening counts as lossy. A false negative costs a warning nobody needed;
+ * a false positive is the header telling the reader their data came back.
+ */
+function typeChangePreservesValues(fromType: string, toType: string): boolean {
+  const from = extractBaseType(fromType);
+  const to = extractBaseType(toType);
+
+  // Same base type: the only question left is the size/precision, which the
+  // compare engine already knows how to read.
+  if (from === to) return !isNarrowingType(fromType, toType);
+
+  // Different base types: widening only, and only along one chain. Losing the
+  // size parameters is deliberate — smallint → numeric(4,0) is not something
+  // this can prove, and it says so by returning false.
+  return WIDENING_TYPE_CHAINS.some((chain) => {
+    const fromIndex = chain.indexOf(from);
+    const toIndex = chain.indexOf(to);
+    return (
+      fromIndex !== -1 &&
+      toIndex > fromIndex &&
+      typeSizeParams(toType) === null
+    );
+  });
+}
+
+/**
+ * Every matched column whose type the forward migration changed in a way the
+ * rollback cannot undo, written "table.column: old → new".
+ *
+ * Read off the ORIGINAL report, so `right` is the target as it stood before the
+ * migration and `left` is what the migration changed it to.
+ */
+function truncatingTypeChangeLabels(report: CompareReport): string[] {
+  const labels: string[] = [];
+  for (const match of report.matchedTables) {
+    for (const column of match.columnMatches) {
+      const changedType = column.changes.some(
+        (change) => change.kind === "type" || change.kind === "size",
+      );
+      if (!changedType) continue;
+      const before = column.right.typeDisplay;
+      const after = column.left.typeDisplay;
+      if (typeChangePreservesValues(before, after)) continue;
+      labels.push(`${match.left.name}.${column.left.name}: ${before} → ${after}`);
+    }
   }
   return labels;
 }
@@ -3488,7 +3577,15 @@ export function generateRollback(
   // index the migration created restores the target exactly; dropping a table
   // or a column it created destroys whatever was written into it since.
   const destroyedCount = droppedTables.length + droppedColumns.length;
-  const lossless = restoredCount === 0 && destroyedCount === 0;
+  // A migration made purely of ALTER COLUMN TYPE drops nothing and creates
+  // nothing, so both counts above are zero and the header used to promise the
+  // target came back exactly as it was. It does not: the down script restores
+  // the type, never the values a truncating cast already threw away.
+  const truncatingTypeChanges = truncatingTypeChangeLabels(report);
+  const lossless =
+    restoredCount === 0 &&
+    destroyedCount === 0 &&
+    truncatingTypeChanges.length === 0;
 
   const warnings: string[] = [];
   if (restoredCount > 0 && forwardAllowedDataLoss) {
@@ -3517,6 +3614,15 @@ export function generateRollback(
         `written into ${destroyedCount === 1 ? "it" : "them"} since are lost.`,
     );
   }
+  if (truncatingTypeChanges.length > 0) {
+    const n = truncatingTypeChanges.length;
+    warnings.push(
+      `The rollback puts back the original type of ${n} column${n === 1 ? "" : "s"} ` +
+        `but not the values: the forward migration's cast could not be undone. ` +
+        `Restore ${n === 1 ? "it" : "them"} from a backup if the old values matter.`,
+    );
+  }
+
   const unconfirmed = reverseReport.possibleTableMatches.length;
   if (unconfirmed > 0) {
     warnings.push(
@@ -3534,6 +3640,7 @@ export function generateRollback(
     sourceSchema: `${report.left.database}.${report.left.schema}`,
     emptyOnRestore: { tables: emptyTables, columns: emptyColumns },
     dropsCreated,
+    truncatingTypeChanges,
     lossless,
     forwardAllowedDataLoss,
   };
@@ -3637,6 +3744,16 @@ export function renderRollbackScript(script: RollbackScript): string {
     if (created.columns.length > 0) {
       header.push(`--   columns:`, ...commentList(created.columns, "--     "));
     }
+  }
+
+  if (script.truncatingTypeChanges.length > 0) {
+    header.push(
+      `--`,
+      `-- TYPE RESTORED, VALUES NOT. The migration's cast on these columns could`,
+      `-- not be undone — the down script gives each column its old type back,`,
+      `-- holding whatever the cast left behind:`,
+      ...script.truncatingTypeChanges.map((label) => `--     ${label}`),
+    );
   }
 
   if (created.objects.length > 0) {

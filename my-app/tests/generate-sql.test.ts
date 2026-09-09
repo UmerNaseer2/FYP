@@ -3,6 +3,7 @@ import {
   generateMigration,
   generateRollback,
   renderMigrationScript,
+  renderRollbackScript,
   type MigrationOptions,
 } from "@/lib/generate-sql";
 import { containsTransactionControl } from "@/lib/sql-guard";
@@ -190,5 +191,60 @@ describe("generateRollback", () => {
     // The forward script would DROP COLUMN legacy; the rollback puts it back,
     // and must not fail when the drop was never armed.
     expect(text).toMatch(/ADD COLUMN IF NOT EXISTS/i);
+  });
+});
+
+/**
+ * A migration made only of ALTER COLUMN TYPE drops nothing and creates
+ * nothing, so the counts that decide `lossless` were both zero and the header
+ * promised the target came back "exactly as it was". It does not: the down
+ * script restores the type, never the values the forward cast threw away.
+ *
+ * The two cases below were checked against a live PostgreSQL before being
+ * written down. Inserting 2024-03-05 14:30:00 and 1.2345, casting down and
+ * back again, returns 2024-03-05 00:00:00 and 1.2300.
+ */
+describe("generateRollback — truncating type changes", () => {
+  /** Same table both sides, one column typed differently. */
+  function typeChange(sourceType: string, targetType: string) {
+    return generateRollback(
+      compareSchemas(
+        schema([table("reading", [column("value", { typeDisplay: sourceType })])]),
+        schema([table("reading", [column("value", { typeDisplay: targetType })])])
+      )
+    );
+  }
+
+  it("is not lossless when the forward cast drops the time of day", () => {
+    const rollback = typeChange("date", "timestamp without time zone");
+    expect(rollback.lossless).toBe(false);
+    expect(rollback.truncatingTypeChanges).toEqual([
+      "reading.value: timestamp without time zone → date",
+    ]);
+  });
+
+  it("is not lossless when the forward cast rounds away scale", () => {
+    const rollback = typeChange("numeric(10,2)", "numeric(10,4)");
+    expect(rollback.lossless).toBe(false);
+    expect(rollback.truncatingTypeChanges).toEqual([
+      "reading.value: numeric(10,4) → numeric(10,2)",
+    ]);
+  });
+
+  it("stays lossless when the forward cast only widens", () => {
+    const widened = typeChange("character varying(200)", "character varying(50)");
+    expect(widened.truncatingTypeChanges).toEqual([]);
+    expect(widened.lossless).toBe(true);
+
+    const promoted = typeChange("bigint", "integer");
+    expect(promoted.truncatingTypeChanges).toEqual([]);
+    expect(promoted.lossless).toBe(true);
+  });
+
+  it("names the columns in the header instead of claiming an exact restore", () => {
+    const sql = renderRollbackScript(typeChange("date", "timestamp without time zone"));
+    expect(sql).not.toMatch(/restores the target exactly as it was/);
+    expect(sql).toMatch(/TYPE RESTORED, VALUES NOT/);
+    expect(sql).toMatch(/reading\.value: timestamp without time zone → date/);
   });
 });
