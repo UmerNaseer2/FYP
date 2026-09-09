@@ -628,6 +628,21 @@ export default function ConnectionsPage() {
   const tlsOn = sslModeUsesTls(form.sslMode);
   const sslChoice = SSL_CHOICES.find((c) => c.mode === form.sslMode) ?? SSL_CHOICES[0];
 
+  /**
+   * Nothing has been saved yet, so there is nothing to summarise or filter.
+   *
+   * This screen used to open on four counter tiles reading 0, 0, — , — above
+   * seven filter pills all reading 0, above a table of eight column headings
+   * with one line of text under them. That is a dashboard reporting that
+   * everything is at zero, which is a different message from "you have not set
+   * this up yet" — and the second one is the true one. On a first run the page
+   * keeps the heading, the explanation and the button, and drops the rest.
+   *
+   * Loading counts as first-run for the same reason: the counters would be
+   * showing zeros they have not read yet.
+   */
+  const isFirstRun = !loadError && connections.length === 0;
+
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
       {/* ——— Page header ——— */}
@@ -647,6 +662,7 @@ export default function ConnectionsPage() {
               <PlusIcon size={14} />
               Add connection
             </button>
+            {!isFirstRun && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <SummaryTile label="Total" value={String(connections.length)} />
               <SummaryTile
@@ -680,11 +696,13 @@ export default function ConnectionsPage() {
                 unit={avgLatency === null ? undefined : "ms"}
               />
             </div>
+            )}
           </div>
         </div>
       </section>
 
       {/* ——— Filters ——— */}
+      {!isFirstRun && (
       <section className="px-8 pt-6 pb-3 flex items-center gap-1.5 flex-wrap">
         <FilterPill active={filter === "all"} onClick={() => setFilter("all")} count={connections.length}>
           All
@@ -722,6 +740,7 @@ export default function ConnectionsPage() {
           Group by environment
         </label>
       </section>
+      )}
 
       {/* One nudge, only while something is genuinely unlabelled. An unlabelled
           target is the state where Compare and Deploy cannot warn about prod. */}
@@ -750,6 +769,9 @@ export default function ConnectionsPage() {
               reachable instead of being clipped by the card. */}
           <div className="overflow-x-auto">
           <table className="conns responsive-table text-[13px]">
+            {/* Eight column headings over one line of "none yet" label nothing.
+                They come back the moment there is a row to head. */}
+            {!isFirstRun && (
             <thead>
               <tr>
                 <th>Name</th>
@@ -762,6 +784,7 @@ export default function ConnectionsPage() {
                 <th style={{ textAlign: "right", width: 210 }}>Actions</th>
               </tr>
             </thead>
+            )}
             <tbody>
               {loading && (
                 <tr>
@@ -801,14 +824,26 @@ export default function ConnectionsPage() {
                     <div className="flex flex-col items-center gap-3">
                       <div style={{ color: "var(--text-3)" }}>
                         {connections.length === 0
-                          ? "No connections yet. Add your first PostgreSQL server."
+                          ? "No connections yet."
                           : "No connections match this filter."}
                       </div>
                       {connections.length === 0 && (
-                        <button className="btn btn-secondary btn-sm" onClick={openAdd}>
-                          <PlusIcon size={14} />
-                          Add connection
-                        </button>
+                        <>
+                          {/* Where the reader goes next, not just what is
+                              missing. This is the first screen of the app with
+                              nothing on it, and every other one — Compare,
+                              Drift, Deploy — needs a connection before it can
+                              show anything at all. */}
+                          <div className="help max-w-[46ch]">
+                            A connection is one PostgreSQL server this app can reach. Compare,
+                            Drift and Deploy all read through them, so this is the first thing
+                            to set up.
+                          </div>
+                          <button className="btn btn-primary btn-sm" onClick={openAdd}>
+                            <PlusIcon size={14} />
+                            Add your first connection
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>
