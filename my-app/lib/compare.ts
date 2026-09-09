@@ -528,6 +528,20 @@ export function nullabilityChangeSeverity(sourceNullable: boolean): ChangeSeveri
 }
 
 /**
+ * Changing a column's collation. Always breaking.
+ *
+ * PostgreSQL has no way to change one in place: the column is re-stated with
+ * `ALTER COLUMN ... TYPE <same type> COLLATE <new>`, which rewrites the table
+ * and rebuilds every index over that column. Collation decides ordering and
+ * equality, so under a nondeterministic collation it also changes which values
+ * a UNIQUE constraint treats as duplicates — a constraint that held before the
+ * change can be impossible to re-create after it.
+ */
+export function collationChangeSeverity(): ChangeSeverity {
+  return "breaking";
+}
+
+/**
  * Changing how a column generates its own values — serial, identity, or
  * neither. ADD GENERATED … AS IDENTITY is refused unless the column is already
  * NOT NULL, and taking an identity away breaks every insert that relied on it
@@ -783,6 +797,22 @@ function compareColumnPair(
       kind: "nullability",
       severity: nullabilityChangeSeverity(leftColumn.nullable),
       message: `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`,
+    });
+  }
+  // Collation, only when BOTH snapshots recorded it. `undefined` means the
+  // snapshot predates this field, and reading that as "the type default" would
+  // report every collated column in the other schema as newly collated — and
+  // have the generator strip a collation the target legitimately has.
+  if (
+    leftColumn.collation !== undefined &&
+    rightColumn.collation !== undefined &&
+    leftColumn.collation !== rightColumn.collation
+  ) {
+    changes.push({
+      kind: "collation",
+      severity: collationChangeSeverity(),
+      // left→right, matching the nullability and type wording in this list.
+      message: `Collation changed from ${leftColumn.collation ?? "the type default"} to ${rightColumn.collation ?? "the type default"}`,
     });
   }
   // Computed columns first, because a column that gains or loses a GENERATED

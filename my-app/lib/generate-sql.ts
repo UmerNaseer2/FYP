@@ -31,6 +31,7 @@ import {
   domainAddedChecks,
   domainNotNullTightens,
   extractBaseType,
+  collationChangeSeverity,
   generatedChangeSeverity,
   isNarrowingType,
   nullabilityChangeSeverity,
@@ -183,8 +184,21 @@ function serialTypeFor(typeDisplay: string): string | null {
 // harmless — both hand out numbers — but an identity column has no row in
 // pg_attrdef, so the table this built compared as "default removed" against the
 // very source it was copied from, forever, and no migration could settle it.
+/**
+ * ` COLLATE "x"` for a column that carries one, or "" for a column on its type
+ * default — and also for a snapshot taken before collation was recorded, where
+ * the field is undefined and there is nothing honest to write.
+ *
+ * It goes immediately after the type everywhere it appears, which is the only
+ * position the grammar allows in both CREATE TABLE and ALTER COLUMN ... TYPE.
+ */
+function collateSuffix(col: ColumnSnapshot): string {
+  return col.collation ? ` COLLATE ${col.collation}` : "";
+}
+
 function buildColumnDef(col: ColumnSnapshot): string {
-  // An IDENTITY column in the source stays an IDENTITY column.
+  // An IDENTITY column in the source stays an IDENTITY column. Identity is
+  // restricted to integer types, which have no collation, so none is written.
   if (col.identity) {
     const notNull = col.nullable ? "" : " NOT NULL";
     return `${q(col.name)} ${col.typeDisplay} GENERATED ${col.identity} AS IDENTITY${notNull}`;
@@ -201,7 +215,7 @@ function buildColumnDef(col: ColumnSnapshot): string {
     return `${q(col.name)} ${serialType}${col.nullable ? "" : " NOT NULL"}`;
   }
 
-  let def = `${q(col.name)} ${col.typeDisplay}`;
+  let def = `${q(col.name)} ${col.typeDisplay}${collateSuffix(col)}`;
   // A computed column carries its expression instead of a default, never as
   // well as one — writing DEFAULT (price * qty) is what PostgreSQL refuses with
   // "cannot use column reference in DEFAULT expression".
@@ -1528,11 +1542,49 @@ function alterStatementsForMatch(
         colMatch.right.typeDisplay
       );
 
+      // ALTER COLUMN ... TYPE resets the column to the new type's DEFAULT
+      // collation whenever COLLATE is omitted, so an ordinary widening used to
+      // silently strip a collation the target already had. Restating the
+      // source's is what makes the column match the source it is being synced
+      // to. The grammar is TYPE <type> [COLLATE ...] [USING ...], in that order.
       stmts.push({
-        sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} TYPE ${colMatch.left.typeDisplay}${usingSuffix};`,
+        sql:
+          `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} TYPE ` +
+          `${colMatch.left.typeDisplay}${collateSuffix(colMatch.left)}${usingSuffix};`,
         description,
         kind: "ALTER_COLUMN_TYPE",
         severity,
+        tableName: tName,
+        destructive: false,
+      });
+    } else if (
+      // Same type, different collation. There is no SET COLLATE in PostgreSQL:
+      // the only way to change one is to re-state the type it already has and
+      // name the collation beside it. Skipped when either side never recorded
+      // one, where `undefined` means "unknown" and not "the type default".
+      colMatch.left.collation !== undefined &&
+      colMatch.right.collation !== undefined &&
+      colMatch.left.collation !== colMatch.right.collation
+    ) {
+      // Going BACK to the type default still has to be written out — omitting
+      // COLLATE on a column that has one leaves that column exactly as it is.
+      // pg_catalog is qualified here because "default" is also a perfectly
+      // legal name for a collation somebody created in the target schema.
+      const clause = colMatch.left.collation
+        ? ` COLLATE ${colMatch.left.collation}`
+        : ` COLLATE pg_catalog."default"`;
+      stmts.push({
+        sql:
+          `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} TYPE ` +
+          `${colMatch.left.typeDisplay}${clause};`,
+        description:
+          `Change collation of "${colName}" in "${tName}": ` +
+          `${colMatch.right.collation ?? "type default"} → ` +
+          `${colMatch.left.collation ?? "type default"} — WARNING: rewrites the ` +
+          "table and rebuilds every index on this column, and changes how its " +
+          "values sort and compare",
+        kind: "ALTER_COLUMN_TYPE",
+        severity: collationChangeSeverity(),
         tableName: tName,
         destructive: false,
       });

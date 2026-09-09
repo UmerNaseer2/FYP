@@ -68,6 +68,7 @@ export type ColumnChangeKind =
   | "type"
   | "size"
   | "nullability"
+  | "collation"
   | "generated"
   | "computed"
   | "default"

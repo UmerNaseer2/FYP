@@ -218,6 +218,21 @@ export type ColumnSnapshot = {
    * identity rather than claiming there is none.
    */
   identity?: "ALWAYS" | "BY DEFAULT" | null;
+  /**
+   * The column's own collation, ready to go straight after the type in DDL —
+   * `"C"`, `"und-x-icu"`, `"ci"` — or null when it uses its type's default.
+   *
+   * format_type() renders the TYPE and nothing else, so a collation is invisible
+   * in typeDisplay: `email text COLLATE "C"` and plain `email text` compared as
+   * an exact match, and a CREATE TABLE written from the first produced the
+   * second. Collation decides ordering and equality, so under a nondeterministic
+   * one that also changes which rows a UNIQUE constraint will accept.
+   *
+   * Optional: a snapshot stored before this field existed says nothing about
+   * collation rather than claiming every column is on its type default — which
+   * would make the generator strip a collation the target legitimately has.
+   */
+  collation?: string | null;
   isPrimaryKey: boolean;
   uniqueConstraintNames: string[];
   foreignKeyConstraintNames: string[];
@@ -367,6 +382,28 @@ const UNQUOTED_ROLE_SPECS = new Set([
   "current_user",
   "session_user",
 ]);
+
+/**
+ * A column's collation as it goes back into DDL, or null for the type default.
+ *
+ * pg_catalog is always on the search_path, so its collations are written bare
+ * ("C", "und-x-icu") the way the type names beside them are. A collation in the
+ * schema being captured is stripped of its qualifier for the same reason
+ * typeDisplay is: `dev."ci"` and `staging."ci"` are the same collation seen from
+ * two schemas, and leaving the qualifier on would report a difference that isn't
+ * one — and pin the generated DDL to the source schema.
+ */
+function formatCollation(
+  collationSchema: string | null,
+  collationName: string | null,
+  schemaName: string
+): string | null {
+  if (collationName === null) return null;
+  const quoted = `"${collationName.replace(/"/g, '""')}"`;
+  if (collationSchema === null || collationSchema === "pg_catalog") return quoted;
+  const qualified = `"${collationSchema.replace(/"/g, '""')}"."${collationName.replace(/"/g, '""')}"`;
+  return stripSchemaFromExpr(qualified, schemaName) ?? qualified;
+}
 
 function quoteRole(role: string): string {
   if (UNQUOTED_ROLE_SPECS.has(role.toLowerCase())) {
@@ -773,6 +810,15 @@ export async function fetchSchemaSnapshot(
     identity: string | null;
     /** pg_attribute.attgenerated: 's' STORED, 'v' VIRTUAL, '' not generated. */
     generated: string | null;
+    /**
+     * information_schema reports these only when the column carries a collation
+     * of its OWN — both are null for a non-collatable type and for a column
+     * left on its type's default, which are the two cases that need no COLLATE
+     * clause. That is exactly the question being asked, so they are read from
+     * there rather than diffed out of pg_attribute by hand.
+     */
+    collation_schema: string | null;
+    collation_name: string | null;
   };
 
   type IndexRow = {
@@ -904,7 +950,9 @@ export async function fetchSchemaSnapshot(
            (c.is_nullable = 'YES') AS is_nullable,
            pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
            a.attidentity AS identity,
-           a.attgenerated AS generated
+           a.attgenerated AS generated,
+           c.collation_schema,
+           c.collation_name
          FROM information_schema.columns c
          JOIN pg_namespace n
            ON n.nspname = c.table_schema
@@ -1413,6 +1461,7 @@ export async function fetchSchemaSnapshot(
             : { storage: generatedStorage, expression: columnExpression ?? "" },
         identity:
           row.identity === "a" ? "ALWAYS" : row.identity === "d" ? "BY DEFAULT" : null,
+        collation: formatCollation(row.collation_schema, row.collation_name, schemaName),
         isPrimaryKey: false,
         uniqueConstraintNames: [],
         foreignKeyConstraintNames: [],
