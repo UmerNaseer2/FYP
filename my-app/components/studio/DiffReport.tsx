@@ -231,8 +231,14 @@ function pickKinds(diffs: ObjectDiff[], kinds: ObjectKind[]): ObjectDiff[] {
 type Tally = { adds: number; chgs: number; rems: number };
 
 function matchTally(match: TableMatch): Tally {
-  const changedCols = match.columnMatches.filter((c) => c.changes.length > 0).length;
-  const renamedCols = match.columnMatches.filter((c) => !c.exact).length;
+  // One test, not two. A column can be renamed AND have its type or nullability
+  // changed; it is still one column and one card row, and counting it in a
+  // "changed" list and a "renamed" list made the chips read ~2 for it. This is
+  // the same test compare-summary.ts uses for the Columns row of the matrix, so
+  // the chips and the matrix now agree by construction.
+  const changedCols = match.columnMatches.filter(
+    (c) => c.changes.length > 0 || !c.exact,
+  ).length;
   const addedConstraints = match.constraintDiffs.filter((d) => d.status === "onlyA").length;
   const droppedConstraints = match.constraintDiffs.filter((d) => d.status === "onlyB").length;
   const changedConstraints = match.constraintDiffs.filter(
@@ -249,7 +255,6 @@ function matchTally(match: TableMatch): Tally {
       objects.filter((d) => d.status === "onlyA").length,
     chgs:
       changedCols +
-      renamedCols +
       changedConstraints +
       objects.filter((d) => d.status === "changedDefinition").length,
     rems:
@@ -944,7 +949,13 @@ export function tallyDelta(report: CompareReport): {
 } {
   let adds = report.tablesOnlyInA.length;
   let rems = report.tablesOnlyInB.length;
-  let chgs = report.possibleTableMatches.length;
+  // Rename suggestions are deliberately NOT counted. A suggestion means the
+  // matcher saw two unmatched tables that might be the same one — but it did
+  // not accept the pairing, so both tables are still in the only-in-A and
+  // only-in-B lists above and the migration still emits a CREATE and a DROP.
+  // Adding the suggestion turned one suspected rename into three headline
+  // changes above a script holding two statements.
+  let chgs = 0;
 
   for (const match of report.matchedTables) {
     if (!match.hasChanges) continue;

@@ -138,6 +138,12 @@ export function documentToMarkdown(document: DiffDocument): string {
       `${totals.dropped} dropped`,
     ];
     if (totals.renamed > 0) bits.push(`${totals.renamed} renamed`);
+    // Suggestions are rows in the document, so they are inside totals.changes.
+    // Leaving them out of this breakdown made the headline fail to add up:
+    // "13 changes — 5 added, 3 changed, 4 dropped".
+    if (totals.renameSuggestions > 0) {
+      bits.push(`${totals.renameSuggestions} rename suggested`);
+    }
     out.push(`**${totals.changes} change${totals.changes === 1 ? "" : "s"}** — ${bits.join(", ")}.`);
     if (totals.breaking > 0) {
       out.push("");
