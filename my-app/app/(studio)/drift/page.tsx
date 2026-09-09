@@ -532,7 +532,7 @@ function DetailTab({
             {/* A stored snapshot can predate a whole object category, and the
                 matrix is the only place that says so out loud — which matters
                 more here than on /compare, where both sides are live. */}
-            <SummaryMatrix report={view.report} />
+            <SummaryMatrix report={view.report} sides="expected-live" />
             {/* "expected-live" because this page's two sides are the tracked
                 baseline and the live database, not a source and a target — it
                 flips every before/after pair so a changed value reads what it

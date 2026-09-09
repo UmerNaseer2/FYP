@@ -1,5 +1,6 @@
 import type { CompareReport } from "@/lib/compare-types";
 import { summaryRows } from "@/lib/compare-summary";
+import type { ReportSides } from "@/components/studio/DiffReport";
 import { ChevronDownIcon } from "@/components/ui/icons";
 
 // ---------------------------------------------------------------------------
@@ -29,8 +30,20 @@ function Count({ n, tone }: { n: number; tone: "sync" | "add" | "rem" | "chg" })
   return <td className={`matrix-n tone-${tone}`}>{n}</td>;
 }
 
-export function SummaryMatrix({ report }: { report: CompareReport }) {
+export function SummaryMatrix({
+  report,
+  sides = "source-target",
+}: {
+  report: CompareReport;
+  sides?: ReportSides;
+}) {
   const rows = summaryRows(report);
+  // The compare engine only knows "left" and "right". /compare's two sides are
+  // a source and a target, so left-only is work the migration will do; /drift's
+  // are the tracked baseline and the live database, so the SAME column is a
+  // record of something already gone. Column headings saying "created" and
+  // "dropped" on /drift named the opposite of what happened.
+  const drift = sides === "expected-live";
   // Split by WHY, not just by whether. A category counted on matched tables is
   // skipped when nothing matched, and telling that reader their snapshot is too
   // old is simply false — it fires on a populated source against an empty
@@ -67,10 +80,12 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
                 <th scope="col">Object</th>
                 <th scope="col">In sync</th>
                 <th scope="col">
-                  Only in source<span className="sub">created</span>
+                  {drift ? "Only in the baseline" : "Only in source"}
+                  <span className="sub">{drift ? "gone from live" : "created"}</span>
                 </th>
                 <th scope="col">
-                  Only in target<span className="sub">dropped</span>
+                  {drift ? "Only in the live database" : "Only in target"}
+                  <span className="sub">{drift ? "added since" : "dropped"}</span>
                 </th>
                 <th scope="col">Changed</th>
               </tr>
@@ -110,18 +125,24 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
         <div className="help">
           Columns, constraints, indexes, triggers, row security and partitioning
           are counted on tables that exist on both sides. On a table that exists
-          on one side only they are created or dropped with the table itself, so
-          counting them here would report the same work twice — the card for
-          that table lists them.
+          on one side only they{" "}
+          {drift ? "arrived or went with the table" : "are created or dropped with the table itself"}
+          , so counting them here would report the same thing twice — the card
+          for that table lists them.
           {unmatched.length > 0 && (
             <>
               {" "}
               <b style={{ color: "var(--text-2)" }}>
                 {unmatched.join(", ") + " have no matched tables to be counted on"}
               </b>
-              {" — they are counted per table pair, and no table exists on both " +
-                "sides. Anything on a table that exists on one side only is created " +
-                "or dropped with the table, and the migration below writes it."}
+              {drift
+                ? " — they are counted per table pair, and no table exists on " +
+                  "both sides. Anything on a table that exists on one side only " +
+                  "arrived or went with the table, and that table's card lists it."
+                : " — they are counted per table pair, and no table exists on " +
+                  "both sides. Anything on a table that exists on one side only " +
+                  "is created or dropped with the table, and the migration below " +
+                  "writes it."}
             </>
           )}
           {manual > 0 && (
@@ -134,8 +155,11 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
               </b>
               {" — PostgreSQL has no statement that makes the change (" +
                 manualLabels.join(", ") +
-                "), so the script writes a note saying what has to be done and " +
-                "runs nothing for it."}
+                (drift
+                  ? "), so undoing it cannot be scripted either — it has to be " +
+                    "done by hand."
+                  : "), so the script writes a note saying what has to be done " +
+                    "and runs nothing for it.")}
             </>
           )}
           {stale.length > 0 && (

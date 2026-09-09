@@ -82,7 +82,7 @@ export type ReportSides = "source-target" | "expected-live";
 
 /** What each side is called on screen, so one component can serve both pages. */
 const SIDE_WORDS: Record<ReportSides, { left: string; right: string }> = {
-  "source-target": { left: "source", right: "target" },
+  "source-target": { left: "the source", right: "the target" },
   "expected-live": { left: "the baseline", right: "the live database" },
 };
 
@@ -229,7 +229,30 @@ function objectKindOf(diff: ObjectDiff): DiffKind {
  * never a severity: the grade comes from objectDiffSeverity, which is the same
  * function the SQL generator's statements are graded by.
  */
-function objectNote(diff: ObjectDiff): string {
+/**
+ * Which side of a two-sided value goes first, in the direction this page reads.
+ *
+ * /compare reads right → left (what the target has now, then what the script
+ * makes it); /drift reads left → right (what the baseline says, then what
+ * somebody changed it to). Same two values, opposite order, so a reader of
+ * either page gets before-then-after rather than a pair to work out.
+ */
+function sideValues(diff: ObjectDiff, sides: ReportSides): string {
+  const words = SIDE_WORDS[sides];
+  const left = `${diff.leftDefinition ?? "?"} in ${words.left}`;
+  const right = `${diff.rightDefinition ?? "?"} in ${words.right}`;
+  return sides === "expected-live" ? `${left}, ${right}` : `${right}, ${left}`;
+}
+
+function objectNote(diff: ObjectDiff, sides: ReportSides): string {
+  // /drift is a record of what already happened; /compare is a plan for what
+  // will. The compare engine has one answer for both, so the same "only in A"
+  // bucket that means "the migration creates this" on /compare means "this is
+  // in the tracked baseline and somebody dropped it from the live database"
+  // here. Printing "created" on /drift tells the reader the opposite of the
+  // truth, which is worse than printing nothing.
+  const drift = sides === "expected-live";
+
   if (diff.kind === "EXTENSION" && diff.status === "changedDefinition") {
     // The version each side is on is the whole content of this line, so print
     // both rather than the word "changed". Whether ALTER EXTENSION can get from
@@ -237,9 +260,8 @@ function objectNote(diff: ObjectDiff): string {
     // same answer the generator gates its statement on. Ahead of the general
     // by-hand line below because that one says "replaced", and an extension
     // that cannot be updated is not replaced by anything.
-    const versions =
-      `${diff.rightDefinition ?? "?"} in the target, ` +
-      `${diff.leftDefinition ?? "?"} in the source`;
+    const versions = sideValues(diff, sides);
+    if (drift) return versions;
     return diff.needsManualWork === true
       ? `${versions} — no update path, has to be moved by hand`
       : `${versions} — updated`;
@@ -248,14 +270,28 @@ function objectNote(diff: ObjectDiff): string {
     // Which way the access moved is the whole point of this line — "definition
     // changed" over a REVOKE tells the reader nothing they came here for. Read
     // off the grade the compare engine already decided (breaking there means
-    // the target loses something) rather than re-comparing the two definitions
-    // here, which is how the report and the script come to disagree.
+    // the right-hand side loses something) rather than re-comparing the two
+    // definitions here, which is how the report and the script come to
+    // disagree.
     if (diff.status === "changedDefinition") {
-      return objectDiffSeverity(diff) === "breaking"
+      const rightLoses = objectDiffSeverity(diff) === "breaking";
+      if (drift) {
+        // A sync can only take access away from the live database when the
+        // live database has access the baseline does not, so the same grade
+        // states a fact about now instead of a plan for later.
+        return rightLoses
+          ? "access changed — the live database grants more than the baseline"
+          : "access changed — the live database grants less than the baseline";
+      }
+      return rightLoses
         ? "access changed — the target loses some"
         : "access changed — the target only gains";
     }
-    if (diff.status === "onlyA") return "only in source — granted";
+    if (diff.status === "onlyA") {
+      return drift
+        ? "granted in the baseline — gone from the live database"
+        : "only in source — granted";
+    }
   }
   // Set by the compare engine wherever no statement can carry the change. Read
   // rather than re-decided so this line and the generator's MANUAL note come
@@ -263,12 +299,38 @@ function objectNote(diff: ObjectDiff): string {
   // create used to be drawn as "only in source — created" while the script
   // could do nothing but describe it.
   if (diff.needsManualWork === true) {
-    return diff.status === "onlyA"
-      ? "only in source — has to be created by hand"
-      : "definition changed — has to be replaced by hand";
+    if (diff.status === "onlyA") {
+      return drift
+        ? "in the baseline — gone from the live database, no automatic way back"
+        : "only in source — has to be created by hand";
+    }
+    return "definition changed — has to be replaced by hand";
   }
-  if (diff.status === "onlyA") return "only in source — created";
-  if (diff.status === "onlyB") return "only in target — dropped";
+  if (diff.status === "onlyA") {
+    return drift
+      ? "in the baseline — gone from the live database"
+      : "only in source — created";
+  }
+  if (diff.status === "onlyB") {
+    return drift
+      ? "only in the live database — added since the baseline"
+      : "only in target — dropped";
+  }
+  if (diff.kind === "ROW SECURITY" || diff.kind === "PARTITIONING") {
+    // Which way the switch moves is the entire content of these lines.
+    // "definition changed", over the setting that decides whether the table
+    // returns any rows at all — or over the difference between a plain table
+    // and a partitioned one, which no ALTER can carry — tells the reader
+    // nothing they came here for.
+    return sideValues(diff, sides);
+  }
+  if (drift) {
+    // Every remaining line below describes HOW the generated migration would
+    // carry the change: dropped and recreated, replaced in place. /drift
+    // renders no migration, so naming statements this page will never write
+    // is noise at best and a promise at worst.
+    return "definition changed";
+  }
   if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
     // Whether a drop is needed is the compare engine's call, not this file's —
     // re-deciding it here is how a report comes to describe a migration the
@@ -286,20 +348,9 @@ function objectNote(diff: ObjectDiff): string {
   // again. Said here rather than falling through to "replaced", which reads as
   // if one statement carried it.
   if (diff.kind === "TRIGGER") return "definition changed — dropped and recreated";
-  if (diff.kind === "ROW SECURITY") {
-    // Which way the switch moves is the entire content of this line. "definition
-    // changed", over the setting that decides whether the table returns any rows
-    // at all, tells the reader nothing they came here for.
-    return `${diff.rightDefinition ?? "?"} in the target, ${diff.leftDefinition ?? "?"} in the source`;
-  }
   // ALTER POLICY can move the roles and the expressions but not the command the
   // policy applies to, so the generator drops it and writes it again.
   if (diff.kind === "POLICY") return "rule changed — dropped and recreated";
-  if (diff.kind === "PARTITIONING") {
-    // No ALTER turns a plain table into a partitioned one or moves a partition
-    // to a different parent, so saying what each side is beats saying "changed".
-    return `${diff.rightDefinition ?? "?"} in the target, ${diff.leftDefinition ?? "?"} in the source`;
-  }
   return "definition changed — replaced";
 }
 
@@ -314,9 +365,11 @@ function objectNote(diff: ObjectDiff): string {
 function ObjectLines({
   label,
   diffs,
+  sides,
 }: {
   label: string;
   diffs: ObjectDiff[];
+  sides: ReportSides;
 }) {
   if (diffs.length === 0) return null;
   return (
@@ -338,7 +391,7 @@ function ObjectLines({
               <span className="muted">on {diff.table} </span>
             )}
             <span className={severity === "breaking" ? "chg-break" : "muted"}>
-              · {objectNote(diff)}
+              · {objectNote(diff, sides)}
               {severity === "breaking" ? " · breaking" : ""}
             </span>
           </DiffLine>
@@ -484,15 +537,22 @@ function ChevronDown() {
 // ---------------------------------------------------------------------------
 
 /**
- * A table that exists only in the source — the migration CREATEs it in target.
+ * A table that exists only on the left-hand side of the report.
  *
- * It lists everything that gets created ALONGSIDE the table, not just its
+ * On /compare that is a table the migration CREATEs in the target, so the card
+ * is headed "new". On /drift the left-hand side is the tracked baseline, so
+ * the same bucket is a table that HAS BEEN DROPPED from the live database —
+ * and this card used to head it with a green "new" pill and a list of columns
+ * marked "added", which is the exact opposite of what happened.
+ *
+ * Either way it lists everything that belongs to the table, not just its
  * columns: the card used to show columns, the primary key and foreign keys and
  * stop there, so a new table arriving with four indexes, a trigger and a couple
  * of CHECK constraints reported "+5" and showed five column lines while the
  * script below it ran a dozen statements.
  */
-function NewTableCard({ table }: { table: TableSnapshot }) {
+function NewTableCard({ table, sides }: { table: TableSnapshot; sides: ReportSides }) {
+  const drift = sides === "expected-live";
   // undefined means the snapshot has no record of the category, which is not
   // the same as the table having none — see ComparedObjectCategories.
   const indexes = table.indexes ?? [];
@@ -530,9 +590,9 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
-        <span className="pill pill-sync">
+        <span className={`pill ${drift ? "pill-break" : "pill-sync"}`}>
           <span className="dot" />
-          new
+          {drift ? "missing" : "new"}
         </span>
         <div className="ml-auto">
           <DeltaChips adds={adds} chgs={0} rems={0} />
@@ -540,7 +600,14 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
       </summary>
 
       <div className="obj-group">
-        <ObjHeader label="Columns" note={`${table.columns.length} added`} />
+        <ObjHeader
+          label="Columns"
+          note={
+            drift
+              ? `${table.columns.length} gone with the table`
+              : `${table.columns.length} added`
+          }
+        />
         {table.columns.map((col) => (
           <DiffLine key={col.name} kind="add" tag="column">
             {columnBody(col)}
@@ -605,7 +672,7 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
               <b>{trigger.name}</b>{" "}
               <span className="muted">
                 calls {trigger.functionName}
-                {trigger.enabled ? "" : " · disabled in source"}
+                {trigger.enabled ? "" : ` · disabled in ${SIDE_WORDS[sides].left}`}
               </span>
             </DiffLine>
           ))}
@@ -652,7 +719,10 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
           true. */}
       {partitioning && partitioned && (
         <div className="obj-group">
-          <ObjHeader label="Partitioning" note="part of the CREATE TABLE" />
+          <ObjHeader
+            label="Partitioning"
+            note={drift ? "part of the table" : "part of the CREATE TABLE"}
+          />
           <DiffLine kind="add" tag="partitioning">
             <span className="muted">{describePartitioning(partitioning)}</span>
           </DiffLine>
@@ -663,31 +733,45 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
 }
 
 /**
- * A table that exists only in the target. The migration ALWAYS generates a
- * `DROP TABLE … CASCADE` for it; the drop mode only decides whether that
- * statement is armed, commented out, or not rendered here at all.
+ * A table that exists only on the right-hand side of the report.
+ *
+ * On /compare that is a table only in the target, and the migration ALWAYS
+ * generates a `DROP TABLE … CASCADE` for it; the drop mode only decides
+ * whether that statement is armed, commented out, or not rendered here at all.
+ *
+ * On /drift the right-hand side is the live database, so it is a table
+ * somebody created outside the tracked schema. This page generates no SQL at
+ * all, so the card used to tell a reader with no such button that "making the
+ * target match the source needs DROP TABLE … CASCADE".
  */
 function ExtraTableCard({
   table,
   dropMode,
+  sides,
 }: {
   table: TableSnapshot;
   dropMode: DropMode;
+  sides: ReportSides;
 }) {
+  const drift = sides === "expected-live";
   return (
     <details className="table-group">
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">{table.name}</span>
         <span
-          className={`pill ${dropMode === "armed" ? "pill-break" : "pill-neutral"}`}
+          className={`pill ${
+            drift ? "pill-drift" : dropMode === "armed" ? "pill-break" : "pill-neutral"
+          }`}
         >
           <span className="dot" />
-          {dropMode === "armed"
-            ? "will be dropped"
-            : dropMode === "safe"
-              ? "drop held back"
-              : "only in target"}
+          {drift
+            ? "not in the baseline"
+            : dropMode === "armed"
+              ? "will be dropped"
+              : dropMode === "safe"
+                ? "drop held back"
+                : "only in target"}
         </span>
         <div className="ml-auto">
           <DeltaChips adds={0} chgs={0} rems={table.columns.length} />
@@ -698,11 +782,13 @@ function ExtraTableCard({
         <ObjHeader
           label="Columns"
           note={
-            dropMode === "armed"
-              ? "dropped with the table"
-              : dropMode === "safe"
-                ? "drop is commented out"
-                : "only in the target"
+            drift
+              ? "none of them tracked"
+              : dropMode === "armed"
+                ? "dropped with the table"
+                : dropMode === "safe"
+                  ? "drop is commented out"
+                  : "only in the target"
           }
         />
         {table.columns.map((col) => (
@@ -710,29 +796,39 @@ function ExtraTableCard({
             {columnBody(col)}
           </DiffLine>
         ))}
-        <p className="help mt-1">
-          This table is only in the target schema, so making the target match
-          the source needs{" "}
-          <span className="mono">DROP TABLE {table.name} CASCADE</span>, which
-          deletes the table and every row in it.{" "}
-          {dropMode === "armed" ? (
-            <>
-              Data loss is armed, so that statement is live in the script below.
-              Untick <b>Allow data loss</b> to hold it back.
-            </>
-          ) : dropMode === "safe" ? (
-            <>
-              That statement is commented out in the script below, so running the
-              script leaves this table alone. Tick <b>Allow data loss</b> to arm
-              it.
-            </>
-          ) : (
-            <>
-              Nothing is dropped by viewing this report — open the comparison in
-              Compare to generate the SQL.
-            </>
-          )}
-        </p>
+        {drift ? (
+          <p className="help mt-1">
+            This table is in the live database and not in the tracked baseline,
+            so somebody created it outside this app. Nothing on this page
+            changes it: <b>Re-baseline to live</b> accepts it as part of the expected
+            structure from now on, and <b>Acknowledge</b> records that you have
+            seen it and leaves the baseline alone.
+          </p>
+        ) : (
+          <p className="help mt-1">
+            This table is only in the target schema, so making the target match
+            the source needs{" "}
+            <span className="mono">DROP TABLE {table.name} CASCADE</span>, which
+            deletes the table and every row in it.{" "}
+            {dropMode === "armed" ? (
+              <>
+                Data loss is armed, so that statement is live in the script
+                below. Untick <b>Allow data loss</b> to hold it back.
+              </>
+            ) : dropMode === "safe" ? (
+              <>
+                That statement is commented out in the script below, so running
+                the script leaves this table alone. Tick <b>Allow data loss</b>{" "}
+                to arm it.
+              </>
+            ) : (
+              <>
+                Nothing is dropped by viewing this report — open the comparison
+                in Compare to generate the SQL.
+              </>
+            )}
+          </p>
+        )}
       </div>
     </details>
   );
@@ -813,11 +909,13 @@ function ChangedTableCard({
             <DiffLine key={`b-${col.name}`} kind="rem" tag="column">
               {columnBody(col)}{" "}
               <span className="muted">
-                {dropMode === "armed"
-                  ? `— only in ${SIDE_WORDS[sides].right} · dropped with its data`
-                  : dropMode === "safe"
-                    ? `— only in ${SIDE_WORDS[sides].right} · drop is commented out`
-                    : `— only in ${SIDE_WORDS[sides].right} · a sync would drop it`}
+                {sides === "expected-live"
+                  ? "— added to the live database, not in the baseline"
+                  : dropMode === "armed"
+                    ? `— only in ${SIDE_WORDS[sides].right} · dropped with its data`
+                    : dropMode === "safe"
+                      ? `— only in ${SIDE_WORDS[sides].right} · drop is commented out`
+                      : `— only in ${SIDE_WORDS[sides].right} · a sync would drop it`}
               </span>
             </DiffLine>
           ))}
@@ -879,14 +977,23 @@ function ChangedTableCard({
           generator has always emitted SQL for them; this card just never drew
           them, so a table whose only change was a dropped index opened to
           nothing at all. */}
-      <ObjectLines label="Indexes" diffs={pickKinds(match.objectDiffs, ["INDEX"])} />
-      <ObjectLines label="Triggers" diffs={pickKinds(match.objectDiffs, ["TRIGGER"])} />
+      <ObjectLines
+        label="Indexes"
+        diffs={pickKinds(match.objectDiffs, ["INDEX"])}
+        sides={sides}
+      />
+      <ObjectLines
+        label="Triggers"
+        diffs={pickKinds(match.objectDiffs, ["TRIGGER"])}
+        sides={sides}
+      />
       {/* One heading for the switch and its policies, because reading either
           on its own gives the wrong answer: three policies with the switch off
           enforce nothing, and the switch on with no policy denies everyone. */}
       <ObjectLines
         label="Row security"
         diffs={pickKinds(match.objectDiffs, ["ROW SECURITY", "POLICY"])}
+        sides={sides}
       />
       {/* Partitioning. A partitioned table and a plain one with the same
           columns used to compare as "identical structure", which was a false
@@ -894,6 +1001,7 @@ function ChangedTableCard({
       <ObjectLines
         label="Partitioning"
         diffs={pickKinds(match.objectDiffs, ["PARTITIONING"])}
+        sides={sides}
       />
     </details>
   );
@@ -906,7 +1014,13 @@ function ChangedTableCard({
  * schema with three changed functions should not push the tables off the
  * screen. Only categories with something in them get a heading.
  */
-function SchemaObjectsCard({ diffs }: { diffs: ObjectDiff[] }) {
+function SchemaObjectsCard({
+  diffs,
+  sides,
+}: {
+  diffs: ObjectDiff[];
+  sides: ReportSides;
+}) {
   const sections = SCHEMA_OBJECT_SECTIONS.map((section) => ({
     label: section.label,
     diffs: pickKinds(diffs, section.kinds),
@@ -933,19 +1047,35 @@ function SchemaObjectsCard({ diffs }: { diffs: ObjectDiff[] }) {
       </summary>
 
       {sections.map((section) => (
-        <ObjectLines key={section.label} label={section.label} diffs={section.diffs} />
+        <ObjectLines
+          key={section.label}
+          label={section.label}
+          diffs={section.diffs}
+          sides={sides}
+        />
       ))}
 
       <div className="obj-group">
-        <p className="help">
-          These belong to the schema rather than to any one table. A dropped view
-          or function is graded breaking because the migration removes it and
-          anything still calling it stops working — a rebuilt view is dropped
-          with <span className="mono">CASCADE</span> first, which can take
-          dependents with it. Rebuilding a view also takes every index and
-          trigger on it, so the script writes all of them back, whether or not
-          they are listed here as changed.
-        </p>
+        {sides === "expected-live" ? (
+          <p className="help">
+            These belong to the schema rather than to any one table. Like every
+            grade on this page, <b>breaking</b> is measured against putting the
+            baseline back: a view only in the live database is graded breaking
+            because the way back drops it, and one that is in the baseline and
+            already gone is graded breaking because whatever called it has
+            already stopped working.
+          </p>
+        ) : (
+          <p className="help">
+            These belong to the schema rather than to any one table. A dropped
+            view or function is graded breaking because the migration removes it
+            and anything still calling it stops working — a rebuilt view is
+            dropped with <span className="mono">CASCADE</span> first, which can
+            take dependents with it. Rebuilding a view also takes every index and
+            trigger on it, so the script writes all of them back, whether or not
+            they are listed here as changed.
+          </p>
+        )}
       </div>
     </details>
   );
@@ -1068,7 +1198,9 @@ export function DiffReport({
         <div>
           <div className="text-[14px] font-medium">Schemas are in sync</div>
           <div className="help">
-            No structural differences were found between the two sources.
+            {sides === "expected-live"
+              ? "The live database matches the tracked baseline."
+              : "No structural differences were found between the two sources."}
           </div>
         </div>
       </div>
@@ -1104,14 +1236,18 @@ export function DiffReport({
         <div className="banner">
           <div>
             <div className="title">
-              {dropMode === "armed"
-                ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} armed`
-                : dropMode === "safe"
-                  ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} held back`
-                  : `Syncing would drop ${destructiveCount} object${destructiveCount === 1 ? "" : "s"}`}
+              {sides === "expected-live"
+                ? `Going back to the baseline would drop ${destructiveCount} thing${destructiveCount === 1 ? "" : "s"}`
+                : dropMode === "armed"
+                  ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} armed`
+                  : dropMode === "safe"
+                    ? `${destructiveCount} destructive statement${destructiveCount === 1 ? "" : "s"} held back`
+                    : `Syncing would drop ${destructiveCount} object${destructiveCount === 1 ? "" : "s"}`}
             </div>
             <div className="body">
-              Making the target match the source needs{" "}
+              {sides === "expected-live"
+                ? "Undoing this drift needs "
+                : "Making the target match the source needs "}
               {droppedTables > 0 && (
                 <b>
                   {droppedTables} table{droppedTables === 1 ? "" : "s"} dropped
@@ -1133,12 +1269,14 @@ export function DiffReport({
                 </>
               )}
               .{" "}
-              {dropMode === "armed"
-                ? "Allow data loss is on, so those statements are live in the script below and the rows they remove cannot be recovered."
-                : dropMode === "safe"
-                  ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss to arm them."
-                  : "Viewing this report changes nothing — open the comparison in Compare to generate that SQL."}
-              {dropMode === "safe" && droppedMatviews > 0 ? (
+              {sides === "expected-live"
+                ? "This page writes no SQL and drops nothing. Author a migration opens Compare with the live database already on the target side, and you choose what to compare it against."
+                : dropMode === "armed"
+                  ? "Allow data loss is on, so those statements are live in the script below and the rows they remove cannot be recovered."
+                  : dropMode === "safe"
+                    ? "Those statements are generated but commented out, so running the script below deletes nothing. Tick Allow data loss to arm them."
+                    : "Viewing this report changes nothing — open the comparison in Compare to generate that SQL."}
+              {sides !== "expected-live" && dropMode === "safe" && droppedMatviews > 0 ? (
                 // A matview is rebuilt by CREATE MATERIALIZED VIEW IF NOT
                 // EXISTS, which does nothing while the old one is still there.
                 // The script holds that rebuild back with the drop, so saying
@@ -1165,9 +1303,10 @@ export function DiffReport({
         />
       ))}
 
-      {/* Tables only in the source — created by the migration */}
+      {/* Tables only on the left — created by the migration on /compare,
+          already gone from the live database on /drift. */}
       {report.tablesOnlyInA.map((table) => (
-        <NewTableCard key={`new-${table.name}`} table={table} />
+        <NewTableCard key={`new-${table.name}`} table={table} sides={sides} />
       ))}
 
       {/* Matched tables with structural changes */}
@@ -1180,18 +1319,20 @@ export function DiffReport({
         />
       ))}
 
-      {/* Tables only in the target — dropped by the migration when armed */}
+      {/* Tables only on the right — dropped by the migration when armed on
+          /compare, created outside the tracked schema on /drift. */}
       {report.tablesOnlyInB.map((table) => (
         <ExtraTableCard
           key={`extra-${table.name}`}
           table={table}
           dropMode={dropMode}
+          sides={sides}
         />
       ))}
 
       {/* Views, sequences, types and functions — after the tables, because they
           are usually consequences of a table change rather than the point. */}
-      <SchemaObjectsCard diffs={report.objectDiffs} />
+      <SchemaObjectsCard diffs={report.objectDiffs} sides={sides} />
 
       {/* Unchanged tables — collapsed summary so the diff stays focused */}
       {unchanged.length > 0 && (
