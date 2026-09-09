@@ -21,7 +21,11 @@ import {
   buildVersionLedger,
   type LedgerEntry,
 } from "@/lib/script-status";
-import { containsTransactionControl, findRowDestroyingStatements } from "@/lib/sql-guard";
+import {
+  containsTransactionControl,
+  extractEnumAddValues,
+  findRowDestroyingStatements,
+} from "@/lib/sql-guard";
 import { changeTypeOf, type ScriptChangeType } from "@/lib/change-type";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
@@ -483,17 +487,25 @@ function RiskGate({
   title,
   body,
   ack,
-  acknowledged,
+  acknowledged = false,
   onAcknowledge,
 }: {
   /** "break" is red (a migration that destroys structure), "drift" is amber. */
   tone: "break" | "drift";
   title: string;
   body: string;
-  /** The sentence beside the checkbox, in the user's words. */
-  ack: string;
-  acknowledged: boolean;
-  onAcknowledge: (value: boolean) => void;
+  /**
+   * The sentence beside the checkbox, in the user's words.
+   *
+   * Optional, and leaving it out drops the checkbox — the panel then states
+   * something true about the run that the reader cannot do anything about.
+   * A tick box over a fact nobody can change is not a decision, it is a toll,
+   * and every one of those makes the boxes that ARE decisions cheaper to tick
+   * without reading.
+   */
+  ack?: string;
+  acknowledged?: boolean;
+  onAcknowledge?: (value: boolean) => void;
 }) {
   return (
     <div className={tone === "drift" ? "prod-gate prod-gate--drift" : "prod-gate"}>
@@ -502,14 +514,16 @@ function RiskGate({
         <span>{title}</span>
       </div>
       <p className="prod-gate__body">{body}</p>
-      <label className="prod-gate__ack">
-        <input
-          type="checkbox"
-          checked={acknowledged}
-          onChange={(event) => onAcknowledge(event.target.checked)}
-        />
-        <span>{ack}</span>
-      </label>
+      {ack && (
+        <label className="prod-gate__ack">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(event) => onAcknowledge?.(event.target.checked)}
+          />
+          <span>{ack}</span>
+        </label>
+      )}
     </div>
   );
 }
@@ -1083,6 +1097,20 @@ export default function DeployPage() {
   const dataLossKinds = useMemo(
     () => [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].join(", "),
     [dataLossScripts]
+  );
+
+  // The one thing in a run that is NOT all-or-nothing.
+  //
+  // PostgreSQL refuses to let a value added by ALTER TYPE … ADD VALUE be used
+  // by another statement in the same transaction, so the apply route lifts
+  // those statements out and runs them first, on their own, in autocommit. They
+  // are therefore committed before the transaction that this page promises will
+  // undo everything — six times over — has even opened, and PostgreSQL has no
+  // statement that removes an enum value, so a failed run leaves them behind
+  // for good. Small and usually harmless, but the page said the opposite of it.
+  const enumAdditions = useMemo(
+    () => extractEnumAddValues(scriptsUpToTarget.map((s) => s.sql_content).join("\n")),
+    [scriptsUpToTarget]
   );
 
   // ── What the approval covers ─────────────────────────────────────────────
@@ -2168,6 +2196,32 @@ export default function DeployPage() {
                             onAcknowledge={setDataLossAcknowledged}
                           />
                         )}
+                        {enumAdditions.length > 0 && (
+                          <RiskGate
+                            tone="drift"
+                            title={
+                              enumAdditions.length === 1
+                                ? "1 enum value runs before the transaction"
+                                : `${enumAdditions.length} enum values run before the transaction`
+                            }
+                            body={
+                              "PostgreSQL will not let a value added by ALTER TYPE … ADD " +
+                              "VALUE be used by another statement in the same transaction, " +
+                              "so the run adds " +
+                              (enumAdditions.length === 1 ? "this one" : "these") +
+                              " first, on their own. They commit straight away. If the run " +
+                              "then fails, everything else is rolled back and " +
+                              (enumAdditions.length === 1 ? "this stays" : "these stay") +
+                              " — there is no statement in PostgreSQL that removes an enum " +
+                              "value, so it cannot be undone by hand either. A label " +
+                              "nothing uses does no harm; it is simply the one part of the " +
+                              "run that is not all-or-nothing. A dry run cannot lift them " +
+                              "out without leaving them behind, so it runs them inside the " +
+                              "transaction instead — which is why rehearsing a script that " +
+                              "uses its own new value fails where the real run succeeds."
+                            }
+                          />
+                        )}
                         {driftBlocks && driftResult && (
                           <RiskGate
                             tone="drift"
@@ -2247,6 +2301,9 @@ export default function DeployPage() {
                             ? "Tick every box above to enable this"
                             : targetIsProduction && !approvedRun
                               ? "Deploy needs a second person's approval — a dry run does not"
+                              : enumAdditions.length > 0
+                              ? "All migrations run in one transaction — all of them or " +
+                                "none, apart from the enum values noted above"
                               : "All migrations run in one transaction — all of them or none"}
                       </div>
                     </div>
@@ -2295,6 +2352,13 @@ export default function DeployPage() {
                           </ChecklistItem>
                         ) : (
                           <ChecklistItem ok>Nothing in this run deletes rows</ChecklistItem>
+                        )}
+                        {enumAdditions.length > 0 && (
+                          <ChecklistItem info>
+                            {countOf(enumAdditions.length, "enum value")}{" "}
+                            {enumAdditions.length === 1 ? "commits" : "commit"} before the
+                            transaction · not undone by a rollback
+                          </ChecklistItem>
                         )}
                         {targetIsProduction && (
                           <ChecklistItem ok={Boolean(approvedRun)}>
