@@ -19,6 +19,7 @@
 
 import type { ClientConfig, PoolClient } from "pg";
 import { getPoolForConfig } from "./postgres";
+import type { TableSnapshot } from "./postgres";
 import type { CompareReport } from "./compare";
 
 /** One table's data comparison. */
@@ -211,7 +212,112 @@ type TablePlan = {
   rightColumns: string[];
   /** Columns present on one side only, named as the source calls them. */
   ignoredColumns: string[];
+  /**
+   * Child tables whose rows this table's own count already includes, so they
+   * are not read separately. See foldChildrenIntoParents. Empty for a table
+   * that has no children, which is nearly all of them.
+   */
+  foldedChildren: string[];
 };
+
+/**
+ * The tables one level up whose rows include this table's rows.
+ *
+ * A partition has exactly one parent, and old-style INHERITS can name several.
+ * The capture keeps them in separate fields because PostgreSQL does: a
+ * partition never appears in `inherits`.
+ *
+ * These are bare table names, which is what the snapshot stores. A partition is
+ * allowed to live in a different schema from its parent, and then this name is
+ * not in this snapshot at all — which is the right answer here, because a
+ * parent in another schema is not a table this run reads either.
+ */
+function parentNames(table: TableSnapshot): string[] {
+  const part = table.partitioning;
+  // undefined means the snapshot predates partitioning being recorded. Treating
+  // that as "standalone" is the safe reading: the table is read on its own, as
+  // it always was.
+  if (!part) return [];
+  return part.partitionOf !== null ? [part.partitionOf] : part.inherits;
+}
+
+/**
+ * Take the child tables out of a group and hand their rows to the parent.
+ *
+ * `SELECT count(*) FROM parent` reads the parent AND every partition and
+ * INHERITS child under it — that is what a partitioned table IS, and short of
+ * `ONLY` there is no way to ask for the parent alone. So planning a parent and
+ * its four partitions as five tables counts the same rows five times: a
+ * partitioned table only the target has reported five times its real size as
+ * "rows a sync destroys", and spent five of the sixty slots a run has to do it.
+ *
+ * Only one-sided groups are folded. A matched parent and its matched partitions
+ * are read separately on purpose: each checksum is a true statement about that
+ * table, and knowing WHICH partition differs is the useful half of the answer.
+ *
+ * Returns the tables still worth reading, each with the children it now speaks
+ * for. Those names end up in the note, because a table that silently disappears
+ * from a data compare is the exact failure this module exists to prevent.
+ */
+function foldChildrenIntoParents(
+  group: TableSnapshot[],
+  everyTableOnThatSide: TableSnapshot[],
+): { table: TableSnapshot; folded: string[] }[] {
+  const inGroup = new Set(group.map((table) => table.name));
+  const byName = new Map(everyTableOnThatSide.map((table) => [table.name, table]));
+
+  // The HIGHEST ancestor of this table that the run is already reading, or null
+  // when there is none. Highest rather than nearest: a partition can itself be
+  // partitioned, and if the middle table is folded away too then attributing
+  // the rows to it would name a table that never appears in the report.
+  //
+  // `seen` guards against a cycle. PostgreSQL cannot build one, but a snapshot
+  // is data from somewhere else and a bad one must not hang the page.
+  function readingAncestorOf(table: TableSnapshot): string | null {
+    const seen = new Set([table.name]);
+    let queue = parentNames(table);
+    let highest: string | null = null;
+    while (queue.length > 0) {
+      const next: string[] = [];
+      for (const name of queue) {
+        if (seen.has(name)) continue;
+        seen.add(name);
+        if (inGroup.has(name)) highest = name;
+        const parent = byName.get(name);
+        if (parent) next.push(...parentNames(parent));
+      }
+      queue = next;
+    }
+    return highest;
+  }
+
+  const foldedInto = new Map<string, string[]>();
+  const kept: TableSnapshot[] = [];
+  for (const table of group) {
+    const ancestor = readingAncestorOf(table);
+    if (ancestor === null) {
+      kept.push(table);
+      continue;
+    }
+    foldedInto.set(ancestor, [...(foldedInto.get(ancestor) ?? []), table.name]);
+  }
+
+  return kept.map((table) => ({
+    table,
+    folded: [...(foldedInto.get(table.name) ?? [])].sort(),
+  }));
+}
+
+/** A sentence naming the children a table's own count already covers. */
+function foldedChildrenNote(plan: TablePlan): string {
+  if (plan.foldedChildren.length === 0) return "";
+  const many = plan.foldedChildren.length > 1;
+  return (
+    ` Its child ${many ? "tables" : "table"} ${plan.foldedChildren.join(", ")} ` +
+    `${many ? "are" : "is"} counted here rather than separately — a count of ` +
+    `this table already includes ${many ? "their" : "its"} rows.`
+  );
+}
 
 /**
  * Work out what to read, from the structural comparison that already ran.
@@ -230,11 +336,18 @@ type TablePlan = {
  * destroyed" banner never appeared, and the panel written to prevent exactly
  * that said nothing. Source-only tables go last: they are created empty, so a
  * missed one costs the reader a row count and no more.
+ *
+ * Partitions and INHERITS children of a table already in the same group are
+ * folded into it rather than planned separately — see foldChildrenIntoParents
+ * for why counting them twice is not merely wasteful but wrong.
  */
 function planTables(report: CompareReport): TablePlan[] {
   const plans: TablePlan[] = [];
 
-  for (const table of report.tablesOnlyInB) {
+  for (const { table, folded } of foldChildrenIntoParents(
+    report.tablesOnlyInB,
+    report.right.tables,
+  )) {
     plans.push({
       label: table.name,
       leftTable: null,
@@ -242,6 +355,7 @@ function planTables(report: CompareReport): TablePlan[] {
       leftColumns: [],
       rightColumns: [],
       ignoredColumns: [],
+      foldedChildren: folded,
     });
   }
 
@@ -266,10 +380,14 @@ function planTables(report: CompareReport): TablePlan[] {
       leftColumns: pairs.map((pair) => pair.left.name),
       rightColumns: pairs.map((pair) => pair.right.name),
       ignoredColumns: ignored,
+      foldedChildren: [],
     });
   }
 
-  for (const table of report.tablesOnlyInA) {
+  for (const { table, folded } of foldChildrenIntoParents(
+    report.tablesOnlyInA,
+    report.left.tables,
+  )) {
     plans.push({
       label: table.name,
       leftTable: table.name,
@@ -277,6 +395,7 @@ function planTables(report: CompareReport): TablePlan[] {
       leftColumns: [],
       rightColumns: [],
       ignoredColumns: [],
+      foldedChildren: folded,
     });
   }
 
@@ -355,9 +474,14 @@ export async function compareRowData(
           leftChecksum: null,
           rightChecksum: null,
           columns: [],
-          note: overCount
-            ? `Not read: only the first ${maxTables} tables are compared in one run.`
-            : "Not read: the data compare ran out of its time budget.",
+          note:
+            (overCount
+              ? `Not read: only the first ${maxTables} tables are compared in one run.`
+              : "Not read: the data compare ran out of its time budget.") +
+            // Said even here: the children were folded into a table that then
+            // went unread, so nothing in this report counts their rows and the
+            // reader needs to know which tables those were.
+            foldedChildrenNote(plan),
           // Recorded even though nothing was read: a drop the run never reached
           // is still a drop, and this is the flag the banner counts.
           droppedBySync: plan.leftTable === null && plan.rightTable !== null,
@@ -406,17 +530,27 @@ async function compareOnePlan(
     const side = onSource ? source : target;
     const table = (onSource ? plan.leftTable : plan.rightTable) as string;
     const result = await readSide(client, countSql(side.schema, table), timeoutMs);
+    // The count that just ran covers this table's children too, so the sentence
+    // naming them belongs on both outcomes — including the failure, where it is
+    // the only record that those tables were looked at at all.
+    const alsoCovers = foldedChildrenNote(plan);
     if (!result.ok) {
-      return { ...base, status: "skipped", note: `Could not read: ${result.error}.` };
+      return {
+        ...base,
+        status: "skipped",
+        note: `Could not read: ${result.error}.${alsoCovers}`,
+      };
     }
     return {
       ...base,
       status: onSource ? "sourceOnly" : "targetOnly",
       leftRows: onSource ? result.rows : null,
       rightRows: onSource ? null : result.rows,
-      note: onSource
-        ? "Only the source has this table — the migration creates it, empty."
-        : "Only the target has this table — a full sync drops it, and these rows with it.",
+      note:
+        (onSource
+          ? "Only the source has this table — the migration creates it, empty."
+          : "Only the target has this table — a full sync drops it, and these rows with it.") +
+        alsoCovers,
     };
   }
 
