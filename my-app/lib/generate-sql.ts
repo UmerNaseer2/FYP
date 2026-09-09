@@ -238,8 +238,24 @@ function buildFkDef(fk: ForeignKeySnapshot, sourceSchema: string): string {
       ? ""
       : `${q(fk.referencedSchema)}.`;
   let def = `FOREIGN KEY (${localCols}) REFERENCES ${refPrefix}${q(refTable)} (${refCols})`;
+  // MATCH goes before the referential actions; that is the order the grammar
+  // wants and the order pg_get_constraintdef prints.
+  if (fk.matchType && fk.matchType !== "SIMPLE") def += ` MATCH ${fk.matchType}`;
   if (fk.onDelete !== "NO ACTION") def += ` ON DELETE ${fk.onDelete}`;
   if (fk.onUpdate !== "NO ACTION") def += ` ON UPDATE ${fk.onUpdate}`;
+  // Deferrability and NOT VALID used to be dropped here. The comparator diffs
+  // pg_get_constraintdef output, which spells both out, so a key that differed
+  // only in one of them was reported, migrated with a statement that did not
+  // carry the clause, and then reported again by the next comparison — the diff
+  // never converged. Every caller of this is ALTER TABLE ... ADD CONSTRAINT,
+  // which is the only place NOT VALID is legal.
+  if (fk.deferrable) {
+    def += " DEFERRABLE";
+    if (fk.initiallyDeferred) def += " INITIALLY DEFERRED";
+  }
+  // `validated === undefined` is a snapshot taken before this app read the
+  // flag: say nothing rather than assert the key was valid.
+  if (fk.validated === false) def += " NOT VALID";
   return def;
 }
 

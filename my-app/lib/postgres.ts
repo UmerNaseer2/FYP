@@ -139,6 +139,18 @@ function formatAction(code: string | null): string {
   }
 }
 
+/**
+ * pg_constraint.confmatchtype as SQL writes it. Anything unrecognised falls
+ * back to SIMPLE, which is what the parser assumes when no MATCH is written,
+ * so an unknown code produces a key Postgres accepts rather than a syntax
+ * error.
+ */
+function formatMatchType(code: string | null): "SIMPLE" | "FULL" | "PARTIAL" {
+  if (code === "f") return "FULL";
+  if (code === "p") return "PARTIAL";
+  return "SIMPLE";
+}
+
 export type CompareTarget = {
   /**
    * A stable id for this target inside one comparison — a React key, and the
@@ -202,6 +214,25 @@ export type ForeignKeySnapshot = {
   referencedColumns: string[];
   onUpdate: string;
   onDelete: string;
+  /**
+   * MATCH FULL / MATCH PARTIAL / MATCH SIMPLE, and whether the constraint is
+   * deferrable or still unvalidated.
+   *
+   * Optional because a snapshot written before this app read them has no record
+   * of them, and `undefined` has to keep meaning "not recorded" rather than
+   * "SIMPLE, not deferrable, validated" — the generator would otherwise rewrite
+   * an old baseline's deferrable key as a plain one.
+   *
+   * The comparator never looks at these: it diffs normalizedDefinition, which
+   * comes from pg_get_constraintdef and already spells them out. They are here
+   * for the generator, which rebuilds the key from parts and used to drop every
+   * one of these clauses — so applying the migration did not remove the
+   * difference and the next comparison reported it again.
+   */
+  matchType?: "SIMPLE" | "FULL" | "PARTIAL";
+  deferrable?: boolean;
+  initiallyDeferred?: boolean;
+  validated?: boolean;
 };
 
 /**
@@ -385,6 +416,10 @@ type ConstraintRow = {
   referenced_columns: string[] | null;
   confupdtype: string | null;
   confdeltype: string | null;
+  confmatchtype: string | null;
+  condeferrable: boolean | null;
+  condeferred: boolean | null;
+  convalidated: boolean | null;
 };
 
 const COMPARE_IGNORED_TABLES = ["script_patch"];
@@ -678,7 +713,11 @@ export async function fetchSchemaSnapshot(
              ARRAY[]::text[]
            ) AS referenced_columns,
            con.confupdtype,
-           con.confdeltype
+           con.confdeltype,
+           con.confmatchtype,
+           con.condeferrable,
+           con.condeferred,
+           con.convalidated
          FROM pg_constraint con
          JOIN pg_class tbl
            ON tbl.oid = con.conrelid
@@ -709,7 +748,11 @@ export async function fetchSchemaSnapshot(
            ref_ns.nspname,
            ref_tbl.relname,
            con.confupdtype,
-           con.confdeltype
+           con.confdeltype,
+           con.confmatchtype,
+           con.condeferrable,
+           con.condeferred,
+           con.convalidated
          ORDER BY tbl.relname, con.contype, con.conname`,
       [schemaName, COMPARE_IGNORED_TABLES]
     );
@@ -1011,6 +1054,10 @@ export async function fetchSchemaSnapshot(
           referencedColumns: coerceTextArray(row.referenced_columns),
           onUpdate: formatAction(row.confupdtype),
           onDelete: formatAction(row.confdeltype),
+          matchType: formatMatchType(row.confmatchtype),
+          deferrable: row.condeferrable === true,
+          initiallyDeferred: row.condeferred === true,
+          validated: row.convalidated !== false,
         };
         table.foreignKeys.push(foreignKey);
 
