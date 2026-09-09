@@ -274,25 +274,39 @@ export async function compareRowData(
   const plans = planTables(report);
   const deadline = Date.now() + budgetMs;
 
-  let leftClient: PoolClient | null = null;
-  let rightClient: PoolClient | null = null;
-  try {
-    // One connection per side held for the whole run: sixty tables means sixty
-    // reads, and taking a fresh connection for each of them is the slowest part
-    // of the job by a wide margin.
-    [leftClient, rightClient] = await Promise.all([
-      getPoolForConfig(source.config).connect(),
-      getPoolForConfig(target.config).connect(),
-    ]);
-  } catch (error) {
-    leftClient?.release();
-    rightClient?.release();
+  // One connection per side held for the whole run: sixty tables means sixty
+  // reads, and taking a fresh connection for each of them is the slowest part
+  // of the job by a wide margin.
+  //
+  // allSettled, not all. Promise.all rejects the moment either side fails and
+  // never hands back the one that succeeded — so the earlier version's
+  // `leftClient?.release()` in the catch could not fire (both variables were
+  // still null, the destructuring having never run) and the good connection
+  // stayed checked out for the life of the process. The pool is max 4 and is
+  // the same pool plain schema introspection uses, so four transient failures
+  // — a sleeping compute, "too many clients already", a TLS reset — were
+  // enough to wedge every later connection to that database until a restart.
+  const [leftSettled, rightSettled] = await Promise.allSettled([
+    getPoolForConfig(source.config).connect(),
+    getPoolForConfig(target.config).connect(),
+  ]);
+  if (leftSettled.status === "rejected" || rightSettled.status === "rejected") {
+    if (leftSettled.status === "fulfilled") leftSettled.value.release();
+    if (rightSettled.status === "fulfilled") rightSettled.value.release();
+    // Whichever side actually failed. Both may have; the first is enough to
+    // put in front of the reader.
+    const error =
+      leftSettled.status === "rejected"
+        ? leftSettled.reason
+        : (rightSettled as PromiseRejectedResult).reason;
     return {
       tables: [],
       error: `Could not open a connection for the data compare: ${describeReadError(error)}`,
       timeoutMs,
     };
   }
+  const leftClient: PoolClient = leftSettled.value;
+  const rightClient: PoolClient = rightSettled.value;
 
   const tables: TableDataCompare[] = [];
   try {
