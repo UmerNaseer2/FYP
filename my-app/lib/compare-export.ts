@@ -27,6 +27,8 @@ import {
   droppedColumnSeverity,
   objectDiffSeverity,
 } from "./compare";
+import { summarizeDataCompare } from "./compare-data";
+import type { DataCompareReport, TableDataCompare } from "./compare-data";
 import { summaryRows, type SummaryRow } from "./compare-summary";
 import type {
   ChangeSeverity,
@@ -75,6 +77,32 @@ export type ChangeRow = {
   detail: string;
 };
 
+/**
+ * The row-level half of a comparison, when one was run.
+ *
+ * Carried in the document rather than left on screen because the numbers that
+ * matter most in a review are here: a table only the target has is a table the
+ * migration drops, and `rowsAtRiskOfDrop` counts the rows that go with it. An
+ * export that showed the schema changes but not that number would understate
+ * the migration to exactly the reader who most needs it spelled out.
+ */
+export type DataSection = {
+  /** Per-statement timeout the run actually used, in milliseconds. */
+  timeoutMs: number;
+  /** A failure that stopped the whole run — no table line below is meaningful. */
+  error: string | null;
+  totals: {
+    identical: number;
+    different: number;
+    sourceOnly: number;
+    targetOnly: number;
+    skipped: number;
+    /** Rows a full sync destroys: they live in tables only the target has. */
+    rowsAtRiskOfDrop: number;
+  };
+  tables: TableDataCompare[];
+};
+
 export type DiffDocument = {
   /** Stamped so a file found on disk months later identifies itself. */
   format: "schema-studio-diff";
@@ -98,6 +126,11 @@ export type DiffDocument = {
   notCompared: ChangeCategory[];
   categories: SummaryRow[];
   changes: ChangeRow[];
+  /**
+   * null when no row comparison was run. That is not "the rows match", so the
+   * formatters say which of the two it is instead of printing nothing.
+   */
+  data: DataSection | null;
 };
 
 /** Which heading each object kind files under. Matches SummaryMatrix's rows. */
@@ -155,7 +188,10 @@ function describeColumn(column: ColumnSnapshot): string {
   return parts.join(" · ");
 }
 
-export function buildDiffDocument(report: CompareReport): DiffDocument {
+export function buildDiffDocument(
+  report: CompareReport,
+  data?: DataCompareReport | null
+): DiffDocument {
   const changes: ChangeRow[] = [];
 
   // ── Tables that exist on one side only ───────────────────────────────────
@@ -320,5 +356,16 @@ export function buildDiffDocument(report: CompareReport): DiffDocument {
     notCompared,
     categories,
     changes,
+    // Totals come from compare-data's own summariser for the same reason the
+    // severities come from compare.ts's graders: the export must not hold a
+    // second opinion about the screen it was exported from.
+    data: data
+      ? {
+          timeoutMs: data.timeoutMs,
+          error: data.error,
+          totals: summarizeDataCompare(data),
+          tables: data.tables,
+        }
+      : null,
   };
 }

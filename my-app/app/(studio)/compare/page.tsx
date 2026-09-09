@@ -1113,7 +1113,7 @@ export default async function ComparePage({ searchParams }: PageProps) {
                   {/* Built on the server: the export has to grade every change
                       with the same functions the canvas below grades them
                       with, and those live in the compare engine. */}
-                  <ExportBar doc={buildDiffDocument(outcome.report)} />
+                  <ExportBar doc={buildDiffDocument(outcome.report, outcome.data)} />
                   {/* The board first, then the narrative. The diff below only
                       shows what changed, so it cannot say "nothing happened to
                       your views" — this can, and it is the answer people scroll

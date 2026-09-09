@@ -145,6 +145,11 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
 
       <span className="export-bar__count">
         {doc.totals.changes} row{doc.totals.changes === 1 ? "" : "s"}
+        {doc.data
+          ? ` \u00b7 ${doc.data.tables.length} table${
+              doc.data.tables.length === 1 ? "" : "s"
+            } of row data`
+          : ""}
         {doc.notCompared.length > 0
           ? ` · ${doc.notCompared.join(", ").toLowerCase()} not compared`
           : ""}

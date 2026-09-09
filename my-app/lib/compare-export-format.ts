@@ -15,6 +15,22 @@ import type { ChangeRow, DiffDocument } from "./compare-export";
 /** Column headings for the CSV, in the order documentRows writes them. */
 const CSV_HEADERS = ["category", "table", "object", "change", "severity", "detail"];
 
+/** Column headings for the row-data block, written only when one was run. */
+const DATA_CSV_HEADERS = [
+  "table",
+  "status",
+  "source_rows",
+  "target_rows",
+  "source_checksum",
+  "target_checksum",
+  "note",
+];
+
+/** A row count as a cell, or empty when that side has no table to count. */
+function countField(value: number | null): string {
+  return value === null ? "" : String(value);
+}
+
 /**
  * One CSV field, quoted the way every spreadsheet expects.
  *
@@ -35,6 +51,35 @@ export function documentToCsv(document: DiffDocument): string {
         .join(",")
     );
   }
+  // Row data goes in the same file as a second block after a blank line, not in
+  // a file of its own: someone handed one export should not have to be told
+  // there was a second one. A spreadsheet shows it as more rows, which is why
+  // the block carries its own heading line saying what those rows are.
+  if (document.data) {
+    lines.push("");
+    lines.push(DATA_CSV_HEADERS.join(","));
+    if (document.data.error) {
+      lines.push(
+        ["", "error", "", "", "", "", document.data.error].map(csvField).join(",")
+      );
+    }
+    for (const table of document.data.tables) {
+      lines.push(
+        [
+          table.table,
+          table.status,
+          countField(table.leftRows),
+          countField(table.rightRows),
+          table.leftChecksum ?? "",
+          table.rightChecksum ?? "",
+          table.note ?? "",
+        ]
+          .map(csvField)
+          .join(",")
+      );
+    }
+  }
+
   // Trailing newline: some tools drop the last row of a file that lacks one.
   return `${lines.join("\n")}\n`;
 }
@@ -43,6 +88,16 @@ export function documentToJson(document: DiffDocument, exportedAt: string): stri
   // exportedAt is threaded in rather than read from the clock here so this stays
   // a pure function — the same document always renders the same text.
   return `${JSON.stringify({ exportedAt, ...document }, null, 2)}\n`;
+}
+
+/** A row count for a Markdown cell, or a dash when that side has no table. */
+function rowCount(value: number | null): string {
+  return value === null ? "—" : String(value);
+}
+
+/** A Markdown table cell cannot hold a bare pipe — a note can. */
+function cell(text: string): string {
+  return text.replace(/\|/g, "\\|");
 }
 
 /** `- Table "orders" · dropped · breaking — …` */
@@ -66,7 +121,15 @@ export function documentToMarkdown(document: DiffDocument): string {
   out.push("");
 
   if (totals.changes === 0) {
-    out.push("The two schemas are in sync. Nothing to migrate.");
+    // "In sync" is a claim about the schema only. When a row comparison ran and
+    // found differences, that sentence on its own reads as "nothing to do".
+    const rowsDiffer = document.data ? document.data.totals.different : 0;
+    out.push(
+      rowsDiffer > 0
+        ? `The two schemas are in sync. Nothing to migrate — but ${rowsDiffer} table` +
+            `${rowsDiffer === 1 ? " holds" : "s hold"} different data (see below).`
+        : "The two schemas are in sync. Nothing to migrate."
+    );
     out.push("");
   } else {
     const bits = [
@@ -111,6 +174,42 @@ export function documentToMarkdown(document: DiffDocument): string {
     out.push("");
     for (const row of document.changes) out.push(markdownRow(row));
     out.push("");
+  }
+
+  if (document.data) {
+    const data = document.data;
+    out.push("## Row data");
+    out.push("");
+    if (data.error) {
+      out.push(`The row comparison could not finish: ${data.error}`);
+      out.push("");
+    } else {
+      const totals = data.totals;
+      out.push(
+        `${totals.identical} identical, ${totals.different} different, ` +
+          `${totals.sourceOnly} only in the source, ${totals.targetOnly} only in the ` +
+          `target, ${totals.skipped} skipped — ${data.timeoutMs} ms per table.`
+      );
+      if (totals.rowsAtRiskOfDrop > 0) {
+        out.push("");
+        out.push(
+          `⚠️ ${totals.rowsAtRiskOfDrop} row` +
+            `${totals.rowsAtRiskOfDrop === 1 ? "" : "s"} sit in tables only the target ` +
+            "has. The migration drops those tables, and no down script can bring the " +
+            "rows back."
+        );
+      }
+      out.push("");
+      out.push("| Table | Status | Source rows | Target rows | Note |");
+      out.push("| --- | --- | --: | --: | --- |");
+      for (const table of data.tables) {
+        out.push(
+          `| \`${table.table}\` | ${table.status} | ${rowCount(table.leftRows)} | ` +
+            `${rowCount(table.rightRows)} | ${cell(table.note ?? "")} |`
+        );
+      }
+      out.push("");
+    }
   }
 
   return out.join("\n");
