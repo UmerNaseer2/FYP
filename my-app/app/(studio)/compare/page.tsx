@@ -1155,7 +1155,12 @@ export default async function ComparePage({ searchParams }: PageProps) {
                       the whole page looking for. */}
                   <SummaryMatrix report={outcome.report} />
                   <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
-                  {outcome.data && <DataCompare result={outcome.data} />}
+                  {outcome.data && (
+                    <DataCompare
+                      result={outcome.data}
+                      allowDataLoss={allowDataLoss}
+                    />
+                  )}
                 </div>
                 <MigrationWorkbench
                   initialSql={outcome.sqlText}

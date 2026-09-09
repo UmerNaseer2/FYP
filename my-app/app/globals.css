@@ -2737,6 +2737,10 @@ summary.obj-header::-webkit-details-marker { display:none; }
                background: color-mix(in oklab, var(--drift) 8%, transparent);
                border:1px solid color-mix(in oklab, var(--drift) 35%, transparent); font-size:12.5px; color:var(--text); }
 .warn-inline .ico { color:var(--drift); flex:none; margin-top:1px; }
+/* Same two-line shape .banner has, so a panel can swap between the two when the
+   risk is real but held back — see DataCompare's drop banner. */
+.warn-inline .title { color:var(--drift); font-weight:600; font-size:12.5px; }
+.warn-inline .body { color:var(--text); line-height:1.5; }
 
 /* Production gate — the stop in front of SQL that runs on a live database.
    Louder than .warn-inline on purpose: that one reports a risk, this one is

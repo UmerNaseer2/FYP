@@ -1,6 +1,7 @@
 import type { DataCompareReport, TableDataCompare } from "@/lib/compare-data";
 import { summarizeDataCompare } from "@/lib/compare-data";
 import { CheckIcon, AlertTriangleIcon } from "@/components/ui/icons";
+import { dropModeFrom } from "@/components/studio/DiffReport";
 
 // ---------------------------------------------------------------------------
 // DataCompare — the row-level half of a comparison.
@@ -98,7 +99,18 @@ function differenceDetail(table: TableDataCompare): string {
   return `${counts}, but the contents differ`;
 }
 
-export function DataCompare({ result }: { result: DataCompareReport }) {
+export function DataCompare({
+  result,
+  allowDataLoss,
+}: {
+  result: DataCompareReport;
+  /**
+   * The same flag the migration script beside this panel was built with.
+   * Leave it undefined on a view that renders no script — the banner then
+   * states what a sync would cost and claims nothing about what will run.
+   */
+  allowDataLoss?: boolean;
+}) {
   if (result.error) {
     return (
       <div className="warn-inline">
@@ -110,6 +122,7 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
     );
   }
 
+  const dropMode = dropModeFrom(allowDataLoss);
   const totals = summarizeDataCompare(result);
   const different = result.tables.filter((t) => t.status === "different");
   const targetOnly = result.tables.filter((t) => t.status === "targetOnly");
@@ -133,9 +146,18 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
           It fires on unreadDrops as well, because a dropped table the run never
           reached is dropped exactly the same. Keying this on the row count
           alone is what let a schema of more than sixty tables push every drop
-          past the cap and show no banner at all. */}
+          past the cap and show no banner at all.
+
+          What it says depends on dropMode, because the same rows are in three
+          different situations. With the switch off the script's DROP TABLEs are
+          commented out, and "would be destroyed" over a script that destroys
+          nothing contradicts the diff card two inches above saying the drop is
+          held back — of the two, the card was right. */}
       {totals.rowsAtRiskOfDrop + totals.unreadDrops > 0 && (
-        <div className="banner">
+        <div className={dropMode === "armed" ? "banner" : "warn-inline"}>
+          <span className="ico">
+            <AlertTriangleIcon size={14} />
+          </span>
           <div>
             <div className="title">
               {totals.rowsAtRiskOfDrop > 0
@@ -143,12 +165,16 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
                     totals.rowsAtRiskOfDrop,
                     "row",
                     "rows",
-                  )} would be destroyed`
+                  )} ${
+                    dropMode === "armed"
+                      ? "would be destroyed"
+                      : "sit in tables a sync drops"
+                  }`
                 : `${totals.unreadDrops} ${plural(
                     totals.unreadDrops,
                     "table is",
                     "tables are",
-                  )} dropped — row count unknown`}
+                  )} dropped by a sync — row count unknown`}
             </div>
             <div className="body">
               {targetOnly.length + totals.unreadDrops}{" "}
@@ -160,8 +186,16 @@ export function DataCompare({ result }: { result: DataCompareReport }) {
               only in the target, so a full sync drops{" "}
               {plural(targetOnly.length + totals.unreadDrops, "it", "them")} — and the
               rows with{" "}
-              {plural(targetOnly.length + totals.unreadDrops, "it", "them")}. Nothing in
-              this app can put them back afterwards.
+              {plural(targetOnly.length + totals.unreadDrops, "it", "them")}.
+              {dropMode === "armed"
+                ? " Nothing in this app can put them back afterwards."
+                : dropMode === "safe"
+                  ? " “Allow data loss” is off, so the script below has those" +
+                    " drops commented out and running it as written leaves the rows" +
+                    " alone. Turning it on runs them, and nothing in this app can put" +
+                    " them back afterwards."
+                  : " No script is rendered here, so nothing on this page runs that" +
+                    " drop — but nothing could put the rows back either."}
               {totals.unreadDrops > 0
                 ? ` ${totals.unreadDrops} of ${plural(
                     totals.unreadDrops,

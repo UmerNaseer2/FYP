@@ -48,7 +48,19 @@ type DiffKind = "add" | "rem" | "chg";
  * These map 1:1 onto generateMigration()'s allowDataLoss option — see
  * lib/generate-sql.ts, which is the only thing that actually emits SQL.
  */
-type DropMode = "none" | "safe" | "armed";
+export type DropMode = "none" | "safe" | "armed";
+
+/**
+ * The one place allowDataLoss becomes a DropMode.
+ *
+ * Exported because the row-data panel below this report has to say the same
+ * thing about the same drops. It used to decide on its own and always say
+ * "would be destroyed", so with the switch off the page told the reader the
+ * rows were gone two inches under a card saying the drop was commented out.
+ */
+export function dropModeFrom(allowDataLoss: boolean | undefined): DropMode {
+  return allowDataLoss === undefined ? "none" : allowDataLoss ? "armed" : "safe";
+}
 
 const SIGN: Record<DiffKind, string> = { add: "+", rem: "−", chg: "~" };
 
@@ -813,8 +825,7 @@ export function DiffReport({
    */
   allowDataLoss?: boolean;
 }) {
-  const dropMode: DropMode =
-    allowDataLoss === undefined ? "none" : allowDataLoss ? "armed" : "safe";
+  const dropMode = dropModeFrom(allowDataLoss);
   const changedTables = report.matchedTables.filter((m) => m.hasChanges);
   const unchanged = report.matchedTables.filter((m) => !m.hasChanges);
   const tableRenames = report.possibleTableMatches;
