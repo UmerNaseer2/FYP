@@ -321,13 +321,16 @@ function foreignKeyLogicalSignature(
   ownSchema: string
 ): string {
   const referenced = normalizeIdentifier(foreignKey.referencedSchema ?? "");
-  // Sentinel for "references its own schema". The surrounding spaces make it
-  // impossible to collide with any real schema name: normalizeIdentifier() trims
-  // every referencedSchema, so no trimmed identifier can equal " self " — unlike
-  // the earlier "<self>", which is itself a legal (quoted) schema name.
+  // Sentinel for "references its own schema". The NUL bytes around it are what
+  // make it impossible to collide with a real schema name: PostgreSQL
+  // identifiers cannot contain a NUL, so no referencedSchema can ever equal
+  // this string — unlike the earlier "<self>", which is itself a legal (quoted)
+  // schema name. Written as escapes rather than literal NULs so the file stays
+  // plain text: raw NULs made `file` call this source binary and made grep skip
+  // it silently.
   const relativeSchema =
     referenced.length > 0 && referenced === normalizeIdentifier(ownSchema)
-      ? " self "
+      ? "\u0000self\u0000"
       : referenced;
   return [
     columnsAsOrderedSignature(foreignKey.columns),
