@@ -108,10 +108,11 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
 
       <div className="obj-group">
         <div className="help">
-          Columns, constraints, indexes and triggers are counted on tables that
-          exist on both sides. On a table that exists on one side only they are
-          created or dropped with the table itself, so counting them here would
-          report the same work twice.
+          Columns, constraints, indexes, triggers, row security and partitioning
+          are counted on tables that exist on both sides. On a table that exists
+          on one side only they are created or dropped with the table itself, so
+          counting them here would report the same work twice — the card for
+          that table lists them.
           {unmatched.length > 0 && (
             <>
               {" "}

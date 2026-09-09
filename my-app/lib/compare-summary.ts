@@ -208,6 +208,23 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     tableScopedDiffs.push(...match.objectDiffs);
   }
 
+  // "None on either side" is a claim about the SCHEMA, so it has to look at
+  // every table — not just the matched ones the counts are measured over. A
+  // schema whose only RLS is on a table the migration creates had this row
+  // hidden behind "none on either side", which is a flat contradiction of the
+  // ENABLE ROW LEVEL SECURITY the script below it writes. Same for a schema
+  // whose only partitioned table is new.
+  //
+  // The counts stay matched-only on purpose: whatever hangs off a one-sided
+  // table is created or dropped with that table, and counting it here as well
+  // would report the same work on two rows. The help text under the matrix
+  // says so.
+  for (const table of [...report.tablesOnlyInA, ...report.tablesOnlyInB]) {
+    const rls = table.rowSecurity;
+    if (rls && (rls.enabled || rls.policies.length > 0)) rowSecurityUsed = true;
+    if (isPartitioned(table)) partitioningUsed = true;
+  }
+
   rows.push({
     label: "Columns",
     compared: true,

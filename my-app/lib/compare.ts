@@ -4,6 +4,7 @@ import type {
   ConstraintSnapshot,
   ForeignKeySnapshot,
   RoutineSnapshot,
+  RowSecuritySnapshot,
   SchemaSnapshot,
   SequenceSnapshot,
   TablePartitioning,
@@ -1866,11 +1867,23 @@ function policyObjects(table: TableSnapshot): ComparableObject[] {
  * "changedDefinition" — there is no such thing as a table that has a switch in
  * one schema and no switch in the other.
  */
+/**
+ * The row-security switch as one short phrase.
+ *
+ * Exported because the report card for a brand-new table has to say the same
+ * thing about the same switch — a table created with RLS on is one the reader
+ * must be told about, and two places writing that sentence separately is how
+ * they end up disagreeing.
+ */
+export function describeRowSecurity(rls: RowSecuritySnapshot): string {
+  return !rls.enabled ? "DISABLED" : rls.forced ? "ENABLED, FORCED" : "ENABLED";
+}
+
 function rowSecurityObjects(table: TableSnapshot): ComparableObject[] {
   const rls = table.rowSecurity;
   if (!rls) return [];
 
-  const state = !rls.enabled ? "DISABLED" : rls.forced ? "ENABLED, FORCED" : "ENABLED";
+  const state = describeRowSecurity(rls);
   return [
     {
       key: "row security",

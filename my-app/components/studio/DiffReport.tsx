@@ -4,6 +4,8 @@ import {
   columnMatchSeverity,
   constraintDiffSeverity,
   describeConstraint,
+  describePartitioning,
+  describeRowSecurity,
   droppedColumnSeverity,
   objectDiffSeverity,
 } from "@/lib/compare";
@@ -406,18 +408,33 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
   // the same as the table having none — see ComparedObjectCategories.
   const indexes = table.indexes ?? [];
   const triggers = table.triggers ?? [];
+  // Same rule, and it matters most here: a table created with row security on
+  // and three policies is a table the migration locks down, and the card that
+  // used to stop at triggers said nothing about it at all. A snapshot with no
+  // record of RLS still says nothing, which is the honest answer for it.
+  const rls = table.rowSecurity;
+  const policies = rls?.policies ?? [];
+  const rlsIsOn = Boolean(rls && (rls.enabled || policies.length > 0));
+  const partitioning = table.partitioning;
+  const partitioned =
+    partitioning !== undefined && describePartitioning(partitioning) !== "standalone";
   const otherConstraints = [
     ...table.uniqueConstraints.map((c) => ({ tag: "uk", constraint: c })),
     ...table.checkConstraints.map((c) => ({ tag: "ck", constraint: c })),
     ...table.excludeConstraints.map((c) => ({ tag: "ex", constraint: c })),
   ];
+  // Partitioning is deliberately NOT in this count: it is a clause of the same
+  // CREATE TABLE the columns are in, not another thing created. The switch and
+  // the policies ARE separate statements, so they are.
   const adds =
     table.columns.length +
     (table.primaryKey ? 1 : 0) +
     table.foreignKeys.length +
     otherConstraints.length +
     indexes.length +
-    triggers.length;
+    triggers.length +
+    (rlsIsOn ? 1 : 0) +
+    policies.length;
 
   return (
     <details className="table-group" open>
@@ -503,6 +520,53 @@ function NewTableCard({ table }: { table: TableSnapshot }) {
               </span>
             </DiffLine>
           ))}
+        </div>
+      )}
+
+      {/* Row security. Only when it is actually on: every table has a switch,
+          so drawing "DISABLED" on all of them would bury the ones that matter.
+          A new table is created with the switch OFF whatever the source says,
+          so the script writes it out — and until this group existed, the one
+          statement that decides who can read the new table appeared in the SQL
+          and nowhere in the report. */}
+      {rls && rlsIsOn && (
+        <div className="obj-group">
+          <ObjHeader
+            label="Row security"
+            note={
+              policies.length === 0
+                ? "on, with no policies — nobody but the owner can read it"
+                : undefined
+            }
+          />
+          <DiffLine kind="add" tag="rls">
+            <b>{describeRowSecurity(rls)}</b>{" "}
+            <span className="muted">
+              {rls.forced
+                ? "policies apply to the table owner too"
+                : "the table owner bypasses the policies"}
+            </span>
+          </DiffLine>
+          {policies.map((policy) => (
+            <DiffLine key={policy.name} kind="add" tag="policy">
+              <b>{policy.name}</b>{" "}
+              <span className="muted">{policy.definition}</span>
+            </DiffLine>
+          ))}
+        </div>
+      )}
+
+      {/* Partitioning, when there is any. It is part of the CREATE TABLE rather
+          than a statement of its own, which is why it is last and why it does
+          not move the count above — but "this new table is a partition of
+          orders" is the single most important line on the card when it is
+          true. */}
+      {partitioning && partitioned && (
+        <div className="obj-group">
+          <ObjHeader label="Partitioning" note="part of the CREATE TABLE" />
+          <DiffLine kind="add" tag="partitioning">
+            <span className="muted">{describePartitioning(partitioning)}</span>
+          </DiffLine>
         </div>
       )}
     </details>
