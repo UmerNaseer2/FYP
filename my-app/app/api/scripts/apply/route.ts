@@ -73,6 +73,19 @@ type PgExecResult = { command?: string; rowCount?: number | null };
  */
 const UNSAFE_NEW_ENUM_VALUE = "55P04";
 
+/**
+ * How long a migration waits for a lock before giving up (see step 8).
+ *
+ * Fifteen seconds is a judgement call, not a measurement: long enough to ride
+ * out the ordinary short transaction that happens to be reading the table when
+ * the deploy lands, short enough that a genuinely busy table fails the deploy
+ * rather than blocking everyone behind it.
+ */
+const LOCK_TIMEOUT_MS = 15_000;
+
+/** PostgreSQL's SQLSTATE for "gave up waiting for a lock" (lock_not_available). */
+const LOCK_NOT_AVAILABLE = "55P03";
+
 // Safely quote a PostgreSQL identifier (schema name, table name).
 // Wraps in double-quotes and escapes any internal double-quotes.
 // Prevents SQL injection when the schema name comes from user input.
@@ -642,6 +655,51 @@ export async function POST(request: NextRequest) {
   // Derive the quoted schema identifier once — used in every query below.
   const quotedSchema = quoteIdent(schemaName);
 
+  // ─── 6b. The schema has to be there ──────────────────────────────────────
+  //
+  // A real apply used to discover this on its way through the ledger, which
+  // happens to produce a readable message. A dry run skips the ledger, so it
+  // got as far as `SET search_path` — which PostgreSQL happily accepts for a
+  // schema that does not exist — and then failed on the first CREATE with "no
+  // schema has been selected to create in", which tells the reader nothing.
+  // One check, before either path, so both say the same understandable thing.
+  try {
+    const exists = await client.query(
+      "SELECT 1 FROM information_schema.schemata WHERE schema_name = $1",
+      [schemaName]
+    );
+    if (exists.rows.length === 0) {
+      client.release();
+      await releaseClaimedApproval();
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          results: queue.map((job) => ({
+            script_name: job.scriptName,
+            version: job.version,
+            status: "skipped" as const,
+          })),
+          error:
+            `Schema "${schemaName}" does not exist on ` +
+            `${connRow.host}:${connRow.port}/${connRow.database_name}, so ` +
+            `nothing was run. Create it first, or pick a different schema.`,
+        },
+        { status: 400 }
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Apply — could not check the target schema:", message);
+    client.release();
+    await releaseClaimedApproval();
+    return NextResponse.json(
+      { error: `Could not check whether schema "${schemaName}" exists: ${message}` },
+      { status: 503 }
+    );
+  }
+
   // Track whether BEGIN has been issued so the catch block only ROLLBACK-s
   // when there is actually an active transaction to roll back.
   let transactionStarted = false;
@@ -687,6 +745,24 @@ export async function POST(request: NextRequest) {
     // blocks other writers for longer than it used to.
     await client.query("BEGIN");
     transactionStarted = true;
+
+    // Fail fast instead of queueing behind someone else's lock.
+    //
+    // ALTER TABLE needs ACCESS EXCLUSIVE, and PostgreSQL's default is to wait
+    // for it indefinitely. That wait is not quiet: the request holding the lock
+    // may be a thirty-second report, but every statement that arrives after our
+    // ALTER queues behind IT, so one blocked migration can stall writes to the
+    // table for as long as the deploy is willing to wait — which, by default,
+    // is forever. Giving up after fifteen seconds turns that into a clean
+    // ROLLBACK and an error the deploy screen can show, and the operator
+    // retries when the table is quiet.
+    //
+    // statement_timeout is deliberately NOT set alongside it: a migration that
+    // rewrites a large table legitimately takes minutes, and cancelling it
+    // half way is the thing this transaction exists to prevent.
+    //
+    // SET LOCAL, so the pooled connection goes back to the pool unchanged.
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
 
     // Scope unqualified names in the migration SQL to the target schema ONLY.
     // `public` is deliberately NOT on the path: with it, an unqualified DROP/RENAME/
@@ -1002,6 +1078,29 @@ export async function POST(request: NextRequest) {
             `Check the script_patch table to confirm.`,
         },
         { status: 409 }
+      );
+    }
+
+    // A lock timeout is not a broken script, and "canceling statement due to
+    // lock timeout" does not tell the operator that. Say what actually
+    // happened, and that trying again is the right response.
+    if (pgCode === LOCK_NOT_AVAILABLE) {
+      const blocked = failedJob
+        ? `Version ${failedJob.version} of "${failedJob.scriptName}"`
+        : "This run";
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, failedJob, "Timed out waiting for a lock."),
+          error:
+            `${blocked} waited ${LOCK_TIMEOUT_MS / 1000} seconds for a lock on a ` +
+            `table in "${schemaName}" and gave up, so nothing was applied. ` +
+            `Something else is holding that table — a long query, an open ` +
+            `transaction, another deploy. Try again once it finishes.`,
+        },
+        { status: 503 }
       );
     }
 

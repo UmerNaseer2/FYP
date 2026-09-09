@@ -29,10 +29,17 @@ import {
   fetchSchemaNames,
   fetchSchemaSnapshot,
   resolveCompareTargets,
+  POOL_MAX,
 } from "@/lib/postgres";
+import { mapWithLimit } from "@/lib/concurrency";
 import { compareSchemas, type CompareReport } from "@/lib/compare";
 import { compareRowData, type DataCompareReport } from "@/lib/compare-data";
-import { findTrackedSchema, getNextLineageVersion } from "@/lib/lineage-db";
+import {
+  findTrackedSchemas,
+  getNextLineageVersion,
+  trackedSchemaKey,
+  type TrackedSchemaHead,
+} from "@/lib/lineage-db";
 import {
   environmentRank,
   isProduction,
@@ -65,6 +72,26 @@ import type {
  * enforces it too, and a limit only one of them knows about is not a limit.
  */
 const MAX_TARGETS = MAX_COMPARISON_TARGETS;
+
+/**
+ * How many targets are compared at the same time.
+ *
+ * The arithmetic that matters: a target needs one connection to read its
+ * schema, and two more — source and target — for the whole of a row-data
+ * compare. Nothing says those are different databases. Comparing `public`
+ * against five sibling schemas in one database is an ordinary thing to do, and
+ * then every one of those connections comes out of the same pool of POOL_MAX.
+ *
+ * Six targets started together would ask that pool for twelve connections,
+ * each holding the one it got while waiting for a second that no one is going
+ * to release: a deadlock, and one that only appears on the runs with the most
+ * work in them. Two at a time needs four of the six, which leaves headroom for
+ * the drift check or the page load that happens to land mid-comparison.
+ *
+ * The cost is wall-clock on multi-target runs, and it is smaller than it
+ * looks — the targets were contending for the same six connections either way.
+ */
+const COMPARE_TARGET_CONCURRENCY = Math.max(1, Math.floor(POOL_MAX / 3));
 
 // ---------------------------------------------------------------------------
 // What the screen receives. Every type below is safe to serialise to a browser:
@@ -388,6 +415,7 @@ async function compareOneTarget(
     schemaOptions: string[];
     schemaListError: string | null;
   },
+  head: TrackedSchemaHead | null,
   allowDataLoss: boolean,
   compareData: boolean,
 ): Promise<TargetOutcome> {
@@ -434,14 +462,10 @@ async function compareOneTarget(
     };
   }
 
-  // The lineage head gives us both the schema's own environment label and the
-  // next version number, so ask for it alongside the snapshot rather than after.
-  const [snapshot, head] = await Promise.all([
-    fetchSchemaSnapshot(slot.target.config, slot.schema),
-    slot.connection
-      ? findTrackedSchema(slot.connection.id, slot.schema)
-      : Promise.resolve(null),
-  ]);
+  // The lineage head — the schema's own environment label and its current
+  // version — was resolved for every target in one query before this fan-out
+  // started, so all that is left here is the target database itself.
+  const snapshot = await fetchSchemaSnapshot(slot.target.config, slot.schema);
 
   const environment = louderEnvironment(
     connectionEnvironment,
@@ -763,8 +787,23 @@ export async function runComparison(
     if (!snapshot.ok) {
       sourceError = `Could not load ${sourceTarget.displayName}.${sourceSchema}: ${snapshot.error}`;
     } else {
-      outcomes = await Promise.all(
-        resolvedTargets.map((slot) =>
+      // Every target's lineage head in one round trip, before any target
+      // database is opened. Asking per target meant a query to the metadata
+      // database landing in the middle of another database's introspection
+      // transaction — correct, but needlessly tangled, and N round trips for
+      // what one query answers.
+      const heads = await findTrackedSchemas(
+        resolvedTargets.flatMap((slot) =>
+          slot.connection
+            ? [{ connectionId: slot.connection.id, schemaName: slot.schema }]
+            : [],
+        ),
+      );
+
+      outcomes = await mapWithLimit(
+        resolvedTargets,
+        COMPARE_TARGET_CONCURRENCY,
+        (slot) =>
           compareOneTarget(
             {
               snapshot: snapshot.data,
@@ -772,10 +811,12 @@ export async function runComparison(
               schema: sourceSchema,
             },
             slot,
+            slot.connection
+              ? heads.get(trackedSchemaKey(slot.connection.id, slot.schema)) ?? null
+              : null,
             allowDataLoss,
             compareData,
           ),
-        ),
       );
     }
   }
@@ -792,13 +833,14 @@ export async function runComparison(
       await syncMetadataTables();
 
       const left = `${sourceTarget.displayName}.${sourceSchema}`;
-      await Promise.all(
-        comparedPairs.map((outcome) =>
-          pool.query(
-            `INSERT INTO schema_comparisons (schema_a, schema_b) VALUES ($1, $2)`,
-            [left, `${outcome.target.displayName}.${outcome.schema}`],
-          ),
-        ),
+      // One statement, one row per target. The previous version fired a
+      // separate INSERT per target through Promise.all — up to six round trips,
+      // each borrowing a connection from the metadata pool, for what is one
+      // small write.
+      await pool.query(
+        `INSERT INTO schema_comparisons (schema_a, schema_b)
+         SELECT $1, unnest($2::text[])`,
+        [left, comparedPairs.map((o) => `${o.target.displayName}.${o.schema}`)],
       );
     } catch (error) {
       console.error("Failed to save comparison history:", error);

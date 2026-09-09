@@ -124,6 +124,76 @@ export type TrackedSchemaHead = {
   environment: Environment;
 };
 
+/** The (connection, schema) pair a caller wants a lineage head for. */
+export type TrackedSchemaRef = { connectionId: number; schemaName: string };
+
+/** How findTrackedSchemas keys its result — connection id and schema name. */
+export function trackedSchemaKey(connectionId: number, schemaName: string): string {
+  return `${connectionId}:${schemaName}`;
+}
+
+/**
+ * Lineage heads for several (connection, schema) pairs in ONE query.
+ *
+ * The Compare screen wants this for every target it is about to read, and
+ * asking per target was both N round trips and — worse — N round trips issued
+ * while the target databases were mid-introspection. Resolving the whole set
+ * up front means the fan-out that follows touches only the databases being
+ * compared, which is easier to reason about and easier to bound.
+ *
+ * Pairs that are not tracked are simply absent from the map; callers already
+ * treat "no head" as "not tracked".
+ */
+export async function findTrackedSchemas(
+  refs: readonly TrackedSchemaRef[]
+): Promise<Map<string, TrackedSchemaHead>> {
+  const found = new Map<string, TrackedSchemaHead>();
+  if (refs.length === 0) return found;
+
+  await syncMetadataTables();
+  const result = await pool.query<{
+    connection_id: number;
+    schema_name: string;
+    id: number;
+    environment: string | null;
+    head_version: string | null;
+    drift_status: DriftStatus | null;
+  }>(
+    `SELECT
+       ts.connection_id,
+       ts.schema_name,
+       ts.id,
+       ts.environment,
+       head.version AS head_version,
+       drift.status AS drift_status
+     FROM unnest($1::int[], $2::text[]) AS want(connection_id, schema_name)
+     JOIN tracked_schemas ts
+       ON ts.connection_id = want.connection_id
+      AND ts.schema_name = want.schema_name
+     LEFT JOIN LATERAL (
+       SELECT version FROM lineage_migrations lm
+       WHERE lm.tracked_schema_id = ts.id
+       ORDER BY lm.seq DESC LIMIT 1
+     ) head ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT status FROM drift_events de
+       WHERE de.tracked_schema_id = ts.id
+       ORDER BY de.detected_at DESC, de.id DESC LIMIT 1
+     ) drift ON TRUE`,
+    [refs.map((r) => r.connectionId), refs.map((r) => r.schemaName)]
+  );
+
+  for (const row of result.rows) {
+    found.set(trackedSchemaKey(row.connection_id, row.schema_name), {
+      trackedSchemaId: row.id,
+      headVersion: row.head_version,
+      driftStatus: row.drift_status,
+      environment: toEnvironment(row.environment),
+    });
+  }
+  return found;
+}
+
 /**
  * Find the tracked schema for a given (connection, schema) pair, with its
  * lineage HEAD version and latest drift status. Returns null when the pair
@@ -135,41 +205,8 @@ export async function findTrackedSchema(
   connectionId: number,
   schemaName: string
 ): Promise<TrackedSchemaHead | null> {
-  await syncMetadataTables();
-  const result = await pool.query<{
-    id: number;
-    environment: string | null;
-    head_version: string | null;
-    drift_status: DriftStatus | null;
-  }>(
-    `SELECT
-       ts.id,
-       ts.environment,
-       head.version AS head_version,
-       drift.status AS drift_status
-     FROM tracked_schemas ts
-     LEFT JOIN LATERAL (
-       SELECT version FROM lineage_migrations lm
-       WHERE lm.tracked_schema_id = ts.id
-       ORDER BY lm.seq DESC LIMIT 1
-     ) head ON TRUE
-     LEFT JOIN LATERAL (
-       SELECT status FROM drift_events de
-       WHERE de.tracked_schema_id = ts.id
-       ORDER BY de.detected_at DESC, de.id DESC LIMIT 1
-     ) drift ON TRUE
-     WHERE ts.connection_id = $1 AND ts.schema_name = $2
-     LIMIT 1`,
-    [connectionId, schemaName]
-  );
-  if (result.rows.length === 0) return null;
-  const r = result.rows[0];
-  return {
-    trackedSchemaId: r.id,
-    headVersion: r.head_version,
-    driftStatus: r.drift_status,
-    environment: toEnvironment(r.environment),
-  };
+  const found = await findTrackedSchemas([{ connectionId, schemaName }]);
+  return found.get(trackedSchemaKey(connectionId, schemaName)) ?? null;
 }
 
 /**

@@ -38,12 +38,69 @@ function normalizeCompareSsl(cfg: ClientConfig): ClientConfig {
   return cfg.ssl ? { ...cfg, ssl: { rejectUnauthorized: false } } : cfg;
 }
 
+/**
+ * Connections this app will open to any ONE target database.
+ *
+ * Deliberately small. These are other people's databases — a Supabase or Neon
+ * free tier tops out around fifteen connections for every client combined, and
+ * a comparison tool that eats a third of that budget is a bad guest. Reading a
+ * schema is one connection held for one transaction, so a bigger pool would buy
+ * parallelism the databases cannot afford.
+ *
+ * Callers that want several jobs at once size themselves against this number
+ * rather than raising it: see COMPARE_TARGET_CONCURRENCY in lib/compare-run.ts.
+ */
+export const POOL_MAX = 6;
+
+/**
+ * How long `pool.connect()` waits for a free connection before giving up.
+ *
+ * Without it, a caller that asks for a connection the pool cannot supply waits
+ * forever and the request hangs with no error anywhere — the worst possible
+ * failure for a screen whose job is to tell you what is wrong. Ten seconds is
+ * long enough to cover a TLS handshake to a sleeping serverless database and
+ * short enough that a wedged pool reports itself instead of timing out at the
+ * browser.
+ */
+const CONNECTION_TIMEOUT_MS = 10_000;
+
+/**
+ * How long an unused connection sits open before the pool closes it.
+ *
+ * pg's own default is 10s; 30s here because the studio's screens come in
+ * bursts — open Compare, look, run it again — and reconnecting to a hosted
+ * database costs a full TLS handshake each time.
+ */
+const IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Ceiling on any single catalog query in fetchSchemaSnapshot.
+ *
+ * Generous on purpose — introspecting a large schema is real work, and a
+ * comparison that gives up on a slow-but-healthy database is worse than one
+ * that takes a moment. This is a backstop against hanging, not a performance
+ * budget.
+ */
+const INTROSPECTION_TIMEOUT_MS = 30_000;
+
 export function getPoolForConfig(cfg: ClientConfig): Pool {
   const key = poolKey(cfg);
   const map = poolMap();
   let p = map.get(key);
   if (!p) {
-    p = new Pool({ ...cfg, max: 4 });
+    p = new Pool({
+      ...cfg,
+      max: POOL_MAX,
+      connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+      idleTimeoutMillis: IDLE_TIMEOUT_MS,
+    });
+    // A pool with no 'error' listener crashes the process when an idle
+    // connection drops — and hosted databases drop idle connections routinely.
+    // Log it and let the pool discard the client; the next caller gets a fresh
+    // one, which is exactly what the pool is for.
+    p.on("error", (error) => {
+      console.error(`Idle connection to ${cfg.host ?? "?"} failed:`, error.message);
+    });
     map.set(key, p);
   }
   return p;
@@ -1348,6 +1405,14 @@ export async function fetchSchemaSnapshot(
 
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+
+    // Catalog reads are normally milliseconds, but "normally" assumes the
+    // database is answering. A sleeping serverless compute, a schema with tens
+    // of thousands of objects, or a catalog read queued behind someone else's
+    // DDL can all leave a query hanging with nothing to show the user, and pg's
+    // own default is no limit at all. SET LOCAL scopes it to this transaction,
+    // so the pooled connection goes back unchanged for the next borrower.
+    await client.query(`SET LOCAL statement_timeout = ${INTROSPECTION_TIMEOUT_MS}`);
 
     const tableResult = await client.query<TableRow>(
         `SELECT table_name
