@@ -480,10 +480,19 @@ function DetailTab({
           ) : (
             <span>Connection removed</span>
           )}
+          {/*
+            The badge beside the schema name is the last RECORDED status, while
+            everything below it was recomputed live on this render. With no
+            record yet that produced a flat contradiction — "○ not checked" and
+            "No check recorded yet" sitting directly above a full drift report.
+            Saying where the report came from resolves it: the diff is live, the
+            badge is the saved result, and Check drift now is what saves one.
+          */}
+          <div className="mt-0.5">Read live on this page load</div>
           <div className="mt-0.5">
             {view.lastRecorded
               ? `Last recorded check · ${fmtDate(view.lastRecorded.detectedAt)}`
-              : "No check recorded yet"}
+              : "Nothing recorded yet — Check drift now saves it"}
           </div>
         </div>
       </div>
