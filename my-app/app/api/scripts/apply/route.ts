@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
 import pool, { ensureConnectionsTable } from "@/lib/version-db";
+import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl, extractEnumAddValues } from "@/lib/sql-guard";
@@ -18,11 +19,165 @@ type ChangeType = (typeof VALID_CHANGE_TYPES)[number];
 // script_patch.version is VARCHAR(20)
 const MAX_VERSION_LENGTH = 20;
 
+/**
+ * The part of a node-postgres result the dry-run report reads.
+ *
+ * A query with no values array goes over the simple protocol, so one string can
+ * hold many statements and the library hands back an ARRAY of results, one per
+ * statement — a shape its own QueryResult type does not describe.
+ */
+type PgExecResult = { command?: string; rowCount?: number | null };
+
+/**
+ * PostgreSQL's "unsafe use of new value of enum type" error.
+ *
+ * Raised when a statement uses a label that ALTER TYPE … ADD VALUE added in the
+ * same transaction. A real apply never sees it — those statements are hoisted
+ * out and committed first — so under a dry run it means the rehearsal hit a
+ * limit of rehearsing, not a fault in the script. The SQLSTATE only exists from
+ * PostgreSQL 12, hence the message fallback for older servers.
+ */
+const UNSAFE_NEW_ENUM_VALUE = "55P04";
+
 // Safely quote a PostgreSQL identifier (schema name, table name).
 // Wraps in double-quotes and escapes any internal double-quotes.
 // Prevents SQL injection when the schema name comes from user input.
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Create the ledger table this route writes to, and bring an older one up to
+ * date. Idempotent — safe to re-run on every request.
+ *
+ * Called BEFORE BEGIN deliberately: DDL inside a transaction is fine in
+ * PostgreSQL, but running it outside keeps the migration transaction focused on
+ * the user's SQL and the audit INSERT. If any step here fails, the caller has
+ * not issued BEGIN yet, so its catch block skips ROLLBACK and reports the setup
+ * error as-is.
+ *
+ * Because it commits as it goes, a dry run must not call it — see the dryRun
+ * guard at the call site.
+ */
+async function ensureScriptPatchTable(
+  client: PoolClient,
+  quotedSchema: string
+): Promise<void> {
+  // 7a. Create the table if it doesn't exist yet.
+  //     Includes script_name so fresh installs get the full schema.
+  //
+  //     `CREATE TABLE IF NOT EXISTS` is NOT concurrency-safe at the catalog
+  //     level: two first-time applies to the same brand-new schema can race
+  //     here, and the loser gets a duplicate-key / "already exists" error even
+  //     though the table now exists. Swallow exactly that race — the goal
+  //     ("ensure the table exists") is met either way, and the real duplicate
+  //     guard is the version check + advisory lock further down.
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ${quotedSchema}.script_patch (
+        id          SERIAL PRIMARY KEY,
+        script_name VARCHAR(150) NOT NULL DEFAULT 'unknown',
+        version     VARCHAR(20)  NOT NULL,
+        title       VARCHAR(150),
+        description TEXT,
+        change_type VARCHAR(20)  NOT NULL
+                      CHECK (change_type IN ('breaking', 'additive', 'patch', 'unknown')),
+        source_ref  TEXT,
+        sql_content TEXT,
+        applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (setupError) {
+    const m = (setupError instanceof Error ? setupError.message : String(setupError)).toLowerCase();
+    if (!m.includes("already exists") && !m.includes("duplicate key")) {
+      throw setupError;
+    }
+    // benign concurrent-creation race — the table exists, carry on.
+  }
+
+  // 7b. Add script_name to tables that were created by an older version of
+  //     this app (before the column existed).  IF NOT EXISTS makes this safe
+  //     to run when the column is already present.
+  await client.query(`
+    ALTER TABLE ${quotedSchema}.script_patch
+    ADD COLUMN IF NOT EXISTS script_name VARCHAR(150) NOT NULL DEFAULT 'unknown'
+  `);
+
+  // 7b-2. Same back-fill for source_ref, added in a later version. Nullable
+  //       so existing rows (and ad-hoc applies) need no value.
+  await client.query(`
+    ALTER TABLE ${quotedSchema}.script_patch
+    ADD COLUMN IF NOT EXISTS source_ref TEXT
+  `);
+
+  // 7b-3. Back-fill sql_content (added for Version Sync / version replay): the
+  //       exact SQL applied each time, so a behind schema can be brought up to
+  //       an ahead one by replaying its ledger. Nullable — rows applied before
+  //       this column existed simply have no stored script.
+  await client.query(`
+    ALTER TABLE ${quotedSchema}.script_patch
+    ADD COLUMN IF NOT EXISTS sql_content TEXT
+  `);
+
+  // 7c. Add a UNIQUE index so the DB itself enforces one row per
+  //     (script_name, version) pair — preventing race-condition duplicates
+  //     even when two apply calls land simultaneously.
+  //     Best-effort: if old rows have duplicate versions under the 'unknown'
+  //     family (from before script_name existed), index creation fails here
+  //     but uniqueness is still enforced by the SELECT check in step 8.
+  try {
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS script_patch_name_version_idx
+      ON ${quotedSchema}.script_patch (script_name, version)
+    `);
+  } catch {
+    console.warn(
+      "Apply — could not create unique index on script_patch " +
+      "(existing rows may have duplicate versions under 'unknown'). " +
+      "Uniqueness is still checked at INSERT time via the SELECT below."
+    );
+  }
+}
+
+/**
+ * Run the script's `ALTER TYPE … ADD VALUE IF NOT EXISTS` statements on their
+ * own, in autocommit, before the migration transaction opens.
+ *
+ * PostgreSQL will not let a value added by `ALTER TYPE … ADD VALUE` be USED
+ * by another statement in the same transaction — it raises "unsafe use of
+ * new value". Since step 8 runs the whole script as one transaction, a
+ * perfectly correct migration that adds an enum label and then, say, builds
+ * an index whose WHERE clause mentions it would fail halfway through.
+ *
+ * So those statements run first, on their own, in autocommit. Only the
+ * ones written with IF NOT EXISTS qualify, which means the copy left in the
+ * script turns into a no-op instead of an "already exists" error. Nothing
+ * is lost if the migration later rolls back: an enum label nothing
+ * references is inert, and the next run finds it already there.
+ *
+ * Committing is the whole point, so a dry run must not call it — see the dryRun
+ * guard at the call site.
+ */
+async function addEnumValuesOutsideTransaction(
+  client: PoolClient,
+  quotedSchema: string,
+  sqlContent: string
+): Promise<void> {
+  const enumAdditions = extractEnumAddValues(sqlContent);
+  if (enumAdditions.length > 0) {
+    // These statements name their type unqualified, so search_path has to
+    // point at the target schema — and this is outside any transaction, so
+    // SET LOCAL is not available and the session setting must be put back by
+    // hand before the client returns to the pool.
+    await client.query(`SET search_path TO ${quotedSchema}`);
+    try {
+      for (const statement of enumAdditions) {
+        await client.query(statement);
+      }
+    } finally {
+      await client.query("RESET search_path");
+    }
+  }
 }
 
 // Bare COMMIT / ROLLBACK detection lives in lib/sql-guard so the deploy page's
@@ -52,6 +207,16 @@ export async function POST(request: NextRequest) {
      * Absent or false against a production target is a refusal, not a default.
      */
     acknowledgeProduction?: boolean;
+    /**
+     * Run the script and then throw the work away instead of committing it.
+     *
+     * A rehearsal, not a review: the SQL really executes against the real target
+     * inside a transaction that always ends in ROLLBACK, so what it reports is
+     * what the database itself said, not what a parser guessed. Nothing is
+     * written — no ledger row, no lineage advance, and none of the setup DDL a
+     * real apply does outside the transaction.
+     */
+    dryRun?: boolean;
   };
 
   try {
@@ -138,6 +303,11 @@ export async function POST(request: NextRequest) {
   // Normalise source_ref — trim, and treat a blank string as "no source".
   const resolvedSourceRef = body.source_ref?.trim() || null;
 
+  // A dry run rehearses the script and rolls it back. Absent or false means a
+  // real apply — the flag has to be asked for explicitly, so a caller that
+  // knows nothing about it (Version Sync's replay) keeps committing as before.
+  const dryRun = body.dryRun === true;
+
   // ─── 4. Look up the saved connection from the app metadata database ───────
   // version-db is the same pool the Connections screen saves to, so a connection
   // created in the UI always resolves here. connection_string + ssl are read so
@@ -191,6 +361,13 @@ export async function POST(request: NextRequest) {
   // A tracked-schemas read that fails must not quietly downgrade the target to
   // "unset": that would turn an outage into permission. The connection's own
   // label still applies, and it is the one that says "prod" in practice.
+  //
+  // A dry run is gated too, deliberately. It commits nothing, but it really runs
+  // the script: a migration that rewrites a large table holds ACCESS EXCLUSIVE on
+  // it for the whole rewrite and only then rolls back, so "nothing was written"
+  // is not the same as "nothing happened to production". Exempting rehearsals
+  // would make the quiet way to lock a production table the one nobody has to
+  // confirm.
   let schemaEnvironment = toEnvironment(null);
   try {
     const tracked = await findTrackedSchema(connectionId, schemaName);
@@ -253,117 +430,15 @@ export async function POST(request: NextRequest) {
   let clientReleased = false;
 
   try {
-    // ─── 7. Ensure script_patch is ready (OUTSIDE the migration transaction) ─
+    // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
     //
-    // These three steps are idempotent — safe to re-run on every request.
-    // They run BEFORE BEGIN deliberately: DDL inside a transaction is fine in
-    // PostgreSQL, but running it outside keeps the migration transaction focused
-    // on the user's SQL and the audit INSERT.  If any setup step fails, the
-    // catch block skips ROLLBACK (transactionStarted is still false) and the
-    // error message explains what went wrong.
-
-    // 7a. Create the table if it doesn't exist yet.
-    //     Includes script_name so fresh installs get the full schema.
-    //
-    //     `CREATE TABLE IF NOT EXISTS` is NOT concurrency-safe at the catalog
-    //     level: two first-time applies to the same brand-new schema can race
-    //     here, and the loser gets a duplicate-key / "already exists" error even
-    //     though the table now exists. Swallow exactly that race — the goal
-    //     ("ensure the table exists") is met either way, and the real duplicate
-    //     guard is the version check + advisory lock further down.
-    try {
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS ${quotedSchema}.script_patch (
-          id          SERIAL PRIMARY KEY,
-          script_name VARCHAR(150) NOT NULL DEFAULT 'unknown',
-          version     VARCHAR(20)  NOT NULL,
-          title       VARCHAR(150),
-          description TEXT,
-          change_type VARCHAR(20)  NOT NULL
-                        CHECK (change_type IN ('breaking', 'additive', 'patch', 'unknown')),
-          source_ref  TEXT,
-          sql_content TEXT,
-          applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-    } catch (setupError) {
-      const m = (setupError instanceof Error ? setupError.message : String(setupError)).toLowerCase();
-      if (!m.includes("already exists") && !m.includes("duplicate key")) {
-        throw setupError;
-      }
-      // benign concurrent-creation race — the table exists, carry on.
-    }
-
-    // 7b. Add script_name to tables that were created by an older version of
-    //     this app (before the column existed).  IF NOT EXISTS makes this safe
-    //     to run when the column is already present.
-    await client.query(`
-      ALTER TABLE ${quotedSchema}.script_patch
-      ADD COLUMN IF NOT EXISTS script_name VARCHAR(150) NOT NULL DEFAULT 'unknown'
-    `);
-
-    // 7b-2. Same back-fill for source_ref, added in a later version. Nullable
-    //       so existing rows (and ad-hoc applies) need no value.
-    await client.query(`
-      ALTER TABLE ${quotedSchema}.script_patch
-      ADD COLUMN IF NOT EXISTS source_ref TEXT
-    `);
-
-    // 7b-3. Back-fill sql_content (added for Version Sync / version replay): the
-    //       exact SQL applied each time, so a behind schema can be brought up to
-    //       an ahead one by replaying its ledger. Nullable — rows applied before
-    //       this column existed simply have no stored script.
-    await client.query(`
-      ALTER TABLE ${quotedSchema}.script_patch
-      ADD COLUMN IF NOT EXISTS sql_content TEXT
-    `);
-
-    // 7c. Add a UNIQUE index so the DB itself enforces one row per
-    //     (script_name, version) pair — preventing race-condition duplicates
-    //     even when two apply calls land simultaneously.
-    //     Best-effort: if old rows have duplicate versions under the 'unknown'
-    //     family (from before script_name existed), index creation fails here
-    //     but uniqueness is still enforced by the SELECT check in step 8.
-    try {
-      await client.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS script_patch_name_version_idx
-        ON ${quotedSchema}.script_patch (script_name, version)
-      `);
-    } catch {
-      console.warn(
-        "Apply — could not create unique index on script_patch " +
-        "(existing rows may have duplicate versions under 'unknown'). " +
-        "Uniqueness is still checked at INSERT time via the SELECT below."
-      );
-    }
-
-    // ─── 7d. Add new enum values BEFORE the transaction opens ───────────────
-    //
-    // PostgreSQL will not let a value added by `ALTER TYPE … ADD VALUE` be USED
-    // by another statement in the same transaction — it raises "unsafe use of
-    // new value". Since step 8 runs the whole script as one transaction, a
-    // perfectly correct migration that adds an enum label and then, say, builds
-    // an index whose WHERE clause mentions it would fail halfway through.
-    //
-    // So those statements run first, on their own, in autocommit. Only the
-    // ones written with IF NOT EXISTS qualify, which means the copy left in the
-    // script turns into a no-op instead of an "already exists" error. Nothing
-    // is lost if the migration later rolls back: an enum label nothing
-    // references is inert, and the next run finds it already there.
-    const enumAdditions = extractEnumAddValues(sql_content);
-    if (enumAdditions.length > 0) {
-      // These statements name their type unqualified, so search_path has to
-      // point at the target schema — and this is outside any transaction, so
-      // SET LOCAL is not available and the session setting must be put back by
-      // hand before the client returns to the pool.
-      await client.query(`SET search_path TO ${quotedSchema}`);
-      try {
-        for (const statement of enumAdditions) {
-          await client.query(statement);
-        }
-      } finally {
-        await client.query("RESET search_path");
-      }
+    // Both of these run OUTSIDE the migration transaction, which is exactly why
+    // a dry run skips them: whatever they do is committed the moment it runs and
+    // no ROLLBACK can take it back. See each function for what it does and why it
+    // has to sit out here.
+    if (!dryRun) {
+      await ensureScriptPatchTable(client, quotedSchema);
+      await addEnumValuesOutsideTransaction(client, quotedSchema, sql_content);
     }
 
     // ─── 8. Run the migration inside a transaction ────────────────────────
@@ -401,20 +476,43 @@ export async function POST(request: NextRequest) {
     // number (e.g. users_migration v1.0.0 and products_migration v1.0.0
     // are completely independent — blocking one because of the other would
     // be wrong).
-    const duplicateCheck = await client.query<{ id: number }>(
-      `SELECT id
-       FROM ${quotedSchema}.script_patch
-       WHERE script_name = $1
-         AND version     = $2
-       LIMIT 1`,
-      [script_name.trim(), version.trim()]
-    );
+    //
+    // A dry run may be rehearsing against a schema that has never been deployed
+    // to, where script_patch does not exist yet: a real apply would have created
+    // it in step 7 and a dry run deliberately did not. So the dry run asks first
+    // rather than letting the read fail. Asking is not squeamishness — inside an
+    // open transaction PostgreSQL marks the WHOLE transaction aborted on any
+    // error, so a failed read would leave every later statement returning 25P02
+    // and the rehearsal would report nothing at all. A real apply skips the
+    // question: step 7 just created the table.
+    let ledgerReady = true;
+    if (dryRun) {
+      const ledgerProbe = await client.query<{ present: boolean }>(
+        `SELECT to_regclass($1) IS NOT NULL AS present`,
+        [`${quotedSchema}.script_patch`]
+      );
+      ledgerReady = ledgerProbe.rows[0]?.present === true;
+    }
 
-    if (duplicateCheck.rows.length > 0) {
+    let alreadyApplied = false;
+    if (ledgerReady) {
+      const duplicateCheck = await client.query<{ id: number }>(
+        `SELECT id
+         FROM ${quotedSchema}.script_patch
+         WHERE script_name = $1
+           AND version     = $2
+         LIMIT 1`,
+        [script_name.trim(), version.trim()]
+      );
+      alreadyApplied = duplicateCheck.rows.length > 0;
+    }
+
+    if (alreadyApplied) {
       await client.query("ROLLBACK");
       transactionStarted = false;
       return NextResponse.json(
         {
+          dryRun,
           error:
             `Version ${version.trim()} of "${script_name.trim()}" has already been applied ` +
             `to schema "${schemaName}". Check the script_patch table to confirm.`,
@@ -424,7 +522,57 @@ export async function POST(request: NextRequest) {
     }
 
     // ─── All preconditions passed — now run the actual migration SQL ──────
-    await client.query(sql_content);
+    //
+    // No values array, so this goes over the simple query protocol and
+    // PostgreSQL runs every statement in the string. node-postgres then hands
+    // back one result per statement instead of a single result object, which is
+    // what the dry-run report below counts.
+    const execution = (await client.query(sql_content)) as unknown as
+      | PgExecResult
+      | PgExecResult[];
+
+    // ─── 8b. A dry run stops here and throws the work away ─────────────────
+    //
+    // Everything above ran against the real target; nothing below it did. The
+    // ROLLBACK undoes the script, the advisory lock is released with the
+    // transaction, and the two steps that would have outlived it — the ledger
+    // INSERT and the lineage advance — are simply never reached.
+    if (dryRun) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+      client.release();
+      clientReleased = true;
+
+      const statements = (Array.isArray(execution) ? execution : [execution]).map(
+        (result) => ({
+          command: result?.command ?? null,
+          rowCount: typeof result?.rowCount === "number" ? result.rowCount : null,
+        })
+      );
+
+      return NextResponse.json({
+        success: true,
+        dryRun: true,
+        version: version.trim(),
+        schema: schemaName,
+        statements,
+        // False means script_patch does not exist in this schema yet, so a real
+        // apply would create it and this would be its first row.
+        ledgerReady,
+        // A real apply hoists these OUT of the transaction and commits them on
+        // their own, because PostgreSQL refuses to let a value added by
+        // ALTER TYPE … ADD VALUE be used in the transaction that added it. A dry
+        // run cannot do that without leaving the values behind, so it ran them
+        // inline — which is also why a script that USES one of its own new
+        // values fails here and would succeed for real. See the 55P04 branch in
+        // the catch block below.
+        deferredEnumAdditions: extractEnumAddValues(sql_content).length,
+        message:
+          `Dry run of v${version.trim()} completed on schema "${schemaName}" — ` +
+          `${statements.length} statement${statements.length === 1 ? " was" : "s were"} ` +
+          `run and rolled back. Nothing was written.`,
+      });
+    }
 
     // Record this migration in the audit log.
     // title is VARCHAR(150) — truncate before INSERT to prevent a DB error
@@ -489,6 +637,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      dryRun: false,
       version: version.trim(),
       appliedAt,
       schema: schemaName,
@@ -507,7 +656,38 @@ export async function POST(request: NextRequest) {
     }
 
     const message = error instanceof Error ? error.message : String(error);
-    console.error("Apply — script execution failed:", message);
+    console.error(
+      dryRun ? "Apply — dry run failed:" : "Apply — script execution failed:",
+      message
+    );
+
+    // A dry run that tripped over its own enum hoist has to say so, or the
+    // reader reasonably concludes the script is broken when it is not. This is
+    // only true when the script actually carries hoistable additions: a bare
+    // ALTER TYPE … ADD VALUE without IF NOT EXISTS is never hoisted, so a real
+    // apply would fail on it in exactly the same way and the caveat would be a
+    // lie.
+    const pgCode = (error as { code?: string }).code;
+    if (
+      dryRun &&
+      (pgCode === UNSAFE_NEW_ENUM_VALUE ||
+        message.toLowerCase().includes("unsafe use of new value")) &&
+      extractEnumAddValues(sql_content).length > 0
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun: true,
+          dryRunLimitation: true,
+          error:
+            `Dry run could not rehearse this script: it adds an enum value and then ` +
+            `uses it, and PostgreSQL refuses that inside one transaction. A real ` +
+            `apply adds the value first, on its own, so this is a limit of the ` +
+            `rehearsal and not a fault in the script. PostgreSQL said: ${message}`,
+        },
+        { status: 422 }
+      );
+    }
 
     // Catch race-condition duplicates: two concurrent requests for the same
     // (script_name, version) can both pass the SELECT check above but then
@@ -517,8 +697,8 @@ export async function POST(request: NextRequest) {
     // (a different constraint) means the script actually FAILED and rolled back —
     // it must surface as a 500 with the real message, not a misleading "already
     // applied".
-    const pgErr = error as { code?: string; constraint?: string };
-    if (pgErr.code === "23505" && pgErr.constraint === "script_patch_name_version_idx") {
+    const constraint = (error as { constraint?: string }).constraint;
+    if (pgCode === "23505" && constraint === "script_patch_name_version_idx") {
       return NextResponse.json(
         {
           success: false,
@@ -531,7 +711,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { success: false, error: message },
+      { success: false, dryRun, error: message },
       { status: 500 }
     );
 
