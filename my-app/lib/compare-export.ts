@@ -48,7 +48,8 @@ export type ChangeCategory =
   | "View"
   | "Sequence"
   | "Type"
-  | "Function";
+  | "Function"
+  | "Row security";
 
 /**
  * What the migration would do.
@@ -145,6 +146,8 @@ const OBJECT_CATEGORY: Record<ObjectKind, ChangeCategory> = {
   "RANGE TYPE": "Type",
   FUNCTION: "Function",
   PROCEDURE: "Function",
+  POLICY: "Row security",
+  "ROW SECURITY": "Row security",
 };
 
 /**
@@ -162,6 +165,7 @@ const SUMMARY_LABEL_CATEGORY: Record<string, ChangeCategory | undefined> = {
   Sequences: "Sequence",
   "Enums & types": "Type",
   Functions: "Function",
+  "Row security": "Row security",
 };
 
 /** The verdict for an object diff, in the export's vocabulary. */
@@ -283,7 +287,8 @@ export function buildDiffDocument(
       });
     }
 
-    // Indexes and triggers hang off the table, so they carry its name.
+    // Indexes, triggers and row security hang off the table, so they carry
+    // its name.
     for (const diff of match.objectDiffs) {
       changes.push({
         category: OBJECT_CATEGORY[diff.kind],

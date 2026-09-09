@@ -1489,6 +1489,8 @@ const OBJECT_KIND_LABEL: Record<ObjectKind, string> = {
   "RANGE TYPE": "Range type",
   FUNCTION: "Function",
   PROCEDURE: "Procedure",
+  POLICY: "Policy",
+  "ROW SECURITY": "Row security on",
 };
 
 /**
@@ -1525,6 +1527,11 @@ type ComparableObject = {
  * breaking for that reason.
  */
 function objectCreateSeverity(obj: ComparableObject): ChangeSeverity {
+  // A policy is an authorization rule, and a new one always takes something
+  // away from somebody: a RESTRICTIVE policy removes rows a caller could read,
+  // a PERMISSIVE one removes the protection on rows they could not. Neither is
+  // a change anyone should skim past, so both are graded the same way.
+  if (obj.kind === "POLICY") return "breaking";
   return obj.kind === "INDEX" && obj.enforcesUniqueness === true ? "breaking" : "info";
 }
 
@@ -1557,6 +1564,11 @@ function objectChangeSeverity(
   target: ComparableObject
 ): ChangeSeverity {
   if (source.kind === "VIEW" || source.kind === "MATERIALIZED VIEW") return "breaking";
+  // Both directions of the row-security switch are dangerous, which is why
+  // there is no "safe" side to it: turning it ON makes working queries return
+  // zero rows, turning it OFF makes every row in the table world-visible.
+  // A rewritten policy is graded with the same reasoning as a new one.
+  if (source.kind === "POLICY" || source.kind === "ROW SECURITY") return "breaking";
   if (source.kind === "INDEX") {
     return objectDropSeverity(target) === "breaking" ||
       objectCreateSeverity(source) === "breaking"
@@ -1680,6 +1692,43 @@ function triggerObjects(table: TableSnapshot): ComparableObject[] {
   }));
 }
 
+function policyObjects(table: TableSnapshot): ComparableObject[] {
+  return (table.rowSecurity?.policies ?? []).map((policy) => ({
+    key: normalizeIdentifier(policy.name),
+    kind: "POLICY" as const,
+    name: policy.name,
+    definition: policy.definition,
+    normalizedDefinition: policy.normalizedDefinition,
+    table: table.name,
+  }));
+}
+
+/**
+ * The row-security switch as a one-element list, so it rides the same
+ * compare-two-lists machinery as everything else.
+ *
+ * Always exactly one element when the snapshot recorded row security, so the
+ * two sides always match on key and the only status it can ever produce is
+ * "changedDefinition" — there is no such thing as a table that has a switch in
+ * one schema and no switch in the other.
+ */
+function rowSecurityObjects(table: TableSnapshot): ComparableObject[] {
+  const rls = table.rowSecurity;
+  if (!rls) return [];
+
+  const state = !rls.enabled ? "DISABLED" : rls.forced ? "ENABLED, FORCED" : "ENABLED";
+  return [
+    {
+      key: "row security",
+      kind: "ROW SECURITY" as const,
+      name: table.name,
+      definition: state,
+      normalizedDefinition: state,
+      table: table.name,
+    },
+  ];
+}
+
 function viewObjects(views: ViewSnapshot[]): ComparableObject[] {
   return views.map((view) => ({
     key: normalizeIdentifier(view.name),
@@ -1752,14 +1801,34 @@ function routineObjects(routines: RoutineSnapshot[]): ComparableObject[] {
 }
 
 /** Indexes and triggers, which belong to one table. */
-function compareTableObjects(left: TableSnapshot, right: TableSnapshot): ObjectDiff[] {
+/**
+ * Indexes, triggers and row security, which belong to one table.
+ *
+ * The two scope names are the SCHEMAS, not the tables. They only ever appear in
+ * the "exists only in X" summary, and naming the table there made every line
+ * read as if the object were somewhere inside the table it is already listed
+ * under — "Index ix_code exists only in orders" says nothing about which of the
+ * two schemas has it, which is the entire question.
+ */
+function compareTableObjects(
+  left: TableSnapshot,
+  right: TableSnapshot,
+  leftSchema: string,
+  rightSchema: string
+): ObjectDiff[] {
   const diffs: ObjectDiff[] = [];
 
   if (left.indexes && right.indexes) {
-    diffs.push(...compareObjectLists(indexObjects(left), indexObjects(right), left.name, right.name));
+    diffs.push(...compareObjectLists(indexObjects(left), indexObjects(right), leftSchema, rightSchema));
   }
   if (left.triggers && right.triggers) {
-    diffs.push(...compareObjectLists(triggerObjects(left), triggerObjects(right), left.name, right.name));
+    diffs.push(...compareObjectLists(triggerObjects(left), triggerObjects(right), leftSchema, rightSchema));
+  }
+  if (left.rowSecurity && right.rowSecurity) {
+    diffs.push(
+      ...compareObjectLists(rowSecurityObjects(left), rowSecurityObjects(right), leftSchema, rightSchema)
+    );
+    diffs.push(...compareObjectLists(policyObjects(left), policyObjects(right), leftSchema, rightSchema));
   }
 
   return diffs;
@@ -1805,6 +1874,7 @@ function comparedCategories(
     sequences: Boolean(left.sequences && right.sequences),
     types: Boolean(left.types && right.types),
     routines: Boolean(left.routines && right.routines),
+    rowSecurity: matchedTables.some((m) => Boolean(m.left.rowSecurity && m.right.rowSecurity)),
   };
 }
 
@@ -1823,7 +1893,7 @@ function compareMatchedTables(
 ): TableMatch {
   const columnResult    = compareColumns(left, right);
   const constraintDiffs = compareConstraints(left, right, leftSchema, rightSchema);
-  const objectDiffs     = compareTableObjects(left, right);
+  const objectDiffs     = compareTableObjects(left, right, leftSchema, rightSchema);
 
   const changedSections = new Set<string>();
   if (columnResult.columnsOnlyInA.length > 0 || columnResult.columnsOnlyInB.length > 0 || columnResult.columnMatches.some((m) => m.changes.length > 0)) changedSections.add("Columns");
@@ -1834,6 +1904,7 @@ function compareMatchedTables(
   if (constraintDiffs.some((d) => d.kind === "EXCLUDE"))       changedSections.add("Exclude constraints");
   if (objectDiffs.some((d) => d.kind === "INDEX"))             changedSections.add("Indexes");
   if (objectDiffs.some((d) => d.kind === "TRIGGER"))           changedSections.add("Triggers");
+  if (objectDiffs.some((d) => d.kind === "POLICY" || d.kind === "ROW SECURITY")) changedSections.add("Row security");
   if (!exact)                                                   changedSections.add("Similarity matched");
 
   return {

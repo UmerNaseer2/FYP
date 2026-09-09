@@ -302,6 +302,103 @@ export type TriggerSnapshot = {
   enabled: boolean;
 };
 
+/**
+ * One row-level security policy: the rule that decides which rows a query is
+ * allowed to see or write.
+ *
+ * On Supabase — which is the environment MANAGED_SCHEMAS above is written for —
+ * policies ARE the authorization model for every table the anon key can reach.
+ * A schema promoted as "in sync" while its policies were never compared is a
+ * schema whose access rules were never checked, which is the opposite of what
+ * the word "sync" promises.
+ */
+export type PolicySnapshot = {
+  name: string;
+  /** The table the policy guards. Policies are per-table, never schema-wide. */
+  table: string;
+  /** PERMISSIVE policies OR together; RESTRICTIVE ones AND on top. */
+  permissive: boolean;
+  /** ALL, SELECT, INSERT, UPDATE or DELETE. */
+  command: string;
+  /** The roles it applies to. `["public"]` means everybody. */
+  roles: string[];
+  /** The USING expression — which existing rows are visible. */
+  using: string | null;
+  /** The WITH CHECK expression — which new rows may be written. */
+  withCheck: string | null;
+  /**
+   * Everything after `CREATE POLICY <name> ON <table> `, so the generator can
+   * write the statement by concatenation and never has to re-derive the
+   * clause order.
+   */
+  definition: string;
+  normalizedDefinition: string;
+};
+
+/**
+ * Whether row-level security is switched on for one table, and the policies
+ * attached to it.
+ *
+ * The enable flag is separate from the policies on purpose: a table with three
+ * policies and RLS switched OFF enforces none of them, and a table with RLS ON
+ * and no policies denies everything to everybody except its owner. Both are
+ * silent in every other part of a snapshot.
+ */
+export type RowSecuritySnapshot = {
+  /** pg_class.relrowsecurity — ALTER TABLE … ENABLE ROW LEVEL SECURITY. */
+  enabled: boolean;
+  /** pg_class.relforcerowsecurity — policies apply to the table owner too. */
+  forced: boolean;
+  policies: PolicySnapshot[];
+};
+
+/**
+ * Role names as `TO ...` wants them.
+ *
+ * `public` is a keyword here, not a role: PostgreSQL has no role called public,
+ * so `TO "public"` fails with `role "public" does not exist` while `TO public`
+ * is the "everybody" form pg_policies reports for an unrestricted policy. Same
+ * for the CURRENT_USER family. Everything else is a real role name and gets
+ * quoted like any other identifier.
+ */
+const UNQUOTED_ROLE_SPECS = new Set([
+  "public",
+  "current_role",
+  "current_user",
+  "session_user",
+]);
+
+function quoteRole(role: string): string {
+  if (UNQUOTED_ROLE_SPECS.has(role.toLowerCase())) {
+    return role.toLowerCase();
+  }
+  return `"${role.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Everything after `CREATE POLICY <name> ON <table> `, in the order the grammar
+ * requires: AS, FOR, TO, USING, WITH CHECK.
+ */
+function buildPolicyDefinition(policy: {
+  permissive: boolean;
+  command: string;
+  roles: string[];
+  using: string | null;
+  withCheck: string | null;
+}): string {
+  const parts = [
+    `AS ${policy.permissive ? "PERMISSIVE" : "RESTRICTIVE"}`,
+    `FOR ${policy.command}`,
+  ];
+  // An empty role list should never come back from the catalog, but writing
+  // `TO ` with nothing after it is a syntax error rather than a wrong answer,
+  // so fall back to the value pg_policies uses for "everybody".
+  parts.push(`TO ${(policy.roles.length > 0 ? policy.roles : ["public"]).map(quoteRole).join(", ")}`);
+  if (policy.using !== null) parts.push(`USING (${policy.using})`);
+  if (policy.withCheck !== null) parts.push(`WITH CHECK (${policy.withCheck})`);
+  return parts.join(" ");
+}
+
 /** A view or materialized view. */
 export type ViewSnapshot = {
   name: string;
@@ -415,6 +512,12 @@ export type TableSnapshot = {
   indexes?: IndexSnapshot[];
   /** Optional on purpose — see the note on SchemaSnapshot. */
   triggers?: TriggerSnapshot[];
+  /**
+   * Row-level security for this table. Optional on purpose — see the note on
+   * SchemaSnapshot: a snapshot captured before this existed must not read as
+   * "RLS was off", or every tracked schema would show phantom drift.
+   */
+  rowSecurity?: RowSecuritySnapshot;
 };
 
 /**
@@ -636,6 +739,22 @@ export async function fetchSchemaSnapshot(
     enabled: boolean;
   };
 
+  type RowSecurityRow = {
+    table_name: string;
+    enabled: boolean;
+    forced: boolean;
+  };
+
+  type PolicyRow = {
+    table_name: string;
+    name: string;
+    permissive: boolean;
+    command: string;
+    roles: string[] | null;
+    using: string | null;
+    with_check: string | null;
+  };
+
   type ViewRow = {
     name: string;
     kind: "v" | "m";
@@ -679,14 +798,14 @@ export async function fetchSchemaSnapshot(
     returns: string | null;
   };
 
-  // Nine catalog queries now describe one schema, and they have to agree with
+  // Eleven catalog queries now describe one schema, and they have to agree with
   // each other: a table that appears in the table list but whose columns were
   // read a moment later, after someone dropped it, produces a snapshot that
   // claims a table with no columns.
   //
   // The previous three queries ran on three separate pooled connections via
   // Promise.all, so each saw its own MVCC snapshot and the assembly loops
-  // papered over the mismatch with `if (!table) continue`. Nine of those would
+  // papered over the mismatch with `if (!table) continue`. Eleven of those would
   // also overflow the pool's `max: 4` and start queueing anyway, so there is no
   // parallelism left to lose. One connection inside a REPEATABLE READ READ ONLY
   // transaction is both consistent and cheaper on the pool: every query below
@@ -854,6 +973,44 @@ export async function fetchSchemaSnapshot(
          AND NOT t.tgisinternal
          AND c.relname <> ALL($2)
        ORDER BY c.relname, t.tgname`,
+      [schemaName, COMPARE_IGNORED_TABLES]
+    );
+
+    // Two queries for row-level security, because the switch and the rules live
+    // in different places: relrowsecurity says whether policies are enforced at
+    // all, pg_policy holds the policies themselves. Reading only one of them
+    // gives an answer that is confidently wrong — three policies with the
+    // switch off enforce nothing.
+    const rowSecurityResult = await client.query<RowSecurityRow>(
+      `SELECT
+         c.relname AS table_name,
+         c.relrowsecurity AS enabled,
+         c.relforcerowsecurity AS forced
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1
+         AND c.relkind IN ('r', 'p')
+         AND c.relname <> ALL($2)
+       ORDER BY c.relname`,
+      [schemaName, COMPARE_IGNORED_TABLES]
+    );
+
+    // pg_policies rather than pg_policy: it already resolves role OIDs to names
+    // and runs pg_get_expr for us, and being a view owned by a superuser it is
+    // readable by an ordinary login role — pg_authid underneath it is not.
+    const policyResult = await client.query<PolicyRow>(
+      `SELECT
+         p.tablename AS table_name,
+         p.policyname AS name,
+         (p.permissive = 'PERMISSIVE') AS permissive,
+         p.cmd AS command,
+         p.roles AS roles,
+         p.qual AS "using",
+         p.with_check AS with_check
+       FROM pg_policies p
+       WHERE p.schemaname = $1
+         AND p.tablename <> ALL($2)
+       ORDER BY p.tablename, p.policyname`,
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
@@ -1030,6 +1187,52 @@ export async function fetchSchemaSnapshot(
         excludeConstraints: [],
         indexes: [],
         triggers: [],
+        // Filled in by the two row-security loops below. Starting at
+        // "off, no policies" is not a guess: every table the catalog did not
+        // report a flag for genuinely has RLS off.
+        rowSecurity: { enabled: false, forced: false, policies: [] },
+      });
+    }
+
+    for (const row of rowSecurityResult.rows) {
+      const table = tablesByName.get(row.table_name);
+      if (!table?.rowSecurity) {
+        continue;
+      }
+      table.rowSecurity.enabled = row.enabled;
+      table.rowSecurity.forced = row.forced;
+    }
+
+    for (const row of policyResult.rows) {
+      const table = tablesByName.get(row.table_name);
+      if (!table?.rowSecurity) {
+        continue;
+      }
+
+      // A policy expression names tables and functions the same way a CHECK
+      // does, so it carries the same own-schema qualifier that would make two
+      // identical policies in two schemas read as different.
+      const using = stripSchemaFromExpr(row.using, schemaName);
+      const withCheck = stripSchemaFromExpr(row.with_check, schemaName);
+      const roles = coerceTextArray(row.roles);
+      const definition = buildPolicyDefinition({
+        permissive: row.permissive,
+        command: row.command,
+        roles,
+        using,
+        withCheck,
+      });
+
+      table.rowSecurity.policies.push({
+        name: row.name,
+        table: row.table_name,
+        permissive: row.permissive,
+        command: row.command,
+        roles,
+        using,
+        withCheck,
+        definition,
+        normalizedDefinition: normalizeDefinition(definition),
       });
     }
 
@@ -1217,6 +1420,7 @@ export async function fetchSchemaSnapshot(
       table.excludeConstraints.sort((a, b) => a.name.localeCompare(b.name));
       table.indexes?.sort((a, b) => a.name.localeCompare(b.name));
       table.triggers?.sort((a, b) => a.name.localeCompare(b.name));
+      table.rowSecurity?.policies.sort((a, b) => a.name.localeCompare(b.name));
     }
 
     const views: ViewSnapshot[] = viewResult.rows.map((row) => {

@@ -110,6 +110,11 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   let indexTotalRight = 0;
   let triggerTotalLeft = 0;
   let triggerTotalRight = 0;
+  // The switch counts as one thing alongside the policies, because it is one
+  // thing that can differ: a table with RLS off and a table with RLS on and no
+  // policies both have zero policies and behave nothing alike.
+  let rowSecurityTotalLeft = 0;
+  let rowSecurityUsed = false;
   const tableScopedDiffs: ObjectDiff[] = [];
 
   for (const match of report.matchedTables) {
@@ -134,6 +139,20 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     indexTotalRight += match.right.indexes?.length ?? 0;
     triggerTotalLeft += match.left.triggers?.length ?? 0;
     triggerTotalRight += match.right.triggers?.length ?? 0;
+
+    if (match.left.rowSecurity) {
+      rowSecurityTotalLeft += match.left.rowSecurity.policies.length + 1;
+      if (match.left.rowSecurity.enabled || match.left.rowSecurity.policies.length > 0) {
+        rowSecurityUsed = true;
+      }
+    }
+    if (
+      match.right.rowSecurity &&
+      (match.right.rowSecurity.enabled || match.right.rowSecurity.policies.length > 0)
+    ) {
+      rowSecurityUsed = true;
+    }
+
     tableScopedDiffs.push(...match.objectDiffs);
   }
 
@@ -173,6 +192,19 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     absent: triggerTotalLeft === 0 && triggerTotalRight === 0,
     inSync: inSyncCount(triggerTotalLeft, triggers.added, triggers.changed),
     ...triggers,
+  });
+
+  const rowSecurity = tallyObjects(tableScopedDiffs, ["POLICY", "ROW SECURITY"]);
+  rows.push({
+    label: "Row security",
+    compared: categories.rowSecurity,
+    // Hidden when neither side uses row security at all. Not when the totals
+    // are zero — every table contributes a switch, so the totals are never
+    // zero once row security is recorded, and a permanent "0 / 0" row on
+    // schemas that have never heard of RLS is noise the matrix does not need.
+    absent: !rowSecurityUsed,
+    inSync: inSyncCount(rowSecurityTotalLeft, rowSecurity.added, rowSecurity.changed),
+    ...rowSecurity,
   });
 
   const views = tallyObjects(report.objectDiffs, VIEW_KINDS);

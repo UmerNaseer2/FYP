@@ -130,7 +130,9 @@ export type ObjectKind =
   | "COMPOSITE TYPE"
   | "RANGE TYPE"
   | "FUNCTION"
-  | "PROCEDURE";
+  | "PROCEDURE"
+  | "POLICY"
+  | "ROW SECURITY";
 
 export type ObjectDiff = {
   kind: ObjectKind;
@@ -178,6 +180,7 @@ export type ComparedObjectCategories = {
   sequences: boolean;
   types: boolean;
   routines: boolean;
+  rowSecurity: boolean;
 };
 
 export type TableMatch = {
@@ -191,7 +194,7 @@ export type TableMatch = {
   columnsOnlyInB: ColumnSnapshot[];
   possibleColumnMatches: MatchCandidate[];
   constraintDiffs: ConstraintDiff[];
-  /** Table-scoped object differences: indexes and triggers. */
+  /** Table-scoped object differences: indexes, triggers and row security. */
   objectDiffs: ObjectDiff[];
   changedSections: string[];
   hasChanges: boolean;

@@ -9,7 +9,9 @@ import type {
   ConstraintSnapshot,
   ForeignKeySnapshot,
   IndexSnapshot,
+  PolicySnapshot,
   RoutineSnapshot,
+  RowSecuritySnapshot,
   SequenceSnapshot,
   TableSnapshot,
   TriggerSnapshot,
@@ -55,6 +57,9 @@ export type SqlStatementKind =
   | "DROP_INDEX"
   | "CREATE_TRIGGER"
   | "DROP_TRIGGER"
+  | "ALTER_ROW_SECURITY"
+  | "CREATE_POLICY"
+  | "DROP_POLICY"
   | "CREATE_VIEW"
   | "DROP_VIEW"
   | "CREATE_SEQUENCE"
@@ -416,6 +421,78 @@ function dropTriggerStatement(triggerName: string, tableName: string): SqlStatem
     sql: `DROP TRIGGER IF EXISTS ${q(triggerName)} ON ${q(tableName)};`,
     description: `Drop trigger "${triggerName}" from "${tableName}" — WARNING: the behaviour it enforced stops`,
     kind: "DROP_TRIGGER",
+    severity: "breaking",
+    tableName,
+  });
+}
+
+// ── Row-level security ─────────────────────────────────────────────────────
+
+/**
+ * Bring one table's row-security switches to the source's setting.
+ *
+ * Two switches, not one: ENABLE decides whether policies are enforced at all,
+ * FORCE decides whether they are enforced against the table's own owner too.
+ * Only the ones that actually differ are written, so a migration that changed a
+ * policy does not also carry a no-op ENABLE line.
+ */
+function rowSecurityStatements(
+  source: RowSecuritySnapshot,
+  target: RowSecuritySnapshot,
+  tableName: string
+): SqlStatement[] {
+  const stmts: SqlStatement[] = [];
+
+  if (source.enabled !== target.enabled) {
+    stmts.push(
+      objectStatement({
+        sql: `ALTER TABLE ${q(tableName)} ${source.enabled ? "ENABLE" : "DISABLE"} ROW LEVEL SECURITY;`,
+        description: source.enabled
+          ? `Enable row level security on "${tableName}" — WARNING: every query now returns ` +
+            "only the rows a policy allows, and a table with no policy returns none"
+          : `Disable row level security on "${tableName}" — WARNING: its policies stop being ` +
+            "enforced and every row becomes visible to anyone who can read the table",
+        kind: "ALTER_ROW_SECURITY",
+        // Breaking in both directions, and for opposite reasons. See
+        // objectChangeSeverity in lib/compare.ts.
+        severity: "breaking",
+        tableName,
+      })
+    );
+  }
+
+  if (source.forced !== target.forced) {
+    stmts.push(
+      objectStatement({
+        sql: `ALTER TABLE ${q(tableName)} ${source.forced ? "FORCE" : "NO FORCE"} ROW LEVEL SECURITY;`,
+        description: source.forced
+          ? `Apply row level security to the owner of "${tableName}" as well`
+          : `Stop applying row level security to the owner of "${tableName}"`,
+        kind: "ALTER_ROW_SECURITY",
+        severity: "breaking",
+        tableName,
+      })
+    );
+  }
+
+  return stmts;
+}
+
+function createPolicyStatement(policy: PolicySnapshot, tableName: string): SqlStatement {
+  return objectStatement({
+    sql: `CREATE POLICY ${q(policy.name)} ON ${q(tableName)} ${policy.definition};`,
+    description: `Create policy "${policy.name}" on "${tableName}" — check who this lets in`,
+    kind: "CREATE_POLICY",
+    severity: "breaking",
+    tableName,
+  });
+}
+
+function dropPolicyStatement(policyName: string, tableName: string, why: string): SqlStatement {
+  return objectStatement({
+    sql: `DROP POLICY IF EXISTS ${q(policyName)} ON ${q(tableName)};`,
+    description: `Drop policy "${policyName}" from "${tableName}"${why}`,
+    kind: "DROP_POLICY",
     severity: "breaking",
     tableName,
   });
@@ -789,6 +866,14 @@ type ObjectPhases = {
   indexes: SqlStatement[];
   /** Triggers — after their functions and after the columns they read. */
   triggers: SqlStatement[];
+  /**
+   * Policies and the row-security switches — last of the table-scoped work.
+   *
+   * A policy expression reads the table's own columns and can call a function,
+   * so it needs every ADD COLUMN and every CREATE FUNCTION above it to have
+   * run. Nothing else depends on a policy, so nothing has to come after.
+   */
+  policies: SqlStatement[];
   /** Views — after foreign keys, so every table is complete. */
   views: SqlStatement[];
   /** View drops — before DROP TABLE, so CASCADE has less to reach. */
@@ -826,6 +911,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     routines: [],
     indexes: [],
     triggers: [],
+    policies: [],
     views: [],
     viewDrops: [],
     routineDrops: [],
@@ -859,6 +945,33 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
           const source = findByName(match.left.triggers, diff.name);
           if (source) phases.triggers.push(...createTriggerStatements(source, tableName));
         }
+      } else if (diff.kind === "ROW SECURITY") {
+        // The diff only ever says "these two states differ"; which switches
+        // moved is read off the snapshots, which are both still here.
+        if (match.left.rowSecurity && match.right.rowSecurity) {
+          phases.policies.push(
+            ...rowSecurityStatements(match.left.rowSecurity, match.right.rowSecurity, tableName)
+          );
+        }
+      } else if (diff.kind === "POLICY") {
+        // Dropped and recreated rather than altered: ALTER POLICY can change
+        // the roles and the expressions but not the command it applies to, so
+        // one rewrite would apply and another would fail on the same shape.
+        if (diff.status !== "onlyA") {
+          phases.policies.push(
+            dropPolicyStatement(
+              diff.name,
+              tableName,
+              diff.status === "onlyB"
+                ? " — WARNING: the access rule it enforced stops applying"
+                : " so it can be recreated with its new definition"
+            )
+          );
+        }
+        if (diff.status !== "onlyB") {
+          const source = findByName(match.left.rowSecurity?.policies, diff.name);
+          if (source) phases.policies.push(createPolicyStatement(source, tableName));
+        }
       }
     }
   }
@@ -870,6 +983,22 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     }
     for (const trigger of table.triggers ?? []) {
       phases.triggers.push(...createTriggerStatements(trigger, table.name));
+    }
+    // A brand-new table is created with row security OFF whatever the source
+    // says, so the switch has to be written out explicitly. Skipping it is how
+    // a table that is locked down in the source arrives world-readable in the
+    // target — the exact failure this whole slice exists to stop.
+    if (table.rowSecurity) {
+      phases.policies.push(
+        ...rowSecurityStatements(
+          table.rowSecurity,
+          { enabled: false, forced: false, policies: [] },
+          table.name
+        )
+      );
+      for (const policy of table.rowSecurity.policies) {
+        phases.policies.push(createPolicyStatement(policy, table.name));
+      }
     }
   }
 
@@ -1641,6 +1770,12 @@ export function generateMigration(
   // ── Triggers ──────────────────────────────────────────────────────────────
   // Triggers need both their function and the columns they read.
   statements.push(...objects.triggers);
+
+  // ── Row security ──────────────────────────────────────────────────────────
+  // After the triggers, because a policy can call a function the same way a
+  // trigger does, and after every column, because a policy expression reads
+  // them. Nothing later in the script depends on a policy existing.
+  statements.push(...objects.policies);
 
   // ── Create views ──────────────────────────────────────────────────────────
   // Last of the additive work. Every table a view reads is now in its final

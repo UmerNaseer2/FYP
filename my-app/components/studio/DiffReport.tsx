@@ -128,6 +128,8 @@ const OBJECT_TAG: Record<ObjectKind, string> = {
   "RANGE TYPE": "range",
   FUNCTION: "function",
   PROCEDURE: "procedure",
+  POLICY: "policy",
+  "ROW SECURITY": "rls",
 };
 
 /**
@@ -169,6 +171,15 @@ function objectNote(diff: ObjectDiff): string {
   // An index cannot be altered in place either, but nothing depends on one, so
   // the drop takes nothing with it.
   if (diff.kind === "INDEX") return "definition changed — dropped and recreated";
+  if (diff.kind === "ROW SECURITY") {
+    // Which way the switch moves is the entire content of this line. "definition
+    // changed", over the setting that decides whether the table returns any rows
+    // at all, tells the reader nothing they came here for.
+    return `${diff.rightDefinition ?? "?"} in the target, ${diff.leftDefinition ?? "?"} in the source`;
+  }
+  // ALTER POLICY can move the roles and the expressions but not the command the
+  // policy applies to, so the generator drops it and writes it again.
+  if (diff.kind === "POLICY") return "rule changed — dropped and recreated";
   return "definition changed — replaced";
 }
 
@@ -664,6 +675,13 @@ function ChangedTableCard({
           nothing at all. */}
       <ObjectLines label="Indexes" diffs={pickKinds(match.objectDiffs, ["INDEX"])} />
       <ObjectLines label="Triggers" diffs={pickKinds(match.objectDiffs, ["TRIGGER"])} />
+      {/* One heading for the switch and its policies, because reading either
+          on its own gives the wrong answer: three policies with the switch off
+          enforce nothing, and the switch on with no policy denies everyone. */}
+      <ObjectLines
+        label="Row security"
+        diffs={pickKinds(match.objectDiffs, ["ROW SECURITY", "POLICY"])}
+      />
     </details>
   );
 }
