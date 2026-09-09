@@ -414,6 +414,24 @@ export type ViewSnapshot = {
    * about to take with it instead of destroying them silently.
    */
   dependsOn: string[];
+  /**
+   * The view's `WITH (...)` settings, exactly as pg_class.reloptions stores
+   * them — `security_invoker=true`, `check_option=cascaded`,
+   * `security_barrier=true`, and a materialized view's storage settings.
+   * Sorted, so two views that set the same options in a different order still
+   * compare equal.
+   *
+   * pg_get_viewdef returns the SELECT body ALONE, so without this two views
+   * with the same query but opposite security_invoker settings compared equal —
+   * and `CREATE OR REPLACE VIEW` with no WITH clause does not merely fail to
+   * add the option, it REPLACES the option list, so recreating a view that a
+   * CASCADE took stripped `security_invoker` off it on the way back.
+   *
+   * Optional: a snapshot captured before this app read reloptions has no record
+   * of them, and reading that as "no options" would report every view in it as
+   * changed.
+   */
+  options?: string[];
 };
 
 /**
@@ -806,6 +824,7 @@ export async function fetchSchemaSnapshot(
     definition: string | null;
     columns: string[] | null;
     depends_on: string[] | null;
+    options: string[] | null;
   };
 
   type SequenceRow = {
@@ -1127,6 +1146,7 @@ export async function fetchSchemaSnapshot(
          c.relname AS name,
          c.relkind AS kind,
          pg_get_viewdef(c.oid, true) AS definition,
+         c.reloptions AS options,
          (SELECT array_agg(a.attname ORDER BY a.attnum)
             FROM pg_attribute a
            WHERE a.attrelid = c.oid
@@ -1557,6 +1577,7 @@ export async function fetchSchemaSnapshot(
         normalizedDefinition: normalizeDefinition(definition),
         columns: coerceTextArray(row.columns),
         dependsOn: coerceTextArray(row.depends_on).sort(),
+        options: coerceTextArray(row.options).sort(),
       };
     });
 

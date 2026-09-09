@@ -1517,6 +1517,8 @@ type ComparableObject = {
   type?: TypeSnapshot;
   /** Carried for a function or procedure, for the same reason. */
   routine?: RoutineSnapshot;
+  /** Carried for a view, so the drop-or-replace question is decided once. */
+  view?: ViewSnapshot;
 };
 
 /**
@@ -1652,7 +1654,9 @@ function compareObjectLists(
         replaceNeedsDrop:
           obj.routine && peer.routine
             ? routineReplaceNeedsDrop(obj.routine, peer.routine)
-            : undefined,
+            : obj.view && peer.view
+              ? viewReplaceNeedsDrop(obj.view, peer.view)
+              : undefined,
       });
     }
   }
@@ -1776,14 +1780,61 @@ function partitioningObjects(table: TableSnapshot): ComparableObject[] {
   ];
 }
 
-function viewObjects(views: ViewSnapshot[]): ComparableObject[] {
-  return views.map((view) => ({
-    key: normalizeIdentifier(view.name),
-    kind: view.materialized ? ("MATERIALIZED VIEW" as const) : ("VIEW" as const),
-    name: view.name,
-    definition: view.definition,
-    normalizedDefinition: view.normalizedDefinition,
-  }));
+/**
+ * A view's `WITH (...)` clause, or "" when it has none.
+ *
+ * `undefined` options means the snapshot predates this app reading them, which
+ * is not the same as a view with no options — the caller decides whether to ask
+ * at all, so this only ever renders what was actually recorded.
+ */
+export function viewOptionsClause(view: ViewSnapshot): string {
+  const options = view.options;
+  if (!options || options.length === 0) return "";
+  return `WITH (${options.join(", ")})`;
+}
+
+/**
+ * @param withOptions whether BOTH snapshots recorded reloptions. When one did
+ * not, the options are left out of the compared text entirely: folding a
+ * missing list in as "no options" would report every view in an older snapshot
+ * as having lost its security_invoker.
+ */
+/**
+ * Whether a changed view has to be DROPPED before it can be written again.
+ *
+ * CREATE OR REPLACE VIEW refuses any change to the column list, and
+ * CREATE MATERIALIZED VIEW IF NOT EXISTS finds the old one there and does
+ * nothing at all, so the answer is almost always yes. The exception is a plain
+ * view whose SELECT is unchanged and whose WITH (...) settings are not:
+ * CREATE OR REPLACE swaps the option list in place, and not dropping it means
+ * its CASCADE cannot reach the views built on top of it.
+ *
+ * Decided here so the statement the generator writes and the sentence the
+ * report prints come from one rule instead of two.
+ */
+export function viewReplaceNeedsDrop(left: ViewSnapshot, right: ViewSnapshot): boolean {
+  if (left.materialized || right.materialized) return true;
+  return left.normalizedDefinition !== right.normalizedDefinition;
+}
+
+function viewObjects(views: ViewSnapshot[], withOptions: boolean): ComparableObject[] {
+  return views.map((view) => {
+    const clause = withOptions ? viewOptionsClause(view) : "";
+    // The clause goes in front of the body, which is where it is written in
+    // the CREATE statement, so a diff of the two texts reads the way the SQL
+    // does rather than putting the setting after a hundred lines of SELECT.
+    const definition = clause ? `${clause}\n${view.definition}` : view.definition;
+    return {
+      key: normalizeIdentifier(view.name),
+      kind: view.materialized ? ("MATERIALIZED VIEW" as const) : ("VIEW" as const),
+      name: view.name,
+      definition,
+      normalizedDefinition: clause
+        ? `${clause} ${view.normalizedDefinition}`
+        : view.normalizedDefinition,
+      view,
+    };
+  });
 }
 
 function describeSequence(sequence: SequenceSnapshot): string {
@@ -1896,7 +1947,18 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
   const diffs: ObjectDiff[] = [];
 
   if (left.views && right.views) {
-    diffs.push(...compareObjectLists(viewObjects(left.views), viewObjects(right.views), left.schema, right.schema));
+    // Options are compared only when both sides recorded them — see viewObjects.
+    const withOptions =
+      left.views.every((v) => v.options !== undefined) &&
+      right.views.every((v) => v.options !== undefined);
+    diffs.push(
+      ...compareObjectLists(
+        viewObjects(left.views, withOptions),
+        viewObjects(right.views, withOptions),
+        left.schema,
+        right.schema
+      )
+    );
   }
   if (left.sequences && right.sequences) {
     diffs.push(

@@ -161,9 +161,18 @@ export type ObjectDiff = {
    */
   severity: ChangeSeverity;
   /**
-   * CREATE OR REPLACE cannot carry this routine change — PostgreSQL rejects a
-   * replacement that changes the return type or renames an argument, so the old
-   * one has to be dropped first. See routineReplaceNeedsDrop.
+   * Whether CREATE OR REPLACE can carry this change on its own, or the old
+   * object has to be dropped first.
+   *
+   * Set for routines — PostgreSQL rejects a replacement that changes the return
+   * type or renames an argument — and for views, where a changed column list
+   * (or a materialized view of any kind) forces a drop but a change confined to
+   * the WITH (...) settings does not. `undefined` for every other kind, which
+   * means "not a question that applies here".
+   *
+   * The generator and the report both read this rather than deciding for
+   * themselves, so the SQL and the sentence describing it cannot drift apart.
+   * See routineReplaceNeedsDrop and viewReplaceNeedsDrop.
    */
   replaceNeedsDrop?: boolean;
 };

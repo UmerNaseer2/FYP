@@ -165,8 +165,13 @@ function objectNote(diff: ObjectDiff): string {
   if (diff.status === "onlyA") return "only in source — created";
   if (diff.status === "onlyB") return "only in target — dropped";
   if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
-    // CREATE OR REPLACE VIEW refuses any change to the column list, so the
-    // generator drops the view with CASCADE and rebuilds it.
+    // Whether a drop is needed is the compare engine's call, not this file's —
+    // re-deciding it here is how a report comes to describe a migration the
+    // generator did not write. `false` means the WITH (...) settings moved and
+    // the SELECT did not, which CREATE OR REPLACE can carry on its own.
+    if (diff.replaceNeedsDrop === false) return "options changed — replaced in place";
+    // Otherwise CREATE OR REPLACE VIEW refuses the change (or the object is a
+    // materialized view), so the generator drops it with CASCADE and rebuilds.
     return "definition changed — dropped and rebuilt";
   }
   // An index cannot be altered in place either, but nothing depends on one, so

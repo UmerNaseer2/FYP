@@ -35,6 +35,7 @@ import {
   isNarrowingType,
   nullabilityChangeSeverity,
   typeChangeSeverity,
+  viewOptionsClause,
 } from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
 
@@ -598,15 +599,23 @@ function dropPolicyStatement(policyName: string, tableName: string, why: string)
 function createViewStatement(view: ViewSnapshot): SqlStatement {
   // pg_get_viewdef already ends in a semicolon and starts with whitespace.
   const body = view.definition.trim();
+  // security_invoker, check_option, security_barrier and a matview's storage
+  // settings live here and nowhere in the body. Writing them out is not just
+  // for completeness: CREATE OR REPLACE VIEW REPLACES the option list, so an
+  // omitted WITH clause silently strips security_invoker off a view this
+  // statement was only meant to put back after a CASCADE took it.
+  const options = viewOptionsClause(view);
+  const head = options ? `${q(view.name)} ${options}` : q(view.name);
   // Both forms are no-ops when the view is already there and already correct.
   // That matters because this same statement is used to put back a view a
   // CASCADE *may* have taken: if it survived, running this changes nothing.
   const sql = view.materialized
-    ? `CREATE MATERIALIZED VIEW IF NOT EXISTS ${q(view.name)} AS\n${body}`
-    : `CREATE OR REPLACE VIEW ${q(view.name)} AS\n${body}`;
+    ? `CREATE MATERIALIZED VIEW IF NOT EXISTS ${head} AS\n${body}`
+    : `CREATE OR REPLACE VIEW ${head} AS\n${body}`;
+  const note = options ? ` ${options}` : "";
   return objectStatement({
     sql: sql.endsWith(";") ? sql : `${sql};`,
-    description: `Create ${view.materialized ? "materialized view" : "view"} "${view.name}"`,
+    description: `Create ${view.materialized ? "materialized view" : "view"} "${view.name}"${note}`,
     kind: "CREATE_VIEW",
     tableName: view.name,
   });
@@ -1122,24 +1131,32 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
 
   for (const diff of report.objectDiffs) {
     if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
-      if (diff.status !== "onlyA") {
-        const target = findByName(rightViews, diff.name);
-        // A view whose definition changed is dropped and rebuilt rather than
-        // replaced: CREATE OR REPLACE VIEW refuses any change to the column
-        // list, which is exactly the kind of change worth migrating.
-        if (target) {
-          phases.viewDrops.push(
-            dropViewStatement(
-              target,
-              diff.status === "onlyB" ? "" : " so it can be rebuilt from the source"
-            )
-          );
-          viewsBeingDropped.add(target.name);
-        }
+      const sourceView = findByName(leftViews, diff.name);
+      const targetView = findByName(rightViews, diff.name);
+      // A plain view whose SELECT is identical and whose WITH (...) settings
+      // are not needs no drop at all: CREATE OR REPLACE replaces the option
+      // list in place, and skipping the drop means its CASCADE cannot reach
+      // the views built on top of it. A materialized view still has to go —
+      // CREATE MATERIALIZED VIEW IF NOT EXISTS would find it there and do
+      // nothing, leaving the old settings and the old rows.
+      //
+      // The compare engine decided that (viewReplaceNeedsDrop) and the report
+      // reads the same flag, so the SQL below and the sentence printed next to
+      // it on screen cannot disagree about what this migration does.
+      const onlyOptionsMoved =
+        diff.status === "changedDefinition" && diff.replaceNeedsDrop === false;
+
+      if (diff.status !== "onlyA" && !onlyOptionsMoved && targetView) {
+        phases.viewDrops.push(
+          dropViewStatement(
+            targetView,
+            diff.status === "onlyB" ? "" : " so it can be rebuilt from the source"
+          )
+        );
+        viewsBeingDropped.add(targetView.name);
       }
       if (diff.status !== "onlyB") {
-        const source = findByName(leftViews, diff.name);
-        if (source) viewsToCreate.push(source);
+        if (sourceView) viewsToCreate.push(sourceView);
       }
       continue;
     }
