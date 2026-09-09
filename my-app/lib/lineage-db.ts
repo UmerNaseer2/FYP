@@ -16,7 +16,7 @@ import { toEnvironment, type Environment } from "./environments";
  * Phase 6 metadata store — "schema lineage".
  *
  * Everything here lives in the SAME Postgres metadata database as `connections`
- * and `schema_comparisons` (the `DATABASE_URL_A` pool from `version-db`), and
+ * and `comparison_sets` (the `DATABASE_URL_A` pool from `version-db`), and
  * the four tables are declared with the rest of them in lib/db/models.ts. We
  * deliberately do NOT introduce a separate Supabase data layer — Supabase is
  * only the auth provider in this app, and keeping all app metadata in one place

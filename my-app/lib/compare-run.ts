@@ -925,27 +925,8 @@ export async function runComparison(
   // comparison would work, so the stamp written below is not in them yet.
   let justRanAt: string | null = null;
 
-  // Comparison history. One row per target, so a three-target run leaves three
-  // entries rather than pretending it was a single two-sided compare.
   const comparedPairs = outcomes.filter((outcome) => outcome.report);
   if (record && comparedPairs.length > 0) {
-    try {
-      await syncMetadataTables();
-
-      const left = `${sourceTarget.displayName}.${sourceSchema}`;
-      // One statement, one row per target. The previous version fired a
-      // separate INSERT per target through Promise.all — up to six round trips,
-      // each borrowing a connection from the metadata pool, for what is one
-      // small write.
-      await pool.query(
-        `INSERT INTO schema_comparisons (schema_a, schema_b)
-         SELECT $1, unnest($2::text[])`,
-        [left, comparedPairs.map((o) => `${o.target.displayName}.${o.schema}`)],
-      );
-    } catch (error) {
-      console.error("Failed to save comparison history:", error);
-    }
-
     // A set nobody has run for months is usually a set pointing at a database
     // that no longer exists, so the picker shows when each one last ran.
     if (activeSet) justRanAt = await markComparisonSetRun(activeSet.id);

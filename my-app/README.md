@@ -128,7 +128,7 @@ my-app/
 | `lib/sql-guard.ts` | Destructive-statement detection |
 | `lib/lineage-db.ts` | `tracked_schemas`, `snapshots`, `lineage_migrations`, `drift_events` |
 | `lib/db/sequelize.ts` | The one Sequelize instance, plus a `pg.Pool`-shaped adapter over its pool |
-| `lib/db/models.ts` | All ten metadata tables as Sequelize models |
+| `lib/db/models.ts` | All nine metadata tables as Sequelize models |
 | `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
 | `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
@@ -175,7 +175,7 @@ creates, alters, deferred foreign keys, then destructive drops last.
 
 ## 4. Data model
 
-In the **metadata database** (`DATABASE_URL_A`) — ten tables, all declared as
+In the **metadata database** (`DATABASE_URL_A`) — nine tables, all declared as
 Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 
 | Table | Holds |
@@ -185,7 +185,6 @@ Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 | `snapshots` | Point-in-time catalog snapshots of a tracked schema |
 | `lineage_migrations` | Which migration was applied to which tracked schema |
 | `drift_events` | Detected drift, plus acknowledgement state |
-| `schema_comparisons` | One row per comparison run; written but not yet read anywhere (§5) |
 | `profiles` | Signed-in users and their role; the first to sign in becomes `admin` |
 | `comparison_sets` | A saved source schema plus its list of targets |
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
@@ -196,7 +195,7 @@ Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 Two very different kinds of database work happen here, and only one of them
 belongs to an ORM:
 
-- **This app's own database** — the ten tables above. A fixed schema the app
+- **This app's own database** — the nine tables above. A fixed schema the app
   owns, so Sequelize defines it, creates it, and does the reading and writing.
   Queries that are genuinely SQL rather than CRUD still run through
   `metadataPool`, which borrows a connection from Sequelize's pool: one pool,
@@ -244,8 +243,6 @@ views, sequences, types and routines.
   `requireAdmin`, and the `profiles` table is created with the rest of the
   metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS=false` turns the whole thing
   on, and then the Entra keys in §1 have to be set for anyone to get in.
-- **`schema_comparisons` is written on every compare and never read.** It is a
-  history log with nothing displaying the history.
 - **Snapshots carry no format version**, so snapshots taken before and after a
   change to the snapshot shape compare as drift.
 - **TLS verification is relaxed on the `DATABASE_URL_A`/`DATABASE_URL_B`

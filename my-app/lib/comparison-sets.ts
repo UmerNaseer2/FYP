@@ -5,13 +5,10 @@ import { toEnvironment, type Environment } from "./environments";
  * Saved comparison sets — a named source + ordered list of targets that can be
  * re-opened and re-run.
  *
- * This is NOT `schema_comparisons`. That table is a history log: it records
- * that a comparison happened, one row per pair, and nothing reads it back to
- * set anything up. A set is the opposite — it is an input, saved on purpose,
- * so that "the nightly check: dev, staging and prod against the model schema"
- * is one click instead of six dropdowns every morning. Keeping them separate
- * means clearing history never deletes a saved set, and saving a set never
- * pretends a comparison was run.
+ * A set is an input, saved on purpose, so that "the nightly check: dev, staging
+ * and prod against the model schema" is one click instead of six dropdowns
+ * every morning. `last_run_at` on the set is the only history kept — the answer
+ * to "when did I last run this", which is what the picker shows.
  *
  * Lives in the same metadata database as `connections` and the lineage tables,
  * and is declared with them as a Sequelize model in `lib/db/models.ts`.

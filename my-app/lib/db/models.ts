@@ -291,28 +291,8 @@ DriftEvent.init(
 );
 
 // ---------------------------------------------------------------------------
-// Compare & Author: what was compared, and the selections worth keeping.
+// Compare & Author: the selections worth keeping.
 // ---------------------------------------------------------------------------
-
-export class SchemaComparison extends Model<
-  InferAttributes<SchemaComparison>,
-  InferCreationAttributes<SchemaComparison>
-> {
-  declare id: CreationOptional<number>;
-  declare schema_a: string;
-  declare schema_b: string;
-  declare compared_at: CreationOptional<Date>;
-}
-
-SchemaComparison.init(
-  {
-    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    schema_a: { type: DataTypes.TEXT, allowNull: false },
-    schema_b: { type: DataTypes.TEXT, allowNull: false },
-    compared_at: { type: TIMESTAMP, defaultValue: NOW },
-  },
-  { sequelize, tableName: "schema_comparisons" }
-);
 
 export class ComparisonSet extends Model<
   InferAttributes<ComparisonSet>,
