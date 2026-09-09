@@ -881,6 +881,12 @@ function compareColumnPair(
 
   const changes: ColumnChange[] = [];
 
+  // Every `message` below is phrased left → right, which is the only direction
+  // this function knows. That reads correctly on /drift, where left is the
+  // tracked baseline and right is the live database. It reads BACKWARDS on
+  // /compare, where the migration rewrites the right side to match the left —
+  // so each change also carries `label` / `leftValue` / `rightValue`, and a
+  // renderer that means the other direction prints those instead.
   if (normalizeType(leftColumn.typeDisplay) !== normalizeType(rightColumn.typeDisplay)) {
     // "size" when only the length/precision moved inside the same base type,
     // "type" when the base type itself changed — the two read very differently
@@ -891,6 +897,9 @@ function compareColumnPair(
       kind: sameBase ? "size" : "type",
       severity: typeChangeSeverity(leftColumn.typeDisplay, rightColumn.typeDisplay),
       message: typeChangeDescription(leftColumn.typeDisplay, rightColumn.typeDisplay),
+      label: sameBase ? "Size/precision" : "Type",
+      leftValue: leftColumn.typeDisplay,
+      rightValue: rightColumn.typeDisplay,
     });
   }
   if (leftColumn.nullable !== rightColumn.nullable) {
@@ -898,6 +907,9 @@ function compareColumnPair(
       kind: "nullability",
       severity: nullabilityChangeSeverity(leftColumn.nullable),
       message: `Nullability changed from ${leftColumn.nullable ? "nullable" : "not null"} to ${rightColumn.nullable ? "nullable" : "not null"}`,
+      label: "Nullability",
+      leftValue: leftColumn.nullable ? "nullable" : "not null",
+      rightValue: rightColumn.nullable ? "nullable" : "not null",
     });
   }
   // Collation, only when BOTH snapshots recorded it. `undefined` means the
@@ -912,8 +924,10 @@ function compareColumnPair(
     changes.push({
       kind: "collation",
       severity: collationChangeSeverity(),
-      // left→right, matching the nullability and type wording in this list.
       message: `Collation changed from ${leftColumn.collation ?? "the type default"} to ${rightColumn.collation ?? "the type default"}`,
+      label: "Collation",
+      leftValue: leftColumn.collation ?? "the type default",
+      rightValue: rightColumn.collation ?? "the type default",
     });
   }
   // Computed columns first, because a column that gains or loses a GENERATED
@@ -925,9 +939,10 @@ function compareColumnPair(
     changes.push({
       kind: "computed",
       severity: computedChangeSeverity(),
-      // left→right, matching the nullability, type and default wording in this
-      // same list: the source is stated first, the target second.
       message: `Generated column changed from ${leftComputed} to ${rightComputed}`,
+      label: "Generated column",
+      leftValue: leftComputed,
+      rightValue: rightComputed,
     });
   }
 
@@ -942,6 +957,9 @@ function compareColumnPair(
       kind: "generated",
       severity: generatedChangeSeverity(leftColumn, rightColumn),
       message: `Generated values changed from ${leftGenerated} to ${rightGenerated}`,
+      label: "Generated values",
+      leftValue: leftGenerated,
+      rightValue: rightGenerated,
     });
   }
 
@@ -962,8 +980,8 @@ function compareColumnPair(
       changes.push({
         kind: "sequenceOptions",
         severity: sequenceOptionsChangeSeverity(leftSequence, rightSequence),
-        // right→left like every other message in this list: the target's
-        // setting first, the source's second.
+        // No before/after pair to hand the report: this one message already
+        // lists every setting that moved, so it prints as written.
         message: `Sequence settings changed — ${moved.join(", ")}`,
       });
     }
@@ -978,13 +996,15 @@ function compareColumnPair(
     const leftDefault = leftColumn.columnDefault?.trim() || null;
     const rightDefault = rightColumn.columnDefault?.trim() || null;
     if (leftDefault !== rightDefault) {
-      // left→right, matching the nullability/type wording in this same list.
       changes.push({
         kind: "default",
         // SET DEFAULT and DROP DEFAULT both always apply: a default only
         // affects rows inserted after it, never rows already stored.
         severity: "safe",
         message: `Default changed from ${leftDefault ?? "none"} to ${rightDefault ?? "none"}`,
+        label: "Default",
+        leftValue: leftDefault ?? "none",
+        rightValue: rightDefault ?? "none",
       });
     }
   }

@@ -218,3 +218,38 @@ describe("change severity", () => {
     expect(addedColumnSeverity(column("note", { nullable: true }))).not.toBe("breaking");
   });
 });
+
+/**
+ * A changed value has two sides and the report has to be able to print them in
+ * either order: /compare rewrites the target so it reads target → source, while
+ * /drift is watching a live database move away from a baseline so it reads
+ * baseline → live. The engine records the pair without choosing; these tests
+ * pin the pair down so a renderer can rely on which side is which.
+ */
+describe("compareSchemas — the pair behind a changed column", () => {
+  it("records the source value as left and the target value as right", () => {
+    const report = compareSchemas(
+      schema([table("customers", [column("full_name", { typeDisplay: "character varying(200)" })])]),
+      schema([table("customers", [column("full_name", { typeDisplay: "character varying(120)" })])])
+    );
+    const [change] = report.matchedTables[0].columnMatches[0].changes;
+
+    expect(change.kind).toBe("size");
+    expect(change.label).toBe("Size/precision");
+    expect(change.leftValue).toBe("character varying(200)");
+    expect(change.rightValue).toBe("character varying(120)");
+  });
+
+  it("records the pair for a nullability change too", () => {
+    const report = compareSchemas(
+      schema([table("orders", [column("note", { nullable: false })])]),
+      schema([table("orders", [column("note", { nullable: true })])])
+    );
+    const change = report.matchedTables[0].columnMatches[0].changes.find(
+      (c) => c.kind === "nullability"
+    );
+
+    expect(change?.leftValue).toBe("not null");
+    expect(change?.rightValue).toBe("nullable");
+  });
+});

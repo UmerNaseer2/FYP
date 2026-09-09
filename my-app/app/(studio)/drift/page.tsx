@@ -533,7 +533,11 @@ function DetailTab({
                 matrix is the only place that says so out loud — which matters
                 more here than on /compare, where both sides are live. */}
             <SummaryMatrix report={view.report} />
-            <DiffReport report={view.report} />
+            {/* "expected-live" because this page's two sides are the tracked
+                baseline and the live database, not a source and a target — it
+                flips every before/after pair so a changed value reads what it
+                was, then what it is. */}
+            <DiffReport report={view.report} sides="expected-live" />
           </div>
         ) : (
           <div className="panel p-5 flex items-start gap-3">

@@ -10,6 +10,7 @@ import {
   objectDiffSeverity,
 } from "@/lib/compare";
 import type {
+  ColumnChange,
   ColumnSnapshot,
   CompareReport,
   ConstraintDiff,
@@ -62,6 +63,48 @@ export type DropMode = "none" | "safe" | "armed";
  */
 export function dropModeFrom(allowDataLoss: boolean | undefined): DropMode {
   return allowDataLoss === undefined ? "none" : allowDataLoss ? "armed" : "safe";
+}
+
+/**
+ * What the two sides of the report actually are, in the words of the page
+ * around it. The compare engine only knows "left" and "right"; this says what
+ * those two mean here, and that decides which way round a changed value reads.
+ *
+ *   "source-target"  (/compare) — left is the schema you want, right is the one
+ *                     the migration rewrites. A changed value reads
+ *                     right → left: what it is now, then what the script makes
+ *                     it. That is the direction the generated SQL comments use.
+ *   "expected-live"  (/drift)   — left is the tracked baseline, right is the
+ *                     live database. A changed value reads left → right: what
+ *                     it was, then what somebody changed it to.
+ */
+export type ReportSides = "source-target" | "expected-live";
+
+/** What each side is called on screen, so one component can serve both pages. */
+const SIDE_WORDS: Record<ReportSides, { left: string; right: string }> = {
+  "source-target": { left: "source", right: "target" },
+  "expected-live": { left: "the baseline", right: "the live database" },
+};
+
+/**
+ * One changed column value, printed in the direction this page reads.
+ *
+ * Falls back to the engine's own sentence when the change has no single
+ * before/after pair — a sequence-settings change lists several at once.
+ */
+function changeText(change: ColumnChange, sides: ReportSides): string {
+  if (
+    change.label === undefined ||
+    change.leftValue === undefined ||
+    change.rightValue === undefined
+  ) {
+    return change.message;
+  }
+  const [before, after] =
+    sides === "expected-live"
+      ? [change.leftValue, change.rightValue]
+      : [change.rightValue, change.leftValue];
+  return `${change.label}: ${before} → ${after}`;
 }
 
 const SIGN: Record<DiffKind, string> = { add: "+", rem: "−", chg: "~" };
@@ -699,9 +742,11 @@ function ExtraTableCard({
 function ChangedTableCard({
   match,
   dropMode,
+  sides,
 }: {
   match: TableMatch;
   dropMode: DropMode;
+  sides: ReportSides;
 }) {
   const tally = matchTally(match);
   const level = matchLevel(match);
@@ -716,6 +761,10 @@ function ChangedTableCard({
         <span className="name">
           {match.exact ? (
             match.left.name
+          ) : sides === "expected-live" ? (
+            <>
+              <s>{match.left.name}</s> → {match.right.name}
+            </>
           ) : (
             <>
               <s>{match.right.name}</s> → {match.left.name}
@@ -754,7 +803,7 @@ function ChangedTableCard({
                 <span key={ch.kind}>
                   {i > 0 && <span className="muted">; </span>}
                   <span className={ch.severity === "breaking" ? "chg-break" : "muted"}>
-                    {ch.message}
+                    {changeText(ch, sides)}
                   </span>
                 </span>
               ))}
@@ -765,10 +814,10 @@ function ChangedTableCard({
               {columnBody(col)}{" "}
               <span className="muted">
                 {dropMode === "armed"
-                  ? "— only in target · dropped with its data"
+                  ? `— only in ${SIDE_WORDS[sides].right} · dropped with its data`
                   : dropMode === "safe"
-                    ? "— only in target · drop is commented out"
-                    : "— only in target · a sync would drop it"}
+                    ? `— only in ${SIDE_WORDS[sides].right} · drop is commented out`
+                    : `— only in ${SIDE_WORDS[sides].right} · a sync would drop it`}
               </span>
             </DiffLine>
           ))}
@@ -780,7 +829,11 @@ function ChangedTableCard({
         <div className="obj-group">
           <ObjHeader label="Possible renamed columns" />
           {match.possibleColumnMatches.map((cand) => (
-            <RenameChip key={`${cand.leftName}-${cand.rightName}`} candidate={cand} />
+            <RenameChip
+              key={`${cand.leftName}-${cand.rightName}`}
+              candidate={cand}
+              sides={sides}
+            />
           ))}
         </div>
       )}
@@ -791,7 +844,15 @@ function ChangedTableCard({
           <ObjHeader label="Renamed columns" />
           {renamedColumns.map((cm) => (
             <DiffLine key={`r-${cm.right.name}`} kind="chg" tag="rename">
-              <s>{cm.right.name}</s> → <b>{cm.left.name}</b>{" "}
+              {sides === "expected-live" ? (
+                <>
+                  <s>{cm.left.name}</s> → <b>{cm.right.name}</b>
+                </>
+              ) : (
+                <>
+                  <s>{cm.right.name}</s> → <b>{cm.left.name}</b>
+                </>
+              )}{" "}
               <span className="muted">· {cm.score}% match — verify</span>
             </DiffLine>
           ))}
@@ -891,7 +952,22 @@ function SchemaObjectsCard({ diffs }: { diffs: ObjectDiff[] }) {
 }
 
 /** Dashed "possible rename" suggestion with similarity score. */
-function RenameChip({ candidate }: { candidate: MatchCandidate }) {
+function RenameChip({
+  candidate,
+  sides,
+}: {
+  candidate: MatchCandidate;
+  sides: ReportSides;
+}) {
+  // The struck-through name is the one that already exists on the side being
+  // read as "before", exactly like the confirmed-rename line in
+  // ChangedTableCard. This chip used to print source → target while that line
+  // printed target → source, so the same card offered two renames pointing
+  // opposite ways.
+  const [before, after] =
+    sides === "expected-live"
+      ? [candidate.leftName, candidate.rightName]
+      : [candidate.rightName, candidate.leftName];
   return (
     <div className="rename">
       <svg
@@ -913,7 +989,7 @@ function RenameChip({ candidate }: { candidate: MatchCandidate }) {
           Possible {candidate.kind} rename
         </div>
         <div className="what mt-0.5">
-          <s>{candidate.leftName}</s> → <b style={{ color: "var(--text)" }}>{candidate.rightName}</b>{" "}
+          <s>{before}</s> → <b style={{ color: "var(--text)" }}>{after}</b>{" "}
           · {candidate.score}% similarity — verify before treating as a rename
         </div>
       </div>
@@ -928,6 +1004,7 @@ function RenameChip({ candidate }: { candidate: MatchCandidate }) {
 export function DiffReport({
   report,
   allowDataLoss,
+  sides = "source-target",
 }: {
   report: CompareReport;
   /**
@@ -936,6 +1013,11 @@ export function DiffReport({
    * on read-only views (/drift) so the copy makes no claim about a script.
    */
   allowDataLoss?: boolean;
+  /**
+   * What "left" and "right" mean on the page rendering this. Defaults to
+   * /compare's reading; /drift passes "expected-live". See ReportSides.
+   */
+  sides?: ReportSides;
 }) {
   const dropMode = dropModeFrom(allowDataLoss);
   const changedTables = report.matchedTables.filter((m) => m.hasChanges);
@@ -995,6 +1077,29 @@ export function DiffReport({
 
   return (
     <div className="space-y-3">
+      {/* The signs are the first thing a reader has to decode, and they mean
+          something different on each page: on /compare a "+" is work the script
+          will do, on /drift it is something already missing from the live
+          database. Saying so once here is cheaper than qualifying every row. */}
+      <p className="help">
+        {sides === "expected-live" ? (
+          <>
+            Read this as the work it would take to put the live database back to
+            the baseline. <b>+</b> is in the baseline but missing from the live
+            database, <b>−</b> is in the live database and not in the baseline,
+            and <b>~</b> is in both with something different about it.
+          </>
+        ) : (
+          <>
+            Every row is a change to the <b>target</b>. <b>+</b> is created,{" "}
+            <b>−</b> is dropped, and <b>~</b> is altered in place — and a{" "}
+            <span className="mono">before → after</span> pair reads left to
+            right, the value the target has now and the value this migration
+            gives it.
+          </>
+        )}
+      </p>
+
       {destructiveCount > 0 && (
         <div className="banner">
           <div>
@@ -1053,7 +1158,11 @@ export function DiffReport({
 
       {/* Possible renamed tables (full-width suggestions) */}
       {tableRenames.map((cand) => (
-        <RenameChip key={`${cand.leftName}-${cand.rightName}`} candidate={cand} />
+        <RenameChip
+          key={`${cand.leftName}-${cand.rightName}`}
+          candidate={cand}
+          sides={sides}
+        />
       ))}
 
       {/* Tables only in the source — created by the migration */}
@@ -1067,6 +1176,7 @@ export function DiffReport({
           key={`chg-${match.left.name}`}
           match={match}
           dropMode={dropMode}
+          sides={sides}
         />
       ))}
 

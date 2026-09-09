@@ -309,7 +309,18 @@ export function buildDiffDocument(
     }
     for (const column of match.columnMatches) {
       if (column.exact && column.changes.length === 0) continue;
-      const notes = column.changes.map((change) => change.message);
+      // The engine phrases every message left → right, which on this page means
+      // source → target — backwards, because the migration rewrites the target
+      // to match the source. Re-print the pair the other way round so an export
+      // agrees with the SQL comments and with the report on screen; a change
+      // with no single pair (sequence settings) keeps the engine's sentence.
+      const notes = column.changes.map((change) =>
+        change.label !== undefined &&
+        change.leftValue !== undefined &&
+        change.rightValue !== undefined
+          ? `${change.label}: ${change.rightValue} → ${change.leftValue}`
+          : change.message
+      );
       if (!column.exact) notes.unshift(`renamed from "${column.right.name}"`);
       changes.push({
         category: "Column",

@@ -105,6 +105,25 @@ export type ColumnChange = {
   kind: ColumnChangeKind;
   severity: ChangeSeverity;
   message: string;
+  /**
+   * The same difference as `message`, split into its three parts so the report
+   * can print it in whichever direction its own page reads.
+   *
+   * The engine has no opinion on direction: it only knows "left" and "right".
+   * /compare's left is the schema you want and its right is the schema the
+   * migration rewrites, so there a change reads right → left — the value now,
+   * then the value after the script runs. /drift's left is the tracked baseline
+   * and its right is the live database, so there the same change reads
+   * left → right — what it was, then what it is. `message` is fixed at
+   * left → right, which is why a renderer that means the other direction has to
+   * use these instead.
+   *
+   * All three are absent when there is no single before/after pair to show — a
+   * sequence-settings change lists several moved settings in one message.
+   */
+  label?: string;
+  leftValue?: string;
+  rightValue?: string;
 };
 
 export type ColumnMatch = {
