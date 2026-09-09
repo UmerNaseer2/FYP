@@ -33,8 +33,15 @@ export function StudioSidebar({
   onSignOut,
   className = "",
 }: StudioSidebarProps) {
-  // When collapsed, hide every label-bearing element (the `sb-label` pattern).
-  const labelHidden = collapsed ? "hidden" : "";
+  /*
+    Collapsing the rail hides the words, not the controls.
+    `hidden` is display:none, which takes an element out of the accessibility
+    tree as well as out of the layout — so a collapsed sidebar used to hand a
+    screen reader a column of unnamed icons. `sr-only` takes the same room
+    (none) and keeps the text readable to assistive tech, so every item in the
+    64px rail still says what it is.
+  */
+  const labelHidden = collapsed ? "sr-only" : "";
 
   return (
     <aside
@@ -118,14 +125,28 @@ export function StudioSidebar({
 
       {/* Footer: theme toggle + identity */}
       <div className="mt-auto p-3 space-y-2" style={{ borderTop: "1px solid var(--border)" }}>
-        <button className="nav-item w-full" onClick={onToggleTheme}>
+        <button
+          className="nav-item w-full"
+          onClick={onToggleTheme}
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
           {theme === "dark" ? <SunIcon className="ico" /> : <MoonIcon className="ico" />}
           <span className={labelHidden}>Theme</span>
           <span className={`ml-auto text-[11px] ${labelHidden}`} style={{ color: "var(--text-3)" }}>
             {theme === "dark" ? "Dark" : "Light"}
           </span>
         </button>
-        <div className="flex items-center gap-2.5 px-2 py-1.5">
+        {/*
+          Sign out used to be hidden along with the labels, so collapsing the
+          sidebar removed the only way to leave the app. It stays; the rail is
+          64px wide, so the row stacks instead of running off the edge.
+        */}
+        <div
+          className={`flex items-center px-2 py-1.5 ${
+            collapsed ? "flex-col gap-1.5 px-0" : "gap-2.5"
+          }`}
+        >
           <div
             className="w-7 h-7 rounded-full grid place-items-center flex-none text-white text-[11px] font-semibold"
             style={{ background: "linear-gradient(135deg, var(--brand), #a78bfa)" }}
@@ -139,8 +160,9 @@ export function StudioSidebar({
             </div>
           </div>
           <button
-            className={`ml-auto btn btn-ghost btn-sm ${labelHidden}`}
+            className={`btn btn-ghost btn-sm ${collapsed ? "" : "ml-auto"}`}
             title="Sign out"
+            aria-label="Sign out"
             onClick={onSignOut}
           >
             <SignOutIcon size={13} />
