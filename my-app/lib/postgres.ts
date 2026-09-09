@@ -497,6 +497,35 @@ export type RoutineSnapshot = {
   normalizedDefinition: string;
 };
 
+/**
+ * How a table relates to other tables it shares its rows or its shape with.
+ *
+ * Declarative partitioning and old-style INHERITS are both recorded here
+ * because both are invisible in every other part of a snapshot: columns,
+ * constraints and indexes all read exactly the same on a partition as on a
+ * standalone table. Without this, a source `events` declared
+ * PARTITION BY RANGE (created_at) compared equal to a plain `events` in the
+ * target and the report said "Exact table name match with identical
+ * structure" — a false statement, not merely a missing one — while the
+ * generated CREATE TABLE quietly produced three disconnected tables.
+ */
+export type TablePartitioning = {
+  /** "RANGE" | "LIST" | "HASH" when this table is a partitioned parent. */
+  strategy: string | null;
+  /** The parent's key, e.g. `RANGE (created_at)`. Null when not partitioned. */
+  key: string | null;
+  /** The table this is a partition OF. Null when it is not a partition. */
+  partitionOf: string | null;
+  /** `FOR VALUES ...` or `DEFAULT`, as PostgreSQL writes it. */
+  bounds: string | null;
+  /**
+   * Old-style INHERITS parents. Empty for a partition — a partition's parent
+   * is in `partitionOf`, and putting it in both would make the generator emit
+   * PARTITION OF and INHERITS for the same table, which is a syntax error.
+   */
+  inherits: string[];
+};
+
 export type TableSnapshot = {
   name: string;
   columns: ColumnSnapshot[];
@@ -518,6 +547,13 @@ export type TableSnapshot = {
    * "RLS was off", or every tracked schema would show phantom drift.
    */
   rowSecurity?: RowSecuritySnapshot;
+  /**
+   * Partitioning and inheritance. Optional on purpose — see the note on
+   * SchemaSnapshot: a snapshot captured before this existed must not read as
+   * "this table was standalone", or every partitioned schema would show
+   * phantom drift the day it shipped.
+   */
+  partitioning?: TablePartitioning;
 };
 
 /**
@@ -739,6 +775,15 @@ export async function fetchSchemaSnapshot(
     enabled: boolean;
   };
 
+  type PartitioningRow = {
+    table_name: string;
+    strategy: string | null;
+    key: string | null;
+    partition_of: string | null;
+    bounds: string | null;
+    inherits: string[] | null;
+  };
+
   type RowSecurityRow = {
     table_name: string;
     enabled: boolean;
@@ -862,6 +907,11 @@ export async function fetchSchemaSnapshot(
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
+    // conparentid = 0 and conislocal skip the constraints a parent owns: a
+    // primary key on a partitioned table is cloned onto every partition, and an
+    // INHERITS child inherits its parent's CHECKs. Recording those made the
+    // report show one constraint several times over, and the generated script
+    // tried to add a constraint PostgreSQL creates by itself.
     const constraintResult = await client.query<ConstraintRow>(
         `SELECT
            tbl.relname AS table_name,
@@ -907,6 +957,8 @@ export async function fetchSchemaSnapshot(
           AND ref_att.attnum = ref_cols.attnum
          WHERE ns.nspname = $1
            AND con.contype IN ('p', 'u', 'f', 'c', 'x')
+           AND con.conparentid = 0
+           AND con.conislocal
            AND tbl.relname <> ALL($2)
          GROUP BY
            tbl.relname,
@@ -929,6 +981,12 @@ export async function fetchSchemaSnapshot(
     // constraint is already reported as that constraint, so including it here
     // would make every primary key show up as two separate differences — and
     // the generated migration would try to drop an index Postgres owns.
+    //
+    // Partition indexes are skipped for the same reason. An index on a
+    // partitioned parent makes PostgreSQL create a matching one on every
+    // partition, attached via pg_inherits. Recording those meant the script
+    // emitted a CREATE INDEX for the parent and then another for each child,
+    // and the second one failed on a name PostgreSQL had just taken.
     const indexResult = await client.query<IndexRow>(
       `SELECT
          c.relname AS table_name,
@@ -952,12 +1010,17 @@ export async function fetchSchemaSnapshot(
          AND NOT EXISTS (
            SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid
          )
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_inherits ii WHERE ii.inhrelid = x.indexrelid
+         )
        ORDER BY c.relname, i.relname`,
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
     // NOT tgisinternal skips the hidden triggers Postgres creates to enforce
     // foreign keys — those are the FK, and are already recorded as one.
+    // tgparentid = 0 skips the copies cloned onto each partition from a trigger
+    // on the parent; the parent's trigger is what recreates them.
     const triggerResult = await client.query<TriggerRow>(
       `SELECT
          c.relname AS table_name,
@@ -971,8 +1034,50 @@ export async function fetchSchemaSnapshot(
        JOIN pg_proc p ON p.oid = t.tgfoid
        WHERE n.nspname = $1
          AND NOT t.tgisinternal
+         AND t.tgparentid = 0
          AND c.relname <> ALL($2)
        ORDER BY c.relname, t.tgname`,
+      [schemaName, COMPARE_IGNORED_TABLES]
+    );
+
+    // Partitioning and inheritance, which nothing else in a snapshot records.
+    //
+    // Three separate facts, all reachable from pg_class: a parent's strategy
+    // and key (pg_partitioned_table + pg_get_partkeydef), a partition's bound
+    // (relpartbound), and old-style INHERITS parents (pg_inherits, filtered to
+    // the rows a partition does not produce). partstrat is a single char, so it
+    // is spelled out here rather than left as 'r'/'l'/'h' for the UI to decode.
+    const partitioningResult = await client.query<PartitioningRow>(
+      `SELECT
+         c.relname AS table_name,
+         CASE pt.partstrat
+           WHEN 'r' THEN 'RANGE'
+           WHEN 'l' THEN 'LIST'
+           WHEN 'h' THEN 'HASH'
+         END AS strategy,
+         CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END AS key,
+         CASE WHEN c.relispartition THEN (
+           SELECT pc.relname
+           FROM pg_inherits i
+           JOIN pg_class pc ON pc.oid = i.inhparent
+           WHERE i.inhrelid = c.oid
+         ) END AS partition_of,
+         CASE WHEN c.relispartition
+           THEN pg_get_expr(c.relpartbound, c.oid)
+         END AS bounds,
+         CASE WHEN NOT c.relispartition THEN (
+           SELECT array_agg(pc.relname ORDER BY i.inhseqno)
+           FROM pg_inherits i
+           JOIN pg_class pc ON pc.oid = i.inhparent
+           WHERE i.inhrelid = c.oid
+         ) END AS inherits
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN pg_partitioned_table pt ON pt.partrelid = c.oid
+       WHERE n.nspname = $1
+         AND c.relkind IN ('r', 'p')
+         AND c.relname <> ALL($2)
+       ORDER BY c.relname`,
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
@@ -1191,7 +1296,26 @@ export async function fetchSchemaSnapshot(
         // "off, no policies" is not a guess: every table the catalog did not
         // report a flag for genuinely has RLS off.
         rowSecurity: { enabled: false, forced: false, policies: [] },
+        partitioning: {
+          strategy: null,
+          key: null,
+          partitionOf: null,
+          bounds: null,
+          inherits: [],
+        },
       });
+    }
+
+    for (const row of partitioningResult.rows) {
+      const table = tablesByName.get(row.table_name);
+      if (!table) continue;
+      table.partitioning = {
+        strategy: row.strategy,
+        key: row.key,
+        partitionOf: row.partition_of,
+        bounds: row.bounds,
+        inherits: coerceTextArray(row.inherits),
+      };
     }
 
     for (const row of rowSecurityResult.rows) {

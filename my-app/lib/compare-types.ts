@@ -12,6 +12,7 @@ import type {
   RoutineSnapshot,
   SchemaSnapshot,
   SequenceSnapshot,
+  TablePartitioning,
   TableSnapshot,
   TriggerSnapshot,
   TypeSnapshot,
@@ -27,6 +28,7 @@ export type {
   RoutineSnapshot,
   SchemaSnapshot,
   SequenceSnapshot,
+  TablePartitioning,
   TableSnapshot,
   TriggerSnapshot,
   TypeSnapshot,
@@ -132,7 +134,8 @@ export type ObjectKind =
   | "FUNCTION"
   | "PROCEDURE"
   | "POLICY"
-  | "ROW SECURITY";
+  | "ROW SECURITY"
+  | "PARTITIONING";
 
 export type ObjectDiff = {
   kind: ObjectKind;
@@ -181,6 +184,7 @@ export type ComparedObjectCategories = {
   types: boolean;
   routines: boolean;
   rowSecurity: boolean;
+  partitioning: boolean;
 };
 
 export type TableMatch = {
@@ -194,7 +198,10 @@ export type TableMatch = {
   columnsOnlyInB: ColumnSnapshot[];
   possibleColumnMatches: MatchCandidate[];
   constraintDiffs: ConstraintDiff[];
-  /** Table-scoped object differences: indexes, triggers and row security. */
+  /**
+   * Table-scoped object differences: indexes, triggers, row security and
+   * partitioning.
+   */
   objectDiffs: ObjectDiff[];
   changedSections: string[];
   hasChanges: boolean;

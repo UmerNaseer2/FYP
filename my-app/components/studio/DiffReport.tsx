@@ -130,6 +130,7 @@ const OBJECT_TAG: Record<ObjectKind, string> = {
   PROCEDURE: "procedure",
   POLICY: "policy",
   "ROW SECURITY": "rls",
+  PARTITIONING: "partitioning",
 };
 
 /**
@@ -180,6 +181,11 @@ function objectNote(diff: ObjectDiff): string {
   // ALTER POLICY can move the roles and the expressions but not the command the
   // policy applies to, so the generator drops it and writes it again.
   if (diff.kind === "POLICY") return "rule changed — dropped and recreated";
+  if (diff.kind === "PARTITIONING") {
+    // No ALTER turns a plain table into a partitioned one or moves a partition
+    // to a different parent, so saying what each side is beats saying "changed".
+    return `${diff.rightDefinition ?? "?"} in the target, ${diff.leftDefinition ?? "?"} in the source`;
+  }
   return "definition changed — replaced";
 }
 
@@ -681,6 +687,13 @@ function ChangedTableCard({
       <ObjectLines
         label="Row security"
         diffs={pickKinds(match.objectDiffs, ["ROW SECURITY", "POLICY"])}
+      />
+      {/* Partitioning. A partitioned table and a plain one with the same
+          columns used to compare as "identical structure", which was a false
+          statement rather than a missing one. */}
+      <ObjectLines
+        label="Partitioning"
+        diffs={pickKinds(match.objectDiffs, ["PARTITIONING"])}
       />
     </details>
   );

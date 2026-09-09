@@ -56,6 +56,15 @@ function tallyObjects(diffs: ObjectDiff[], kinds: ObjectKind[]) {
  * the snapshot, and it can never disagree with the diffs beside it. Clamped at
  * zero because a snapshot restored from lineage can be older than its diffs.
  */
+/** Whether a table takes part in partitioning or inheritance at all. */
+function isPartitioned(table: TableSnapshot): boolean {
+  const part = table.partitioning;
+  if (!part) return false;
+  return (
+    part.key !== null || part.partitionOf !== null || part.inherits.length > 0
+  );
+}
+
 function inSyncCount(sourceTotal: number, added: number, changed: number): number {
   return Math.max(0, sourceTotal - added - changed);
 }
@@ -115,6 +124,11 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   // policies both have zero policies and behave nothing alike.
   let rowSecurityTotalLeft = 0;
   let rowSecurityUsed = false;
+  // Same shape as row security: every table has exactly one answer to "how is
+  // this partitioned", so the total is the table count and the row is hidden
+  // unless at least one side actually partitions or inherits something.
+  let partitioningTotalLeft = 0;
+  let partitioningUsed = false;
   const tableScopedDiffs: ObjectDiff[] = [];
 
   for (const match of report.matchedTables) {
@@ -152,6 +166,12 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     ) {
       rowSecurityUsed = true;
     }
+
+    if (match.left.partitioning) {
+      partitioningTotalLeft += 1;
+      if (isPartitioned(match.left)) partitioningUsed = true;
+    }
+    if (isPartitioned(match.right)) partitioningUsed = true;
 
     tableScopedDiffs.push(...match.objectDiffs);
   }
@@ -205,6 +225,15 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     absent: !rowSecurityUsed,
     inSync: inSyncCount(rowSecurityTotalLeft, rowSecurity.added, rowSecurity.changed),
     ...rowSecurity,
+  });
+
+  const partitioning = tallyObjects(tableScopedDiffs, ["PARTITIONING"]);
+  rows.push({
+    label: "Partitioning",
+    compared: categories.partitioning,
+    absent: !partitioningUsed,
+    inSync: inSyncCount(partitioningTotalLeft, partitioning.added, partitioning.changed),
+    ...partitioning,
   });
 
   const views = tallyObjects(report.objectDiffs, VIEW_KINDS);

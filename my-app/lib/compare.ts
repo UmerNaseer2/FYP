@@ -5,6 +5,7 @@ import type {
   RoutineSnapshot,
   SchemaSnapshot,
   SequenceSnapshot,
+  TablePartitioning,
   TableSnapshot,
   TypeSnapshot,
   ViewSnapshot,
@@ -1491,6 +1492,7 @@ const OBJECT_KIND_LABEL: Record<ObjectKind, string> = {
   PROCEDURE: "Procedure",
   POLICY: "Policy",
   "ROW SECURITY": "Row security on",
+  PARTITIONING: "Partitioning of",
 };
 
 /**
@@ -1569,6 +1571,10 @@ function objectChangeSeverity(
   // zero rows, turning it OFF makes every row in the table world-visible.
   // A rewritten policy is graded with the same reasoning as a new one.
   if (source.kind === "POLICY" || source.kind === "ROW SECURITY") return "breaking";
+  // A table cannot be turned into a partitioned one, or a partition detached
+  // and reattached, by any ALTER the generator can write. Whichever way it
+  // moves, the fix is a rebuild — which is the definition of breaking here.
+  if (source.kind === "PARTITIONING") return "breaking";
   if (source.kind === "INDEX") {
     return objectDropSeverity(target) === "breaking" ||
       objectCreateSeverity(source) === "breaking"
@@ -1729,6 +1735,47 @@ function rowSecurityObjects(table: TableSnapshot): ComparableObject[] {
   ];
 }
 
+/**
+ * How a table is partitioned, written the way it would appear in the CREATE
+ * TABLE that produced it. "standalone" for an ordinary table, so the two sides
+ * of a comparison always have something to differ on.
+ */
+export function describePartitioning(part: TablePartitioning): string {
+  const parts: string[] = [];
+  if (part.partitionOf) {
+    parts.push(`PARTITION OF ${part.partitionOf} ${part.bounds ?? ""}`.trim());
+  }
+  if (part.inherits.length > 0) {
+    parts.push(`INHERITS (${part.inherits.join(", ")})`);
+  }
+  if (part.key) {
+    parts.push(`PARTITION BY ${part.key}`);
+  }
+  return parts.length > 0 ? parts.join(" ") : "standalone";
+}
+
+/**
+ * Partitioning as a one-element list, for the same reason as the row-security
+ * switch above: every table has exactly one answer to "how is this table
+ * partitioned", so the only status this can produce is "changedDefinition".
+ */
+function partitioningObjects(table: TableSnapshot): ComparableObject[] {
+  const part = table.partitioning;
+  if (!part) return [];
+
+  const state = describePartitioning(part);
+  return [
+    {
+      key: "partitioning",
+      kind: "PARTITIONING" as const,
+      name: table.name,
+      definition: state,
+      normalizedDefinition: state,
+      table: table.name,
+    },
+  ];
+}
+
 function viewObjects(views: ViewSnapshot[]): ComparableObject[] {
   return views.map((view) => ({
     key: normalizeIdentifier(view.name),
@@ -1830,6 +1877,16 @@ function compareTableObjects(
     );
     diffs.push(...compareObjectLists(policyObjects(left), policyObjects(right), leftSchema, rightSchema));
   }
+  if (left.partitioning && right.partitioning) {
+    diffs.push(
+      ...compareObjectLists(
+        partitioningObjects(left),
+        partitioningObjects(right),
+        leftSchema,
+        rightSchema
+      )
+    );
+  }
 
   return diffs;
 }
@@ -1875,6 +1932,7 @@ function comparedCategories(
     types: Boolean(left.types && right.types),
     routines: Boolean(left.routines && right.routines),
     rowSecurity: matchedTables.some((m) => Boolean(m.left.rowSecurity && m.right.rowSecurity)),
+    partitioning: matchedTables.some((m) => Boolean(m.left.partitioning && m.right.partitioning)),
   };
 }
 
@@ -1905,6 +1963,7 @@ function compareMatchedTables(
   if (objectDiffs.some((d) => d.kind === "INDEX"))             changedSections.add("Indexes");
   if (objectDiffs.some((d) => d.kind === "TRIGGER"))           changedSections.add("Triggers");
   if (objectDiffs.some((d) => d.kind === "POLICY" || d.kind === "ROW SECURITY")) changedSections.add("Row security");
+  if (objectDiffs.some((d) => d.kind === "PARTITIONING")) changedSections.add("Partitioning");
   if (!exact)                                                   changedSections.add("Similarity matched");
 
   return {

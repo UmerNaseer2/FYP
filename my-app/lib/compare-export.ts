@@ -49,7 +49,8 @@ export type ChangeCategory =
   | "Sequence"
   | "Type"
   | "Function"
-  | "Row security";
+  | "Row security"
+  | "Partitioning";
 
 /**
  * What the migration would do.
@@ -148,6 +149,7 @@ const OBJECT_CATEGORY: Record<ObjectKind, ChangeCategory> = {
   PROCEDURE: "Function",
   POLICY: "Row security",
   "ROW SECURITY": "Row security",
+  PARTITIONING: "Partitioning",
 };
 
 /**
@@ -166,6 +168,7 @@ const SUMMARY_LABEL_CATEGORY: Record<string, ChangeCategory | undefined> = {
   "Enums & types": "Type",
   Functions: "Function",
   "Row security": "Row security",
+  Partitioning: "Partitioning",
 };
 
 /** The verdict for an object diff, in the export's vocabulary. */

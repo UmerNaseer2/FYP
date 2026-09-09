@@ -224,18 +224,112 @@ function nonFkConstraints(
   return all;
 }
 
+/**
+ * The CREATE TABLE for a table the target does not have.
+ *
+ * Partitioning changes the SHAPE of the statement rather than adding a clause
+ * to the end of it. A partition takes its columns from its parent and must not
+ * repeat them, so it is written `PARTITION OF parent FOR VALUES ...`, while a
+ * partitioned parent keeps the ordinary column list and gains `PARTITION BY`.
+ * This used to emit three plain CREATE TABLEs for a parent and its two
+ * partitions. That runs without error, which is the problem: you get three
+ * unrelated tables, and rows inserted into the parent stay in the parent.
+ */
 function buildCreateTable(table: TableSnapshot): string {
-  const lines: string[] = table.columns.map((col) => `  ${buildColumnDef(col)}`);
+  const constraints = nonFkConstraints(table).map(
+    ({ constraint }) => `  CONSTRAINT ${q(constraint.name)} ${constraint.definition}`
+  );
+  const part = table.partitioning;
 
-  for (const { constraint } of nonFkConstraints(table)) {
-    lines.push(`  CONSTRAINT ${q(constraint.name)} ${constraint.definition}`);
+  if (part?.partitionOf) {
+    // A partition's OWN constraints are legal inside the parens. The ones it
+    // inherited are not captured at all (the snapshot filters constraints whose
+    // conparentid is set), so nothing here can collide with the parent's.
+    const body = constraints.length > 0 ? ` (\n${constraints.join(",\n")}\n)` : "";
+    // `bounds` is what pg_get_expr printed — "FOR VALUES ..." or "DEFAULT".
+    const bounds = part.bounds ?? "DEFAULT";
+    return (
+      `CREATE TABLE IF NOT EXISTS ${q(table.name)} ` +
+      `PARTITION OF ${q(part.partitionOf)}${body} ${bounds};`
+    );
   }
+
+  const lines = table.columns
+    .map((col) => `  ${buildColumnDef(col)}`)
+    .concat(constraints);
+
+  // INHERITS goes before PARTITION BY; that is the order the grammar wants.
+  // A partition never reaches here — its parent is in `partitionOf`, and a
+  // table cannot be PARTITION OF and INHERITS at the same time.
+  let tail = "";
+  if (part && part.inherits.length > 0) {
+    tail += `\nINHERITS (${part.inherits.map(q).join(", ")})`;
+  }
+  if (part?.key) tail += `\nPARTITION BY ${part.key}`;
 
   return (
     `CREATE TABLE IF NOT EXISTS ${q(table.name)} (\n` +
     lines.join(",\n") +
-    `\n);`
+    `\n)${tail};`
   );
+}
+
+/**
+ * How the CREATE TABLE line describes itself.
+ *
+ * A partition and its parent both read "Create table X" otherwise, which hides
+ * the one thing about the statement worth noticing.
+ */
+function describeNewTable(table: TableSnapshot): string {
+  const part = table.partitioning;
+  if (part?.partitionOf) {
+    return `partition "${table.name}" of "${part.partitionOf}"`;
+  }
+  if (part?.key) {
+    return `table "${table.name}", partitioned by ${part.key}`;
+  }
+  if (part && part.inherits.length > 0) {
+    return `table "${table.name}", inheriting from ${part.inherits.join(", ")}`;
+  }
+  return `table "${table.name}"`;
+}
+
+/**
+ * Tables ordered so a parent comes before anything hanging off it.
+ *
+ * PARTITION OF and INHERITS both name a table that has to exist already. The
+ * comparator hands tables over in name order, which puts `events_2025` before
+ * `events` and makes the script fail on its second statement.
+ */
+function orderTablesForCreate(tables: TableSnapshot[]): TableSnapshot[] {
+  const byName = new Map(tables.map((t) => [t.name, t]));
+  const ordered: TableSnapshot[] = [];
+  const placed = new Set<string>();
+  const visiting = new Set<string>();
+
+  function place(table: TableSnapshot) {
+    if (placed.has(table.name)) return;
+    // A real schema cannot contain an inheritance cycle, but a hand-edited
+    // snapshot could, and that must not hang the generator.
+    if (visiting.has(table.name)) return;
+    visiting.add(table.name);
+
+    const part = table.partitioning;
+    if (part) {
+      const parents = part.partitionOf ? [part.partitionOf] : part.inherits;
+      for (const name of parents) {
+        const parent = byName.get(name);
+        if (parent) place(parent);
+      }
+    }
+
+    visiting.delete(table.name);
+    placed.add(table.name);
+    ordered.push(table);
+  }
+
+  for (const table of tables) place(table);
+  return ordered;
 }
 
 // Build a FK definition from structured snapshot fields instead of using the
@@ -859,7 +953,12 @@ function dropRoutineStatement(routine: RoutineSnapshot, reason = ""): SqlStateme
  * and every table before a view that selects from them.
  */
 type ObjectPhases = {
-  /** Types and standalone sequences — before CREATE TABLE. */
+  /**
+   * Types and standalone sequences — before CREATE TABLE.
+   *
+   * Also the `-- MANUAL:` notes for work the generator cannot express, so the
+   * reader meets them before the statements that assume the work was done.
+   */
   beforeTables: SqlStatement[];
   /** Functions and procedures — after tables exist, before triggers need them. */
   routines: SqlStatement[];
@@ -954,6 +1053,19 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
             ...rowSecurityStatements(match.left.rowSecurity, match.right.rowSecurity, tableName)
           );
         }
+      } else if (diff.kind === "PARTITIONING") {
+        // There is no ALTER that turns a plain table into a partitioned one,
+        // moves a partition to a different parent, or changes a partition key.
+        // The only route is a rebuild. Saying nothing here is what let the
+        // report claim the script handled a change it could not express.
+        const note =
+          `Table "${tableName}" is ${diff.leftDefinition ?? "unknown"} in the source and ` +
+          `${diff.rightDefinition ?? "unknown"} in the target. PostgreSQL has no ALTER for ` +
+          `this — build the table in its new shape, copy the rows across, then swap the names.`;
+        phases.beforeTables.push(
+          manualNote(note, `Partitioning of "${tableName}" needs a rebuild`, tableName)
+        );
+        phases.warnings.push(note);
       } else if (diff.kind === "POLICY") {
         // Dropped and recreated rather than altered: ALTER POLICY can change
         // the roles and the expressions but not the command it applies to, so
@@ -1692,10 +1804,10 @@ export function generateMigration(
   // so the ordering of CREATE TABLE statements doesn't matter.
   const fkStatements: SqlStatement[] = [];
 
-  for (const table of report.tablesOnlyInA) {
+  for (const table of orderTablesForCreate(report.tablesOnlyInA)) {
     statements.push({
       sql: buildCreateTable(table),
-      description: `Create table "${table.name}"`,
+      description: `Create ${describeNewTable(table)}`,
       kind: "CREATE_TABLE",
       severity: "info",
       tableName: table.name,
