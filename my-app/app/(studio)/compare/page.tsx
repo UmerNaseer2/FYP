@@ -24,6 +24,7 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
+import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
@@ -1107,6 +1108,11 @@ export default async function ComparePage({ searchParams }: PageProps) {
                   sticky). Stacks under 980px via the .compare-layout rule. */}
               <div className="compare-layout">
                 <div className="space-y-3">
+                  {/* The board first, then the narrative. The diff below only
+                      shows what changed, so it cannot say "nothing happened to
+                      your views" — this can, and it is the answer people scroll
+                      the whole page looking for. */}
+                  <SummaryMatrix report={outcome.report} />
                   <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
                   {outcome.data && <DataCompare result={outcome.data} />}
                 </div>

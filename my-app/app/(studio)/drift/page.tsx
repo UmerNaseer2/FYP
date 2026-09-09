@@ -19,6 +19,7 @@ import {
   DashboardIcon,
 } from "@/components/ui/icons";
 import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
+import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DriftResolutionBar } from "@/components/studio/DriftResolutionBar";
 import { DriftSchemaPicker } from "@/components/studio/DriftSchemaPicker";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
@@ -383,7 +384,13 @@ async function DetailTab({
         </div>
 
         {view.report ? (
-          <DiffReport report={view.report} />
+          <div className="space-y-3">
+            {/* A stored snapshot can predate a whole object category, and the
+                matrix is the only place that says so out loud — which matters
+                more here than on /compare, where both sides are live. */}
+            <SummaryMatrix report={view.report} />
+            <DiffReport report={view.report} />
+          </div>
         ) : (
           <div className="panel p-5 flex items-start gap-3">
             <span style={{ color: "var(--text-3)", marginTop: 1, flex: "none" }}>
