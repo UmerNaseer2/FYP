@@ -23,6 +23,15 @@ npm run dev          # http://localhost:3000 → redirects to /studio
 ```bash
 npm run build        # production build
 npm run lint         # eslint
+npm run typecheck    # tsc --noEmit
+npm test             # jest
+```
+
+Or bring up Postgres and the app together, from the repository root — this needs
+no local Node and creates the metadata database for you:
+
+```bash
+docker compose up --build
 ```
 
 Create `my-app/.env.local` (git-ignored, never commit it):
@@ -84,7 +93,7 @@ my-app/
     page.tsx                  redirect → /studio
     login/                    Microsoft Entra sign-in button
     (studio)/                 the app shell; every page below shares it
-      studio/                 dashboard: tracked schemas, recent activity
+      studio/                 dashboard: tracked schemas and their drift status
       connections/            connection CRUD + test
       compare/                live-vs-live schema comparison
       script-editor/          review, edit, semver-classify, push to GitHub
@@ -124,7 +133,7 @@ my-app/
 | `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
 | `lib/version-sync.ts` | Ledger reconciliation helpers |
-| `lib/version-detection.ts` | Change-level severity; most of this file is unreachable (§5) |
+| `lib/version-detection.ts` | Change-level severity, plus detecting an existing version table in a target |
 | `lib/connection-config.ts` | Builds a `pg` config from a saved row; host allow-list check |
 | `lib/parse-uri.ts` | `postgres://` URI parsing |
 
@@ -176,7 +185,7 @@ Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 | `snapshots` | Point-in-time catalog snapshots of a tracked schema |
 | `lineage_migrations` | Which migration was applied to which tracked schema |
 | `drift_events` | Detected drift, plus acknowledgement state |
-| `schema_comparisons` | One row per comparison run, for the recent-activity feed |
+| `schema_comparisons` | One row per comparison run; written but not yet read anywhere (§5) |
 | `profiles` | Signed-in users and their role; the first to sign in becomes `admin` |
 | `comparison_sets` | A saved source schema plus its list of targets |
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
@@ -217,7 +226,8 @@ migration generation · script review and editing · semver push to the GitHub
 registry · pull back · pre-flight · dry run · approval and the two-person rule ·
 transactional apply · `script_patch` ledger · rollback from a `.down.sql` ·
 lineage snapshots · drift detection and re-baseline · version-sync
-reconciliation · saved comparison sets · comparing one source against up to six
+reconciliation · detecting an existing version table in a target · saved
+comparison sets · comparing one source against up to six
 targets · dev/staging/production labels and their warnings · exporting a diff as
 Markdown, JSON, CSV or PDF · the ERD visualizer.
 
@@ -234,11 +244,6 @@ views, sequences, types and routines.
   `requireAdmin`, and the `profiles` table is created with the rest of the
   metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS=false` turns the whole thing
   on, and then the Entra keys in §1 have to be set for anyone to get in.
-- **`lib/version-detection.ts` is written but not wired to anything.** Only
-  `ChangeLevel` and `summarizeStructuralSeverity` are imported. The other ~370
-  lines detect and read an existing version table in a target — Flyway,
-  Liquibase, a `schema_version` table — which is spec feature 5. It works; no
-  screen calls it.
 - **`schema_comparisons` is written on every compare and never read.** It is a
   history log with nothing displaying the history.
 - **Snapshots carry no format version**, so snapshots taken before and after a
@@ -263,16 +268,18 @@ views, sequences, types and routines.
 | Microsoft OAuth via NextAuth | wired in `auth.ts`, disabled by `BYPASS_AUTH` |
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
-| Docker | met — multi-stage `Dockerfile` on the Next.js standalone output, plus `.dockerignore` |
-| Jest unit tests | met — 113 tests over the six domain modules; the pages themselves are covered by route tests, not render tests |
+| Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
+| Jest unit tests | met — 135 tests in 8 suites over the domain modules; the pages themselves are covered by route tests, not render tests |
 
 ---
 
 ## 6. Styling
 
-All styling lives in `app/globals.css` (about 3,000 lines) as CSS custom
-properties plus hand-written component classes. Tailwind v4 is installed and the
-PostCSS plugin is configured, but no Tailwind utility classes are used.
+All styling lives in `app/globals.css` (about 1,250 lines) as CSS custom
+properties plus hand-written component classes. Tailwind v4 is imported at the
+top of that file and its utilities carry layout and spacing — `flex`, `grid`,
+`mt-2`, `text-[12px]` — while anything with a look of its own (`.btn`, `.card`,
+`.pill`, `.diff-row`) is a hand-written class built on the tokens below.
 
 Theming is driven by a `data-theme` attribute on `:root`, with a full token set
 defined for both `light` and `dark`.
@@ -290,15 +297,13 @@ defined for both `light` and `dark`.
 Fonts are Geist Sans and Geist Mono via `next/font`, exposed as
 `--font-geist-sans` and `--font-geist-mono`.
 
-A meaningful share of `globals.css` is no longer referenced by any component and
-is queued for removal.
-
 ---
 
 ## 7. Repository conventions
 
-- `main` is the trunk. `Umer-dev`, `Cindy-dev`, `mei-dev` and `test` are the
-  per-person branches and are kept level with `main`.
+- `main` is the trunk. `Umer-dev`, `Cindy-dev`, `mei-dev`, `G-DEV` and `test`
+  are the per-person branches. Work lands on `Umer-dev` first; the others are
+  fast-forwarded to match, so every branch holds the same tree.
 - This README is the only tracked document. Working notes, reviews and generated
   reports go in `my-app/docs/`, which is git-ignored.
 - The full FYP-B review — subsystem maps, the spec trace, 54 findings, the market
