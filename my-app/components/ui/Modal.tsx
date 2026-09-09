@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { AlertTriangleIcon } from "./icons";
 
 type ModalProps = {
@@ -10,11 +11,31 @@ type ModalProps = {
   children: ReactNode;
   /** Max width of the centered card. Defaults to 380px. */
   width?: number | string;
+  /**
+   * What this dialog is, in a few words — "Stop tracking shop_dev", say.
+   *
+   * Required, because `aria-modal="true"` without a name announces itself as
+   * "dialog" and nothing else: the screen-reader user is told the rest of the
+   * page is unavailable and not told what replaced it. Callers that render
+   * their own heading can point at it with `labelledBy` instead.
+   */
+  label?: string;
+  /** id of the element that titles this dialog. Wins over `label`. */
+  labelledBy?: string;
 };
 
 /** Centered overlay card, portaled to <body>. */
-export function Modal({ open, onClose, children, width = 380 }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  children,
+  width = 380,
+  label,
+  labelledBy,
+}: ModalProps) {
   const [mounted, setMounted] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(open && mounted, panelRef);
   // SSR guard: only portal after the client mounts so createPortal never runs
   // against an undefined `document` during server render (e.g. open-on-first-paint).
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -39,10 +60,14 @@ export function Modal({ open, onClose, children, width = 380 }: ModalProps) {
         onClick={onClose}
       />
       <div
+        ref={panelRef}
+        tabIndex={-1}
         className="card relative w-full p-5"
         style={{ maxWidth: typeof width === "number" ? `${width}px` : width, boxShadow: "var(--shadow-lg)" }}
         role="dialog"
         aria-modal="true"
+        aria-label={labelledBy ? undefined : label}
+        aria-labelledby={labelledBy}
       >
         {children}
       </div>
@@ -80,13 +105,16 @@ type ConfirmDialogProps = {
 
 /** Confirm gate for destructive or risky actions. Built on Modal. */
 export function ConfirmDialog({ open, onClose, ...body }: ConfirmDialogProps) {
+  // The dialog's own heading is its name — pointing at it beats repeating the
+  // title in an aria-label, because the two can never drift apart.
+  const titleId = useId();
   return (
-    <Modal open={open} onClose={onClose}>
+    <Modal open={open} onClose={onClose} labelledBy={titleId}>
       {/* The contents live in their own component so the acknowledgement tick
           is created fresh on every opening. Modal renders nothing while it is
           closed, so ConfirmBody unmounts and there is no stale tick left to
           carry into the next use — no reset effect needed. */}
-      <ConfirmBody onClose={onClose} {...body} />
+      <ConfirmBody onClose={onClose} titleId={titleId} {...body} />
     </Modal>
   );
 }
@@ -95,12 +123,13 @@ function ConfirmBody({
   onClose,
   onConfirm,
   title,
+  titleId,
   description,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   destructive = false,
   acknowledge,
-}: Omit<ConfirmDialogProps, "open">) {
+}: Omit<ConfirmDialogProps, "open"> & { titleId: string }) {
   const [acknowledged, setAcknowledged] = useState(false);
   const blocked = Boolean(acknowledge) && !acknowledged;
 
@@ -116,7 +145,9 @@ function ConfirmBody({
           </div>
         )}
         <div>
-          <h4 className="text-[15px] font-semibold">{title}</h4>
+          <h4 id={titleId} className="text-[15px] font-semibold">
+            {title}
+          </h4>
           {description && (
             <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
               {description}

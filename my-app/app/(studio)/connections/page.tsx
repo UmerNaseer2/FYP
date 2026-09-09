@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { parsePostgresUri } from "@/lib/parse-uri";
 import {
   DEFAULT_SSL_MODE,
@@ -189,6 +190,16 @@ export default function ConnectionsPage() {
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
+
+  // Both overlays on this page stay mounted so CSS can animate them, so both
+  // need the keyboard handling a mounted-and-hidden dialog does not get for
+  // free — see useDialogFocus.
+  const drawerRef = useRef<HTMLElement>(null);
+  const deleteRef = useRef<HTMLDivElement>(null);
+  const drawerTitleId = useId();
+  const deleteTitleId = useId();
+  useDialogFocus(drawerOpen, drawerRef);
+  useDialogFocus(deleteTarget !== null, deleteRef);
   // Set once the API has told us the connection is still in use; the next press
   // of Delete carries confirm: true.
   const [deleteDependents, setDeleteDependents] = useState<Dependents | null>(null);
@@ -996,7 +1007,24 @@ export default function ConnectionsPage() {
 
       {/* ——— Scrim + Drawer ——— */}
       <div className={`scrim ${drawerOpen ? "open" : ""}`} onClick={() => setDrawerOpen(false)} />
-      <aside className={`drawer ${drawerOpen ? "open" : ""}`} aria-hidden={!drawerOpen}>
+      {/*
+        This panel is always in the DOM — it slides in and out with a CSS
+        transform, and a transform moves an element without removing it from
+        the tab order. It used to carry aria-hidden while closed, which is the
+        worst of both: twenty-odd form controls still reachable by Tab, inside
+        a region a screen reader is told does not exist, so focus vanished for
+        several presses on the way past. `inert` is the attribute that
+        actually means "closed": not focusable, not clickable, not announced.
+      */}
+      <aside
+        ref={drawerRef}
+        tabIndex={-1}
+        className={`drawer ${drawerOpen ? "open" : ""}`}
+        inert={!drawerOpen}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={drawerTitleId}
+      >
         <div className="drawer-header">
           <div className="flex items-center gap-2.5 min-w-0">
             <div
@@ -1006,7 +1034,7 @@ export default function ConnectionsPage() {
               <LogoIcon size={14} />
             </div>
             <div className="leading-tight min-w-0">
-              <h2 className="text-[14.5px] font-semibold truncate">
+              <h2 id={drawerTitleId} className="text-[14.5px] font-semibold truncate">
                 {editingId === null ? "Add connection" : `Edit ${form.name || "connection"}`}
               </h2>
               <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
@@ -1346,15 +1374,23 @@ export default function ConnectionsPage() {
       </aside>
 
       {/* ——— Delete confirm modal ——— */}
+      {/*
+        Same problem as the drawer: this stays mounted so it can fade, and a
+        closed one is only `opacity: 0`. Without `inert` the Delete button sat
+        in the tab order of every visit to this page, under a role="dialog"
+        that told assistive tech a modal was open the entire time.
+      */}
       <div
         className={`modal-scrim ${deleteTarget ? "open" : ""}`}
+        inert={!deleteTarget}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={deleteTitleId}
         onClick={(e) => {
           if (e.target === e.currentTarget) closeDelete();
         }}
       >
-        <div className="modal p-5">
+        <div ref={deleteRef} tabIndex={-1} className="modal p-5">
           <div className="flex items-start gap-3">
             <div
               className="w-10 h-10 rounded-full grid place-items-center flex-none"
@@ -1363,7 +1399,7 @@ export default function ConnectionsPage() {
               <AlertTriangleIcon size={18} />
             </div>
             <div className="min-w-0">
-              <h3 className="text-[15px] font-semibold tracking-[-0.005em]">
+              <h3 id={deleteTitleId} className="text-[15px] font-semibold tracking-[-0.005em]">
                 Delete <span className="mono">{deleteTarget?.name}</span>?
               </h3>
               <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>

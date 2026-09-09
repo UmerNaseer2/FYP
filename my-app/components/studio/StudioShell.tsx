@@ -123,6 +123,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
           onClose={() => setMobileNavOpen(false)}
           side="left"
           bare
+          label="Main navigation"
           width="min(280px, 85vw)"
         >
           {sidebar}

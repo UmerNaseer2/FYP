@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 
 type DrawerProps = {
   open: boolean;
@@ -21,6 +22,13 @@ type DrawerProps = {
    * used to host the nav sidebar (which brings its own header/footer) on mobile.
    */
   bare?: boolean;
+  /**
+   * What this drawer is, for assistive tech. Only needed in `bare` mode: the
+   * normal chrome has a visible <h4> title and the drawer points at that, but
+   * a bare drawer hands the whole surface to its child and has no heading of
+   * its own to name it by.
+   */
+  label?: string;
 };
 
 /** Slide-over for add / edit flows and the mobile nav. Portaled to <body>. */
@@ -34,8 +42,12 @@ export function Drawer({
   width = 460,
   side = "right",
   bare = false,
+  label,
 }: DrawerProps) {
   const [mounted, setMounted] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useDialogFocus(open && mounted, panelRef);
   // SSR guard: only portal after the client mounts so createPortal never runs
   // against an undefined `document` during server render (e.g. open-on-first-paint).
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -75,6 +87,8 @@ export function Drawer({
       />
       {/* panel */}
       <div
+        ref={panelRef}
+        tabIndex={-1}
         className={`panel absolute ${edge} top-0 bottom-0 flex flex-col`}
         style={{
           width: w,
@@ -90,6 +104,8 @@ export function Drawer({
         }}
         role="dialog"
         aria-modal="true"
+        aria-label={bare ? label : undefined}
+        aria-labelledby={bare ? undefined : titleId}
       >
         {bare ? (
           children
@@ -100,7 +116,9 @@ export function Drawer({
               style={{ borderBottom: "1px solid var(--border)" }}
             >
               <div className="flex items-center gap-2">
-                <h4 className="text-[14px] font-semibold">{title}</h4>
+                <h4 id={titleId} className="text-[14px] font-semibold">
+                  {title}
+                </h4>
                 {badge}
               </div>
               <button className="btn btn-ghost btn-sm" aria-label="Close" onClick={onClose}>
