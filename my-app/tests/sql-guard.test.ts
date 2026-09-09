@@ -1,4 +1,8 @@
-import { containsTransactionControl, extractEnumAddValues } from "@/lib/sql-guard";
+import {
+  containsTransactionControl,
+  extractEnumAddValues,
+  findRowDestroyingStatements,
+} from "@/lib/sql-guard";
 
 /**
  * The transaction guard is the one thing standing between a migration and a
@@ -161,5 +165,44 @@ describe("extractEnumAddValues", () => {
       "ALTER TYPE mood ADD VALUE IF NOT EXISTS 'a';",
       "ALTER TYPE mood ADD VALUE IF NOT EXISTS 'b';",
     ]);
+  });
+});
+
+/**
+ * The deploy checklist grades a run with changeTypeOf, which answers how far
+ * the version moves. A TRUNCATE moves it nowhere, so the checklist reported
+ * "nothing in this run is breaking" over a statement that empties a table.
+ * This is the second question the screen now asks.
+ */
+describe("findRowDestroyingStatements", () => {
+  it("finds the statements that take rows away", () => {
+    expect(findRowDestroyingStatements("TRUNCATE TABLE orders;")).toEqual(["TRUNCATE"]);
+    expect(findRowDestroyingStatements("DELETE FROM orders WHERE id = 1;")).toEqual([
+      "DELETE",
+    ]);
+    expect(findRowDestroyingStatements("DROP TABLE orders;")).toEqual(["DROP TABLE"]);
+  });
+
+  it("names every distinct kind it found, once each", () => {
+    const sql = [
+      "TRUNCATE TABLE a;",
+      "TRUNCATE TABLE b;",
+      "DELETE FROM c;",
+    ].join("\n");
+    expect(findRowDestroyingStatements(sql)).toEqual(["TRUNCATE", "DELETE"]);
+  });
+
+  it("ignores the words in a comment or a string literal", () => {
+    const sql = [
+      "-- this replaces the old TRUNCATE step",
+      "INSERT INTO audit(note) VALUES ('delete from orders');",
+    ].join("\n");
+    expect(findRowDestroyingStatements(sql)).toEqual([]);
+  });
+
+  it("says nothing about a migration that only adds", () => {
+    expect(findRowDestroyingStatements("ALTER TABLE orders ADD COLUMN note text;")).toEqual(
+      []
+    );
   });
 });

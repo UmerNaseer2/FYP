@@ -47,6 +47,27 @@ describe("inferChangeTypeFromSql", () => {
   it("still grades real destructive SQL breaking", () => {
     expect(inferChangeTypeFromSql("DROP TABLE legacy;")).toBe("breaking");
   });
+
+  // These used to match no branch at all and fall through to "patch", so a
+  // script whose whole job was dropping a view told the deploy checklist that
+  // nothing in the run was breaking.
+  it("grades a dropped view, index, function or schema breaking too", () => {
+    expect(inferChangeTypeFromSql("DROP VIEW big_orders;")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP MATERIALIZED VIEW totals;")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP INDEX orders_status_idx;")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP FUNCTION recalc(int);")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP TRIGGER audit_ins ON orders;")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP SEQUENCE order_no;")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP TYPE mood;")).toBe("breaking");
+    expect(inferChangeTypeFromSql("DROP SCHEMA staging CASCADE;")).toBe("breaking");
+  });
+
+  // The change type answers how far the version moves, and a TRUNCATE moves it
+  // nowhere. That is correct, and it is why the deploy screen asks about row
+  // loss separately — see findRowDestroyingStatements.
+  it("leaves a row-only change on patch", () => {
+    expect(inferChangeTypeFromSql("TRUNCATE TABLE orders;")).toBe("patch");
+  });
 });
 
 describe("readChangeTypeHeader", () => {

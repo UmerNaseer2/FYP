@@ -128,6 +128,37 @@ export function containsTransactionControl(sql: string): boolean {
 }
 
 /**
+ * Statements that take rows out of a live table, named by keyword.
+ *
+ * Deliberately separate from changeTypeOf. That grades a script for the version
+ * bump — how much the SHAPE moved — and TRUNCATE moves no shape at all, so it
+ * grades "patch" and the deploy checklist happily reported "nothing in this run
+ * is breaking" above a statement that empties a table. Those are two different
+ * questions and this is the second one: not how big a version this is, but
+ * whether rows go away.
+ *
+ * DROP TABLE and DROP SCHEMA are here as well as in the breaking grade. They
+ * are both things at once, and a reader deciding whether they need a backup
+ * first is asking this question, not the version one.
+ *
+ * The scan runs on maskNonCode's output for the same reason every other scan in
+ * this file does: a keyword in a comment or a string literal is not a statement.
+ *
+ * Returns the keywords it found, in a fixed order, so the screen can name them.
+ */
+export function findRowDestroyingStatements(sql: string): string[] {
+  const code = maskNonCode(sql);
+  const checks: [RegExp, string][] = [
+    [/\bTRUNCATE\b/i, "TRUNCATE"],
+    [/\bDELETE\s+FROM\b/i, "DELETE"],
+    [/\bDROP\s+TABLE\b/i, "DROP TABLE"],
+    [/\bDROP\s+SCHEMA\b/i, "DROP SCHEMA"],
+    [/\bDROP\s+DATABASE\b/i, "DROP DATABASE"],
+  ];
+  return checks.filter(([pattern]) => pattern.test(code)).map(([, label]) => label);
+}
+
+/**
  * Split a script into statements, ignoring semicolons that are not statement
  * boundaries.
  *

@@ -62,6 +62,18 @@ export function readChangeTypeHeader(sql: string): ScriptChangeType | null {
 }
 
 /**
+ * Any DROP that takes away something another object or another app can be
+ * depending on.
+ *
+ * This used to name only tables, columns and constraints, so a script whose
+ * whole job was dropping a view, an index or a function matched no branch at
+ * all and fell through to "patch" — which then told the deploy checklist that
+ * nothing in the run was breaking, over a statement that stops a report dead.
+ */
+const DROPS_SOMETHING =
+  /\bdrop\s+(table|column|constraint|materialized\s+view|view|index|sequence|function|procedure|trigger|type|domain|schema|database|extension|rule|policy)\b/;
+
+/**
  * Grade a script by reading the SQL it will actually run.
  *
  * The scan runs on maskNonCode's output, so a keyword inside a comment, a
@@ -72,9 +84,7 @@ export function readChangeTypeHeader(sql: string): ScriptChangeType | null {
 export function inferChangeTypeFromSql(sql: string): ScriptChangeType {
   const code = maskNonCode(sql).toLowerCase();
   if (
-    /\bdrop\s+table\b/.test(code) ||
-    /\bdrop\s+column\b/.test(code) ||
-    /\bdrop\s+constraint\b/.test(code) ||
+    DROPS_SOMETHING.test(code) ||
     /\bset\s+not\s+null\b/.test(code) ||
     /\balter\s+column\b/.test(code) ||
     /\brename\b/.test(code)
