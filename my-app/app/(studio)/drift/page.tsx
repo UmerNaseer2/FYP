@@ -256,6 +256,21 @@ function ListUnreadable() {
   );
 }
 
+/** The drift history itself could not be read — say so instead of "none". */
+function HistoryUnreadable() {
+  return (
+    <Card className="p-0 overflow-hidden">
+      <div style={{ height: 280 }}>
+        <EmptyState
+          icon={<AlertCircleIcon size={22} />}
+          title="Could not load the drift history"
+          description="The recorded checks could not be read just now. Reload the page to try again."
+        />
+      </div>
+    </Card>
+  );
+}
+
 function NothingTracked() {
   return (
     <Card className="p-0 overflow-hidden">
@@ -783,6 +798,7 @@ function CountTile({
 
 function AuditTab() {
   const [events, setEvents] = useState<DriftEventFeedItem[] | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -790,12 +806,15 @@ function AuditTab() {
       try {
         const res = await fetch("/api/lineage/audit");
         const data = res.ok ? await res.json() : null;
-        if (!cancelled) setEvents(Array.isArray(data) ? data : []);
+        if (cancelled) return;
+        setEvents(Array.isArray(data) ? data : []);
+        setFailed(!Array.isArray(data));
       } catch {
-        // The route already answers with an empty feed rather than an error, so
-        // reaching here means the network failed. An empty table reads the same
-        // as "no checks recorded", which is the honest thing to show.
-        if (!cancelled) setEvents([]);
+        // An empty table reads as "no checks recorded", which is a very
+        // different claim from "we could not ask". Say which one this is.
+        if (cancelled) return;
+        setEvents([]);
+        setFailed(true);
       }
     }
     void load();
@@ -805,6 +824,7 @@ function AuditTab() {
   }, []);
 
   if (events === null) return <ContentSkeleton tab="audit" />;
+  if (failed) return <HistoryUnreadable />;
 
   const total = events.length;
   const drifted = events.filter((e) => e.status === "drifted").length;

@@ -33,7 +33,12 @@ export async function GET(request: NextRequest) {
     const events = await listDriftEvents(trackedSchemaId, limit);
     return NextResponse.json(events);
   } catch (error) {
+    // An empty audit feed means "no drift check has ever run", which is a
+    // reassuring thing to read. Never say that because the query failed.
     console.error("GET audit error:", error);
-    return NextResponse.json([], { status: 200 });
+    return NextResponse.json(
+      { error: "Could not read the drift history. Is the app database reachable?" },
+      { status: 500 }
+    );
   }
 }

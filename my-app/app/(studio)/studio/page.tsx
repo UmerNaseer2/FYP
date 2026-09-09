@@ -163,8 +163,16 @@ export default function DashboardPage() {
     setListPhase("loading");
     try {
       const res = await fetch("/api/lineage", { cache: "no-store" });
-      const data = await res.json();
-      setItems(Array.isArray(data) ? data : []);
+      const data = await res.json().catch(() => null);
+      // The route answers with an error object, not a list, when it cannot read
+      // the database. Checking the status matters more than the shape: an empty
+      // dashboard has to mean "you track nothing", never "the query failed".
+      if (!res.ok || !Array.isArray(data)) {
+        setItems([]);
+        setListPhase("error");
+        return;
+      }
+      setItems(data);
       setListPhase("ready");
     } catch {
       setItems([]);

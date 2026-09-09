@@ -19,9 +19,15 @@ export async function GET() {
     const items = await listTrackedSchemas();
     return NextResponse.json(items);
   } catch (error) {
+    // This used to answer `[]` with a 200. A dashboard showing "nothing tracked
+    // yet" when the metadata database is unreachable is worse than an error —
+    // it invites you to track a schema that is already tracked, and it hides
+    // every drift warning you actually needed to see.
     console.error("GET lineage error:", error);
-    // Keep the dashboard readable: an empty list, not a crash.
-    return NextResponse.json([], { status: 200 });
+    return NextResponse.json(
+      { error: "Could not read your tracked schemas. Is the app database reachable?" },
+      { status: 500 }
+    );
   }
 }
 
