@@ -225,6 +225,30 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     if (isPartitioned(table)) partitioningUsed = true;
   }
 
+  // Views carry indexes and triggers too — a materialized view is indexed like
+  // a table, and INSTEAD OF triggers are what make a view writable — and the
+  // comparison files those diffs at schema scope. Counting only the tables here
+  // left the Indexes row reading "3 in sync" while the changes list below it
+  // showed a fourth, on a view, that the totals had never heard of.
+  //
+  // Matched by name, which is how the comparison matched them: a view on one
+  // side only takes its indexes with it, exactly as a one-sided table does.
+  const rightViewsByName = new Map(
+    (report.right.views ?? []).map((view) => [view.name, view])
+  );
+  for (const view of report.left.views ?? []) {
+    const peer = rightViewsByName.get(view.name);
+    if (!peer) continue;
+    if (view.indexes && peer.indexes) {
+      indexTotalLeft += view.indexes.length;
+      indexTotalRight += peer.indexes.length;
+    }
+    if (view.triggers && peer.triggers) {
+      triggerTotalLeft += view.triggers.length;
+      triggerTotalRight += peer.triggers.length;
+    }
+  }
+
   rows.push({
     label: "Columns",
     compared: true,
@@ -247,7 +271,12 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     manual: 0,
   });
 
-  const indexes = tallyObjects(tableScopedDiffs, ["INDEX"]);
+  // Both lists: a table's indexes are recorded on its match, a view's on the
+  // schema. tallyObjects filters by kind, so nothing else in report.objectDiffs
+  // is picked up by either of these two.
+  const relationScopedDiffs = [...tableScopedDiffs, ...report.objectDiffs];
+
+  const indexes = tallyObjects(relationScopedDiffs, ["INDEX"]);
   rows.push({
     label: "Indexes",
     compared: categories.indexes,
@@ -257,7 +286,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     ...indexes,
   });
 
-  const triggers = tallyObjects(tableScopedDiffs, ["TRIGGER"]);
+  const triggers = tallyObjects(relationScopedDiffs, ["TRIGGER"]);
   rows.push({
     label: "Triggers",
     compared: categories.triggers,

@@ -498,6 +498,29 @@ export type ViewSnapshot = {
    * changed.
    */
   options?: string[];
+  /**
+   * Indexes on this view. Only a materialized view can have any: it stores its
+   * result set, so PostgreSQL indexes it the way it indexes a table.
+   *
+   * Not a detail. REFRESH MATERIALIZED VIEW CONCURRENTLY REQUIRES a unique
+   * index, so a matview recreated without one can only be refreshed by locking
+   * it against every reader for the length of the rebuild — and the migration
+   * that dropped and rebuilt the matview is what took the index away.
+   *
+   * Optional for the usual reason: a snapshot captured before this app read
+   * them has no record, which is not the same as there being none.
+   */
+  indexes?: IndexSnapshot[];
+  /**
+   * Triggers on this view, which in practice means INSTEAD OF triggers.
+   *
+   * They are the entire reason a view can be written to. A view with three of
+   * them accepts INSERT, UPDATE and DELETE; the same view without them rejects
+   * all three. The trigger query has always returned these rows — nothing
+   * filtered them by relkind — and the loop that files them away simply had
+   * nowhere to put a row belonging to a view, so it dropped them.
+   */
+  triggers?: TriggerSnapshot[];
 };
 
 /**
@@ -1222,6 +1245,12 @@ export async function fetchSchemaSnapshot(
     // would make every primary key show up as two separate differences — and
     // the generated migration would try to drop an index Postgres owns.
     //
+    // 'm' is in the relkind list beside the tables: a materialized view stores
+    // its rows and is indexed like a table, and REFRESH ... CONCURRENTLY does
+    // not work without a unique index on it. Reading only 'r' and 'p' meant a
+    // migration that rebuilt a matview left it with no index at all, and
+    // nothing in the report mentioned it.
+    //
     // Partition indexes are skipped for the same reason. An index on a
     // partitioned parent makes PostgreSQL create a matching one on every
     // partition, attached via pg_inherits. Recording those meant the script
@@ -1245,7 +1274,7 @@ export async function fetchSchemaSnapshot(
        JOIN pg_am am ON am.oid = i.relam
        JOIN pg_namespace n ON n.oid = c.relnamespace
        WHERE n.nspname = $1
-         AND c.relkind IN ('r', 'p')
+         AND c.relkind IN ('r', 'p', 'm')
          AND c.relname <> ALL($2)
          AND NOT EXISTS (
            SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid
@@ -1784,9 +1813,36 @@ export async function fetchSchemaSnapshot(
       }
     }
 
+    const views: ViewSnapshot[] = viewResult.rows.map((row) => {
+      const raw = row.definition ?? "";
+      const definition = stripSchemaFromExpr(raw, schemaName) ?? raw;
+      return {
+        name: row.name,
+        materialized: row.kind === "m",
+        definition,
+        normalizedDefinition: normalizeDefinition(definition),
+        columns: coerceTextArray(row.columns),
+        dependsOn: coerceTextArray(row.depends_on).sort(),
+        options: coerceTextArray(row.options).sort(),
+        indexes: [],
+        triggers: [],
+      };
+    });
+
+    // Built here, above the two loops, because an index or a trigger can hang
+    // off a view as readily as off a table and the loops should not have to
+    // care which they found. A schema cannot hold a table and a view of the
+    // same name, so one map over both is unambiguous.
+    const relationsByName = new Map<
+      string,
+      { indexes?: IndexSnapshot[]; triggers?: TriggerSnapshot[] }
+    >();
+    for (const [name, table] of tablesByName) relationsByName.set(name, table);
+    for (const view of views) relationsByName.set(view.name, view);
+
     for (const row of indexResult.rows) {
-      const table = tablesByName.get(row.table_name);
-      if (!table) {
+      const relation = relationsByName.get(row.table_name);
+      if (!relation) {
         continue;
       }
 
@@ -1796,7 +1852,7 @@ export async function fetchSchemaSnapshot(
       // two schemas compares equal and replays into either one.
       const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
 
-      table.indexes?.push({
+      relation.indexes?.push({
         name: row.index_name,
         definition,
         normalizedDefinition: normalizeDefinition(definition),
@@ -1808,14 +1864,14 @@ export async function fetchSchemaSnapshot(
     }
 
     for (const row of triggerResult.rows) {
-      const table = tablesByName.get(row.table_name);
-      if (!table) {
+      const relation = relationsByName.get(row.table_name);
+      if (!relation) {
         continue;
       }
 
       const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
 
-      table.triggers?.push({
+      relation.triggers?.push({
         name: row.name,
         definition,
         normalizedDefinition: normalizeDefinition(definition),
@@ -1839,19 +1895,10 @@ export async function fetchSchemaSnapshot(
       table.rowSecurity?.policies.sort((a, b) => a.name.localeCompare(b.name));
     }
 
-    const views: ViewSnapshot[] = viewResult.rows.map((row) => {
-      const raw = row.definition ?? "";
-      const definition = stripSchemaFromExpr(raw, schemaName) ?? raw;
-      return {
-        name: row.name,
-        materialized: row.kind === "m",
-        definition,
-        normalizedDefinition: normalizeDefinition(definition),
-        columns: coerceTextArray(row.columns),
-        dependsOn: coerceTextArray(row.depends_on).sort(),
-        options: coerceTextArray(row.options).sort(),
-      };
-    });
+    for (const view of views) {
+      view.indexes?.sort((a, b) => a.name.localeCompare(b.name));
+      view.triggers?.sort((a, b) => a.name.localeCompare(b.name));
+    }
 
     const sequences: SequenceSnapshot[] = sequenceResult.rows.map((row) => ({
       name: row.name,

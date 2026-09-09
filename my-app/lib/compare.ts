@@ -3,12 +3,14 @@ import type {
   ColumnSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
+  IndexSnapshot,
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
   SequenceSnapshot,
   TablePartitioning,
   TableSnapshot,
+  TriggerSnapshot,
   TypeSnapshot,
   ViewSnapshot,
 } from "./postgres";
@@ -1822,20 +1824,31 @@ function compareObjectLists(
   return diffs;
 }
 
-function indexObjects(table: TableSnapshot): ComparableObject[] {
-  return (table.indexes ?? []).map((index) => ({
+/**
+ * What indexObjects and triggerObjects need from the thing they are given.
+ *
+ * A table is not the only relation that carries these. A materialized view is
+ * indexed like a table, and a plain view carries the INSTEAD OF triggers that
+ * are the whole reason it can be written to — so both functions take the shape
+ * rather than the TableSnapshot they used to.
+ */
+type IndexedRelation = { name: string; indexes?: IndexSnapshot[] };
+type TriggeredRelation = { name: string; triggers?: TriggerSnapshot[] };
+
+function indexObjects(relation: IndexedRelation): ComparableObject[] {
+  return (relation.indexes ?? []).map((index) => ({
     key: normalizeIdentifier(index.name),
     kind: "INDEX" as const,
     name: index.name,
     definition: index.definition,
     normalizedDefinition: index.normalizedDefinition,
-    table: table.name,
+    table: relation.name,
     enforcesUniqueness: index.isUnique,
   }));
 }
 
-function triggerObjects(table: TableSnapshot): ComparableObject[] {
-  return (table.triggers ?? []).map((trigger) => ({
+function triggerObjects(relation: TriggeredRelation): ComparableObject[] {
+  return (relation.triggers ?? []).map((trigger) => ({
     key: normalizeIdentifier(trigger.name),
     kind: "TRIGGER" as const,
     name: trigger.name,
@@ -1843,7 +1856,7 @@ function triggerObjects(table: TableSnapshot): ComparableObject[] {
     // A disabled trigger and an enabled one with the same body are not the same
     // thing, and pg_get_triggerdef() does not say which it is.
     normalizedDefinition: `${trigger.normalizedDefinition}${trigger.enabled ? "" : " [DISABLED]"}`,
-    table: table.name,
+    table: relation.name,
   }));
 }
 
@@ -2134,6 +2147,58 @@ function compareTableObjects(
   return diffs;
 }
 
+/**
+ * Indexes and triggers on views that exist in both schemas.
+ *
+ * They are the same two kinds of object a table carries, so they are compared
+ * with the same two functions and reported under the same two matrix rows —
+ * the only difference is what they hang off, which the diff records in `table`
+ * exactly as it does for a table's own.
+ *
+ * Views are matched by name and nothing else. There is no similarity matching
+ * for views, so a renamed view is a drop and an add, and its indexes go with
+ * it: not compared here, and created or dropped alongside the view itself.
+ */
+function compareViewRelationObjects(
+  left: SchemaSnapshot,
+  right: SchemaSnapshot
+): ObjectDiff[] {
+  const diffs: ObjectDiff[] = [];
+  const rightByKey = new Map(
+    (right.views ?? []).map((view) => [normalizeIdentifier(view.name), view])
+  );
+
+  for (const view of left.views ?? []) {
+    const peer = rightByKey.get(normalizeIdentifier(view.name));
+    if (!peer) continue;
+
+    // Both sides, separately, for each kind: a snapshot captured before views
+    // recorded their indexes says `undefined`, which is not "there are none".
+    if (view.indexes && peer.indexes) {
+      diffs.push(
+        ...compareObjectLists(
+          indexObjects(view),
+          indexObjects(peer),
+          left.schema,
+          right.schema
+        )
+      );
+    }
+    if (view.triggers && peer.triggers) {
+      diffs.push(
+        ...compareObjectLists(
+          triggerObjects(view),
+          triggerObjects(peer),
+          left.schema,
+          right.schema
+        )
+      );
+    }
+  }
+
+  return diffs;
+}
+
 /** Views, sequences, types, collations and routines, which belong to the schema. */
 function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): ObjectDiff[] {
   const diffs: ObjectDiff[] = [];
@@ -2165,6 +2230,7 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
         right.schema
       )
     );
+    diffs.push(...compareViewRelationObjects(left, right));
   }
   if (left.sequences && right.sequences) {
     diffs.push(
@@ -2206,25 +2272,64 @@ function comparedCategories(
     return compared;
   }
 
+  // Views matched by name, for the two categories a view can also carry. A
+  // schema with no matched table but a matched materialized view HAS compared
+  // its indexes, and "not compared — no matched tables" over a row holding real
+  // numbers is a contradiction the reader has no way to resolve.
+  const matchedViews: Array<[ViewSnapshot, ViewSnapshot]> = [];
+  if (left.views && right.views) {
+    const rightByKey = new Map(
+      right.views.map((view) => [normalizeIdentifier(view.name), view])
+    );
+    for (const view of left.views) {
+      const peer = rightByKey.get(normalizeIdentifier(view.name));
+      if (peer) matchedViews.push([view, peer]);
+    }
+  }
+
   /**
    * Record a table-scoped category, which has two ways to be off. With no
    * matched pair at all, no snapshot is at fault — there was nothing to
    * compare. Only when pairs exist and none of them recorded the category on
    * both sides is a snapshot actually too old.
+   *
+   * `recordedOnView` is passed only for the categories a view can carry —
+   * indexes and triggers — and only ever consulted when there is no matched
+   * table at all. That order is deliberate. Matched tables that exist but
+   * recorded nothing ARE a stale snapshot, whatever the views say: answering
+   * "compared" there would put a row of numbers on screen that silently leaves
+   * every table's indexes out of them. The views only decide the case the
+   * tables cannot speak to, which is a schema of nothing but views — where
+   * "not compared, no matched tables" would sit directly above a real count.
    */
   function tableScoped(
     key: ObjectCategoryKey,
-    recorded: (m: TableMatch) => boolean
+    recorded: (m: TableMatch) => boolean,
+    recordedOnView?: (left: ViewSnapshot, right: ViewSnapshot) => boolean
   ): boolean {
     if (matchedTables.some(recorded)) return true;
+    if (matchedTables.length > 0) {
+      reasons[key] = "snapshotPredatesCategory";
+      return false;
+    }
+    const viewPairs = recordedOnView ? matchedViews : [];
+    if (viewPairs.some(([l, r]) => recordedOnView?.(l, r))) return true;
     reasons[key] =
-      matchedTables.length === 0 ? "noMatchedTables" : "snapshotPredatesCategory";
+      viewPairs.length === 0 ? "noMatchedTables" : "snapshotPredatesCategory";
     return false;
   }
 
   return {
-    indexes: tableScoped("indexes", (m) => Boolean(m.left.indexes && m.right.indexes)),
-    triggers: tableScoped("triggers", (m) => Boolean(m.left.triggers && m.right.triggers)),
+    indexes: tableScoped(
+      "indexes",
+      (m) => Boolean(m.left.indexes && m.right.indexes),
+      (l, r) => Boolean(l.indexes && r.indexes)
+    ),
+    triggers: tableScoped(
+      "triggers",
+      (m) => Boolean(m.left.triggers && m.right.triggers),
+      (l, r) => Boolean(l.triggers && r.triggers)
+    ),
     views: schemaScoped("views", Boolean(left.views && right.views)),
     sequences: schemaScoped("sequences", Boolean(left.sequences && right.sequences)),
     types: schemaScoped("types", Boolean(left.types && right.types)),

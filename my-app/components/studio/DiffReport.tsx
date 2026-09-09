@@ -153,11 +153,16 @@ const OBJECT_TAG: Record<ObjectKind, string> = {
  *
  * Enums, domains, composite types and range types are four kinds of the same
  * thing to anyone reading a diff, and splitting them into four one-line
- * sections would bury the change. Indexes and triggers are absent on purpose —
- * they hang off a table and are rendered inside that table's card.
+ * sections would bury the change.
+ *
+ * Indexes and triggers appear here too, but only the ones on a VIEW: a
+ * materialized view is indexed like a table, and a view's INSTEAD OF triggers
+ * are what let anything write to it. A table's own are rendered inside that
+ * table's card and never reach this list.
  */
 const SCHEMA_OBJECT_SECTIONS: { label: string; kinds: ObjectKind[] }[] = [
   { label: "Views", kinds: ["VIEW", "MATERIALIZED VIEW"] },
+  { label: "Indexes and triggers on views", kinds: ["INDEX", "TRIGGER"] },
   { label: "Sequences", kinds: ["SEQUENCE"] },
   { label: "Types", kinds: ["ENUM", "DOMAIN", "COMPOSITE TYPE", "RANGE TYPE"] },
   { label: "Collations", kinds: ["COLLATION"] },
@@ -203,6 +208,10 @@ function objectNote(diff: ObjectDiff): string {
   // An index cannot be altered in place either, but nothing depends on one, so
   // the drop takes nothing with it.
   if (diff.kind === "INDEX") return "definition changed — dropped and recreated";
+  // CREATE TRIGGER has no OR REPLACE, so the generator drops and writes it
+  // again. Said here rather than falling through to "replaced", which reads as
+  // if one statement carried it.
+  if (diff.kind === "TRIGGER") return "definition changed — dropped and recreated";
   if (diff.kind === "ROW SECURITY") {
     // Which way the switch moves is the entire content of this line. "definition
     // changed", over the setting that decides whether the table returns any rows
@@ -248,6 +257,12 @@ function ObjectLines({
             tag={OBJECT_TAG[diff.kind]}
           >
             <b>{diff.name}</b>{" "}
+            {/* Only an index or a trigger on a view carries this at schema
+                scope, and without it the line names an index and never says
+                which of three materialized views it is on. */}
+            {diff.table !== undefined && (
+              <span className="muted">on {diff.table} </span>
+            )}
             <span className={severity === "breaking" ? "chg-break" : "muted"}>
               · {objectNote(diff)}
               {severity === "breaking" ? " · breaking" : ""}
@@ -835,7 +850,9 @@ function SchemaObjectsCard({ diffs }: { diffs: ObjectDiff[] }) {
           or function is graded breaking because the migration removes it and
           anything still calling it stops working — a rebuilt view is dropped
           with <span className="mono">CASCADE</span> first, which can take
-          dependents with it.
+          dependents with it. Rebuilding a view also takes every index and
+          trigger on it, so the script writes all of them back, whether or not
+          they are listed here as changed.
         </p>
       </div>
     </details>

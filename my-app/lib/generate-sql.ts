@@ -489,13 +489,22 @@ function indexCreateSql(index: IndexSnapshot, idempotent: boolean): string {
   return `${definition.replace(/^(CREATE\s+(?:UNIQUE\s+)?INDEX)\s+/i, "$1 IF NOT EXISTS ")};`;
 }
 
+/**
+ * @param afterHeldBackDrop set for an index on a view whose drop safe mode
+ * comments out. The old view is then still sitting there with this index
+ * already on it, and a plain CREATE INDEX fails on the duplicate name — inside
+ * the one transaction the apply route uses, which takes the whole migration
+ * down with it. Held back beside the view instead.
+ */
 function createIndexStatement(
   index: IndexSnapshot,
   tableName: string,
-  idempotent: boolean
+  idempotent: boolean,
+  afterHeldBackDrop = false
 ): SqlStatement {
   return objectStatement({
     sql: indexCreateSql(index, idempotent),
+    needsArmedDrop: afterHeldBackDrop,
     // A unique index is built against the rows already in the table and refused
     // if two of them collide, so it can abort the migration on real data — the
     // same reason every ADD CONSTRAINT is breaking. A plain index cannot fail
@@ -527,30 +536,57 @@ function dropIndexStatement(index: IndexSnapshot, tableName: string): SqlStateme
 
 // CREATE TRIGGER has no IF NOT EXISTS, so a preceding DROP is the only way to
 // make it idempotent. That is also what makes a changed trigger replaceable.
-function createTriggerStatements(trigger: TriggerSnapshot, tableName: string): SqlStatement[] {
+function createTriggerStatements(
+  trigger: TriggerSnapshot,
+  tableName: string,
+  opts: {
+    /**
+     * Set for a trigger on a view whose drop safe mode comments out — see
+     * createIndexStatement. The DROP/CREATE pair itself would succeed against
+     * the old view, but it would be putting the source's trigger onto the
+     * target's view, which is not a state either side asked for.
+     */
+    afterHeldBackDrop?: boolean;
+    /**
+     * Set when `tableName` names a view rather than a table.
+     *
+     * PostgreSQL has no way to disable a trigger on a view: ALTER TABLE is the
+     * only syntax that carries DISABLE TRIGGER, and it answers "ALTER action
+     * DISABLE TRIGGER cannot be performed on relation" for a view. So a view
+     * trigger is always enabled and the disable line below is skipped — which
+     * matters, because the apply route runs the migration in one transaction
+     * and that one rejected statement would take every other one down with it.
+     */
+    onView?: boolean;
+  } = {}
+): SqlStatement[] {
+  const afterHeldBackDrop = opts.afterHeldBackDrop ?? false;
   const stmts: SqlStatement[] = [
     objectStatement({
       sql: `DROP TRIGGER IF EXISTS ${q(trigger.name)} ON ${q(tableName)};`,
       description: `Replace trigger "${trigger.name}" on "${tableName}"`,
       kind: "DROP_TRIGGER",
       tableName,
+      needsArmedDrop: afterHeldBackDrop,
     }),
     objectStatement({
       sql: `${trigger.definition.trim()};`,
       description: `Create trigger "${trigger.name}" on "${tableName}"`,
       kind: "CREATE_TRIGGER",
       tableName,
+      needsArmedDrop: afterHeldBackDrop,
     }),
   ];
   // A trigger is created enabled. Recreating a disabled one without this would
   // silently turn its behaviour back on in the target.
-  if (!trigger.enabled) {
+  if (!trigger.enabled && !opts.onView) {
     stmts.push(
       objectStatement({
         sql: `ALTER TABLE ${q(tableName)} DISABLE TRIGGER ${q(trigger.name)};`,
         description: `Disable trigger "${trigger.name}" on "${tableName}" (it is disabled in the source)`,
         kind: "CREATE_TRIGGER",
         tableName,
+        needsArmedDrop: afterHeldBackDrop,
       })
     );
   }
@@ -1159,6 +1195,15 @@ type ObjectPhases = {
   policies: SqlStatement[];
   /** Views — after foreign keys, so every table is complete. */
   views: SqlStatement[];
+  /**
+   * Indexes and triggers that hang off a VIEW — after the views above.
+   *
+   * They cannot ride in `indexes` and `triggers`, which run long before any
+   * view exists: a CREATE INDEX on a materialized view the script has not
+   * built yet fails on a relation that is not there. So they get a bucket of
+   * their own, emitted immediately after the view they belong to is created.
+   */
+  afterViews: SqlStatement[];
   /** View drops — before DROP TABLE, so CASCADE has less to reach. */
   viewDrops: SqlStatement[];
   /**
@@ -1214,6 +1259,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     triggers: [],
     policies: [],
     views: [],
+    afterViews: [],
     viewDrops: [],
     routineDrops: [],
     afterTables: [],
@@ -1330,6 +1376,14 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
    * NOT EXISTS finds the old one and quietly does nothing.
    */
   const heldBackViewDrops = new Set<string>();
+  /**
+   * INDEX and TRIGGER diffs from the schema-scoped list, which is where the ones
+   * belonging to a VIEW arrive. Held aside rather than handled in the loop
+   * below, because what to write for them depends on whether the view they hang
+   * off is about to be rebuilt — and that is not known until the CASCADE walk
+   * further down has finished. See the pass after the views are created.
+   */
+  const viewObjectDiffs: ObjectDiff[] = [];
 
   /** Queue a drop and record it in both sets — the only place that does. */
   function queueViewDrop(view: ViewSnapshot, reason: string) {
@@ -1340,6 +1394,13 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
   }
 
   for (const diff of report.objectDiffs) {
+    if (diff.kind === "INDEX" || diff.kind === "TRIGGER") {
+      // Only a view puts these in the schema-scoped list; a table's ride on its
+      // own match, which the loop above has already dealt with.
+      viewObjectDiffs.push(diff);
+      continue;
+    }
+
     if (diff.kind === "VIEW" || diff.kind === "MATERIALIZED VIEW") {
       const sourceView = findByName(leftViews, diff.name);
       const targetView = findByName(rightViews, diff.name);
@@ -1598,8 +1659,70 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
 
   // A view built on another view has to be created after it.
   for (const view of sortViewsByDependency(viewsToCreate)) {
-    phases.views.push(createViewStatement(view, heldBackViewDrops.has(view.name)));
+    const held = heldBackViewDrops.has(view.name);
+    phases.views.push(createViewStatement(view, held));
+    // Every index and trigger the source's copy carries, unconditionally.
+    //
+    // A view in this list was dropped first — CREATE OR REPLACE without a drop
+    // only happens when nothing but the WITH (...) settings moved, and those
+    // views are not queued here — so its indexes and its INSTEAD OF triggers
+    // went with it whether or not they appear in any diff. An index identical
+    // on both sides produces no diff at all, which is exactly how a rebuilt
+    // materialized view came back with none: including the one UNIQUE index
+    // REFRESH ... CONCURRENTLY cannot work without.
+    for (const index of view.indexes ?? []) {
+      phases.afterViews.push(createIndexStatement(index, view.name, idempotent, held));
+    }
+    for (const trigger of view.triggers ?? []) {
+      phases.afterViews.push(
+        ...createTriggerStatements(trigger, view.name, {
+          afterHeldBackDrop: held,
+          onView: true,
+        })
+      );
+    }
   }
+
+  // The views the loop above rebuilt from scratch, by name.
+  const rebuiltViews = new Set(viewsToCreate.map((view) => view.name));
+
+  // Indexes and triggers on views the script does NOT rebuild — a materialized
+  // view whose SELECT is unchanged but whose indexes moved, or a plain view
+  // that gained an INSTEAD OF trigger. Nothing dropped these, so each change
+  // has to be written out on its own. Views that WERE rebuilt are skipped: the
+  // loop above already wrote every index and trigger they need, and writing the
+  // diffs again would emit a DROP INDEX for one that no longer exists and a
+  // second CREATE for one that was just made.
+  for (const diff of viewObjectDiffs) {
+    const viewName = diff.table;
+    if (viewName === undefined || rebuiltViews.has(viewName)) continue;
+
+    if (diff.kind === "INDEX") {
+      if (diff.status !== "onlyA") {
+        const target = findByName(findByName(rightViews, viewName)?.indexes, diff.name);
+        if (target) phases.afterViews.push(dropIndexStatement(target, viewName));
+      }
+      if (diff.status !== "onlyB") {
+        const source = findByName(findByName(leftViews, viewName)?.indexes, diff.name);
+        if (source) {
+          phases.afterViews.push(createIndexStatement(source, viewName, idempotent));
+        }
+      }
+      continue;
+    }
+
+    if (diff.status === "onlyB") {
+      phases.afterViews.push(dropTriggerStatement(diff.name, viewName));
+      continue;
+    }
+    const source = findByName(findByName(leftViews, viewName)?.triggers, diff.name);
+    if (source) {
+      phases.afterViews.push(
+        ...createTriggerStatements(source, viewName, { onView: true })
+      );
+    }
+  }
+
   // ...and dropped before it, which is the same order reversed.
   phases.viewDrops.reverse();
 
@@ -2280,6 +2403,12 @@ export function generateMigration(
   // shape, and every table that was going to be dropped is already gone, so
   // nothing here can be cascaded away by a later statement.
   statements.push(...objects.views);
+
+  // ── Indexes and triggers on those views ───────────────────────────────────
+  // Immediately after, and not with the table-scoped ones far above: a
+  // materialized view's indexes and a view's INSTEAD OF triggers need the view
+  // itself to exist, and it has only just been made.
+  statements.push(...objects.afterViews);
 
   // ── Routines that are no longer used ──────────────────────────────────────
   // Before the types below: a function whose argument or return type is an enum
