@@ -310,6 +310,24 @@ export function buildDiffDocument(
       });
     }
 
+    // Pairings the matcher offered for two columns and did not accept. Both
+    // columns are still listed above, one as added and one as dropped, which is
+    // what the migration does. This is the line that says they might be the
+    // same column under a new name - on screen it is the "Possible renamed
+    // columns" group, and an export without it hands the reader the two halves
+    // and not the suggestion that ties them together.
+    for (const candidate of match.possibleColumnMatches) {
+      changes.push({
+        category: "Column",
+        table: tableName,
+        object: candidate.leftName,
+        change: "rename-suggested",
+        severity: "info",
+        detail: `may be "${candidate.rightName}" renamed (score ${candidate.score}) — not applied`,
+        manual: false,
+      });
+    }
+
     for (const diff of match.constraintDiffs) {
       changes.push({
         category: "Constraint",
@@ -356,6 +374,8 @@ export function buildDiffDocument(
   }
 
   // ── Rename pairings the matcher offered but did not apply ────────────────
+  // The column-level suggestions are written inside the matched table above,
+  // so they sit with the table they belong to. These are table renames.
   for (const candidate of report.possibleTableMatches) {
     changes.push({
       category: "Table",
