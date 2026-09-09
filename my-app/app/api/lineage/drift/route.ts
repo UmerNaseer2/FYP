@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool from "@/lib/version-db";
 import type { CompareReport } from "@/lib/compare-types";
 import {
   computeDriftDetail,
+  getDriftDetail,
   type DriftCounts,
+  type DriftDetailView,
   type DriftStatus,
 } from "@/lib/lineage-db";
 
-// Re-export so existing callers can keep importing DriftCounts from here.
-export type { DriftCounts };
+// Re-export so existing callers can keep importing these from here.
+export type { DriftCounts, DriftDetailView };
 
 export type DriftCheckResult = {
   trackedSchemaId: number;
@@ -21,6 +23,39 @@ export type DriftCheckResult = {
   /** Full structural report (Expected vs Actual) for the drift detail screen. */
   report: CompareReport | null;
 };
+
+/**
+ * GET /api/lineage/drift?trackedSchemaId=N — the drift detail screen's read.
+ *
+ * Same live recompute as the POST below, but it records nothing and needs only
+ * viewer rights. The two are deliberately separate verbs: opening a screen is
+ * not a check somebody ran, and an audit log that fills up every time a page is
+ * refreshed stops being an audit log.
+ */
+export async function GET(request: NextRequest) {
+  const gate = await requireViewer();
+  if (!gate.ok) return gate.response;
+
+  const idParam = new URL(request.url).searchParams.get("trackedSchemaId");
+  const trackedSchemaId = Number(idParam);
+  if (!Number.isInteger(trackedSchemaId) || trackedSchemaId <= 0) {
+    return NextResponse.json({ error: "trackedSchemaId is required." }, { status: 400 });
+  }
+
+  try {
+    const view = await getDriftDetail(trackedSchemaId);
+    if (!view) {
+      return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
+    }
+    return NextResponse.json(view);
+  } catch (error) {
+    console.error("GET drift detail error:", error);
+    return NextResponse.json(
+      { error: "Could not read this schema's drift." },
+      { status: 500 }
+    );
+  }
+}
 
 /**
  * POST /api/lineage/drift  { trackedSchemaId }

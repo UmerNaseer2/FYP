@@ -19,8 +19,11 @@ import type {
 } from "./postgres";
 
 // The one question "can this range type be written out as a statement" is
-// asked of, so the sentence on screen and the SQL underneath cannot disagree.
-import { rangeTypeIsCreatable } from "./postgres";
+// asked once, so the sentence on screen and the SQL underneath cannot disagree.
+// It comes from snapshot-facts, not postgres: this module is imported by the
+// diff components, and a value import from postgres would put `pg` in the
+// browser bundle.
+import { rangeTypeIsCreatable } from "./snapshot-facts";
 
 import type {
   ChangeSeverity,

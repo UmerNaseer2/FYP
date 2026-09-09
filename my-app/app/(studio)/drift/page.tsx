@@ -1,4 +1,7 @@
-import { Suspense } from "react";
+"use client";
+
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   Pill,
@@ -23,14 +26,14 @@ import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DriftResolutionBar } from "@/components/studio/DriftResolutionBar";
 import { DriftSchemaPicker } from "@/components/studio/DriftSchemaPicker";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
-import {
-  listTrackedSchemas,
-  getDriftDetail,
-  listDriftEvents,
-  type DriftStatus,
-  type DriftDetailView,
-  type DriftCounts,
-  type TrackedSchemaListItem,
+// Types only. `import type` is erased at compile time, so importing the shape
+// of a row does not pull the database module into the client bundle.
+import type {
+  DriftStatus,
+  DriftDetailView,
+  DriftCounts,
+  DriftEventFeedItem,
+  TrackedSchemaListItem,
 } from "@/lib/lineage-db";
 
 /**
@@ -42,12 +45,12 @@ import {
  *     resolution actions (author a migration · re-baseline · acknowledge · re-check).
  *   • Audit (S7)  — the dense, filterable history of every recorded drift check.
  *
- * Server component (force-dynamic): it reads straight from the crisp lineage
- * backend — getDriftDetail recomputes the live drift, listDriftEvents reads the
- * recorded history. Only the picker, the resolution bar and the audit filters
- * are client islands. No mock data.
+ * Client component: everything comes through the API layer —
+ * GET /api/lineage for the tracked list, GET /api/lineage/drift for the live
+ * recompute, GET /api/lineage/audit for the recorded history. The screen holds
+ * its own data, so the resolution bar reloads it directly after a write rather
+ * than asking the server to re-render. No mock data.
  */
-export const dynamic = "force-dynamic";
 
 // ── Small pure formatters (server-safe, no Date.now → no hydration risk) ─────
 
@@ -87,26 +90,40 @@ function statusPill(status: DriftStatus): { tone: PillTone; label: string } {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default async function DriftPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ tab?: string; schema?: string }>;
-}) {
-  const sp = await searchParams;
-  const tab: "detail" | "audit" = sp.tab === "audit" ? "audit" : "detail";
-  const schema =
-    typeof sp.schema === "string" && sp.schema.trim() ? sp.schema.trim() : undefined;
+export default function DriftPage() {
+  // useSearchParams has to sit under a Suspense boundary: while the page is
+  // pre-rendered there is no URL to read, so React puts this fallback in the
+  // static HTML and the real screen takes over as soon as it reaches a browser.
+  return (
+    <Suspense
+      fallback={
+        <Shell tab="detail" schema={undefined}>
+          <ContentSkeleton tab="detail" />
+        </Shell>
+      }
+    >
+      <DriftScreen />
+    </Suspense>
+  );
+}
 
-  // The shell (header + tab bar) is SYNCHRONOUS — it renders the instant a tab is
-  // clicked. Only the tab content touches the lineage backend (and, for detail, a
-  // live drift recompute), behind a Suspense boundary, so switching tabs shows an
-  // immediate skeleton instead of freezing on the DB round-trip. The key
-  // re-suspends the boundary on every tab/schema change so the skeleton always shows.
+function DriftScreen() {
+  const sp = useSearchParams();
+  const tab: "detail" | "audit" = sp.get("tab") === "audit" ? "audit" : "detail";
+  const raw = sp.get("schema");
+  const schema = raw && raw.trim() ? raw.trim() : undefined;
+
+  // The shell (header + tab bar) renders the instant a tab is clicked; only the
+  // tab content waits on the API, and it shows the skeleton while it does. The
+  // key remounts the content on every tab/schema change so the skeleton always
+  // shows rather than the previous schema's numbers sitting there looking live.
   return (
     <Shell tab={tab} schema={schema}>
-      <Suspense key={`${tab}:${schema ?? ""}`} fallback={<ContentSkeleton tab={tab} />}>
-        {tab === "detail" ? <DetailContent schema={schema} /> : <AuditContent />}
-      </Suspense>
+      {tab === "detail" ? (
+        <DetailContent key={schema ?? ""} schema={schema} />
+      ) : (
+        <AuditContent />
+      )}
     </Shell>
   );
 }
@@ -161,8 +178,49 @@ function Shell({
 
 // ── Async tab content (Suspense-wrapped — only this hits the backend) ─────────
 
-async function DetailContent({ schema }: { schema: string | undefined }) {
-  const tracked = await listTrackedSchemas();
+/**
+ * The tracked list, which both tabs need before they can show anything: the
+ * detail tab picks a schema out of it, the audit tab only uses it to tell
+ * "nothing tracked yet" apart from "nothing has drifted yet".
+ *
+ * Returns null while it is still loading so a caller can show its skeleton.
+ */
+function useTrackedSchemas(): {
+  tracked: TrackedSchemaListItem[] | null;
+  failed: boolean;
+} {
+  const [tracked, setTracked] = useState<TrackedSchemaListItem[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch("/api/lineage");
+        const data = res.ok ? await res.json() : null;
+        if (cancelled) return;
+        setTracked(Array.isArray(data) ? data : []);
+        setFailed(!Array.isArray(data));
+      } catch {
+        if (cancelled) return;
+        setTracked([]);
+        setFailed(true);
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { tracked, failed };
+}
+
+function DetailContent({ schema }: { schema: string | undefined }) {
+  const { tracked, failed } = useTrackedSchemas();
+
+  if (tracked === null) return <ContentSkeleton tab="detail" />;
+  if (failed) return <ListUnreadable />;
   if (tracked.length === 0) return <NothingTracked />;
 
   // Worst-drift-first, so the default selection is the schema that needs eyes.
@@ -174,10 +232,28 @@ async function DetailContent({ schema }: { schema: string | undefined }) {
   return <DetailTab tracked={byPriority} selectedId={selected.id} />;
 }
 
-async function AuditContent() {
-  const tracked = await listTrackedSchemas();
+function AuditContent() {
+  const { tracked, failed } = useTrackedSchemas();
+
+  if (tracked === null) return <ContentSkeleton tab="audit" />;
+  if (failed) return <ListUnreadable />;
   if (tracked.length === 0) return <NothingTracked />;
   return <AuditTab />;
+}
+
+/** The tracked list itself could not be read — say so instead of "nothing". */
+function ListUnreadable() {
+  return (
+    <Card className="p-0 overflow-hidden">
+      <div style={{ height: 280 }}>
+        <EmptyState
+          icon={<AlertCircleIcon size={22} />}
+          title="Could not load your tracked schemas"
+          description="The list could not be read just now. Reload the page to try again."
+        />
+      </div>
+    </Card>
+  );
 }
 
 function NothingTracked() {
@@ -279,16 +355,61 @@ function Tab({
 
 // ── Detail tab ───────────────────────────────────────────────────────────────
 
-async function DetailTab({
+function DetailTab({
   tracked,
   selectedId,
 }: {
   tracked: TrackedSchemaListItem[];
   selectedId: number;
 }) {
-  // Live recompute for the selected schema + its recent recorded history.
-  const view = await getDriftDetail(selectedId);
-  const history = await listDriftEvents(selectedId, 6);
+  const [view, setView] = useState<DriftDetailView | null>(null);
+  const [history, setHistory] = useState<DriftEventFeedItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // The live recompute for the selected schema, plus its recent recorded
+  // history. The resolution bar calls this again after every write, because
+  // this screen holds its own data — refreshing the router would show nothing.
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [detailRes, historyRes] = await Promise.all([
+        fetch("/api/lineage/drift?trackedSchemaId=" + selectedId),
+        fetch("/api/lineage/audit?trackedSchemaId=" + selectedId + "&limit=6"),
+      ]);
+      const detail = await detailRes.json().catch(() => null);
+      const events = await historyRes.json().catch(() => null);
+
+      if (detailRes.ok && detail) {
+        setView(detail as DriftDetailView);
+        setError(null);
+      } else {
+        setView(null);
+        // A 404 is "not tracked any more", which the empty state below already
+        // explains. Anything else is a real failure worth naming.
+        setError(
+          detailRes.status === 404
+            ? null
+            : detail?.error ?? "Could not read this schema's drift."
+        );
+      }
+      setHistory(Array.isArray(events) ? events : []);
+    } catch {
+      setView(null);
+      setError("Network error while reading this schema's drift.");
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Only the first load blanks the screen. A re-check keeps the current diff on
+  // screen until the new one lands, so the page doesn't flash back to skeleton
+  // every time someone presses a button.
+  if (loading && !view) return <ContentSkeleton tab="detail" />;
 
   if (!view) {
     return (
@@ -296,8 +417,16 @@ async function DetailTab({
         <div style={{ height: 280 }}>
           <EmptyState
             icon={<AlertCircleIcon size={22} />}
-            title="Tracked schema not found"
-            description="It may have been removed. Pick another schema or head back to the dashboard."
+            title={error ? "Could not read this schema's drift" : "Tracked schema not found"}
+            description={
+              error ??
+              "It may have been removed. Pick another schema or head back to the dashboard."
+            }
+            actions={
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void load()}>
+                Try again
+              </button>
+            }
           />
         </div>
       </Card>
@@ -360,7 +489,7 @@ async function DetailTab({
       )}
 
       {/* Status hero (state-aware) */}
-      <DriftHero view={view} compareHref={compareHref} />
+      <DriftHero view={view} compareHref={compareHref} onResolved={() => void load()} />
 
       {/* Delta counts — only when we actually computed a comparison */}
       {view.counts && <CountTiles counts={view.counts} report={view.report} />}
@@ -450,15 +579,18 @@ async function DetailTab({
 function DriftHero({
   view,
   compareHref,
+  onResolved,
 }: {
   view: DriftDetailView;
   compareHref: string | null;
+  onResolved: () => void;
 }) {
   const resolution = (
     <DriftResolutionBar
       trackedSchemaId={view.trackedSchemaId}
       state={view.state}
       compareHref={compareHref}
+      onDone={onResolved}
     />
   );
 
@@ -649,8 +781,30 @@ function CountTile({
 
 // ── Audit tab ────────────────────────────────────────────────────────────────
 
-async function AuditTab() {
-  const events = await listDriftEvents();
+function AuditTab() {
+  const [events, setEvents] = useState<DriftEventFeedItem[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch("/api/lineage/audit");
+        const data = res.ok ? await res.json() : null;
+        if (!cancelled) setEvents(Array.isArray(data) ? data : []);
+      } catch {
+        // The route already answers with an empty feed rather than an error, so
+        // reaching here means the network failed. An empty table reads the same
+        // as "no checks recorded", which is the honest thing to show.
+        if (!cancelled) setEvents([]);
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (events === null) return <ContentSkeleton tab="audit" />;
 
   const total = events.length;
   const drifted = events.filter((e) => e.status === "drifted").length;

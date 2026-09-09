@@ -717,22 +717,10 @@ export type TypeSnapshot = {
   normalizedDefinition: string;
 };
 
-/**
- * Whether a range type can be written out as a real CREATE TYPE statement.
- *
- * Read by the compare engine, so the report can say "has to be created by
- * hand", and by the migration generator, so it knows what to write. One
- * function rather than the same test in both places: the sentence on screen
- * and the SQL underneath cannot disagree if they ask the same question.
- *
- * A snapshot captured before range types were recorded in this detail has no
- * rangeDetails at all, and the answer for it is the same one: not from here.
- */
-export function rangeTypeIsCreatable(type: TypeSnapshot): boolean {
-  if (type.kind !== "RANGE") return false;
-  if (type.rangeDetails === undefined) return false;
-  return !type.rangeDetails.needsManualCreate;
-}
+// Moved to lib/snapshot-facts so the screens can ask it without importing this
+// module — importing a VALUE from here pulls the node-only `pg` client into the
+// browser bundle. Re-exported so the server-side callers read the same way.
+export { rangeTypeIsCreatable } from "./snapshot-facts";
 
 /**
  * Which library decides how a collation sorts and compares.

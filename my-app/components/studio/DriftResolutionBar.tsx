@@ -19,17 +19,20 @@ type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
  *     without changing the database.
  *   • Re-check — re-runs the drift check (shared RecheckDriftButton island).
  *
- * The page stays a server component; only these buttons are client. Each write
- * calls router.refresh() so the server-rendered hero + diff re-read fresh data.
+ * Every write has to make the hero and the diff above re-read. A screen that
+ * fetches its own data passes `onDone` and reloads it; without one this falls
+ * back to router.refresh(), which is what a server-rendered caller needs.
  */
 export function DriftResolutionBar({
   trackedSchemaId,
   state,
   compareHref,
+  onDone,
 }: {
   trackedSchemaId: number;
   state: DriftState;
   compareHref: string | null;
+  onDone?: () => void;
 }) {
   const router = useRouter();
   const [confirmRebaseline, setConfirmRebaseline] = useState(false);
@@ -50,7 +53,8 @@ export function DriftResolutionBar({
         setError(data?.error ?? "Action failed.");
         return;
       }
-      router.refresh();
+      if (onDone) onDone();
+      else router.refresh();
     } catch {
       setError("Network error during the action.");
     } finally {
@@ -100,6 +104,7 @@ export function DriftResolutionBar({
         trackedSchemaId={trackedSchemaId}
         variant="secondary"
         label={recheckLabel}
+        onDone={onDone}
       />
 
       {error && (
