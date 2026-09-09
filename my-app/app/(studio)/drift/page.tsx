@@ -857,13 +857,20 @@ function AuditTab() {
 
   return (
     <div className="space-y-6">
-      {/* Stat strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatTile label="Recorded checks" value={total} />
-        <StatTile label="Drifted" value={drifted} tone="drift" />
-        <StatTile label="In sync" value={inSync} tone="sync" />
-        <StatTile label="Acknowledged" value={acknowledged} />
-      </div>
+      {/*
+        Four tiles reading 0, 0, 0, 0 over "no checks recorded yet" summarise
+        nothing — they only make the empty log look like a dashboard that has
+        lost its data. The strip comes back with the first recorded check, which
+        is also the first moment it has anything to say.
+      */}
+      {total > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatTile label="Recorded checks" value={total} />
+          <StatTile label="Drifted" value={drifted} tone="drift" />
+          <StatTile label="In sync" value={inSync} tone="sync" />
+          <StatTile label="Acknowledged" value={acknowledged} />
+        </div>
+      )}
 
       <AuditLogTable rows={rows} />
     </div>

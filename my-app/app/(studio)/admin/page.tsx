@@ -160,11 +160,18 @@ export default function AdminPage() {
 
   return (
     <div className="max-w-[820px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
+      {/*
+        "· 0 users, 0 admins" sits directly above the "No users yet" empty
+        state, so the first-run page says the same nothing twice — the second
+        time in the language of a populated list that has been emptied. The
+        counts are worth reading once there is something to count, and the
+        header already suppresses them when they are null.
+      */}
       <AdminHeader
         onRefresh={() => void fetchUsers()}
         refreshing={phase === "loading"}
-        count={phase === "ready" ? users.length : null}
-        admins={phase === "ready" ? adminCount : null}
+        count={phase === "ready" && users.length > 0 ? users.length : null}
+        admins={phase === "ready" && users.length > 0 ? adminCount : null}
       />
 
       {actionError && (

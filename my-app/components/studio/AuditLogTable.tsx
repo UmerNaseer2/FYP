@@ -82,10 +82,18 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
     [rows]
   );
 
+  // Five filter chips all reading 0 and a search box over an empty log are
+  // controls for work that has not happened yet — the same first-run rule the
+  // Connections table follows. They return with the first recorded check.
+  const isFirstRun = rows.length === 0;
+
   return (
     <div className="space-y-4">
       {/* Controls: filter chips + search */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div
+        className="flex items-center justify-between gap-3 flex-wrap"
+        hidden={isFirstRun}
+      >
         <div className="flex items-center gap-1.5 flex-wrap">
           {FILTERS.map((f) => {
             const active = filter === f.key;
@@ -201,7 +209,10 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
         </div>
       )}
 
-      <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+      {/* "Showing 0 of 0 recorded checks" under "nothing recorded yet" is the
+          empty state said twice, the second time in the language of a filter
+          that is not on screen. */}
+      <p className="text-[11.5px]" style={{ color: "var(--text-3)" }} hidden={isFirstRun}>
         Showing {filtered.length} of {rows.length} recorded check
         {rows.length === 1 ? "" : "s"} · newest first.
       </p>
