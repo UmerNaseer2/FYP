@@ -13,6 +13,7 @@ import {
   ChevronRightIcon,
   EyeIcon,
   LogoIcon,
+  UsersIcon,
 } from "@/components/ui/icons";
 import {
   compareVersions,
@@ -29,6 +30,8 @@ import {
   DEFAULT_ENVIRONMENT,
   type Environment,
 } from "@/lib/environments";
+import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { useUser } from "@/hooks/useUser";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
@@ -155,6 +158,53 @@ type DriftResult = {
 };
 // Where the lineage drift check stands for the chosen target.
 type DriftPhase = "idle" | "loading" | "untracked" | "ready" | "error";
+
+// ── Deploy approvals (the two-person rule) ─────────────────────────────────
+// One row of `deploy_approvals`, exactly as /api/deploy/approvals returns it.
+// Mirrors DeployApproval in lib/approvals-db, which cannot be imported here —
+// that module opens a database pool, and this file runs in the browser.
+type ApprovalRow = {
+  id: number;
+  target_version: string;
+  run_fingerprint: string;
+  migration_count: number;
+  breaking_count: number;
+  requested_by: string;
+  requested_at: string;
+  status: "pending" | "approved" | "rejected" | "used";
+  decided_by: string | null;
+  decided_at: string | null;
+  self_approved: boolean;
+  note: string | null;
+  used_at: string | null;
+};
+
+/**
+ * Hash the text of a run the same way the server does.
+ *
+ * The server uses node:crypto and this uses the Web Crypto API, but both hash
+ * the string lib/approval-fingerprint builds, so the two hex strings match and
+ * this screen can tell whether the run in front of the user is the approved
+ * one. crypto.subtle only exists in a secure context — https or localhost — so
+ * the caller has to cope with this throwing rather than assume it cannot.
+ */
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** A short, readable stamp for an approval's timeline. */
+function approvalTime(iso: string | null): string {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleString();
+}
 
 // Version comparison + the Applied/Pending ledger live in lib/script-status so
 // they can be unit-tested in isolation; compareVersions is imported above.
@@ -411,7 +461,281 @@ function ProductionGate({
   );
 }
 
+/**
+ * A second stop, for a risk that is not "this is production".
+ *
+ * The Deploy screen used to print `breakingCount` and a red drift row and then
+ * let you press Deploy anyway — information on screen that gated nothing. Each
+ * of these now has to be read and ticked, for the same reason the production
+ * gate exists: being on screen was not enough.
+ */
+function RiskGate({
+  tone,
+  title,
+  body,
+  ack,
+  acknowledged,
+  onAcknowledge,
+}: {
+  /** "break" is red (a migration that destroys structure), "drift" is amber. */
+  tone: "break" | "drift";
+  title: string;
+  body: string;
+  /** The sentence beside the checkbox, in the user's words. */
+  ack: string;
+  acknowledged: boolean;
+  onAcknowledge: (value: boolean) => void;
+}) {
+  return (
+    <div className={tone === "drift" ? "prod-gate prod-gate--drift" : "prod-gate"}>
+      <div className="prod-gate__head">
+        <AlertTriangleIcon size={15} className="ico" />
+        <span>{title}</span>
+      </div>
+      <p className="prod-gate__body">{body}</p>
+      <label className="prod-gate__ack">
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          onChange={(event) => onAcknowledge(event.target.checked)}
+        />
+        <span>{ack}</span>
+      </label>
+    </div>
+  );
+}
+
+/**
+ * The two-person rule, on screen.
+ *
+ * The gate itself is the apply route's: it claims an approval row before it
+ * runs anything, so nothing here can talk a production deploy into starting.
+ * What this panel does is make the state readable — who asked, who cleared it,
+ * and whether the approval still covers the SQL currently selected — and give
+ * the two people the buttons for their halves of it.
+ *
+ * An approval is pinned to a fingerprint of the exact SQL. That is why the
+ * panel says "these N migrations" rather than "this deploy": change one
+ * character of one migration and the approval stops matching, which is the
+ * point of having one.
+ */
+function ApprovalPanel({
+  migrationCount,
+  targetVersion,
+  hashReady,
+  hashError,
+  loading,
+  error,
+  busy,
+  approved,
+  pending,
+  latest,
+  viewerEmail,
+  isAdmin,
+  bypass,
+  note,
+  onNoteChange,
+  onRequest,
+  onDecide,
+}: {
+  migrationCount: number;
+  targetVersion: string;
+  /** False until the run's fingerprint has been computed in the browser. */
+  hashReady: boolean;
+  hashError: string | null;
+  loading: boolean;
+  error: string | null;
+  busy: boolean;
+  /** The approval that covers this exact run, if there is one. */
+  approved: ApprovalRow | null;
+  pending: ApprovalRow | null;
+  /** Newest row for this run whatever its state — explains a rejection. */
+  latest: ApprovalRow | null;
+  viewerEmail: string;
+  isAdmin: boolean;
+  bypass: boolean;
+  note: string;
+  onNoteChange: (value: string) => void;
+  onRequest: () => void;
+  onDecide: (id: number, decision: "approve" | "reject") => void;
+}) {
+  if (migrationCount === 0) {
+    return (
+      <div className="appr">
+        <div className="appr__head" style={{ color: "var(--text-2)" }}>
+          <UsersIcon size={15} className="ico" />
+          <span>Approval</span>
+        </div>
+        <p className="appr__body">
+          Pick a target version first — an approval covers one exact set of
+          migrations, so there is nothing to approve yet.
+        </p>
+      </div>
+    );
+  }
+
+  if (hashError || !hashReady || loading) {
+    return (
+      <div className="appr">
+        <div className="appr__head" style={{ color: "var(--text-2)" }}>
+          <UsersIcon size={15} className="ico" />
+          <span>Approval</span>
+        </div>
+        <p className="appr__body">
+          {hashError
+            ? hashError
+            : hashReady
+              ? "Reading the approvals for this target…"
+              : "Working out which approval covers this run…"}
+        </p>
+      </div>
+    );
+  }
+
+  // Why this person may not decide this request. The same rule runs server-side
+  // and again as a CHECK constraint on the table — this copy exists so the
+  // button is not offered in the first place, not to enforce anything.
+  const selfDecision =
+    pending !== null &&
+    !bypass &&
+    pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
+
+  const tone = approved ? "ok" : pending ? "wait" : "no";
+
+  return (
+    <div className={`appr appr--${tone}`}>
+      <div className="appr__head">
+        {approved ? <CheckIcon size={15} className="ico" /> : <UsersIcon size={15} className="ico" />}
+        <span>
+          {approved
+            ? "Approved by a second person"
+            : pending
+              ? "Waiting for a second person"
+              : "Needs a second person"}
+        </span>
+      </div>
+
+      {approved ? (
+        <>
+          <p className="appr__body">
+            Cleared for exactly these {migrationCount} migration
+            {migrationCount === 1 ? "" : "s"}
+            {targetVersion ? <> through <span className="mono">v{targetVersion}</span></> : null}, and
+            good for one run. Edit any of the SQL and this stops applying.
+          </p>
+          <p className="appr__meta">
+            Requested by {approved.requested_by} · approved by{" "}
+            {approved.decided_by ?? "—"}
+            {approvalTime(approved.decided_at) ? ` · ${approvalTime(approved.decided_at)}` : ""}
+          </p>
+          {approved.self_approved && (
+            <p className="appr__meta">
+              Self-approved under the auth bypass — recorded on the row, because
+              with the bypass on there is only one principal to be.
+            </p>
+          )}
+          {approved.note && <p className="appr__meta">Note: {approved.note}</p>}
+        </>
+      ) : pending ? (
+        <>
+          <p className="appr__body">
+            Requested by {pending.requested_by}
+            {approvalTime(pending.requested_at) ? ` · ${approvalTime(pending.requested_at)}` : ""}.
+            Someone else has to read these migrations and clear them before the
+            run can start. A dry run does not need it.
+          </p>
+          {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
+          {!isAdmin ? (
+            <p className="appr__meta">Clearing a production run needs the admin role.</p>
+          ) : selfDecision ? (
+            <p className="appr__meta">
+              You asked for this deploy, so you cannot approve it. That is the
+              whole rule — it needs someone else.
+            </p>
+          ) : (
+            <>
+              <input
+                className="input mt-2"
+                style={{ fontSize: "12px" }}
+                placeholder="Optional note for the record"
+                value={note}
+                onChange={(event) => onNoteChange(event.target.value)}
+              />
+              <div className="appr__actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  disabled={busy}
+                  onClick={() => onDecide(pending.id, "approve")}
+                >
+                  <CheckIcon size={13} />
+                  Approve this run
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  disabled={busy}
+                  onClick={() => onDecide(pending.id, "reject")}
+                >
+                  <XIcon size={13} />
+                  Reject
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="appr__body">
+            This target is labelled production, so the run needs an approval from
+            someone other than you.
+            {latest?.status === "rejected" ? (
+              <>
+                {" "}
+                The last request for this exact SQL was rejected by{" "}
+                {latest.decided_by ?? "someone"}
+                {latest.note ? ` — "${latest.note}"` : ""}.
+              </>
+            ) : latest?.status === "used" ? (
+              <> An earlier approval for this exact SQL has already been spent on a run.</>
+            ) : null}
+          </p>
+          <input
+            className="input mt-2"
+            style={{ fontSize: "12px" }}
+            placeholder="Optional note for the approver"
+            value={note}
+            onChange={(event) => onNoteChange(event.target.value)}
+          />
+          <div className="appr__actions">
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              disabled={busy}
+              onClick={onRequest}
+            >
+              <UsersIcon size={13} />
+              {latest ? "Request approval again" : "Request approval"}
+            </button>
+          </div>
+        </>
+      )}
+
+      {error && (
+        <p className="appr__meta" style={{ color: "var(--break)" }}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function DeployPage() {
+  // Who is looking. The approval panel needs two things from this: whether to
+  // offer Approve at all (admins decide), and whether this is the same person
+  // who asked for the run (nobody clears their own).
+  const { user, isAdmin, bypass } = useUser();
+
   // ── Selection state ──────────────────────────────────────────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
@@ -444,6 +768,27 @@ export default function DeployPage() {
   // Ticked in the ProductionGate. One per destructive action, never shared.
   const [deployAcknowledged, setDeployAcknowledged] = useState(false);
   const [revertAcknowledged, setRevertAcknowledged] = useState(false);
+
+  // Ticked beside the risk they belong to, never shared with each other or
+  // with the production tick — three different things to have read.
+  const [breakingAcknowledged, setBreakingAcknowledged] = useState(false);
+  const [driftAcknowledged, setDriftAcknowledged] = useState(false);
+
+  // ── Deploy approvals (the two-person rule) ───────────────────────────────
+  // runHash identifies the exact batch on screen. It is compared against the
+  // run_fingerprint of the rows below, so the panel can only ever call a run
+  // approved when the approved SQL is the SQL that would run.
+  const [runHash, setRunHash] = useState<string | null>(null);
+  const [hashError, setHashError] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [approvalNote, setApprovalNote] = useState("");
+  // Bumped after a request or a decision to re-read the list. A counter rather
+  // than a shared loader function keeps the fetch in one effect, with one
+  // cancellation path.
+  const [approvalReloadKey, setApprovalReloadKey] = useState(0);
 
   // ── Drift pre-check (Phase 6 lineage) ────────────────────────────────────
   const [driftPhase, setDriftPhase] = useState<DriftPhase>("idle");
@@ -644,6 +989,8 @@ export default function DeployPage() {
   // goes, not just where.
   useEffect(() => {
     setDeployAcknowledged(false);
+    setBreakingAcknowledged(false);
+    setDriftAcknowledged(false);
   }, [connectionId, schema, scriptGroup, targetVersion]);
 
   // The schema's own label belongs to one (connection, schema) pair. Drop it the
@@ -685,14 +1032,116 @@ export default function DeployPage() {
   }, [scriptsUpToTarget]);
   const txnViolationScripts = scriptsUpToTarget.filter((s) => containsTransactionControl(s.sql_content));
   const hasTxnViolation = txnViolationScripts.length > 0;
+
+  // ── What the approval covers ─────────────────────────────────────────────
+  // Hash the batch the same way the server does, so this screen can say
+  // "approved" only when the approved SQL is the SQL that would run. Recomputed
+  // whenever the batch changes, which includes an edited migration arriving in
+  // a fresh GitHub pull.
+  useEffect(() => {
+    if (scriptsUpToTarget.length === 0) {
+      setRunHash(null);
+      setHashError(null);
+      return;
+    }
+    const body = fingerprintBody(
+      scriptsUpToTarget.map((s) => ({
+        scriptName: s.script_name,
+        version: s.version,
+        sqlContent: s.sql_content,
+      }))
+    );
+    let cancelled = false;
+    setHashError(null);
+    sha256Hex(body)
+      .then((hex) => {
+        if (!cancelled) setRunHash(hex);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // crypto.subtle is missing outside a secure context. Say so instead of
+        // silently reporting every run as unapproved, which would look like the
+        // approval had gone missing.
+        setRunHash(null);
+        setHashError(
+          "This browser cannot check the approval — crypto.subtle needs " +
+            "https or localhost. Open the app over https to approve a run."
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scriptsUpToTarget]);
+
+  // Approvals are only read for a production target, because production is the
+  // only place the server asks for one. Fetching them elsewhere would put a
+  // panel on screen that gates nothing.
+  useEffect(() => {
+    if (!targetIsProduction || !connectionId || !schema || !scriptGroup) {
+      setApprovals([]);
+      setApprovalError(null);
+      return;
+    }
+    let cancelled = false;
+    setApprovalsLoading(true);
+    const url =
+      `/api/deploy/approvals?connectionId=${encodeURIComponent(connectionId)}` +
+      `&schemaName=${encodeURIComponent(schema)}` +
+      `&scriptName=${encodeURIComponent(scriptGroup)}`;
+    fetch(url, { cache: "no-store" })
+      .then(async (res) => {
+        const data = (await res.json()) as { approvals?: ApprovalRow[]; error?: string };
+        if (cancelled) return;
+        if (!res.ok || !data.approvals) {
+          setApprovals([]);
+          setApprovalError(data.error ?? "Could not read the approvals for this target.");
+          return;
+        }
+        setApprovals(data.approvals);
+        setApprovalError(null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setApprovals([]);
+        setApprovalError("Network error reading the approvals for this target.");
+      })
+      .finally(() => {
+        if (!cancelled) setApprovalsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetIsProduction, connectionId, schema, scriptGroup, approvalReloadKey]);
+
+  // Every approval row for this exact batch, newest first (the API orders by
+  // id DESC). Anything with a different fingerprint belongs to different SQL
+  // and must not count towards this run.
+  const runApprovals = useMemo(
+    () => (runHash ? approvals.filter((a) => a.run_fingerprint === runHash) : []),
+    [approvals, runHash]
+  );
+  const approvedRun = runApprovals.find((a) => a.status === "approved") ?? null;
+  const pendingRun = runApprovals.find((a) => a.status === "pending") ?? null;
+  const latestRun = runApprovals[0] ?? null;
   // What stops a run starting at all. Deploy and Dry run share it: a rehearsal
   // writes nothing but still executes every statement against the real target,
   // so the same preconditions apply to both.
+  // A drift result that is not "in sync" means the target is not the database
+  // these migrations were written against. That is a reason to stop and look,
+  // not a reason to forbid the run outright — so it is a tick, like production.
+  const driftBlocks =
+    driftPhase === "ready" && driftResult !== null && driftResult.status !== "in_sync";
   const runBlocked =
     scriptsUpToTarget.length === 0 ||
     hasTxnViolation ||
     isDeploying ||
-    (targetIsProduction && !deployAcknowledged);
+    (targetIsProduction && !deployAcknowledged) ||
+    (breakingCount > 0 && !breakingAcknowledged) ||
+    (driftBlocks && !driftAcknowledged);
+  // What additionally stops a real deploy. A dry run is exempt because the
+  // server exempts it: a rehearsal writes nothing, and charging a second person
+  // for a rehearsal would make the careful path the expensive one.
+  const deployBlocked = runBlocked || (targetIsProduction && !approvedRun);
 
   // ── Data loaders ─────────────────────────────────────────────────────────
   async function handlePull() {
@@ -806,10 +1255,85 @@ export default function DeployPage() {
     }
   }
 
+  // ── Approvals ────────────────────────────────────────────────────────────
+  // Ask for a second person's sign-off on exactly the batch on screen. The
+  // server hashes the SQL again from this request body rather than trusting a
+  // fingerprint the browser sends, so a tampered request cannot approve one set
+  // of migrations and run another.
+  async function handleRequestApproval() {
+    if (!connectionId || !schema || !scriptGroup || !targetVersion) return;
+    if (scriptsUpToTarget.length === 0 || approvalBusy) return;
+
+    setApprovalBusy(true);
+    setApprovalError(null);
+    try {
+      const res = await fetch("/api/deploy/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionId: Number(connectionId),
+          schemaName: schema || "public",
+          scriptName: scriptGroup,
+          targetVersion,
+          breakingCount,
+          note: approvalNote.trim() || undefined,
+          scripts: scriptsUpToTarget.map((script) => ({
+            script_name: script.script_name,
+            version: script.version,
+            sql_content: script.sql_content,
+          })),
+        }),
+      });
+      const data = (await res.json()) as { approval?: ApprovalRow; error?: string };
+      if (!res.ok || !data.approval) {
+        setApprovalError(data.error ?? "Could not record the approval request.");
+        return;
+      }
+      setApprovalNote("");
+      showToast("Approval requested — someone else has to clear it");
+    } catch {
+      setApprovalError("Network error requesting the approval.");
+    } finally {
+      setApprovalBusy(false);
+      setApprovalReloadKey((key) => key + 1);
+    }
+  }
+
+  // The second person's half. A 409 here means someone decided it first; their
+  // decision stands, and the reload below puts it on screen.
+  async function handleDecideApproval(id: number, decision: "approve" | "reject") {
+    if (approvalBusy) return;
+    setApprovalBusy(true);
+    setApprovalError(null);
+    try {
+      const res = await fetch(`/api/deploy/approvals/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, note: approvalNote.trim() || undefined }),
+      });
+      const data = (await res.json()) as { approval?: ApprovalRow; error?: string };
+      if (!res.ok || !data.approval) {
+        setApprovalError(data.error ?? "Could not record the decision.");
+        return;
+      }
+      setApprovalNote("");
+      showToast(decision === "approve" ? "Run approved" : "Run rejected");
+    } catch {
+      setApprovalError("Network error recording the decision.");
+    } finally {
+      setApprovalBusy(false);
+      setApprovalReloadKey((key) => key + 1);
+    }
+  }
+
   function resetDrift() {
     setDriftPhase("idle");
     setDriftResult(null);
     setDriftError(null);
+    // An acknowledgement belongs to one drift result. Dropping it here means a
+    // fresh check always has to be read again, rather than inheriting a tick
+    // given for a report that no longer exists.
+    setDriftAcknowledged(false);
   }
 
   // Phase 6 drift pre-check. If the chosen target (connection + schema) is
@@ -825,6 +1349,7 @@ export default function DeployPage() {
     setDriftPhase("loading");
     setDriftError(null);
     setDriftResult(null);
+    setDriftAcknowledged(false);
     try {
       const lookupRes = await fetch(
         `/api/lineage/lookup?connectionId=${encodeURIComponent(id)}&schemaName=${encodeURIComponent(sch)}`,
@@ -899,8 +1424,10 @@ export default function DeployPage() {
   // which is why the rehearsal has to be one request too.
   async function handleRun(dryRun: boolean) {
     const batch = scriptsUpToTarget;
-    if (batch.length === 0 || isDeploying) return;
-    if (targetIsProduction && !deployAcknowledged) return;
+    // The disabled buttons say all of this already, but a disabled button is a
+    // hint, not a rule — this is the rule. A rehearsal is held to everything
+    // except the approval, exactly as the apply route holds it.
+    if (dryRun ? runBlocked : deployBlocked) return;
 
     setRunScripts(batch);
     setRunIsDryRun(dryRun);
@@ -1004,6 +1531,9 @@ export default function DeployPage() {
     await runPreflightCheck(connectionId, schema, scriptGroup);
     // Re-run the drift check so the Verify step reflects the post-deploy state.
     void runDriftCheck(connectionId, schema);
+    // A real run spends its approval. Re-read them so the panel says so rather
+    // than still offering a green light that the server would now refuse.
+    setApprovalReloadKey((key) => key + 1);
 
     if (failure) {
       showToast(dryRun ? "Dry run failed — nothing was written" : "Deploy failed — nothing was applied");
@@ -1490,20 +2020,84 @@ export default function DeployPage() {
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>one transaction</span></div>
                       </div>
 
-                      {targetIsProduction && (
-                        <div className="mt-4">
+                      <div className="space-y-3 mt-4">
+                        {targetIsProduction && (
                           <ProductionGate
                             what={`run ${scriptsUpToTarget.length} migration${scriptsUpToTarget.length === 1 ? "" : "s"}`}
                             acknowledged={deployAcknowledged}
                             onAcknowledge={setDeployAcknowledged}
                           />
-                        </div>
-                      )}
+                        )}
+                        {breakingCount > 0 && (
+                          <RiskGate
+                            tone="break"
+                            title={`${breakingCount} breaking migration${breakingCount === 1 ? "" : "s"}`}
+                            body={
+                              "A breaking migration drops or rewrites structure that is " +
+                              "already there. Anything reading the old shape — an app, a " +
+                              "view, a report — stops working the moment this commits, and " +
+                              "the rollback restores the structure, not the rows that were " +
+                              "in it."
+                            }
+                            ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what they remove.`}
+                            acknowledged={breakingAcknowledged}
+                            onAcknowledge={setBreakingAcknowledged}
+                          />
+                        )}
+                        {driftBlocks && driftResult && (
+                          <RiskGate
+                            tone="drift"
+                            title={
+                              driftResult.status === "drifted"
+                                ? "The target has drifted"
+                                : "The target could not be checked"
+                            }
+                            body={
+                              driftResult.status === "drifted"
+                                ? "The live schema no longer matches the snapshot these " +
+                                  "migrations were written against, so a migration may hit " +
+                                  "an object that is not the one it expects. Read the drift " +
+                                  "report on the left before running this."
+                                : "The drift check could not reach the target, so nothing " +
+                                  "here has confirmed what state it is in. The run will " +
+                                  "still connect — this only means it starts unverified."
+                            }
+                            ack={
+                              driftResult.status === "drifted"
+                                ? "I have read the drift and mean to run anyway."
+                                : "I mean to run without a drift check."
+                            }
+                            acknowledged={driftAcknowledged}
+                            onAcknowledge={setDriftAcknowledged}
+                          />
+                        )}
+                        {targetIsProduction && (
+                          <ApprovalPanel
+                            migrationCount={scriptsUpToTarget.length}
+                            targetVersion={targetVersion}
+                            hashReady={runHash !== null}
+                            hashError={hashError}
+                            loading={approvalsLoading}
+                            error={approvalError}
+                            busy={approvalBusy}
+                            approved={approvedRun}
+                            pending={pendingRun}
+                            latest={latestRun}
+                            viewerEmail={user?.email ?? ""}
+                            isAdmin={isAdmin}
+                            bypass={bypass}
+                            note={approvalNote}
+                            onNoteChange={setApprovalNote}
+                            onRequest={handleRequestApproval}
+                            onDecide={handleDecideApproval}
+                          />
+                        )}
+                      </div>
 
                       <button
                         type="button"
                         className={`btn btn-lg w-full mt-5 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                        disabled={runBlocked}
+                        disabled={deployBlocked}
                         onClick={() => handleRun(false)}
                       >
                         <DeployIcon size={14} />
@@ -1525,9 +2119,13 @@ export default function DeployPage() {
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
                         {hasTxnViolation
                           ? "Resolve the transaction-control issue below first"
-                          : targetIsProduction && !deployAcknowledged
-                            ? "Tick the box above to enable this"
-                            : "All migrations run in one transaction — all of them or none"}
+                          : (targetIsProduction && !deployAcknowledged) ||
+                              (breakingCount > 0 && !breakingAcknowledged) ||
+                              (driftBlocks && !driftAcknowledged)
+                            ? "Tick every box above to enable this"
+                            : targetIsProduction && !approvedRun
+                              ? "Deploy needs a second person's approval — a dry run does not"
+                              : "All migrations run in one transaction — all of them or none"}
                       </div>
                     </div>
 
@@ -1536,8 +2134,9 @@ export default function DeployPage() {
                       <ul className="space-y-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
                         <ChecklistItem ok>Target reachable · {activeConn.host}</ChecklistItem>
                         {targetIsProduction ? (
-                          <ChecklistItem ok={false}>
-                            Environment · production — needs an explicit confirmation
+                          <ChecklistItem ok={deployAcknowledged}>
+                            Environment · production —{" "}
+                            {deployAcknowledged ? "confirmed" : "needs an explicit confirmation"}
                           </ChecklistItem>
                         ) : targetEnvironment === "unset" ? (
                           <ChecklistItem info>
@@ -1556,6 +2155,23 @@ export default function DeployPage() {
                             ? `Transaction control found in ${txnViolationScripts.length} script${txnViolationScripts.length === 1 ? "" : "s"}`
                             : "No transaction-control in SQL"}
                         </ChecklistItem>
+                        {breakingCount > 0 ? (
+                          <ChecklistItem ok={breakingAcknowledged}>
+                            Breaking changes · {breakingCount}{" "}
+                            {breakingAcknowledged ? "· acknowledged" : "· need acknowledging"}
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>Nothing in this run is breaking</ChecklistItem>
+                        )}
+                        {targetIsProduction && (
+                          <ChecklistItem ok={Boolean(approvedRun)}>
+                            {approvedRun
+                              ? `Approved by ${approvedRun.decided_by ?? "a second person"}`
+                              : pendingRun
+                                ? "Approval requested · waiting for a second person"
+                                : "Approval · not requested yet"}
+                          </ChecklistItem>
+                        )}
                         {preflightResult.needsInit ? (
                           <ChecklistItem info>Ledger table will be created on first deploy</ChecklistItem>
                         ) : (
@@ -1579,9 +2195,15 @@ export default function DeployPage() {
                               ) : null}
                             </ChecklistItem>
                           ) : driftResult.status === "drifted" ? (
-                            <ChecklistItem ok={false}>Drift check · live schema has drifted</ChecklistItem>
+                            <ChecklistItem ok={driftAcknowledged}>
+                              Drift check · live schema has drifted
+                              {driftAcknowledged ? " · acknowledged" : ""}
+                            </ChecklistItem>
                           ) : (
-                            <ChecklistItem ok={false}>Drift check · target unreachable</ChecklistItem>
+                            <ChecklistItem ok={driftAcknowledged}>
+                              Drift check · target unreachable
+                              {driftAcknowledged ? " · acknowledged" : ""}
+                            </ChecklistItem>
                           )
                         )}
                         {driftPhase === "idle" && (
@@ -1714,11 +2336,17 @@ export default function DeployPage() {
                     {preflightResult?.currentVersion ? `v${preflightResult.currentVersion}` : "no versions yet"}
                   </span>.
                 </div>
+                {targetIsProduction && !approvedRun && (
+                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                    A clean rehearsal is not an approval. Go back to Pre-flight to ask
+                    someone else to clear the real run.
+                  </div>
+                )}
               </div>
               <button
                 type="button"
                 className={`btn btn-sm ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                disabled={runBlocked}
+                disabled={deployBlocked}
                 onClick={() => handleRun(false)}
               >
                 <DeployIcon size={13} />
@@ -1751,7 +2379,7 @@ export default function DeployPage() {
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                disabled={runBlocked}
+                disabled={runIsDryRun ? runBlocked : deployBlocked}
                 onClick={() => handleRun(runIsDryRun)}
               >
                 {runIsDryRun ? "Rehearse again" : "Run again"}

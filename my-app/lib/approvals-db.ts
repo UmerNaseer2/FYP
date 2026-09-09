@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import pool, { ensureMetadataSchema } from "./version-db";
+import { fingerprintBody, type ApprovalScript } from "./approval-fingerprint";
+
+export type { ApprovalScript };
 
 /**
  * Deploy approvals — the two-person rule for production runs.
@@ -26,13 +29,6 @@ import pool, { ensureMetadataSchema } from "./version-db";
  * approval that could be re-used against different SQL would be worse than no
  * approval, because it would carry a second person's name.
  */
-
-/** One migration as it goes into a fingerprint. */
-export type ApprovalScript = {
-  scriptName: string;
-  version: string;
-  sqlContent: string;
-};
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "used";
 
@@ -126,16 +122,12 @@ async function createApprovalsTable(): Promise<void> {
 /**
  * Hash the exact SQL of a run.
  *
- * Order matters and is preserved: the same migrations in a different order are
- * a different run, and would produce a different database. Names and versions
- * go into the hash too, so an approval for v1.2.0 cannot cover v1.3.0 even if
- * the two happen to hold identical SQL.
+ * The text being hashed is built by lib/approval-fingerprint, which the Deploy
+ * screen also uses — the screen has to reach the same hex string to know
+ * whether the run in front of the user is the approved one.
  */
 export function runFingerprint(scripts: ApprovalScript[]): string {
-  const body = scripts
-    .map((s) => `${s.scriptName} ${s.version} ${s.sqlContent}`)
-    .join("\n-- next migration --\n");
-  return createHash("sha256").update(body, "utf8").digest("hex");
+  return createHash("sha256").update(fingerprintBody(scripts), "utf8").digest("hex");
 }
 
 export async function createApprovalRequest(input: {

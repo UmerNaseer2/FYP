@@ -2745,16 +2745,38 @@ summary.obj-header::-webkit-details-marker { display:none; }
 /* Production gate — the stop in front of SQL that runs on a live database.
    Louder than .warn-inline on purpose: that one reports a risk, this one is
    holding a button down until somebody reads it. */
-.prod-gate { border:1px solid color-mix(in oklab, var(--break) 45%, transparent);
+/* One tone drives the whole block, so a second kind of risk (drift) is one
+   custom-property override rather than a duplicated rule set. */
+.prod-gate { --gate-tone: var(--break);
+             border:1px solid color-mix(in oklab, var(--gate-tone) 45%, transparent);
              border-radius:9px; padding:11px 12px;
-             background: color-mix(in oklab, var(--break) 7%, var(--surface)); }
+             background: color-mix(in oklab, var(--gate-tone) 7%, var(--surface)); }
+.prod-gate--drift { --gate-tone: var(--drift); }
 .prod-gate__head { display:flex; align-items:center; gap:7px;
-                   font-size:12.5px; font-weight:600; color:var(--break); }
+                   font-size:12.5px; font-weight:600; color:var(--gate-tone); }
 .prod-gate__head .ico { flex:none; }
 .prod-gate__body { margin-top:6px; font-size:12px; line-height:1.5; color:var(--text-2); }
 .prod-gate__ack { display:flex; align-items:flex-start; gap:8px; margin-top:9px;
                   font-size:12px; line-height:1.45; color:var(--text); cursor:pointer; }
-.prod-gate__ack input { margin-top:2px; flex:none; accent-color:var(--break); cursor:pointer; }
+.prod-gate__ack input { margin-top:2px; flex:none; accent-color:var(--gate-tone); cursor:pointer; }
+
+/* Approval panel — the two-person rule on the Deploy screen. Three states, and
+   the colour is the answer to "may this run go ahead?": green yes, amber
+   waiting on someone, red not asked or refused. */
+.appr { --appr-tone: var(--text-3);
+        border:1px solid color-mix(in oklab, var(--appr-tone) 38%, var(--border));
+        border-radius:9px; padding:11px 12px;
+        background: color-mix(in oklab, var(--appr-tone) 6%, var(--surface)); }
+.appr--ok   { --appr-tone: var(--sync); }
+.appr--wait { --appr-tone: var(--drift); }
+.appr--no   { --appr-tone: var(--break); }
+.appr__head { display:flex; align-items:center; gap:7px;
+              font-size:12.5px; font-weight:600; color:var(--appr-tone); }
+.appr__head .ico { flex:none; }
+.appr__body { margin-top:6px; font-size:12px; line-height:1.5; color:var(--text-2); }
+.appr__meta { margin-top:6px; font-size:11.5px; line-height:1.5; color:var(--text-3);
+              overflow-wrap:anywhere; }
+.appr__actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 
 /* change-level segmented control colours (extends the foundation .seg) */
 .seg .swatch { width:8px; height:8px; border-radius:999px; display:inline-block; flex:none; }
