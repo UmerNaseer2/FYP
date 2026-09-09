@@ -11,6 +11,7 @@ import {
   DriftIcon,
   InfoIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
   EyeIcon,
   LogoIcon,
   UsersIcon,
@@ -20,7 +21,7 @@ import {
   buildVersionLedger,
   type LedgerEntry,
 } from "@/lib/script-status";
-import { containsTransactionControl } from "@/lib/sql-guard";
+import { containsTransactionControl, findRowDestroyingStatements } from "@/lib/sql-guard";
 import { changeTypeOf, type ScriptChangeType } from "@/lib/change-type";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
@@ -369,6 +370,8 @@ function MigRow({
   rightPill,
   cell,
   selected,
+  sql,
+  sqlOpen,
 }: {
   seq: string;
   name: string;
@@ -377,12 +380,24 @@ function MigRow({
   rightPill: string;
   cell: RunCell;
   selected?: boolean;
+  /**
+   * The statements this row will run. When given, the row opens to show them.
+   *
+   * The checklist beside this list asks the reader to tick "I have read the
+   * breaking migrations and know what they remove" — an attestation about SQL
+   * that, until this existed, appeared nowhere on the page and had no link out
+   * to it. A tick box in front of text nobody can read is not a safety gate,
+   * it is a formality, so the text is here.
+   */
+  sql?: string;
+  /** Start expanded. Used for the breaking ones, which are the point. */
+  sqlOpen?: boolean;
 }) {
   const cls = ["mig-row", cell.status, selected ? "selected" : ""]
     .filter(Boolean)
     .join(" ");
   return (
-    <div>
+    <div className="mig-item">
       <div className={cls}>
         <div className="seq-circle">{seq}</div>
         <div className="min-w-0">
@@ -396,6 +411,16 @@ function MigRow({
         <RightStatus cell={cell} />
       </div>
       {cell.error && <pre className="err-pre">{cell.error}</pre>}
+      {sql && (
+        <details className="mig-sql" open={sqlOpen}>
+          <summary>
+            <ChevronDownIcon className="chev" size={12} />
+            <span>SQL</span>
+            <span className="mono">{countOf(getSqlLineCount(sql), "line")}</span>
+          </summary>
+          <pre className="sql">{sql.trim()}</pre>
+        </details>
+      )}
     </div>
   );
 }
@@ -757,6 +782,7 @@ export default function DeployPage() {
   // Ticked beside the risk they belong to, never shared with each other or
   // with the production tick — three different things to have read.
   const [breakingAcknowledged, setBreakingAcknowledged] = useState(false);
+  const [dataLossAcknowledged, setDataLossAcknowledged] = useState(false);
   const [driftAcknowledged, setDriftAcknowledged] = useState(false);
 
   // ── Deploy approvals (the two-person rule) ───────────────────────────────
@@ -998,6 +1024,7 @@ export default function DeployPage() {
   useEffect(() => {
     setDeployAcknowledged(false);
     setBreakingAcknowledged(false);
+    setDataLossAcknowledged(false);
     setDriftAcknowledged(false);
   }, [connectionId, schema, scriptGroup, targetVersion]);
 
@@ -1040,6 +1067,23 @@ export default function DeployPage() {
   }, [scriptsUpToTarget]);
   const txnViolationScripts = scriptsUpToTarget.filter((s) => containsTransactionControl(s.sql_content));
   const hasTxnViolation = txnViolationScripts.length > 0;
+  // Asked separately from the change type, because they are separate questions.
+  // changeTypeOf answers "how far does the version move", and a TRUNCATE moves
+  // it not at all — so a run that empties a table used to arrive here graded
+  // "patch" with the checklist reporting that nothing in it was breaking.
+  const dataLossScripts = useMemo(
+    () =>
+      scriptsUpToTarget
+        .map((s) => ({ script: s, statements: findRowDestroyingStatements(s.sql_content) }))
+        .filter((entry) => entry.statements.length > 0),
+    [scriptsUpToTarget]
+  );
+  // Named rather than counted: "TRUNCATE, DELETE" tells the reader what to go
+  // and look for, where "3 statements" tells them only that there are three.
+  const dataLossKinds = useMemo(
+    () => [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].join(", "),
+    [dataLossScripts]
+  );
 
   // ── What the approval covers ─────────────────────────────────────────────
   // Hash the batch the same way the server does, so this screen can say
@@ -1145,6 +1189,7 @@ export default function DeployPage() {
     isDeploying ||
     (targetIsProduction && !deployAcknowledged) ||
     (breakingCount > 0 && !breakingAcknowledged) ||
+    (dataLossScripts.length > 0 && !dataLossAcknowledged) ||
     (driftBlocks && !driftAcknowledged);
   // What additionally stops a real deploy. A dry run is exempt because the
   // server exempts it: a rehearsal writes nothing, and charging a second person
@@ -2037,6 +2082,8 @@ export default function DeployPage() {
                             rightPill={bumpWord(kind)}
                             cell={{ status: "queued" }}
                             selected={inRun}
+                            sql={script.sql_content}
+                            sqlOpen={inRun && kind === "breaking"}
                           />
                         );
                       })}
@@ -2086,11 +2133,29 @@ export default function DeployPage() {
                               "already there. Anything reading the old shape — an app, a " +
                               "view, a report — stops working the moment this commits, and " +
                               "the rollback restores the structure, not the rows that were " +
-                              "in it."
+                              "in it. The breaking ones in the list on the left are open " +
+                              "already, showing the statements they will run."
                             }
                             ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what they remove.`}
                             acknowledged={breakingAcknowledged}
                             onAcknowledge={setBreakingAcknowledged}
+                          />
+                        )}
+                        {dataLossScripts.length > 0 && (
+                          <RiskGate
+                            tone="break"
+                            title={`${dataLossScripts.length} migration${dataLossScripts.length === 1 ? "" : "s"} deletes rows`}
+                            body={
+                              `This run contains ${dataLossKinds}. Those take rows out of ` +
+                              "a live table, and no rollback puts them back — a down " +
+                              "script rebuilds structure, not data. Nothing else on this " +
+                              "page catches this: a TRUNCATE changes no structure, so it " +
+                              "is graded a patch and shows no breaking pill. Have a " +
+                              "backup you can restore from before running this."
+                            }
+                            ack="I have read these statements and know which rows they delete."
+                            acknowledged={dataLossAcknowledged}
+                            onAcknowledge={setDataLossAcknowledged}
                           />
                         )}
                         {driftBlocks && driftResult && (
@@ -2210,7 +2275,18 @@ export default function DeployPage() {
                             {breakingAcknowledged ? "· acknowledged" : "· need acknowledging"}
                           </ChecklistItem>
                         ) : (
-                          <ChecklistItem ok>Nothing in this run is breaking</ChecklistItem>
+                          <ChecklistItem ok>
+                            Nothing in this run drops or rewrites structure
+                          </ChecklistItem>
+                        )}
+                        {dataLossScripts.length > 0 ? (
+                          <ChecklistItem ok={dataLossAcknowledged}>
+                            Deletes rows · {dataLossKinds} in{" "}
+                            {countOf(dataLossScripts.length, "script")}{" "}
+                            {dataLossAcknowledged ? "· acknowledged" : "· needs acknowledging"}
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>Nothing in this run deletes rows</ChecklistItem>
                         )}
                         {targetIsProduction && (
                           <ChecklistItem ok={Boolean(approvedRun)}>
@@ -2350,6 +2426,7 @@ export default function DeployPage() {
                   sub={subByStatus[cell.status]}
                   rightPill={`v${script.version}`}
                   cell={cell}
+                  sql={script.sql_content}
                 />
               );
             })}
