@@ -558,6 +558,42 @@ export function constraintDiffSeverity(diff: ConstraintDiff): ChangeSeverity {
 }
 
 /**
+ * ADD COLUMN. A NOT NULL column with no default has nothing to put in the rows
+ * that are already there, so the statement aborts; anything else applies.
+ *
+ * This and the two rules below used to live inline in DiffReport's matchLevel,
+ * which is exactly the arrangement that let a table wear an "additive" pill
+ * over a script full of breaking statements. They are restatements of what
+ * lib/generate-sql.ts grades ADD COLUMN / DROP COLUMN / ALTER COLUMN, and they
+ * live here so the canvas, the export and the version picker all read the one
+ * copy.
+ */
+export function addedColumnSeverity(column: ColumnSnapshot): ChangeSeverity {
+  return !column.nullable && column.columnDefault === null ? "breaking" : "safe";
+}
+
+/** DROP COLUMN. Always breaking: the column and every row's value in it go. */
+export function droppedColumnSeverity(): ChangeSeverity {
+  return "breaking";
+}
+
+/**
+ * A matched pair of columns: the worst of the differences between them.
+ *
+ * A non-exact match is a rename, and that is breaking on its own even when no
+ * property differs — everything that names the column as a string (a view body,
+ * a saved query, application code) stops working the moment the ALTER lands.
+ * Between the other two grades "info" wins over "safe", because a change worth
+ * mentioning outranks one that is merely guaranteed to apply.
+ */
+export function columnMatchSeverity(match: ColumnMatch): ChangeSeverity {
+  if (!match.exact) return "breaking";
+  if (match.changes.some((change) => change.severity === "breaking")) return "breaking";
+  if (match.changes.some((change) => change.severity === "info")) return "info";
+  return "safe";
+}
+
+/**
  * How dangerous an index / trigger / view / sequence / type / routine change is.
  *
  * Same job constraintChangeSeverity does for constraints, and it exists for the

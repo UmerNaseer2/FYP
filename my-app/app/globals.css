@@ -757,61 +757,109 @@ body {
   border-radius: 4px;
 }
 
+/* ===== Printing the compare page ==========================================
+   Ctrl-P and the "Print / PDF" button in components/studio/ExportBar.tsx both
+   land here. The rules this replaced targeted eighteen .db-* / .compare-* class
+   names that no page has used since the studio shell was built, so printing
+   produced an unstyled dump with the sidebar in it.
+
+   Two things happen in JavaScript instead of here, because CSS can do neither:
+   ExportBar's beforeprint handler opens every collapsed <details> so the whole
+   diff prints instead of a column of one-line summaries, and it flips
+   <html data-theme> to light for the duration — printing the dark palette
+   either burns a page of ink or, with background graphics off, puts pale grey
+   text on white paper.
+   ========================================================================= */
+
 @page {
-  margin: 12mm;
+  margin: 14mm;
 }
 
 @media print {
+  html,
   body {
-    background: white;
+    background: #fff;
   }
 
-  .db-layout {
-    display: block;
-    min-height: auto;
+  /* The shell is a full-height two-column grid whose column widths and height
+     are inline styles on StudioShell, so !important is the only way to unwind
+     it for paper. Its <main> scrolls, and an overflow container prints as one
+     clipped page. */
+  .studio {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
   }
 
-  .db-sidebar,
-  .compare-card--setup {
-    display: none;
+  .studio main {
+    overflow: visible !important;
+    height: auto !important;
   }
 
-  .db-main {
-    padding: 0;
+  /* Navigation, controls, and anything that opted out with .no-print. None of
+     it means anything on paper, and the sidebar was the loudest part of the
+     old dump. */
+  .studio > aside,
+  .topbar,
+  .studio-portal,
+  .scrim,
+  .drawer,
+  .source-bar,
+  .set-bar,
+  .btn,
+  .no-print {
+    display: none !important;
   }
 
-  .db-topbar {
-    margin-bottom: 12px;
+  /* The migration draft is the right-hand <aside>. A <textarea> prints only the
+     lines scrolled into view, so a printed script would be a silently truncated
+     one — the Copy button on screen is how that leaves the page. */
+  .compare-layout {
+    display: block !important;
   }
 
-  .compare-summary-grid,
-  .compare-report-grid,
-  .compare-detail-grid,
-  .compare-constraint-catalog,
-  .compare-form-grid {
-    grid-template-columns: 1fr;
+  .compare-layout > aside {
+    display: none !important;
   }
 
-  .db-topbar,
-  .compare-summary-card,
-  .compare-report-block,
-  .compare-detail-group,
-  .compare-note-card,
-  .compare-form-card,
-  .compare-constraint-catalog__column {
-    break-inside: avoid-page;
+  /* Sticky positioning and internal scrolling both fight pagination. */
+  .sticky-panel {
+    position: static !important;
+  }
+
+  .matrix-wrap {
+    overflow-x: visible !important;
+  }
+
+  /* Keep a card whole on one page wherever it fits. */
+  .panel,
+  .card,
+  .table-group,
+  .matrix-wrap,
+  .banner,
+  .warn-inline,
+  .rename {
+    break-inside: avoid;
     page-break-inside: avoid;
+    box-shadow: none !important;
   }
 
-  .db-topbar,
-  .compare-card,
-  .compare-summary-card,
-  .compare-report-block,
-  .compare-result-card,
-  .compare-note-card,
-  .compare-form-card,
-  .compare-constraint-catalog__column {
-    box-shadow: none;
+  /* On a diff row the colour is the meaning, and browsers drop backgrounds by
+     default. These are small and few, so print them exactly as drawn. */
+  .diff-row,
+  .pill,
+  .delta,
+  .matrix td,
+  .matrix th,
+  .banner {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Underlined blue text on paper is just noise — nothing is clickable. */
+  a[href] {
+    color: inherit;
+    text-decoration: none;
   }
 }
 
@@ -2988,6 +3036,18 @@ summary.obj-header::-webkit-details-marker { display:none; }
 /* Compare body: two-column on desktop, stacked + un-stuck on tablet/phone.
    min-width:0 lets the grid children shrink below their content's intrinsic
    width (otherwise a wide SQL block forces the column past the viewport). */
+/* Export controls above the diff. Deliberately quiet — a strip of ghost
+   buttons, not a toolbar competing with the diff underneath it. Carries
+   .no-print, since a printed page has nothing to click. */
+.export-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+              padding:8px 12px; border:1px solid var(--border); border-radius:10px;
+              background:var(--surface-2); }
+.export-bar__label { font-size:10.5px; font-weight:600; letter-spacing:.06em;
+                     text-transform:uppercase; color:var(--text-3); }
+.export-bar__count { margin-left:auto; font-size:12px; color:var(--text-3); }
+/* Full-width so a blocked-clipboard message never squeezes the buttons. */
+.export-bar__error { flex-basis:100%; font-size:12px; color:var(--break); }
+
 .compare-layout { display:grid; gap:1.5rem; grid-template-columns:minmax(0,1fr) 480px; }
 .compare-layout > * { min-width:0; }
 @media (max-width: 980px) {

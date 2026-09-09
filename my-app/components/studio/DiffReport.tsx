@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 import {
+  addedColumnSeverity,
+  columnMatchSeverity,
   constraintDiffSeverity,
   describeConstraint,
+  droppedColumnSeverity,
   objectDiffSeverity,
 } from "@/lib/compare";
 import type {
@@ -256,14 +259,25 @@ function matchTally(match: TableMatch): Tally {
   };
 }
 
-/** Worst-case severity for a matched table, used for its header pill. */
+/**
+ * Worst-case severity for a matched table, used for its header pill.
+ *
+ * Every clause below defers to a grader in lib/compare.ts. None of them decides
+ * anything here, because the pill and the script have to agree about the same
+ * table and there is only one way to guarantee that.
+ */
 function matchLevel(match: TableMatch): "breaking" | "additive" {
   const breakingColumn = match.columnMatches.some(
-    (c) => c.changes.some((ch) => ch.severity === "breaking") || !c.exact,
+    (c) => columnMatchSeverity(c) === "breaking",
   );
   const breakingNewCol = match.columnsOnlyInA.some(
-    (c) => !c.nullable && c.columnDefault === null,
+    (c) => addedColumnSeverity(c) === "breaking",
   );
+  // A dropped column was missing from this list entirely, so a table whose only
+  // change was DROP COLUMN wore an "additive" pill above a statement the
+  // generator marks both breaking and destructive.
+  const droppedColumnGrade =
+    match.columnsOnlyInB.length > 0 ? droppedColumnSeverity() : "safe";
   // Same rule the generator grades its ADD/DROP CONSTRAINT statements with, so
   // the pill cannot say "additive" over a statement the script marks breaking.
   const breakingConstraint = match.constraintDiffs.some(
@@ -275,7 +289,11 @@ function matchLevel(match: TableMatch): "breaking" | "additive" {
   const breakingObject = match.objectDiffs.some(
     (d) => objectDiffSeverity(d, targetUnique.has(d.name)) === "breaking",
   );
-  return breakingColumn || breakingNewCol || breakingConstraint || breakingObject
+  return breakingColumn ||
+    breakingNewCol ||
+    droppedColumnGrade === "breaking" ||
+    breakingConstraint ||
+    breakingObject
     ? "breaking"
     : "additive";
 }

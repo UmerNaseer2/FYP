@@ -23,7 +23,9 @@ import {
   toEnvironment,
   type Environment,
 } from "@/lib/environments";
+import { buildDiffDocument } from "@/lib/compare-export";
 import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
+import { ExportBar } from "@/components/studio/ExportBar";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
@@ -1108,6 +1110,10 @@ export default async function ComparePage({ searchParams }: PageProps) {
                   sticky). Stacks under 980px via the .compare-layout rule. */}
               <div className="compare-layout">
                 <div className="space-y-3">
+                  {/* Built on the server: the export has to grade every change
+                      with the same functions the canvas below grades them
+                      with, and those live in the compare engine. */}
+                  <ExportBar doc={buildDiffDocument(outcome.report)} />
                   {/* The board first, then the narrative. The diff below only
                       shows what changed, so it cannot say "nothing happened to
                       your views" — this can, and it is the answer people scroll
