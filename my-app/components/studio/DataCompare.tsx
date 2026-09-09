@@ -1,5 +1,8 @@
-import type { DataCompareReport, TableDataCompare } from "@/lib/compare-data";
-import { summarizeDataCompare } from "@/lib/compare-data";
+import {
+  summarizeDataCompare,
+  type DataCompareReport,
+  type TableDataCompare,
+} from "@/lib/compare-data-summary";
 import { CheckIcon, AlertTriangleIcon } from "@/components/ui/icons";
 import { dropModeFrom } from "@/components/studio/DiffReport";
 

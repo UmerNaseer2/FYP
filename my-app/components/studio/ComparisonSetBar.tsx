@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Select } from "@/components/ui/Select";
 import { Input } from "@/components/ui/Input";
 import { AlertTriangleIcon, TrashIcon } from "@/components/ui/icons";
@@ -50,7 +50,26 @@ type Props = {
    * a set at. Saving there would store a selection that cannot be restored.
    */
   canSave: boolean;
+  /**
+   * Reload the screen's data. The Compare screen fetches its own comparison, so
+   * a router refresh would leave the set list showing the name it had before
+   * Save. Server-rendered callers can leave this out and get router.refresh().
+   */
+  onDone?: () => void;
 };
+
+/**
+ * Two query strings that mean the same thing, whatever order they were written
+ * in — `?set=3&run=1` and `?run=1&set=3` open the same comparison.
+ */
+function sameQuery(a: string, b: string): boolean {
+  const normalize = (query: string) => {
+    const params = new URLSearchParams(query);
+    params.sort();
+    return params.toString();
+  };
+  return normalize(a) === normalize(b);
+}
 
 function timeAgo(iso: string | null): string {
   if (!iso) return "never run";
@@ -71,8 +90,10 @@ export function ComparisonSetBar({
   modified,
   selection,
   canSave,
+  onDone,
 }: Props) {
   const router = useRouter();
+  const currentQuery = useSearchParams().toString();
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
 
   const [name, setName] = useState(activeSet?.name ?? "");
@@ -88,10 +109,27 @@ export function ComparisonSetBar({
     setSaved(null);
   }, [activeSet?.id, activeSet?.name]);
 
+  /**
+   * Show the comparison `query` describes.
+   *
+   * Normally a navigation — the URL is the selection, so every one of these is
+   * a link somebody could have typed. Pushing the URL we are already on does
+   * nothing, though, and re-saving a set under a new name lands exactly there,
+   * so that case reloads the screen instead.
+   */
+  function goTo(query: string) {
+    if (sameQuery(query, currentQuery)) {
+      if (onDone) onDone();
+      else router.refresh();
+      return;
+    }
+    router.push(`/compare?${query}`);
+  }
+
   function open(value: string) {
     const id = Number(value);
     if (!Number.isInteger(id) || id <= 0) return;
-    router.push(`/compare?set=${id}&run=1`);
+    goTo(`set=${id}&run=1`);
   }
 
   async function save() {
@@ -117,8 +155,7 @@ export function ComparisonSetBar({
       setSaved(data?.created ? `Saved "${trimmed}".` : `Updated "${trimmed}".`);
       // Land on the set we just wrote, so the bar shows it as open and the
       // "changed since saved" hint clears.
-      router.push(`/compare?set=${data.set.id}&run=1`);
-      router.refresh();
+      goTo(`set=${data.set.id}&run=1`);
     } catch {
       setError("Network error while saving the set.");
     } finally {
@@ -144,8 +181,7 @@ export function ComparisonSetBar({
       }
       // The selection stays on screen — deleting the bookmark should not throw
       // away the comparison you are looking at.
-      router.push("/compare?run=1");
-      router.refresh();
+      goTo("run=1");
     } catch {
       setError("Network error while deleting the set.");
     } finally {

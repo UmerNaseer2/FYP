@@ -27,8 +27,14 @@ import {
   droppedColumnSeverity,
   objectDiffSeverity,
 } from "./compare";
-import { summarizeDataCompare } from "./compare-data";
-import type { DataCompareReport, TableDataCompare } from "./compare-data";
+// From compare-data-summary, not compare-data: the export bar is a client
+// component, and compare-data opens connections, so importing a value from it
+// would put the PostgreSQL driver in the browser bundle.
+import {
+  summarizeDataCompare,
+  type DataCompareReport,
+  type TableDataCompare,
+} from "./compare-data-summary";
 import { summaryRows, type SummaryRow } from "./compare-summary";
 import type {
   ChangeSeverity,
