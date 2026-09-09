@@ -1183,14 +1183,24 @@ export default function DeployPage() {
   // not a reason to forbid the run outright — so it is a tick, like production.
   const driftBlocks =
     driftPhase === "ready" && driftResult !== null && driftResult.status !== "in_sync";
-  const runBlocked =
-    scriptsUpToTarget.length === 0 ||
-    hasTxnViolation ||
-    isDeploying ||
+  // Every box the reader has to tick, in one place.
+  //
+  // It is one name rather than a repeated expression because it is read twice —
+  // once to disable the buttons, once to write the line under them saying why
+  // they are disabled — and those two lists had already drifted apart: the
+  // data-loss box disabled the button while the line under it went on
+  // announcing that all migrations run in one transaction, leaving the reader
+  // with a dead button and no reason for it.
+  const unacknowledgedGates =
     (targetIsProduction && !deployAcknowledged) ||
     (breakingCount > 0 && !breakingAcknowledged) ||
     (dataLossScripts.length > 0 && !dataLossAcknowledged) ||
     (driftBlocks && !driftAcknowledged);
+  const runBlocked =
+    scriptsUpToTarget.length === 0 ||
+    hasTxnViolation ||
+    isDeploying ||
+    unacknowledgedGates;
   // What additionally stops a real deploy. A dry run is exempt because the
   // server exempts it: a rehearsal writes nothing, and charging a second person
   // for a rehearsal would make the careful path the expensive one.
@@ -2233,9 +2243,7 @@ export default function DeployPage() {
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
                         {hasTxnViolation
                           ? "Resolve the transaction-control issue below first"
-                          : (targetIsProduction && !deployAcknowledged) ||
-                              (breakingCount > 0 && !breakingAcknowledged) ||
-                              (driftBlocks && !driftAcknowledged)
+                          : unacknowledgedGates
                             ? "Tick every box above to enable this"
                             : targetIsProduction && !approvedRun
                               ? "Deploy needs a second person's approval — a dry run does not"
