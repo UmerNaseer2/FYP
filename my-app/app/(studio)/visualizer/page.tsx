@@ -61,6 +61,7 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
 export default function VisualizerPage() {
   const [connections, setConnections] = useState<VizConnection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const [connectionsFailed, setConnectionsFailed] = useState(false);
   const [mode, setMode] = useState<Mode>("single");
   const [splitPct, setSplitPct] = useState(50);
 
@@ -85,10 +86,14 @@ export default function VisualizerPage() {
     (async () => {
       try {
         const res = await fetch("/api/connections", { cache: "no-store" });
-        const data = await res.json();
-        if (active && Array.isArray(data)) setConnections(data);
+        // A failed read must not become "you have no connections" — that empty
+        // state points at a page that cannot save one either.
+        const data = res.ok ? await res.json() : null;
+        if (!active) return;
+        if (Array.isArray(data)) setConnections(data);
+        else setConnectionsFailed(true);
       } catch {
-        /* the empty state below guides the user */
+        if (active) setConnectionsFailed(true);
       } finally {
         if (active) setConnectionsLoaded(true);
       }
@@ -144,17 +149,25 @@ export default function VisualizerPage() {
 
       {noConnections ? (
         <div className="viz-stage">
-          <EmptyState
-            icon={<SchemaMapIcon size={22} />}
-            title="Add a connection first"
-            description="The visualizer reads a live database, so it needs a saved PostgreSQL connection to draw from."
-            actions={
-              <Link href="/connections" className="btn btn-primary btn-sm">
-                <ConnectionsIcon size={14} />
-                Go to Connections
-              </Link>
-            }
-          />
+          {connectionsFailed ? (
+            <EmptyState
+              icon={<SchemaMapIcon size={22} />}
+              title="Could not load your connections"
+              description="The saved connections could not be read just now. Reload the page to try again."
+            />
+          ) : (
+            <EmptyState
+              icon={<SchemaMapIcon size={22} />}
+              title="Add a connection first"
+              description="The visualizer reads a live database, so it needs a saved PostgreSQL connection to draw from."
+              actions={
+                <Link href="/connections" className="btn btn-primary btn-sm">
+                  <ConnectionsIcon size={14} />
+                  Go to Connections
+                </Link>
+              }
+            />
+          )}
         </div>
       ) : (
         <div className={`viz-body${effectiveMode === "split" ? " viz-split" : ""}`} ref={splitRef}>

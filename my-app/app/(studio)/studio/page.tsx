@@ -141,6 +141,7 @@ export default function DashboardPage() {
   const [trackOpen, setTrackOpen] = useState(false);
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [connLoaded, setConnLoaded] = useState(false);
+  const [connFailed, setConnFailed] = useState(false);
   const [trackConnId, setTrackConnId] = useState("");
   const [schemaOptions, setSchemaOptions] = useState<string[]>([]);
   const [schemaPhase, setSchemaPhase] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -203,13 +204,17 @@ export default function DashboardPage() {
     // Pull the connection list fresh each time the drawer opens.
     try {
       const res = await fetch("/api/connections", { cache: "no-store" });
-      const data = await res.json();
-      const pg: ConnectionRow[] = (Array.isArray(data) ? data : []).filter(
-        (c: ConnectionRow) => c.type === "PostgreSQL"
-      );
-      setConnections(pg);
+      const data = res.ok ? await res.json() : null;
+      if (!Array.isArray(data)) {
+        setConnections([]);
+        setConnFailed(true);
+        return;
+      }
+      setConnections(data.filter((c: ConnectionRow) => c.type === "PostgreSQL"));
+      setConnFailed(false);
     } catch {
       setConnections([]);
+      setConnFailed(true);
     } finally {
       setConnLoaded(true);
     }
@@ -542,7 +547,9 @@ export default function DashboardPage() {
           />
           {connLoaded && connections.length === 0 && (
             <p className="help mt-1">
-              No PostgreSQL connections saved yet. Add one on the Connections page first.
+              {connFailed
+                ? "Could not read your saved connections. Reload the page to try again."
+                : "No PostgreSQL connections saved yet. Add one on the Connections page first."}
             </p>
           )}
         </div>

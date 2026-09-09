@@ -52,6 +52,7 @@ export default function ScriptEditorPage() {
   // ── Target selection ──────────────────────────────────────────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const [connectionsFailed, setConnectionsFailed] = useState(false);
   const [connectionId, setConnectionId] = useState("");
 
   const [schemas, setSchemas] = useState<string[]>([]);
@@ -90,10 +91,14 @@ export default function ScriptEditorPage() {
     (async () => {
       try {
         const res = await fetch("/api/connections", { cache: "no-store" });
-        const data = await res.json();
-        if (active && Array.isArray(data)) setConnections(data);
+        // An unreadable list is not an empty one, and the two need different
+        // advice — one is fixed by adding a connection, the other is not.
+        const data = res.ok ? await res.json() : null;
+        if (!active) return;
+        if (Array.isArray(data)) setConnections(data);
+        else setConnectionsFailed(true);
       } catch {
-        /* leave empty; the empty state guides the user */
+        if (active) setConnectionsFailed(true);
       } finally {
         if (active) setConnectionsLoaded(true);
       }
@@ -343,17 +348,25 @@ export default function ScriptEditorPage() {
 
       {connectionsLoaded && connections.length === 0 ? (
         <div style={{ minHeight: 360 }}>
-          <EmptyState
-            icon={<EditIcon size={22} />}
-            title="Add a connection first"
-            description="The editor needs a saved PostgreSQL connection to know the target database and read its applied versions."
-            actions={
-              <Link href="/connections" className="btn btn-primary btn-sm">
-                <ConnectionsIcon size={14} />
-                Go to Connections
-              </Link>
-            }
-          />
+          {connectionsFailed ? (
+            <EmptyState
+              icon={<EditIcon size={22} />}
+              title="Could not load your connections"
+              description="The saved connections could not be read just now. Reload the page to try again."
+            />
+          ) : (
+            <EmptyState
+              icon={<EditIcon size={22} />}
+              title="Add a connection first"
+              description="The editor needs a saved PostgreSQL connection to know the target database and read its applied versions."
+              actions={
+                <Link href="/connections" className="btn btn-primary btn-sm">
+                  <ConnectionsIcon size={14} />
+                  Go to Connections
+                </Link>
+              }
+            />
+          )}
         </div>
       ) : (
         <div className="grid gap-4">

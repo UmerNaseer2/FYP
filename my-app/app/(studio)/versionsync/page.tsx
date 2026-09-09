@@ -96,7 +96,7 @@ function useLedgerSource() {
           `/api/lineage/lookup?connectionId=${encodeURIComponent(connectionId)}&schemaName=${encodeURIComponent(schema)}`,
           { cache: "no-store" },
         );
-        const data = (await res.json()) as { environment?: string };
+        const data = res.ok ? ((await res.json()) as { environment?: string }) : null;
         if (active) setSchemaEnvironment(toEnvironment(data?.environment));
       } catch {
         // An unreachable lookup leaves the label unset, which reads as
@@ -176,6 +176,7 @@ function changeTone(t: string): string {
 export default function VersionSyncPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const [connectionsFailed, setConnectionsFailed] = useState(false);
 
   const source = useLedgerSource();
   const target = useLedgerSource();
@@ -185,10 +186,14 @@ export default function VersionSyncPage() {
     (async () => {
       try {
         const res = await fetch("/api/connections", { cache: "no-store" });
-        const data = await res.json();
-        if (active && Array.isArray(data)) setConnections(data);
+        // "No connections" is a different answer from "could not read them";
+        // only the first one is fixed by visiting the Connections page.
+        const data = res.ok ? await res.json() : null;
+        if (!active) return;
+        if (Array.isArray(data)) setConnections(data);
+        else setConnectionsFailed(true);
       } catch {
-        /* empty state guides the user */
+        if (active) setConnectionsFailed(true);
       } finally {
         if (active) setConnectionsLoaded(true);
       }
@@ -375,16 +380,24 @@ export default function VersionSyncPage() {
       </div>
 
       {noConnections ? (
-        <EmptyState
-          icon={<VersionSyncIcon size={22} />}
-          title="Add a connection first"
-          description="Version Sync reads two saved PostgreSQL connections' applied-script ledgers."
-          actions={
-            <Link href="/connections" className="btn btn-primary btn-sm">
-              <ConnectionsIcon size={14} /> Go to Connections
-            </Link>
-          }
-        />
+        connectionsFailed ? (
+          <EmptyState
+            icon={<VersionSyncIcon size={22} />}
+            title="Could not load your connections"
+            description="The saved connections could not be read just now. Reload the page to try again."
+          />
+        ) : (
+          <EmptyState
+            icon={<VersionSyncIcon size={22} />}
+            title="Add a connection first"
+            description="Version Sync reads two saved PostgreSQL connections' applied-script ledgers."
+            actions={
+              <Link href="/connections" className="btn btn-primary btn-sm">
+                <ConnectionsIcon size={14} /> Go to Connections
+              </Link>
+            }
+          />
+        )
       ) : (
         <>
           {/* ── Source → Target pickers ──────────────────────────────────── */}

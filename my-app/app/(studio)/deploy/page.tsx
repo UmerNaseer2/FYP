@@ -721,6 +721,7 @@ export default function DeployPage() {
   // ── Selection state ──────────────────────────────────────────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const [connectionsFailed, setConnectionsFailed] = useState(false);
   const [connectionId, setConnectionId] = useState<string>("");
   const [schemas, setSchemas] = useState<string[]>([]);
   const [schemasLoading, setSchemasLoading] = useState(false);
@@ -820,13 +821,15 @@ export default function DeployPage() {
   // ── Load connections + GitHub scripts on mount ───────────────────────────
   useEffect(() => {
     fetch("/api/connections", { cache: "no-store" })
-      .then((r) => r.json())
+      .then(async (r) => (r.ok ? ((await r.json()) as unknown) : null))
       .then((data: unknown) => {
+        // An unreadable list is not an empty one. Saying "add a connection
+        // first" when the app database is down sends the user to a page that
+        // will fail the same way.
         if (Array.isArray(data)) setConnections(data as Connection[]);
+        else setConnectionsFailed(true);
       })
-      .catch(() => {
-        /* leave empty — the UI shows a "no connections" hint */
-      })
+      .catch(() => setConnectionsFailed(true))
       .finally(() => setConnectionsLoaded(true));
 
     void handlePull();
@@ -1337,6 +1340,13 @@ export default function DeployPage() {
         `/api/lineage/lookup?connectionId=${encodeURIComponent(id)}&schemaName=${encodeURIComponent(sch)}`,
         { cache: "no-store" }
       );
+      // A failed lookup must not read as "not tracked" — that answer skips the
+      // drift pre-check and leaves the environment label unset, so a dead
+      // metadata database would quietly remove both warnings.
+      if (!lookupRes.ok) {
+        setDriftPhase("error");
+        return;
+      }
       const lookup = (await lookupRes.json()) as {
         tracked?: boolean;
         trackedSchemaId?: number;
@@ -1658,7 +1668,9 @@ export default function DeployPage() {
                 />
                 {connectionsLoaded && connections.length === 0 && (
                   <p className="help mt-1">
-                    No connections saved yet. Add one on the Connections page first.
+                    {connectionsFailed
+                      ? "Could not read your saved connections. Reload the page to try again."
+                      : "No connections saved yet. Add one on the Connections page first."}
                   </p>
                 )}
                 {activeConn && (
