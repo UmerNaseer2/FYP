@@ -307,10 +307,19 @@ function CompareScreenView({ query }: { query: string }) {
     return (
       <EmptyState
         icon={<CompareIcon size={22} />}
-        title="Add a couple of connections to compare"
+        title="Add a connection to compare"
         description={
           <>
-            Schema comparison needs at least two saved PostgreSQL connections.
+            {/*
+              This used to say "at least two connections", but the branch it
+              sits in fires on ZERO — and one connection is genuinely enough,
+              because the two sides of a comparison are two SCHEMAS and both
+              can live on the same server. Asking for a second one sent people
+              off to invent a connection they did not need.
+            */}
+            Comparing reads two schemas through your saved PostgreSQL
+            connections. One is enough to start — the two sides can be two
+            schemas on the same server.
             {screen.resolveError ? (
               <span className="block mt-2" style={{ color: "var(--text-3)" }}>
                 {screen.resolveError}
