@@ -26,6 +26,26 @@ export const entraConfigured = Boolean(
     process.env.AZURE_AD_TENANT_ID
 );
 
+/**
+ * NextAuth signs its session cookie with this and refuses to start without it.
+ *
+ * It is checked separately from the provider keys because the failure mode is
+ * different: with no secret, NextAuth throws on the FIRST request to any of its
+ * routes — including the session read every page makes — so a deployment that
+ * simply never set it answered 500 to /api/auth/session on every single page
+ * load. Nothing broke visibly, because the bypass supplies its own principal,
+ * but the console filled with errors that had nothing to do with the page.
+ */
+export const secretConfigured = Boolean(process.env.NEXTAUTH_SECRET);
+
+/**
+ * True when a real sign-in could actually complete: somewhere to sign in to,
+ * and a secret to sign the resulting session with. When this is false the
+ * NextAuth routes cannot run at all, and callers answer for them instead of
+ * letting them throw — see app/api/auth/[...nextauth]/route.ts and middleware.
+ */
+export const authUsable = entraConfigured && secretConfigured;
+
 export const authConfig = {
   providers: entraConfigured
     ? [

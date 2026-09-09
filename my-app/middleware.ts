@@ -1,6 +1,6 @@
 import NextAuth from "next-auth";
 import { NextResponse, type NextRequest } from "next/server";
-import { authConfig } from "./auth.config";
+import { authConfig, authUsable } from "./auth.config";
 import { BYPASS_AUTH } from "./lib/auth-mode";
 
 /**
@@ -49,8 +49,28 @@ function getEnforcer(): EdgeMiddleware {
   return enforce;
 }
 
+/**
+ * Turning the bypass off without configuring sign-in used to reach NextAuth,
+ * which threw on the missing secret and answered 500 to every page. Nobody can
+ * be signed in in that state, so the answer is the same one an anonymous
+ * visitor gets — a redirect to /login, which explains that sign-in is not set
+ * up rather than offering a button that can only fail.
+ */
+function notConfigured(request: NextRequest): Response {
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return NextResponse.json(
+      { error: "Sign-in is not set up on this server." },
+      { status: 401 }
+    );
+  }
+  const loginUrl = new URL("/login", request.nextUrl.origin);
+  loginUrl.searchParams.set("error", "Configuration");
+  return NextResponse.redirect(loginUrl);
+}
+
 export default function middleware(request: NextRequest) {
   if (BYPASS_AUTH) return NextResponse.next();
+  if (!authUsable) return notConfigured(request);
   return getEnforcer()(request);
 }
 
