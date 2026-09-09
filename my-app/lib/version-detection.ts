@@ -380,6 +380,15 @@ export function determineNewerSchema(
   newer: "left" | "right" | "same" | "unknown";
   reason: string;
 } {
+  // Two databases each with a schema called "public" is the ordinary case, not
+  // an odd one, and every sentence below names a side. "public is newer than
+  // public" tells the reader nothing, and "public records no version of its
+  // own" does not say WHICH public. Where the names collide, fall back to the
+  // roles the screen itself prints above each row.
+  const collides = left.schema === right.schema;
+  const leftName = collides ? "the source schema" : left.schema;
+  const rightName = collides ? "the target schema" : right.schema;
+
   if (
     left.versionScheme !== null &&
     right.versionScheme !== null &&
@@ -388,8 +397,8 @@ export function determineNewerSchema(
     return {
       newer: "unknown",
       reason:
-        `${left.schema} numbers itself as ${left.detectedVersion} and ` +
-        `${right.schema} as ${right.detectedVersion}. Those are not the same ` +
+        `${leftName} numbers itself as ${left.detectedVersion} and ` +
+        `${rightName} as ${right.detectedVersion}. Those are not the same ` +
         `kind of version, so neither one is "ahead" of the other.`,
     };
   }
@@ -398,14 +407,14 @@ export function determineNewerSchema(
     if (left.comparableValue > right.comparableValue) {
       return {
         newer: "left",
-        reason: `${left.schema} is newer based on version ${left.detectedVersion}.`,
+        reason: `${leftName} is newer based on version ${left.detectedVersion}.`,
       };
     }
 
     if (right.comparableValue > left.comparableValue) {
       return {
         newer: "right",
-        reason: `${right.schema} is newer based on version ${right.detectedVersion}.`,
+        reason: `${rightName} is newer based on version ${right.detectedVersion}.`,
       };
     }
 
@@ -420,10 +429,12 @@ export function determineNewerSchema(
   const blank = [left, right].filter((side) => side.comparableValue === null);
   const reason =
     blank.length > 1
-      ? `Neither ${left.schema} nor ${right.schema} records a version of its own, ` +
+      ? (collides
+          ? "Neither schema records a version of its own, "
+          : `Neither ${leftName} nor ${rightName} records a version of its own, `) +
         "so the structural diff is the whole answer."
-      : `${blank[0].schema} records no version of its own, so there is nothing ` +
-        "to rank the two against.";
+      : `${blank[0] === left ? leftName : rightName} records no version of its ` +
+        "own, so there is nothing to rank the two against.";
 
   return { newer: "unknown", reason };
 }

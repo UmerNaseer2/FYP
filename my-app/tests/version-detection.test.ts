@@ -70,6 +70,38 @@ describe("determineNewerSchema", () => {
     expect(determineNewerSchema(none, none).newer).toBe("unknown");
   });
 
+  it("names sides by role when both schemas are called the same thing", () => {
+    // Two databases each with a "public" is the ordinary case. Naming the sides
+    // by schema then produces "Neither public nor public records a version of
+    // its own", which reads like a bug in the tool rather than a fact about the
+    // databases.
+    const left = detected("public", null, null, null);
+    const right = detected("public", null, null, null);
+    expect(determineNewerSchema(left, right).reason).toBe(
+      "Neither schema records a version of its own, so the structural diff is " +
+        "the whole answer."
+    );
+
+    // One side blank is worse, because "public records no version" does not say
+    // which public the reader should go and look at.
+    const versioned = detected("public", "1.0.0", 1_000_000, "semver");
+    expect(determineNewerSchema(versioned, right).reason).toContain("the target schema");
+    expect(determineNewerSchema(right, versioned).reason).toContain("the source schema");
+
+    // And the ranking sentences too — "public is newer based on version 2.0.0"
+    // is a verdict with no subject.
+    const ahead = detected("public", "2.0.0", 2_000_000, "semver");
+    expect(determineNewerSchema(ahead, versioned).reason).toBe(
+      "the source schema is newer based on version 2.0.0."
+    );
+  });
+
+  it("keeps using the schema names when they differ", () => {
+    const dev = detected("dev", null, null, null);
+    const prod = detected("prod", null, null, null);
+    expect(determineNewerSchema(dev, prod).reason).toContain("Neither dev nor prod");
+  });
+
   it("gives a reason in every branch, because the screen prints it", () => {
     const a = detected("dev", "1.0.0", 1_000_000, "semver");
     const b = detected("prod", "2.0.0", 2_000_000, "semver");
