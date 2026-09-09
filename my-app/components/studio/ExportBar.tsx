@@ -151,7 +151,10 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
             } of row data`
           : ""}
         {doc.notCompared.length > 0
-          ? ` · ${doc.notCompared.join(", ").toLowerCase()} not compared`
+          ? ` · ${doc.notCompared
+              .map((entry) => entry.category)
+              .join(", ")
+              .toLowerCase()} not compared`
           : ""}
       </span>
 

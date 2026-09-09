@@ -34,6 +34,7 @@ import type {
   ChangeSeverity,
   ColumnSnapshot,
   CompareReport,
+  NotComparedReason,
   ObjectDiff,
   ObjectKind,
 } from "./compare-types";
@@ -126,11 +127,16 @@ export type DiffDocument = {
     breaking: number;
   };
   /**
-   * Categories one of the two snapshots has no record of, so they were skipped.
+   * Categories that were skipped, each with the reason it was skipped.
    * Absent from `categories` counts and absent from `changes` — a reader has to
    * be told that, or "0 views changed" reads as "the views match".
+   *
+   * The reason is carried rather than assumed. This used to be a bare list and
+   * every reader of it printed "one of the two snapshots has no record of
+   * them", which is untrue for a category that is counted per table pair when
+   * no table pair exists.
    */
-  notCompared: ChangeCategory[];
+  notCompared: Array<{ category: ChangeCategory; reason: NotComparedReason }>;
   categories: SummaryRow[];
   changes: ChangeRow[];
   /**
@@ -337,8 +343,16 @@ export function buildDiffDocument(
   const categories = summaryRows(report);
   const notCompared = categories
     .filter((row) => !row.compared)
-    .map((row) => SUMMARY_LABEL_CATEGORY[row.label])
-    .filter((category): category is ChangeCategory => category !== undefined);
+    .map((row) => ({
+      category: SUMMARY_LABEL_CATEGORY[row.label],
+      // A report restored from before the reason existed records none, and the
+      // old wording is the one it was written under.
+      reason: row.notComparedReason ?? ("snapshotPredatesCategory" as const),
+    }))
+    .filter(
+      (entry): entry is { category: ChangeCategory; reason: NotComparedReason } =>
+        entry.category !== undefined
+    );
 
   const count = (verdict: ChangeVerdict) =>
     changes.filter((row) => row.change === verdict).length;

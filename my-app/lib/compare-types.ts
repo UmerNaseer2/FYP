@@ -191,6 +191,32 @@ export type ObjectDiff = {
   dropDestroysData?: boolean;
 };
 
+/** The categories the matrix has a row for, named the way the report names them. */
+export type ObjectCategoryKey =
+  | "indexes"
+  | "triggers"
+  | "views"
+  | "sequences"
+  | "types"
+  | "routines"
+  | "rowSecurity"
+  | "partitioning";
+
+/**
+ * Why a category was skipped. There are two reasons and they are not the same
+ * thing, so telling the reader the wrong one is a defect in its own right.
+ *
+ *   snapshotPredatesCategory — one of the snapshots has no record of it, so the
+ *     comparison would read "not recorded" as "none" and report every object on
+ *     the other side as newly added. Nothing can be done but re-capture.
+ *   noMatchedTables — the category is counted on tables that exist on BOTH
+ *     sides, and no table matched. Both snapshots may be perfectly current;
+ *     there was simply no pair to compare. This is the normal state of the
+ *     tool's most common run, a populated source against an empty target, where
+ *     the panel beside the matrix is busy creating every index and trigger.
+ */
+export type NotComparedReason = "snapshotPredatesCategory" | "noMatchedTables";
+
 /**
  * Which object categories BOTH snapshots recorded, and were therefore compared.
  *
@@ -208,6 +234,16 @@ export type ComparedObjectCategories = {
   routines: boolean;
   rowSecurity: boolean;
   partitioning: boolean;
+  /**
+   * For each category that is false above, why.
+   *
+   * Carried rather than re-derived because the reason lives here, where both
+   * snapshots and the matched-table list are in hand. Every screen and every
+   * export used to attach one hardcoded cause — "captured before this app
+   * recorded them" — which is simply untrue when the real cause is that no
+   * table matched. A category that WAS compared has no entry.
+   */
+  reasons: Partial<Record<ObjectCategoryKey, NotComparedReason>>;
 };
 
 export type TableMatch = {

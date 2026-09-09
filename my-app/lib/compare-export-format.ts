@@ -158,7 +158,15 @@ export function documentToMarkdown(document: DiffDocument): string {
   out.push("| --- | --: | --: | --: | --: |");
   for (const row of document.categories) {
     if (!row.compared) {
-      out.push(`| ${row.label} | not compared | | | |`);
+      // The cell says WHICH kind of "not compared" this is. A category counted
+      // per matched table pair, on a comparison with no matched pair, is not a
+      // stale snapshot — and the sentence below used to tell every reader it
+      // was.
+      const cell =
+        row.notComparedReason === "noMatchedTables"
+          ? "no matched tables"
+          : "not compared";
+      out.push(`| ${row.label} | ${cell} | | | |`);
       continue;
     }
     out.push(
@@ -167,10 +175,26 @@ export function documentToMarkdown(document: DiffDocument): string {
   }
   out.push("");
 
-  if (document.notCompared.length > 0) {
+  const unmatched = document.notCompared
+    .filter((entry) => entry.reason === "noMatchedTables")
+    .map((entry) => entry.category);
+  const stale = document.notCompared
+    .filter((entry) => entry.reason === "snapshotPredatesCategory")
+    .map((entry) => entry.category);
+  if (unmatched.length > 0) {
     out.push(
-      `Not compared: ${document.notCompared.join(", ")} — one of the two snapshots ` +
-        "has no record of them, which is not the same as them matching."
+      `Not compared: ${unmatched.join(", ")} — these are counted per pair of ` +
+        "tables that exist on both sides, and no table matched. Whatever hangs " +
+        "off a table that exists on one side only is created or dropped with " +
+        "that table, and the migration script covers it."
+    );
+    out.push("");
+  }
+  if (stale.length > 0) {
+    out.push(
+      `Not compared: ${stale.join(", ")} — one of the two snapshots ` +
+        "has no record of them, which is not the same as them matching. " +
+        "Re-capture it to include them."
     );
     out.push("");
   }

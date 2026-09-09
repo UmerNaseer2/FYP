@@ -10,6 +10,8 @@
 
 import type {
   CompareReport,
+  NotComparedReason,
+  ObjectCategoryKey,
   ObjectDiff,
   ObjectKind,
   TableSnapshot,
@@ -19,8 +21,17 @@ import { isStandaloneSequence } from "./compare";
 /** One line of the matrix: a category, and how its objects fared. */
 export type SummaryRow = {
   label: string;
-  /** False when one side's snapshot has no record of this category at all. */
+  /** False when nothing in this category was compared. See notComparedReason. */
   compared: boolean;
+  /**
+   * Why `compared` is false — undefined when it is true.
+   *
+   * The matrix and the export both used to print a single hardcoded cause, and
+   * on the tool's most common run (a populated source against an empty target)
+   * that cause was false: nothing was stale, there was simply no matched table
+   * to count indexes and triggers on.
+   */
+  notComparedReason?: NotComparedReason;
   /** True when both sides were read and neither holds a single object. */
   absent: boolean;
   inSync: number;
@@ -92,6 +103,12 @@ function constraintTotal(table: TableSnapshot): number {
 export function summaryRows(report: CompareReport): SummaryRow[] {
   const rows: SummaryRow[] = [];
   const categories = report.comparedObjectCategories;
+
+  // `reasons` is absent on a report restored from a snapshot taken before this
+  // field existed. Undefined then means "compared, or skipped for a reason
+  // nobody recorded" — which is exactly what the callers already handle.
+  const reasonFor = (key: ObjectCategoryKey): NotComparedReason | undefined =>
+    categories.reasons?.[key];
 
   rows.push({
     label: "Tables",
@@ -201,6 +218,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Indexes",
     compared: categories.indexes,
+    notComparedReason: reasonFor("indexes"),
     absent: indexTotalLeft === 0 && indexTotalRight === 0,
     inSync: inSyncCount(indexTotalLeft, indexes.added, indexes.changed),
     ...indexes,
@@ -210,6 +228,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Triggers",
     compared: categories.triggers,
+    notComparedReason: reasonFor("triggers"),
     absent: triggerTotalLeft === 0 && triggerTotalRight === 0,
     inSync: inSyncCount(triggerTotalLeft, triggers.added, triggers.changed),
     ...triggers,
@@ -219,6 +238,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Row security",
     compared: categories.rowSecurity,
+    notComparedReason: reasonFor("rowSecurity"),
     // Hidden when neither side uses row security at all. Not when the totals
     // are zero — every table contributes a switch, so the totals are never
     // zero once row security is recorded, and a permanent "0 / 0" row on
@@ -232,6 +252,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Partitioning",
     compared: categories.partitioning,
+    notComparedReason: reasonFor("partitioning"),
     absent: !partitioningUsed,
     inSync: inSyncCount(partitioningTotalLeft, partitioning.added, partitioning.changed),
     ...partitioning,
@@ -241,6 +262,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Views",
     compared: categories.views,
+    notComparedReason: reasonFor("views"),
     absent: (report.left.views?.length ?? 0) === 0 && (report.right.views?.length ?? 0) === 0,
     inSync: inSyncCount(report.left.views?.length ?? 0, views.added, views.changed),
     ...views,
@@ -258,6 +280,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Sequences",
     compared: categories.sequences,
+    notComparedReason: reasonFor("sequences"),
     absent: leftSequences.length === 0 && rightSequences.length === 0,
     inSync: inSyncCount(leftSequences.length, sequences.added, sequences.changed),
     ...sequences,
@@ -267,6 +290,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Enums & types",
     compared: categories.types,
+    notComparedReason: reasonFor("types"),
     absent: (report.left.types?.length ?? 0) === 0 && (report.right.types?.length ?? 0) === 0,
     inSync: inSyncCount(report.left.types?.length ?? 0, types.added, types.changed),
     ...types,
@@ -276,6 +300,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
   rows.push({
     label: "Functions",
     compared: categories.routines,
+    notComparedReason: reasonFor("routines"),
     absent:
       (report.left.routines?.length ?? 0) === 0 &&
       (report.right.routines?.length ?? 0) === 0,

@@ -16,6 +16,8 @@ import type {
   ColumnChange,
   ColumnMatch,
   ComparedObjectCategories,
+  NotComparedReason,
+  ObjectCategoryKey,
   CompareReport,
   ConstraintDiff,
   MatchCandidate,
@@ -38,6 +40,8 @@ import {
 export type {
   ColumnMatch,
   ComparedObjectCategories,
+  NotComparedReason,
+  ObjectCategoryKey,
   CompareReport,
   ConstraintDiff,
   MatchCandidate,
@@ -2008,23 +2012,58 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
 }
 
 /**
- * Which categories were actually compared. A table-scoped category counts as
- * compared when at least one matched pair of tables recorded it on both sides.
+ * Which categories were actually compared, and for the rest, WHY not.
+ *
+ * A table-scoped category counts as compared when at least one matched pair of
+ * tables recorded it on both sides. That makes an empty matchedTables list turn
+ * indexes, triggers, row security and partitioning off — correctly, since no
+ * comparison ran — but for a completely different reason than a stale snapshot,
+ * and every screen used to print the stale-snapshot reason regardless. So the
+ * reason is decided here, once, alongside the flag it explains.
  */
 function comparedCategories(
   left: SchemaSnapshot,
   right: SchemaSnapshot,
   matchedTables: TableMatch[]
 ): ComparedObjectCategories {
+  const reasons: Partial<Record<ObjectCategoryKey, NotComparedReason>> = {};
+
+  /** Record a schema-scoped category: only a missing snapshot can turn it off. */
+  function schemaScoped(key: ObjectCategoryKey, compared: boolean): boolean {
+    if (!compared) reasons[key] = "snapshotPredatesCategory";
+    return compared;
+  }
+
+  /**
+   * Record a table-scoped category, which has two ways to be off. With no
+   * matched pair at all, no snapshot is at fault — there was nothing to
+   * compare. Only when pairs exist and none of them recorded the category on
+   * both sides is a snapshot actually too old.
+   */
+  function tableScoped(
+    key: ObjectCategoryKey,
+    recorded: (m: TableMatch) => boolean
+  ): boolean {
+    if (matchedTables.some(recorded)) return true;
+    reasons[key] =
+      matchedTables.length === 0 ? "noMatchedTables" : "snapshotPredatesCategory";
+    return false;
+  }
+
   return {
-    indexes: matchedTables.some((m) => Boolean(m.left.indexes && m.right.indexes)),
-    triggers: matchedTables.some((m) => Boolean(m.left.triggers && m.right.triggers)),
-    views: Boolean(left.views && right.views),
-    sequences: Boolean(left.sequences && right.sequences),
-    types: Boolean(left.types && right.types),
-    routines: Boolean(left.routines && right.routines),
-    rowSecurity: matchedTables.some((m) => Boolean(m.left.rowSecurity && m.right.rowSecurity)),
-    partitioning: matchedTables.some((m) => Boolean(m.left.partitioning && m.right.partitioning)),
+    indexes: tableScoped("indexes", (m) => Boolean(m.left.indexes && m.right.indexes)),
+    triggers: tableScoped("triggers", (m) => Boolean(m.left.triggers && m.right.triggers)),
+    views: schemaScoped("views", Boolean(left.views && right.views)),
+    sequences: schemaScoped("sequences", Boolean(left.sequences && right.sequences)),
+    types: schemaScoped("types", Boolean(left.types && right.types)),
+    routines: schemaScoped("routines", Boolean(left.routines && right.routines)),
+    rowSecurity: tableScoped("rowSecurity", (m) =>
+      Boolean(m.left.rowSecurity && m.right.rowSecurity)
+    ),
+    partitioning: tableScoped("partitioning", (m) =>
+      Boolean(m.left.partitioning && m.right.partitioning)
+    ),
+    reasons,
   };
 }
 

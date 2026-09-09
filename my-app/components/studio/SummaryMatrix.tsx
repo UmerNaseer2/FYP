@@ -12,10 +12,12 @@ import { ChevronDownIcon } from "@/components/ui/icons";
 //
 // This is the other half: every category the comparison looked at, on one line
 // each, with the four things that can happen to an object. It is also the only
-// place the report admits it did NOT look at something. A snapshot captured
-// before a category existed has no record of it, so that category is skipped
-// (see ComparedObjectCategories) — and "skipped" rendered as a row of zeros
-// would be a lie, so those rows say "not compared" instead.
+// place the report admits it did NOT look at something, and "skipped" rendered
+// as a row of zeros would be a lie, so those rows say so instead — with the
+// right reason of the two (see NotComparedReason). A snapshot captured before a
+// category existed has no record of it; separately, indexes and triggers are
+// counted per matched table pair, so a comparison with no pair at all compares
+// none of them while both snapshots are perfectly current.
 //
 // Server component, and it reuses the diff canvas' vocabulary (.table-group /
 // .obj-group) rather than inventing a third layout for one page.
@@ -29,7 +31,17 @@ function Count({ n, tone }: { n: number; tone: "sync" | "add" | "rem" | "chg" })
 
 export function SummaryMatrix({ report }: { report: CompareReport }) {
   const rows = summaryRows(report);
-  const skipped = rows.filter((row) => !row.compared).map((row) => row.label);
+  // Split by WHY, not just by whether. A category counted on matched tables is
+  // skipped when nothing matched, and telling that reader their snapshot is too
+  // old is simply false — it fires on a populated source against an empty
+  // target, the tool's most common run, while the panel beside this one is busy
+  // creating every index and trigger it just said were "not compared".
+  const stale = rows
+    .filter((row) => row.notComparedReason === "snapshotPredatesCategory")
+    .map((row) => row.label);
+  const unmatched = rows
+    .filter((row) => row.notComparedReason === "noMatchedTables")
+    .map((row) => row.label);
 
   return (
     <details className="table-group" open>
@@ -65,7 +77,9 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
                   </th>
                   {!row.compared ? (
                     <td className="matrix-na" colSpan={4}>
-                      not compared
+                      {row.notComparedReason === "noMatchedTables"
+                        ? "no matched tables"
+                        : "not compared"}
                     </td>
                   ) : row.absent ? (
                     <td className="matrix-na" colSpan={4}>
@@ -92,15 +106,27 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
           exist on both sides. On a table that exists on one side only they are
           created or dropped with the table itself, so counting them here would
           report the same work twice.
-          {skipped.length > 0 && (
+          {unmatched.length > 0 && (
             <>
               {" "}
               <b style={{ color: "var(--text-2)" }}>
-                {skipped.join(", ")} could not be compared
-              </b>{" "}
-              — one of these snapshots was captured before this app recorded them,
-              and treating &ldquo;no record&rdquo; as &ldquo;none&rdquo; would
-              report every one of them as newly added.
+                {unmatched.join(", ") + " have no matched tables to be counted on"}
+              </b>
+              {" — they are counted per table pair, and no table exists on both " +
+                "sides. Anything on a table that exists on one side only is created " +
+                "or dropped with the table, and the migration below writes it."}
+            </>
+          )}
+          {stale.length > 0 && (
+            <>
+              {" "}
+              <b style={{ color: "var(--text-2)" }}>
+                {stale.join(", ") + " could not be compared"}
+              </b>
+              {" — one of these snapshots was captured before this app recorded " +
+                "them, and treating \u201cno record\u201d as \u201cnone\u201d would " +
+                "report every one of them as newly added. Re-capture it to include " +
+                "them."}
             </>
           )}
         </div>
