@@ -21,7 +21,7 @@
  * in that gap and be waved past the guard. A scanner cannot be fooled that way,
  * because it only ever recognises an opener while it is actually reading code.
  */
-function maskNonCode(sql: string): string {
+export function maskNonCode(sql: string): string {
   const out = sql.split("");
   // A dollar-quote tag is empty or starts with a letter/underscore, which is
   // what keeps a `$1` placeholder from being read as an opening tag. Sticky so

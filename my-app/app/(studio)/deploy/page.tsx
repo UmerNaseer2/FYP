@@ -21,6 +21,7 @@ import {
   type LedgerEntry,
 } from "@/lib/script-status";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import { changeTypeOf, type ScriptChangeType } from "@/lib/change-type";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
@@ -58,7 +59,10 @@ import { useUser } from "@/hooks/useUser";
 // re-read after a run — is real.
 // ---------------------------------------------------------------------------
 
-type ChangeKind = "breaking" | "additive" | "patch";
+// The deploy screen's own name for a script's change type. The grading itself
+// lives in lib/change-type, so this screen and the generator can never disagree
+// about what a script does.
+type ChangeKind = ScriptChangeType;
 
 // A migration script, loaded from the GitHub repo (the source of truth).
 type GitHubScript = {
@@ -217,29 +221,6 @@ function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
 // same script_name@version pair.
 function scriptKey(s: GitHubScript): string {
   return `${s.schema_name}@${s.script_name}@${s.version}`;
-}
-
-function inferChangeKind(sql: string): ChangeKind {
-  const normalized = sql.toLowerCase();
-  if (
-    normalized.includes("drop table") ||
-    normalized.includes("drop column") ||
-    normalized.includes("drop constraint") ||
-    normalized.includes(" set not null") ||
-    normalized.includes(" alter column") ||
-    normalized.includes(" rename ")
-  ) {
-    return "breaking";
-  }
-  if (
-    normalized.includes("create table") ||
-    normalized.includes("add column") ||
-    normalized.includes("add constraint") ||
-    normalized.includes("create index")
-  ) {
-    return "additive";
-  }
-  return "patch";
 }
 
 function getSqlLineCount(sql: string): number {
@@ -1018,7 +999,7 @@ export default function DeployPage() {
 
   // Summary stats for the chosen batch.
   const breakingCount = scriptsUpToTarget.filter(
-    (s) => inferChangeKind(s.sql_content) === "breaking"
+    (s) => changeTypeOf(s.sql_content) === "breaking"
   ).length;
   const linesOfSql = scriptsUpToTarget.reduce(
     (sum, s) => sum + getSqlLineCount(s.sql_content),
@@ -1027,7 +1008,7 @@ export default function DeployPage() {
   const bumps = useMemo(() => {
     const order: Array<"major" | "minor" | "patch"> = ["major", "minor", "patch"];
     const present = new Set(
-      scriptsUpToTarget.map((s) => bumpWord(inferChangeKind(s.sql_content)))
+      scriptsUpToTarget.map((s) => bumpWord(changeTypeOf(s.sql_content)))
     );
     return order.filter((b) => present.has(b)).join(" + ") || "—";
   }, [scriptsUpToTarget]);
@@ -1466,7 +1447,7 @@ export default function DeployPage() {
             sql_content: script.sql_content,
             version: script.version,
             title: script.script_name,
-            change_type: inferChangeKind(script.sql_content),
+            change_type: changeTypeOf(script.sql_content),
             // Link the applied row back to the GitHub file it came from.
             source_ref: script.path,
           })),
@@ -1974,7 +1955,7 @@ export default function DeployPage() {
 
                     <div>
                       {pendingScripts.map((script, i) => {
-                        const kind = inferChangeKind(script.sql_content);
+                        const kind = changeTypeOf(script.sql_content);
                         const from = i === 0 ? currentLabel : `v${pendingScripts[i - 1].version}`;
                         const inRun = targetVersion
                           ? compareVersions(script.version, targetVersion) <= 0
@@ -2282,7 +2263,7 @@ export default function DeployPage() {
 
           <div>
             {runScripts.map((script, i) => {
-              const kind = inferChangeKind(script.sql_content);
+              const kind = changeTypeOf(script.sql_content);
               const cell = runStatus[scriptKey(script)] ?? { status: "queued" };
               const ran = cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : "";
               const subByStatus: Record<RunStatus, string> = {

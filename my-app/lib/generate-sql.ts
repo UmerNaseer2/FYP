@@ -49,6 +49,8 @@ import {
   viewOptionsClause,
 } from "./compare";
 import { normalizeSimilarityText } from "./compare-utils";
+import { changeTypeHeaderLine } from "./change-type";
+import type { ChangeLevel } from "./version-detection";
 // The compare engine asks this same question when it decides whether to tell
 // the reader a range type has to be created by hand.
 import { rangeTypeIsCreatable } from "./postgres";
@@ -3284,6 +3286,33 @@ export function manualNoteCount(statements: SqlStatement[]): number {
 // When script.allowDataLoss is false, statements flagged destructive are
 // rendered commented out. This is the single point where a generated script
 // becomes able to destroy data, so the decision is made here and nowhere else.
+/**
+ * How severe this migration is, decided from the statements the generator
+ * wrote rather than from the text it renders.
+ *
+ * Only statements that will RUN count. Safe mode comments its destructive
+ * statements out, so a migration whose only breaking change is a held-back DROP
+ * does not actually break anything when applied, and grading it "breaking"
+ * would force a major version bump for a script that just adds a column.
+ *
+ * A MANUAL note runs nothing either — it is a description of work no statement
+ * can do — so it cannot raise the level on its own.
+ */
+export function migrationChangeLevel(script: MigrationScript): ChangeLevel {
+  const willRun = script.statements.filter((stmt) => {
+    if (stmt.kind === "MANUAL") return false;
+    const muted = (stmt.destructive || stmt.needsArmedDrop === true) && !script.allowDataLoss;
+    return !muted;
+  });
+
+  if (willRun.length === 0) return "patch";
+  if (willRun.some((stmt) => stmt.severity === "breaking")) return "breaking";
+  if (willRun.some((stmt) => stmt.kind.startsWith("CREATE_") || stmt.kind.startsWith("ADD_"))) {
+    return "additive";
+  }
+  return "patch";
+}
+
 export function renderMigrationScript(script: MigrationScript): string {
   const breaking = script.statements.filter((s) => s.severity === "breaking").length;
   const safe = script.statements.filter((s) => s.severity === "safe").length;
@@ -3298,6 +3327,10 @@ export function renderMigrationScript(script: MigrationScript): string {
     `-- Migration: ${script.sourceSchema}  →  ${script.targetSchema}`,
     `-- Direction: modifies the RIGHT/TARGET schema to match the LEFT/SOURCE schema`,
     `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
+    // Machine-readable, and the only accurate grading of this script that
+    // exists: everything downstream sees the file as text and would otherwise
+    // have to guess by searching it. See lib/change-type.ts.
+    changeTypeHeaderLine(migrationChangeLevel(script)),
   ];
 
   const notes = manualNoteCount(script.statements);
