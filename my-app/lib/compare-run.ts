@@ -35,6 +35,12 @@ import { mapWithLimit } from "@/lib/concurrency";
 import { compareSchemas, type CompareReport } from "@/lib/compare";
 import { compareRowData, type DataCompareReport } from "@/lib/compare-data";
 import {
+  determineNewerSchema,
+  fetchSchemaVersionInfo,
+  type ChangeLevel,
+  type VersionDetectionResult,
+} from "@/lib/version-detection";
+import {
   findTrackedSchemas,
   getNextLineageVersion,
   trackedSchemaKey,
@@ -124,6 +130,12 @@ export type SourceView = {
   schema: string;
   schemaOptions: string[];
   environment: Environment;
+  /**
+   * What the source schema's own version table says. Null when the run never
+   * got as far as reading it — an unreachable source, or a schema that is not
+   * there — in which case `sourceError` is the thing to read.
+   */
+  detectedVersion: DetectedVersion | null;
 };
 
 /** One target's finished comparison, with the connection details removed. */
@@ -341,6 +353,62 @@ function pickList(value: string | string[] | undefined): string[] {
   return [];
 }
 
+/**
+ * How many timeline entries travel to the browser with each schema.
+ *
+ * The detector reads up to 200 rows so it can sort them and pick the latest;
+ * the screen shows a handful for context. Sending all 200 for the source and
+ * every target would be most of the page's weight for rows nobody scrolls to.
+ */
+const VERSION_TIMELINE_SHOWN = 5;
+
+/**
+ * What a schema's OWN version table says about itself.
+ *
+ * Not the same thing as the lineage this app keeps: this is read out of the
+ * target database, from whatever it already uses — Flyway's
+ * flyway_schema_history, Liquibase, a hand-rolled schema_version, our own
+ * script_patch. A schema that tracks its versions somewhere is telling you
+ * which side is ahead, and that is worth knowing before you generate a
+ * migration for it.
+ */
+export type DetectedVersion = {
+  /** Where the version was read from, or null when the schema has no such table. */
+  table: string | null;
+  /** The latest version the table records, as written there. */
+  version: string | null;
+  /** The most recent few entries, newest first. */
+  recent: {
+    version: string | null;
+    label: string;
+    appliedAt: string | null;
+    changeLevel: ChangeLevel;
+  }[];
+  /** Which table was found, or why there is no answer. Shown as-is. */
+  message: string;
+};
+
+/** Trim a full detection result down to what the screen renders. */
+function toDetectedVersion(info: VersionDetectionResult): DetectedVersion {
+  return {
+    table: info.tableName,
+    version: info.detectedVersion,
+    recent: info.timeline.slice(0, VERSION_TIMELINE_SHOWN).map((entry) => ({
+      version: entry.version,
+      // The detector falls back to the version string for its label when the
+      // table has no title column, which renders as the version printed twice.
+      // Plenty of those tables do carry a description — use it instead.
+      label:
+        entry.label === entry.version
+          ? (entry.description ?? entry.label)
+          : entry.label,
+      appliedAt: entry.appliedAt,
+      changeLevel: entry.changeLevel,
+    })),
+    message: info.message,
+  };
+}
+
 /** One target's fully-resolved comparison, or the reason it could not run. */
 type TargetOutcome = {
   /** Position in the form. Also what the "remove" button submits. */
@@ -376,6 +444,14 @@ type TargetOutcome = {
   targetVersions:
     | { current: string | null; breaking: string; additive: string; patch: string }
     | null;
+  /** What this schema's own version table says. Null when it could not be read. */
+  detectedVersion: DetectedVersion | null;
+  /**
+   * Which side is further ahead by those detected versions, and why. "unknown"
+   * whenever either side has no version to compare, which is the common case
+   * and the reason the structural diff below is the real answer.
+   */
+  versionVerdict: { newer: "left" | "right" | "same" | "unknown"; reason: string } | null;
 };
 
 /**
@@ -406,7 +482,12 @@ function tallySeverities(statements: SqlStatement[]): {
 }
 
 async function compareOneTarget(
-  source: { snapshot: SchemaSnapshot; config: CompareTarget["config"]; schema: string },
+  source: {
+    snapshot: SchemaSnapshot;
+    config: CompareTarget["config"];
+    schema: string;
+    versionInfo: VersionDetectionResult;
+  },
   slot: {
     index: number;
     connection: SavedConnection | null;
@@ -443,6 +524,8 @@ async function compareOneTarget(
     overallKind: "patch" as ChangeKind,
     warnings: [] as string[],
     targetVersions: null,
+    detectedVersion: null,
+    versionVerdict: null,
   };
 
   if (slot.schemaListError) {
@@ -479,6 +562,13 @@ async function compareOneTarget(
       error: `Could not load ${slot.target.displayName}.${slot.schema}: ${snapshot.error}`,
     };
   }
+
+  // Feature 5: what does this schema say about its own version? Read AFTER the
+  // snapshot rather than beside it — same database, and the snapshot already
+  // holds a connection, so racing them would only ask the target for two at
+  // once to save a few milliseconds.
+  const versionInfo = await fetchSchemaVersionInfo(slot.target.config, slot.schema);
+  const versionVerdict = determineNewerSchema(source.versionInfo, versionInfo);
 
   const report = compareSchemas(source.snapshot, snapshot.data);
 
@@ -528,6 +618,8 @@ async function compareOneTarget(
     // When the target schema is tracked, derive the real next version for each
     // change level from its lineage HEAD. Null when it isn't tracked — the
     // workbench then shows an honest "track it" message instead of a number.
+    detectedVersion: toDetectedVersion(versionInfo),
+    versionVerdict,
     targetVersions: head
       ? {
           current: head.headVersion,
@@ -782,11 +874,18 @@ export async function runComparison(
   }
 
   let outcomes: TargetOutcome[] = [];
+  let sourceVersionInfo: VersionDetectionResult | null = null;
   if (!sourceError) {
     const snapshot = await fetchSchemaSnapshot(sourceTarget.config, sourceSchema);
     if (!snapshot.ok) {
       sourceError = `Could not load ${sourceTarget.displayName}.${sourceSchema}: ${snapshot.error}`;
     } else {
+      // The source's own version table, once, for every target to compare
+      // against. fetchSchemaVersionInfo never throws — a schema with no
+      // version table is the ordinary case and comes back as fallbackMode.
+      const srcVersion = await fetchSchemaVersionInfo(sourceTarget.config, sourceSchema);
+      sourceVersionInfo = srcVersion;
+
       // Every target's lineage head in one round trip, before any target
       // database is opened. Asking per target meant a query to the metadata
       // database landing in the middle of another database's introspection
@@ -809,6 +908,7 @@ export async function runComparison(
               snapshot: snapshot.data,
               config: sourceTarget.config,
               schema: sourceSchema,
+              versionInfo: srcVersion,
             },
             slot,
             slot.connection
@@ -893,6 +993,7 @@ export async function runComparison(
       schema: sourceSchema,
       schemaOptions: sourceSchemaInfo.options,
       environment: sourceEnvironment,
+      detectedVersion: sourceVersionInfo ? toDetectedVersion(sourceVersionInfo) : null,
     },
     sourceError,
     targets: resolvedTargets.map((slot) => ({

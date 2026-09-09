@@ -15,6 +15,7 @@ import { ExportBar } from "@/components/studio/ExportBar";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
+import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
 import { ComparisonSetBar } from "@/components/studio/ComparisonSetBar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -609,6 +610,17 @@ function CompareScreenView({ query }: { query: string }) {
                   </span>
                 </div>
               )}
+
+              {/* Before the diff, because it can change what the diff MEANS: if
+                  the target declares the higher version, the script on the right
+                  would move it backwards. */}
+              <VersionDetectBar
+                sourceName={`${source.displayName}.${source.schema}`}
+                source={source.detectedVersion}
+                targetName={`${outcome.displayName}.${outcome.schema}`}
+                target={outcome.detectedVersion}
+                verdict={outcome.versionVerdict}
+              />
 
               {/* Two-column body: diff canvas (left) + migration draft (right,
                   sticky). Stacks under 980px via the .compare-layout rule. */}

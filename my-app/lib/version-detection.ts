@@ -4,6 +4,9 @@ import type { CompareReport } from "./compare-types";
 
 export type ChangeLevel = "breaking" | "additive" | "patch" | "unknown";
 
+/** How a schema numbers itself: dotted semver, or a plain running number. */
+export type VersionScheme = "semver" | "numeric";
+
 export type VersionTimelineEntry = {
   version: string | null;
   label: string;
@@ -19,6 +22,11 @@ export type VersionDetectionResult = {
   tableName: string | null;
   detectedVersion: string | null;
   comparableValue: number | null;
+  /**
+   * Which way comparableValue counts. Two schemas are only comparable when
+   * they count the same way — see ParsedVersion.
+   */
+  versionScheme: VersionScheme | null;
   timeline: VersionTimelineEntry[];
   fallbackMode: boolean;
   message: string;
@@ -92,52 +100,101 @@ function findColumn(columns: string[], candidates: string[]): string | null {
   return null;
 }
 
-function parseVersion(value: string | null): number | null {
+/**
+ * A version string turned into something orderable, plus HOW it was read.
+ *
+ * The scheme matters as much as the number. "2.3.1" and Flyway's
+ * "20240115120000" are both perfectly good version strings, and both become
+ * numbers here, but the numbers do not live on the same scale — comparing them
+ * would announce that a schema stamped with a date is eight orders of magnitude
+ * ahead of one on semver. Two schemas are only comparable when they count the
+ * same way, so the caller gets told which way this one counted.
+ */
+type ParsedVersion = { scheme: VersionScheme; value: number };
+
+/**
+ * Dotted versions, one to three parts, with the missing parts read as zero.
+ *
+ * Three parts is the common case but not the only one: plenty of hand-rolled
+ * tables store "2.3", and the earlier three-part-only pattern fell through to
+ * the digits fallback for those, which turned "2.3" into 23 and "1.20" into
+ * 120 — and so ranked 1.20 above 2.3.
+ */
+const DOTTED_VERSION = /^v?(\d+)\.(\d+)(?:\.(\d+))?/i;
+
+function parseVersion(value: string | null): ParsedVersion | null {
   if (!value) return null;
 
-  const semver = value.trim().match(/v?(\d+)\.(\d+)\.(\d+)/i);
+  const dotted = value.trim().match(DOTTED_VERSION);
 
-  if (semver) {
-    return (
-      Number(semver[1]) * 1_000_000 +
-      Number(semver[2]) * 1_000 +
-      Number(semver[3])
-    );
+  if (dotted) {
+    return {
+      scheme: "semver",
+      value:
+        Number(dotted[1]) * 1_000_000 +
+        Number(dotted[2]) * 1_000 +
+        Number(dotted[3] ?? 0),
+    };
   }
 
+  // Whatever is left: a Flyway installed_rank, a timestamp-shaped migration
+  // name, a bare "7". Monotonic within one table, meaningless against another
+  // table that numbers itself differently — hence the scheme tag.
   const digits = value.replace(/[^\d]/g, "");
-  return digits ? Number(digits) : null;
+  return digits ? { scheme: "numeric", value: Number(digits) } : null;
 }
 
-function normalizeChangeLevel(value: unknown): ChangeLevel {
-  const text = String(value ?? "").toLowerCase();
+/**
+ * Build a whole-word matcher for one set of words.
+ *
+ * Whole words on purpose. This used to be a plain `text.includes("add")`, which
+ * graded any migration whose description mentioned an *address* column as
+ * additive, and `includes("drop")` did the same to "dropdown". A word boundary
+ * is the difference between reading the description and pattern-matching it.
+ *
+ * The endings are spelled out below rather than derived from a suffix rule.
+ * English is not regular enough for one — "create" loses its e in "creating",
+ * "drop" doubles its p in "dropped" — and a list anybody can read and extend
+ * beats a rule that has to be trusted.
+ */
+function wordMatcher(words: string[]): RegExp {
+  return new RegExp(`\\b(?:${words.join("|")})\\b`, "i");
+}
 
-  if (
-    text.includes("breaking") ||
-    text.includes("major") ||
-    text.includes("drop") ||
-    text.includes("remove") ||
-    text.includes("delete")
-  ) {
-    return "breaking";
-  }
+const BREAKING_WORDS = wordMatcher([
+  "breaking",
+  "major",
+  "drop", "drops", "dropped", "dropping",
+  "remove", "removes", "removed", "removing", "removal",
+  "delete", "deletes", "deleted", "deleting", "deletion",
+]);
 
-  if (
-    text.includes("additive") ||
-    text.includes("minor") ||
-    text.includes("add") ||
-    text.includes("create")
-  ) {
-    return "additive";
-  }
+const ADDITIVE_WORDS = wordMatcher([
+  "additive",
+  "minor",
+  "add", "adds", "added", "adding", "addition",
+  "create", "creates", "created", "creating", "creation",
+]);
 
-  if (
-    text.includes("patch") ||
-    text.includes("fix") ||
-    text.includes("small")
-  ) {
-    return "patch";
-  }
+const PATCH_WORDS = wordMatcher([
+  "patch", "patches", "patched",
+  "fix", "fixes", "fixed",
+  "small",
+]);
+
+/**
+ * Grade one piece of text as breaking / additive / patch.
+ *
+ * Exported because it is the whole rule for how a foreign version table gets
+ * colour-coded on the Compare screen, and a rule that reads prose deserves to
+ * be pinned down by name rather than only through a database.
+ */
+export function normalizeChangeLevel(value: unknown): ChangeLevel {
+  const text = String(value ?? "");
+
+  if (BREAKING_WORDS.test(text)) return "breaking";
+  if (ADDITIVE_WORDS.test(text)) return "additive";
+  if (PATCH_WORDS.test(text)) return "patch";
 
   return "unknown";
 }
@@ -151,7 +208,10 @@ function inferChangeLevel(
     if (direct !== "unknown") return direct;
   }
 
-  return normalizeChangeLevel(JSON.stringify(row));
+  // No column says what kind of change this was, so fall back to reading the
+  // row. Values only — the column NAMES are the same on every row and would
+  // grade the whole table the same way.
+  return normalizeChangeLevel(Object.values(row).join(" "));
 }
 
 async function detectVersionTable(
@@ -238,8 +298,11 @@ async function readTimeline(
     const aVersion = parseVersion(String(a[versionColumn] ?? ""));
     const bVersion = parseVersion(String(b[versionColumn] ?? ""));
 
-    if (aVersion !== null && bVersion !== null) {
-      return bVersion - aVersion;
+    // Same table, so the two rows almost always number themselves the same
+    // way. When they do not, the version is not a usable sort key and the
+    // applied-at date below is the better one.
+    if (aVersion && bVersion && aVersion.scheme === bVersion.scheme) {
+      return bVersion.value - aVersion.value;
     }
 
     if (appliedAtColumn) {
@@ -270,10 +333,17 @@ async function readTimeline(
         ? String(row[descriptionColumn])
         : null;
 
+    // node-postgres hands a timestamp column back as a Date, and String(Date)
+    // is a 40-character locale string with a timezone NAME in it — unreadable
+    // in a list and not parseable by the browser. ISO survives the trip and
+    // formats on the other side.
+    const rawAppliedAt = appliedAtColumn ? row[appliedAtColumn] : null;
     const appliedAt =
-      appliedAtColumn && row[appliedAtColumn] != null
-        ? String(row[appliedAtColumn])
-        : null;
+      rawAppliedAt instanceof Date
+        ? rawAppliedAt.toISOString()
+        : rawAppliedAt != null
+          ? String(rawAppliedAt)
+          : null;
 
     return {
       version,
@@ -300,23 +370,25 @@ export async function fetchSchemaVersionInfo(
         tableName: null,
         detectedVersion: null,
         comparableValue: null,
+        versionScheme: null,
         timeline: [],
         fallbackMode: true,
-        message:
-          "No version table found. System will use structural comparison fallback.",
+        message: "no version table in this schema",
       };
     }
 
     const timeline = await readTimeline(cfg, schemaName, tableName);
     const latest = timeline[0] ?? null;
     const detectedVersion = latest?.version ?? latest?.label ?? null;
+    const parsed = parseVersion(detectedVersion);
 
     return {
       schema: schemaName,
       hasVersionTable: true,
       tableName,
       detectedVersion,
-      comparableValue: parseVersion(detectedVersion),
+      comparableValue: parsed ? parsed.value : null,
+      versionScheme: parsed ? parsed.scheme : null,
       timeline,
       fallbackMode: false,
       message: `Version table found: ${tableName}`,
@@ -330,13 +402,23 @@ export async function fetchSchemaVersionInfo(
       tableName: null,
       detectedVersion: null,
       comparableValue: null,
+      versionScheme: null,
       timeline: [],
       fallbackMode: true,
-      message: `Version detection failed: ${message}`,
+      message: `could not read a version table — ${message}`,
     };
   }
 }
 
+/**
+ * Which of two schemas declares the higher version, and why.
+ *
+ * "unknown" is a real answer here and the most common one. A schema with no
+ * version table has nothing to say, and two schemas that number themselves
+ * differently — one on semver, one on Flyway ranks — have nothing to say to
+ * EACH OTHER: their numbers are both valid and on different scales, so the
+ * only honest reading is that the structural diff is the answer.
+ */
 export function determineNewerSchema(
   left: VersionDetectionResult,
   right: VersionDetectionResult
@@ -344,6 +426,20 @@ export function determineNewerSchema(
   newer: "left" | "right" | "same" | "unknown";
   reason: string;
 } {
+  if (
+    left.versionScheme !== null &&
+    right.versionScheme !== null &&
+    left.versionScheme !== right.versionScheme
+  ) {
+    return {
+      newer: "unknown",
+      reason:
+        `${left.schema} numbers itself as ${left.detectedVersion} and ` +
+        `${right.schema} as ${right.detectedVersion}. Those are not the same ` +
+        `kind of version, so neither one is "ahead" of the other.`,
+    };
+  }
+
   if (left.comparableValue !== null && right.comparableValue !== null) {
     if (left.comparableValue > right.comparableValue) {
       return {
@@ -365,11 +461,17 @@ export function determineNewerSchema(
     };
   }
 
-  return {
-    newer: "unknown",
-    reason:
-      "Version information is missing, so the system uses structural comparison fallback.",
-  };
+  // At least one side has no number to rank. Say WHICH — "version information
+  // is missing" leaves the reader checking both schemas to find out whose.
+  const blank = [left, right].filter((side) => side.comparableValue === null);
+  const reason =
+    blank.length > 1
+      ? `Neither ${left.schema} nor ${right.schema} records a version of its own, ` +
+        "so the structural diff is the whole answer."
+      : `${blank[0].schema} records no version of its own, so there is nothing ` +
+        "to rank the two against.";
+
+  return { newer: "unknown", reason };
 }
 
 export function summarizeStructuralSeverity(report: CompareReport): {
