@@ -24,6 +24,7 @@ import {
 import {
   containsTransactionControl,
   extractEnumAddValues,
+  findMightFailStatements,
   findRowDestroyingStatements,
 } from "@/lib/sql-guard";
 import { changeTypeOf, type ScriptChangeType } from "@/lib/change-type";
@@ -1175,6 +1176,28 @@ export default function DeployPage() {
   const dataLossKinds = useMemo(
     () => [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].join(", "),
     [dataLossScripts]
+  );
+
+  // The third risk, and the only one of the three that is not about what
+  // succeeding costs you. These statements are valid SQL that the rows already
+  // in the table can refuse: a NOT NULL column with no default, a UNIQUE
+  // constraint over duplicates. Nothing above catches them — they break no
+  // contract and delete nothing — so a run that cannot possibly commit used to
+  // arrive here with a clean checklist.
+  //
+  // Warned about, not gated. The run is one transaction, so a failure here
+  // leaves the target exactly as it was; making the user tick a box to proceed
+  // would spend a confirmation on the one outcome that costs nothing.
+  const mightFailScripts = useMemo(
+    () =>
+      scriptsUpToTarget
+        .map((s) => ({ script: s, statements: findMightFailStatements(s.sql_content) }))
+        .filter((entry) => entry.statements.length > 0),
+    [scriptsUpToTarget]
+  );
+  const mightFailKinds = useMemo(
+    () => [...new Set(mightFailScripts.flatMap((entry) => entry.statements))].join(", "),
+    [mightFailScripts]
   );
 
   // The one thing in a run that is NOT all-or-nothing.
@@ -2339,7 +2362,12 @@ export default function DeployPage() {
                         </div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Migrations</span><span className="mono">{scriptsUpToTarget.length}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Bump</span><span>{bumps}</span></div>
+                        {/* Two rows, because they are two questions. Breaking
+                            is what stops working after this succeeds; deletes
+                            rows is what you need a backup for. A rename is the
+                            first and not the second. */}
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
+                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Deletes rows</span><span className="mono">{dataLossScripts.length}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Lines of SQL</span><span className="mono">{linesOfSql}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>one transaction</span></div>
                       </div>
@@ -2388,6 +2416,29 @@ export default function DeployPage() {
                             acknowledged={dataLossAcknowledged}
                             onAcknowledge={setDataLossAcknowledged}
                           />
+                        )}
+                        {mightFailScripts.length > 0 && (
+                          // No tick. See the mightFailScripts comment above: the
+                          // whole run is one transaction, so this is the risk
+                          // that costs nothing when it happens, and a gate here
+                          // would teach the reader to tick past the two that do.
+                          <div className="warn-inline">
+                            <span className="ico">
+                              <AlertTriangleIcon size={14} />
+                            </span>
+                            <span>
+                              <b>
+                                {countOf(mightFailScripts.length, "migration")} may be
+                                refused by the data already in the table.
+                              </b>{" "}
+                              This run contains {mightFailKinds}. Those are valid SQL
+                              that PostgreSQL checks against every existing row — one
+                              NULL, one duplicate or one value that will not cast and
+                              the statement stops. Nothing is half-applied if that
+                              happens: the run is one transaction, so it rolls back and
+                              the target is left as it is now.
+                            </span>
+                          </div>
                         )}
                         {enumAdditions.length > 0 && (
                           <RiskGate
@@ -2556,6 +2607,19 @@ export default function DeployPage() {
                           </ChecklistItem>
                         ) : (
                           <ChecklistItem ok>Nothing in this run deletes rows</ChecklistItem>
+                        )}
+                        {mightFailScripts.length > 0 ? (
+                          // `info`, not a failed tick: this is a thing that might
+                          // happen, not a thing that is wrong.
+                          <ChecklistItem info>
+                            May be refused by existing rows · {mightFailKinds} in{" "}
+                            {countOf(mightFailScripts.length, "script")} · rolls back if
+                            it is
+                          </ChecklistItem>
+                        ) : (
+                          <ChecklistItem ok>
+                            Nothing in this run can be refused by existing rows
+                          </ChecklistItem>
                         )}
                         {enumAdditions.length > 0 && (
                           <ChecklistItem info>

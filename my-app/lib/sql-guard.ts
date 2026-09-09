@@ -152,8 +152,60 @@ export function findRowDestroyingStatements(sql: string): string[] {
     [/\bTRUNCATE\b/i, "TRUNCATE"],
     [/\bDELETE\s+FROM\b/i, "DELETE"],
     [/\bDROP\s+TABLE\b/i, "DROP TABLE"],
+    // A dropped column takes its values with it. It was missing here because it
+    // is already graded breaking, but breaking answers a different question:
+    // "what stops working" is not "what do I need a backup of".
+    [/\bDROP\s+COLUMN\b/i, "DROP COLUMN"],
     [/\bDROP\s+SCHEMA\b/i, "DROP SCHEMA"],
     [/\bDROP\s+DATABASE\b/i, "DROP DATABASE"],
+  ];
+  return checks.filter(([pattern]) => pattern.test(code)).map(([, label]) => label);
+}
+
+/**
+ * Statements that can fail when they meet the rows already in the table, even
+ * though the SQL itself is perfectly valid.
+ *
+ * This is the third question a migration raises, and the one this app never
+ * asked. The other two are "does it break what reads the schema" (the breaking
+ * grade) and "does it delete rows" (findRowDestroyingStatements above). Neither
+ * of them covers `ALTER TABLE orders ADD COLUMN ref text NOT NULL` — that adds
+ * a column, breaks nothing, deletes nothing, and stops dead on any table that
+ * already has a row in it.
+ *
+ * Splitting the three apart is how Atlas grades migrations, and the reason to
+ * copy it is that they fail differently: a breaking change succeeds and takes
+ * something else down with it, a destructive one succeeds and cannot be undone,
+ * and one of these simply does not run. Because the deploy runs inside one
+ * transaction, a failure here rolls the whole run back and changes nothing —
+ * which is why the screen warns about these rather than gating on them.
+ *
+ * Detection is deliberately shallow: it names the shape, not the table, because
+ * whether it actually fails depends on data this app has not read. Every check
+ * below is written so that an empty table always passes it.
+ *
+ * Returns the labels it found, in a fixed order, so the screen can name them.
+ */
+export function findMightFailStatements(sql: string): string[] {
+  const code = maskNonCode(sql);
+  const checks: [RegExp, string][] = [
+    // NOT NULL with no DEFAULT: every existing row would need a value and has
+    // none. With a DEFAULT the same statement is fine, so the pattern has to
+    // look at the rest of the clause, up to the comma or paren that ends it.
+    [/\bADD\s+COLUMN\b(?:\s+IF\s+NOT\s+EXISTS)?[^,;()]*\bNOT\s+NULL\b(?![^,;]*\bDEFAULT\b)/i,
+      "NOT NULL column with no default"],
+    // Promoting an existing column: fails on the first NULL already stored.
+    [/\bSET\s+NOT\s+NULL\b/i, "SET NOT NULL"],
+    // Uniqueness applied after the fact: fails on the first duplicate.
+    [/\bADD\s+CONSTRAINT\b[^;]*\bUNIQUE\b/i, "UNIQUE constraint"],
+    [/\bCREATE\s+UNIQUE\s+INDEX\b/i, "UNIQUE index"],
+    // A foreign key added to a populated table fails on the first orphan.
+    [/\bADD\s+CONSTRAINT\b[^;]*\bFOREIGN\s+KEY\b/i, "FOREIGN KEY constraint"],
+    // A CHECK is validated against every existing row when it is added.
+    [/\bADD\s+CONSTRAINT\b[^;]*\bCHECK\b/i, "CHECK constraint"],
+    // A type change casts every row. Narrowing, or a text column holding one
+    // unparseable value, and the whole statement stops.
+    [/\bALTER\s+COLUMN\b[^;]*\bTYPE\b/i, "column type change"],
   ];
   return checks.filter(([pattern]) => pattern.test(code)).map(([, label]) => label);
 }

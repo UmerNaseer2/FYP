@@ -1,6 +1,7 @@
 import {
   containsTransactionControl,
   extractEnumAddValues,
+  findMightFailStatements,
   findRowDestroyingStatements,
 } from "@/lib/sql-guard";
 
@@ -204,5 +205,86 @@ describe("findRowDestroyingStatements", () => {
     expect(findRowDestroyingStatements("ALTER TABLE orders ADD COLUMN note text;")).toEqual(
       []
     );
+  });
+
+  it("counts a dropped column, which takes its values with it", () => {
+    expect(
+      findRowDestroyingStatements("ALTER TABLE orders DROP COLUMN legacy_ref;")
+    ).toEqual(["DROP COLUMN"]);
+  });
+});
+
+/**
+ * The third question, and the one neither of the others answers: will this
+ * statement run at all against a table that already has rows in it? A NOT NULL
+ * column with no default breaks nothing and deletes nothing — it simply stops.
+ */
+describe("findMightFailStatements", () => {
+  it("finds a NOT NULL column with no default", () => {
+    expect(
+      findMightFailStatements("ALTER TABLE orders ADD COLUMN ref text NOT NULL;")
+    ).toEqual(["NOT NULL column with no default"]);
+  });
+
+  it("says nothing when that same column has a default", () => {
+    expect(
+      findMightFailStatements(
+        "ALTER TABLE orders ADD COLUMN ref text NOT NULL DEFAULT '';"
+      )
+    ).toEqual([]);
+  });
+
+  it("reads each column of a multi-column ADD on its own", () => {
+    // The safe column must not vouch for the one after it.
+    expect(
+      findMightFailStatements(
+        "ALTER TABLE orders ADD COLUMN a text DEFAULT '', ADD COLUMN b text NOT NULL;"
+      )
+    ).toEqual(["NOT NULL column with no default"]);
+  });
+
+  it("finds the constraints that are validated against existing rows", () => {
+    expect(findMightFailStatements("ALTER TABLE orders ALTER COLUMN ref SET NOT NULL;")).toEqual(
+      ["SET NOT NULL"]
+    );
+    expect(
+      findMightFailStatements("ALTER TABLE orders ADD CONSTRAINT u UNIQUE (ref);")
+    ).toEqual(["UNIQUE constraint"]);
+    expect(findMightFailStatements("CREATE UNIQUE INDEX ix ON orders (ref);")).toEqual([
+      "UNIQUE index",
+    ]);
+    expect(
+      findMightFailStatements(
+        "ALTER TABLE orders ADD CONSTRAINT fk FOREIGN KEY (user_id) REFERENCES users(id);"
+      )
+    ).toEqual(["FOREIGN KEY constraint"]);
+    expect(
+      findMightFailStatements("ALTER TABLE orders ADD CONSTRAINT ck CHECK (total >= 0);")
+    ).toEqual(["CHECK constraint"]);
+    expect(
+      findMightFailStatements("ALTER TABLE orders ALTER COLUMN total TYPE integer;")
+    ).toEqual(["column type change"]);
+  });
+
+  it("names every distinct kind it found, once each, in a fixed order", () => {
+    const sql = [
+      "ALTER TABLE a ALTER COLUMN x SET NOT NULL;",
+      "ALTER TABLE b ALTER COLUMN y SET NOT NULL;",
+      "CREATE UNIQUE INDEX ix ON c (z);",
+    ].join("\n");
+    expect(findMightFailStatements(sql)).toEqual(["SET NOT NULL", "UNIQUE index"]);
+  });
+
+  it("ignores the words in a comment or a string literal", () => {
+    const sql = [
+      "-- was: ALTER COLUMN total TYPE integer",
+      "INSERT INTO notes(body) VALUES ('set not null on ref');",
+    ].join("\n");
+    expect(findMightFailStatements(sql)).toEqual([]);
+  });
+
+  it("says nothing about a plain nullable column or a plain index", () => {
+    expect(findMightFailStatements("ALTER TABLE orders ADD COLUMN note text;")).toEqual([]);
+    expect(findMightFailStatements("CREATE INDEX ix ON orders (ref);")).toEqual([]);
   });
 });
