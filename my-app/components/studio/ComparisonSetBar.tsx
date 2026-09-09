@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Select } from "@/components/ui/Select";
 import { Input } from "@/components/ui/Input";
 import { AlertTriangleIcon, TrashIcon } from "@/components/ui/icons";
+import { timeAgo } from "@/lib/time-ago";
 
 /**
  * The saved-set bar above the Compare pickers: open a saved comparison, save
@@ -71,17 +72,12 @@ function sameQuery(a: string, b: string): boolean {
   return normalize(a) === normalize(b);
 }
 
-function timeAgo(iso: string | null): string {
+function ranAgo(iso: string | null): string {
   if (!iso) return "never run";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "never run";
-  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (secs < 60) return "run just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `run ${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `run ${hrs}h ago`;
-  return `run ${Math.floor(hrs / 24)}d ago`;
+  const rel = timeAgo(iso);
+  // timeAgo returns "—" for an unparseable timestamp, which reads as a gap in
+  // the sentence rather than an answer. "never run" is the honest fallback.
+  return rel === "—" ? "never run" : `run ${rel}`;
 }
 
 export function ComparisonSetBar({
@@ -216,7 +212,7 @@ export function ComparisonSetBar({
             />
             {activeSet && (
               <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                {timeAgo(activeSet.lastRunAt)}
+                {ranAgo(activeSet.lastRunAt)}
               </span>
             )}
           </>

@@ -39,6 +39,7 @@ import {
   LockIcon,
 } from "@/components/ui/icons";
 import { EnvironmentPill, FilterPill } from "@/components/ui";
+import { timeAgo } from "@/lib/time-ago";
 
 // ——— Data shapes ———
 type Connection = {
@@ -60,6 +61,14 @@ type Connection = {
   // it through connEnvironment() so those come back as "unset" rather than
   // silently looking like a labelled target.
   environment?: string | null;
+  // The last "Test" outcome, stored on the row. All null until the connection
+  // has been tested once — and cleared again if it is later repointed at a
+  // different host, database or user. Read them through rowResult().
+  last_tested_at?: string | null;
+  last_test_ok?: boolean | null;
+  last_test_version?: string | null;
+  last_test_latency_ms?: number | null;
+  last_test_error?: string | null;
 };
 
 /** What DELETE reports when a connection is still in use. */
@@ -74,8 +83,8 @@ type Dependents = {
 
 type RowResult =
   | { status: "testing" }
-  | { status: "ok"; version: string; latencyMs: number }
-  | { status: "err"; error: string };
+  | { status: "ok"; version: string; latencyMs: number; testedAt: string | null }
+  | { status: "err"; error: string; testedAt: string | null };
 
 type FieldMode = "uri" | "fields";
 type Filter = "all" | "local" | "online" | "ssl" | Environment;
@@ -111,6 +120,35 @@ function connSslMode(conn: Connection): SslMode {
 /** The environment for a saved row. Anything unknown or missing reads "unset". */
 function connEnvironment(conn: Connection): Environment {
   return toEnvironment(conn.environment);
+}
+
+/**
+ * What this row's "Last tested" cell should show.
+ *
+ * Two sources, in order: a test run in this browser session wins, because it is
+ * the newest thing that happened (and it is the only source that can say
+ * "testing…"); otherwise the outcome saved on the row, which is what survives a
+ * reload. Undefined only when neither exists — a connection nobody has tested.
+ */
+function rowResult(
+  conn: Connection,
+  live: Record<number, RowResult>
+): RowResult | undefined {
+  const inSession = live[conn.id];
+  if (inSession) return inSession;
+  if (!conn.last_tested_at) return undefined;
+  return conn.last_test_ok
+    ? {
+        status: "ok",
+        version: conn.last_test_version ?? "PostgreSQL",
+        latencyMs: conn.last_test_latency_ms ?? 0,
+        testedAt: conn.last_tested_at,
+      }
+    : {
+        status: "err",
+        error: conn.last_test_error ?? "The last test failed.",
+        testedAt: conn.last_tested_at,
+      };
 }
 
 const SSL_CHOICES: { mode: SslMode; label: string; help: string }[] = [
@@ -430,6 +468,16 @@ export default function ConnectionsPage() {
       setDrawerOpen(false);
       showToast(editingId === null ? "Connection saved" : "Connection updated");
       await reload();
+
+      // The drawer's "Test connection" runs before the row exists, so its
+      // result has nowhere to be recorded. When it passed, re-run the same test
+      // against the row that now does — otherwise a connection the user just
+      // watched answer lands in the table reading "Last tested: Never".
+      // Quietly: "Connection saved" is the message for this action, and a
+      // second toast a moment later only competes with it.
+      if (drawerTest.kind === "ok" && typeof data?.id === "number") {
+        void testRow(data as Connection, true);
+      }
     } catch {
       showToast("Could not save the connection.");
     } finally {
@@ -438,7 +486,7 @@ export default function ConnectionsPage() {
   }
 
   // ——— Row test (saved connection) ———
-  async function testRow(conn: Connection) {
+  async function testRow(conn: Connection, quiet = false) {
     setRowResults((r) => ({ ...r, [conn.id]: { status: "testing" } }));
     try {
       const res = await fetch("/api/connections/test-saved", {
@@ -447,18 +495,34 @@ export default function ConnectionsPage() {
         body: JSON.stringify({ id: conn.id }),
       });
       const data = await res.json();
+      // The route records the outcome on the row and sends back the instant it
+      // stamped, so the cell shows the same time a reload would.
+      const testedAt = typeof data.testedAt === "string" ? data.testedAt : null;
       if (data.ok) {
         setRowResults((r) => ({
           ...r,
-          [conn.id]: { status: "ok", version: data.version, latencyMs: data.latencyMs },
+          [conn.id]: {
+            status: "ok",
+            version: data.version,
+            latencyMs: data.latencyMs,
+            testedAt,
+          },
         }));
-        showToast(`Connection healthy · ${conn.name}`);
+        if (!quiet) showToast(`Connection healthy · ${conn.name}`);
       } else {
-        setRowResults((r) => ({ ...r, [conn.id]: { status: "err", error: data.error } }));
+        setRowResults((r) => ({
+          ...r,
+          [conn.id]: { status: "err", error: data.error, testedAt },
+        }));
         showToast(`Test failed · ${conn.name}`);
       }
     } catch {
-      setRowResults((r) => ({ ...r, [conn.id]: { status: "err", error: "Could not run the test." } }));
+      // The request never reached the app — nothing was recorded, so there is
+      // no server timestamp to show.
+      setRowResults((r) => ({
+        ...r,
+        [conn.id]: { status: "err", error: "Could not run the test.", testedAt: null },
+      }));
       showToast(`Test failed · ${conn.name}`);
     }
   }
@@ -548,10 +612,14 @@ export default function ConnectionsPage() {
     connections.filter((c) => connEnvironment(c) === environment).length;
   const prodCount = envCount("prod");
   const unlabelledCount = envCount("unset");
-  const healthyCount = Object.values(rowResults).filter((r) => r.status === "ok").length;
-  const latencies = Object.values(rowResults).flatMap((r) =>
-    r.status === "ok" ? [r.latencyMs] : []
-  );
+  // Counted over the connections, not over `rowResults`: the tiles have to
+  // agree with the rows below them, and a row can be healthy because of a
+  // result saved on it rather than one tested in this session.
+  const results = connections.map((c) => rowResult(c, rowResults));
+  const healthyCount = results.filter((r) => r?.status === "ok").length;
+  const failingCount = results.filter((r) => r?.status === "err").length;
+  const untestedCount = results.filter((r) => r === undefined).length;
+  const latencies = results.flatMap((r) => (r?.status === "ok" ? [r.latencyMs] : []));
   const avgLatency =
     latencies.length > 0
       ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
@@ -588,8 +656,23 @@ export default function ConnectionsPage() {
               />
               <SummaryTile
                 label="Healthy"
-                value={String(healthyCount)}
-                dot={healthyCount > 0 ? "var(--sync)" : "var(--text-3)"}
+                // A bare "0" claimed every connection was unhealthy when the
+                // truth was that none had been tested. An em dash says
+                // "unknown"; once anything has been tested the count carries
+                // "of N" so 1 of 3 cannot be misread as 1 of 1.
+                value={untestedCount === connections.length ? "—" : String(healthyCount)}
+                unit={
+                  untestedCount === connections.length
+                    ? undefined
+                    : `of ${connections.length}`
+                }
+                dot={
+                  healthyCount > 0
+                    ? "var(--sync)"
+                    : failingCount > 0
+                      ? "var(--break)"
+                      : "var(--text-3)"
+                }
               />
               <SummaryTile
                 label="Avg latency"
@@ -750,7 +833,7 @@ export default function ConnectionsPage() {
                       </tr>
                     )}
                     {group.rows.map((conn) => {
-                    const result = rowResults[conn.id];
+                    const result = rowResult(conn, rowResults);
                     const dot =
                       result?.status === "ok" ? "ok" : result?.status === "err" ? "err" : "unknown";
                     const local = isLocalHost(conn.host);
@@ -1418,11 +1501,24 @@ function RowTested({ result }: { result?: RowResult }) {
       </div>
     );
   }
+  // A result with no timestamp never reached the server, so there is no instant
+  // to report — the second line stays empty rather than inventing "just now".
+  const when = result.testedAt === null ? "" : timeAgo(result.testedAt);
   if (result.status === "err") {
     return (
-      <div className="flex items-center gap-2 text-[12.5px]" style={{ color: "var(--break)" }}>
-        <AlertCircleIcon size={12} />
-        failed
+      <div className="leading-tight" title={result.error}>
+        <div
+          className="flex items-center gap-2 text-[12.5px]"
+          style={{ color: "var(--break)" }}
+        >
+          <AlertCircleIcon size={12} />
+          failed
+        </div>
+        {when && (
+          <div className="text-[10.5px] mt-0.5" style={{ color: "var(--text-3)" }}>
+            {when}
+          </div>
+        )}
       </div>
     );
   }
@@ -1430,7 +1526,7 @@ function RowTested({ result }: { result?: RowResult }) {
     <div className="flex items-center gap-2">
       <CheckIcon size={12} style={{ color: "var(--sync)" }} />
       <div className="leading-tight">
-        <div className="text-[12.5px]">just now</div>
+        <div className="text-[12.5px]">{when || "reached"}</div>
         <div className="mono text-[10.5px]" style={{ color: "var(--text-3)" }}>
           {result.latencyMs} ms
         </div>

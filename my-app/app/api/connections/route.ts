@@ -34,7 +34,9 @@ import {
 /** Columns safe to return to the browser. */
 const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
                 (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
-                ssl, ssl_mode, environment`;
+                ssl, ssl_mode, environment,
+                last_tested_at, last_test_ok, last_test_version,
+                last_test_latency_ms, last_test_error`;
 
 export async function GET() {
   const gate = await requireViewer();
@@ -183,8 +185,17 @@ export async function PUT(request: NextRequest) {
     // authenticate). POST guards this on create; PUT has to read the existing
     // row first, because a blank password means "keep the stored one" and
     // `clearConnectionString` wipes any stored URI.
-    const existing = await pool.query<{ password: string | null; connection_string: string | null }>(
-      `SELECT password, connection_string FROM connections WHERE id = $1`,
+    const existing = await pool.query<{
+      password: string | null;
+      connection_string: string | null;
+      host: string;
+      port: number;
+      database_name: string;
+      username: string;
+      ssl_mode: string | null;
+    }>(
+      `SELECT password, connection_string, host, port, database_name, username, ssl_mode
+         FROM connections WHERE id = $1`,
       [id]
     );
     if (existing.rows.length === 0) {
@@ -211,6 +222,40 @@ export async function PUT(request: NextRequest) {
             "Enter a password (or keep a connection string) before saving.",
         },
         { status: 400 }
+      );
+    }
+
+    // A stored test result describes the target that was reached, so it only
+    // stays true while the target does. Renaming a connection or relabelling
+    // its environment leaves it alone; repointing it — different host, port,
+    // database, user, TLS setting or credential — makes it describe somewhere
+    // else, so it is cleared and the row goes back to "never tested".
+    //
+    // Re-typing the same password also clears it: what is compared here is a
+    // plaintext field against a stored ciphertext, so they never match. That
+    // errs toward asking for a fresh test, which is the safe way to be wrong.
+    const before = existing.rows[0];
+    const targetChanged =
+      before.host !== value.host ||
+      Number(before.port) !== value.port ||
+      before.database_name !== value.database_name ||
+      before.username !== value.username ||
+      (before.ssl_mode ?? "") !== value.ssl_mode ||
+      effectivePassword !== storedPassword ||
+      effectiveConnString !== storedConnString;
+
+    // Before the UPDATE below, so its RETURNING sends back the cleared values
+    // rather than the ones that have just stopped being true.
+    if (targetChanged) {
+      await pool.query(
+        `UPDATE connections
+            SET last_tested_at = NULL,
+                last_test_ok = NULL,
+                last_test_version = NULL,
+                last_test_latency_ms = NULL,
+                last_test_error = NULL
+          WHERE id = $1`,
+        [id]
       );
     }
 

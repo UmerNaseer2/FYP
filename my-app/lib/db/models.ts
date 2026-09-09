@@ -89,6 +89,22 @@ export class Connection extends Model<
   declare ssl_mode: CreationOptional<string>;
   declare environment: CreationOptional<string>;
   declare created_at: CreationOptional<Date>;
+  /**
+   * The outcome of the last "Test" run against this connection.
+   *
+   * Stored rather than kept in the page's memory because the Connections table
+   * has a "Last tested" column and a "Healthy" tile: with the result living
+   * only in React state, both reset to "Never" and 0 on every reload, so the
+   * screen claimed the connection had never been reached seconds after it was.
+   * Null on every row until it is tested for the first time.
+   */
+  declare last_tested_at: CreationOptional<Date | null>;
+  declare last_test_ok: CreationOptional<boolean | null>;
+  /** "PostgreSQL 16.2" on success; null on a failure, which reports no version. */
+  declare last_test_version: CreationOptional<string | null>;
+  declare last_test_latency_ms: CreationOptional<number | null>;
+  /** Why the last test failed, so the row can say more than "failed". */
+  declare last_test_error: CreationOptional<string | null>;
 }
 
 Connection.init(
@@ -116,6 +132,11 @@ Connection.init(
       validate: { isIn: [ENVIRONMENT_VALUES] },
     },
     created_at: { type: DataTypes.DATE, defaultValue: NOW },
+    last_tested_at: { type: DataTypes.DATE, allowNull: true },
+    last_test_ok: { type: DataTypes.BOOLEAN, allowNull: true },
+    last_test_version: { type: DataTypes.TEXT, allowNull: true },
+    last_test_latency_ms: { type: DataTypes.INTEGER, allowNull: true },
+    last_test_error: { type: DataTypes.TEXT, allowNull: true },
   },
   { sequelize, tableName: "connections" }
 );

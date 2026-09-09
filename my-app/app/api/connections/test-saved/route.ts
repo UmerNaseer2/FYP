@@ -54,7 +54,38 @@ export async function POST(request: NextRequest) {
       sslMode: conn.ssl_mode,
     });
 
-    return NextResponse.json(testResult);
+    // Record what happened, so the Connections table can say when this
+    // connection was last reached and whether it answered. Without this the
+    // row reads "Last tested: Never" the moment the page is reloaded, which is
+    // the opposite of what just happened.
+    //
+    // Its own try/catch: a failure to WRITE the note must not turn a successful
+    // test into a reported failure. The user asked whether the database
+    // answers, and it did.
+    const testedAt = new Date();
+    try {
+      await pool.query(
+        `UPDATE connections
+            SET last_tested_at = $1,
+                last_test_ok = $2,
+                last_test_version = $3,
+                last_test_latency_ms = $4,
+                last_test_error = $5
+          WHERE id = $6`,
+        [
+          testedAt,
+          testResult.ok,
+          testResult.ok ? testResult.version : null,
+          testResult.ok ? testResult.latencyMs : null,
+          testResult.ok ? null : testResult.error,
+          id,
+        ]
+      );
+    } catch (writeError) {
+      console.error("Could not record the connection test result:", writeError);
+    }
+
+    return NextResponse.json({ ...testResult, testedAt: testedAt.toISOString() });
   } catch (error) {
     console.error("Saved test connection route error:", error);
     return NextResponse.json(

@@ -170,6 +170,25 @@ async function backfillOlderTables(): Promise<void> {
     `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`
   );
 
+  // The last "Test" outcome, kept on the row instead of in the page's memory.
+  // Every column is nullable and stays null until the connection is tested, so
+  // an existing row is honestly "never tested" rather than falsely healthy.
+  await metadataPool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS last_tested_at TIMESTAMPTZ`
+  );
+  await metadataPool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS last_test_ok BOOLEAN`
+  );
+  await metadataPool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS last_test_version TEXT`
+  );
+  await metadataPool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS last_test_latency_ms INTEGER`
+  );
+  await metadataPool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS last_test_error TEXT`
+  );
+
   await alterTimestampColumns();
 }
 
