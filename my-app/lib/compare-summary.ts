@@ -402,5 +402,32 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     ...routines,
   });
 
+  // The "dropped" cell on this row is structurally always zero, and that is
+  // not an oversight. A privilege entry the target has and the source does not
+  // belongs to an object the script is already dropping, so the comparison
+  // leaves it out rather than reporting a revoke on something that will not be
+  // there — see the privileges block in compare.ts. Access genuinely taken
+  // away shows up under "changed", on the object that survives.
+  const privileges = tallyObjects(report.objectDiffs, ["PRIVILEGES"]);
+  rows.push({
+    label: "Privileges",
+    compared: categories.privileges,
+    notComparedReason: reasonFor("privileges"),
+    // Never true in practice: every schema has an owner, so a snapshot that
+    // recorded privileges at all has at least the one entry for the schema
+    // itself. Kept for the same reason as every other row — the cell means
+    // "neither side had any", and asserting that from the data is honest even
+    // where the data cannot say it.
+    absent:
+      (report.left.privileges?.length ?? 0) === 0 &&
+      (report.right.privileges?.length ?? 0) === 0,
+    inSync: inSyncCount(
+      report.left.privileges?.length ?? 0,
+      privileges.added,
+      privileges.changed
+    ),
+    ...privileges,
+  });
+
   return rows;
 }

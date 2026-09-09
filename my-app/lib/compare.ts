@@ -5,6 +5,7 @@ import type {
   ConstraintSnapshot,
   ForeignKeySnapshot,
   IndexSnapshot,
+  PrivilegeSnapshot,
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
@@ -1666,6 +1667,7 @@ const OBJECT_KIND_LABEL: Record<ObjectKind, string> = {
   PARTITIONING: "Partitioning of",
   COLLATION: "Collation",
   EXTENSION: "Extension",
+  PRIVILEGES: "Access to",
 };
 
 /**
@@ -1696,6 +1698,11 @@ type ComparableObject = {
   collation?: CollationSnapshot;
   /** Carried for an extension: the generator writes its version into the SQL. */
   extension?: ExtensionSnapshot;
+  /**
+   * Carried for a privilege entry. Grading a changed one needs both sides —
+   * the whole question is whether the target is about to LOSE something.
+   */
+  privilege?: PrivilegeSnapshot;
 };
 
 /**
@@ -1713,6 +1720,10 @@ function objectCreateSeverity(obj: ComparableObject): ChangeSeverity {
   // a PERMISSIVE one removes the protection on rows they could not. Neither is
   // a change anyone should skim past, so both are graded the same way.
   if (obj.kind === "POLICY") return "breaking";
+  // A privilege entry that exists only in the source belongs to an object the
+  // script is also creating, so its grants are new access rather than moved
+  // access. Nothing anybody has today is touched.
+  if (obj.kind === "PRIVILEGES") return "info";
   return obj.kind === "INDEX" && obj.enforcesUniqueness === true ? "breaking" : "info";
 }
 
@@ -1766,6 +1777,16 @@ function objectChangeSeverity(
   // with it. Whether the move is even applicable is a separate question the
   // generator answers, since ALTER EXTENSION ... UPDATE only goes forwards.
   if (source.kind === "EXTENSION") return "info";
+  // Access that moved. Breaking only when the target is about to lose some —
+  // a REVOKE, or an owner handing the object to somebody else — because that
+  // is the case where a query that works today stops working. Handing out MORE
+  // access is graded safe: no statement can fail and nothing stops working.
+  // Asked through the same exported function the generator asks.
+  if (source.kind === "PRIVILEGES" && source.privilege && target.privilege) {
+    return privilegeChangeTakesAway(source.privilege, target.privilege)
+      ? "breaking"
+      : "safe";
+  }
   if (source.kind === "INDEX") {
     return objectDropSeverity(target) === "breaking" ||
       objectCreateSeverity(source) === "breaking"
@@ -1848,6 +1869,44 @@ function objectChangeNeedsManualWork(
  * instead made a patch release unorderable against the release it patched — the
  * single commonest bump there is.
  */
+/**
+ * Whether syncing the target's access to the source's takes any of it away.
+ *
+ * "Takes away" means somebody who can do something today cannot do it once the
+ * script has run: a grantee dropped entirely, a privilege revoked from one who
+ * stays, a GRANT OPTION withdrawn, or the object handed to a different owner —
+ * which moves the implicit right to drop and alter it along with everything
+ * else an owner may do.
+ *
+ * This is the question the whole privileges comparison exists to answer, so it
+ * is asked once here and read by both the report and the generator. Granting
+ * MORE is not a loss: no GRANT can fail on the rows already in a table, and
+ * nothing that works today stops working.
+ *
+ * Note the direction. `source` is the schema being copied FROM and `target` is
+ * the one being changed, so the loss is anything the TARGET has that the source
+ * does not — the reverse of how a first reading of the argument names suggests
+ * it should go.
+ */
+export function privilegeChangeTakesAway(
+  source: PrivilegeSnapshot,
+  target: PrivilegeSnapshot
+): boolean {
+  if (source.owner !== target.owner) return true;
+  const sourceByGrantee = new Map(source.grants.map((g) => [g.grantee, g]));
+  for (const held of target.grants) {
+    const kept = sourceByGrantee.get(held.grantee);
+    // The grantee disappears altogether, so everything they had goes.
+    if (!kept) return true;
+    if (held.privileges.some((p) => !kept.privileges.includes(p))) return true;
+    // A privilege they keep, but may no longer pass on. Smaller than losing the
+    // privilege itself and still a thing they could do yesterday and cannot
+    // today, which is the line this function draws.
+    if (held.grantable.some((p) => !kept.grantable.includes(p))) return true;
+  }
+  return false;
+}
+
 export function extensionUpdateIsForward(source: string, target: string): boolean {
   const left = source.split(".");
   const right = target.split(".");
@@ -2270,6 +2329,45 @@ function collationObjects(collations: CollationSnapshot[]): ComparableObject[] {
   }));
 }
 
+/**
+ * Privilege entries flattened for comparison.
+ *
+ * The name carries the object kind — "table orders", "schema app" — because
+ * the names are only unique WITHIN a kind. A table and a sequence in one schema
+ * may both be called "orders", and matching them to each other would report one
+ * as having become the other.
+ */
+function privilegeObjects(privileges: PrivilegeSnapshot[]): ComparableObject[] {
+  return privileges.map((privilege) => {
+    // A routine's arguments are what tell two overloads apart, so they are part
+    // of both the name on screen and the identity the match is made on.
+    const args =
+      privilege.identityArguments === undefined
+        ? ""
+        : `(${privilege.identityArguments})`;
+    const name =
+      `${privilege.objectKind.toLowerCase()} ${privilege.objectName}${args}`;
+    return {
+      // The schema entry is keyed on its kind alone. There is exactly one per
+      // snapshot and it IS the schema being compared, so the two sides match
+      // whatever they are called — keying it by name made a comparison of two
+      // differently-named schemas report the source's schema grants as newly
+      // added and the target's as nothing at all, which is every run of this
+      // tool that compares "public" against anything.
+      key:
+        privilege.objectKind === "SCHEMA"
+          ? "SCHEMA"
+          : `${privilege.objectKind}\u0000` +
+            `${normalizeIdentifier(privilege.objectName)}\u0000${args}`,
+      kind: "PRIVILEGES" as const,
+      name,
+      definition: privilege.definition,
+      normalizedDefinition: privilege.normalizedDefinition,
+      privilege,
+    };
+  });
+}
+
 function extensionObjects(extensions: ExtensionSnapshot[]): ComparableObject[] {
   return extensions.map((extension) => ({
     key: normalizeIdentifier(extension.name),
@@ -2425,6 +2523,25 @@ function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): Obje
     );
   }
 
+  if (left.privileges && right.privileges) {
+    // Entries the target has and the source does not are dropped rather than
+    // reported. An object that exists only in the target is one the script is
+    // already dropping, and its grants go with it — so "revoke everything on a
+    // table that will not be there" is noise, not a difference to fix. What
+    // remains is real work: the objects both sides have, and the ones the
+    // script is creating and has to grant access on.
+    const sourceEntries = privilegeObjects(left.privileges);
+    const sourceKeys = new Set(sourceEntries.map((obj) => obj.key));
+    diffs.push(
+      ...compareObjectLists(
+        sourceEntries,
+        privilegeObjects(right.privileges).filter((obj) => sourceKeys.has(obj.key)),
+        left.schema,
+        right.schema
+      )
+    );
+  }
+
   if (left.views && right.views) {
     // Options are compared only when both sides recorded them — see viewObjects.
     const withOptions =
@@ -2550,6 +2667,7 @@ function comparedCategories(
     partitioning: tableScoped("partitioning", (m) =>
       Boolean(m.left.partitioning && m.right.partitioning)
     ),
+    privileges: schemaScoped("privileges", Boolean(left.privileges && right.privileges)),
     reasons,
   };
 }

@@ -12,6 +12,8 @@ import type {
   ForeignKeySnapshot,
   IndexSnapshot,
   PolicySnapshot,
+  PrivilegeGrant,
+  PrivilegeSnapshot,
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
@@ -33,6 +35,8 @@ export type {
   ForeignKeySnapshot,
   IndexSnapshot,
   PolicySnapshot,
+  PrivilegeGrant,
+  PrivilegeSnapshot,
   RoutineSnapshot,
   RowSecuritySnapshot,
   SchemaSnapshot,
@@ -149,7 +153,8 @@ export type ObjectKind =
   | "PROCEDURE"
   | "POLICY"
   | "ROW SECURITY"
-  | "PARTITIONING";
+  | "PARTITIONING"
+  | "PRIVILEGES";
 
 export type ObjectDiff = {
   kind: ObjectKind;
@@ -231,7 +236,8 @@ export type ObjectCategoryKey =
   | "extensions"
   | "routines"
   | "rowSecurity"
-  | "partitioning";
+  | "partitioning"
+  | "privileges";
 
 /**
  * Why a category was skipped. There are two reasons and they are not the same
@@ -267,6 +273,7 @@ export type ComparedObjectCategories = {
   routines: boolean;
   rowSecurity: boolean;
   partitioning: boolean;
+  privileges: boolean;
   /**
    * For each category that is false above, why.
    *

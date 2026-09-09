@@ -147,6 +147,7 @@ const OBJECT_TAG: Record<ObjectKind, string> = {
   PARTITIONING: "partitioning",
   COLLATION: "collation",
   EXTENSION: "extension",
+  PRIVILEGES: "grants",
 };
 
 /**
@@ -169,6 +170,7 @@ const SCHEMA_OBJECT_SECTIONS: { label: string; kinds: ObjectKind[] }[] = [
   { label: "Extensions", kinds: ["EXTENSION"] },
   { label: "Collations", kinds: ["COLLATION"] },
   { label: "Functions", kinds: ["FUNCTION", "PROCEDURE"] },
+  { label: "Ownership and grants", kinds: ["PRIVILEGES"] },
 ];
 
 function objectKindOf(diff: ObjectDiff): DiffKind {
@@ -198,6 +200,19 @@ function objectNote(diff: ObjectDiff): string {
     return diff.needsManualWork === true
       ? `${versions} — no update path, has to be moved by hand`
       : `${versions} — updated`;
+  }
+  if (diff.kind === "PRIVILEGES") {
+    // Which way the access moved is the whole point of this line — "definition
+    // changed" over a REVOKE tells the reader nothing they came here for. Read
+    // off the grade the compare engine already decided (breaking there means
+    // the target loses something) rather than re-comparing the two definitions
+    // here, which is how the report and the script come to disagree.
+    if (diff.status === "changedDefinition") {
+      return objectDiffSeverity(diff) === "breaking"
+        ? "access changed — the target loses some"
+        : "access changed — the target only gains";
+    }
+    if (diff.status === "onlyA") return "only in source — granted";
   }
   // Set by the compare engine wherever no statement can carry the change. Read
   // rather than re-decided so this line and the generator's MANUAL note come

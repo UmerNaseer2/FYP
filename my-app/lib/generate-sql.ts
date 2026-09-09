@@ -13,6 +13,8 @@ import type {
   ForeignKeySnapshot,
   IndexSnapshot,
   PolicySnapshot,
+  PrivilegeObjectKind,
+  PrivilegeSnapshot,
   RoutineSnapshot,
   RowSecuritySnapshot,
   SequenceOptions,
@@ -88,6 +90,9 @@ export type SqlStatementKind =
   | "ALTER_EXTENSION"
   | "CREATE_ROUTINE"
   | "DROP_ROUTINE"
+  | "ALTER_OWNER"
+  | "GRANT"
+  | "REVOKE"
   /**
    * A change PostgreSQL cannot express as runnable DDL — dropping an enum
    * value, say. The `sql` is a `-- MANUAL:` comment describing the work, so it
@@ -144,6 +149,22 @@ export type MigrationOptions = {
    * rather than errors.
    */
   addColumnIfNotExists?: boolean;
+  /**
+   * The name of the schema this script will be run against, for the one
+   * statement that cannot be written without it: a GRANT or an ALTER OWNER on
+   * the schema itself.
+   *
+   * Everything else here is unqualified, because the apply route sets
+   * search_path to the target schema first — but there is no unqualified way to
+   * name a schema. Defaults to `report.right.schema`, which is the target for a
+   * forward migration and is right without anyone passing anything.
+   *
+   * generateRollback has to pass it. It builds its script from the comparison
+   * run BACKWARDS, where `right` is the original SOURCE — so the default would
+   * name the schema being copied from, and a rollback of a comparison between
+   * two schemas of one database would silently grant on the wrong one.
+   */
+  appliesToSchema?: string;
 };
 
 export type MigrationScript = {
@@ -1410,6 +1431,238 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Ownership and grants
+// ---------------------------------------------------------------------------
+
+/**
+ * How GRANT names each kind of object, which is not always how CREATE names it.
+ *
+ * The one that catches people: GRANT has no VIEW. A view and a materialized
+ * view are both granted `ON TABLE`, and writing `ON VIEW` is a syntax error.
+ */
+const GRANT_OBJECT_WORD: Record<PrivilegeObjectKind, string> = {
+  TABLE: "TABLE",
+  VIEW: "TABLE",
+  "MATERIALIZED VIEW": "TABLE",
+  SEQUENCE: "SEQUENCE",
+  FUNCTION: "FUNCTION",
+  PROCEDURE: "PROCEDURE",
+  SCHEMA: "SCHEMA",
+};
+
+/** How ALTER names each kind, which for a view is not how GRANT names it. */
+const ALTER_OBJECT_WORD: Record<PrivilegeObjectKind, string> = {
+  TABLE: "TABLE",
+  VIEW: "VIEW",
+  "MATERIALIZED VIEW": "MATERIALIZED VIEW",
+  SEQUENCE: "SEQUENCE",
+  FUNCTION: "FUNCTION",
+  PROCEDURE: "PROCEDURE",
+  SCHEMA: "SCHEMA",
+};
+
+/**
+ * The object as GRANT and ALTER have to spell it: quoted name, and for a
+ * routine the argument list after it, unquoted.
+ *
+ * `targetSchema` is used for, and only for, the SCHEMA entry. Everything else
+ * in this file is written unqualified because the apply route sets search_path
+ * to the target schema first — but there is no unqualified way to name a
+ * schema, and the name the snapshot carries is the SOURCE's. Writing that one
+ * would grant on whichever schema the source happened to be called, which on a
+ * two-schema comparison inside one database is a live and silent mis-grant.
+ */
+function privilegeObjectSql(
+  privilege: PrivilegeSnapshot,
+  targetSchema: string
+): string {
+  if (privilege.objectKind === "SCHEMA") return q(targetSchema);
+  const args =
+    privilege.identityArguments === undefined
+      ? ""
+      : `(${privilege.identityArguments})`;
+  return `${q(privilege.objectName)}${args}`;
+}
+
+/** "table orders", "function f(integer)" — the same words the report uses. */
+function privilegeLabel(privilege: PrivilegeSnapshot): string {
+  const args =
+    privilege.identityArguments === undefined
+      ? ""
+      : `(${privilege.identityArguments})`;
+  return `${privilege.objectKind.toLowerCase()} ${privilege.objectName}${args}`;
+}
+
+/**
+ * PUBLIC is a keyword in GRANT, not a role name, so quoting it turns a grant to
+ * everybody into a grant to a role called "public" that does not exist.
+ */
+function grantee(name: string): string {
+  return name.toUpperCase() === "PUBLIC" ? "PUBLIC" : q(name);
+}
+
+/** The same distinction for prose, where the quotes are only decoration. */
+function quoteRoleText(name: string): string {
+  return name.toUpperCase() === "PUBLIC" ? "PUBLIC" : `"${name}"`;
+}
+
+function ownerStatement(
+  privilege: PrivilegeSnapshot,
+  targetSchema: string,
+  previousOwner: string | null
+): SqlStatement {
+  const label = privilegeLabel(privilege);
+  const moved =
+    previousOwner === null ? "" : ` (was ${quoteRoleText(previousOwner)})`;
+  return objectStatement({
+    sql:
+      `ALTER ${ALTER_OBJECT_WORD[privilege.objectKind]} ` +
+      `${privilegeObjectSql(privilege, targetSchema)} ` +
+      `OWNER TO ${q(privilege.owner)};`,
+    description: `Set owner of ${label} to ${quoteRoleText(privilege.owner)}${moved}`,
+    kind: "ALTER_OWNER",
+    // Breaking only when it is taken off somebody. On an object the script has
+    // just created there is no previous owner to lose anything.
+    severity: previousOwner === null ? "info" : "breaking",
+    tableName: privilege.objectName,
+  });
+}
+
+function grantStatement(
+  privilege: PrivilegeSnapshot,
+  targetSchema: string,
+  role: string,
+  privileges: string[],
+  withGrantOption: boolean
+): SqlStatement {
+  const label = privilegeLabel(privilege);
+  const option = withGrantOption ? " WITH GRANT OPTION" : "";
+  return objectStatement({
+    sql:
+      `GRANT ${privileges.join(", ")} ON ` +
+      `${GRANT_OBJECT_WORD[privilege.objectKind]} ` +
+      `${privilegeObjectSql(privilege, targetSchema)} ` +
+      `TO ${grantee(role)}${option};`,
+    description:
+      `Grant ${privileges.join(", ")} on ${label} to ${quoteRoleText(role)}` +
+      (withGrantOption ? ", who may pass it on" : ""),
+    kind: "GRANT",
+    // A GRANT cannot fail on the rows already there and takes nothing from
+    // anybody, which is the definition of safe in this file.
+    severity: "safe",
+    tableName: privilege.objectName,
+  });
+}
+
+function revokeStatement(
+  privilege: PrivilegeSnapshot,
+  targetSchema: string,
+  role: string,
+  privileges: string[],
+  optionOnly: boolean
+): SqlStatement {
+  const label = privilegeLabel(privilege);
+  const what = optionOnly ? "GRANT OPTION FOR " : "";
+  return objectStatement({
+    sql:
+      `REVOKE ${what}${privileges.join(", ")} ON ` +
+      `${GRANT_OBJECT_WORD[privilege.objectKind]} ` +
+      `${privilegeObjectSql(privilege, targetSchema)} ` +
+      `FROM ${grantee(role)};`,
+    description: optionOnly
+      ? `Stop ${quoteRoleText(role)} passing on ${privileges.join(", ")} ` +
+        `on ${label} — WARNING: anything they granted onwards goes with it`
+      : `Revoke ${privileges.join(", ")} on ${label} from ${quoteRoleText(role)}` +
+        " — WARNING: queries running under that role stop working",
+    kind: "REVOKE",
+    severity: "breaking",
+    tableName: privilege.objectName,
+    // Not `destructive`. Nothing is deleted, so "allow data loss" is the wrong
+    // gate for it — but it is the change most likely to take an application
+    // down, which is what the breaking grade above is for.
+  });
+}
+
+/**
+ * The statements that move one object's access from what the target has to what
+ * the source has.
+ *
+ * `target` is null for an object the script is creating, where there is nothing
+ * to compare against and every grant in the source is new.
+ */
+function privilegeStatements(
+  source: PrivilegeSnapshot,
+  target: PrivilegeSnapshot | null,
+  targetSchema: string,
+  heldBack: boolean
+): SqlStatement[] {
+  const statements: SqlStatement[] = [];
+
+  if (target === null || source.owner !== target.owner) {
+    statements.push(ownerStatement(source, targetSchema, target?.owner ?? null));
+  }
+
+  const held = new Map((target?.grants ?? []).map((g) => [g.grantee, g]));
+  const wanted = new Map(source.grants.map((g) => [g.grantee, g]));
+
+  for (const grant of source.grants) {
+    const has = held.get(grant.grantee);
+    // Split by grant option rather than emitting one statement per privilege:
+    // GRANT takes a list, and two statements read better than seven.
+    const plain = grant.privileges.filter(
+      (p) => !grant.grantable.includes(p) && !(has?.privileges ?? []).includes(p)
+    );
+    // Re-granting WITH GRANT OPTION is how the option is added to a privilege
+    // the role already holds — there is no ALTER for it.
+    const grantable = grant.grantable.filter(
+      (p) => !(has?.grantable ?? []).includes(p)
+    );
+    if (plain.length > 0) {
+      statements.push(
+        grantStatement(source, targetSchema, grant.grantee, plain, false)
+      );
+    }
+    if (grantable.length > 0) {
+      statements.push(
+        grantStatement(source, targetSchema, grant.grantee, grantable, true)
+      );
+    }
+  }
+
+  for (const grant of held.values()) {
+    const keep = wanted.get(grant.grantee);
+    const lose = grant.privileges.filter(
+      (p) => !(keep?.privileges ?? []).includes(p)
+    );
+    if (lose.length > 0) {
+      statements.push(
+        revokeStatement(source, targetSchema, grant.grantee, lose, false)
+      );
+    }
+    // A privilege they keep but may no longer hand on. REVOKE GRANT OPTION FOR
+    // is the only statement that takes the option without taking the privilege.
+    const loseOption = grant.grantable.filter(
+      (p) => (keep?.privileges ?? []).includes(p) && !(keep?.grantable ?? []).includes(p)
+    );
+    if (loseOption.length > 0) {
+      statements.push(
+        revokeStatement(source, targetSchema, grant.grantee, loseOption, true)
+      );
+    }
+  }
+
+  // Every statement here assumes the object is in the state the source
+  // describes. When safe mode holds back the drop that would have rebuilt it,
+  // it is not: `ALTER VIEW "recent" OWNER TO ...` over a materialized view that
+  // is still sitting there fails outright with "recent is not a view", and the
+  // apply route runs the whole script in one transaction, so that one failure
+  // rolls the entire migration back. Held back beside the drop instead.
+  return heldBack
+    ? statements.map((statement) => ({ ...statement, needsArmedDrop: true }))
+    : statements;
+}
+
 // ── Functions and procedures ───────────────────────────────────────────────
 
 // pg_get_functiondef returns a complete CREATE OR REPLACE statement, so the
@@ -1529,6 +1782,16 @@ type ObjectPhases = {
    */
   extensionDrops: SqlStatement[];
   /**
+   * Ownership and grants — after everything the script creates, and before
+   * anything it drops.
+   *
+   * After the creations because there is nothing to grant on until the object
+   * is there; before the drops because a REVOKE on an object that has just been
+   * dropped fails, and because leaving them to the very end would put a GRANT
+   * after a DROP TYPE that a safe-mode run has commented out.
+   */
+  privileges: SqlStatement[];
+  /**
    * Tables whose ALTER COLUMN ... TYPE cannot run while safe mode holds a
    * materialized view's drop back, keyed by the table's name in the SOURCE and
    * listing the views in the way.
@@ -1545,6 +1808,27 @@ function findByName<T extends { name: string }>(items: T[] | undefined, name: st
 }
 
 /**
+ * Find a privilege entry by the display name the compare engine gave it —
+ * "table orders", "function f(integer)".
+ *
+ * Rebuilt here rather than carried on the diff because ObjectDiff has one name
+ * field and every other kind puts its own name in it. Both sides must spell it
+ * the same way; the compare engine's privilegeObjects is the other half.
+ */
+function findPrivilege(
+  items: PrivilegeSnapshot[] | undefined,
+  name: string
+): PrivilegeSnapshot | null {
+  return (
+    items?.find((item) => {
+      const args =
+        item.identityArguments === undefined ? "" : `(${item.identityArguments})`;
+      return `${item.objectKind.toLowerCase()} ${item.objectName}${args}` === name;
+    }) ?? null
+  );
+}
+
+/**
  * Build every object statement the migration needs, in dependency order.
  *
  * Reads the object differences the comparator produced, plus the objects that
@@ -1552,7 +1836,11 @@ function findByName<T extends { name: string }>(items: T[] | undefined, name: st
  * its indexes and triggers appear in no diff and would otherwise be dropped on
  * the floor exactly the way its foreign keys once were.
  */
-function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases {
+function objectPhases(
+  report: CompareReport,
+  idempotent: boolean,
+  appliesToSchema: string
+): ObjectPhases {
   const phases: ObjectPhases = {
     extensions: [],
     collations: [],
@@ -1568,6 +1856,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     afterTables: [],
     collationDrops: [],
     extensionDrops: [],
+    privileges: [],
     retypeBlockedBy: new Map(),
     warnings: [],
   };
@@ -1688,6 +1977,8 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
    * further down has finished. See the pass after the views are created.
    */
   const viewObjectDiffs: ObjectDiff[] = [];
+  /** Ownership and grant diffs, held aside for the same reason. */
+  const privilegeDiffs: ObjectDiff[] = [];
 
   /** Queue a drop and record it in both sets — the only place that does. */
   function queueViewDrop(view: ViewSnapshot, reason: string) {
@@ -1793,6 +2084,15 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
           );
         }
       }
+      continue;
+    }
+
+    if (diff.kind === "PRIVILEGES") {
+      // Held aside for the same reason the view indexes and triggers are:
+      // whether the object these grants sit on is really going to be rebuilt is
+      // not known until the CASCADE walk below has finished adding to
+      // heldBackViewDrops. See the pass after the views are created.
+      privilegeDiffs.push(diff);
       continue;
     }
 
@@ -2067,6 +2367,33 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
         ...createTriggerStatements(source, viewName, { onView: true })
       );
     }
+  }
+
+  // ── Ownership and grants ──────────────────────────────────────────────────
+  // Last, because it is the first pass that can tell whether the object each
+  // entry describes is really going to exist in the shape the source recorded.
+  for (const diff of privilegeDiffs) {
+    // Privilege entries are keyed by kind and name together, and the diff
+    // carries them already joined, so look them up by the same joined string
+    // the compare engine wrote — see privilegeObjects there.
+    const source = findPrivilege(report.left.privileges, diff.name);
+    // "onlyB" never arrives: the compare engine leaves out an entry the target
+    // has and the source does not, because the object it belongs to is one this
+    // script is already dropping.
+    if (!source) continue;
+    const target = findPrivilege(report.right.privileges, diff.name);
+    phases.privileges.push(
+      ...privilegeStatements(
+        source,
+        diff.status === "onlyA" ? null : target,
+        appliesToSchema,
+        // Only a view or a materialized view is ever dropped and put back, so
+        // only those two can be sitting there in the old shape.
+        (source.objectKind === "VIEW" ||
+          source.objectKind === "MATERIALIZED VIEW") &&
+          heldBackViewDrops.has(source.objectName)
+      )
+    );
   }
 
   // ...and dropped before it, which is the same order reversed.
@@ -2659,7 +2986,11 @@ export function generateMigration(
   const sourceSchema = report.left.schema;
   const statements: SqlStatement[] = [];
   const warnings: string[] = [];
-  const objects = objectPhases(report, options.addColumnIfNotExists === true);
+  const objects = objectPhases(
+    report,
+    options.addColumnIfNotExists === true,
+    options.appliesToSchema ?? report.right.schema
+  );
   const rightViews = report.right.views ?? [];
 
   // ── Extensions ────────────────────────────────────────────────────────────
@@ -2832,6 +3163,12 @@ export function generateMigration(
   // itself to exist, and it has only just been made.
   statements.push(...objects.afterViews);
 
+  // ── Ownership and grants ──────────────────────────────────────────────────
+  // Everything the script builds now exists, so there is something to grant on
+  // — and nothing has been dropped yet, so nothing is granted on a name that
+  // has already gone.
+  statements.push(...objects.privileges);
+
   // ── Routines that are no longer used ──────────────────────────────────────
   // Before the types below: a function whose argument or return type is an enum
   // holds that enum in place, and DROP TYPE deliberately carries no CASCADE.
@@ -2855,6 +3192,32 @@ export function generateMigration(
   statements.push(...objects.extensionDrops);
 
   warnings.push(...objects.warnings);
+
+  // Roles are cluster-wide, and the snapshot records one schema. So the script
+  // can name a role the target server has never heard of, and GRANT fails on a
+  // role that does not exist rather than creating one. Said once here, because
+  // saying it on every GRANT would bury the statements themselves.
+  const namedRoles = new Set<string>();
+  for (const statement of objects.privileges) {
+    const match = /(?:TO|FROM) (?:PUBLIC|"((?:[^"]|"")+)")/.exec(statement.sql);
+    if (match?.[1]) namedRoles.add(match[1].replace(/""/g, '"'));
+  }
+  if (namedRoles.size > 0) {
+    const listed = [...namedRoles].sort().map((r) => `"${r}"`).join(", ");
+    warnings.push(
+      `This script grants to ${listed}. Roles belong to the whole server, not ` +
+        "to a schema, so a snapshot cannot tell whether the target has them — " +
+        "CREATE ROLE any that are missing before running it, or the GRANT fails.",
+    );
+  }
+  if (objects.privileges.length > 0) {
+    warnings.push(
+      "Everything this script creates is owned by whoever runs it until the " +
+        "ALTER ... OWNER TO statements near the end move it. Running it as a " +
+        "role that cannot reassign ownership leaves the objects owned by that " +
+        "role, which is a difference the next comparison will report.",
+    );
+  }
 
   const destructiveCount = statements.filter((s) => s.destructive).length;
   const heldBackCount = statements.filter(
@@ -3089,6 +3452,9 @@ export function generateRollback(
   const inverse = generateMigration(reverseReport, {
     allowDataLoss: true,
     addColumnIfNotExists: true,
+    // The reversed report has the SOURCE on its right, and this script runs
+    // against the target — see the note on the option.
+    appliesToSchema: report.right.schema,
   });
 
   // What the forward migration destroyed, read off the ORIGINAL report so the

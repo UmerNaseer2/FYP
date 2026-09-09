@@ -451,6 +451,66 @@ function formatCollation(
   return stripSchemaFromExpr(qualified, schemaName) ?? qualified;
 }
 
+/**
+ * The order GRANT lists privileges in, which is the order PostgreSQL's own
+ * documentation lists them in.
+ *
+ * A fixed order rather than alphabetical, so `SELECT, INSERT, UPDATE` reads the
+ * way somebody would type it — and so the same set of privileges always renders
+ * to the same string, which is what the comparison actually compares.
+ */
+const PRIVILEGE_ORDER = [
+  "SELECT",
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+  "TRUNCATE",
+  "REFERENCES",
+  "TRIGGER",
+  "MAINTAIN",
+  "USAGE",
+  "CREATE",
+  "EXECUTE",
+  "CONNECT",
+  "TEMPORARY",
+  "SET",
+  "ALTER SYSTEM",
+];
+
+function sortPrivileges(privileges: string[]): string[] {
+  return [...privileges].sort((a, b) => {
+    const ai = PRIVILEGE_ORDER.indexOf(a);
+    const bi = PRIVILEGE_ORDER.indexOf(b);
+    // A privilege a future PostgreSQL adds is unknown to the list above; it
+    // sorts to the end rather than to the front, where it would silently
+    // reorder every existing rendering.
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+}
+
+/**
+ * The one-line rendering the comparison diffs, e.g.
+ * `owned by "app" — "api": SELECT, INSERT; PUBLIC: SELECT (SELECT grantable)`.
+ */
+function buildPrivilegeDefinition(
+  owner: string,
+  grants: PrivilegeGrant[]
+): string {
+  const head = `owned by ${quoteRole(owner)}`;
+  if (grants.length === 0) return `${head} — no grants to anybody else`;
+  const parts = grants.map((grant) => {
+    const passOn =
+      grant.grantable.length > 0
+        ? ` (may pass on ${grant.grantable.join(", ")})`
+        : "";
+    return `${quoteRole(grant.grantee)}: ${grant.privileges.join(", ")}${passOn}`;
+  });
+  return `${head} — ${parts.join("; ")}`;
+}
+
 function quoteRole(role: string): string {
   if (UNQUOTED_ROLE_SPECS.has(role.toLowerCase())) {
     return role.toLowerCase();
@@ -771,6 +831,99 @@ export type ExtensionSnapshot = {
 };
 
 /**
+ * One grantee's access to one object.
+ *
+ * `privileges` is what GRANT lists after the word GRANT, in the order GRANT
+ * lists them, so the comparison and the statement that fixes it read the same
+ * way round.
+ */
+export type PrivilegeGrant = {
+  /** A role name, or the word PUBLIC — which is what grantee 0 means. */
+  grantee: string;
+  /** SELECT, INSERT, USAGE, EXECUTE and so on. Never empty. */
+  privileges: string[];
+  /**
+   * Those of the above this grantee may hand on to somebody else.
+   *
+   * Recorded rather than dropped because WITH GRANT OPTION is the difference
+   * between one role reading a table and one role deciding who else may. Two
+   * schemas that differ only in that are not the same schema.
+   */
+  grantable: string[];
+};
+
+/** The object kinds GRANT has a word for, spelled the way GRANT spells them. */
+export type PrivilegeObjectKind =
+  | "TABLE"
+  | "VIEW"
+  | "MATERIALIZED VIEW"
+  | "SEQUENCE"
+  | "FUNCTION"
+  | "PROCEDURE"
+  | "SCHEMA";
+
+/**
+ * Who owns one object, and who has been granted what on it.
+ *
+ * Kept as one flat list on the snapshot rather than hung off each table, view
+ * and routine, because the schema ITSELF has an owner and a set of grants —
+ * and without USAGE on the schema every other grant in it is unreachable, so
+ * the one entry that matters most has nowhere else to live.
+ *
+ * This is the difference the comparison was blindest to. Two schemas with the
+ * same tables, columns, constraints and indexes but a `GRANT SELECT` on one
+ * side and nothing on the other came out as an exact match, so a sync could
+ * report "in sync" over a target the application cannot read a row from. The
+ * schema was identical; the database was not usable.
+ *
+ * Grants are recorded for every object the schema owns, INCLUDING the sequence
+ * behind a `serial` or IDENTITY column, which is skipped everywhere else in
+ * this snapshot. It is skipped there because its column already describes it —
+ * but nothing about the column says who may call nextval on it, and a role
+ * with INSERT on the table and no USAGE on the sequence cannot insert a row.
+ */
+export type PrivilegeSnapshot = {
+  objectKind: PrivilegeObjectKind;
+  /**
+   * The object's own name, unquoted and WITHOUT a routine's argument list.
+   *
+   * The arguments live in `identityArguments` rather than being glued on here,
+   * because the generator has to quote the name and must not quote the
+   * arguments — `GRANT EXECUTE ON FUNCTION "f"(integer)`. Anything that wants
+   * the two together, for display or for identity, joins them itself.
+   */
+  objectName: string;
+  /**
+   * A routine's argument types as PostgreSQL spells them, e.g. `integer, text`.
+   * An empty string for a routine that takes none; undefined for every other
+   * kind, which has no arguments to have.
+   *
+   * This is what tells two overloads of one function apart, so it is part of
+   * the identity the comparison matches on and not only decoration.
+   */
+  identityArguments?: string;
+  /** pg_get_userbyid of the object's owner. */
+  owner: string;
+  /**
+   * Everyone with access, sorted by grantee, WITHOUT the owner's own entry.
+   *
+   * The owner is dropped because PostgreSQL materialises its full default set
+   * into the ACL the moment anybody else is granted anything, so a table with
+   * one GRANT would otherwise differ from an untouched one by the owner's
+   * seven implicit privileges as well as by the real grant — and because that
+   * set gains a member between major versions (MAINTAIN arrived in 17), which
+   * would make every object differ across a version upgrade.
+   *
+   * The cost is a REVOKE taken off the owner itself, which is rare enough and
+   * strange enough that reporting it is worth less than the noise above.
+   */
+  grants: PrivilegeGrant[];
+  /** A one-line human-readable rendering; this is what the comparator diffs. */
+  definition: string;
+  normalizedDefinition: string;
+};
+
+/**
  * How a table relates to other tables it shares its rows or its shape with.
  *
  * Declarative partitioning and old-style INHERITS are both recorded here
@@ -869,6 +1022,11 @@ export type SchemaSnapshot = {
   routines?: RoutineSnapshot[];
   /** Extensions installed into this schema. See the optionality note above. */
   extensions?: ExtensionSnapshot[];
+  /**
+   * Ownership and grants, one entry per object plus one for the schema
+   * itself. See the optionality note above.
+   */
+  privileges?: PrivilegeSnapshot[];
 };
 
 type ConstraintRow = {
@@ -1156,6 +1314,19 @@ export async function fetchSchemaSnapshot(
     version: string;
   };
 
+  /** One row per (object, grantee, privilege). Grouped into grants below. */
+  type PrivilegeRow = {
+    object_kind: PrivilegeObjectKind;
+    object_name: string;
+    /** A routine's argument types; NULL for every other kind. */
+    identity_arguments: string | null;
+    owner: string;
+    /** NULL when the object's ACL is empty — the LEFT JOIN keeps the owner row. */
+    grantee: string | null;
+    privilege_type: string | null;
+    is_grantable: boolean | null;
+  };
+
   type RoutineRow = {
     name: string;
     kind: "function" | "procedure";
@@ -1167,14 +1338,14 @@ export async function fetchSchemaSnapshot(
     returns: string | null;
   };
 
-  // Twelve catalog queries now describe one schema, and they have to agree with
+  // Thirteen catalog queries now describe one schema, and they have to agree with
   // each other: a table that appears in the table list but whose columns were
   // read a moment later, after someone dropped it, produces a snapshot that
   // claims a table with no columns.
   //
   // The previous three queries ran on three separate pooled connections via
   // Promise.all, so each saw its own MVCC snapshot and the assembly loops
-  // papered over the mismatch with `if (!table) continue`. Twelve of those would
+  // papered over the mismatch with `if (!table) continue`. Thirteen of those would
   // also overflow the pool's `max: 4` and start queueing anyway, so there is no
   // parallelism left to lose. One connection inside a REPEATABLE READ READ ONLY
   // transaction is both consistent and cheaper on the pool: every query below
@@ -1676,6 +1847,99 @@ export async function fetchSchemaSnapshot(
       [schemaName]
     );
 
+    // One row per (object, grantee, privilege), for every kind of object GRANT
+    // has a word for, plus the schema itself.
+    //
+    // aclexplode turns the aclitem array into rows with the privilege spelled
+    // out — SELECT rather than the letter r — so nothing here has to decode
+    // PostgreSQL's ACL shorthand or know which letters a table has and a
+    // sequence does not. acldefault fills in the implicit ACL an untouched
+    // object has: relacl is NULL until somebody grants something, and reading
+    // that NULL as "nobody has anything" would report a plain table as having
+    // lost every privilege its owner holds.
+    //
+    // LEFT JOIN LATERAL rather than a plain join, so an object whose ACL
+    // really is empty still produces its one row and its owner is recorded.
+    //
+    // Sequences are included whether or not a column owns them — see the note
+    // on PrivilegeSnapshot. Indexes and constraints are not: they have no ACL
+    // of their own and take their access from the table.
+    const privilegeResult = await client.query<PrivilegeRow>(
+      `WITH objects AS (
+         SELECT
+           CASE c.relkind
+             WHEN 'v' THEN 'VIEW'
+             WHEN 'm' THEN 'MATERIALIZED VIEW'
+             WHEN 'S' THEN 'SEQUENCE'
+             ELSE 'TABLE'
+           END AS object_kind,
+           c.relname::text AS object_name,
+           NULL::text AS identity_arguments,
+           pg_get_userbyid(c.relowner) AS owner,
+           c.relowner AS owner_oid,
+           COALESCE(
+             c.relacl,
+             -- The cast is needed: a CASE returns text, and acldefault takes
+             -- the one-byte "char" the catalogs use for object kinds.
+             acldefault(
+               (CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END)::"char",
+               c.relowner
+             )
+           ) AS acl
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1
+           AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+           AND c.relname <> ALL($2)
+         UNION ALL
+         SELECT
+           CASE p.prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END,
+           p.proname::text,
+           -- Kept apart from the name because the generator quotes the name and
+           -- must not quote these. proargtypes holds the IN arguments only,
+           -- which is exactly what identifies an overload.
+           (SELECT COALESCE(string_agg(format_type(u.t, NULL), ', ' ORDER BY u.ord), '')
+              FROM unnest(p.proargtypes) WITH ORDINALITY AS u(t, ord)),
+           pg_get_userbyid(p.proowner),
+           p.proowner,
+           COALESCE(p.proacl, acldefault('f', p.proowner))
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = $1
+           AND p.prokind IN ('f', 'p')
+           AND NOT EXISTS (
+             SELECT 1 FROM pg_depend dep
+              WHERE dep.objid = p.oid
+                AND dep.classid = 'pg_proc'::regclass
+                AND dep.deptype IN ('e', 'i')
+           )
+         UNION ALL
+         SELECT
+           'SCHEMA', n.nspname::text, NULL::text,
+           pg_get_userbyid(n.nspowner), n.nspowner,
+           COALESCE(n.nspacl, acldefault('n', n.nspowner))
+         FROM pg_namespace n
+         WHERE n.nspname = $1
+       )
+       SELECT
+         o.object_kind,
+         o.object_name,
+         o.identity_arguments,
+         o.owner,
+         CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END
+           AS grantee,
+         a.privilege_type,
+         a.is_grantable
+       FROM objects o
+       LEFT JOIN LATERAL aclexplode(o.acl) a
+         -- The owner's own entry is dropped here rather than in JS, so the
+         -- rows that travel back are only the ones the comparison looks at.
+         ON a.grantee <> o.owner_oid
+       ORDER BY o.object_kind, o.object_name, o.identity_arguments,
+                grantee, a.privilege_type`,
+      [schemaName, COMPARE_IGNORED_TABLES]
+    );
+
     await client.query("COMMIT");
 
     const tablesByName = new Map<string, TableSnapshot>();
@@ -2171,6 +2435,64 @@ export async function fetchSchemaSnapshot(
       } satisfies ExtensionSnapshot;
     });
 
+    // The query hands back one row per (object, grantee, privilege); this puts
+    // them back together into one entry per object.
+    const privilegesByKey = new Map<string, PrivilegeSnapshot>();
+    const grantsByKey = new Map<string, Map<string, PrivilegeGrant>>();
+    for (const row of privilegeResult.rows) {
+      // format_type() qualifies an argument whose type lives in this schema, so
+      // an untouched `f(order_status)` arrives as `f(dev.order_status)`. Left
+      // alone that is wrong twice over: the same function in two schemas would
+      // never match, and the generated GRANT would name a type in the schema
+      // being copied FROM. Same treatment the routine signatures get.
+      const identityArguments =
+        stripSchemaFromExpr(row.identity_arguments, schemaName);
+      // The arguments are part of the key: two overloads of one function are
+      // two objects with two ACLs, and keying on the name alone would fold
+      // them together and report one's grants as the other's.
+      const key =
+        `${row.object_kind}\u0000${row.object_name}` +
+        `\u0000${identityArguments ?? ""}`;
+      let entry = privilegesByKey.get(key);
+      if (!entry) {
+        entry = {
+          objectKind: row.object_kind,
+          objectName: row.object_name,
+          ...(identityArguments === null ? {} : { identityArguments }),
+          owner: row.owner,
+          grants: [],
+          definition: "",
+          normalizedDefinition: "",
+        };
+        privilegesByKey.set(key, entry);
+        grantsByKey.set(key, new Map());
+      }
+      // Null on the row the LEFT JOIN produced for an object nobody else has
+      // any access to. The object still belongs in the list — its owner is the
+      // point — so the row is kept and only the grant is skipped.
+      if (row.grantee === null || row.privilege_type === null) continue;
+      const byGrantee = grantsByKey.get(key)!;
+      let grant = byGrantee.get(row.grantee);
+      if (!grant) {
+        grant = { grantee: row.grantee, privileges: [], grantable: [] };
+        byGrantee.set(row.grantee, grant);
+        entry.grants.push(grant);
+      }
+      grant.privileges.push(row.privilege_type);
+      if (row.is_grantable) grant.grantable.push(row.privilege_type);
+    }
+
+    const privileges: PrivilegeSnapshot[] = Array.from(privilegesByKey.values());
+    for (const entry of privileges) {
+      entry.grants.sort((a, b) => a.grantee.localeCompare(b.grantee));
+      for (const grant of entry.grants) {
+        grant.privileges = sortPrivileges(grant.privileges);
+        grant.grantable = sortPrivileges(grant.grantable);
+      }
+      entry.definition = buildPrivilegeDefinition(entry.owner, entry.grants);
+      entry.normalizedDefinition = normalizeDefinition(entry.definition);
+    }
+
     const routines: RoutineSnapshot[] = routineResult.rows.map((row) => {
       const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
       const identityArguments = stripSchemaFromExpr(row.args, schemaName) ?? row.args;
@@ -2202,6 +2524,12 @@ export async function fetchSchemaSnapshot(
     collations.sort((a, b) => a.name.localeCompare(b.name));
     extensions.sort((a, b) => a.name.localeCompare(b.name));
     routines.sort((a, b) => a.signature.localeCompare(b.signature));
+    privileges.sort(
+      (a, b) =>
+        a.objectKind.localeCompare(b.objectKind) ||
+        a.objectName.localeCompare(b.objectName) ||
+        (a.identityArguments ?? "").localeCompare(b.identityArguments ?? "")
+    );
 
     return {
       ok: true,
@@ -2217,6 +2545,7 @@ export async function fetchSchemaSnapshot(
         collations,
         routines,
         extensions,
+        privileges,
       },
     };
   } catch (e) {

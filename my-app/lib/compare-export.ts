@@ -53,7 +53,8 @@ export type ChangeCategory =
   | "Extension"
   | "Function"
   | "Row security"
-  | "Partitioning";
+  | "Partitioning"
+  | "Privileges";
 
 /**
  * What the migration would do.
@@ -181,6 +182,7 @@ const OBJECT_CATEGORY: Record<ObjectKind, ChangeCategory> = {
   PARTITIONING: "Partitioning",
   COLLATION: "Collation",
   EXTENSION: "Extension",
+  PRIVILEGES: "Privileges",
 };
 
 /**
@@ -202,6 +204,7 @@ const SUMMARY_LABEL_CATEGORY: Record<string, ChangeCategory | undefined> = {
   Functions: "Function",
   "Row security": "Row security",
   Partitioning: "Partitioning",
+  Privileges: "Privileges",
 };
 
 /** The verdict for an object diff, in the export's vocabulary. */
