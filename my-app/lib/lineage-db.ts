@@ -383,6 +383,20 @@ export type SnapshotSummary = {
   tableCount: number;
   columnCount: number;
   constraintCount: number;
+  /**
+   * The object categories the comparison engine also reads. Each one is null
+   * when the snapshot holds no record of that category at all, which is a
+   * different thing from zero: snapshots captured before this app learned to
+   * read indexes, views, sequences, types and routines are still sitting in
+   * lineage_snapshots, and reporting them as "0 views" would tell somebody
+   * reading an old baseline that the schema had none.
+   */
+  indexCount: number | null;
+  triggerCount: number | null;
+  viewCount: number | null;
+  sequenceCount: number | null;
+  typeCount: number | null;
+  routineCount: number | null;
   /** Table names, for a short "what's inside" peek. */
   tableNames: string[];
   capturedAt: string;
@@ -444,12 +458,24 @@ function summarizeSnapshot(snap: SchemaSnapshot | null | undefined): {
   tableCount: number;
   columnCount: number;
   constraintCount: number;
+  indexCount: number | null;
+  triggerCount: number | null;
+  viewCount: number | null;
+  sequenceCount: number | null;
+  typeCount: number | null;
+  routineCount: number | null;
   tableNames: string[];
 } {
   const tables = Array.isArray(snap?.tables) ? snap.tables : [];
   let columnCount = 0;
   let constraintCount = 0;
   const tableNames: string[] = [];
+
+  // Table-scoped object counts. Both start null and only become numbers once a
+  // table is found that actually carries the array, so a snapshot written
+  // before the engine read indexes reports "not recorded" rather than "none".
+  let indexCount: number | null = null;
+  let triggerCount: number | null = null;
 
   for (const t of tables) {
     tableNames.push(typeof t?.name === "string" ? t.name : "(unnamed)");
@@ -459,9 +485,27 @@ function summarizeSnapshot(snap: SchemaSnapshot | null | undefined): {
     constraintCount += Array.isArray(t?.foreignKeys) ? t.foreignKeys.length : 0;
     constraintCount += Array.isArray(t?.checkConstraints) ? t.checkConstraints.length : 0;
     constraintCount += Array.isArray(t?.excludeConstraints) ? t.excludeConstraints.length : 0;
+    if (Array.isArray(t?.indexes)) indexCount = (indexCount ?? 0) + t.indexes.length;
+    if (Array.isArray(t?.triggers)) triggerCount = (triggerCount ?? 0) + t.triggers.length;
   }
 
-  return { tableCount: tables.length, columnCount, constraintCount, tableNames };
+  return {
+    tableCount: tables.length,
+    columnCount,
+    constraintCount,
+    indexCount,
+    triggerCount,
+    viewCount: countRecorded(snap?.views),
+    sequenceCount: countRecorded(snap?.sequences),
+    typeCount: countRecorded(snap?.types),
+    routineCount: countRecorded(snap?.routines),
+    tableNames,
+  };
+}
+
+/** Length of a schema-scoped collection, or null when it was never recorded. */
+function countRecorded(items: unknown): number | null {
+  return Array.isArray(items) ? items.length : null;
 }
 
 /**

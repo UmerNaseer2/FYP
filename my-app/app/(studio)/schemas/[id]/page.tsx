@@ -483,6 +483,24 @@ function LineageNodeCard({
   const previewNames = snap ? snap.tableNames.slice(0, 8) : [];
   const moreCount = snap ? Math.max(0, snap.tableNames.length - previewNames.length) : 0;
 
+  // Split the optional categories two ways: a count worth a tile, and a name
+  // for the "nobody looked" line. null means the snapshot has no record of the
+  // category, which the summary keeps separate from a recorded zero.
+  const objectStats: { label: string; value: number }[] = [];
+  const unrecorded: string[] = [];
+  for (const [label, count] of [
+    ["INDEXES", snap?.indexCount],
+    ["TRIGGERS", snap?.triggerCount],
+    ["VIEWS", snap?.viewCount],
+    ["SEQUENCES", snap?.sequenceCount],
+    ["TYPES", snap?.typeCount],
+    ["FUNCTIONS", snap?.routineCount],
+  ] as const) {
+    if (count === undefined) continue;
+    if (count === null) unrecorded.push(label);
+    else if (count > 0) objectStats.push({ label, value: count });
+  }
+
   return (
     <TimelineNode state="applied" head={isHead} drift={drifted}>
       <div className="pb-5">
@@ -535,6 +553,23 @@ function LineageNodeCard({
               <SummaryStat value={snap.columnCount} label="COLUMNS" />
               <SummaryStat value={snap.constraintCount} label="CONSTRAINTS" />
             </div>
+            {/* The other things the comparison engine reads. Only the ones this
+                snapshot actually holds get a tile, and only when there is at
+                least one — a schema with no triggers does not need a 0. */}
+            {objectStats.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 text-center mt-2">
+                {objectStats.map((stat) => (
+                  <SummaryStat key={stat.label} value={stat.value} label={stat.label} />
+                ))}
+              </div>
+            )}
+            {unrecorded.length > 0 && (
+              <p className="text-[11px] mt-2.5" style={{ color: "var(--text-3)" }}>
+                Not recorded in this snapshot: {unrecorded.join(", ").toLowerCase()}. It
+                was captured before this app read them, so a comparison against it
+                stays quiet about those rather than reporting them as missing.
+              </p>
+            )}
             {previewNames.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-3">
                 {previewNames.map((name) => (
