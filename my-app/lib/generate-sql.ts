@@ -1140,6 +1140,15 @@ type ObjectPhases = {
    * gone: after the table drops, and after the type drops above.
    */
   collationDrops: SqlStatement[];
+  /**
+   * Tables whose ALTER COLUMN ... TYPE cannot run while safe mode holds a
+   * materialized view's drop back, keyed by the table's name in the SOURCE and
+   * listing the views in the way.
+   *
+   * The generator marks those ALTERs `needsArmedDrop` so the renderer comments
+   * them out with the drop rather than leaving them to fail mid-transaction.
+   */
+  retypeBlockedBy: Map<string, string[]>;
   warnings: string[];
 };
 
@@ -1168,6 +1177,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     routineDrops: [],
     afterTables: [],
     collationDrops: [],
+    retypeBlockedBy: new Map(),
     warnings: [],
   };
 
@@ -1454,23 +1464,54 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
   // nothing dropped it. The migration died on a statement the report had shown
   // as clean, and the rollback died on the mirror image of it. Drop them up
   // front and let the CASCADE walk above queue the rebuild.
-  const retypedTables = new Set<string>();
+  // Keyed by the table's name in the SOURCE, because that is the name the
+  // ALTER statements use: the rename step above has already run by then.
+  const retypedTables = new Map<string, string>();
   for (const match of report.matchedTables) {
     const retyped = match.columnMatches.some(
-      (col) => normalizeType(col.left.typeDisplay) !== normalizeType(col.right.typeDisplay)
+      (col) =>
+        normalizeType(col.left.typeDisplay) !== normalizeType(col.right.typeDisplay) ||
+        // A collation change is written as ALTER COLUMN ... TYPE too — there is
+        // no SET COLLATE, so the only way to change one is to re-state the type
+        // beside the new collation. The server does not care that the type is
+        // unchanged: the statement is still a retype and it is still refused
+        // while a view reads the column. Same condition as the branch that
+        // emits it, so the two cannot drift apart.
+        (col.left.collation !== undefined &&
+          col.right.collation !== undefined &&
+          col.left.collation !== col.right.collation)
     );
-    if (retyped) retypedTables.add(match.right.name);
+    if (retyped) retypedTables.set(match.right.name, match.left.name);
   }
-  for (const view of viewsCascadedBy(rightViews, retypedTables)) {
-    if (viewsBeingDropped.has(view.name)) continue;
-    // Only drop what can be put back. A view the source does not have would
-    // already be a diff and already be in the set above, so reaching here with
-    // no source copy means views were never recorded on that side — and
-    // dropping a view this script cannot recreate is worse than the ALTER
-    // failing loudly.
-    if (!findByName(leftViews, view.name)) continue;
-    queueViewDrop(view, " so a column it reads can change type");
-    cascadingRelations.add(view.name);
+  // One table at a time rather than one call over the whole set, so each view
+  // found is attributable to the table whose column change needs it gone. The
+  // union is the same either way; what the per-table walk buys is the map
+  // below, which safe mode needs to hold the ALTER back beside the drop.
+  for (const [targetName, sourceName] of retypedTables) {
+    for (const view of viewsCascadedBy(rightViews, new Set([targetName]))) {
+      if (!viewsBeingDropped.has(view.name)) {
+        // Only drop what can be put back. A view the source does not have would
+        // already be a diff and already be in the set above, so reaching here
+        // with no source copy means views were never recorded on that side —
+        // and dropping a view this script cannot recreate is worse than the
+        // ALTER failing loudly.
+        if (!findByName(leftViews, view.name)) continue;
+        queueViewDrop(view, " so a column it reads can change type");
+        cascadingRelations.add(view.name);
+      }
+      // A materialized view is dropped destructively — it holds its own rows —
+      // so safe mode comments the drop out. The ALTER is not destructive and
+      // would stay live, hit a matview that is still sitting there, and fail
+      // with "cannot alter type of a column used by a view or rule". The apply
+      // route runs the whole script in one transaction, so that failure rolls
+      // the entire migration back: the safest mode produced the one script that
+      // cannot finish. Held back beside the drop instead.
+      if (heldBackViewDrops.has(view.name)) {
+        const blocked = phases.retypeBlockedBy.get(sourceName) ?? [];
+        if (!blocked.includes(view.name)) blocked.push(view.name);
+        phases.retypeBlockedBy.set(sourceName, blocked);
+      }
+    }
   }
 
   const cascaded = viewsCascadedBy(rightViews, cascadingRelations);
@@ -2102,6 +2143,23 @@ export function generateMigration(
       options.addColumnIfNotExists === true,
       report.left.sequences,
     );
+    // Safe mode comments a materialized view's drop out, and the retype it was
+    // dropped for has to be held back with it — see ObjectPhases.retypeBlockedBy.
+    // Marked rather than skipped, so the reader still sees the statement and the
+    // "N held back" count still includes it.
+    const blockers = objects.retypeBlockedBy.get(match.left.name);
+    if (blockers && blockers.length > 0 && !allowDataLoss) {
+      for (const stmt of stmts) {
+        if (stmt.kind === "ALTER_COLUMN_TYPE") stmt.needsArmedDrop = true;
+      }
+      warnings.push(
+        `The column type change${stmts.filter((s) => s.kind === "ALTER_COLUMN_TYPE").length === 1 ? "" : "s"} ` +
+          `on "${match.left.name}" ${blockers.length === 1 ? "needs" : "need"} ` +
+          `${blockers.join(", ")} out of the way, and dropping a materialized view ` +
+          `throws its rows away, so both are held back. Enable "allow data loss" to ` +
+          `run them.`,
+      );
+    }
     statements.push(...stmts);
     fkStatements.push(...fkStmts);
   }
