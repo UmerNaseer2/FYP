@@ -38,6 +38,17 @@ export type SummaryRow = {
   added: number;
   dropped: number;
   changed: number;
+  /**
+   * How many of the above are things no statement can do — the script writes a
+   * note for each and runs nothing. Counted alongside rather than instead of
+   * added/changed, because the work is real and still has to be counted; it
+   * just is not work the script performs. See ObjectDiff.needsManualWork.
+   *
+   * Always 0 on the Tables, Columns and Constraints rows: those are counted
+   * from the snapshots rather than from object diffs, and none of the cases
+   * the flag covers is a table, a column or a constraint.
+   */
+  manual: number;
 };
 
 /** Which ObjectKinds roll up into each named row of the matrix. */
@@ -50,13 +61,15 @@ function tallyObjects(diffs: ObjectDiff[], kinds: ObjectKind[]) {
   let added = 0;
   let dropped = 0;
   let changed = 0;
+  let manual = 0;
   for (const diff of diffs) {
     if (!kinds.includes(diff.kind)) continue;
     if (diff.status === "onlyA") added += 1;
     else if (diff.status === "onlyB") dropped += 1;
     else changed += 1;
+    if (diff.needsManualWork === true) manual += 1;
   }
-  return { added, dropped, changed };
+  return { added, dropped, changed, manual };
 }
 
 /**
@@ -118,6 +131,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     added: report.summary.tablesOnlyInA,
     dropped: report.summary.tablesOnlyInB,
     changed: report.summary.changedTables,
+    manual: 0,
   });
 
   // Columns and constraints are counted over MATCHED tables only. A column on a
@@ -202,6 +216,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     added: columnsAdded,
     dropped: columnsDropped,
     changed: columnsChanged,
+    manual: 0,
   });
 
   rows.push({
@@ -212,6 +227,7 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     added: constraintsAdded,
     dropped: constraintsDropped,
     changed: constraintsChanged,
+    manual: 0,
   });
 
   const indexes = tallyObjects(tableScopedDiffs, ["INDEX"]);

@@ -42,6 +42,12 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
   const unmatched = rows
     .filter((row) => row.notComparedReason === "noMatchedTables")
     .map((row) => row.label);
+  // Counted here rather than given a column of its own. These are rare — a
+  // range type the snapshot cannot describe, a changed collation — and a sixth
+  // column of zeros on every row would cost every reader something to buy the
+  // one reader who has one. A sentence costs nothing until there is one.
+  const manual = rows.reduce((sum, row) => sum + row.manual, 0);
+  const manualLabels = rows.filter((row) => row.manual > 0).map((row) => row.label);
 
   return (
     <details className="table-group" open>
@@ -115,6 +121,20 @@ export function SummaryMatrix({ report }: { report: CompareReport }) {
               {" — they are counted per table pair, and no table exists on both " +
                 "sides. Anything on a table that exists on one side only is created " +
                 "or dropped with the table, and the migration below writes it."}
+            </>
+          )}
+          {manual > 0 && (
+            <>
+              {" "}
+              <b style={{ color: "var(--drift)" }}>
+                {manual === 1
+                  ? "1 of these is counted but cannot be scripted"
+                  : manual + " of these are counted but cannot be scripted"}
+              </b>
+              {" — PostgreSQL has no statement that makes the change (" +
+                manualLabels.join(", ") +
+                "), so the script writes a note saying what has to be done and " +
+                "runs nothing for it."}
             </>
           )}
           {stale.length > 0 && (

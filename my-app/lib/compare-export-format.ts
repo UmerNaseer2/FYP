@@ -13,7 +13,18 @@
 import type { ChangeRow, DiffDocument } from "./compare-export";
 
 /** Column headings for the CSV, in the order documentRows writes them. */
-const CSV_HEADERS = ["category", "table", "object", "change", "severity", "detail"];
+const CSV_HEADERS = [
+  "category",
+  "table",
+  "object",
+  "change",
+  "severity",
+  // yes when the migration script cannot make this change and writes a note
+  // instead. A filter on "changed" still finds the row; this column is what
+  // tells the reader nothing will run for it.
+  "manual",
+  "detail",
+];
 
 /** Column headings for the row-data block, written only when one was run. */
 const DATA_CSV_HEADERS = [
@@ -46,7 +57,15 @@ export function documentToCsv(document: DiffDocument): string {
   const lines = [CSV_HEADERS.join(",")];
   for (const row of document.changes) {
     lines.push(
-      [row.category, row.table, row.object, row.change, row.severity, row.detail]
+      [
+        row.category,
+        row.table,
+        row.object,
+        row.change,
+        row.severity,
+        row.manual ? "yes" : "no",
+        row.detail,
+      ]
         .map(csvField)
         .join(",")
     );
@@ -103,7 +122,11 @@ function cell(text: string): string {
 /** `- Table "orders" · dropped · breaking — …` */
 function markdownRow(row: ChangeRow): string {
   const where = row.table && row.table !== row.object ? `${row.table}.` : "";
-  return `- **${row.category}** \`${where}${row.object}\` · ${row.change} · ${row.severity} — ${row.detail}`;
+  // The reader of a pull request sees this line and nothing else about the row,
+  // so the fact that the script writes a note instead of a statement has to be
+  // on it. Without this, "Type `ts_range` · added" reads as work already done.
+  const manual = row.manual ? " · by hand" : "";
+  return `- **${row.category}** \`${where}${row.object}\` · ${row.change} · ${row.severity}${manual} — ${row.detail}`;
 }
 
 /**
@@ -149,6 +172,15 @@ export function documentToMarkdown(document: DiffDocument): string {
       out.push("");
       out.push(
         `⚠️ ${totals.breaking} of them ${totals.breaking === 1 ? "is" : "are"} breaking.`
+      );
+    }
+    if (totals.manual > 0) {
+      out.push("");
+      out.push(
+        `✋ ${totals.manual} of them ${totals.manual === 1 ? "has" : "have"} to be ` +
+          `done by hand — the script writes a note for ` +
+          `${totals.manual === 1 ? "it" : "each"} and runs nothing. ` +
+          `Marked \`by hand\` below.`
       );
     }
     out.push("");

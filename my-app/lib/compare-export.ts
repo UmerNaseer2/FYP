@@ -78,6 +78,19 @@ export type ChangeRow = {
   change: ChangeVerdict;
   severity: ChangeSeverity;
   detail: string;
+  /**
+   * True when no statement can carry this change and a person has to plan it —
+   * a range type the snapshot cannot describe well enough to write CREATE TYPE,
+   * a changed collation, a changed range type. The script writes a note for
+   * each of these and runs nothing.
+   *
+   * Kept beside `change` rather than folded into it as a sixth verdict: the row
+   * is still an addition or still a change, and a reader filtering the CSV for
+   * "changed" should keep finding it. What this adds is that the migration will
+   * not do it for them. See ObjectDiff.needsManualWork, which is where the
+   * decision is made — this only carries it out to the file.
+   */
+  manual: boolean;
 };
 
 /**
@@ -126,6 +139,8 @@ export type DiffDocument = {
     renamed: number;
     renameSuggestions: number;
     breaking: number;
+    /** Of those changes, how many the script cannot make. See ChangeRow.manual. */
+    manual: number;
   };
   /**
    * Categories that were skipped, each with the reason it was skipped.
@@ -219,6 +234,7 @@ export function buildDiffDocument(
       detail: `created with ${table.columns.length} column${
         table.columns.length === 1 ? "" : "s"
       }`,
+      manual: false,
     });
   }
   for (const table of report.tablesOnlyInB) {
@@ -233,6 +249,7 @@ export function buildDiffDocument(
       detail: `dropped with ${table.columns.length} column${
         table.columns.length === 1 ? "" : "s"
       } — CASCADE also removes anything depending on it`,
+      manual: false,
     });
   }
 
@@ -252,6 +269,7 @@ export function buildDiffDocument(
         change: "renamed",
         severity: "breaking",
         detail: `renamed from "${match.right.name}" (match score ${match.score})`,
+        manual: false,
       });
     }
 
@@ -263,6 +281,7 @@ export function buildDiffDocument(
         change: "added",
         severity: addedColumnSeverity(column),
         detail: describeColumn(column),
+        manual: false,
       });
     }
     for (const column of match.columnsOnlyInB) {
@@ -273,6 +292,7 @@ export function buildDiffDocument(
         change: "dropped",
         severity: droppedColumnSeverity(),
         detail: `${describeColumn(column)} — removes the column and its data`,
+        manual: false,
       });
     }
     for (const column of match.columnMatches) {
@@ -286,6 +306,7 @@ export function buildDiffDocument(
         change: column.exact ? "changed" : "renamed",
         severity: columnMatchSeverity(column),
         detail: notes.join("; "),
+        manual: false,
       });
     }
 
@@ -302,6 +323,7 @@ export function buildDiffDocument(
               : "changed",
         severity: constraintDiffSeverity(diff),
         detail: `${diff.kind} — ${diff.summary}`,
+        manual: false,
       });
     }
 
@@ -315,6 +337,7 @@ export function buildDiffDocument(
         change: objectVerdict(diff),
         severity: objectDiffSeverity(diff),
         detail: diff.summary,
+        manual: diff.needsManualWork === true,
       });
     }
   }
@@ -328,6 +351,7 @@ export function buildDiffDocument(
       change: objectVerdict(diff),
       severity: objectDiffSeverity(diff),
       detail: diff.summary,
+      manual: diff.needsManualWork === true,
     });
   }
 
@@ -340,6 +364,7 @@ export function buildDiffDocument(
       change: "rename-suggested",
       severity: "info",
       detail: `may be "${candidate.rightName}" renamed (score ${candidate.score}) — not applied`,
+      manual: false,
     });
   }
 
@@ -373,6 +398,7 @@ export function buildDiffDocument(
       renamed: count("renamed"),
       renameSuggestions: count("rename-suggested"),
       breaking: changes.filter((row) => row.severity === "breaking").length,
+      manual: changes.filter((row) => row.manual).length,
     },
     notCompared,
     categories,
