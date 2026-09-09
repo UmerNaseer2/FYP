@@ -123,6 +123,38 @@ type SideResult =
   | { ok: false; error: string };
 
 /**
+ * The settings that decide how a value renders as text, pinned to the same
+ * thing on both sides.
+ *
+ * The checksum hashes `ROW(a::text, b::text)::text`, so anything that changes
+ * the text of a value changes the hash. Every one of these has a server default
+ * that differs between a local box and a hosted one, and none of them means the
+ * data differs:
+ *
+ *   TimeZone           a timestamptz renders in the session zone, so the same
+ *                      instant reads "2024-01-01 12:00:00+00" on one side and
+ *                      "2024-01-01 07:00:00-05" on the other. This is the one
+ *                      that fires in practice, because almost every table has a
+ *                      created_at.
+ *   DateStyle          "2024-01-31" vs "01/31/2024" for date and timestamp.
+ *   extra_float_digits float8 rounds to 6 significant digits at 0 and round
+ *                      trips at 3, which Postgres 12+ defaults to but an older
+ *                      server or an explicit ALTER DATABASE SET does not.
+ *   IntervalStyle      "1 day 02:00:00" vs "@ 1 day 2 hours".
+ *   bytea_output       "\\x4142" vs the escape form.
+ *
+ * SET LOCAL, so it lasts exactly as long as the read's own transaction and no
+ * later query on this pooled connection inherits it.
+ */
+const SETTINGS_THE_CHECKSUM_DEPENDS_ON = [
+  "SET LOCAL TimeZone = 'UTC'",
+  "SET LOCAL DateStyle = 'ISO, MDY'",
+  "SET LOCAL extra_float_digits = 3",
+  "SET LOCAL IntervalStyle = 'postgres'",
+  "SET LOCAL bytea_output = 'hex'",
+].join("; ");
+
+/**
  * Run one read against one side inside its own short, read-only transaction.
  *
  * Its own transaction because a statement timeout aborts the transaction it
@@ -139,6 +171,7 @@ async function readSide(
   try {
     await client.query("BEGIN READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${Math.round(timeoutMs)}`);
+    await client.query(SETTINGS_THE_CHECKSUM_DEPENDS_ON);
     const result = await client.query<{ row_count: string; checksum: string | null }>(
       sql,
     );
