@@ -769,7 +769,17 @@ type ObjectPhases = {
   views: SqlStatement[];
   /** View drops — before DROP TABLE, so CASCADE has less to reach. */
   viewDrops: SqlStatement[];
-  /** Routine, type and sequence drops — after the tables that used them are gone. */
+  /**
+   * Routine drops — after the tables, before the type drops below.
+   *
+   * Their own bucket rather than the back of afterTables: object diffs arrive
+   * sorted alphabetically by kind, so "ENUM" came before "FUNCTION" and a
+   * rollback that removed an enum and a function taking that enum emitted the
+   * DROP TYPE first. DROP TYPE carries no CASCADE on purpose, so it failed and
+   * took the whole transaction with it.
+   */
+  routineDrops: SqlStatement[];
+  /** Type and sequence drops — after the tables and routines that used them. */
   afterTables: SqlStatement[];
   warnings: string[];
 };
@@ -794,6 +804,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     triggers: [],
     views: [],
     viewDrops: [],
+    routineDrops: [],
     afterTables: [],
     warnings: [],
   };
@@ -893,7 +904,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
       const source = report.left.routines?.find((r) => r.signature === diff.name) ?? null;
       const target = report.right.routines?.find((r) => r.signature === diff.name) ?? null;
       if (diff.status === "onlyB") {
-        if (target) phases.afterTables.push(dropRoutineStatement(target));
+        if (target) phases.routineDrops.push(dropRoutineStatement(target));
       } else if (source) {
         phases.routines.push(createRoutineStatement(source));
       }
@@ -933,6 +944,39 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
   for (const table of report.tablesOnlyInB) cascadingRelations.add(table.name);
   for (const match of report.matchedTables) {
     if (match.columnsOnlyInB.length > 0) cascadingRelations.add(match.right.name);
+  }
+  // A view the script drops by name cascades as well. A second view built on
+  // that one is usually byte-identical in both schemas, so the comparator says
+  // nothing about it and it was in neither list: the CASCADE took it and
+  // nothing put it back — in the migration, and again in the rollback, which
+  // still called itself complete. Seeding the set with the views being dropped
+  // makes the walk below find those dependents and queue them for rebuild.
+  for (const name of viewsBeingDropped) cascadingRelations.add(name);
+
+  // ── Views standing in the way of a column type change ─────────────────────
+  // PostgreSQL refuses ALTER TABLE ... ALTER COLUMN ... TYPE while any view
+  // selects that column, and a view identical on both sides is in no diff, so
+  // nothing dropped it. The migration died on a statement the report had shown
+  // as clean, and the rollback died on the mirror image of it. Drop them up
+  // front and let the CASCADE walk above queue the rebuild.
+  const retypedTables = new Set<string>();
+  for (const match of report.matchedTables) {
+    const retyped = match.columnMatches.some(
+      (col) => normalizeType(col.left.typeDisplay) !== normalizeType(col.right.typeDisplay)
+    );
+    if (retyped) retypedTables.add(match.right.name);
+  }
+  for (const view of viewsCascadedBy(rightViews, retypedTables)) {
+    if (viewsBeingDropped.has(view.name)) continue;
+    // Only drop what can be put back. A view the source does not have would
+    // already be a diff and already be in the set above, so reaching here with
+    // no source copy means views were never recorded on that side — and
+    // dropping a view this script cannot recreate is worse than the ALTER
+    // failing loudly.
+    if (!findByName(leftViews, view.name)) continue;
+    phases.viewDrops.push(dropViewStatement(view, " so a column it reads can change type"));
+    viewsBeingDropped.add(view.name);
+    cascadingRelations.add(view.name);
   }
 
   const cascaded = viewsCascadedBy(rightViews, cascadingRelations);
@@ -1526,7 +1570,12 @@ export function generateMigration(
   // nothing here can be cascaded away by a later statement.
   statements.push(...objects.views);
 
-  // ── Routines, types and sequences that are no longer used ─────────────────
+  // ── Routines that are no longer used ──────────────────────────────────────
+  // Before the types below: a function whose argument or return type is an enum
+  // holds that enum in place, and DROP TYPE deliberately carries no CASCADE.
+  statements.push(...objects.routineDrops);
+
+  // ── Types and sequences that are no longer used ───────────────────────────
   // Last of all: a type cannot be dropped while a column still has it, and that
   // column only went away with the table drops above.
   statements.push(...objects.afterTables);
