@@ -1,4 +1,5 @@
 import type {
+  CollationSnapshot,
   ColumnSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
@@ -1527,6 +1528,7 @@ const OBJECT_KIND_LABEL: Record<ObjectKind, string> = {
   POLICY: "Policy",
   "ROW SECURITY": "Row security on",
   PARTITIONING: "Partitioning of",
+  COLLATION: "Collation",
 };
 
 /**
@@ -1553,6 +1555,8 @@ type ComparableObject = {
   routine?: RoutineSnapshot;
   /** Carried for a view, so the drop-or-replace question is decided once. */
   view?: ViewSnapshot;
+  /** Carried for a collation: the generator writes CREATE from the fields. */
+  collation?: CollationSnapshot;
 };
 
 /**
@@ -1611,6 +1615,11 @@ function objectChangeSeverity(
   // and reattached, by any ALTER the generator can write. Whichever way it
   // moves, the fix is a rebuild — which is the definition of breaking here.
   if (source.kind === "PARTITIONING") return "breaking";
+  // PostgreSQL has no ALTER COLLATION that changes how one sorts — only
+  // RENAME, OWNER and REFRESH VERSION. A changed collation therefore has to be
+  // dropped and recreated, which fails outright while any column still uses
+  // it, and re-sorts every index over those columns once it is done.
+  if (source.kind === "COLLATION") return "breaking";
   if (source.kind === "INDEX") {
     return objectDropSeverity(target) === "breaking" ||
       objectCreateSeverity(source) === "breaking"
@@ -1950,6 +1959,17 @@ function typeObjects(types: TypeSnapshot[]): ComparableObject[] {
   }));
 }
 
+function collationObjects(collations: CollationSnapshot[]): ComparableObject[] {
+  return collations.map((collation) => ({
+    key: normalizeIdentifier(collation.name),
+    kind: "COLLATION" as const,
+    name: collation.name,
+    definition: collation.definition,
+    normalizedDefinition: collation.normalizedDefinition,
+    collation,
+  }));
+}
+
 function routineObjects(routines: RoutineSnapshot[]): ComparableObject[] {
   return routines.map((routine) => ({
     // Postgres allows overloads, so the identity is the signature, not the name.
@@ -2006,9 +2026,23 @@ function compareTableObjects(
   return diffs;
 }
 
-/** Views, sequences, types and routines, which belong to the schema. */
+/** Views, sequences, types, collations and routines, which belong to the schema. */
 function compareSchemaObjects(left: SchemaSnapshot, right: SchemaSnapshot): ObjectDiff[] {
   const diffs: ObjectDiff[] = [];
+
+  // First in the list on purpose. A column, a domain and an index can all name
+  // a collation, so the statement that creates one has to come before them —
+  // and the generator emits object statements in the order they arrive here.
+  if (left.collations && right.collations) {
+    diffs.push(
+      ...compareObjectLists(
+        collationObjects(left.collations),
+        collationObjects(right.collations),
+        left.schema,
+        right.schema
+      )
+    );
+  }
 
   if (left.views && right.views) {
     // Options are compared only when both sides recorded them — see viewObjects.
@@ -2086,6 +2120,7 @@ function comparedCategories(
     views: schemaScoped("views", Boolean(left.views && right.views)),
     sequences: schemaScoped("sequences", Boolean(left.sequences && right.sequences)),
     types: schemaScoped("types", Boolean(left.types && right.types)),
+    collations: schemaScoped("collations", Boolean(left.collations && right.collations)),
     routines: schemaScoped("routines", Boolean(left.routines && right.routines)),
     rowSecurity: tableScoped("rowSecurity", (m) =>
       Boolean(m.left.rowSecurity && m.right.rowSecurity)

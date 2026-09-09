@@ -6,6 +6,7 @@ import type {
   TableMatch,
 } from "./compare-types";
 import type {
+  CollationSnapshot,
   ColumnSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
@@ -71,6 +72,8 @@ export type SqlStatementKind =
   | "CREATE_TYPE"
   | "DROP_TYPE"
   | "ALTER_TYPE"
+  | "CREATE_COLLATION"
+  | "DROP_COLLATION"
   | "CREATE_ROUTINE"
   | "DROP_ROUTINE"
   /**
@@ -788,6 +791,53 @@ function alterSequenceStatement(sequence: SequenceSnapshot): SqlStatement {
 
 // ── Types: enums, domains, composites, ranges ──────────────────────────────
 
+/**
+ * CREATE COLLATION, written from the snapshot's fields rather than its one-line
+ * definition, so the sentence in the report and the SQL can be worded
+ * independently of each other.
+ *
+ * A collation whose provider is the database default is skipped: there is no
+ * option list to write, and `CREATE COLLATION x (provider = default)` is not
+ * something PostgreSQL accepts.
+ */
+function createCollationStatement(
+  collation: CollationSnapshot,
+  idempotent: boolean
+): SqlStatement | null {
+  const options: string[] = [];
+  if (collation.provider !== "default") options.push(`PROVIDER = ${collation.provider}`);
+  if (collation.locale !== null) options.push(`LOCALE = ${literal(collation.locale)}`);
+  if (collation.lcCollate !== null) {
+    options.push(`LC_COLLATE = ${literal(collation.lcCollate)}`);
+  }
+  if (collation.lcCtype !== null) options.push(`LC_CTYPE = ${literal(collation.lcCtype)}`);
+  if (collation.rules !== null) options.push(`RULES = ${literal(collation.rules)}`);
+  // Only written when false. The default is true, so spelling it out adds
+  // nothing, and the option does not exist before PostgreSQL 12.
+  if (!collation.deterministic) options.push("DETERMINISTIC = false");
+  if (options.length === 0) return null;
+
+  const exists = idempotent ? " IF NOT EXISTS" : "";
+  return objectStatement({
+    sql: `CREATE COLLATION${exists} ${q(collation.name)} (${options.join(", ")});`,
+    description: `Create collation "${collation.name}"`,
+    kind: "CREATE_COLLATION",
+    tableName: collation.name,
+  });
+}
+
+function dropCollationStatement(collation: CollationSnapshot): SqlStatement {
+  return objectStatement({
+    sql: `DROP COLLATION IF EXISTS ${q(collation.name)};`,
+    description:
+      `Drop collation "${collation.name}" — WARNING: fails while any column, ` +
+      "index or domain still uses it",
+    kind: "DROP_COLLATION",
+    severity: "breaking",
+    tableName: collation.name,
+  });
+}
+
 function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
   if (type.kind === "ENUM") {
     const labels = type.labels.map((label) => `  ${literal(label)}`).join(",\n");
@@ -1015,6 +1065,13 @@ function dropRoutineStatement(routine: RoutineSnapshot, reason = ""): SqlStateme
  */
 type ObjectPhases = {
   /**
+   * Collations — before everything, including the types below.
+   *
+   * A column, a domain and an index can all name a collation, so nothing that
+   * might name one can be written until it exists.
+   */
+  collations: SqlStatement[];
+  /**
    * Types and standalone sequences — before CREATE TABLE.
    *
    * Also the `-- MANUAL:` notes for work the generator cannot express, so the
@@ -1051,6 +1108,14 @@ type ObjectPhases = {
   routineDrops: SqlStatement[];
   /** Type and sequence drops — after the tables and routines that used them. */
   afterTables: SqlStatement[];
+  /**
+   * Collation drops — the very last thing.
+   *
+   * DROP COLLATION carries no CASCADE here and fails while any column, domain
+   * or index still uses it, so it has to come after every one of those has
+   * gone: after the table drops, and after the type drops above.
+   */
+  collationDrops: SqlStatement[];
   warnings: string[];
 };
 
@@ -1068,6 +1133,7 @@ function findByName<T extends { name: string }>(items: T[] | undefined, name: st
  */
 function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases {
   const phases: ObjectPhases = {
+    collations: [],
     beforeTables: [],
     routines: [],
     indexes: [],
@@ -1077,6 +1143,7 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
     viewDrops: [],
     routineDrops: [],
     afterTables: [],
+    collationDrops: [],
     warnings: [],
   };
 
@@ -1243,6 +1310,37 @@ function objectPhases(report: CompareReport, idempotent: boolean): ObjectPhases 
       } else {
         const source = findByName(report.left.sequences, diff.name);
         if (source) phases.beforeTables.push(alterSequenceStatement(source));
+      }
+      continue;
+    }
+
+    if (diff.kind === "COLLATION") {
+      const source = findByName(report.left.collations, diff.name);
+      const target = findByName(report.right.collations, diff.name);
+      if (diff.status === "onlyA") {
+        // A collation with nothing to write is one on the database default,
+        // which every schema already has; there is nothing to create.
+        const create = source ? createCollationStatement(source, idempotent) : null;
+        if (create) phases.collations.push(create);
+      } else if (diff.status === "onlyB") {
+        if (target) phases.collationDrops.push(dropCollationStatement(target));
+      } else {
+        // No ALTER COLLATION changes how one sorts — the grammar has RENAME,
+        // OWNER and REFRESH VERSION and nothing else. Replacing it means
+        // dropping it, which fails while a single column still uses it, so
+        // every column has to be moved off it first. That is a plan, not a
+        // statement, and the generator writes plans as MANUAL notes.
+        phases.collations.push(
+          manualNote(
+            `collation "${diff.name}" has to be replaced by hand: it is ` +
+              `(${diff.rightDefinition ?? "?"}) in the target and ` +
+              `(${diff.leftDefinition ?? "?"}) in the source, and PostgreSQL has no ` +
+              "ALTER that changes either. Move every column off it, drop it, " +
+              "create it again, then put the columns back.",
+            `Collation "${diff.name}" needs replacing by hand`,
+            diff.name
+          )
+        );
       }
       continue;
     }
@@ -1889,6 +1987,11 @@ export function generateMigration(
   const objects = objectPhases(report, options.addColumnIfNotExists === true);
   const rightViews = report.right.views ?? [];
 
+  // ── Collations ────────────────────────────────────────────────────────────
+  // Ahead of the types below as well as the tables: a domain can be declared
+  // COLLATE "x" exactly the way a column can.
+  statements.push(...objects.collations);
+
   // ── Types and standalone sequences ────────────────────────────────────────
   // A CREATE TABLE below can name an enum or a domain, and a column
   // default can call nextval on a standalone sequence, so both have to exist
@@ -2024,6 +2127,11 @@ export function generateMigration(
   // Last of all: a type cannot be dropped while a column still has it, and that
   // column only went away with the table drops above.
   statements.push(...objects.afterTables);
+
+  // ── Collations that are no longer used ────────────────────────────────────
+  // After the type drops, not with them: a domain can carry a collation, so
+  // the collation outlives the domain by exactly one statement.
+  statements.push(...objects.collationDrops);
 
   warnings.push(...objects.warnings);
 

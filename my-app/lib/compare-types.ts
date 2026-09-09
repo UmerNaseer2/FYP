@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import type {
+  CollationSnapshot,
   ColumnSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
@@ -21,6 +22,7 @@ import type {
 
 // Re-export postgres types that the UI also needs directly
 export type {
+  CollationSnapshot,
   ColumnSnapshot,
   ConstraintSnapshot,
   ForeignKeySnapshot,
@@ -132,6 +134,7 @@ export type ObjectKind =
   | "DOMAIN"
   | "COMPOSITE TYPE"
   | "RANGE TYPE"
+  | "COLLATION"
   | "FUNCTION"
   | "PROCEDURE"
   | "POLICY"
@@ -199,6 +202,7 @@ export type ObjectCategoryKey =
   | "views"
   | "sequences"
   | "types"
+  | "collations"
   | "routines"
   | "rowSecurity"
   | "partitioning";
@@ -232,6 +236,7 @@ export type ComparedObjectCategories = {
   views: boolean;
   sequences: boolean;
   types: boolean;
+  collations: boolean;
   routines: boolean;
   rowSecurity: boolean;
   partitioning: boolean;

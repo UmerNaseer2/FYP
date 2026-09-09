@@ -131,6 +131,7 @@ const OBJECT_TAG: Record<ObjectKind, string> = {
   POLICY: "policy",
   "ROW SECURITY": "rls",
   PARTITIONING: "partitioning",
+  COLLATION: "collation",
 };
 
 /**
@@ -145,6 +146,7 @@ const SCHEMA_OBJECT_SECTIONS: { label: string; kinds: ObjectKind[] }[] = [
   { label: "Views", kinds: ["VIEW", "MATERIALIZED VIEW"] },
   { label: "Sequences", kinds: ["SEQUENCE"] },
   { label: "Types", kinds: ["ENUM", "DOMAIN", "COMPOSITE TYPE", "RANGE TYPE"] },
+  { label: "Collations", kinds: ["COLLATION"] },
   { label: "Functions", kinds: ["FUNCTION", "PROCEDURE"] },
 ];
 
@@ -190,6 +192,12 @@ function objectNote(diff: ObjectDiff): string {
     // No ALTER turns a plain table into a partitioned one or moves a partition
     // to a different parent, so saying what each side is beats saying "changed".
     return `${diff.rightDefinition ?? "?"} in the target, ${diff.leftDefinition ?? "?"} in the source`;
+  }
+  if (diff.kind === "COLLATION") {
+    // There is no ALTER COLLATION that changes how one sorts, and dropping it
+    // fails while a single column still uses it. The generator writes a
+    // MANUAL note for exactly that reason, so the report says the same thing.
+    return "definition changed — has to be replaced by hand";
   }
   return "definition changed — replaced";
 }

@@ -296,6 +296,22 @@ export function summaryRows(report: CompareReport): SummaryRow[] {
     ...types,
   });
 
+  const collations = tallyObjects(report.objectDiffs, ["COLLATION"]);
+  rows.push({
+    label: "Collations",
+    compared: categories.collations,
+    notComparedReason: reasonFor("collations"),
+    absent:
+      (report.left.collations?.length ?? 0) === 0 &&
+      (report.right.collations?.length ?? 0) === 0,
+    inSync: inSyncCount(
+      report.left.collations?.length ?? 0,
+      collations.added,
+      collations.changed
+    ),
+    ...collations,
+  });
+
   const routines = tallyObjects(report.objectDiffs, ROUTINE_KINDS);
   rows.push({
     label: "Functions",

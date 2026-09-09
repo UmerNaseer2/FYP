@@ -91,6 +91,35 @@ function coerceJsonArray<T>(value: unknown): T[] {
   }
 }
 
+/**
+ * A JSON value that is a non-empty string, or null.
+ *
+ * Used on catalog columns read through to_jsonb, where a column the server
+ * version does not have comes back `undefined` rather than raising an error —
+ * which is the whole reason those columns are read that way.
+ */
+function textOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** A SQL string literal, for values that go in a statement rather than names. */
+function quoteLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * pg_collation.collprovider, spelled the way CREATE COLLATION spells it.
+ *
+ * 'b' (builtin) only exists from PostgreSQL 17, and an unknown letter from a
+ * newer server is reported as the database default rather than guessed at.
+ */
+function collationProvider(code: string): CollationProvider {
+  if (code === "i") return "icu";
+  if (code === "c") return "libc";
+  if (code === "b") return "builtin";
+  return "default";
+}
+
 function coerceTextArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
@@ -528,6 +557,51 @@ export type TypeSnapshot = {
 };
 
 /**
+ * Which library decides how a collation sorts and compares.
+ *
+ *   icu     — an ICU locale, the only provider that can be nondeterministic
+ *   libc    — the operating system's locale, named by LC_COLLATE / LC_CTYPE
+ *   builtin — PostgreSQL's own C / C.UTF-8, added in 17
+ *   default — the database's collation, inherited rather than declared
+ */
+export type CollationProvider = "icu" | "libc" | "builtin" | "default";
+
+/**
+ * A collation the schema owns.
+ *
+ * A column's collation is captured (see ColumnSnapshot.collation) and written
+ * back out as `COLLATE "ci"`, which names a collation the target schema has to
+ * have. Without this the generated CREATE TABLE referred to something that was
+ * never created, and the migration stopped on it.
+ *
+ * The library version (pg_collation.collversion) is deliberately NOT recorded.
+ * It is the ICU or OS version the collation was defined against, so two servers
+ * on different machines report different values for the same collation — and a
+ * comparison would call that drift when nothing in either schema moved.
+ */
+export type CollationSnapshot = {
+  name: string;
+  provider: CollationProvider;
+  /**
+   * False only for an ICU collation created with `deterministic = false`, where
+   * two different strings can compare equal. That decides which rows a UNIQUE
+   * constraint accepts, so it is part of the definition and not a detail.
+   */
+  deterministic: boolean;
+  /** ICU and builtin: the locale. libc leaves this null and uses the pair below. */
+  locale: string | null;
+  /** libc only: LC_COLLATE. */
+  lcCollate: string | null;
+  /** libc only: LC_CTYPE. */
+  lcCtype: string | null;
+  /** ICU only, PostgreSQL 16+: custom tailoring rules. */
+  rules: string | null;
+  /** A one-line human-readable rendering; this is what the comparator diffs. */
+  definition: string;
+  normalizedDefinition: string;
+};
+
+/**
  * A function or procedure. `signature` (name + identity arguments) is the
  * identity: Postgres allows overloads, so the name alone is not unique.
  */
@@ -639,6 +713,14 @@ export type SchemaSnapshot = {
   sequences?: SequenceSnapshot[];
   /** Enums, domains, composites and ranges. See the optionality note above. */
   types?: TypeSnapshot[];
+  /**
+   * Collations the schema owns. Its own list rather than part of `types`,
+   * because a snapshot taken before collations were captured already HAS a
+   * `types` array — folding them in would make that snapshot claim the schema
+   * has no collations, and report every collation in the other one as newly
+   * added. See the optionality note above.
+   */
+  collations?: CollationSnapshot[];
   /** Functions and procedures. See the optionality note above. */
   routines?: RoutineSnapshot[];
 };
@@ -895,6 +977,25 @@ export async function fetchSchemaSnapshot(
     domain_not_null: boolean | null;
     domain_checks: DomainCheck[] | string | null;
     composite_fields: string[] | null;
+  };
+
+  type CollationRow = {
+    name: string;
+    provider: string;
+    deterministic: boolean;
+    lc_collate: string | null;
+    lc_ctype: string | null;
+    /**
+     * The whole catalog row as JSON.
+     *
+     * The locale and the tailoring rules moved columns twice — `colliculocale`
+     * arrived in 15, was renamed `colllocale` in 17, and `collicurules` arrived
+     * in 16 — so naming any of them in the SELECT list makes the query fail
+     * outright on a server that does not have that column. Nothing in this file
+     * gates on server version, so they are read out of the row as JSON instead,
+     * where a missing key is simply undefined.
+     */
+    raw: Record<string, unknown>;
   };
 
   type RoutineRow = {
@@ -1311,6 +1412,29 @@ export async function fetchSchemaSnapshot(
       [schemaName]
     );
 
+    // Only the columns that have been in pg_collation since 12 are named here.
+    // The locale and the ICU rules are read from to_jsonb(co) below, because
+    // the columns holding them differ by server version and naming one the
+    // server does not have makes the whole query fail.
+    const collationResult = await client.query<CollationRow>(
+      `SELECT
+         co.collname AS name,
+         co.collprovider AS provider,
+         co.collisdeterministic AS deterministic,
+         co.collcollate AS lc_collate,
+         co.collctype AS lc_ctype,
+         to_jsonb(co) AS raw
+       FROM pg_collation co
+       JOIN pg_namespace n ON n.oid = co.collnamespace
+       WHERE n.nspname = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_depend dep
+            WHERE dep.objid = co.oid AND dep.deptype = 'e'
+         )
+       ORDER BY co.collname`,
+      [schemaName]
+    );
+
     // prokind 'f'/'p' only: aggregates and window functions are declared, not
     // defined, and pg_get_functiondef() raises an error on them.
     const routineResult = await client.query<RoutineRow>(
@@ -1694,6 +1818,45 @@ export async function fetchSchemaSnapshot(
       } satisfies TypeSnapshot;
     });
 
+    const collations: CollationSnapshot[] = collationResult.rows.map((row) => {
+      const provider = collationProvider(row.provider);
+      // colllocale is 17+, colliculocale is 15-16, and before 15 an ICU
+      // collation kept its locale in collcollate — the same column libc uses.
+      const rawLocale =
+        textOrNull(row.raw.colllocale) ??
+        textOrNull(row.raw.colliculocale) ??
+        (provider === "libc" ? null : row.lc_collate);
+      const isLibc = provider === "libc" || provider === "default";
+      const locale = isLibc ? null : rawLocale;
+      const lcCollate = isLibc ? row.lc_collate : null;
+      const lcCtype = isLibc ? row.lc_ctype : null;
+      const rules = textOrNull(row.raw.collicurules);
+
+      // Written as the CREATE COLLATION option list, so the diff on screen
+      // reads the way the statement that would fix it does.
+      const parts = [`provider = ${provider}`];
+      if (locale !== null) parts.push(`locale = ${quoteLiteral(locale)}`);
+      if (lcCollate !== null) parts.push(`lc_collate = ${quoteLiteral(lcCollate)}`);
+      if (lcCtype !== null) parts.push(`lc_ctype = ${quoteLiteral(lcCtype)}`);
+      if (rules !== null) parts.push(`rules = ${quoteLiteral(rules)}`);
+      // Only ever written when it is false: "deterministic = true" on every
+      // ordinary collation is noise on a line the report shows in full.
+      if (!row.deterministic) parts.push("deterministic = false");
+      const definition = parts.join(", ");
+
+      return {
+        name: row.name,
+        provider,
+        deterministic: row.deterministic,
+        locale,
+        lcCollate,
+        lcCtype,
+        rules,
+        definition,
+        normalizedDefinition: normalizeDefinition(definition),
+      } satisfies CollationSnapshot;
+    });
+
     const routines: RoutineSnapshot[] = routineResult.rows.map((row) => {
       const definition = stripSchemaFromExpr(row.definition, schemaName) ?? row.definition;
       const identityArguments = stripSchemaFromExpr(row.args, schemaName) ?? row.args;
@@ -1722,6 +1885,7 @@ export async function fetchSchemaSnapshot(
     views.sort((a, b) => a.name.localeCompare(b.name));
     sequences.sort((a, b) => a.name.localeCompare(b.name));
     types.sort((a, b) => a.name.localeCompare(b.name));
+    collations.sort((a, b) => a.name.localeCompare(b.name));
     routines.sort((a, b) => a.signature.localeCompare(b.signature));
 
     return {
@@ -1735,6 +1899,7 @@ export async function fetchSchemaSnapshot(
         views,
         sequences,
         types,
+        collations,
         routines,
       },
     };
