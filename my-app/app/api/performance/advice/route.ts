@@ -216,7 +216,7 @@ export async function GET(request: NextRequest) {
       size_bytes: num(r.size_bytes),
     }));
 
-    runtime = analyzeTableStats(tables, indexes).map((a) => ({
+    runtime = analyzeTableStats(schema, tables, indexes).map((a) => ({
       ...a,
       origin: "statistics",
     }));

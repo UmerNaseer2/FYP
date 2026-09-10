@@ -465,6 +465,63 @@ describe("readPlan — findings", () => {
     expect(ids(summary?.findings ?? []).some((id) => id.startsWith("nested-loop:"))).toBe(true);
   });
 
+  it("does not blame a nested loop for a busy node under a different join", () => {
+    // The busy Seq Scan below sits one level under the OTHER join, at the same
+    // depth as this loop's own child. Matching on depth alone across the whole
+    // flattened plan attributed it to the quiet loop.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Hash Join",
+        "Plan Rows": 1,
+        "Total Cost": 100,
+        "Actual Total Time": 900,
+        "Actual Rows": 10,
+        "Actual Loops": 1,
+        Plans: [
+          {
+            "Node Type": "Nested Loop",
+            "Plan Rows": 1,
+            "Total Cost": 10,
+            "Actual Total Time": 1,
+            "Actual Rows": 2,
+            "Actual Loops": 1,
+            Plans: [
+              {
+                "Node Type": "Index Scan",
+                "Relation Name": "customers",
+                "Plan Rows": 1,
+                "Total Cost": 1,
+                "Actual Total Time": 0.1,
+                "Actual Rows": 1,
+                "Actual Loops": 2,
+              },
+            ],
+          },
+          {
+            "Node Type": "Hash",
+            "Plan Rows": 1,
+            "Total Cost": 80,
+            "Actual Total Time": 800,
+            "Actual Rows": 1,
+            "Actual Loops": 1,
+            Plans: [
+              {
+                "Node Type": "Seq Scan",
+                "Relation Name": "line_items",
+                "Plan Rows": 1,
+                "Total Cost": 79,
+                "Actual Total Time": 700,
+                "Actual Rows": 1,
+                "Actual Loops": 5000,
+              },
+            ],
+          },
+        ],
+      })
+    );
+    expect(ids(summary?.findings ?? []).some((id) => id.startsWith("nested-loop:"))).toBe(false);
+  });
+
   it("flags a plan that uses no index anywhere over a large table", () => {
     const summary = readPlan(
       envelope({
@@ -605,6 +662,22 @@ describe("readSql", () => {
     );
   });
 
+  it("does not read a function in a later clause as one in the WHERE", () => {
+    // HAVING runs after aggregation, so no index could have helped it either
+    // way. The old rule matched anything between WHERE and the end of the
+    // statement, which meant a following clause fired a finding about a WHERE
+    // that wraps nothing.
+    const sql =
+      "SELECT email FROM users WHERE tenant = $1 GROUP BY email HAVING LOWER(email) = 'a@b.com'";
+    expect(ids(readSql(sql))).not.toContain("function-on-column");
+  });
+
+  it("still reads the second of two WHERE clauses", () => {
+    const sql =
+      "SELECT id FROM a WHERE tenant = $1 UNION SELECT id FROM b WHERE LOWER(email) = 'a@b.com'";
+    expect(ids(readSql(sql))).toContain("function-on-column");
+  });
+
   it("flags NOT IN over a subquery", () => {
     const sql = "SELECT id FROM a WHERE id NOT IN (SELECT a_id FROM b)";
     expect(ids(readSql(sql))).toContain("not-in-subquery");
@@ -634,6 +707,13 @@ describe("readSql", () => {
     expect(ids(readSql("SELECT id FROM orders ORDER BY created_at DESC LIMIT 20"))).not.toContain(
       "order-by-no-limit"
     );
+  });
+
+  it("does not read a window function's own ordering as the result's", () => {
+    // OVER (ORDER BY …) says how the window is numbered, not how many rows come
+    // back, so a LIMIT would not change what this sorts.
+    const sql = "SELECT id, row_number() OVER (ORDER BY created_at) FROM orders";
+    expect(ids(readSql(sql))).not.toContain("order-by-no-limit");
   });
 
   it("flags a deep OFFSET", () => {

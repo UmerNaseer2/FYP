@@ -377,6 +377,25 @@ describe("buildSeries", () => {
     expect(series.driftMarks.length).toBe(1);
   });
 
+  it("keeps a drift mark inside the plot when the first readings are missing", () => {
+    // The marks come from every sample but the axis used to come only from the
+    // samples this metric could read, so a drift recorded before the first
+    // readable measurement was placed at a negative percentage — off the left
+    // edge of the box, invisible.
+    const series = buildSeries(
+      [
+        sample("2026-09-01T00:00:00.000Z", { totalBytes: null, drifted: true }),
+        sample("2026-09-02T00:00:00.000Z", { totalBytes: 100 }),
+        sample("2026-09-03T00:00:00.000Z", { totalBytes: 200 }),
+      ],
+      "totalBytes",
+      BOX
+    );
+    expect(series.driftMarks.length).toBe(1);
+    expect(series.driftMarks[0].x).toBe(0);
+    expect(series.points.map((p) => p.x)).toEqual([50, 100]);
+  });
+
   it("ignores a reading whose timestamp cannot be read", () => {
     const series = buildSeries(
       [

@@ -295,12 +295,17 @@ function TrendCard({ metric, samples }: { metric: MetricKey; samples: MetricSamp
           <span
             className="text-[11.5px] mono"
             style={{
+              // Deliberately not red-for-up, green-for-down. There is no
+              // direction that is bad for all four metrics: more tables is
+              // usually growth, fewer indexes is usually a loss, and bytes going
+              // up is a cost rather than a fault. Colouring by direction would
+              // have the chart pass a judgement it has no way to make. The sign
+              // on the number says which way it went; a moved value is darker
+              // than one that did not move, and that is all the colour claims.
               color:
-                change.direction === "up"
-                  ? "var(--drift)"
-                  : change.direction === "down"
-                    ? "var(--brand)"
-                    : "var(--text-3)",
+                change.direction === "up" || change.direction === "down"
+                  ? "var(--text-2)"
+                  : "var(--text-3)",
             }}
           >
             {change.delta}
@@ -427,9 +432,11 @@ function Plot({ series }: { series: Series }) {
           style={{ height: 8 }}
           title="Checks that found the schema drifted"
         >
-          {series.driftMarks.map((mark) => (
+          {series.driftMarks.map((mark, i) => (
             <span
-              key={mark.at}
+              // Two checks can land in the same millisecond, so the timestamp
+              // alone is not a key.
+              key={`${mark.at}-${i}`}
               className="absolute rounded-sm"
               style={{
                 left: `${mark.x}%`,

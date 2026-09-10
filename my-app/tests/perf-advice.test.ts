@@ -228,6 +228,20 @@ describe("analyzeSchemaPerformance", () => {
     expect(ids(advice).filter((id) => id === "duplicate-index")).toHaveLength(1);
   });
 
+  it("drops every duplicate but the first, not just the second", () => {
+    // Dropping one of three leaves the finding true, and the reader believing
+    // they have dealt with it.
+    const same = (name: string) => index(name, ["customer_id"]);
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        table("orders", { indexes: [same("orders_a"), same("orders_b"), same("orders_c")] }),
+      ])
+    );
+    const found = advice.filter((a) => a.id === "duplicate-index")[0];
+    expect(found.title).toBe("3 indexes with the same definition");
+    expect(found.fix.split("\n")).toHaveLength(2);
+  });
+
   it("reports a narrow index already covered by a wider one", () => {
     const advice = analyzeSchemaPerformance(
       snapshot([
@@ -292,6 +306,16 @@ describe("analyzeSchemaPerformance", () => {
     expect(ids(advice)).not.toContain("timestamp-without-timezone");
   });
 
+  it("says nothing about a timestamptz column that carries a precision", () => {
+    // Postgres renders the precision in the MIDDLE of the type name, so a rule
+    // that reads only up to the first bracket sees "timestamp" and offers to
+    // convert a column that is already zoned.
+    const advice = analyzeSchemaPerformance(
+      snapshot([table("orders", { columns: [column("placed_at", "timestamp(3) with time zone")] })])
+    );
+    expect(ids(advice)).not.toContain("timestamp-without-timezone");
+  });
+
   it("reports character(n) but not character varying(n)", () => {
     const padded = analyzeSchemaPerformance(
       snapshot([table("t", { columns: [column("code", "character(4)")] })])
@@ -312,6 +336,59 @@ describe("analyzeSchemaPerformance", () => {
       ])
     );
     expect(ids(advice)).toContain("serial-not-identity");
+  });
+
+  it("carries the existing rows over when it converts a serial to an identity", () => {
+    // A new identity starts at 1. On a populated table that is a primary key
+    // collision on the very next insert, so the fix has to move the sequence up
+    // to the rows already there.
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        table("t", {
+          columns: [column("id", "integer", { columnDefault: "nextval('t_id_seq'::regclass)" })],
+        }),
+      ])
+    );
+    const fix = advice.filter((a) => a.id === "serial-not-identity")[0].fix;
+    expect(fix).toContain("setval");
+    expect(fix).toContain("max(\"id\")");
+  });
+
+  it("names the sequence a converted serial leaves behind", () => {
+    // Dropping the default is the only moment the old sequence's name is still
+    // recoverable — after that it exists, owned by nothing, findable by nobody.
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        table("t", {
+          columns: [column("id", "integer", { columnDefault: "nextval('shop.t_id_seq'::regclass)" })],
+        }),
+      ])
+    );
+    const fix = advice.filter((a) => a.id === "serial-not-identity")[0].fix;
+    expect(fix).toContain("DROP SEQUENCE shop.t_id_seq");
+  });
+
+  it("makes a nullable serial column NOT NULL first, because identities cannot be null", () => {
+    const nullable = analyzeSchemaPerformance(
+      snapshot([
+        table("t", {
+          columns: [
+            column("id", "integer", { columnDefault: "nextval('t_id_seq'::regclass)", nullable: true }),
+          ],
+        }),
+      ])
+    );
+    const already = analyzeSchemaPerformance(
+      snapshot([
+        table("t", {
+          columns: [
+            column("id", "integer", { columnDefault: "nextval('t_id_seq'::regclass)", nullable: false }),
+          ],
+        }),
+      ])
+    );
+    expect(nullable.filter((a) => a.id === "serial-not-identity")[0].fix).toContain("SET NOT NULL");
+    expect(already.filter((a) => a.id === "serial-not-identity")[0].fix).not.toContain("SET NOT NULL");
   });
 
   it("reports a text primary key", () => {
@@ -375,7 +452,7 @@ function indexStat(extra: Partial<IndexStats> = {}): IndexStats {
 
 describe("analyzeTableStats", () => {
   it("reports a large table that is almost always scanned in full", () => {
-    const advice = analyzeTableStats(
+    const advice = analyzeTableStats("shop",
       [stats({ n_live_tup: 50_000, seq_scan: 5_000, idx_scan: 10 })],
       []
     );
@@ -383,31 +460,31 @@ describe("analyzeTableStats", () => {
   });
 
   it("says nothing about a small lookup table that is always scanned in full", () => {
-    const advice = analyzeTableStats([stats({ n_live_tup: 12, seq_scan: 5_000, idx_scan: 0 })], []);
+    const advice = analyzeTableStats("shop", [stats({ n_live_tup: 12, seq_scan: 5_000, idx_scan: 0 })], []);
     expect(ids(advice)).not.toContain("sequential-scan-heavy");
   });
 
   it("reports a table that is a fifth dead rows", () => {
-    const advice = analyzeTableStats([stats({ n_live_tup: 10_000, n_dead_tup: 4_000 })], []);
+    const advice = analyzeTableStats("shop", [stats({ n_live_tup: 10_000, n_dead_tup: 4_000 })], []);
     expect(ids(advice)).toContain("dead-tuples");
   });
 
   it("says nothing about dead rows on a table too small for it to matter", () => {
-    const advice = analyzeTableStats([stats({ n_live_tup: 100, n_dead_tup: 90 })], []);
+    const advice = analyzeTableStats("shop", [stats({ n_live_tup: 100, n_dead_tup: 90 })], []);
     expect(ids(advice)).not.toContain("dead-tuples");
   });
 
   it("reports a table the planner has never had statistics for", () => {
-    const advice = analyzeTableStats([stats({ n_live_tup: 5_000, last_analyzed: null })], []);
+    const advice = analyzeTableStats("shop", [stats({ n_live_tup: 5_000, last_analyzed: null })], []);
     expect(ids(advice)).toContain("never-analyzed");
   });
 
   it("reports a low cache hit ratio only once the table has been read enough", () => {
-    const busy = analyzeTableStats(
+    const busy = analyzeTableStats("shop",
       [stats({ seq_scan: 10, heap_blks_hit: 5_000, heap_blks_read: 45_000 })],
       []
     );
-    const quiet = analyzeTableStats(
+    const quiet = analyzeTableStats("shop",
       [stats({ seq_scan: 10, heap_blks_hit: 50, heap_blks_read: 450 })],
       []
     );
@@ -416,23 +493,34 @@ describe("analyzeTableStats", () => {
   });
 
   it("reports an index nothing has ever used", () => {
-    const advice = analyzeTableStats([], [indexStat()]);
+    const advice = analyzeTableStats("shop", [], [indexStat()]);
     expect(ids(advice)).toContain("unused-index");
   });
 
   it("leaves an unused unique index alone, because it is enforcing something", () => {
-    const advice = analyzeTableStats([], [indexStat({ is_unique: true })]);
+    const advice = analyzeTableStats("shop", [], [indexStat({ is_unique: true })]);
     expect(ids(advice)).toEqual([]);
   });
 
   it("leaves an index that has been used alone", () => {
-    const advice = analyzeTableStats([], [indexStat({ idx_scan: 1 })]);
+    const advice = analyzeTableStats("shop", [], [indexStat({ idx_scan: 1 })]);
     expect(ids(advice)).toEqual([]);
   });
 
   it("names the index size in the finding, so the reader can judge it", () => {
-    const advice = analyzeTableStats([], [indexStat({ size_bytes: 5 * 1024 * 1024 })]);
+    const advice = analyzeTableStats("shop", [], [indexStat({ size_bytes: 5 * 1024 * 1024 })]);
     expect(advice[0].detail).toContain("5 MB");
+  });
+
+  it("qualifies every statement it emits with the schema it read", () => {
+    // These run in whatever search_path the user's own client has. Unqualified,
+    // they VACUUM or DROP the same-named object in a different schema.
+    const dead = analyzeTableStats("shop", [stats({ n_live_tup: 10_000, n_dead_tup: 4_000 })], []);
+    const stale = analyzeTableStats("shop", [stats({ n_live_tup: 5_000, last_analyzed: null })], []);
+    const unused = analyzeTableStats("shop", [], [indexStat()]);
+    expect(dead.filter((a) => a.id === "dead-tuples")[0].fix).toContain('"shop"."orders"');
+    expect(stale.filter((a) => a.id === "never-analyzed")[0].fix).toContain('"shop"."orders"');
+    expect(unused[0].fix).toContain('"shop"."orders_customer_idx"');
   });
 });
 

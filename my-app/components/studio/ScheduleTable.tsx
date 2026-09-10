@@ -223,10 +223,10 @@ export function ScheduleTable() {
             <EmptyState
               icon={<AlertCircleIcon size={22} />}
               title="No schemas are being tracked"
-              description="Track a schema first — the cadence is set per schema, so there is nothing to schedule yet."
+              description="The cadence is set per schema, so there is nothing to schedule until one is tracked. Tracking starts on the Dashboard: pick a connection and a schema, and the first snapshot becomes its baseline."
               actions={
-                <Link href="/schemas" className="btn btn-primary btn-sm">
-                  Go to Schemas
+                <Link href="/studio" className="btn btn-primary btn-sm">
+                  Go to the Dashboard
                 </Link>
               }
             />

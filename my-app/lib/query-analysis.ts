@@ -345,6 +345,24 @@ function rowsScanned(step: PlanStep, tableRows: TableRows, planRows: number): nu
 export type TableRows = Record<string, number>;
 
 /** Rules that read the plan. Ordered as they are written, sorted on the way out. */
+/**
+ * The direct children of one flattened plan step.
+ *
+ * flattenPlan walks depth-first, so a step's subtree is the contiguous run of
+ * ids after it, ending at the first step back at its own depth or shallower.
+ * Matching on `depth === step.depth + 1` alone — which this used to do — picked
+ * up any node one level down anywhere in the plan, so a busy inner side under a
+ * completely different join was reported as this loop's.
+ */
+function childrenOfStep(steps: PlanStep[], step: PlanStep): PlanStep[] {
+  const children: PlanStep[] = [];
+  for (let i = step.id + 1; i < steps.length; i += 1) {
+    if (steps[i].depth <= step.depth) break;
+    if (steps[i].depth === step.depth + 1) children.push(steps[i]);
+  }
+  return children;
+}
+
 function planFindings(
   steps: PlanStep[],
   measured: boolean,
@@ -462,12 +480,11 @@ function planFindings(
 
     // A nested loop is the right choice when the inner side is tiny. Run
     // thousands of times, it is the classic accidental O(n·m).
-    if (
-      step.nodeType === "Nested Loop" &&
-      measured &&
-      steps.some((s) => s.depth === step.depth + 1 && (s.loops ?? 1) >= 1000)
-    ) {
-      const inner = steps.find((s) => s.depth === step.depth + 1 && (s.loops ?? 1) >= 1000);
+    const inner =
+      step.nodeType === "Nested Loop" && measured
+        ? childrenOfStep(steps, step).find((s) => (s.loops ?? 1) >= 1000)
+        : undefined;
+    if (inner) {
       out.push({
         id: `nested-loop:${step.id}`,
         severity: "medium",
@@ -658,6 +675,41 @@ function inCode(mask: string, pattern: RegExp): boolean {
 }
 
 /**
+ * How deep in parentheses a position is, counting from the start of the mask.
+ *
+ * The mask has already blanked string literals and comments, so every bracket
+ * left is real syntax.
+ */
+function parenDepthAt(mask: string, index: number): number {
+  let depth = 0;
+  for (let i = 0; i < index && i < mask.length; i += 1) {
+    if (mask[i] === "(") depth += 1;
+    else if (mask[i] === ")") depth = Math.max(0, depth - 1);
+  }
+  return depth;
+}
+
+/** Where a WHERE clause stops. Anything past one of these is a different clause. */
+const CLAUSE_END = /\b(?:GROUP\s+BY|HAVING|WINDOW|ORDER\s+BY|LIMIT|OFFSET|FETCH|UNION|INTERSECT|EXCEPT|RETURNING)\b/i;
+
+/**
+ * Each WHERE clause in the statement, as text.
+ *
+ * A clause runs from the keyword to whichever comes first: the next clause
+ * keyword, a semicolon, or the end. Rules that ask "is this condition shaped
+ * badly" have to read one clause, not the whole statement.
+ */
+function whereClauses(mask: string): string[] {
+  return codeMatches(mask, /\bWHERE\b/i).map((m) => {
+    const rest = mask.slice(m.end);
+    const stop = CLAUSE_END.exec(rest);
+    const semi = rest.indexOf(";");
+    const ends = [stop ? stop.index : rest.length, semi === -1 ? rest.length : semi];
+    return rest.slice(0, Math.min(...ends));
+  });
+}
+
+/**
  * Rules that read only the query text.
  *
  * Every one of these is a heuristic and is written to be wrong in the safe
@@ -707,7 +759,17 @@ export function readSql(sql: string): QueryFinding[] {
 
   // LOWER(email) = … and friends: the index is on the column, the condition is
   // on the result of a function, and those are two different things.
-  if (inCode(mask, /\bWHERE\b[\s\S]*\b(?:LOWER|UPPER|DATE|CAST|COALESCE|SUBSTRING)\s*\(\s*[A-Za-z_][\w.]*\s*\)\s*(?:=|<|>|LIKE)/i)) {
+  //
+  // Searched inside each WHERE clause rather than across the whole statement:
+  // a single regex with `[\s\S]*` between WHERE and the call was satisfied by a
+  // function call anywhere later — a SELECT list, an ORDER BY, a following
+  // subquery — so the finding fired on statements that wrap nothing.
+  const functionOnColumn = whereClauses(mask).some((clause) =>
+    /\b(?:LOWER|UPPER|DATE|CAST|COALESCE|SUBSTRING)\s*\(\s*[A-Za-z_][\w.]*\s*\)\s*(?:=|<|>|LIKE)/i.test(
+      clause
+    )
+  );
+  if (functionOnColumn) {
     out.push({
       id: "function-on-column",
       severity: "medium",
@@ -760,7 +822,13 @@ export function readSql(sql: string): QueryFinding[] {
     });
   }
 
-  if (inCode(mask, /\bORDER\s+BY\b/i) && !inCode(mask, /\bLIMIT\b|\bFETCH\s+FIRST\b/i)) {
+  // Only an ORDER BY that orders the result set. A window function's
+  // `OVER (ORDER BY …)` and a subquery's own ordering both sit inside
+  // parentheses, and neither has anything to do with how many rows come back.
+  const topLevelOrderBy = codeMatches(mask, /\bORDER\s+BY\b/i).some(
+    (m) => parenDepthAt(mask, m.index) === 0
+  );
+  if (topLevelOrderBy && !inCode(mask, /\bLIMIT\b|\bFETCH\s+FIRST\b/i)) {
     out.push({
       id: "order-by-no-limit",
       severity: "low",

@@ -318,7 +318,12 @@ export function buildSeries(
   const lo = min - padding;
   const hi = max + padding;
 
-  const times = readable.map((r) => r.t);
+  // The time axis spans every sample in the window, not just the ones this
+  // metric could read. Two reasons: the drift marks below are taken from every
+  // sample, so an axis built from a subset put them outside the plot box; and
+  // the three charts on the Trends screen sit above one another, so they have
+  // to agree about where a given moment is.
+  const times = ordered.map((s) => timeOf(s.at)).filter((t) => Number.isFinite(t));
   const t0 = Math.min(...times);
   const t1 = Math.max(...times);
   const inner = { w: box.width - box.pad * 2, h: box.height - box.pad * 2 };
