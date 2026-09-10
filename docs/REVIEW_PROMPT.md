@@ -23,9 +23,8 @@ TypeScript across a Next.js 16 App Router codebase.
    where the coursework documents have gone stale relative to the code.
 4. `my-app/README.md` — the only tracked document maintained alongside the code.
 
-The `docs/` folder also holds three sprint reports and a user manual as text
-extractions. Treat them as historical: they describe earlier architectures that
-no longer exist, and `docs/README.md` says exactly where.
+The `docs/` folder also holds the user manual as a text extraction. Treat it as
+partly stale: `docs/README.md` lists where it disagrees with the code.
 
 ## What is deliberately out of scope
 

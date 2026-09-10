@@ -4,9 +4,6 @@ node_modules
 # AI-assistant config (local only)
 .claude/
 
-# Coursework documents that must never reach this public repo: the sprint-report
-# PDFs embed screenshots of real user data, and the project agreement is a signed
-# legal form. The safe .txt extractions are committed in their place.
-# See docs/README.md.
-docs/progress-reports/*.pdf
+# The signed Student Project Agreement must never reach this public repo: it is a
+# legal form carrying signatures and personal details. See docs/README.md.
 docs/**/*Agreement*.pdf
