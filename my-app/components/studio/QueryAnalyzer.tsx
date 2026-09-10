@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Card, EmptyState, Pill } from "@/components/ui";
+import { useUser } from "@/hooks/useUser";
+import { roleAtLeast } from "@/lib/auth-mode";
 import { AlertCircleIcon, CheckIcon, PlayIcon } from "@/components/ui/icons";
 import {
   FindingCard,
@@ -81,14 +83,22 @@ const PLACEHOLDER =
   " LIMIT 20;";
 
 export function QueryAnalyzer({ target }: { target: PerfTarget | null }) {
+  const { role, loading: roleLoading } = useUser();
   const [sql, setSql] = useState("");
-  const [measure, setMeasure] = useState(false);
+  const [wantsMeasure, setWantsMeasure] = useState(false);
   const [running, setRunning] = useState(false);
   const [view, setView] = useState<AnalyzeView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
 
   const ready = Boolean(target && sql.trim() && !running);
+
+  // Measuring runs the query, so the route asks for the editor role. Deciding
+  // that here as well is not a second gate — the server's is the gate — it is
+  // so a viewer is told before they press the button instead of after, and so a
+  // request can never be sent that we already know will come back a 403.
+  const canMeasure = roleAtLeast(role, "editor");
+  const measure = wantsMeasure && canMeasure;
 
   async function analyse() {
     if (!target || !sql.trim()) return;
@@ -162,20 +172,35 @@ export function QueryAnalyzer({ target }: { target: PerfTarget | null }) {
         />
 
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <label className="flex items-start gap-2 text-[12.5px] cursor-pointer max-w-[52ch]">
+          <label
+            className={`flex items-start gap-2 text-[12.5px] max-w-[52ch] ${
+              canMeasure ? "cursor-pointer" : "cursor-not-allowed"
+            }`}
+          >
             <input
               type="checkbox"
               checked={measure}
-              onChange={(e) => setMeasure(e.target.checked)}
+              disabled={roleLoading || !canMeasure}
+              onChange={(e) => setWantsMeasure(e.target.checked)}
               className="mt-0.5"
             />
-            <span style={{ color: "var(--text-2)" }}>
+            <span style={{ color: canMeasure ? "var(--text-2)" : "var(--text-3)" }}>
               Run it and measure
               <span className="block text-[11.5px]" style={{ color: "var(--text-3)" }}>
-                Without this, the server only says what it would do. With it, the
-                query really runs — inside a read-only transaction that is rolled
-                back afterwards, so anything that writes is refused rather than
-                applied.
+                {canMeasure ? (
+                  <>
+                    Without this, the server only says what it would do. With it,
+                    the query really runs — inside a read-only transaction that is
+                    rolled back afterwards, so anything that writes is refused
+                    rather than applied.
+                  </>
+                ) : (
+                  <>
+                    Running the query needs the editor role, and yours is viewer.
+                    You can still analyse it — the server will say what it would
+                    do, using its own estimates, without touching any rows.
+                  </>
+                )}
               </span>
             </span>
           </label>

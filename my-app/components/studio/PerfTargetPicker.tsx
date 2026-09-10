@@ -64,6 +64,8 @@ export function PerfTargetPicker({
   // render, and React's lint rightly refuses one. Retrying is therefore "ask
   // for another run", not "call the loader again".
   const [connectionsReload, setConnectionsReload] = useState(0);
+  /** The same trick for the schema list, which fails on its own terms. */
+  const [schemasReload, setSchemasReload] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,7 +142,7 @@ export function PerfTargetPicker({
     return () => {
       cancelled = true;
     };
-  }, [connectionId]);
+  }, [connectionId, schemasReload]);
 
   const picked = connections.find((c) => String(c.id) === connectionId);
   const connectionName = picked ? picked.name : "";
@@ -251,7 +253,20 @@ export function PerfTargetPicker({
           <AlertCircleIcon size={15} className="ico" />
           <div>
             <div className="title">Could not list schemas</div>
-            <div className="body">{schemaError}</div>
+            <div className="body">
+              {schemaError}{" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  setSchemaPhase("loading");
+                  setSchemasReload((n) => n + 1);
+                }}
+              >
+                Try again
+              </button>
+              .
+            </div>
           </div>
         </div>
       )}

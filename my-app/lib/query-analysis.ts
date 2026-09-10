@@ -59,6 +59,12 @@ export type PlanStep = {
    * it is the key a caller looks a table's real size up by.
    */
   relation: string | null;
+  /**
+   * The schema `relation` lives in, as the plan reported it. Kept beside the
+   * table name because the name alone is not a key — two schemas on one server
+   * routinely hold a table called `orders`.
+   */
+  relationSchema: string | null;
   /** One plain sentence saying what this step does. Empty if we have no words. */
   meaning: string;
   /** "Filter: (status = 'paid')" and friends, already flattened to strings. */
@@ -236,6 +242,7 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
       nodeType,
       label: labelOf(node),
       relation: str(node, "Relation Name"),
+      relationSchema: str(node, "Schema"),
       meaning: NODE_MEANINGS[nodeType] ?? "",
       details,
       estimatedRows: num(node, "Plan Rows"),
@@ -248,14 +255,10 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
 
     let childInclusive = 0;
     for (const child of childrenOf(node)) {
-      const before = steps.length;
       walk(child, depth + 1);
-      const childStep = steps[before];
       const childLoops = numOrNull(child, "Actual Loops");
       const childPerLoop = numOrNull(child, "Actual Total Time");
-      if (childStep && childPerLoop !== null) {
-        childInclusive += childPerLoop * (childLoops ?? 1);
-      }
+      if (childPerLoop !== null) childInclusive += childPerLoop * (childLoops ?? 1);
     }
 
     if (step.selfMs !== null) {
@@ -327,12 +330,17 @@ function rowsRemovedByFilter(step: PlanStep): number | null {
  */
 function rowsScanned(step: PlanStep, tableRows: TableRows, planRows: number): number {
   if (step.relation === null || !TABLE_SCANS.has(step.nodeType)) return planRows;
-  const known = tableRows[step.relation];
+  // The key is schema-qualified, so a step reading reporting.orders is never
+  // measured against public.orders. A plan old enough not to carry "Schema"
+  // has no key to look up, and gets the plan's own number rather than a guess
+  // at which same-named table it meant.
+  if (step.relationSchema === null) return planRows;
+  const known = tableRows[`${step.relationSchema}.${step.relation}`];
   return typeof known === "number" && known > planRows ? known : planRows;
 }
 
 /**
- * How many rows each table in the schema actually holds, keyed by table name.
+ * How many rows each table actually holds, keyed `"schema.table"`.
  *
  * Optional, and for one reason: a plan says how many rows a step will HAND ON,
  * not how many it will READ. `SELECT * FROM orders WHERE id = 7` shows a
@@ -625,13 +633,18 @@ export function readPlan(raw: unknown, tableRows: TableRows = {}): PlanSummary |
 export function describePlan(summary: PlanSummary): string {
   const head = summary.steps[0];
   if (!head) return "The server returned an empty plan.";
-  if (summary.measured && summary.executionMs !== null) {
+  if (summary.measured) {
     const rows = totalActualRows(head);
-    return (
-      `Ran in ${fmtMs(summary.executionMs)} and returned ` +
-      `${fmtRows(rows ?? 0)} row${rows === 1 ? "" : "s"}, in ${summary.steps.length} ` +
-      `step${summary.steps.length === 1 ? "" : "s"}.`
-    );
+    const tail =
+      `returned ${fmtRows(rows ?? 0)} row${rows === 1 ? "" : "s"}, in ` +
+      `${summary.steps.length} step${summary.steps.length === 1 ? "" : "s"}.`;
+    // A measured plan can arrive without a total time — EXPLAIN (ANALYZE,
+    // SUMMARY OFF) omits it, and so do some older servers. The query still ran,
+    // so it drops the duration rather than falling through to the sentence
+    // below, which would tell the reader it was never executed.
+    return summary.executionMs === null
+      ? `Ran and ${tail}`
+      : `Ran in ${fmtMs(summary.executionMs)} and ${tail}`;
   }
   return (
     `Planned in ${summary.steps.length} step${summary.steps.length === 1 ? "" : "s"}, ` +

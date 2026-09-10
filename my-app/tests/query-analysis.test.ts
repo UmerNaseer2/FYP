@@ -275,6 +275,7 @@ describe("readPlan — findings", () => {
     const plan = envelope({
       "Node Type": "Seq Scan",
       "Relation Name": "orders",
+      Schema: "public",
       "Plan Rows": 1,
       "Total Cost": 900,
       Filter: "(reference = 'AB-1'::text)",
@@ -282,11 +283,47 @@ describe("readPlan — findings", () => {
 
     expect(readPlan(plan)?.findings).toEqual([]);
 
-    const informed = readPlan(plan, { orders: 400000 });
+    const informed = readPlan(plan, { "public.orders": 400000 });
     expect(ids(informed?.findings ?? [])).toContain("seq-scan:0");
     expect(informed?.findings[0].detail).toContain("400,000 rows");
     // It should say what the reader is actually getting for that work.
     expect(informed?.findings[0].detail).toContain("1 row is expected to match");
+  });
+
+  it("does not lend one schema's row count to a same-named table in another", () => {
+    // Two schemas holding an "orders" table is the normal case for this app —
+    // dev and prod side by side on one server is what it exists to compare. A
+    // size keyed on the bare name would report the busy table's size against a
+    // scan of the empty one.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Seq Scan",
+        "Relation Name": "orders",
+        Schema: "staging",
+        "Plan Rows": 1,
+        "Total Cost": 900,
+        Filter: "(reference = 'AB-1'::text)",
+      }),
+      { "public.orders": 400000 }
+    );
+    expect(summary?.findings).toEqual([]);
+  });
+
+  it("falls back to the plan's own number when the plan names no schema", () => {
+    // Nothing to key on means nothing to look up. The weaker reading is the
+    // right answer here — picking whichever same-named table happened to be in
+    // the map would be inventing the one fact this rule turns on.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Seq Scan",
+        "Relation Name": "orders",
+        "Plan Rows": 1,
+        "Total Cost": 900,
+        Filter: "(reference = 'AB-1'::text)",
+      }),
+      { "public.orders": 400000 }
+    );
+    expect(summary?.findings).toEqual([]);
   });
 
   it("ignores a table size that is smaller than the plan's own estimate", () => {
@@ -296,10 +333,11 @@ describe("readPlan — findings", () => {
       envelope({
         "Node Type": "Seq Scan",
         "Relation Name": "orders",
+        Schema: "public",
         "Plan Rows": 60000,
         "Total Cost": 900,
       }),
-      { orders: 12 }
+      { "public.orders": 12 }
     );
     expect(summary?.findings[0].detail).toContain("60,000 rows");
   });
@@ -313,10 +351,15 @@ describe("readPlan — findings", () => {
         "Plan Rows": 4,
         "Total Cost": 10,
         Plans: [
-          { "Node Type": "Index Scan", "Relation Name": "orders", "Plan Rows": 4 },
+          {
+            "Node Type": "Index Scan",
+            "Relation Name": "orders",
+            Schema: "public",
+            "Plan Rows": 4,
+          },
         ],
       }),
-      { orders: 900000 }
+      { "public.orders": 900000 }
     );
     // An index scan is not a whole-table read however big the table is, and the
     // sort above it is not a read at all.
@@ -331,6 +374,7 @@ describe("readPlan — findings", () => {
       envelope({
         "Node Type": "Seq Scan",
         "Relation Name": "events",
+        Schema: "public",
         Filter: "(kind = 'error'::text)",
         "Rows Removed by Filter": 39999,
         "Plan Rows": 1,
@@ -339,7 +383,7 @@ describe("readPlan — findings", () => {
         "Actual Rows": 1,
         "Actual Loops": 1,
       }),
-      { events: 40000 }
+      { "public.events": 40000 }
     );
     const seqScan = summary?.findings.find((f) => f.id === "seq-scan:0");
     expect(seqScan?.detail).toContain("39,999 of them are thrown away");
@@ -610,6 +654,27 @@ describe("describePlan", () => {
     const line = describePlan(summary!);
     expect(line).toContain("3.14 ms");
     expect(line).toContain("42 rows");
+  });
+
+  it("still says the query ran when the plan carries no total time", () => {
+    // EXPLAIN (ANALYZE, SUMMARY OFF) reports the per-step actuals without an
+    // "Execution Time", and so do some older servers. Telling the reader their
+    // query was not run is the one thing this sentence must never get wrong.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Seq Scan",
+        "Relation Name": "t",
+        "Plan Rows": 1,
+        "Total Cost": 9,
+        "Actual Total Time": 3,
+        "Actual Rows": 42,
+        "Actual Loops": 1,
+      })
+    );
+    const line = describePlan(summary!);
+    expect(line).toContain("Ran and returned");
+    expect(line).toContain("42 rows");
+    expect(line).not.toContain("estimates");
   });
 });
 

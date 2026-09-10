@@ -297,9 +297,15 @@ export function analyzeSchemaPerformance(snapshot: SchemaSnapshot): PerfAdvice[]
             "read the table directly rather than use an index that eliminates so " +
             "little. The index is maintained on every write and rarely chosen.",
           fix:
-            `If the point was to find the rare value quickly, make it partial:\n` +
+            `-- Worth keeping only if one of the two values is rare, and then the\n` +
+            `-- index belongs on the columns the query actually filters or orders\n` +
+            `-- by, with the boolean as the predicate. Indexing the boolean inside\n` +
+            `-- its own predicate stores the same value in every entry.\n` +
             `CREATE INDEX ON ${qualified(schema, table.name)} ` +
-            `(${quote(index.columns[0])}) WHERE ${quote(index.columns[0])};`,
+            `(/* the column you look up by */) WHERE ${quote(index.columns[0])};\n` +
+            `-- Swap the predicate for NOT ${quote(index.columns[0])} if false is the\n` +
+            `-- rare value. If neither value is rare, there is nothing to keep:\n` +
+            `DROP INDEX ${quote(schema)}.${quote(index.name)};`,
         });
       }
 

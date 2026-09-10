@@ -77,6 +77,13 @@ export type AnalyzeView = {
  */
 const STATEMENT_TIMEOUT_MS = 15_000;
 
+/**
+ * The same idea for the supplementary read of pg_class, but shorter. Nothing
+ * downstream needs it — the analysis is only less sharp without it — so it gets
+ * a third of the patience the user's own query gets.
+ */
+const SIZE_TIMEOUT_MS = 5_000;
+
 export async function POST(request: NextRequest) {
   // Reading a plan is a read. Running the query — even rolled back — is not
   // something a viewer should be able to make somebody else's database do.
@@ -269,9 +276,16 @@ export async function POST(request: NextRequest) {
   // Not fatal on its own: everything below still works from the plan alone,
   // just less sharply, and losing the entire analysis because a role cannot
   // read pg_class would be the wrong trade.
+  //
+  // On its own client and inside its own read-only transaction, for the
+  // statement_timeout: a catch handles a refusal, but nothing handles a hang,
+  // and this runs after the reply to the user is already most of the way built.
   const tableRows: TableRows = {};
+  const sizeClient = await target.connect();
   try {
-    const sizes = await target.query<{ table_name: string; row_count: string }>(
+    await sizeClient.query("BEGIN READ ONLY");
+    await sizeClient.query(`SET LOCAL statement_timeout = ${SIZE_TIMEOUT_MS}`);
+    const sizes = await sizeClient.query<{ table_name: string; row_count: string }>(
       `SELECT c.relname AS table_name,
               GREATEST(c.reltuples, 0)::bigint AS row_count
          FROM pg_class c
@@ -280,15 +294,26 @@ export async function POST(request: NextRequest) {
           AND c.relkind IN ('r', 'p', 'm')`,
       [schema]
     );
+    await sizeClient.query("COMMIT");
     for (const row of sizes.rows) {
       // reltuples is -1 until a table has been analysed, and GREATEST has
       // already turned that into 0 — which means "unknown", and falls through
       // to the plan's own number rather than claiming the table is empty.
       const count = Number(row.row_count);
-      if (Number.isFinite(count) && count > 0) tableRows[row.table_name] = count;
+      // Keyed with the schema, because that is how readPlan looks a step up:
+      // a plan step reading another schema's table of the same name must not
+      // be measured against this one.
+      if (Number.isFinite(count) && count > 0) {
+        tableRows[`${schema}.${row.table_name}`] = count;
+      }
     }
   } catch (error) {
     console.error("Query analysis — table sizes unavailable:", error);
+    // A rolled-back client is safe to hand back to the pool; one left mid
+    // transaction is not, and this is the only place that knows to do it.
+    await sizeClient.query("ROLLBACK").catch(() => {});
+  } finally {
+    sizeClient.release();
   }
 
   const plan = readPlan(raw, tableRows);

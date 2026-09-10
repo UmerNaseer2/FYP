@@ -76,8 +76,15 @@ const WINDOWS: { days: number; label: string }[] = [
   { days: 90, label: "90 days" },
 ];
 
-/** The four structural metrics, then the three about size. */
-const STRUCTURE_KEYS: MetricKey[] = ["tables", "columns", "indexes", "foreignKeys"];
+/** The six structural metrics, then the three about size. */
+const STRUCTURE_KEYS: MetricKey[] = [
+  "tables",
+  "columns",
+  "indexes",
+  "foreignKeys",
+  "views",
+  "routines",
+];
 const SIZE_KEYS: MetricKey[] = ["totalBytes", "indexBytes", "estimatedRows"];
 
 /** One completed request, tagged with the request it answers. */
@@ -238,7 +245,7 @@ export function SchemaTrends({ target }: { target: PerfTarget | null }) {
             <span>{share.sentence}</span>
           </div>
 
-          <Section title="Structure" columns="sm:grid-cols-2">
+          <Section title="Structure" columns="sm:grid-cols-2 lg:grid-cols-3">
             {STRUCTURE_KEYS.map((metric) => (
               <TrendCard key={metric} metric={metric} samples={samples} />
             ))}

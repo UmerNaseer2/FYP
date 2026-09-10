@@ -57,6 +57,8 @@ export type MetricKey =
   | "columns"
   | "indexes"
   | "foreignKeys"
+  | "views"
+  | "routines"
   | "totalBytes"
   | "indexBytes"
   | "estimatedRows";
@@ -125,6 +127,27 @@ export const METRICS: MetricMeta[] = [
     noun: "foreign key",
     nounPlural: "foreign keys",
     help: "Foreign keys across every table — the shape of the relationships.",
+  },
+  {
+    key: "views",
+    label: "Views",
+    unit: "count",
+    noun: "view",
+    nounPlural: "views",
+    help:
+      "Views and materialised views the schema defines. A view moving on its " +
+      "own is a reporting change; one moving with the table count is usually " +
+      "the same migration touching both.",
+  },
+  {
+    key: "routines",
+    label: "Functions",
+    unit: "count",
+    noun: "function",
+    nounPlural: "functions",
+    help:
+      "Functions and procedures the schema defines. These are the objects a " +
+      "comparison is most likely to find redefined rather than added.",
   },
   {
     key: "totalBytes",
