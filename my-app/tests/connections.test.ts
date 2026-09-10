@@ -9,6 +9,7 @@ import {
   DEFAULT_SSL_MODE,
 } from "@/lib/connection-validate";
 import { parsePostgresUri } from "@/lib/parse-uri";
+import { checkConnectableHost } from "@/lib/connection-config";
 import {
   migrationFileName,
   rollbackFileName,
@@ -320,5 +321,88 @@ describe("registry file names", () => {
     const grouped = groupRegistryFiles([{ name: "v2.0.0.down.sql" }]);
     expect(grouped.get("2.0.0")!.up).toBeUndefined();
     expect(grouped.get("2.0.0")!.down!.name).toBe("v2.0.0.down.sql");
+  });
+});
+
+describe("checkConnectableHost", () => {
+  /**
+   * These run with NODE_ENV set to whatever Jest sets it to, which is "test" —
+   * so only the ALWAYS-blocked list applies here. The private-range half of the
+   * guard is production-only by design, and setting NODE_ENV inside a test
+   * would be testing the harness rather than the rule.
+   */
+  it("blocks the cloud metadata service by name and by address", () => {
+    expect(checkConnectableHost("metadata.google.internal").ok).toBe(false);
+    expect(checkConnectableHost("169.254.169.254").ok).toBe(false);
+  });
+
+  it("blocks the metadata address written as a bare 32-bit number", () => {
+    // 2852039166 is 169.254.169.254. Every C resolver accepts this spelling,
+    // and a check that compares strings would never have seen it coming.
+    expect(checkConnectableHost("2852039166").ok).toBe(false);
+  });
+
+  it("blocks the wildcard address however it is written", () => {
+    expect(checkConnectableHost("0.0.0.0").ok).toBe(false);
+    expect(checkConnectableHost("::").ok).toBe(false);
+    expect(checkConnectableHost("0").ok).toBe(false);
+    expect(checkConnectableHost("::ffff:0.0.0.0").ok).toBe(false);
+  });
+
+  it("sees through the brackets a connection string puts round an IPv6 literal", () => {
+    expect(checkConnectableHost("[fe80::1]").ok).toBe(false);
+  });
+
+  it("lets an ordinary database host through", () => {
+    expect(checkConnectableHost("ep-cool-name.eu-central-1.aws.neon.tech").ok).toBe(true);
+    expect(checkConnectableHost("db.example.com").ok).toBe(true);
+    expect(checkConnectableHost("203.0.113.10").ok).toBe(true);
+  });
+
+  /**
+   * The private-range half only runs in production, so these swap NODE_ENV for
+   * the length of one call. It is the branch that matters most — a deployed
+   * server is exactly where reaching its own loopback would be a hole.
+   */
+  function inProduction<T>(run: () => T): T {
+    const before = process.env.NODE_ENV;
+    Object.defineProperty(process.env, "NODE_ENV", { value: "production", configurable: true });
+    try {
+      return run();
+    } finally {
+      Object.defineProperty(process.env, "NODE_ENV", { value: before, configurable: true });
+    }
+  }
+
+  it("blocks loopback in production however it is spelled", () => {
+    inProduction(() => {
+      expect(checkConnectableHost("127.0.0.1").ok).toBe(false);
+      expect(checkConnectableHost("localhost").ok).toBe(false);
+      expect(checkConnectableHost("::1").ok).toBe(false);
+      // The three spellings that used to walk straight through.
+      expect(checkConnectableHost("::ffff:127.0.0.1").ok).toBe(false);
+      expect(checkConnectableHost("::ffff:7f00:1").ok).toBe(false);
+      expect(checkConnectableHost("2130706433").ok).toBe(false);
+    });
+  });
+
+  it("blocks a private range written as mapped IPv6 in production", () => {
+    inProduction(() => {
+      expect(checkConnectableHost("::ffff:10.1.2.3").ok).toBe(false);
+      expect(checkConnectableHost("::ffff:192.168.0.9").ok).toBe(false);
+    });
+  });
+
+  it("still allows a public host in production", () => {
+    inProduction(() => {
+      expect(checkConnectableHost("db.example.com").ok).toBe(true);
+      expect(checkConnectableHost("203.0.113.10").ok).toBe(true);
+    });
+  });
+
+  it("does not read a per-octet octal address as loopback", () => {
+    // Platforms disagree about "0177.0.0.1" — macOS resolves it to the public
+    // 177.0.0.1 — so normalising it would block a reachable host on a guess.
+    expect(checkConnectableHost("0177.0.0.1").ok).toBe(true);
   });
 });
