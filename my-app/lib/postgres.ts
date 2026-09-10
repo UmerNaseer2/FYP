@@ -1,6 +1,7 @@
 import { parseIntoClientConfig } from "pg-connection-string";
 import type { ClientConfig, PoolClient } from "pg";
 import { Pool } from "pg";
+import { SNAPSHOT_FORMAT_VERSION } from "./snapshot-format";
 
 declare global {
   var __comparePgPoolMap: Map<string, Pool> | undefined;
@@ -1046,6 +1047,17 @@ export type TableSnapshot = {
  * "recorded, and there are none". Never collapse the two with `?? []`.
  */
 export type SchemaSnapshot = {
+  /**
+   * Which generation of the capture wrote this snapshot — see
+   * lib/snapshot-format.ts.
+   *
+   * Optional for the same reason every collection below is: the snapshots
+   * already stored in `snapshots` were written before this field existed and
+   * nothing rewrites them, so `undefined` has to keep meaning "captured before
+   * stamping" rather than "version zero". Never compared — a stored baseline
+   * and a live capture differing here is the normal case, not drift.
+   */
+  formatVersion?: number;
   database: string;
   schema: string;
   tables: TableSnapshot[];
@@ -2647,6 +2659,7 @@ export async function fetchSchemaSnapshot(
     return {
       ok: true,
       data: {
+        formatVersion: SNAPSHOT_FORMAT_VERSION,
         database,
         schema: schemaName,
         tables: Array.from(tablesByName.values()).sort((a, b) =>

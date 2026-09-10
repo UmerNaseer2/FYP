@@ -543,6 +543,19 @@ function DetailTab({
 
         {view.report ? (
           <div className="space-y-3">
+            {/* A baseline captured by an older build never recorded some of the
+                categories this one reads, and the comparator silently skips
+                those — correct, but silence reads as "checked, and clean". */}
+            {view.expected.format.note && (
+              <div className="warn-inline">
+                <span className="ico" style={{ color: "var(--pending)" }}>
+                  <InfoIcon size={14} />
+                </span>
+                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                  <b>Not everything was compared.</b> {view.expected.format.note}
+                </div>
+              </div>
+            )}
             {/* A stored snapshot can predate a whole object category, and the
                 matrix is the only place that says so out loud — which matters
                 more here than on /compare, where both sides are live. */}

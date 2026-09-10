@@ -11,6 +11,7 @@ import type { ChangeLevel } from "./version-detection";
 import { listSetNamesUsingConnection } from "./comparison-sets";
 import pool, { syncMetadataTables } from "./version-db";
 import { toEnvironment, type Environment } from "./environments";
+import { snapshotFormatGap, type SnapshotFormatGap } from "./snapshot-format";
 
 /**
  * Phase 6 metadata store — "schema lineage".
@@ -593,6 +594,18 @@ export type ExpectedRef = {
   version: string | null;
   seq: number | null;
   snapshotId: number | null;
+  /**
+   * What generation of the capture wrote that baseline, and what it therefore
+   * could not have recorded.
+   *
+   * A stored snapshot is never rewritten, so a schema tracked a year ago is
+   * still being compared against JSON produced by whatever build was running
+   * that day. The comparator already refuses to report a category the baseline
+   * never recorded (lib/compare.ts), which is the correct behaviour — but it
+   * is silent about it, and silence reads as "checked, and clean". This says
+   * so out loud instead. See lib/snapshot-format.ts.
+   */
+  format: SnapshotFormatGap;
 };
 
 /** Shared identity carried by every non-"not_found" computation outcome. */
@@ -705,7 +718,12 @@ export async function computeDriftDetail(
 
   // 2. The EXPECTED snapshot — lineage HEAD, else the most recent capture.
   let expected: SchemaSnapshot | null = null;
-  const ref: ExpectedRef = { version: null, seq: null, snapshotId: null };
+  const ref: ExpectedRef = {
+    version: null,
+    seq: null,
+    snapshotId: null,
+    format: snapshotFormatGap(null),
+  };
   const head = await pool.query<{ id: number; snapshot: SchemaSnapshot; version: string; seq: number }>(
     `SELECT s.id, s.snapshot, lm.version, lm.seq
      FROM lineage_migrations lm
@@ -720,6 +738,10 @@ export async function computeDriftDetail(
     ref.version = head.rows[0].version;
     ref.seq = head.rows[0].seq;
     ref.snapshotId = head.rows[0].id;
+    // Read the format off the row as stored, before withoutToolTables — the
+    // spread carries the stamp through, but the question is about what was
+    // captured, not about what we chose to compare.
+    ref.format = snapshotFormatGap(head.rows[0].snapshot);
   } else {
     const latest = await pool.query<{ id: number; snapshot: SchemaSnapshot }>(
       `SELECT id, snapshot FROM snapshots
@@ -730,6 +752,7 @@ export async function computeDriftDetail(
     if (latest.rows.length > 0) {
       expected = withoutToolTables(latest.rows[0].snapshot);
       ref.snapshotId = latest.rows[0].id;
+      ref.format = snapshotFormatGap(latest.rows[0].snapshot);
     }
   }
   if (!expected) return { kind: "no_baseline", ...subject };
@@ -861,7 +884,12 @@ export async function getDriftDetail(
     connection: comp.connection,
     lastRecorded,
   };
-  const noRef: ExpectedRef = { version: null, seq: null, snapshotId: null };
+  const noRef: ExpectedRef = {
+    version: null,
+    seq: null,
+    snapshotId: null,
+    format: snapshotFormatGap(null),
+  };
 
   if (comp.kind === "no_baseline") {
     return {
