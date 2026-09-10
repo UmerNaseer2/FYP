@@ -1,0 +1,869 @@
+              Sprint Report 3
+                        PORTFOLIO TASK 4
+
+
+                       Unit code: COS40005
+            Unit Name: Computing Technology Project A
+                   Submission date: 14/6/2026
+
+
+
+
+        Name                                    Student Id
+    Umer Naseer                                 104404127
+Frandya Meidy Fabiola                           102765149
+ Cindy Wong Ing Ying                            102779425
+          ACKNOWLEDGMENT OF COUNTRY
+          -
+          CONTRIBUTION SUMMARY (THIS SPRINT)
+
+          All team members should complete the following table together. You can provide a yes/no
+          response or a brief comment where appropriate.
+
+             Name                                     Student ID                     % Contribution
+             Umer Naseer                              104404127                      33%
+             Frandya Meidy Fabiola                    102765149                      33%
+             Cindy Wong Ing Ying                      102779425                      33%
+
+
+
+
+                Contribution      Initiatives                       Communication                              Respect
+
+Team            Finished tasks   Self-          Attended   Attended     Attended     Replied      Kept the   The student
+Member          in time or on    assigned       all team   all          all client   every time   team       respected
+                time with an     tasks and      meetings   supervisor   meetings     within an    updated    others and
+                acceptable       proactively               meetings                  acceptable   about      listened to
+                quality          found                                               timeframe    the        different
+                                 solutions to                                                     status     opinions
+                                 problems
+
+Umer            yes              yes            yes        yes          yes          yes          yes        yes
+
+Frandya         yes              no             yes        yes          yes          yes          yes        yes
+Meidy Fabiola
+
+Cindy Wong      Yes              Yes            Yes        Yes          Yes          Yes          Yes        Yes
+Ing Ying
+
+
+
+
+          CONTRIBUTION DETAILS (THIS SPRINT)
+
+          In this section, every member of the team should write a summary of what they have
+          contributed during this sprint. All contributions must be supported by evidence, such as the
+          number of GitHub commits, a screenshot of developed screens, a summary/outcome of
+          research, etc.
+
+
+
+                                                                                         UNIT CODE COS40005
+                                                                                        PORTFOLIO TASK 2/3/4
+                                                                                                 PAGE 1
+ Umer
+ Studio      Re-architected the               Completed
+rebuild & app into a single
+architecture (studio) route
+             group with a
+             shared layout,
+             reusable UI kit
+             (Select, Card, Pill,
+             EmptyState,
+             ConfirmDialog),
+             and instant
+             skeleton loading on
+             every server-
+             rendered page,
+             replacing the
+             legacy multi-page
+             shell from Sprint 2.
+Schema       Built an interactive             Completed
+Visualizer React Flow ER
+(ER          diagram that
+diagram) renders any
+             schema's tables,
+             columns and
+             foreign-key
+             relationships, with
+             a side-by-side
+             mode to view two
+             schemas (e.g. dev
+             vs prod) at once
+             behind a draggable
+             divider.
+Drift        Implemented drift                Completed
+Detection & detection against a
+schema       tracked baseline,
+lineage      backed by a new
+store        metadata store
+             (lineage-db.ts) with
+             tracked_schemas,
+             snapshots,
+             lineage_migrations
+             and drift_events
+             tables — all kept in
+             the existing
+             metadata DB.
+             Detects and
+             classifies schema
+                                     UNIT CODE COS40005
+                                    PORTFOLIO TASK 2/3/4
+                                             PAGE 2
+              drift since the last
+              captured snapshot.
+Version       Delivered the                      Completed
+Sync          Sprint 3 priority of
+(version      reverting a schema
+replay /      to another version:
+rollback)     diffs two schemas'
+              applied-script
+              ledgers
+              (script_patch),
+              finds entries the
+              target is missing,
+              and replays them
+              in order to catch it
+              up. Pure, unit-
+              testable diff logic in
+              version-sync.ts.
+Script Editor Added an in-app                    Completed
+              editor to create
+              and edit migration
+              scripts with
+              semantic-version
+              handling
+              (validation, auto-
+              bump,
+              comparison),
+              removing the need
+              to hand-edit SQL
+              outside the tool.
+SQL           Extended the                       Completed
+generation generator to emit
+& shared DROP TABLE /
+SQL guard DROP COLUMN in
+              sync scripts, and
+              centralised
+              transaction-control
+              detection into one
+              shared sql-guard.ts
+              used by both the
+              apply route and the
+              deploy page,
+              removing the
+              duplicate/divergent
+              regex from Sprint
+              2.
+
+
+                                        UNIT CODE COS40005
+                                       PORTFOLIO TASK 2/3/4
+                                                PAGE 3
+Mobile-         Completed a full                               Completed
+responsive      mobile-responsive
+pass &          pass across all
+admin           Studio screens,
+rebuild         rebuilt the Admin
+                Control page, and
+                pruned ~395 lines
+                of dead CSS,
+                addressing the
+                "report page too
+                dense" feedback
+                from the Sprint 2
+                review.
+
+
+
+
+Testing         Added test cases                               Completed
+                covering the
+                comparison and
+                version logic
+                against known
+                schema inputs,
+                acting on the Sprint
+                2 lesson to test
+                against defined
+                cases rather than
+                ad-hoc demo data.
+
+
+
+
+                                       Frandya
+Task          Description Evidence               completio
+                                                 n
+ fixing rls   Due to                             complete
+issue         update on
+              supabase it
+              created
+              issue or
+              clash in the
+              project
+              making the
+                                                      UNIT CODE COS40005
+                                                     PORTFOLIO TASK 2/3/4
+                                                              PAGE 4
+           role not
+           available
+ configure due to          complete
+azure AD change of
+to work from local to
+with the web app
+new web new route
+app and has to be
+next auth added
+ ensuring -checking if     complete
+authentic the
+ation      authenticati
+work in on is
+both local working and
+and web there is no
+site       major
+           problem
+ creating create the       complete
+presentat presentatio
+ion slide n slide
+and video about
+presentat teamwork
+ion        Ethical
+           Consideratio
+           ns and
+           refection
+           and create a
+           video talking
+           about it
+ Supervis Attended
+or         supervisor                       Compl
+Consultat meetings                          eted
+ion        to discuss
+           implement
+           ation
+           progress,
+           receive
+           guidance,
+           and
+           address
+           technical
+           challenges.
+
+
+
+
+                                UNIT CODE COS40005
+                               PORTFOLIO TASK 2/3/4
+                                        PAGE 5
+Saved     Improved                    Compl
+Connecti connection                   eted
+on       testing
+Testing functionali
+         ty to
+         validate
+         database
+         accessibilit
+         y before
+         usage.
+
+
+
+
+System    Conducted                   Comple
+Testing   testing and                 ted
+and Bug   resolved
+Fixing    issues
+          related to
+          database
+          connection
+          s and
+          version
+          synchronis
+          ation.
+
+ Client    Participate                Compl
+Meeting d in client                   eted
+Participat meetings
+ion        to gather
+           feedback,
+           clarify
+           requireme
+           nts, and
+           present
+           the latest
+
+                          UNIT CODE COS40005
+                         PORTFOLIO TASK 2/3/4
+                                  PAGE 6
+           system
+           progress.
+           Prepared                                                 Compl
+ Presentat presentati                                               eted
+ion Slide on slides
+Preparati summarisi
+on         ng the
+           project's
+           objectives,
+           implement
+           ed
+           features,
+           and sprint
+           outcomes.
+Presentat Collaborat                                                Comple
+ion Video ed in                                                     ted
+Preparati creating
+on         and
+           recording
+           the project
+           presentati
+           on video
+           for
+           submission
+           and
+           demonstra
+           tion
+           purposes.
+
+
+
+
+                                             Cindy
+Task                Description             Evidence             Status
+Connections         Enhanced the                                 Complete
+Module             Connections page to                           d
+Enhancement        display saved database
+                   connections and their
+                   details, including
+                   connection type and
+                   SSL status.
+
+
+
+                                                        UNIT CODE COS40005
+                                                       PORTFOLIO TASK 2/3/4
+                                                                PAGE 7
+Supervisor         Attended supervisor
+Consultation      meetings to discuss                 Complete
+                  implementation                      d
+                  progress, receive
+                  guidance, and address
+                  technical challenges.
+
+
+
+
+Saved Connection Improved connection                  Complete
+Testing          testing functionality to             d
+                 validate database
+                 accessibility before
+                 usage.
+
+
+
+
+System Testing    Conducted testing and               Completed
+and Bug Fixing    resolved issues related
+                  to database
+                  connections and
+                  version synchronisatio
+                  n.
+
+Client Meeting    Participated in client              Complete
+Participation     meetings to gather                  d
+                  feedback, clarify
+                  requirements, and
+                  present the latest
+                  system progress.
+
+
+
+
+                                             UNIT CODE COS40005
+                                            PORTFOLIO TASK 2/3/4
+                                                     PAGE 8
+                    Prepared presentation                                              Complete
+         Presentati slides summarising the                                             d
+on Slide            project's objectives,
+Preparation         implemented features,
+                    and sprint outcomes.
+
+
+
+
+Presentation      Collaborated in                                                      Completed
+Video Preparation creating and recording
+                  the project
+                  presentation video for
+                  submission and
+                  demonstration
+                  purposes.
+
+
+
+
+            1. SPRINT PLAN
+
+
+      1. SPRINT PLAN
+Sprint goal: The goal for Sprint 3 was to move the comparison tool from a local prototype into a
+deployable, access-controlled increment that the client could use online. In practice this meant
+putting the whole app behind a login, hosting it so the team and client all worked off the same
+version, and acting on the gaps the client raised at the end of Sprint 2 (rollback support, one
+place to store scripts, and a way to preview what a script changes before it runs).
+
+
+Planning approach: At the start of the sprint we held a planning meeting, carried the priorities
+listed at the end of the Sprint 2 report into a product backlog, and assigned each item to an
+owner by area. Work was tracked on a shared task board and reviewed in regular check-ins so
+we could see what was in progress and what was blocked.
+
+
+ ID       Product Backlog Item               Owner                Priority          Status
+
+
+
+
+                                                                              UNIT CODE COS40005
+                                                                             PORTFOLIO TASK 2/3/4
+                                                                                      PAGE 9
+PBI-01   Migrate authentication to         Frandya    High          Done
+         NextAuth with Microsoft Entra
+         ID and enforce login on all pages
+
+
+PBI-02   Deploy the application to Vercel   Frandya   High          Done
+         and connect it to online
+         databases (Neon, Supabase)
+
+
+PBI-03   Set up and validate database       Cindy     Medium        Done
+         connections and connection
+         configuration
+
+
+PBI-04   Fix the SQL migration runner       Umer      High          Done
+         and guard against unsafe
+         transaction control
+         (COMMIT/ROLLBACK)
+
+
+PBI-05   Extend SQL generation to emit      Umer      High          Done
+         DROP TABLE / DROP COLUMN
+         with breaking and safe severity
+
+
+PBI-06   Build the Schema Visualizer        Umer      Medium        Done
+         (React Flow ER diagram, single
+         and side-by-side modes)
+
+
+PBI-07   Build the Script Editor with       Umer      Medium        Done
+         semantic versioning and a
+         reusable dropdown component
+
+
+PBI-08   Build Version Sync to diff two     Umer      High          Done
+         schemas' script ledgers for
+         version replay
+
+
+
+
+                                                              UNIT CODE COS40005
+                                                             PORTFOLIO TASK 2/3/4
+                                                                      PAGE 10
+ PBI-09   Add admin-only execution and        Umer              Medium            Done
+          rebuild the admin area
+
+
+ PBI-10   Full mobile-responsive UI pass      Umer              Medium            Done
+          and removal of dead CSS
+
+
+ PBI-11   Standardise a shared .env across All                  Low               Done
+          the team and run a task board
+          with regular check-ins
+
+
+ PBI-12   Rollback and downgrade              Umer              High              Carried over
+          migration scripts, so every                                             to Sprint
+          upgrade ships with a matching                                           4(FYP-B)
+          downgrade
+
+
+ PBI-13   Make GitHub the single source       Umer              High              Carried over
+          of truth for scripts, with a sync                                       to Sprint
+          action                                                                  4(FYP-B)
+
+
+ PBI-14   Script-change preview               Umer              Medium            Carried over
+          (summary and visual diff before                                         to Sprint 4
+          a script runs)                                                          (FYP-B)
+
+
+ PBI-15   Encrypt stored database             Cindy             Medium            Carried over
+          connection passwords                                                    to Sprint
+                                                                                  4(FYP-B)
+
+
+
+
+    2. SPRINT PROGRESS
+WEEK 10
+
+
+Umer
+
+Week 10 focused on re-architecting the application so the new Sprint 3 features had a solid
+foundation to sit on. The app was consolidated into a single (studio) route group with one
+                                                                          UNIT CODE COS40005
+                                                                         PORTFOLIO TASK 2/3/4
+                                                                                  PAGE 11
+shared layout, and a reusable UI kit was built out (Select, Card, Pill, EmptyState, ConfirmDialog)
+so every screen draws from the same components instead of the divergent one-off styling
+carried over from Sprint 2. Instant skeleton loading was added to every server-rendered page so
+navigation feels immediate rather than blank-then-pop. On the functional side, the Script Editor
+was introduced — an in-app editor for creating and editing migration scripts with proper
+semantic-version handling (validation, auto-bump, and comparison), removing the earlier need
+to hand-edit SQL outside the tool. The SQL generator was also extended to emit DROP TABLE
+and DROP COLUMN statements in sync scripts, and transaction-control detection was
+centralised into a single shared sql-guard.ts used by both the apply route and the deploy page,
+eliminating the duplicate, slightly-divergent regex that previously lived in two places.
+
+
+
+
+Cindy
+
+During Week 10, the team focused on enhancing the existing functionalities developed in
+previous sprints. The Connections module was refined to improve database connection
+management, including the ability to add, edit, delete, and validate saved database connections.
+The Version Sync module was also enhanced to better identify version differences between
+source and target schemas. Team members attended meetings with the supervisor to discuss
+the current implementation status and obtain feedback on areas requiring improvement.
+
+
+
+
+Frandya
+
+                                                                           UNIT CODE COS40005
+                                                                          PORTFOLIO TASK 2/3/4
+                                                                                   PAGE 12
+The problem which I resolved during Week 10 was that the application could not read the user
+role from the profiles table. There might be the correct roles (either admin or viewer) in the
+table, but either there were no RLS policies set up or they were implemented in a wrong way.
+This was making the useUser hook always return the 'viewer' role and the Admin Control page
+not to show any users.
+
+Firstly, I turned off the RLS policy temporarily to check whether the data itself is valid. Then after
+checking that role values are indeed correct, I dropped all the incorrect policies and used a
+different approach to solve the problem. I created a SECURITY DEFINER function called
+get_my_role(), which works with database owner privileges, thus ignoring RLS, and which
+returns the role of a particular user using auth.uid(). Having done that, I enabled the RLS again
+and introduced two new policies, Users can view their own profile, and Admins can view all
+profiles.
+
+With these changes, the application could determine whether the user was an admin or a
+viewer and display all users on the Admin Control page.
+
+
+
+
+WEEK 11
+
+
+Umer
+
+Week 11 was the core feature-build week. The Schema Visualizer was implemented as an
+interactive React Flow ER diagram that renders a schema's tables, columns and foreign-key
+relationships, including a side-by-side mode that draws two schemas at once (e.g. dev vs prod)
+behind a draggable divider for direct visual comparison. Drift Detection was then built on top of
+a new metadata store (lineage-db.ts) introducing four tables tracked_schemas, snapshots,
+lineage_migrations and drift_events. All kept inside the existing metadata database rather than
+a separate data layer. This lets the system capture a baseline snapshot of a tracked schema and
+detect and classify any drift that has occurred since. Finally, the Version Sync (version replay)
+feature delivered the Sprint 2 priority of reverting/aligning a schema to another version: it diffs
+                                                                              UNIT CODE COS40005
+                                                                             PORTFOLIO TASK 2/3/4
+                                                                                        PAGE 13
+two schemas' applied-script ledgers (script_patch), finds the entries the target is missing, and
+replays them in order to bring it back in sync. The diff logic was kept pure and dependency-free
+in version-sync.ts so it is unit-testable in isolation. These modules were wired to their backend
+APIs (/api/lineage, version-sync) for live data.
+
+
+
+
+Cindy
+
+During Week 11, integration and testing activities were prioritised. The frontend interfaces for
+the Connections and Version Sync modules were integrated with backend APIs to ensure real-
+time data processing. Functional testing was conducted to identify and resolve issues affecting
+connection validation and version synchronisation. The team also met with the client to
+demonstrate the system progress and gather feedback regarding usability and feature
+expectations.
+
+
+
+
+                                                                           UNIT CODE COS40005
+                                                                          PORTFOLIO TASK 2/3/4
+                                                                                   PAGE 14
+Frandya
+
+Compliance for the project was done via Microsoft authentication using NextAuth, whereas the
+project used Supabase Auth. Consequently, during Week 11, I did a revamp of the entire
+authentication process. I had to remove the existing Supabase client authentication on the login
+page and install NextAuth authentication instead. I updated the auth.ts file with Microsoft Entra
+ID as the OAuth provider, corrected the Azure redirect URI URLs, and replaced the useUser hook
+with useSession. The obsolete AuthCallback component that was handling Supabase OAuth was
+removed because it was not necessary anymore. After some testing, everything seemed to
+work, and still able to retrieve the role from the supabase.
+
+
+
+
+WEEK 12
+
+
+                                                                           UNIT CODE COS40005
+                                                                          PORTFOLIO TASK 2/3/4
+                                                                                   PAGE 15
+Umer
+Week 12 was spent finalising and hardening the sprint deliverables. A full mobile-responsive
+pass was completed across every Studio screen, the Admin Control page was rebuilt, and
+roughly 395 lines of dead CSS were pruned, directly addressing the Sprint 2 review feedback that
+the report/comparison views were too dense and not adapting well to smaller screens. Test
+cases were added covering the comparison and version-sync logic against known schema inputs,
+acting on the Sprint 2 lesson to test against defined cases rather than ad-hoc demo data. The
+remaining time went to bug-fixing, verifying each feature behaved correctly end-to-end in the
+running environment, and preparing the increment for the supervisor and client demonstration.
+
+
+
+
+Cindy
+
+During Week 12, the team concentrated on finalising the sprint deliverables. System
+demonstrations were conducted to verify that implemented features worked correctly within
+the deployed environment. Presentation slides and the presentation video were prepared to
+communicate the project's objectives, implemented functionalities, and sprint outcomes. Final
+supervisor consultations were held to review the sprint achievements and ensure readiness for
+submission and showcase activities.
+
+
+
+
+                                                                         UNIT CODE COS40005
+                                                                        PORTFOLIO TASK 2/3/4
+                                                                                 PAGE 16
+Frandya
+
+Once we made the transition to NextAuth, everything seemed to work locally, but issues started
+coming up upon deployment to Vercel. The authentication process wasn’t working at all since it
+couldn’t find the variables that were supposed to be present for configuring the application. I
+went ahead and set those variables up within the Vercel dashboard, which included
+NEXTAUTH_URL, NEXTAUTH_SECRET, Azure login credentials, and the DATABASE_URL from
+Supabase. I also made sure to add our domain as a new redirect URI in Azure. Everything was
+finally sorted out after a couple of tests.
+
+
+
+   3. SPRINT REVIEW
+The Sprint 3 increment was demonstrated to the client and supervisor, Jason Thomas Chew,
+during the Week 12 meeting. The session walked through the full end to end flow of the tool
+running on the live Vercel deployment, starting from logging in through Microsoft Entra ID and
+ending with a generated migration script pushed to GitHub. The goal of the demonstration was
+to show that the tool now works as a hosted, access controlled application that the whole team
+and the client can reach from the same place, rather than something that only runs on one
+person's machine, and to collect the client's feedback on what to prioritise next.
+
+What was demonstrated:
+
+   •      Logging in to the deployed application through Microsoft Entra ID, with the app
+          enforcing the login before any page can be reached.
+   •      The schema comparison report, showing both table level and column level differences
+          between two databases (A against B).
+   •      Migration script generation with the changes grouped by severity (breaking, safe or
+          additive, and informational), including the new DROP TABLE and DROP COLUMN
+          handling.
+   •      Saving a generated script to the script registry and pushing it to GitHub.
+   •      Drift detection, tracking how a schema has changed against a captured baseline over
+          time.
+                                                                         UNIT CODE COS40005
+                                                                        PORTFOLIO TASK 2/3/4
+                                                                                 PAGE 17
+    •   Version Sync, replaying the scripts a target schema is missing so it can be brought back
+        in line with a source schema.
+    •   The Schema Visualizer, rendering a schema as an interactive ER diagram, including the
+        side by side mode for comparing two schemas at once.
+    •   The Connections page, adding, editing and testing a saved database connection with the
+        SSL toggle.
+        Client feedback
+        The client treated the demonstration as a working prototype and gave the following
+        feedback for the next increment:
+    •   Single source of truth for scripts. Scripts are currently stored in two places, the local
+        script table and GitHub, which risks the two drifting apart. The client recommended
+        making GitHub the single source of truth and adding a sync button so the local table
+        always matches the remote repository.
+    •   Rollback support. There are no downgrade scripts yet. The client said every upgrade
+        script should ship with a matching downgrade script, following a proper migration
+        pattern, so a bad change can be cleanly reversed.
+    •   Change preview before running. The tool runs a script without first showing what it will
+        change. The client asked for a summary or a visual diff so the user can review the impact
+        before anything executes.
+    •   Local database connectivity. The hosted web app cannot reach databases running on
+        localhost and only works with online databases such as Neon and Supabase. The client
+        noted this as a genuine limitation for real world use that the team should be upfront
+        about.
+    •   Support for concurrent development. With more than one person working on the same
+        schema, the client suggested leaning on GitHub as the central history so the team can
+        manage parallel changes without overwriting each other.
+        Progress against the sprint plan
+
+
+The sprint goal was to move the tool from a local prototype into a deployable, access controlled
+increment, and that goal was met. The team delivered the authentication migration and login
+enforcement, the deployment to Vercel against online databases, and the full compare,
+generate and push flow working end to end, on top of the new Drift Detection, Version Sync,
+Schema Visualizer and Script Editor modules. Four items did not make it into this sprint and
+were carried into Sprint 4: rollback and downgrade scripts, making GitHub the single source of
+truth, the script change preview, and password encryption for stored connections. It is worth
+noting that all four of these line up directly with the feedback the client raised in the
+demonstration, so the next sprint follows on logically from this review rather than starting from
+a fresh set of priorities.
+
+The client was satisfied with the progress made over Sprint 3 and was comfortable with the
+team carrying the remaining items into FYP B.
+
+                                                                           UNIT CODE COS40005
+                                                                          PORTFOLIO TASK 2/3/4
+                                                                                   PAGE 18
+  4. RETROSPECT (CRITICAL REVIEW OF THE PROCESS)
+Went well                                   To improve               Actions for Sprint 4(FYP-B)
+
+We moved the app from a local-only          We did not have a        Standardise on a shared
+prototype to a live deployment on           shared .env from the     .env and a branching
+Vercel, with login working through          start, so connection     convention to cut setup and
+Microsoft Entra ID, so the team and the     details drifted          merge friction.
+client all worked off the same hosted       between machines
+version.                                    and slowed setup
+                                            early in the sprint.
+The core engine work landed: SQL            The move to online-      Finish password encryption
+generation now handles destructive          only databases           for stored connection
+changes (DROP TABLE and DROP                caught us out mid-       credentials (PBI-15) and
+COLUMN), the migration runner is            sprint, because the      document the online-
+guarded against unsafe transaction          hosted app cannot        database setup.
+control, and Version Sync can diff script   reach a local
+ledgers.                                    database, which
+                                            forced some rework
+                                            on how connections
+                                            are configured.
+Work split cleanly by area (Umer on the     Scripts were being       Make GitHub the single
+engine, UI, visualizer and versioning;      stored in two places,    source of truth for scripts
+Frandya on auth and deployment;             which the client         and add a sync button (PBI-
+Cindy on connections), so we rarely         flagged. There is no     13).
+blocked each other.                         single source of truth
+                                            yet.
+We demonstrated the increment to the        There are no rollback    Adopt a downgrade-script
+client and got concrete, useful             or downgrade scripts     pattern so every upgrade
+feedback instead of vague comments.         yet, so a bad            ships with a matching
+                                            upgrade cannot be        rollback (PBI-12).
+                                            cleanly reversed.
+Tracking work on a task board with          Concurrent               Add a script-change preview
+regular check-ins kept everyone aware       development              (summary and visual diff)
+of progress and blockers.                   sometimes caused         before anything runs (PBI-
+                                            merge friction           14).
+                                            because we were
+                                            not always branching
+                                            consistently.
+
+
+
+
+                                                                               UNIT CODE COS40005
+                                                                              PORTFOLIO TASK 2/3/4
+                                                                                       PAGE 19
+   5. LESSONS LEARNED (CRITICAL REVIEW OF SPRINT THREE EXPERIENCE AND FUTURE
+      PLAN)
+
+
+Sprint 3 was different from the earlier sprints because most of the work was building on
+top of features that already existed rather than starting from nothing. That sounds easier,
+but it actually brought its own set of problems, and we learned a few things the hard way.
+
+The biggest lesson was that integration should happen early and often, not at the end. A
+lot of the new work this sprint, like Drift Detection, the Schema Visualizer and Version
+Sync, was developed in separate branches and only really tested together near the end of
+the sprint. When we finally merged everything, we ran into compatibility issues and a
+few bugs that only showed up once the frontend was talking to the live backend APIs. If
+we had merged smaller pieces more frequently, most of those issues would have been
+caught while they were still small and easy to fix.
+
+Related to that, we learned that our GitHub workflow needed to be tighter. Because
+several people were touching the same areas of the codebase, we ended up with merge
+conflicts that took real time to sort out, and at one point we had to be careful that new
+features were not quietly breaking things that already worked. Back in Sprint 2 we said
+we would use a shared task board and do regular check-ins, and we did improve on this,
+but we still did not stick to it as consistently as we should have. When everyone knows
+what the others are working on, it is much easier to avoid two people editing the same file
+at the same time.
+
+Testing was another area we underestimated again. Even though we added test cases for
+the comparison and version logic this sprint, a lot of problems still only became obvious
+once the full system was running end to end. Things that looked fine in isolation behaved
+differently once they were connected to real data and the other modules. This told us that
+unit tests are useful but they are not enough on their own, and we need to spend proper
+time testing the whole flow before a demo, not the night before.
+
+On the positive side, the studio rebuild and the move to a shared set of UI components
+made development noticeably faster once it was done. Having one consistent layout and
+reusable pieces meant new screens like the Visualizer and Version Sync took less time to
+put together and looked consistent without extra effort. That was a good reminder that
+spending time on the foundation early pays off later, even if it does not feel like visible
+progress at the time.
+
+We also kept the security and ethics side in mind throughout the sprint. Database
+credentials and sensitive details were kept out of the public repository, and access control
+was used to stop unauthorised users from reaching parts of the system they should not.
+Since the project deals with database connection information, we only tested against our
+
+                                                                       UNIT CODE COS40005
+                                                                      PORTFOLIO TASK 2/3/4
+                                                                               PAGE 20
+own local and online development databases, such as Neon and Supabase and did not
+touch any real or personal data.
+
+Recommendations to carry into the next sprint:
+
+   •   Merge and integrate small changes regularly instead of leaving it until the end of
+       the sprint.
+
+   •   Actually keep the task board updated and hold short check-ins, since the times we
+       did this it clearly helped.
+
+   •   Agree on simple GitHub habits (pull before you start, smaller pull requests, clear
+       commit messages) to cut down merge conflicts.
+
+   •   Write tests as features are built, and always run a full end to end test of the system
+       before any demo.
+
+   •   Keep documenting features as we go so the report and the handover are not a
+       scramble at the end.
+
+   •   Continue being careful with database credentials and user permissions as the
+       system gets closer to something that could actually be deployed.
+
+Overall, Sprint 3 showed us that building on an existing system needs just as much
+planning as starting one, especially around integration, testing and keeping the team in
+sync. The features we delivered worked, but the process taught us where we still lose
+time, and most of that comes down to merging late and testing late.
+
+
+
+
+                                                                       UNIT CODE COS40005
+                                                                      PORTFOLIO TASK 2/3/4
+                                                                               PAGE 21
+

@@ -1,0 +1,656 @@
+Sprint Report 1
+PORTFOLIO TASK 2/3/4
+
+
+Unit code: COS40005
+Unit Name: Computing Technology Project A
+Submission date:19/4/2026
+
+
+
+Name                               Student Id
+Umer Naseer                        104404127
+Frandya Meidy Fabiola              102765149
+Cindy Wong Ing Ying                102779425
+Table of Contents
+ Acknowledgment of Country ....................................................................................................... 1
+ Contribution summary (This Sprint) ............................................................................................ 1
+ Contribution Details (This Sprint) ............................................................................................... 2
+ 1.     Sprint plan ......................................................................................................................... 10
+ 2.     Sprint progress .................................................................................................................. 11
+ 3.     Sprint review ..................................................................................................................... 18
+ 4.     Retrospect (Critical review of the process) ....................................................................... 19
+ 5.     Lessons learned (Critical review of SPRINT one experience and future plan) ................ 19
+
+
+
+
+                                                                                                             UNIT CODE COS40005
+                                                                                                            PORTFOLIO TASK 2/3/4
+                                                                                                                     PAGE 1
+           ACKNOWLEDGMENT OF COUNTRY
+
+           Each team member identifies:
+
+                the Traditional Owners of the land they lived on while completing this work (if living in
+                Australia)…
+
+           CONTRIBUTION SUMMARY (THIS SPRINT)
+
+
+           All team members should complete the following table together. You can provide a yes/no
+           response or a brief comment where appropriate.
+
+
+
+                 Contribution     Initiatives    Communication                                                 Respect
+
+
+Team Member      Finished tasks   Self-          Attended   Attended     Attended     Replied      Kept the    The student
+                 in time or on    assigned       all team   all          all client   every time   team        respected
+                 time with an     tasks and      meetings   supervisor   meetings     within an    updated     others and
+                 acceptable       proactively               meetings                  acceptable   about the   listened to
+                 quality          found                                               timeframe    status      different
+                                  solutions to                                                                 opinions
+                                  problems
+
+
+Umer Naseer      Yes              Yes            Yes        Yes          Yes          Yes          Yes         Yes
+
+
+Frandya          Yes              Some           Yes        Yes          Yes          Yes          Yes         Yes
+Meidy Fabiola
+
+
+Cindy Wong       Yes              Yes            Yes        Yes          Yes          Yes          Yes         Yes
+Ing Ying
+
+
+
+
+           CONTRIBUTION DETAILS (THIS SPRINT)
+
+
+                                                                                          UNIT CODE COS40005
+                                                                                         PORTFOLIO TASK 2/3/4
+                                                                                                  PAGE 2
+                                          Umer
+Task                   Description                 Evidence              Status
+Backend research and   Researched possible                               Completed
+initial setup          backend approaches for
+                       the project and initially
+                       tested Supabase as a
+                       quick backend option
+                       before the architecture
+                       was changed.
+
+
+
+
+Local PostgreSQL       Set up backend                                    Completed
+integration            connection handling for
+                       local PostgreSQL
+                       databases and configured
+                       environment based target
+                       selection for schema
+                       comparison.
+Schema metadata        Implemented backend                               Completed
+extraction             logic to read tables,
+                       columns, primary keys,
+                       foreign keys, unique
+                       constraints, check
+                       constraints, and exclude
+                       constraints directly from
+                       PostgreSQL.
+
+
+
+
+                                                               UNIT CODE COS40005
+                                                              PORTFOLIO TASK 2/3/4
+                                                                       PAGE 3
+Schema comparison   Developed the                        Completed
+algorithm           comparison logic to
+                    match tables and
+                    columns, detect exact
+                    and similarity based
+                    matches, and produce a
+                    structured diff report.
+
+
+
+
+                                               UNIT CODE COS40005
+                                              PORTFOLIO TASK 2/3/4
+                                                       PAGE 4
+Frandya Meidy Fabiola
+Task              Description           Evidence                          Status
+Attend meeting    Attend meeting                                          Complete
+with supervisor   with supervisor and
+and client        client
+
+
+
+
+Login page        Created basic                                           Complete
+layout            structure and                                           the ui
+                  design of the login
+                  page using Next.js
+
+
+
+
+Team              Always respond in                                       Complete
+coordiantion      group as soon as
+                  possible
+
+
+
+
+Research          Finish up some                                          Complete
+                  research material
+
+
+
+
+Rdesearch         Complete the report                                     Complete
+report            part given
+
+
+
+
+                                                    UNIT CODE COS40005
+                                                   PORTFOLIO TASK 2/3/4
+                                                            PAGE 5
+                                         Cindy
+Task         Description      Evidence                                  Status
+Team         I participated                                             Completed
+meeting      in team
+             discussion
+             and planning.
+
+
+
+
+Supervisor   Consulted                                                  Completed
+Meeting      supervisor for
+             feedback and
+             guidance.
+
+
+
+
+Client       Attended                                                   Completed
+Meeting      meeting with
+             client to
+             understand
+             requirements.
+
+
+
+
+Document     Reviewed                                                   Completed
+Review       documents
+             provided by
+
+                                                  UNIT CODE COS40005
+                                                 PORTFOLIO TASK 2/3/4
+                                                          PAGE 6
+            client to
+            clarify system
+            requirements.
+
+
+
+Research    Researched                              Completed
+(Next.js)   how to use
+            Next.js to
+            support
+            understanding
+            of how to use
+            the language.
+
+
+
+
+Page        Set up main                             Completed
+Structure   pages
+Setup       Dashboard in
+            the system.
+
+
+
+
+                              UNIT CODE COS40005
+                             PORTFOLIO TASK 2/3/4
+                                      PAGE 7
+Dashboard     Developed                                               Completed
+UI            dashboard UI
+Development   using Next.js
+              and Tailwind
+              CSS.
+
+
+
+
+                                Tailwind CSS
+
+
+
+
+Navigation    Implemented                                             Completed
+(Sidebar &    navigation
+Topbar)       components
+              and fixed
+              routing issues.
+
+
+                                                UNIT CODE COS40005
+                                               PORTFOLIO TASK 2/3/4
+                                                        PAGE 8
+UI Styling     Improved UI                                                                             Completed
+Improvement    design for
+               better layout
+               and user
+               experience.
+
+
+Bug Fixing     Identified and                                                                          Completed
+(Frontend)     fixed errors in
+               frontend
+               components
+               and layout.
+
+
+
+
+                                 Top Bar is not closed properly so it causes error
+                                 Fixed:
+
+
+
+
+Presentation   Prepared                                                                                Completed
+Preparation    presentation
+               slides for
+               sprint
+               review/demo.
+
+
+
+
+                                                                                 UNIT CODE COS40005
+                                                                                PORTFOLIO TASK 2/3/4
+                                                                                         PAGE 9
+    1. SPRINT PLAN
+
+For Sprint 1, the team made a frontend prototype and set up the backend infrastructure. They built
+a user interface with a dashboard, navigationcomponents,, and a login page layout so the client
+and supervisor could see what was happening with the Sprint 1 system.
+
+The Sprint 1 period was four weeks long from Week 2 to Week 6. Here is the Sprint 1 backlog
+with tasks for Sprint 1 for the people doing them for Sprint 1 and the estimated hours for Sprint 1
+tasks.
+
+
+ Task                             Member                           Est. hours
+
+
+ Research material                All member                       6-8 hour each member
+
+
+ Set up GitHub repository         Umer                             1
+ and invite team
+
+
+ Create login page layout         Frandya                          3
+ and structure
+
+ Build dashboard UI (main         Cindy
+                                                                   6
+ page)
+ Implement Sidebar and            Cindy                            2
+ Topbar navigation
+ Improve UI styling               Cindy                            2
+ Attend client meeting            All                              1
+ Attend supervisor meeting        All                              3
+ Set up backend (database,        Umer                             8
+ API, authentication)
+
+
+
+
+                                                                            UNIT CODE COS40005
+                                                                           PORTFOLIO TASK 2/3/4
+                                                                                    PAGE 10
+    2. SPRINT PROGRESS
+
+Week 2
+
+Umer
+
+He spent this week understanding the project requirements and the overall direction of the
+system. He reviewed the project materials, investigated how schema comparison systems usually
+work, and started thinking about how the backend could be structured. At this stage, he also
+began exploring Supabase as an initial backend option because it seemed like a quick way to get
+started.
+
+
+
+
+Frandya Meidy
+
+Focused on studying the project materials and understanding the overall system. This included
+reviewing the requirements, project scope, and expected outcomes to gain a clear direction before
+starting development.`
+
+Cindy
+
+In this week, the team finalised the project topic after discussion. She met with the supervisor to
+gain a clearer understanding of the project scope, objectives, and expected outcomes. During the
+discussion, she also asked questions about system requirements and suitable technologies. In
+addition, she requested the supervisor’s approval to arrange a meeting with the client to better
+understand real-world requirements. This helped ensure that the project direction was aligned
+with expectations from the beginning. The supervisor then arranged a meeting for the team with
+the client.
+
+
+
+
+                                                                             UNIT CODE COS40005
+                                                                            PORTFOLIO TASK 2/3/4
+                                                                                     PAGE 11
+Week 3
+
+Umer
+
+He continued working on the backend direction and tested the feasibility of using Supabase for
+the project. After discussing this with the supervisor, it became clear that the client wanted the
+system to run locally on a computer, so using a cloud-based backend would not suit the project
+properly.
+
+
+
+Frandya Meidy
+
+Continued learning the relevant technologies and concepts needed for the project. I explored how
+login systems work and prepared the necessary knowledge to begin the implementation phase.
+
+
+
+
+Cindy
+
+In this week, I attended a meeting with the client to gather system requirements and understand
+the expected features of the system. Important requirements such as system functionality, user
+needs, and project expectations were discussed. After the meeting, I had a short discussion with
+
+
+
+
+                                                                              UNIT CODE COS40005
+                                                                             PORTFOLIO TASK 2/3/4
+                                                                                      PAGE 12
+teammates in class to share the information and ensure everyone had the same understanding.
+
+
+
+
+Week 4
+
+Umer
+
+He started setting up the local backend structure for the schema comparison feature this week. He
+worked on configuring PostgreSQL connection handling and began building the logic needed to
+read schema information from the database. This included looking at how to retrieve tables,
+columns, and constraint information directly from PostgreSQL.
+
+
+
+
+Frandya Meidy
+
+Started developing the login page by creating the basic layout and structure. She worked on
+designing a simple and user-friendly interface for users to enter their login details.
+
+
+
+
+Cindy
+
+In this week, she conducted research on suitable programming languages and tools for the project,
+especially focusing on frontend technologies. Based on the research, she started developing the
+system by building the main Dashboard page. She implemented important navigation components
+such as Sidebar and Topbar to support user navigation within the system.
+
+
+
+
+                                                                               UNIT CODE COS40005
+                                                                              PORTFOLIO TASK 2/3/4
+                                                                                       PAGE 13
+During development, she encountered routing issues between pages and worked on fixing them to
+ensure smooth navigation. This marked the beginning of actual system implementation.
+
+
+
+
+Week 5
+
+Umer
+
+In this week, he focused on implementing the core backend comparison logic. He worked on
+building the schema snapshot structure and the comparison algorithm used to compare two
+schemas. This included matching tables and columns, identifying structural differences, and
+preparing the backend output needed for the comparison report.
+                                                                          UNIT CODE COS40005
+                                                                         PORTFOLIO TASK 2/3/4
+                                                                                  PAGE 14
+Frandya Meidy
+
+Continued improving the login page by adding more features and refining the design. She worked
+on implementing the login functionality and ensuring the page works correctly.
+
+
+
+
+Cindy
+
+In this week, she continued frontend development by working on the Connections page. She
+improved the layout design to make it more structured and user-friendly. She also fixed styling
+issues to ensure consistency across different components.
+
+In addition, she performed frontend bug fixing. She identified and resolved several issues such as
+incorrect JSX structure, layout misalignment, and component rendering errors. She also attended
+a meeting with the supervisor to present her progress and received feedback for further
+improvement.
+
+This week focused on improving system quality and fixing errors to ensure the system works
+properly.
+
+
+
+
+                                                                            UNIT CODE COS40005
+                                                                           PORTFOLIO TASK 2/3/4
+                                                                                    PAGE 15
+Week 6
+
+Umer
+
+This week, he refined the backend further by extending the comparison logic to handle
+constraints such as primary keys, foreign keys, unique constraints, check constraints, and exclude
+constraints. He also worked on improving the reliability of the backend by fixing issues,
+improving matching behaviour, and adding tests so the schema comparison prototype would be
+
+
+
+
+                                                                            UNIT CODE COS40005
+                                                                           PORTFOLIO TASK 2/3/4
+                                                                                    PAGE 16
+ready for demonstration.
+
+
+
+
+Frandya Meidy
+
+Focused on refining the login page by fixing minor bugs and improving the overall user
+experience. She also ensured the page aligns better with the system requirements and works
+smoothly.
+
+
+
+
+Cindy
+
+In this week, she prepared the sprint progress report by documenting all completed tasks and
+progress made throughout the sprint. At the same time, she continued developing other frontend
+pages to expand the system functionality.
+
+She also made improvements based on feedback received from the supervisor to ensure better UI
+consistency and usability. This week focused on both documentation and continuing system
+development.
+
+
+
+
+                                                                          UNIT CODE COS40005
+                                                                         PORTFOLIO TASK 2/3/4
+                                                                                  PAGE 17
+    3. SPRINT REVIEW
+
+A formal meeting with the client to reveal the sprint 1 result has yet to be occurred. The client
+demonstration is scheduled for next week.
+
+The team presented the Sprint 1 deliverable to Jason Thomas Chew (supervisor) on Microsoft
+Teams during Week 6. The session went like this:
+
+The team presented the front-end prototype. This included the Dashboard and the Sidebar, and the
+Top bar. We also showed how to move between pages. Each member of the team explained how
+the user interface supports the main features of the Sprint 1 deliverable. We said the problems
+with routing had been fixed.
+
+The team showed the layout of the login page for the Sprint 1 deliverable. We also talked about
+the backend of the Sprint 1 deliverable. This included the structure of the GitHub repository for
+the Sprint 1 deliverable. We discussed their plan for connecting to the database for the Sprint 1
+deliverable.
+
+The team answered all the questions from Jason Thomas Chew about the Sprint 1 deliverable in a
+manner. We took notes on the feedback from Jason Thomas Chew(supervisor) about the Sprint 1
+deliverable. The team thanked Jason Thomas Chew for his time during the session. Everyone, on
+the team acted professionally. We responded to Jason Thomas Chew clearly about the Sprint 1
+deliverable.
+
+
+
+
+                                                                             UNIT CODE COS40005
+                                                                            PORTFOLIO TASK 2/3/4
+                                                                                     PAGE 18
+    4. RETROSPECT (CRITICAL REVIEW OF THE PROCESS)
+
+During the sprint, the team followed a simple workflow using physical meetings, Microsoft
+Teams, and WhatsApp for communication. Tasks were divided among members based on roles,
+with frontend and backend handled separately. GitHub was used to manage code and track
+progress. Overall, the team maintained consistent communication, which helped ensure that
+everyone was aligned with the project goals.
+
+One of the main strengths of the team was effective communication and collaboration. Meetings
+with the client and supervisor provided clear guidance, while task distribution allowed members
+to focus on their responsibilities. However, the team faced some challenges, including unclear
+requirements in the early stage and technical issues such as routing errors, JSX syntax errors, and
+layout problems during frontend development. These issues were resolved through discussions,
+debugging, and applying feedback from the supervisor.
+
+The team followed a basic code of conduct by respecting each member, completing assigned
+tasks on time, and communicating any issues early. In terms of cybersecurity and ethics, the
+project ensured that sensitive data such as login credentials and database details were handled
+carefully. Basic principles similar to the Australian Privacy Principles were considered, including
+protecting user data and limiting access. Only sample data was used during development and
+testing to ensure privacy and security.
+
+
+
+
+    5. LESSONS LEARNED (CRITICAL REVIEW OF SPRINT ONE EXPERIENCE
+        AND FUTURE PLAN)
+
+During this sprint, we learned a lot from trying to build both the frontend prototype and the
+backend comparison logic at the same time. The main lesson was that even if the idea sounds
+simple at first, a schema comparison system has a lot of detail once we actually start
+implementing it. On the frontend side, it was not enough to just create pages and navigation. The
+screens only became meaningful once the backend could return real comparison results. On the
+backend side, it was not enough to just connect to PostgreSQL. We also had to work out how to
+read schema metadata properly and compare tables, columns, and constraints in a way that was
+actually useful.
+
+
+                                                                             UNIT CODE COS40005
+                                                                            PORTFOLIO TASK 2/3/4
+                                                                                     PAGE 19
+The other major lesson was that we should have confirmed the technical setup with the client
+earlier. At the beginning, we considered Supabase as the backend because it seemed like a quick
+way to start development. Later, after discussion with the supervisor, we found that the client
+wanted the system to run locally on a computer. Because of that, we had to change direction and
+rebuild the backend around local PostgreSQL. That change taught us that technical decisions such
+as hosting, environment, and database setup need to be confirmed early, because they affect both
+frontend integration and backend development time.
+
+We also learned that frontend and backend work cannot be treated as completely separate. During
+this sprint, the frontend pages helped us visualise the system, but the compare page only became a
+proper feature once the backend could return structured data such as tables only in A, tables only
+in B, matched tables, column differences, and constraint differences. This showed us that the
+interface and the backend logic need to be planned together, especially for a feature like schema
+comparison where the output structure is important.
+
+Another lesson was about testing. For the backend, we found that comparison logic can look
+correct on paper but still fail in real cases, especially with renamed columns, constraint matching,
+and schema edge cases. For the frontend, we also saw that a page may look fine visually but still
+not communicate the results clearly enough for a demo. This sprint showed us that we need to test
+not only whether the system works, but also whether the output is understandable to the user.
+
+Lessons we learned in this sprint:
+
+    •   We need to confirm the required environment earlier, especially whether the system must
+        run locally or can depend on a cloud backend.
+    •   A frontend prototype is useful, but it can only show real value once it is connected to
+        actual backend logic.
+    •   Schema comparison is more detailed than expected because it involves tables, columns,
+        data types, nullability, order, and multiple kinds of constraints.
+    •   Backend logic needs regular testing with realistic schema examples, not just one simple
+        case.
+    •   Frontend design for a report-style page needs to focus on clarity, because too much
+        empty space or unclear wording can weaken the demo even if the backend is correct.
+    •   Team coordination matters more when one part of the group is building interface screens
+        and another part is building the logic behind them.
+                                                                              UNIT CODE COS40005
+                                                                             PORTFOLIO TASK 2/3/4
+                                                                                      PAGE 20
+    •   For the next sprint, our recommendations are:
+    •   Finalise technical decisions earlier before spending too much time on one backend
+        approach.
+    •   Improve coordination between frontend and backend so that the data returned by the
+        backend directly supports what needs to be shown in the UI.
+    •   Prepare better sample databases earlier so both the algorithm and the report page can be
+        tested properly.
+    •   Continue improving the schema comparison feature, especially its reliability and clarity
+        for demonstration.
+    •   Spend more time polishing the report output so the frontend presents the backend results
+        more clearly.
+    •   Keep documenting changes as we go, so writing reports and explaining progress is easier
+        at the end of the sprint.
+
+Overall, this sprint taught us that building the system was not just about dividing frontend and
+backend tasks. The main challenge was making both parts support each other properly so the
+project moved from a simple prototype into something that could actually demonstrate the core
+schema comparison feature.
+
+
+
+
+                                                                             UNIT CODE COS40005
+                                                                            PORTFOLIO TASK 2/3/4
+                                                                                     PAGE 21
+

@@ -1,0 +1,525 @@
+================================================================================
+                        SCHEMA STUDIO USER MANUAL
+                    PostgreSQL Schema Comparison & Versioning
+================================================================================
+
+VERSION: 2.0.0
+LAST UPDATED: 2026-06-16
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. OVERVIEW
+2. GETTING STARTED
+3. CONNECTIONS
+4. DASHBOARD
+5. COMPARE & AUTHOR
+6. SCRIPT EDITOR & VERSION SYNC
+7. VISUALIZER
+8. DRIFT DETECTION
+9. DEPLOY & APPLY
+10. USER MANAGEMENT (ADMIN)
+11. KEYBOARD SHORTCUTS & TIPS
+12. TROUBLESHOOTING
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+Schema Studio is a web-based tool for PostgreSQL schema management. It lets you:
+
+  • Compare schemas between databases (dev, staging, prod) and generate migration
+    SQL to bring them into sync
+  • Version-control schema migrations with a ledger system (script_patch)
+  • Replay missed versions from one schema to another (catch-up sync)
+  • Visualize table relationships and foreign keys as interactive diagrams
+  • Track schema drift over time (unintended divergence from a baseline)
+  • Safely apply and audit all schema changes
+
+All work is scoped by your saved database connection. You can have multiple
+PostgreSQL connections (dev, staging, production) and compare/sync between any
+two.
+
+================================================================================
+2. GETTING STARTED
+================================================================================
+
+LOGIN
+-----
+Schema Studio uses Microsoft Entra ID (Azure AD) for authentication. Sign in with
+your organization account.
+
+SIGN IN FLOW
+  1. Click "Sign In" on the login page
+  2. Enter your Microsoft/Azure AD email
+  3. Complete multi-factor authentication if prompted
+  4. You'll be logged in and redirected to the Dashboard
+
+Once signed in, you have a role: either 'viewer' or 'admin'.
+  • Viewer: can compare, visualize, and review schemas
+  • Admin: can manage users, grant/revoke roles, and remove access
+
+DASHBOARD
+---------
+After login, you land on /studio (the Dashboard). Here you can:
+  • See all tracked schemas at a glance
+  • View drift status (schemas vs. their baseline snapshot)
+  • Click a schema card to inspect tables, columns, and constraints
+  • Untrack schemas you no longer need to monitor
+
+================================================================================
+3. CONNECTIONS
+================================================================================
+
+A "Connection" is a saved PostgreSQL database you want to compare or monitor.
+
+ADDING A CONNECTION
+-------------------
+  1. Go to Connections (left sidebar > Connections)
+  2. Click "New Connection"
+  3. Fill in the details:
+     • Name: e.g., "production", "staging", "dev local"
+     • Host: e.g., ep-xxxxxxxx-xxxxxxxx.<region>.aws.neon.tech
+     • Port: usually 5432
+     • Database: the default database name (e.g., "neondb")
+     • Username: the database user
+     • Password: the user's password
+     • SSL: toggle on for cloud databases (Neon, AWS RDS)
+  4. Click "Test" to verify the connection works
+  5. Click "Save"
+
+Once saved, the connection is listed in a table. You can:
+  • Test it again (verify credentials are still valid)
+  • View its last-tested timestamp
+  • Delete it (removes it from the app, not the actual database)
+
+IMPORTANT: Passwords are encrypted at rest and never shown after saving.
+
+================================================================================
+4. DASHBOARD
+================================================================================
+
+The Dashboard (/studio) shows all schemas you've tracked and their current state.
+
+TRACKING A SCHEMA
+-----------------
+  1. Go to Dashboard
+  2. Click "Track a Schema" (or the + button on a card)
+  3. Pick a Connection from the dropdown
+  4. The app introspects that database and lists all schemas
+  5. Click the schema name to start tracking it
+  6. A baseline snapshot is created immediately
+
+Once tracked, the schema appears as a card showing:
+  • Schema name and connection
+  • Table count, column count, foreign keys
+  • Drift status: "in sync" (no drift detected) or "drifted" (unintended changes)
+  • Last snapshot timestamp
+
+VIEWING SCHEMA DETAILS
+---------------------
+Click any schema card to open its detail page (/schemas/[id]). You'll see:
+  • All tables, with their columns and types
+  • Primary keys and foreign key constraints
+  • Indexes
+  • Ability to compare this schema against another
+
+DRIFT DETECTION
+---------------
+Schema Studio takes a snapshot of each tracked schema on first track and then
+whenever you manually refresh. The "drift" status compares the live database
+against the stored baseline snapshot.
+
+If drift is detected, click the card or go to Drift Detection to see:
+  • Tables added or dropped
+  • Columns added, renamed, or dropped
+  • Type or constraint changes
+  • When the drift was first detected
+
+Note: Drift is informational. It doesn't auto-correct anything.
+
+UNTRACKING A SCHEMA
+-------------------
+On any schema card, click the menu (...) and select "Untrack". This removes
+the schema from your dashboard and deletes its baseline snapshot.
+
+================================================================================
+5. COMPARE & AUTHOR
+================================================================================
+
+Compare two schemas and generate migration SQL to sync them.
+
+STARTING A COMPARISON
+---------------------
+  1. Go to Compare (left sidebar > Compare & Author)
+  2. Pick two schemas:
+     • "Left" (usually the source/baseline)
+     • "Right" (usually the target you want to evolve)
+  3. Click "Compare"
+
+The app will:
+  • Introspect both schemas
+  • Find differences
+  • Highlight tables added/removed, columns changed, constraints modified
+  • Render a visual diff
+
+READING THE DIFF
+----------------
+The diff shows, for each table:
+  • Green rows: new tables or columns (only in Right)
+  • Red rows: dropped tables or columns (only in Left)
+  • Yellow rows: modified columns (type, default, nullability changed)
+  • Renamed columns are detected by similarity matching (70%+ threshold)
+
+Foreign key changes are also shown. Note: cross-schema FKs may report spurious
+changes due to schema-prefix differences in the comparison.
+
+GENERATING MIGRATION SQL
+------------------------
+  1. Once a diff is displayed, click "Author SQL"
+  2. The app generates a migration script in 5 phases:
+     • DROP constraints
+     • DROP tables
+     • CREATE tables
+     • ADD columns
+     • ADD constraints
+  3. The SQL respects PostgreSQL's dependency order (you can't drop a table
+     if another table references it with a foreign key)
+
+REVIEWING & CUSTOMIZING
+-----------------------
+The generated SQL is fully editable. You can:
+  • Delete steps you don't want to apply
+  • Reorder steps (be careful of dependencies)
+  • Add your own SQL (e.g., data migrations, index creation)
+  • Add comments for clarity
+
+APPLYING MIGRATION SQL
+----------------------
+Once happy with the SQL:
+  1. Click "Next: Apply" or go to Deploy
+  2. Pick the target connection and schema
+  3. Optionally add a script name and version (for Version Sync ledger)
+  4. Click "Pre-flight Check" to validate the SQL syntax and check for conflicts
+  5. If all checks pass, click "Apply"
+
+The migration runs inside a transaction. If any step fails, the whole migration
+is rolled back.
+
+After successful apply:
+  • The schema_patch table (on that schema) is updated with a new ledger entry
+  • The script's SQL is stored for future version replay
+  • You can see the applied script in Script Editor
+
+================================================================================
+6. SCRIPT EDITOR & VERSION SYNC
+================================================================================
+
+Version Sync lets you manage a ledger of applied migrations per schema and
+replay missed versions to catch one schema up to another.
+
+SCRIPT EDITOR
+-------------
+Go to Script Editor (left sidebar). Here you can:
+  • Browse saved migrations (the ledger) for any schema
+  • View the exact SQL that was applied
+  • See metadata: script name, version, change type (breaking/additive/patch)
+
+The ledger is stored in the target schema's `script_patch` table:
+  • script_name: the family name (e.g., "users_migration")
+  • version: semantic version (e.g., "v1.0.0")
+  • title: short description of what changed
+  • change_type: breaking (schema incompatible), additive (backward compat),
+    patch (bug fix), or unknown
+  • sql_content: the exact SQL that was applied (used for replay)
+
+VERSION SYNC
+------------
+Go to Version Sync (left sidebar). This compares two schemas' ledgers.
+
+  1. Pick a Source schema (ahead, has more versions applied)
+  2. Pick a Target schema (behind, missing some versions)
+  3. Click "Sync"
+
+The app shows:
+  • Missing versions: versions the Source has but Target lacks (can be replayed)
+  • Diverged versions: both have a version, but the SQL differs (warn user)
+  • Up-to-date indicator: true if Target has all Source versions
+
+REPLAYING VERSIONS
+------------------
+  1. Once you've diffed the ledgers, the missing versions are listed
+  2. Select the versions you want to replay (or replay all)
+  3. Click "Apply"
+  4. Each version's stored SQL is executed against the Target in order
+  5. A new ledger entry is added to the Target's script_patch table
+
+Important: Replay assumes the stored SQL uses unqualified table names
+(no schema prefix). The apply route sets `search_path` to scope them
+to the target schema automatically.
+
+If a version has no stored SQL (legacy entries before P1), it's marked
+"not replayable" and can't be auto-applied.
+
+================================================================================
+7. VISUALIZER
+================================================================================
+
+Visualizer draws an interactive entity-relationship diagram (ERD) of any schema.
+
+OPENING VISUALIZER
+------------------
+  1. Go to Visualizer (left sidebar > Visualizer)
+  2. Pick a schema from the dropdown
+  3. The diagram renders automatically
+
+USING THE DIAGRAM
+-----------------
+  • Boxes represent tables; text inside shows columns
+  • Lines show foreign key relationships
+  • Click a table to highlight paths that reference it
+  • Drag to pan, scroll to zoom
+  • Double-click the divider (in side-by-side mode) to reset the pane sizes
+
+SINGLE vs. SIDE-BY-SIDE
+-----------------------
+  • Single: view one schema at a time
+  • Side-by-side: compare two schemas side by side (very useful for spotting
+    structural differences visually before you compare)
+
+The layout is responsive. On mobile/tablet, the visualizer forces single-pane
+mode (dragging a divider is unwieldy on touch).
+
+================================================================================
+8. DRIFT DETECTION
+================================================================================
+
+Drift monitors unintended schema changes over time.
+
+HOW IT WORKS
+------------
+When you first track a schema, a baseline snapshot is saved. Drift is calculated
+by comparing the live database against that snapshot.
+
+If the live schema no longer matches the snapshot:
+  • Drift status changes to "drifted"
+  • Details show which tables/columns changed, when it was first detected
+  • You can manually refresh the snapshot at any time (updates the baseline)
+
+WHY DRIFT MATTERS
+-----------------
+In a production environment, untracked schema changes are a warning sign:
+  • Developers may have applied emergency hotfix migrations without versioning
+  • Bugs in production schemas should be tracked and replayed to staging
+  • Drift helps audit compliance: all schema changes should be intentional
+
+VIEWING DRIFT DETAILS
+---------------------
+Go to Drift Detection (left sidebar > Drift). Pick a schema.
+
+You'll see two tabs:
+  • Schema Details: the live state vs. the baseline (red = new, blue = removed)
+  • Audit Log: a timeline of detected changes (when drift was first noticed)
+
+================================================================================
+9. DEPLOY & APPLY
+================================================================================
+
+The Deploy page consolidates the migration flow: from authored SQL to applied
+ledger entry.
+
+WORKFLOW
+--------
+  1. Author SQL (Compare & Author → Author SQL)
+     (or paste custom SQL if applying a script from elsewhere)
+  2. Go to Deploy (auto-navigates, or left sidebar > Deploy)
+  3. Specify:
+     • Target connection (which database)
+     • Target schema (which schema in that database)
+     • Script name: family (e.g., "users_migration") — used for versioning
+     • Version: semantic version (e.g., "v1.0.0")
+     • Change type: breaking, additive, patch, or unknown
+     • Title: short description
+  4. Paste or review the migration SQL
+  5. Click "Pre-flight Check"
+     • Validates SQL syntax
+     • Checks for duplicate version (can't apply v1.0.0 twice to same schema)
+     • Verifies the script_patch table exists (app creates it if missing)
+  6. If all checks pass, click "Apply"
+
+EXECUTION
+---------
+When you click "Apply":
+  • A transaction begins
+  • An advisory lock is acquired (prevents concurrent applies of the same
+    script name + version)
+  • Your SQL is executed (unqualified table names are scoped to the target
+    via `SET LOCAL search_path`)
+  • The script_patch table is updated with the new ledger entry
+  • The transaction commits
+
+If any step fails, everything rolls back. You'll see the error message.
+
+BEST PRACTICES
+--------------
+  • Always test migrations on a dev/staging schema first
+  • Use semantic versioning (v1.0.0, v1.0.1, v1.1.0, v2.0.0)
+  • Write clear script names and titles (future you will thank you)
+  • Mark breaking changes as change_type='breaking' so Version Sync can warn
+  • Store migrations in version control (Git); don't rely on the app as your
+    single source of truth
+
+================================================================================
+10. USER MANAGEMENT (ADMIN)
+================================================================================
+
+Admins can manage users and roles.
+
+ACCESSING ADMIN
+---------------
+Go to Admin (left sidebar > Admin). You must have the 'admin' role. If you
+don't see this option, ask an existing admin to grant you the role.
+
+VIEWING USERS
+-------------
+The Admin page lists all users who've ever signed in. For each user:
+  • Email
+  • Current role (viewer or admin)
+  • Controls: change role, remove user
+
+CHANGING A USER'S ROLE
+----------------------
+  1. Find the user in the list
+  2. Click the role dropdown (currently shows "Viewer" or "Admin")
+  3. Select the new role
+  4. The change is applied immediately (optimistically updated on screen,
+     rolled back if the server rejects it)
+
+REMOVING A USER
+---------------
+  1. Find the user
+  2. Click the trash/delete icon
+  3. Confirm in the dialog
+  4. The user is removed from the app (their Microsoft/Azure AD account
+     remains untouched — they can be re-added later)
+
+SELF-LOCKOUT PROTECTION
+-----------------------
+If you're the only admin, you can't demote yourself. This prevents accidental
+lockout. To remove yourself as admin, add another user as admin first.
+
+================================================================================
+11. KEYBOARD SHORTCUTS & TIPS
+================================================================================
+
+NAVIGATION
+  • Sidebar menu on desktop; hamburger icon on mobile
+  • Breadcrumb at top shows your current page
+  • Back button in browser works (app is fully navigable)
+
+RESPONSIVE DESIGN
+  • All pages are mobile-friendly
+  • Tables collapse to cards on small screens
+  • Modals and drawers adapt to screen size
+  • Use landscape mode on mobile for side-by-side visualizer
+
+PERFORMANCE TIPS
+  • Comparing very large schemas (1000+ tables) may take a few seconds
+  • Visualizer is most responsive with < 500 tables
+  • Refresh your browser if the page feels sluggish (clears local cache)
+
+SETTINGS
+  • Your role and email are visible at the top-right (profile icon)
+  • You can sign out there
+  • Some settings may be user-configurable in future versions
+
+================================================================================
+12. TROUBLESHOOTING
+================================================================================
+
+"Unable to compare" or Connection Error
+----------------------------------------
+  • Verify the saved connection credentials are correct (Connections page)
+  • Check network connectivity (schema introspection queries the live DB)
+  • If using SSL, ensure the certificate is valid
+  • On Neon, make sure you're using the pooler endpoint, not the direct one
+  • Try "Test Connection" on the connection card to get a detailed error
+
+"Version already applied" or Duplicate Version Error
+-----------------------------------------------------
+  • You tried to apply the same (script_name, version) to a schema twice
+  • Check the script_patch table: `SELECT * FROM schema_name.script_patch`
+  • Either pick a new version number, or delete the old ledger entry if it
+    failed/was rolled back
+
+"Drift detected" but I didn't change anything
+----------------------------------------------
+  • Refresh the baseline snapshot (Dashboard > schema card > Refresh)
+  • Drift might be from an earlier change you forgot about
+  • Check the Audit Log (Drift page) to see when it was detected
+  • If it's spurious (a bug), let your admin know
+
+"Pre-flight check failed" or "SQL syntax error"
+------------------------------------------------
+  • Check your SQL for typos (missing semicolons, mismatched quotes)
+  • Make sure unqualified table names are correct (schema_path will scope them)
+  • If you reference a schema explicitly (schema.table), it may not scope correctly
+  • Try running the SQL manually in a SQL IDE first to confirm it works
+
+"Can't see schemas in the Visualizer / Compare dropdown"
+---------------------------------------------------------
+  • Make sure you've selected a connection (not all connections have all schemas)
+  • Check that the schema exists: `\dn` in psql or look in the Connections page
+  • Introspection queries may time out on very large databases
+  • Refresh the page and try again
+
+"I'm locked out of the app (no 'admin' role and need to make changes)"
+---------------------------------------------------------------------
+  • Ask an existing admin to grant you the admin role (Admin page)
+  • If no other admin exists, contact your system administrator to unlock you
+
+"Script Patch table doesn't exist"
+-----------------------------------
+  • When you apply a migration for the first time, the app auto-creates
+    the script_patch table in the target schema
+  • If creation fails, check your permissions (you may need ALTER SCHEMA rights)
+  • Manually create the table if needed (see apply route source code for DDL)
+
+================================================================================
+GLOSSARY
+================================================================================
+
+Schema: A namespace in PostgreSQL. e.g., `public`, `auth`, `inventory`.
+        All tables belong to a schema.
+
+Connection: A saved PostgreSQL database (host, port, user, password).
+           You can have multiple connections and compare across them.
+
+Drift: Unintended divergence of a live schema from a baseline snapshot.
+
+Ledger: The script_patch table that tracks all applied migrations per schema.
+
+Version: A semantic version (v1.0.0, v1.0.1, etc.) that uniquely identifies
+         a migration in the script_patch ledger.
+
+Script Name: A family name for related migrations (e.g., "users_migration").
+            Same script_name can have multiple versions (v1.0.0, v2.0.0).
+
+Foreign Key (FK): A constraint that links a column in one table to a primary
+                  key in another, enforcing referential integrity.
+
+Migration: A versioned SQL script that changes a schema (add/drop/alter tables,
+          columns, constraints, etc.).
+
+Replay: Re-running a stored migration (from the script_patch ledger) against a
+       different schema to synchronize it.
+
+================================================================================
+END OF USER MANUAL
+================================================================================
+
+For more help, contact your system administrator or check the app's internal
+documentation (CODEBASE_WALKTHROUGH.html, for developers).
+
+Last updated: 2026-06-16 · Schema Studio v2.0.0

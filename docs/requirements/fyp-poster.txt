@@ -1,0 +1,92 @@
+                                           Database Schema Comparison and Version
+                                                       Control System​
+                   Umer Naseer, Frandya Meidy F., Cindy Wong IY| Supervised by: Jason Thomas Chew
+                                                             Faculty of Engineering, Computing and Science
+                                                          Swinburne University of Technology Sarawak Campus
+                                                                       Email: JTChew@swinburne.edu.my
+
+                                  Introduction                                                                                                Methodology
+Database schema drift occurs when environments silently diverge, leaving
+undocumented changes to reach production as missing columns, wrong types, or absent            A three-phase pipeline: compare two live schemas, generate a versioned migration script,
+constraints that crash applications.                                                           apply it to the target database.
+This tool automates PostgreSQL schema drift detection, generates SQL migration
+scripts, and commits every versioned change to GitHub, replacing a fragile manual
+process with a structured, auditable workflow.
+                                                                                                                 01                                            02                                             03
+                                                                                                            Schema                                    SQL Generation                                        Apply
+Research Objectives                                                                                       Comparison                                   & Versioning                                        Pipeline
+                                                                                                • Introspect two live PostgreSQL schemas ► • Translate diff into a valid SQL migration   ► • Pull script history from GitHub
+                                                                                                               ――――――――――                                    ――――――――――                                     ――――――――――
+
+• Compare two live PostgreSQL schemas and surface all structural differences
+• Match renamed entities via weighted similarity scoring                                          via information_schema + pg_catalog        script                                          • Detect version gaps, queue missing
+                                                                                                • Score every table pair and column pair   • Auto-assign SemVer: Major (DROP),                 versions in order
+• Auto-generate SQL migration scripts from detected differences                                   using weighted similarity                  Minor (ADD), Patch (modify)                     • Execute scripts sequentially via pg
+• Assign SemVer versions (Major.Minor.Patch), auto-bumped by change severity                    • Handles renames: structural match        • Script is editable before committing              Node.js driver
+                                                                                                  beats exact-name miss
+• Commit scripts to GitHub with a pull-and-apply deployment pipeline                            • Output: colour-coded diff (added /
+                                                                                                                                           • Push to GitHub via Contents API under
+                                                                                                                                             /scripts/vX.Y.Z.sql
+                                                                                                                                                                                             • Update in-database version table on
+                                                                                                                                                                                               success
+                                                                                                  removed / modified)
+
+
+
+
+                           Problem Statement
+Schema changes made in development often go undocumented and reach production as
+missing columns, wrong types, or absent constraints. The client experienced this               Key Results
+firsthand: an untracked change caused a live production outage.
+                                                                                               • All Constraint types compared: PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK,
+Core Challenges                                                                                  EXCLUDE, nullability etc
+• No automated visibility into structural differences between environments                     • Sem-Ver bump levels auto-detected from change severity (Major / Minor / Patch)
+• Changes tracked only in developer memory, no formal record                                   • Similarity scoring correctly identifies renamed entities: no false drop-and-create pairs
+• Scripts written manually, prone to omission and inconsistency
+• Renames appear as drop-and-create without similarity analysis                                • Full lifecycle in one interface: generate → review → push → pull → apply
+• No version history tied to the database or environment
+Scope
+Compares tables, columns, types, order, nullability, PKs, and unique/FK/check/exclude
+constraints.
+
+
+                            Literature Review
+Schema Matching
+Rahm & Bernstein (2001) show that effective schema matching must combine name,
+structural, and semantic signals, informing the weighted scoring algorithm in this tool.
+Melnik et al. (2002) show that entity similarity propagates to structurally related
+neighbours, motivating the column-context weighting in the matching phase.
+
+Schema Evolution
+Brahmia et al. (2024) find that automated migration tooling remains fragmented and
+largely requires manual script authoring: the gap this project addresses.
+Hu et al. (2022) show that properly sequenced schema changes can be applied with
+near-zero downtime, motivating the version-gapped execution model in the apply
+pipeline.
+
+Existing Tools: Gap Analysis
+Flyway and Liquibase manage script execution and ordering, but neither detects drift nor
+generates scripts automatically. This project fills that upstream gap.
+
+System Architecture
+The tool introspects two PostgreSQL instances via information_schema and pg_catalog,
+runs weighted similarity matching, computes a colour-coded diff, generates a migration
+script, pushes it to GitHub, and provides a pull-and-apply pipeline for the target database.
+
+                                                                                                                                                Conclusions
+                                                                                               This tool automates the full schema drift lifecycle from detection to deployment, replacing
+                                                                                               a fragile manual process with a structured, auditable workflow. The similarity algorithm
+                                                                                               handles renamed entities and constraint drift.
+                                                                                               GitHub integration provides a versioned record of all migration scripts. SemVer auto-
+                                                                                               bumping makes correct versioning the default, not the exception.
+
+                                  References
+• [1] Rahm, E. & Bernstein, P. A. (2001). A survey of approaches to automatic schema                                                  Recommendations
+  matching. VLDB Journal, 10(4), 334–350.
+• [2] Melnik, S., Garcia-Molina, H. & Rahm, E. (2002). Similarity Flooding. Proc. 18th         Extend engine support to MySQL and SQLite. Integrate with CI/CD pipelines for
+  ICDE. IEEE.                                                                                  automated drift detection on every deployment. Add role-based access control and audit
+• [3] Brahmia, Z., Grandi, F. & Oliboni, B. (2024). A Literature Review on Schema              trails for team environments. Implement AI-assisted migration review to flag destructive
+  Evolution in Databases. Computing Open, 2(1).                                                changes before execution, and rollback/dry-run functionality for safer production
+• [4] Hu, T. et al. (2022). Online Schema Evolution is (Almost) Free for Snapshot              deployments.
+  Databases. PVLDB, 16(2), 140–153.
+
