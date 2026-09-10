@@ -13,7 +13,22 @@ is the one that was checked last.
 
 ## 1. Running it
 
-Requires Node 22 and a PostgreSQL database to hold the tool's own metadata.
+Requires Node 22 and a PostgreSQL database to hold the tool's own metadata. The
+simplest one is the Postgres in the root `docker-compose.yml` — start only that
+service (Docker Desktop must be running), then point `DATABASE_URL_A` at it in
+`my-app/.env.local`:
+
+```bash
+docker compose up -d db    # from the repository root: Postgres 17 on localhost:5433
+```
+
+```
+DATABASE_URL_A=postgres://studio:studio@localhost:5433/studio
+```
+
+The same server can also be saved on the Connections screen as a database to
+compare (host `localhost`, port `5433`, SSL off). `docker compose down` stops it
+and keeps the data; `docker compose down -v` deletes the data as well.
 
 ```bash
 npm install

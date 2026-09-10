@@ -50,15 +50,11 @@ Corollaries also out of scope: that the flag is fail-open on a malformed value;
 that no Microsoft sign-in has ever completed; that `.env.local` lacks
 `AZURE_AD_*` and `NEXTAUTH_SECRET`.
 
-**2. The dead metadata database.** `DATABASE_URL_A` points at a deleted Supabase
-project, so the app's own store is unreachable right now. Choosing a replacement
-is in progress. Do not report "the database connection fails".
-
-**3. Secret rotation.** Credentials leaked into the repository's public history
+**2. Secret rotation.** Credentials leaked into the repository's public history
 earlier in the project. The history has been purged and rotation is a known,
 tracked action item. Do not re-report it.
 
-**4. Item 38 of the backlog, "AI assistance if time allows".** Confirmed absent,
+**3. Item 38 of the backlog, "AI assistance if time allows".** Confirmed absent,
 already recorded, and marked optional by the client.
 
 ## What I actually want reviewed

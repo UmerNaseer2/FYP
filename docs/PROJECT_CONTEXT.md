@@ -238,14 +238,17 @@ request, and manual dispatch. Production build: 42 static pages, 30 API routes,
 
 ## 11. Known state and honest caveats
 
-- **The metadata database is currently unreachable.** `DATABASE_URL_A` points at
-  a deleted Supabase project. Every screen backed by the metadata DB will fail
-  until it is repointed at a live PostgreSQL. Recent verification used a
-  throwaway local instance. This is an environment problem, not a code problem.
+- **The metadata database is the Docker Compose Postgres.** For local work,
+  `DATABASE_URL_A` points at the `db` service of the root `docker-compose.yml`
+  (Postgres 17 on `localhost:5433`). The app creates its ten tables itself on
+  first use. The hosted Supabase project it once pointed at has been deleted, and
+  nothing saved there survives.
 - **The auth bypass is ON** — see section 6.
-- **`checkConnectableHost` does string matching**, so `::ffff:127.0.0.1` and
-  `2130706433` can reach loopback in a development build. The production gate
-  closes this.
+- **`checkConnectableHost` judges the literal host only.** It normalises
+  IPv4-mapped IPv6 and bare 32-bit integers first, so `::ffff:127.0.0.1` and
+  `2130706433` are caught, but a public name that resolves to a private address
+  (DNS rebinding) is not. Loopback and private ranges are refused only in a
+  production build.
 - **`/api/lineage/acknowledge` is the only metadata-writing route that never
   calls `syncMetadataTables()`** before querying. On a fresh database it fails
   where its siblings self-heal.
