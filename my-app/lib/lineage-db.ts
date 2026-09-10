@@ -642,6 +642,15 @@ export type DriftComputation =
       counts: DriftCounts;
       report: CompareReport;
       expected: ExpectedRef;
+      /**
+       * The live structure this check actually read.
+       *
+       * Carried out so the monitoring sample (spec feature 10) can count it
+       * without introspecting the same schema a second time a moment later —
+       * two reads would cost twice as much and could honestly disagree, and a
+       * chart is only worth anything if its points were taken when they say.
+       */
+      live: SchemaSnapshot;
     } & DriftSubject);
 
 /** Turn a version + counts into the one-line summary stored on a drift event. */
@@ -695,10 +704,8 @@ type TrackedConnRow = {
 export async function computeDriftDetail(
   trackedSchemaId: number
 ): Promise<DriftComputation> {
-  await syncMetadataTables();
-
-  // 1. Tracked schema + its connection (LEFT JOIN — connection may be deleted).
-  // ssl_mode is added lazily, so make sure it exists before selecting it.
+  // The tables have to exist before any of this, and ssl_mode is added lazily,
+  // so the sync has to happen before the SELECT below names it.
   await syncMetadataTables();
   const res = await pool.query<TrackedConnRow>(
     `SELECT
@@ -833,6 +840,7 @@ export async function computeDriftDetail(
     status: drifted ? "drifted" : "in_sync",
     counts,
     report,
+    live: live.data,
     summary: buildDriftSummary(ref.version, counts),
   };
 }

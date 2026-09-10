@@ -17,7 +17,7 @@ import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
  * happened to own, and each route calling the two or three it thought it
  * needed. Getting that wrong was silent until a JOIN hit a table nobody had
  * asked for yet. Now the models ARE the schema (lib/db/models.ts) and one
- * `sync()` creates all nine tables in dependency order, so a caller cannot ask
+ * `sync()` creates all ten tables in dependency order, so a caller cannot ask
  * for half a database.
  *
  * Three things sync() cannot express, which is why there is anything below it:

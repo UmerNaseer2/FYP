@@ -355,6 +355,81 @@ DriftEvent.init(
   { sequelize, tableName: "drift_events" }
 );
 
+/**
+ * One reading of a schema's size and shape, taken when a drift check ran.
+ *
+ * Spec feature 10. This is the only table in the app that grows on a timer
+ * rather than because somebody did something, which is why two things about it
+ * are unlike every other table here:
+ *
+ *   • Every column that comes from the server's own statistics is nullable.
+ *     Reading `pg_total_relation_size` needs a privilege that reading the
+ *     structure does not, so a role that can introspect but not measure gets a
+ *     row with real counts and null sizes — which the chart draws as a gap.
+ *     Writing 0 there would say the schema was empty.
+ *   • Rows are pruned. lib/schema-metrics keeps a bounded window; without that
+ *     a quarter-hourly cadence writes about ten thousand rows per schema per
+ *     season, and a table nobody ever deletes from is a table that eventually
+ *     costs more than the thing it measures.
+ */
+export class SchemaMetric extends Model<
+  InferAttributes<SchemaMetric>,
+  InferCreationAttributes<SchemaMetric>
+> {
+  declare id: CreationOptional<number>;
+  declare tracked_schema_id: number;
+  /** Counted from the snapshot the drift check had already fetched. */
+  declare tables: number;
+  declare columns: number;
+  declare indexes: number;
+  declare foreign_keys: number;
+  declare views: number;
+  declare routines: number;
+  /** Heap + indexes + TOAST. Null when the sizes could not be read. */
+  declare total_bytes: CreationOptional<string | null>;
+  /** The index share of total_bytes. Null under the same conditions. */
+  declare index_bytes: CreationOptional<string | null>;
+  /** The planner's row estimate, summed. Null under the same conditions. */
+  declare estimated_rows: CreationOptional<string | null>;
+  /** Whether the check that took this reading found drift. */
+  declare drifted: CreationOptional<boolean>;
+  declare sampled_at: CreationOptional<Date>;
+}
+
+SchemaMetric.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    tracked_schema_id: { type: DataTypes.INTEGER, allowNull: false },
+    tables: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    columns: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    indexes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    foreign_keys: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    views: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    routines: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    // BIGINT, and therefore a string on the way back out — node-postgres hands
+    // every bigint over as text rather than quietly losing precision above
+    // 2^53. A schema can genuinely exceed four gigabytes, so INTEGER is not an
+    // option and pretending the result is a number is how that becomes a bug.
+    total_bytes: { type: DataTypes.BIGINT, allowNull: true },
+    index_bytes: { type: DataTypes.BIGINT, allowNull: true },
+    estimated_rows: { type: DataTypes.BIGINT, allowNull: true },
+    drifted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    sampled_at: { type: DataTypes.DATE, defaultValue: NOW },
+  },
+  {
+    sequelize,
+    tableName: "schema_metrics",
+    // Every read is "this schema, newest first, within a window", and every
+    // prune is "anything older than a date". One index serves both.
+    indexes: [
+      {
+        name: "schema_metrics_tracked_schema_id_sampled_at_idx",
+        fields: ["tracked_schema_id", "sampled_at"],
+      },
+    ],
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Compare & Author: the selections worth keeping.
 // ---------------------------------------------------------------------------
@@ -523,6 +598,15 @@ DriftEvent.belongsTo(Snapshot, {
   foreignKey: "baseline_snapshot_id",
   onDelete: "SET NULL",
 });
+
+// Readings are about a tracked schema and mean nothing without it, so they go
+// when it does — unlike drift_events, which are also cascaded, the history here
+// is a measurement rather than an audit record.
+TrackedSchema.hasMany(SchemaMetric, {
+  foreignKey: "tracked_schema_id",
+  onDelete: "CASCADE",
+});
+SchemaMetric.belongsTo(TrackedSchema, { foreignKey: "tracked_schema_id" });
 
 ComparisonSet.hasMany(ComparisonSetTarget, {
   foreignKey: "set_id",

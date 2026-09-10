@@ -5,6 +5,7 @@ import {
   type DriftStatus,
   type ExpectedRef,
 } from "./lineage-db";
+import { recordSchemaMetrics } from "./schema-metrics";
 import type { CompareReport } from "./compare-types";
 import type { DriftSource } from "./drift-source";
 
@@ -100,6 +101,18 @@ export async function runDriftCheck(
   // still written — a duplicated event is better than a schema that silently
   // stops being checked.
   await stampLastChecked(trackedSchemaId);
+
+  // Spec feature 10 — one reading per check, whatever the check found and
+  // whether or not the audit row below is suppressed. The audit feed answers
+  // "what changed"; this answers "what did it look like", and a series with
+  // points only on the days something changed is not a series.
+  if (comp.kind === "ok") {
+    await recordSchemaMetrics({
+      trackedSchemaId,
+      live: comp.live,
+      drifted: status === "drifted",
+    });
+  }
 
   const worthRecording =
     mode === "always" || (await statusChanged(trackedSchemaId, status));

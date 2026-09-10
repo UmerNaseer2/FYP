@@ -1,6 +1,7 @@
 import pool, { syncMetadataTables } from "./version-db";
 import { mapWithLimit } from "./concurrency";
 import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
+import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
 import type { DriftSource } from "./drift-source";
 import {
   normalizeDriftInterval,
@@ -55,6 +56,16 @@ const MAX_PER_TICK = 6;
  */
 const CHECK_CONCURRENCY = 2;
 
+/**
+ * How often the monitoring readings are pruned.
+ *
+ * Not every tick: the delete scans an index over ninety days of rows, and doing
+ * that once a minute to remove nothing is a cost with no answer attached. Six
+ * hours keeps the table inside its window to within a quarter of a day, which
+ * is far tighter than any question the trend screen asks.
+ */
+const PRUNE_EVERY_MS = 6 * 60 * 60 * 1000;
+
 /** What the scheduler is doing, for /api/drift/schedule and the UI. */
 export type SchedulerStatus = {
   /** False when the loop is not running — disabled, or never started. */
@@ -82,6 +93,8 @@ type SchedulerState = {
   lastTickAt: string | null;
   lastTickSummary: string | null;
   stoppedReason: string | null;
+  /** When the monitoring readings were last pruned, ms. Null before the first. */
+  lastPruneAt: number | null;
 };
 
 declare global {
@@ -106,6 +119,7 @@ function state(): SchedulerState {
       lastTickAt: null,
       lastTickSummary: null,
       stoppedReason: null,
+      lastPruneAt: null,
     };
   }
   return globalThis.__driftSchedulerState;
@@ -145,6 +159,29 @@ async function loadEntries(): Promise<DriftScheduleEntry[]> {
 }
 
 /**
+ * Throw away monitoring readings past the retention window, occasionally.
+ *
+ * Runs inside the tick rather than on a timer of its own, so there is still
+ * exactly one background loop in this process — and so the kill switch that
+ * stops the scheduler stops this too. Failure is swallowed inside
+ * pruneSchemaMetrics: a tick that could not tidy up has still done its real
+ * job, and the next one tries again.
+ */
+async function pruneIfDue(now: Date): Promise<void> {
+  const s = state();
+  const at = now.getTime();
+  if (s.lastPruneAt !== null && at - s.lastPruneAt < PRUNE_EVERY_MS) return;
+  s.lastPruneAt = at;
+  const removed = await pruneSchemaMetrics(METRIC_RETENTION_DAYS);
+  if (removed > 0) {
+    console.log(
+      `Drift scheduler — pruned ${removed} monitoring reading` +
+        `${removed === 1 ? "" : "s"} older than ${METRIC_RETENTION_DAYS} days.`
+    );
+  }
+}
+
+/**
  * One pass: find what is due, check it, write down what happened.
  *
  * Returns a one-line summary rather than throwing, so the caller can put it on
@@ -158,6 +195,7 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<string> 
     await syncMetadataTables();
     const entries = await loadEntries();
     const due = selectDue(entries, now, MAX_PER_TICK);
+    await pruneIfDue(now);
 
     if (due.length === 0) {
       const watched = entries.length;
