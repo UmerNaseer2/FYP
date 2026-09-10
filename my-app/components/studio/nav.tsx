@@ -6,6 +6,7 @@ import {
   DeployIcon,
   ConnectionsIcon,
   DriftIcon,
+  GaugeIcon,
   SchemaMapIcon,
   VersionSyncIcon,
   UsersIcon,
@@ -71,6 +72,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/drift",
     icon: <DriftIcon className="ico" />,
     // No badge: real drift-event counts arrive with the Phase 6/9 drift backend.
+  },
+  {
+    screen: "Performance",
+    label: "Performance",
+    href: "/performance",
+    icon: <GaugeIcon className="ico" />,
   },
   {
     screen: "Visualizer",

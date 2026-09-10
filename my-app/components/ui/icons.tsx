@@ -286,3 +286,33 @@ export function InfoIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** Performance: a dial with its needle pointing up and to the right. */
+export function GaugeIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.5 17a9 9 0 1 1 17 0" />
+      <path d="M12 14l4-4" />
+      <circle cx="12" cy="14" r="1.4" />
+    </Svg>
+  );
+}
+
+/** Run this — used on the button that sends a query off to be explained. */
+export function PlayIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 4.5l13 7.5-13 7.5z" />
+    </Svg>
+  );
+}
+
+/** A measurement over time: axes with a line climbing across them. */
+export function TrendIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 4v15a1 1 0 0 0 1 1h15" />
+      <path d="M7.5 15l3.5-4 3 2.5 4.5-6" />
+    </Svg>
+  );
+}
