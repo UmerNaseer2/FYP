@@ -46,6 +46,7 @@ Create `my-app/.env.local` (git-ignored, never commit it):
 | `AZURE_AD_CLIENT_SECRET` | Microsoft Entra app secret | not yet set — see §5 |
 | `AZURE_AD_TENANT_ID` | Microsoft Entra tenant | not yet set — see §5 |
 | `NEXTAUTH_SECRET` | Session encryption key | not yet set — see §5 |
+| `DRIFT_SCHEDULER` | `off` stops the background drift loop; anything else leaves it on | no, defaults to on |
 
 Metadata tables are created on first use by `ensureMetadataSchema()`; there is no
 separate migration step for the tool's own storage.
@@ -127,8 +128,15 @@ my-app/
 | `lib/generate-sql.ts` | Migration generator, five ordered phases |
 | `lib/sql-guard.ts` | Destructive-statement detection |
 | `lib/lineage-db.ts` | `tracked_schemas`, `snapshots`, `lineage_migrations`, `drift_events` |
+| `lib/drift-runner.ts` | One drift check plus its audit row — shared by the button, the scheduler and tracking |
+| `lib/drift-schedule.ts` | Cadence arithmetic: what is due, what is overdue. Pure, so it is unit-tested |
+| `lib/drift-scheduler.ts` | The background loop itself; the only timer in the process |
+| `lib/query-analysis.ts` | Reads an `EXPLAIN` plan and says what is wrong with it. Pure |
+| `lib/schema-metrics.ts` | `schema_metrics`: takes a reading, reads a window, prunes the tail |
+| `lib/metrics-series.ts` | Readings to plot geometry, ticks and a sentence. Pure |
+| `lib/snapshot-format.ts` | The snapshot format version, and what to do with an older one |
 | `lib/db/sequelize.ts` | The one Sequelize instance, plus a `pg.Pool`-shaped adapter over its pool |
-| `lib/db/models.ts` | All nine metadata tables as Sequelize models |
+| `lib/db/models.ts` | All ten metadata tables as Sequelize models |
 | `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
 | `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
@@ -140,15 +148,16 @@ my-app/
 ### API routes
 
 ```
-admin/users              auth/[...nextauth]       compare
-comparison-sets          connections              connections/test
-connections/test-saved   deploy/approvals         deploy/approvals/[id]
-github/pull              github/push              lineage
-lineage/[id]             lineage/acknowledge      lineage/audit
-lineage/drift            lineage/lookup           lineage/rebaseline
-lineage/schemas          lineage/track            schema/snapshot
-scripts/apply            scripts/preflight        scripts/revert
-scripts/schemas          versionsync/ledger
+admin/users             auth/[...nextauth]      compare
+comparison-sets         connections             connections/test
+connections/test-saved  deploy/approvals        deploy/approvals/[id]
+github/pull             github/push             lineage
+lineage/[id]            lineage/acknowledge     lineage/audit
+lineage/drift           lineage/lookup          lineage/rebaseline
+lineage/schedule        lineage/schemas         lineage/track
+performance/advice      performance/analyze     performance/metrics
+schema/snapshot         scripts/apply           scripts/preflight
+scripts/revert          scripts/schemas         versionsync/ledger
 ```
 
 Every one of them opens with a role gate — `requireViewer`, `requireEditor`,
@@ -175,7 +184,7 @@ creates, alters, deferred foreign keys, then destructive drops last.
 
 ## 4. Data model
 
-In the **metadata database** (`DATABASE_URL_A`) — nine tables, all declared as
+In the **metadata database** (`DATABASE_URL_A`) — ten tables, all declared as
 Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 
 | Table | Holds |
@@ -189,13 +198,14 @@ Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 | `comparison_sets` | A saved source schema plus its list of targets |
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
 | `deploy_approvals` | Approval requests, decisions, and the two-person record |
+| `schema_metrics` | One reading of a schema's size and shape per drift check, pruned past 90 days |
 
 ### Which database layer talks to what
 
 Two very different kinds of database work happen here, and only one of them
 belongs to an ORM:
 
-- **This app's own database** — the nine tables above. A fixed schema the app
+- **This app's own database** — the ten tables above. A fixed schema the app
   owns, so Sequelize defines it, creates it, and does the reading and writing.
   Queries that are genuinely SQL rather than CRUD still run through
   `metadataPool`, which borrows a connection from Sequelize's pool: one pool,
@@ -215,8 +225,8 @@ In each **target database**:
 
 ## 5. Verified state — what works and what does not
 
-Checked against the code on 9 September 2026. Nothing below is deferred; the
-items marked *not built* are what is left of the FYP-B work list.
+Checked against the code on 9 September 2026, and against a running instance
+with a real PostgreSQL behind it. Nothing below is deferred.
 
 ### Works end to end
 
@@ -228,23 +238,53 @@ lineage snapshots · drift detection and re-baseline · version-sync
 reconciliation · detecting an existing version table in a target · saved
 comparison sets · comparing one source against up to six
 targets · dev/staging/production labels and their warnings · exporting a diff as
-Markdown, JSON, CSV or PDF · the ERD visualizer.
+Markdown, JSON, CSV or PDF · the ERD visualizer · scheduled drift checking
+without a button press · query plan analysis · index and schema suggestions ·
+schema metrics over time.
 
 The compare engine introspects tables, columns, constraints, indexes, triggers,
 views, sequences, types and routines.
+
+Four of those are new enough to say where they live:
+
+- **Drift is checked on a cadence**, not only when somebody presses the button.
+  `lib/drift-scheduler.ts` runs one interval timer in the Next.js server,
+  started from `instrumentation.ts`. It wakes every 60s, asks
+  `lib/drift-schedule.ts` which tracked schemas are overdue, and runs the same
+  check the button runs — at most 6 per tick, 2 at a time, so a backlog drains
+  over several ticks instead of opening thirty connections to other people's
+  databases at once. `DRIFT_SCHEDULER=off` is the kill switch. Per-schema
+  cadence is set on the Drift screen; 0 means manual only.
+- **Performance** is three tabs over one schema. *Suggestions* reads
+  `pg_stat_user_tables` / `pg_stat_user_indexes` and the catalog for un-indexed
+  foreign keys, unused and duplicate indexes, sequential-scan-heavy tables,
+  bloat and missing primary keys. *Analyse a query* runs `EXPLAIN` — never
+  `ANALYZE`, so nothing is executed — behind a read-only statement guard.
+  *Trends* draws the history that monitoring collects.
+- **Monitoring** takes one reading per drift check into `schema_metrics`:
+  structure counts from the snapshot the check already had, plus a size probe
+  against `pg_class`. Readings are pruned past 90 days. Charts are hand-drawn
+  SVG; there is no charting dependency.
+- **Snapshots carry a format version.** `lib/snapshot-format.ts` stamps one on
+  every capture. The comparator already refused to report a category as "added"
+  just because an old baseline predated it — a category is compared only when
+  both sides recorded it — so the bug this fixes is not a false drift report but
+  a silent one: `undefined` meant both "captured before this app knew about
+  views" and "tried to read views and was refused", and the app guessed the
+  first. The stamp separates them, names the categories being skipped, and says
+  re-baselining is the fix. It also gives a future change that alters an
+  existing field somewhere to be noticed, which optionality cannot do.
 
 ### Switched off or incomplete
 
 - **Authentication is bypassed on purpose, for testing.**
   `NEXT_PUBLIC_AUTH_BYPASS` is not `"false"`, so `lib/auth-mode.ts` reports the
   bypass as on and both the UI guard and `lib/auth-guard.ts` let every request
-  through as an admin. The wiring underneath is complete: all 26 API routes
+  through as an admin. The wiring underneath is complete: all 30 API routes
   except the NextAuth handler itself call `requireViewer` / `requireEditor` /
   `requireAdmin`, and the `profiles` table is created with the rest of the
   metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS=false` turns the whole thing
   on, and then the Entra keys in §1 have to be set for anyone to get in.
-- **Snapshots carry no format version**, so snapshots taken before and after a
-  change to the snapshot shape compare as drift.
 - **TLS verification is relaxed on the `DATABASE_URL_A`/`DATABASE_URL_B`
   fallback path only.** Saved connections honour their own `ssl_mode`, including
   `verify-full`; `normalizeCompareSsl` in `lib/postgres.ts` deliberately accepts
@@ -253,8 +293,9 @@ views, sequences, types and routines.
 
 ### Not built at all
 
-- Query execution analysis, performance suggestions, performance monitoring —
-  spec features 8, 9 and 10.
+Nothing in the spec is unbuilt. Spec features 8, 9 and 10 — query execution
+analysis, performance suggestions and performance monitoring — were the last
+three, and they are the Performance section described above.
 
 ### Compliance sheet
 
@@ -266,7 +307,7 @@ views, sequences, types and routines.
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | met — 135 tests in 8 suites over the domain modules; the pages themselves are covered by route tests, not render tests |
+| Jest unit tests | met — 365 tests in 16 suites over the domain modules; the pages themselves are covered by route tests, not render tests |
 
 ---
 
