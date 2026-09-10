@@ -12,6 +12,8 @@ Team: Umer Naseer, Frandya Meidy F., Cindy Wong IY. Supervisor: Jason Thomas Che
 
 | File | What it is | Trust it for |
 |---|---|---|
+| `PROJECT_CONTEXT.md` | Orientation for someone reviewing the code: architecture, the two-database model, core entry points, the backlog traced against what is actually built, and the honest caveats. | **The current code.** Written from the code, not from a plan, and dated. |
+| `REVIEW_PROMPT.md` | A paste-ready prompt for an external AI reviewer, including what is deliberately out of scope. | Getting a useful outside review instead of a list of things already known. |
 | `requirements/COS40005-team-and-project-plan.*` | The project plan agreed with the client. Stakeholders, scope, the mandated technology stack, and the 38-item Product Backlog (Table 5). | **The requirements.** This is the authoritative statement of what the software is supposed to do. |
 | `requirements/fyp-poster.*` | The academic poster: problem framing, literature review, gap analysis against Flyway and Liquibase. | Why the project exists and how it differs from existing tools. |
 | `progress-reports/COS40005-sprint-report-{1,2,3}.txt` | What was built in each sprint, week by week, per team member. | A timeline of the build. **Not** a description of the current code — see below. |
@@ -19,6 +21,10 @@ Team: Umer Naseer, Frandya Meidy F., Cindy Wong IY. Supervisor: Jason Thomas Che
 
 `.txt` files are text extractions of the original documents, kept alongside them
 so a reader that cannot open a PDF still gets the full content.
+
+The first two rows are maintained alongside the code and describe it as it is
+today. The rest are coursework documents, frozen at the date they were
+submitted.
 
 ## What is deliberately not here
 
