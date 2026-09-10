@@ -156,8 +156,9 @@ export async function POST(request: NextRequest) {
 
     const counts = { tablesAdded: 0, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 0 };
     await client.query(
-      `INSERT INTO drift_events (tracked_schema_id, status, summary, detail, baseline_snapshot_id)
-       VALUES ($1, 'in_sync', $2, $3::jsonb, $4)`,
+      `INSERT INTO drift_events
+         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
+       VALUES ($1, 'in_sync', $2, $3::jsonb, $4, 'rebaseline')`,
       [
         trackedSchemaId,
         `Re-baselined to live — ${buildDriftSummary(nextVersion, counts)}`,

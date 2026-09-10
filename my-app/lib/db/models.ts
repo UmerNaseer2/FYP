@@ -8,6 +8,8 @@ import {
 } from "sequelize";
 import { sequelize } from "./sequelize";
 import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
+import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
+import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 
 /**
  * The app's own tables, as Sequelize models.
@@ -187,6 +189,22 @@ export class TrackedSchema extends Model<
   declare schema_name: string;
   declare label: CreationOptional<string | null>;
   declare environment: CreationOptional<string>;
+  /**
+   * How often the scheduler re-checks this schema for drift, in minutes.
+   * 0 means never — the schema is checked only when somebody presses the
+   * button. See lib/drift-schedule.ts for the cadences the UI offers.
+   */
+  declare drift_check_interval_minutes: CreationOptional<number>;
+  /**
+   * When a drift check last ran for this schema, from any source.
+   *
+   * Separate from the newest drift_events row on purpose: "we looked at 14:32
+   * and nothing had changed" is worth showing and not worth keeping forever, so
+   * the scheduler updates this every time but only writes an event row when the
+   * answer actually changed. Null means no check has ever run, which is what
+   * makes a freshly tracked schema due immediately.
+   */
+  declare last_drift_check_at: CreationOptional<Date | null>;
   declare created_at: CreationOptional<Date>;
 }
 
@@ -202,6 +220,12 @@ TrackedSchema.init(
       defaultValue: DEFAULT_ENVIRONMENT,
       validate: { isIn: [ENVIRONMENT_VALUES] },
     },
+    drift_check_interval_minutes: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: DEFAULT_DRIFT_INTERVAL_MINUTES,
+    },
+    last_drift_check_at: { type: DataTypes.DATE, allowNull: true },
     created_at: { type: DataTypes.DATE, defaultValue: NOW },
   },
   {
@@ -301,6 +325,14 @@ export class DriftEvent extends Model<
   declare detected_at: CreationOptional<Date>;
   /** Set when someone has looked at this drift and decided it is expected. */
   declare acknowledged_at: CreationOptional<Date | null>;
+  /**
+   * What ran this check — see DRIFT_SOURCES in lib/drift-source.ts.
+   *
+   * Without it the audit feed cannot tell an automatic check from somebody
+   * pressing the button, which is exactly the question a user asks when the app
+   * claims to be watching a schema for them.
+   */
+  declare source: CreationOptional<string>;
 }
 
 DriftEvent.init(
@@ -313,6 +345,12 @@ DriftEvent.init(
     baseline_snapshot_id: { type: DataTypes.INTEGER, allowNull: true },
     detected_at: { type: DataTypes.DATE, defaultValue: NOW },
     acknowledged_at: { type: DataTypes.DATE, allowNull: true },
+    source: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      defaultValue: DEFAULT_DRIFT_SOURCE,
+      validate: { isIn: [DRIFT_SOURCE_VALUES] },
+    },
   },
   { sequelize, tableName: "drift_events" }
 );

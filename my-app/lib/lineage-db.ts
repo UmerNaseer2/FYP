@@ -12,6 +12,8 @@ import { listSetNamesUsingConnection } from "./comparison-sets";
 import pool, { syncMetadataTables } from "./version-db";
 import { toEnvironment, type Environment } from "./environments";
 import { snapshotFormatGap, type SnapshotFormatGap } from "./snapshot-format";
+import { normalizeDriftInterval } from "./drift-schedule";
+import { toDriftSource, type DriftSource } from "./drift-source";
 
 /**
  * Phase 6 metadata store — "schema lineage".
@@ -270,8 +272,9 @@ export async function recordAppliedMigrationToLineage(params: {
       objectsChanged: 0,
     };
     await client.query(
-      `INSERT INTO drift_events (tracked_schema_id, status, summary, detail, baseline_snapshot_id)
-       VALUES ($1, 'in_sync', $2, $3::jsonb, $4)`,
+      `INSERT INTO drift_events
+         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
+       VALUES ($1, 'in_sync', $2, $3::jsonb, $4, 'deploy')`,
       [
         trackedSchemaId,
         `Deploy applied — ${buildDriftSummary(nextVersion, counts)}`,
@@ -364,6 +367,8 @@ export type LineageDetail = {
     detail: unknown;
     detectedAt: string;
   } | null;
+  /** How often the scheduler re-checks this schema; 0 is manual only. */
+  driftIntervalMinutes: number;
 };
 
 /**
@@ -443,6 +448,7 @@ export async function getLineageDetail(
     schema_name: string;
     label: string | null;
     environment: string | null;
+    drift_check_interval_minutes: number | null;
     created_at: string;
     connection_id: number;
     connection_name: string | null;
@@ -453,6 +459,7 @@ export async function getLineageDetail(
   }>(
     `SELECT
        ts.id, ts.schema_name, ts.label, ts.environment, ts.created_at, ts.connection_id,
+       ts.drift_check_interval_minutes,
        c.name          AS connection_name,
        c.host          AS connection_host,
        c.port          AS connection_port,
@@ -562,6 +569,7 @@ export async function getLineageDetail(
             detectedAt: drift.rows[0].detected_at,
           }
         : null,
+    driftIntervalMinutes: normalizeDriftInterval(ts.drift_check_interval_minutes),
   };
 }
 
@@ -614,6 +622,12 @@ type DriftSubject = {
   label: string | null;
   environment: Environment;
   connection: LineageConnection | null;
+  /**
+   * How often the scheduler re-checks this schema, in minutes; 0 is manual
+   * only. Carried on every outcome, including "unreachable", because a screen
+   * that cannot show a result still has to say when the next attempt is.
+   */
+  driftIntervalMinutes: number;
 };
 
 /** Outcome of a live drift recompute — a clean discriminated union. */
@@ -669,6 +683,7 @@ type TrackedConnRow = {
   connection_string: string | null;
   ssl: boolean | null;
   ssl_mode: string | null;
+  drift_check_interval_minutes: number | null;
 };
 
 /**
@@ -688,6 +703,7 @@ export async function computeDriftDetail(
   const res = await pool.query<TrackedConnRow>(
     `SELECT
        ts.schema_name, ts.label, ts.environment, ts.connection_id,
+       ts.drift_check_interval_minutes,
        c.name AS connection_name, c.host, c.port, c.database_name, c.type,
        c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
      FROM tracked_schemas ts
@@ -714,6 +730,7 @@ export async function computeDriftDetail(
     label: t.label,
     environment: toEnvironment(t.environment),
     connection,
+    driftIntervalMinutes: normalizeDriftInterval(t.drift_check_interval_minutes),
   };
 
   // 2. The EXPECTED snapshot — lineage HEAD, else the most recent capture.
@@ -835,6 +852,8 @@ export type DriftDetailView = {
   counts: DriftCounts | null;
   /** Full Expected-vs-Actual report — null when there is nothing to diff. */
   report: CompareReport | null;
+  /** How often the scheduler re-checks this schema; 0 is manual only. */
+  driftIntervalMinutes: number;
   /** The last drift check actually recorded (audit), null until one has run. */
   lastRecorded: {
     status: DriftStatus;
@@ -882,6 +901,7 @@ export async function getDriftDetail(
     label: comp.label,
     environment: comp.environment,
     connection: comp.connection,
+    driftIntervalMinutes: comp.driftIntervalMinutes,
     lastRecorded,
   };
   const noRef: ExpectedRef = {
@@ -936,6 +956,8 @@ export type DriftEventFeedItem = {
   detectedAt: string;
   /** Set when the event was acknowledged by a human (Phase 9). */
   acknowledgedAt: string | null;
+  /** What ran this check — a person, the scheduler, a deploy. */
+  source: DriftSource;
 };
 
 type DriftEventFeedRow = {
@@ -948,6 +970,7 @@ type DriftEventFeedRow = {
   detail: unknown;
   detected_at: string;
   acknowledged_at: string | null;
+  source: string | null;
 };
 
 /**
@@ -968,7 +991,7 @@ export async function listDriftEvents(
   const result = await pool.query<DriftEventFeedRow>(
     `SELECT
        de.id, de.tracked_schema_id, de.status, de.summary, de.detail,
-       de.detected_at, de.acknowledged_at,
+       de.detected_at, de.acknowledged_at, de.source,
        ts.schema_name,
        c.name AS connection_name
      FROM drift_events de
@@ -990,6 +1013,7 @@ export async function listDriftEvents(
     detail: r.detail,
     detectedAt: r.detected_at,
     acknowledgedAt: r.acknowledged_at,
+    source: toDriftSource(r.source),
   }));
 }
 
@@ -1020,6 +1044,20 @@ export type TrackedSchemaListItem = {
   driftStatus: DriftStatus | null;
   driftSummary: string | null;
   driftCheckedAt: string | null;
+  /**
+   * How often the scheduler re-checks this schema, in minutes; 0 is manual
+   * only. Read through normalizeDriftInterval so a value written by an older
+   * build lands on a cadence the picker can actually show.
+   */
+  driftIntervalMinutes: number;
+  /**
+   * When a check last RAN, which is not the same as when a result was last
+   * recorded: a scheduled check that finds nothing new writes no event row, on
+   * purpose, so the audit log stays readable. Without this the dashboard would
+   * say "checked 4 hours ago" about a schema being looked at every fifteen
+   * minutes. Null on a row that has only ever been checked by an older build.
+   */
+  lastCheckedAt: string | null;
 };
 
 type TrackedListRow = {
@@ -1028,6 +1066,7 @@ type TrackedListRow = {
   schema_name: string;
   label: string | null;
   environment: string | null;
+  drift_check_interval_minutes: number | null;
   created_at: string;
   connection_name: string | null;
   connection_host: string | null;
@@ -1038,6 +1077,7 @@ type TrackedListRow = {
   drift_status: DriftStatus | null;
   drift_summary: string | null;
   drift_checked_at: string | null;
+  last_drift_check_at: string | null;
 };
 
 /**
@@ -1056,6 +1096,8 @@ export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
       ts.schema_name,
       ts.label,
       ts.environment,
+      ts.drift_check_interval_minutes,
+      ts.last_drift_check_at,
       ts.created_at,
       c.name           AS connection_name,
       c.host           AS connection_host,
@@ -1106,6 +1148,8 @@ export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
     driftStatus: r.drift_status,
     driftSummary: r.drift_summary,
     driftCheckedAt: r.drift_checked_at,
+    driftIntervalMinutes: normalizeDriftInterval(r.drift_check_interval_minutes),
+    lastCheckedAt: r.last_drift_check_at,
   }));
 }
 

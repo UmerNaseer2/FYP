@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Pill, type PillTone } from "@/components/ui";
 import { CheckIcon, SearchIcon } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
+import { driftSourceLabel, type DriftSource } from "@/lib/drift-source";
 
 type DriftStatus = "in_sync" | "drifted" | "unreachable";
 
@@ -19,6 +20,12 @@ export type AuditRow = {
   summary: string | null;
   detectedAt: string;
   acknowledgedAt: string | null;
+  /**
+   * What ran this check. The whole point of a scheduler is that checks happen
+   * without anybody pressing anything, and a log that cannot tell an automatic
+   * check from a button press cannot show that it is working.
+   */
+  source: DriftSource;
 };
 
 type FilterKey = "all" | "drifted" | "in_sync" | "unreachable" | "acknowledged";
@@ -66,7 +73,10 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
             : r.status === filter;
       if (!passesFilter) return false;
       if (!q) return true;
-      const haystack = `${r.schemaName} ${r.connectionName ?? ""} ${r.summary ?? ""}`.toLowerCase();
+      const haystack = (
+        `${r.schemaName} ${r.connectionName ?? ""} ` +
+        `${r.summary ?? ""} ${driftSourceLabel(r.source)}`
+      ).toLowerCase();
       return haystack.includes(q);
     });
   }, [rows, filter, query]);
@@ -154,6 +164,7 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                 style={{ color: "var(--text-3)", borderBottom: "1px solid var(--border)" }}
               >
                 <Th>When</Th>
+                <Th>By</Th>
                 <Th>Status</Th>
                 <Th>Summary</Th>
                 <Th>Schema</Th>
@@ -180,6 +191,14 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
                     <Td label="When">
                       <span className="mono whitespace-nowrap" style={{ color: "var(--text-2)" }}>
                         {timeAgo(r.detectedAt)}
+                      </span>
+                    </Td>
+                    <Td label="By">
+                      <span
+                        className="text-[11.5px] whitespace-nowrap"
+                        style={{ color: "var(--text-3)" }}
+                      >
+                        {driftSourceLabel(r.source)}
                       </span>
                     </Td>
                     <Td label="Status">

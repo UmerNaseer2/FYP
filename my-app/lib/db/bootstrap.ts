@@ -1,6 +1,8 @@
 import { sequelize, metadataPool } from "./sequelize";
 import "./models";
 import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
+import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
+import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 
 /**
  * Create the app's own tables, once per process.
@@ -39,6 +41,9 @@ import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
  * by the other. Only ever built from our own constants — no user input.
  */
 const ENVIRONMENT_SQL_LIST = ENVIRONMENTS.map((e) => `'${e}'`).join(", ");
+
+/** The drift-source list as a SQL literal, generated the same way. */
+const DRIFT_SOURCE_SQL_LIST = DRIFT_SOURCE_VALUES.map((s) => `'${s}'`).join(", ");
 
 /**
  * Add a CHECK constraint, tolerating the (normal) case where it is already
@@ -90,6 +95,18 @@ async function addConstraints(): Promise<void> {
     "tracked_schemas",
     "tracked_schemas_environment_check",
     `environment IN (${ENVIRONMENT_SQL_LIST})`
+  );
+  await addCheckConstraint(
+    "drift_events",
+    "drift_events_source_check",
+    `source IN (${DRIFT_SOURCE_SQL_LIST})`
+  );
+  // A cadence the scheduler cannot act on is a schema nobody is watching, so
+  // the floor is enforced here rather than trusted to every writer.
+  await addCheckConstraint(
+    "tracked_schemas",
+    "tracked_schemas_drift_interval_check",
+    "drift_check_interval_minutes >= 0 AND drift_check_interval_minutes <= 10080"
   );
   await addCheckConstraint(
     "profiles",
@@ -165,9 +182,33 @@ async function backfillOlderTables(): Promise<void> {
     `ALTER TABLE tracked_schemas ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '${DEFAULT_ENVIRONMENT}'`
   );
 
+  // How often the scheduler re-checks a tracked schema. Rows created before
+  // the scheduler existed get the promised 15 minutes rather than 0: they were
+  // tracked by a user who was told the app would watch them, and defaulting to
+  // "manual only" would have quietly kept that promise unkept.
+  await metadataPool.query(
+    `ALTER TABLE tracked_schemas ADD COLUMN IF NOT EXISTS
+       drift_check_interval_minutes INTEGER NOT NULL
+       DEFAULT ${DEFAULT_DRIFT_INTERVAL_MINUTES}`
+  );
+
+  // When a check last ran, whatever it found. See the note on the model for
+  // why this is not simply the newest drift_events row.
+  await metadataPool.query(
+    `ALTER TABLE tracked_schemas ADD COLUMN IF NOT EXISTS last_drift_check_at TIMESTAMPTZ`
+  );
+
   // An "expected, I looked at it" marker on a drift event.
   await metadataPool.query(
     `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`
+  );
+
+  // What ran the check. Rows written before the scheduler existed default to
+  // 'manual', which is not a placeholder — back then a button press was the
+  // only thing that could have written one.
+  await metadataPool.query(
+    `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS
+       source TEXT NOT NULL DEFAULT '${DEFAULT_DRIFT_SOURCE}'`
   );
 
   // The last "Test" outcome, kept on the row instead of in the page's memory.

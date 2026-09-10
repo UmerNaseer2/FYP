@@ -55,8 +55,9 @@ export async function POST(request: NextRequest) {
   try {
     await pool.query(
       `INSERT INTO drift_events
-         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, acknowledged_at)
-       VALUES ($1, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP)`,
+         (tracked_schema_id, status, summary, detail, baseline_snapshot_id,
+          acknowledged_at, source)
+       VALUES ($1, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP, 'acknowledged')`,
       [
         trackedSchemaId,
         status,

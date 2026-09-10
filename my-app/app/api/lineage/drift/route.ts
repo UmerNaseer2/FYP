@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
-import pool from "@/lib/version-db";
 import type { CompareReport } from "@/lib/compare-types";
 import {
-  computeDriftDetail,
   getDriftDetail,
   type DriftCounts,
   type DriftDetailView,
   type DriftStatus,
 } from "@/lib/lineage-db";
+import { runDriftCheck } from "@/lib/drift-runner";
 
 // Re-export so existing callers can keep importing these from here.
 export type { DriftCounts, DriftDetailView };
@@ -84,54 +83,33 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "trackedSchemaId is required." }, { status: 400 });
   }
 
-  let comp;
-  try {
-    comp = await computeDriftDetail(trackedSchemaId);
-  } catch (error) {
-    console.error("Drift — recompute failed:", error);
+  // The check and its audit row are one operation, shared with the scheduler
+  // (lib/drift-runner.ts) so an automatic check and a button press can never
+  // record themselves differently.
+  const outcome = await runDriftCheck(trackedSchemaId, "manual");
+
+  if (!outcome.ok) {
+    if (outcome.problem.kind === "not_found") {
+      return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
+    }
+    if (outcome.problem.kind === "no_baseline") {
+      return NextResponse.json(
+        { error: "This tracked schema has no baseline snapshot to compare against." },
+        { status: 409 }
+      );
+    }
+    console.error("Drift — recompute failed:", outcome.problem.message);
     return NextResponse.json({ error: "Could not read tracking metadata." }, { status: 500 });
-  }
-
-  if (comp.kind === "not_found") {
-    return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
-  }
-  if (comp.kind === "no_baseline") {
-    return NextResponse.json(
-      { error: "This tracked schema has no baseline snapshot to compare against." },
-      { status: 409 }
-    );
-  }
-
-  const status: DriftStatus = comp.kind === "unreachable" ? "unreachable" : comp.status;
-  const counts = comp.kind === "ok" ? comp.counts : null;
-  const report = comp.kind === "ok" ? comp.report : null;
-
-  // Record the check for the audit feed. A failed insert shouldn't fail the
-  // check itself — the user still gets their result.
-  try {
-    await pool.query(
-      `INSERT INTO drift_events (tracked_schema_id, status, summary, detail, baseline_snapshot_id)
-       VALUES ($1, $2, $3, $4::jsonb, $5)`,
-      [
-        trackedSchemaId,
-        status,
-        comp.summary,
-        counts ? JSON.stringify(counts) : null,
-        comp.expected.snapshotId,
-      ]
-    );
-  } catch (error) {
-    console.error("Drift — failed to record drift_event:", error);
   }
 
   const result: DriftCheckResult = {
     trackedSchemaId,
-    status,
-    summary: comp.summary,
-    counts,
-    expectedVersion: comp.expected.version,
-    checkedAt: new Date().toISOString(),
-    report,
+    status: outcome.run.status,
+    summary: outcome.run.summary,
+    counts: outcome.run.counts,
+    expectedVersion: outcome.run.expected.version,
+    checkedAt: outcome.run.checkedAt,
+    report: outcome.run.report,
   };
   return NextResponse.json(result);
 }

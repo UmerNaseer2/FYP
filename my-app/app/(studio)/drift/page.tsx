@@ -26,6 +26,8 @@ import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DriftResolutionBar } from "@/components/studio/DriftResolutionBar";
 import { DriftSchemaPicker } from "@/components/studio/DriftSchemaPicker";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
+import { ScheduleTable } from "@/components/studio/ScheduleTable";
+import { describeCadence } from "@/lib/drift-schedule";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
@@ -61,6 +63,24 @@ function fmtDate(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "—";
   return d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
 }
+
+/** The three questions this screen answers, in the order they get asked. */
+type DriftTab = "detail" | "audit" | "schedule";
+
+const TAB_TITLES: Record<DriftTab, string> = {
+  detail: "Drift detail",
+  audit: "Audit log",
+  schedule: "Schedule",
+};
+
+const TAB_BLURBS: Record<DriftTab, string> = {
+  detail:
+    "Compare a tracked schema's live structure against its expected lineage snapshot, and resolve any drift.",
+  audit:
+    "Every recorded drift check, newest first — filterable by status and searchable by schema, connection or summary.",
+  schedule:
+    "How often each tracked schema is checked on its own, when it was last looked at, and when the next check is due.",
+};
 
 /** Drifted first, then unreachable, then never-checked, then in-sync. */
 function sortPriority(status: DriftStatus | null): number {
@@ -109,7 +129,9 @@ export default function DriftPage() {
 
 function DriftScreen() {
   const sp = useSearchParams();
-  const tab: "detail" | "audit" = sp.get("tab") === "audit" ? "audit" : "detail";
+  const raw_tab = sp.get("tab");
+  const tab: DriftTab =
+    raw_tab === "audit" ? "audit" : raw_tab === "schedule" ? "schedule" : "detail";
   const raw = sp.get("schema");
   const schema = raw && raw.trim() ? raw.trim() : undefined;
 
@@ -121,6 +143,8 @@ function DriftScreen() {
     <Shell tab={tab} schema={schema}>
       {tab === "detail" ? (
         <DetailContent key={schema ?? ""} schema={schema} />
+      ) : tab === "schedule" ? (
+        <ScheduleTable />
       ) : (
         <AuditContent />
       )}
@@ -135,7 +159,7 @@ function Shell({
   schema,
   children,
 }: {
-  tab: "detail" | "audit";
+  tab: DriftTab;
   schema: string | undefined;
   children: React.ReactNode;
 }) {
@@ -152,12 +176,10 @@ function Shell({
           <div className="section-title">Drift &amp; Audit</div>
         </div>
         <h1 className="text-[28px] font-semibold tracking-[-0.02em] mt-1">
-          {tab === "detail" ? "Drift detail" : "Audit log"}
+          {TAB_TITLES[tab]}
         </h1>
         <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-          {tab === "detail"
-            ? "Compare a tracked schema's live structure against its expected lineage snapshot, and resolve any drift."
-            : "Every recorded drift check, newest first — filterable by status and searchable by schema, connection or summary."}
+          {TAB_BLURBS[tab]}
         </p>
       </header>
 
@@ -168,6 +190,9 @@ function Shell({
         </Tab>
         <Tab href={`/drift?tab=audit${q}`} active={tab === "audit"}>
           Audit log
+        </Tab>
+        <Tab href={`/drift?tab=schedule${q}`} active={tab === "schedule"}>
+          Schedule
         </Tab>
       </div>
 
@@ -292,7 +317,7 @@ function NothingTracked() {
 
 // ── Content skeleton (shown while a tab's data loads) ────────────────────────
 
-function ContentSkeleton({ tab }: { tab: "detail" | "audit" }) {
+function ContentSkeleton({ tab }: { tab: DriftTab }) {
   if (tab === "audit") {
     return (
       <div className="space-y-6">
@@ -498,6 +523,27 @@ function DetailTab({
             {view.lastRecorded
               ? `Last recorded check · ${fmtDate(view.lastRecorded.detectedAt)}`
               : "Nothing recorded yet — Check drift now saves it"}
+          </div>
+          {/* Without this line the page reads as though nothing happens between
+              button presses, which stopped being true when the scheduler
+              shipped. It also gives "nothing recorded yet" a second meaning
+              worth telling apart: not watched, versus watched and unchanged. */}
+          <div className="mt-0.5">
+            {view.driftIntervalMinutes > 0 ? (
+              <>
+                Checked automatically {describeCadence(view.driftIntervalMinutes)} ·{" "}
+                <Link href="/drift?tab=schedule" style={{ color: "var(--brand)" }}>
+                  change
+                </Link>
+              </>
+            ) : (
+              <>
+                Automatic checking off ·{" "}
+                <Link href="/drift?tab=schedule" style={{ color: "var(--brand)" }}>
+                  turn on
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -879,6 +925,7 @@ function AuditTab() {
     summary: e.summary,
     detectedAt: e.detectedAt,
     acknowledgedAt: e.acknowledgedAt,
+    source: e.source,
   }));
 
   return (

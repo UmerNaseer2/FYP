@@ -8,6 +8,7 @@ import {
   type TrackedSchemaRow,
 } from "@/lib/lineage-db";
 import { ENVIRONMENTS, toEnvironment, type Environment } from "@/lib/environments";
+import { requestImmediateCheck } from "@/lib/drift-scheduler";
 
 /**
  * POST /api/lineage/track
@@ -185,6 +186,12 @@ export async function POST(request: NextRequest) {
     );
 
     await client.query("COMMIT");
+
+    // The baseline that was just captured is also the first "we looked" — but
+    // recording that is the scheduler's job, not this route's, and the user is
+    // waiting on a 201. Fire it and move on: if it fails, last_drift_check_at
+    // stays null, which is exactly what makes the next tick pick this schema up.
+    requestImmediateCheck(tracked.id);
 
     return NextResponse.json(
       {

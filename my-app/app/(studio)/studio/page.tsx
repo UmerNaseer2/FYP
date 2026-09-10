@@ -25,6 +25,8 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { Select } from "@/components/ui/Select";
+import { useNow } from "@/hooks/useNow";
+import { describeCadence } from "@/lib/drift-schedule";
 import {
   DashboardIcon,
   CheckIcon,
@@ -66,6 +68,11 @@ type TrackedSchema = {
   driftStatus: DriftStatus | null;
   driftSummary: string | null;
   driftCheckedAt: string | null;
+  // How often this schema is checked on its own, in minutes; 0 is manual only.
+  driftIntervalMinutes?: number;
+  // When a check last RAN. A scheduled check that changes nothing records no
+  // event, so driftCheckedAt (the last recorded RESULT) can be much older.
+  lastCheckedAt?: string | null;
 };
 
 /** A saved connection as GET /api/connections returns it (only fields we use). */
@@ -805,6 +812,45 @@ function LoadingGrid() {
   );
 }
 
+/**
+ * "Checked 3m ago · every 15m" under a schema card.
+ *
+ * Two facts, deliberately together. The age on its own reads as the last thing
+ * that happened and says nothing about whether anything will happen next; the
+ * cadence on its own is a promise with no evidence. Side by side they answer
+ * the only question a watched schema raises — is this still being looked at?
+ *
+ * The age ticks (useNow) because a dashboard is a screen people leave open.
+ */
+function CheckedLine({
+  lastCheckedAt,
+  intervalMinutes,
+}: {
+  lastCheckedAt: string | null;
+  intervalMinutes: number;
+}) {
+  // Subscribing to the clock keeps timeAgo honest on a page nobody is clicking.
+  const now = useNow(30_000);
+  const cadence = intervalMinutes > 0 ? describeCadence(intervalMinutes) : null;
+
+  if (!lastCheckedAt) {
+    return (
+      <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
+        {cadence ? `Not checked yet — due ${cadence}` : "Automatic checking is off"}
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
+      {/* now === null is the pre-hydration frame; showing nothing for it beats
+          showing a relative age the browser then has to correct. */}
+      {now === null ? "\u00a0" : `Checked ${timeAgo(lastCheckedAt)}`}
+      {cadence ? ` \u00b7 ${cadence}` : " \u00b7 manual only"}
+    </div>
+  );
+}
+
 function SchemaCard({
   item,
   checking,
@@ -894,11 +940,10 @@ function SchemaCard({
           <span style={{ color: "var(--text-3)" }}>No drift check yet.</span>
         )}
       </div>
-      {item.driftCheckedAt && (
-        <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
-          Checked {timeAgo(item.driftCheckedAt)}
-        </div>
-      )}
+      <CheckedLine
+        lastCheckedAt={item.lastCheckedAt ?? item.driftCheckedAt}
+        intervalMinutes={item.driftIntervalMinutes ?? 0}
+      />
 
       {error && (
         <div className="text-[11.5px] mt-2" style={{ color: "var(--break)" }}>
