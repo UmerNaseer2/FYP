@@ -219,8 +219,13 @@ export function findMightFailStatements(sql: string): string[] {
  * Splitting on the masked copy instead means only a semicolon the database
  * would treat as a boundary ends a statement — while the text handed back is
  * sliced from the ORIGINAL, comments, literals and all.
+ *
+ * Exported because the query analyser needs the same answer for a different
+ * reason: it refuses to EXPLAIN a box holding more than one statement, and
+ * "more than one" has to mean what the database would say, not what a split on
+ * semicolons would say.
  */
-function splitStatements(sql: string): string[] {
+export function splitStatements(sql: string): string[] {
   const mask = maskNonCode(sql);
   const out: string[] = [];
   let start = 0;

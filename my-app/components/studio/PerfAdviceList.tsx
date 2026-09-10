@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, EmptyState, Pill, Skeleton, type PillTone } from "@/components/ui";
+import { Card, EmptyState, Skeleton } from "@/components/ui";
+import { AlertCircleIcon, CheckIcon, RefreshIcon } from "@/components/ui/icons";
 import {
-  AlertCircleIcon,
-  CheckIcon,
-  ClipboardIcon,
-  RefreshIcon,
-} from "@/components/ui/icons";
+  FindingCard,
+  OriginBadge,
+  SeverityFilter,
+  activeFilter,
+  type FilterKey,
+  type FindingSeverity,
+} from "./FindingCard";
 import type { PerfTarget } from "./PerfTargetPicker";
 
 /**
@@ -26,12 +29,10 @@ import type { PerfTarget } from "./PerfTargetPicker";
  *    translation is where the mistakes are.
  */
 
-type Severity = "high" | "medium" | "low";
-
 /** One finding (mirrors AdviceItem in app/api/performance/advice/route.ts). */
 type AdviceItem = {
   id: string;
-  severity: Severity;
+  severity: FindingSeverity;
   title: string;
   object: string;
   detail: string;
@@ -50,12 +51,6 @@ type AdviceView = {
   statsUnavailable: string | null;
 };
 
-const SEVERITY_META: Record<Severity, { tone: PillTone; label: string; color: string }> = {
-  high: { tone: "break", label: "High", color: "var(--break)" },
-  medium: { tone: "drift", label: "Medium", color: "var(--drift)" },
-  low: { tone: "neutral", label: "Low", color: "var(--text-3)" },
-};
-
 const ORIGIN_META: Record<AdviceItem["origin"], { label: string; help: string }> = {
   structure: {
     label: "From the schema",
@@ -68,8 +63,6 @@ const ORIGIN_META: Record<AdviceItem["origin"], { label: string; help: string }>
       "it has been since they were last reset.",
   },
 };
-
-type FilterKey = "all" | Severity;
 
 /** One completed request, tagged with the request it answers. */
 type Loaded = { key: string; view: AdviceView | null; error: string | null };
@@ -155,10 +148,7 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
     );
   }
 
-  // A filter left on "High" from the previous schema, where this one has no
-  // high findings, would show an empty list under a full set of counts.
-  const active: FilterKey =
-    filter !== "all" && view.counts[filter] === 0 ? "all" : filter;
+  const active = activeFilter(filter, view.counts);
   const shown =
     active === "all" ? view.advice : view.advice.filter((a) => a.severity === active);
 
@@ -200,7 +190,15 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
           <SeverityFilter counts={view.counts} value={active} onChange={setFilter} />
           <div className="space-y-2.5">
             {shown.map((item, i) => (
-              <AdviceCard key={`${item.id}-${item.object}-${i}`} item={item} />
+              <FindingCard
+                key={`${item.id}-${item.object}-${i}`}
+                severity={item.severity}
+                title={item.title}
+                object={item.object}
+                detail={item.detail}
+                fix={item.fix}
+                badge={<OriginBadge {...ORIGIN_META[item.origin]} />}
+              />
             ))}
           </div>
           <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
@@ -230,126 +228,6 @@ function SummaryBar({ view, onRerun }: { view: AdviceView; onRerun: () => void }
       <button type="button" className="btn btn-ghost btn-sm" onClick={onRerun}>
         <RefreshIcon size={12} /> Run again
       </button>
-    </div>
-  );
-}
-
-function SeverityFilter({
-  counts,
-  value,
-  onChange,
-}: {
-  counts: AdviceView["counts"];
-  value: FilterKey;
-  onChange: (next: FilterKey) => void;
-}) {
-  const options: { key: FilterKey; label: string; count: number }[] = [
-    { key: "all", label: "All", count: counts.total },
-    { key: "high", label: "High", count: counts.high },
-    { key: "medium", label: "Medium", count: counts.medium },
-    { key: "low", label: "Low", count: counts.low },
-  ];
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {options.map((o) => {
-        const active = value === o.key;
-        return (
-          <button
-            key={o.key}
-            type="button"
-            // A severity with nothing in it is a filter onto an empty list.
-            disabled={o.count === 0}
-            onClick={() => onChange(o.key)}
-            className="text-[12.5px] px-2.5 py-1 rounded-md transition-colors disabled:opacity-45"
-            style={{
-              border: "1px solid var(--border)",
-              background: active ? "var(--text)" : "var(--surface)",
-              color: active ? "var(--surface)" : "var(--text-2)",
-            }}
-          >
-            {o.label}
-            <span className="mono ml-1.5 opacity-60">{o.count}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function AdviceCard({ item }: { item: AdviceItem }) {
-  const meta = SEVERITY_META[item.severity];
-  const origin = ORIGIN_META[item.origin];
-  return (
-    <Card className="p-0 overflow-hidden">
-      {/* The stripe repeats the severity pill in a form you can scan a column
-          of without reading any of them. */}
-      <div className="flex" style={{ borderLeft: `3px solid ${meta.color}` }}>
-        <div className="p-4 space-y-2.5 min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Pill tone={meta.tone}>{meta.label}</Pill>
-            <span
-              className="text-[11px] px-1.5 py-0.5 rounded"
-              style={{
-                border: "1px solid var(--border)",
-                color: "var(--text-3)",
-              }}
-              title={origin.help}
-            >
-              {origin.label}
-            </span>
-            <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
-              {item.object}
-            </span>
-          </div>
-
-          <div className="text-[14px] font-semibold tracking-[-0.01em]">{item.title}</div>
-
-          <p className="text-[13px] leading-[1.6]" style={{ color: "var(--text-2)" }}>
-            {item.detail}
-          </p>
-
-          <FixBlock fix={item.fix} />
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-/** The suggested fix, copyable — usually SQL, sometimes SQL under a sentence. */
-function FixBlock({ fix }: { fix: string }) {
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(fix);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard blocked (e.g. an insecure context) — leave the button as-is.
-    }
-  }
-
-  return (
-    <div
-      className="rounded-lg overflow-hidden"
-      style={{ border: "1px solid var(--border)", background: "var(--surface-2)" }}
-    >
-      <div
-        className="flex items-center justify-between gap-2 px-3 py-1.5"
-        style={{ borderBottom: "1px solid var(--border)" }}
-      >
-        <span
-          className="text-[10px] font-semibold uppercase tracking-[0.06em]"
-          style={{ color: "var(--text-3)" }}
-        >
-          Suggested fix
-        </span>
-        <button type="button" className="btn btn-ghost btn-xs" onClick={copy}>
-          {copied ? <CheckIcon size={11} /> : <ClipboardIcon size={11} />}
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <pre className="sql px-3 py-2.5 overflow-x-auto whitespace-pre-wrap">{fix}</pre>
     </div>
   );
 }
