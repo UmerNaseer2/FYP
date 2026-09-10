@@ -267,7 +267,23 @@ Snapshot.init(
     label: { type: DataTypes.TEXT, allowNull: true },
     captured_at: { type: DataTypes.DATE, defaultValue: NOW },
   },
-  { sequelize, tableName: "snapshots" }
+  {
+    sequelize,
+    tableName: "snapshots",
+    // Two jobs, one index. Every read is "the newest snapshot for this tracked
+    // schema" (lib/lineage-db), and deleting a tracked schema cascades to every
+    // row here — without a leading tracked_schema_id, that delete has to read
+    // the whole table, and this is the table that holds a JSON document per row.
+    //
+    // Ascending is enough for a DESC read: the leading column is fixed by an
+    // equality, so Postgres walks the rest of the index backwards for free.
+    indexes: [
+      {
+        name: "snapshots_tracked_schema_id_captured_at_idx",
+        fields: ["tracked_schema_id", "captured_at"],
+      },
+    ],
+  }
 );
 
 export class LineageMigration extends Model<
@@ -301,12 +317,20 @@ LineageMigration.init(
   {
     sequelize,
     tableName: "lineage_migrations",
-    // Two migrations at the same position would make "what is HEAD" ambiguous.
     indexes: [
+      // Two migrations at the same position would make "what is HEAD"
+      // ambiguous. Doubles as the tracked_schema_id cascade index.
       {
         name: "lineage_migrations_tracked_schema_id_seq_key",
         unique: true,
         fields: ["tracked_schema_id", "seq"],
+      },
+      // For the snapshot prune: a removed snapshot nulls this column on every
+      // migration that produced it, and lineage rows are never deleted, so this
+      // table only ever gets longer to scan.
+      {
+        name: "lineage_migrations_snapshot_id_idx",
+        fields: ["snapshot_id"],
       },
     ],
   }
@@ -352,7 +376,28 @@ DriftEvent.init(
       validate: { isIn: [DRIFT_SOURCE_VALUES] },
     },
   },
-  { sequelize, tableName: "drift_events" }
+  {
+    sequelize,
+    tableName: "drift_events",
+    indexes: [
+      // "The newest event for this schema" is asked five separate ways across
+      // lib/lineage-db and lib/drift-runner, always as
+      // `WHERE tracked_schema_id = $1 ORDER BY detected_at DESC, id DESC`. This
+      // is that query, and it is also what stops a tracked schema's delete from
+      // scanning the longest table in the app.
+      {
+        name: "drift_events_tracked_schema_id_detected_at_idx",
+        fields: ["tracked_schema_id", "detected_at"],
+      },
+      // Nothing reads by baseline; this is for the write. Pruning one snapshot
+      // has to null every event that pointed at it, and without this that is a
+      // full scan of the event feed per snapshot removed.
+      {
+        name: "drift_events_baseline_snapshot_id_idx",
+        fields: ["baseline_snapshot_id"],
+      },
+    ],
+  }
 );
 
 /**
@@ -463,7 +508,18 @@ ComparisonSet.init(
     updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     last_run_at: { type: DataTypes.DATE, allowNull: true },
   },
-  { sequelize, tableName: "comparison_sets" }
+  {
+    sequelize,
+    tableName: "comparison_sets",
+    // Deleting a connection nulls this column rather than taking the saved sets
+    // with it, and that update has to find the rows first.
+    indexes: [
+      {
+        name: "comparison_sets_source_connection_id_idx",
+        fields: ["source_connection_id"],
+      },
+    ],
+  }
 );
 
 export class ComparisonSetTarget extends Model<
@@ -491,13 +547,19 @@ ComparisonSetTarget.init(
   {
     sequelize,
     tableName: "comparison_set_targets",
-    // Order is part of the data: target 1 and target 2 keep the columns they
-    // had when the set was saved, so re-opening a set looks the same every time.
     indexes: [
+      // Order is part of the data: target 1 and target 2 keep the columns they
+      // had when the set was saved, so re-opening a set looks the same every
+      // time. Doubles as the set_id cascade index.
       {
         name: "comparison_set_targets_position_key",
         unique: true,
         fields: ["set_id", "position"],
+      },
+      // The other half of a connection delete — see comparison_sets above.
+      {
+        name: "comparison_set_targets_connection_id_idx",
+        fields: ["connection_id"],
       },
     ],
   }
