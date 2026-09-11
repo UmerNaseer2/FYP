@@ -1,4 +1,3 @@
-import { parseIntoClientConfig } from "pg-connection-string";
 import type { ClientConfig, PoolClient } from "pg";
 import { Pool } from "pg";
 import { SNAPSHOT_FORMAT_VERSION } from "./snapshot-format";
@@ -27,16 +26,6 @@ function poolKey(cfg: ClientConfig): string {
     // pool was created first silently wins for both callers.
     JSON.stringify(cfg.ssl ?? false),
   ].join("\0");
-}
-
-// Normalize a parsed-from-URL config's SSL so it behaves like the saved-
-// connection path (buildPgConfig): when a URL carries `sslmode=require`,
-// pg-connection-string yields `ssl: {}`, which makes Node verify the cert chain
-// and rejects hosted providers (Neon/Supabase/RDS) that present untrusted
-// chains. We only read schema metadata, so accept the cert instead — matching
-// the Connections screen, which sets { rejectUnauthorized: false }.
-function normalizeCompareSsl(cfg: ClientConfig): ClientConfig {
-  return cfg.ssl ? { ...cfg, ssl: { rejectUnauthorized: false } } : cfg;
 }
 
 /**
@@ -1141,82 +1130,6 @@ export function withoutToolTables(snapshot: SchemaSnapshot): SchemaSnapshot {
       (p) => !ignored.has(p.objectName) && !ignoredSequences.has(p.objectName)
     ),
   };
-}
-
-function trimEnv(name: string): string | undefined {
-  const v = process.env[name]?.trim();
-  return v && v.length > 0 ? v : undefined;
-}
-
-/**
- * The environment-variable fallback for Compare, used when there are no saved
- * connections yet. Two ways to configure:
- *
- * 1) DATABASE_URL_A + DATABASE_URL_B — full URLs, possibly different hosts/users.
- * 2) DATABASE_URL (or DATABASE_URL_A) only — same server/user/password; opens
- *    COMPARE_DATABASE_A (default "postgres") and COMPARE_DATABASE_B (default: A).
- *
- * Returns an ordered list instead of a fixed { a, b } pair. Environment
- * variables still only ever describe two databases, but the caller compares one
- * source against N targets and should not have to know where the ceiling is:
- * the first entry is the source, everything after it is a target.
- */
-export function resolveCompareTargets():
-  | { ok: true; targets: CompareTarget[] }
-  | { ok: false; error: string } {
-  const urlA = trimEnv("DATABASE_URL_A") || trimEnv("DATABASE_URL");
-  const urlB = trimEnv("DATABASE_URL_B");
-
-  if (!urlA) {
-    return {
-      ok: false,
-      error:
-        "Set DATABASE_URL in .env.local (or DATABASE_URL_A + DATABASE_URL_B for two full URLs).",
-    };
-  }
-
-  try {
-    if (urlB) {
-      const cfgA = normalizeCompareSsl(parseIntoClientConfig(urlA));
-      const cfgB = normalizeCompareSsl(parseIntoClientConfig(urlB));
-      return {
-        ok: true,
-        targets: [
-          {
-            id: "env-a",
-            config: cfgA,
-            displayName: cfgA.database ?? "database A",
-          },
-          {
-            id: "env-b",
-            config: cfgB,
-            displayName: cfgB.database ?? "database B",
-          },
-        ],
-      };
-    }
-
-    const base = normalizeCompareSsl(parseIntoClientConfig(urlA));
-    const dbA = trimEnv("COMPARE_DATABASE_A") || "postgres";
-    // Default the second compare database to the first. A single-database server
-    // (e.g. a Supabase project, which only exposes the "postgres" database)
-    // would otherwise try to reach a non-existent "TEST" database and error. Set
-    // COMPARE_DATABASE_B explicitly to compare two databases on the same server;
-    // for the normal case, compare two real connections from the Connections page.
-    const dbB = trimEnv("COMPARE_DATABASE_B") || dbA;
-    const cfgA = { ...base, database: dbA };
-    const cfgB = { ...base, database: dbB };
-    return {
-      ok: true,
-      targets: [
-        { id: "env-a", config: cfgA, displayName: dbA },
-        { id: "env-b", config: cfgB, displayName: dbB },
-      ],
-    };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: `Invalid connection URL: ${message}` };
-  }
 }
 
 // Schemas that PostgreSQL or a managed provider (Supabase, Neon, RDS) own

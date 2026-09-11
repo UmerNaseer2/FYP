@@ -230,6 +230,13 @@ async function backfillOlderTables(): Promise<void> {
     `ALTER TABLE connections ADD COLUMN IF NOT EXISTS last_test_error TEXT`
   );
 
+  // A saved set remembers whether it compares row data as well as structure.
+  // Sets saved before the option existed never compared rows, hence false.
+  await metadataPool.query(
+    `ALTER TABLE comparison_sets
+       ADD COLUMN IF NOT EXISTS compare_data BOOLEAN NOT NULL DEFAULT false`
+  );
+
   await alterTimestampColumns();
 }
 

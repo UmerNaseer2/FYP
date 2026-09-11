@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { isProduction, type Environment } from "@/lib/environments";
+import { isProduction, toEnvironment, type Environment } from "@/lib/environments";
+import {
+  pickSchemaAfterConnectionChange,
+  selectionToQuery,
+  swapSourceWithTarget,
+} from "@/lib/compare-selection";
 import { buildDiffDocument } from "@/lib/compare-export";
 import type {
   CompareScreen,
@@ -38,9 +43,11 @@ import {
 // before any of that work has finished.
 //
 // It reads its whole selection out of the query string, which is what keeps a
-// comparison shareable and reloadable, and what lets the picker bar below stay
-// a plain <form> with no client state: "add target" is a submit, and repeated
-// field names arrive as parallel lists.
+// comparison shareable and reloadable. The picker bar is still a plain GET
+// <form>: "add target" is a submit, and repeated field names arrive as
+// parallel lists. The one thing a picker does on its own is fetch the schema
+// list when its connection changes, so the schema box never offers the last
+// database's schemas for the new one.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -52,28 +59,100 @@ import {
  *
  * All the target pickers share the field names `targetConnection` and
  * `targetSchema`, so the browser submits them as two parallel lists — that is
- * what makes "add another target" work with a plain <form> and no JavaScript.
+ * what makes "add another target" work with a plain <form>.
+ *
+ * Changing the connection fetches that database's schemas straight away. The
+ * schema box used to keep offering the OLD connection's list until Compare was
+ * pressed, so the usual move — dev.public to staging.public — took two
+ * submits, and the first one compared a schema the new database might not have.
  */
 function SlotPicker({
   role,
   fieldPrefix,
+  slotKey,
   connections,
   selectedConnectionId,
-  fixedConnectionLabel,
   schemaOptions,
   selectedSchema,
   environment,
+  missingMessage,
+  onDirtyChange,
 }: {
   role: string;
   fieldPrefix: "source" | "target";
+  /** Names this picker when it reports to onDirtyChange. */
+  slotKey: string;
   connections: ConnectionView[];
+  /** What the comparison on screen used; "" when this side has no connection. */
   selectedConnectionId: string;
-  /** Shown instead of a picker when the target came from .env, not a connection. */
-  fixedConnectionLabel?: string;
   schemaOptions: string[];
   selectedSchema: string;
   environment: Environment;
+  /** Why this side has no connection to read, or null when it has one. */
+  missingMessage: string | null;
+  /** Told whether the picks now differ from what the comparison on screen used. */
+  onDirtyChange: (slotKey: string, dirty: boolean) => void;
 }) {
+  const [connectionId, setConnectionId] = useState(selectedConnectionId);
+  const [options, setOptions] = useState(schemaOptions);
+  const [schema, setSchema] = useState(selectedSchema);
+  const [loading, setLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  // Picking A and then B quickly sends two requests, and A's answer can land
+  // second. Only the newest request is allowed to fill the list.
+  const latestRequest = useRef(0);
+
+  // Compared with what the screen used, not with "has anything been touched":
+  // picking another connection and then the first one again is back to clean.
+  const dirty = connectionId !== selectedConnectionId || schema !== selectedSchema;
+  useEffect(() => {
+    onDirtyChange(slotKey, dirty);
+  }, [slotKey, dirty, onDirtyChange]);
+
+  async function changeConnection(next: string) {
+    if (next === connectionId) return;
+    setConnectionId(next);
+    setListError(null);
+    setLoading(true);
+    const request = ++latestRequest.current;
+    try {
+      const response = await fetch(
+        `/api/lineage/schemas?connectionId=${encodeURIComponent(next)}`,
+        { cache: "no-store" },
+      );
+      const data = await response.json().catch(() => null);
+      if (request !== latestRequest.current) return;
+      if (response.ok && Array.isArray(data?.schemas)) {
+        const list: string[] = data.schemas;
+        setOptions(list);
+        setSchema((previous) => pickSchemaAfterConnectionChange(previous, list));
+      } else {
+        // The schema already in the box stays. Compare still tries it, and the
+        // result says whether that database could be read at all.
+        setOptions([]);
+        setListError(data?.error ?? "Could not list the schemas on that connection.");
+      }
+    } catch {
+      if (request !== latestRequest.current) return;
+      setOptions([]);
+      setListError("Network error while listing the schemas on that connection.");
+    } finally {
+      if (request === latestRequest.current) setLoading(false);
+    }
+  }
+
+  const picked = connections.find((connection) => String(connection.id) === connectionId);
+  // The server's answer until somebody picks another connection; after that
+  // the picked connection's own label, because the server has not seen it yet.
+  const shownEnvironment =
+    connectionId === selectedConnectionId || !picked
+      ? environment
+      : toEnvironment(picked.environment);
+  // A schema the list does not contain — typed into a URL, or kept after a
+  // listing failed — still shows, so the box never looks empty while it
+  // would submit something.
+  const schemaChoices = options.length > 0 ? options : schema.length > 0 ? [schema] : [];
+
   return (
     <div className="picker">
       {/* The pill is two letters of jargon. A title alone reaches neither a
@@ -90,36 +169,47 @@ function SlotPicker({
           <span className="text-[10px]" style={{ color: "var(--text-3)" }}>
             {role}
           </span>
-          <EnvironmentPill environment={environment} />
+          <EnvironmentPill environment={shownEnvironment} />
         </div>
-        {fixedConnectionLabel ? (
-          <span className="text-[13.5px] font-medium truncate" title={fixedConnectionLabel}>
-            {fixedConnectionLabel}
-          </span>
-        ) : (
-          <Select
-            name={`${fieldPrefix}Connection`}
-            value={selectedConnectionId}
-            ariaLabel={`${role} connection`}
-            placeholder="Select a connection"
-            options={connections.map((connection) => ({
-              value: String(connection.id),
-              label: `${connection.name} (${connection.database_name})`,
-            }))}
-          />
-        )}
+        <Select
+          name={`${fieldPrefix}Connection`}
+          value={connectionId}
+          onChange={(next) => void changeConnection(next)}
+          ariaLabel={`${role} connection`}
+          placeholder="Pick a connection…"
+          options={connections.map((connection) => ({
+            value: String(connection.id),
+            label: `${connection.name} (${connection.database_name})`,
+          }))}
+        />
+        {/* Blank while loading, so a Compare pressed mid-load sends no schema
+            and the server picks the default rather than the old database's. */}
         <Select
           name={`${fieldPrefix}Schema`}
-          value={selectedSchema}
+          value={loading ? "" : schema}
+          onChange={setSchema}
           ariaLabel={`${role} schema`}
           variant="sub"
           mono
-          options={
-            schemaOptions.length === 0
-              ? [{ value: selectedSchema, label: selectedSchema }]
-              : schemaOptions.map((schema) => ({ value: schema, label: schema }))
+          disabled={loading || schemaChoices.length === 0}
+          placeholder={
+            loading
+              ? "Loading schemas…"
+              : connectionId === ""
+                ? "Pick a connection first"
+                : "No schemas on this connection"
           }
+          options={schemaChoices.map((name) => ({ value: name, label: name }))}
         />
+        {listError ? (
+          <span className="text-[11.5px]" role="alert" style={{ color: "var(--drift)" }}>
+            {listError}
+          </span>
+        ) : missingMessage && connectionId === selectedConnectionId ? (
+          <span className="text-[11.5px]" style={{ color: "var(--drift)" }}>
+            {missingMessage}
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -139,6 +229,13 @@ function PageHeader({ targetCount }: { targetCount: number }) {
         updates <b>that target</b> to match the source — you can edit it freely
         before saving.
       </p>
+      {targetCount > 1 && (
+        <p className="text-[12.5px] mt-1 max-w-[64ch]" style={{ color: "var(--text-3)" }}>
+          Each target is compared with the source only — targets are not compared
+          with each other. To compare two targets, press <b>Use as source</b> on
+          one of their results.
+        </p>
+      )}
     </div>
   );
 }
@@ -153,6 +250,9 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
   // name, and a target compared with itself, which was never dialled at all.
   const unreachable = outcomes.filter((o) => o.failure === "unreachable").length;
   const schemaMissing = outcomes.filter((o) => o.failure === "schema-missing").length;
+  const noConnection = outcomes.filter((o) => o.failure === "no-connection").length;
+  const duplicates = outcomes.filter((o) => o.failure === "duplicate").length;
+  const sameAsSource = outcomes.filter((o) => o.sameAsSource).length;
   const production = outcomes.filter((o) => isProduction(o.environment)).length;
 
   return (
@@ -173,6 +273,18 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
       )}
       {schemaMissing > 0 && (
         <span className="delta delta-rem">{schemaMissing} schema not found</span>
+      )}
+      {noConnection > 0 && (
+        <span className="delta delta-rem">{noConnection} without a connection</span>
+      )}
+      {/* Not failures — nothing was dialled because the answer was known. */}
+      {sameAsSource > 0 && (
+        <span className="pill pill-neutral">{sameAsSource} same as source</span>
+      )}
+      {duplicates > 0 && (
+        <span className="pill pill-neutral">
+          {duplicates} duplicate{duplicates === 1 ? "" : "s"}
+        </span>
       )}
       {production > 0 && (
         <span className="pill pill-break">
@@ -243,11 +355,10 @@ function CompareScreenView({ query }: { query: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // `run=1` is what the Compare button adds, and it is the whole difference
-  // between reading a comparison and recording one in the history. Deep links
-  // from the dashboard, Drift and a schema's detail page only seed the pickers,
-  // so they no longer leave a row behind just for being opened. The ref stops
-  // the same run being recorded twice when React re-runs this effect.
+  // `record` asks the server to stamp the open saved set's "last run" time. It
+  // goes once per URL that carries `run=1` — Compare, opening a set, or a link
+  // that asks to run — and not on the reload after Save, which would count the
+  // same run twice. The ref remembers which URL has been stamped.
   const recorded = useRef<string | null>(null);
 
   // The two run options are the only fields in the picker bar that change what
@@ -264,6 +375,16 @@ function CompareScreenView({ query }: { query: string }) {
   // to null on their own and there is nothing to reset.
   const [pendingDataLoss, setPendingDataLoss] = useState<boolean | null>(null);
   const [pendingRowData, setPendingRowData] = useState<boolean | null>(null);
+
+  // The same idea for the pickers: which of them now differ from what the
+  // comparison on screen used. Keyed by picker, because one picker going back
+  // to clean must not hide another that is still changed.
+  const [dirtyPickers, setDirtyPickers] = useState<Record<string, boolean>>({});
+  const reportDirty = useCallback((slotKey: string, dirty: boolean) => {
+    setDirtyPickers((previous) =>
+      Boolean(previous[slotKey]) === dirty ? previous : { ...previous, [slotKey]: dirty },
+    );
+  }, []);
 
   // One run of the comparison. Everything it needs is in the query string, so
   // it is sent verbatim and the server decides what it means — two places
@@ -296,6 +417,14 @@ function CompareScreenView({ query }: { query: string }) {
 
   useEffect(() => {
     void load();
+    // React in development runs every effect twice, and the two answers can
+    // land in either order. When only the first run stamped the set, the
+    // second could land last carrying the time from before the stamp, and a
+    // set that had just run read "never run". Forgetting the stamp here lets
+    // both runs stamp it: twice, milliseconds apart, and only in development.
+    return () => {
+      recorded.current = null;
+    };
   }, [load]);
 
   // A comparison that never arrived at all — there is nothing else to draw.
@@ -335,11 +464,6 @@ function CompareScreenView({ query }: { query: string }) {
             Comparing reads two schemas through your saved PostgreSQL
             connections. One is enough to start — the two sides can be two
             schemas on the same server.
-            {screen.resolveError ? (
-              <span className="block mt-2" style={{ color: "var(--text-3)" }}>
-                {screen.resolveError}
-              </span>
-            ) : null}
           </>
         }
         actions={
@@ -360,10 +484,10 @@ function CompareScreenView({ query }: { query: string }) {
   const outcomes = screen.outcomes;
   const source = screen.source;
   const {
-    usingEnvFallback,
     canAddTarget,
     maxTargets,
     activeSetId,
+    setNotFound,
     setModified,
     selection,
     sourceError,
@@ -381,6 +505,8 @@ function CompareScreenView({ query }: { query: string }) {
   const dataLossBox = pendingDataLoss ?? allowDataLoss;
   const rowDataBox = pendingRowData ?? compareData;
   const optionsPending = dataLossBox !== allowDataLoss || rowDataBox !== compareData;
+  const picksChanged = Object.values(dirtyPickers).some(Boolean);
+  const unapplied = optionsPending || picksChanged;
 
   return (
     <div
@@ -414,7 +540,8 @@ function CompareScreenView({ query }: { query: string }) {
         activeSetId={activeSetId}
         modified={setModified}
         selection={selection}
-        canSave={!usingEnvFallback}
+        hasUnappliedChanges={unapplied}
+        asked={asked}
         onDone={() => void load()}
       />
 
@@ -422,7 +549,20 @@ function CompareScreenView({ query }: { query: string }) {
           names, so the browser submits them as parallel lists and "add target"
           needs no client state at all. */}
       <form action="/compare" className="source-bar">
-        <input type="hidden" name="run" value="1" />
+        {/* Only the Compare button sends run=1 — Add target and Remove change
+            the pickers without running anything. This copy of it comes first
+            because the first submit button in a form is the one Enter
+            presses, and without it that was a target's Remove. */}
+        <button
+          type="submit"
+          name="run"
+          value="1"
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+        >
+          Compare
+        </button>
         {/* Carried through every submit so the bar still knows which set is
             open after you add a target or press Compare. */}
         {activeSetId !== null && (
@@ -432,19 +572,22 @@ function CompareScreenView({ query }: { query: string }) {
         <div className="source-bar__group">
           <div className="source-bar__label">Source · the schema you want</div>
           <div className="source-bar__slot">
+            {/* Keyed by what the server resolved, so a reload that answers
+                differently starts the picker again from that answer. */}
             <SlotPicker
+              key={`${source.connectionId}:${source.schema}`}
               role="Source · desired"
               fieldPrefix="source"
+              slotKey="source"
               connections={savedConnections}
               selectedConnectionId={
                 source.connectionId === null ? "" : String(source.connectionId)
               }
-              fixedConnectionLabel={
-                usingEnvFallback ? source.displayName : undefined
-              }
               schemaOptions={source.schemaOptions}
               selectedSchema={source.schema}
               environment={source.environment}
+              missingMessage={source.missingMessage}
+              onDirtyChange={reportDirty}
             />
           </div>
         </div>
@@ -459,22 +602,23 @@ function CompareScreenView({ query }: { query: string }) {
             {resolvedTargets.map((slot, index) => (
               <div className="source-bar__slot" key={`target-${index}`}>
                 <SlotPicker
+                  key={`${slot.connectionId}:${slot.schema}`}
                   role={
                     resolvedTargets.length === 1
                       ? "Target · updated"
                       : `Target ${index + 1} · updated`
                   }
                   fieldPrefix="target"
+                  slotKey={`target-${index}`}
                   connections={savedConnections}
                   selectedConnectionId={
                     slot.connectionId === null ? "" : String(slot.connectionId)
                   }
-                  fixedConnectionLabel={
-                    usingEnvFallback ? slot.displayName : undefined
-                  }
                   schemaOptions={slot.schemaOptions}
                   selectedSchema={slot.schema}
-                  environment={outcomes[index]?.environment ?? slot.environment}
+                  environment={slot.environment}
+                  missingMessage={slot.missingMessage}
+                  onDirtyChange={reportDirty}
                 />
                 {resolvedTargets.length > 1 && (
                   <button
@@ -499,11 +643,11 @@ function CompareScreenView({ query }: { query: string }) {
               <PlusIcon size={14} />
               Add target
             </button>
-          ) : !usingEnvFallback ? (
+          ) : (
             <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
               {maxTargets} targets is the maximum for one comparison.
             </span>
-          ) : null}
+          )}
           {/* These two decide whether the generated script destroys data and
               whether the run reads table contents at all, and a hover tooltip
               was the only place either of them said so — no use on a touch
@@ -559,7 +703,7 @@ function CompareScreenView({ query }: { query: string }) {
           <span className="source-bar__spacer" />
           {/* Said beside the button that applies it, because this is the moment
               the reader is deciding whether anything more is needed. */}
-          {optionsPending && (
+          {unapplied && (
             <span
               className="text-[12px] flex items-center gap-1.5"
               style={{ color: "var(--drift)" }}
@@ -568,7 +712,7 @@ function CompareScreenView({ query }: { query: string }) {
               Not applied yet — press Compare.
             </span>
           )}
-          <button type="submit" className="btn btn-primary">
+          <button type="submit" name="run" value="1" className="btn btn-primary">
             <CompareIcon size={14} />
             Compare
           </button>
@@ -593,12 +737,30 @@ function CompareScreenView({ query }: { query: string }) {
 
       {/* A migration generated for a pair nobody chose reads as a
           recommendation, so a screen nobody asked to run says so and stops. */}
-      {!asked && (
+      {/* A link to a saved set that has since been deleted. Said whether or
+          not anything ran, because the bar above now shows no set open and
+          would otherwise leave the reader wondering where it went. */}
+      {setNotFound && (
+        <div className="warn-inline mt-4">
+          <span className="ico">
+            <AlertTriangleIcon size={14} />
+          </span>
+          <span>
+            That saved set no longer exists — it may have been deleted.
+            {asked
+              ? " The comparison below is the one in the pickers."
+              : " The pickers show the defaults instead; pick what to compare, then press Compare."}
+          </span>
+        </div>
+      )}
+
+      {(!asked || source.missingMessage) && (
         <div className="panel mt-6 p-4">
           <h2 className="section-title m-0">Nothing compared yet</h2>
           <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
-            These are the defaults, not a result. Press Compare to read both
-            schemas and generate the migration.
+            {source.missingMessage
+              ? "The source has no connection, so there is nothing to compare the targets with. Pick a source connection above, then press Compare."
+              : "Nothing has been read from the databases yet. Press Compare to read the schemas picked above and generate each target's migration."}
           </p>
         </div>
       )}
@@ -697,6 +859,19 @@ function CompareScreenView({ query }: { query: string }) {
                 {outcome.displayName}.{outcome.schema}
               </span>
             </span>
+            {/* Only for a target that was actually read — swapping in one that
+                could not be reached, or that repeats another, gives a source
+                the next Compare cannot read either. No run=1: the swap only
+                fills the pickers, and the reader decides when to run it. */}
+            {outcome.report && (
+              <Link
+                href={`/compare?${selectionToQuery(swapSourceWithTarget(selection, outcome.index))}`}
+                className="btn btn-ghost btn-sm"
+                title="Make this target the source and the current source a target. Press Compare to run it."
+              >
+                Use as source
+              </Link>
+            )}
           </div>
 
           {outcome.sameAsSource ? (
@@ -705,11 +880,16 @@ function CompareScreenView({ query }: { query: string }) {
                 <AlertTriangleIcon size={14} />
               </span>
               <span>
-                Both sides are <span className="mono">{outcome.schema}</span> on{" "}
-                <span className="mono">{outcome.displayName}</span> — the same schema.
-                A schema always matches itself, so there is nothing here to report and
-                nothing to migrate. Pick a different schema or connection on the right,
-                then press Compare.
+                {selection.targets[outcome.index]?.connectionId ===
+                selection.sourceConnectionId
+                  ? "This target is the source itself — the same connection and schema ("
+                  : "This target reaches the same database and schema as the source through a different saved connection ("}
+                <span className="mono">
+                  {outcome.connectionDatabase ?? outcome.displayName} · {outcome.schema}
+                </span>
+                ). A schema always matches itself, so there is nothing to report
+                and nothing to migrate. Pick a different schema or connection for
+                this target, then press Compare.
               </span>
             </div>
           ) : outcome.error ? (

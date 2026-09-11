@@ -976,7 +976,7 @@ function SchemaCard({
         </Button>
         {!connectionGone && (
           <Link
-            href={`/compare?rightConnection=${item.connectionId}&rightSchema=${encodeURIComponent(item.schemaName)}`}
+            href={`/compare?rightConnection=${item.connectionId}&rightSchema=${encodeURIComponent(item.schemaName)}&run=1`}
             className="btn btn-ghost btn-sm"
           >
             Compare

@@ -12,6 +12,18 @@
 
 import type { ChangeRow, DiffDocument } from "./compare-export";
 
+/**
+ * How many changes a document holds: every row except the rename suggestions.
+ *
+ * A suggestion is a row so the reader sees it beside the add and the drop it
+ * might join, but it is not a change — nothing in the migration comes from it,
+ * and the Compare header above the export does not count it. Counting it here
+ * made the export read "8 changes" under a header that said 7.
+ */
+export function countedChanges(totals: DiffDocument["totals"]): number {
+  return totals.changes - totals.renameSuggestions;
+}
+
 /** Column headings for the CSV, in the order documentRows writes them. */
 const CSV_HEADERS = [
   "category",
@@ -190,12 +202,13 @@ function markdownRow(row: ChangeRow): string {
  */
 export function documentToMarkdown(document: DiffDocument): string {
   const { source, target, totals } = document;
+  const counted = countedChanges(totals);
   const out: string[] = [];
 
   out.push(`# Schema diff — ${source.database}.${source.schema} → ${target.database}.${target.schema}`);
   out.push("");
 
-  if (totals.changes === 0) {
+  if (counted === 0) {
     // "In sync" is a claim about the schema only. When a row comparison ran and
     // found differences, that sentence on its own reads as "nothing to do".
     const rowsDiffer = document.data ? document.data.totals.different : 0;
@@ -213,13 +226,19 @@ export function documentToMarkdown(document: DiffDocument): string {
       `${totals.dropped} dropped`,
     ];
     if (totals.renamed > 0) bits.push(`${totals.renamed} renamed`);
-    // Suggestions are rows in the document, so they are inside totals.changes.
-    // Leaving them out of this breakdown made the headline fail to add up:
-    // "13 changes — 5 added, 3 changed, 4 dropped".
-    if (totals.renameSuggestions > 0) {
-      bits.push(`${totals.renameSuggestions} rename suggested`);
+    out.push(`**${counted} change${counted === 1 ? "" : "s"}** — ${bits.join(", ")}.`);
+    // Suggestions get their own line, not a place in the sum above: they are
+    // listed with the changes, but nothing in the script comes from them.
+    const suggested = totals.renameSuggestions;
+    if (suggested > 0) {
+      out.push("");
+      out.push(
+        `🔎 ${suggested} possible rename${suggested === 1 ? " is" : "s are"} ` +
+          "listed below but not applied. The script still adds one name and " +
+          "drops the other, so check " +
+          `${suggested === 1 ? "it" : "them"} before running it.`
+      );
     }
-    out.push(`**${totals.changes} change${totals.changes === 1 ? "" : "s"}** — ${bits.join(", ")}.`);
     if (totals.breaking > 0) {
       out.push("");
       out.push(

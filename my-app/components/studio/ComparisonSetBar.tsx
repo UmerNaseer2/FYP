@@ -6,13 +6,21 @@ import { Select } from "@/components/ui/Select";
 import { Input } from "@/components/ui/Input";
 import { AlertTriangleIcon, TrashIcon } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
+import { useUser } from "@/hooks/useUser";
+import { roleAtLeast } from "@/lib/auth-mode";
+import {
+  MAX_NAME_LENGTH,
+  saveButtonLabel,
+  setOptionLabel,
+} from "@/lib/comparison-set-rules";
+import { selectionToQuery, type CurrentSelection } from "@/lib/compare-selection";
 
 /**
  * The saved-set bar above the Compare pickers: open a saved comparison, save
  * the one on screen, or delete one.
  *
- * A client island rather than another form-GET, because saving writes to the
- * database and the rest of this page is a GET that must stay safe to reload,
+ * A client island rather than part of the pickers' form, because saving writes
+ * to the database and that form is a GET that must stay safe to reload,
  * bookmark and share. Opening a set is still just a navigation — the URL is
  * `/compare?set=<id>&run=1`, so a saved comparison is a link somebody can put
  * in a runbook, and re-saving the set changes what that link does.
@@ -23,20 +31,13 @@ export type ComparisonSetOption = {
   id: number;
   name: string;
   targetCount: number;
-  /** True when any member of the set points at a production database. */
+  /** True when the source or any target points at a production database. */
   hasProduction: boolean;
+  /** True when the set also compares table rows — slower, and it reads data. */
+  compareData: boolean;
   /** True when a connection this set used has since been deleted. */
   hasMissingConnection: boolean;
   lastRunAt: string | null;
-};
-
-/** The selection currently on screen, which is what Save writes. */
-export type CurrentSelection = {
-  sourceConnectionId: number | null;
-  sourceConnectionLabel: string;
-  sourceSchema: string;
-  allowDataLoss: boolean;
-  targets: { connectionId: number | null; connectionLabel: string; schema: string }[];
 };
 
 type Props = {
@@ -45,12 +46,20 @@ type Props = {
   activeSetId: number | null;
   /** True when the on-screen selection no longer matches the saved set. */
   modified: boolean;
+  /** The selection the page last loaded, which is what Save writes. */
   selection: CurrentSelection;
   /**
-   * False in the .env fallback, where there are no saved connections to point
-   * a set at. Saving there would store a selection that cannot be restored.
+   * True while a picker or a box has been changed and Compare not yet pressed.
+   * Save writes `selection`, which does not have those changes in it, so it
+   * waits — saving then would store something other than what the reader sees.
    */
-  canSave: boolean;
+  hasUnappliedChanges: boolean;
+  /**
+   * Whether the comparison on screen was actually run. Saving or deleting
+   * lands on a URL for the same selection, and that URL runs it again only if
+   * it had been run — a set saved from untouched defaults stays unrun.
+   */
+  asked: boolean;
   /**
    * Reload the screen's data. The Compare screen fetches its own comparison, so
    * a router refresh would leave the set list showing the name it had before
@@ -80,29 +89,64 @@ function ranAgo(iso: string | null): string {
   return rel === "—" ? "never run" : `run ${rel}`;
 }
 
+/**
+ * The confirmation a save or delete leaves for the bar that comes after it.
+ *
+ * Both end in a navigation, and the Compare screen remounts on every new URL
+ * (page.tsx keys it by the query), so a message kept only in this bar's state
+ * was thrown away with the bar before anyone saw it — Save worked and said
+ * nothing. The next bar picks it up, and only if it opened on the set the
+ * message is about.
+ */
+let noticeForNextBar: { setId: number | null; text: string } | null = null;
+
+/** The set a Compare query opens, or null when it names none. */
+function setIdIn(query: string): number | null {
+  const id = Number(new URLSearchParams(query).get("set"));
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
 export function ComparisonSetBar({
   sets,
   activeSetId,
   modified,
   selection,
-  canSave,
+  hasUnappliedChanges,
+  asked,
   onDone,
 }: Props) {
   const router = useRouter();
   const currentQuery = useSearchParams().toString();
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
 
+  // Saving and deleting are editor actions, and the API refuses them for a
+  // viewer. Saying so here beats a button that fails with "Forbidden".
+  const { role, loading } = useUser();
+  const canEdit = !loading && roleAtLeast(role, "editor");
+
   const [name, setName] = useState(activeSet?.name ?? "");
   const [busy, setBusy] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
+  // What the last save or delete did, in words. It starts with the message a
+  // save or delete on the previous screen left for this one.
+  const [done, setDone] = useState<string | null>(() =>
+    noticeForNextBar !== null && noticeForNextBar.setId === activeSetId
+      ? noticeForNextBar.text
+      : null,
+  );
 
-  // Opening a different set (a navigation, not a remount) has to move the name
-  // box with it, or Save would silently overwrite the set you just left.
+  // Shown once: every new URL has either read it by now or is not about it.
+  useEffect(() => {
+    noticeForNextBar = null;
+  }, [currentQuery]);
+
+  // A reload of the same URL (Update on the set that is open) keeps this bar
+  // mounted, and the set can come back under a new name — "Orders" saved over
+  // "orders". The name box follows it, or the next Save would write the old
+  // name back.
   useEffect(() => {
     setName(activeSet?.name ?? "");
     setError(null);
-    setSaved(null);
   }, [activeSet?.id, activeSet?.name]);
 
   /**
@@ -112,13 +156,17 @@ export function ComparisonSetBar({
    * a link somebody could have typed. Pushing the URL we are already on does
    * nothing, though, and re-saving a set under a new name lands exactly there,
    * so that case reloads the screen instead.
+   *
+   * `notice` is what to tell the reader once the new screen is up.
    */
-  function goTo(query: string) {
+  function goTo(query: string, notice: string | null = null) {
     if (sameQuery(query, currentQuery)) {
+      // Same URL, so this bar stays mounted and keeps its own message.
       if (onDone) onDone();
       else router.refresh();
       return;
     }
+    noticeForNextBar = notice === null ? null : { setId: setIdIn(query), text: notice };
     router.push(`/compare?${query}`);
   }
 
@@ -126,6 +174,23 @@ export function ComparisonSetBar({
     const id = Number(value);
     if (!Number.isInteger(id) || id <= 0) return;
     goTo(`set=${id}&run=1`);
+  }
+
+  async function postSet(trimmed: string, overwrite: boolean) {
+    const res = await fetch("/api/comparison-sets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...selection,
+        name: trimmed,
+        // The set that is open, so saving over it is an update rather than
+        // a clash with its own name.
+        id: activeSet?.id ?? null,
+        overwrite,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    return { res, data };
   }
 
   async function save() {
@@ -136,22 +201,30 @@ export function ComparisonSetBar({
     }
     setBusy("save");
     setError(null);
-    setSaved(null);
+    setDone(null);
     try {
-      const res = await fetch("/api/comparison-sets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...selection, name: trimmed }),
-      });
-      const data = await res.json().catch(() => null);
+      let { res, data } = await postSet(trimmed, false);
+      if (res.status === 409 && data?.conflict) {
+        // The name belongs to a different set. Replacing somebody's saved
+        // comparison is the reader's call, not something Save does quietly.
+        const replace = window.confirm(
+          `A saved set called "${trimmed}" already exists. Replace it with the comparison on screen?`,
+        );
+        if (!replace) {
+          setError("Not saved — pick a different name, or confirm to replace it.");
+          return;
+        }
+        ({ res, data } = await postSet(trimmed, true));
+      }
       if (!res.ok) {
         setError(data?.error ?? "Could not save that comparison set.");
         return;
       }
-      setSaved(data?.created ? `Saved "${trimmed}".` : `Updated "${trimmed}".`);
+      const notice = data?.created ? `Saved "${trimmed}".` : `Updated "${trimmed}".`;
+      setDone(notice);
       // Land on the set we just wrote, so the bar shows it as open and the
       // "changed since saved" hint clears.
-      goTo(`set=${data.set.id}&run=1`);
+      goTo(`set=${data.set.id}${asked ? "&run=1" : ""}`, notice);
     } catch {
       setError("Network error while saving the set.");
     } finally {
@@ -161,9 +234,13 @@ export function ComparisonSetBar({
 
   async function remove() {
     if (!activeSet) return;
+    const confirmed = window.confirm(
+      `Delete the saved set "${activeSet.name}"? The comparison on screen stays; only the saved set is removed.`,
+    );
+    if (!confirmed) return;
     setBusy("delete");
     setError(null);
-    setSaved(null);
+    setDone(null);
     try {
       const res = await fetch("/api/comparison-sets", {
         method: "DELETE",
@@ -176,8 +253,12 @@ export function ComparisonSetBar({
         return;
       }
       // The selection stays on screen — deleting the bookmark should not throw
-      // away the comparison you are looking at.
-      goTo("run=1");
+      // away the comparison you are looking at. It is spelled out in the URL
+      // because the set that used to describe it is gone.
+      goTo(
+        `${selectionToQuery(selection)}${asked ? "&run=1" : ""}`,
+        `Deleted "${activeSet.name}".`,
+      );
     } catch {
       setError("Network error while deleting the set.");
     } finally {
@@ -187,10 +268,43 @@ export function ComparisonSetBar({
 
   const options = sets.map((set) => ({
     value: String(set.id),
-    label: `${set.name} · ${set.targetCount} target${set.targetCount === 1 ? "" : "s"}${
-      set.hasProduction ? " · prod" : ""
-    }`,
+    label: setOptionLabel(set, ranAgo(set.lastRunAt)),
   }));
+
+  // One sentence under the bar, the one that matters most right now.
+  let note: { text: string; tone: "error" | "warn" | "quiet" } | null = null;
+  if (error) {
+    note = { text: error, tone: "error" };
+  } else if (activeSet?.hasMissingConnection) {
+    note = {
+      text: canEdit
+        ? "A connection this set used has been deleted. Pick a replacement below, press Compare, then Update the set."
+        : "A connection this set used has been deleted. An editor can pick a replacement and update the set.",
+      tone: "warn",
+    };
+  } else if (canEdit && hasUnappliedChanges) {
+    note = {
+      text: "Press Compare first — Save stores the selection as the page last loaded it, and your latest changes are not in it yet.",
+      tone: "warn",
+    };
+  } else if (modified) {
+    note = {
+      text: canEdit
+        ? "Changed since it was saved — press Update to keep it, or reopen the set to go back."
+        : "Changed since it was saved — reopen the set to go back.",
+      tone: "quiet",
+    };
+  } else if (!loading && !canEdit) {
+    note = { text: "Only editors can save or delete comparison sets.", tone: "quiet" };
+  }
+
+  const saveLabel =
+    busy === "save" ? "Saving…" : saveButtonLabel(activeSet?.name ?? null, name);
+
+  // Update with nothing changed would only write the set back as it is. The
+  // name test is exact, so correcting a set's capitals still counts.
+  const nothingToUpdate =
+    activeSet !== null && !modified && name.trim() === activeSet.name;
 
   return (
     <div className="set-bar">
@@ -198,81 +312,86 @@ export function ComparisonSetBar({
         <span className="set-bar__label">Saved sets</span>
         {sets.length === 0 ? (
           <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
-            None yet — set up a comparison below, then name it and save it.
+            {canEdit
+              ? "None yet — set up a comparison below, then name it and save it."
+              : "None saved yet."}
           </span>
         ) : (
-          <>
-            <Select
-              value={activeSet ? String(activeSet.id) : ""}
-              options={options}
-              onChange={open}
-              placeholder="Open a saved set…"
-              variant="input"
-              ariaLabel="Open a saved comparison set"
-            />
-            {activeSet && (
-              <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                {ranAgo(activeSet.lastRunAt)}
-              </span>
-            )}
-          </>
+          // The open set's last run is already in its label, so it is not
+          // repeated beside the picker.
+          <Select
+            value={activeSet ? String(activeSet.id) : ""}
+            options={options}
+            onChange={open}
+            placeholder="Open a saved set…"
+            variant="input"
+            ariaLabel="Open a saved comparison set"
+          />
         )}
       </div>
 
-      {canSave && (
-        <div className="set-bar__side set-bar__side--end">
-          <Input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Name this comparison…"
-            aria-label="Comparison set name"
-            maxLength={60}
-          />
+      <div className="set-bar__side set-bar__side--end">
+        <Input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="Name this comparison…"
+          aria-label="Comparison set name"
+          maxLength={MAX_NAME_LENGTH}
+          disabled={!canEdit}
+        />
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => void save()}
+          disabled={busy !== null || hasUnappliedChanges || !canEdit || nothingToUpdate}
+          title={
+            !canEdit
+              ? "Only editors can save comparison sets"
+              : hasUnappliedChanges
+                ? "Press Compare first"
+                : nothingToUpdate
+                  ? "Nothing to update — this is the comparison the set already holds"
+                  : undefined
+          }
+        >
+          {saveLabel}
+        </button>
+        {activeSet && canEdit && (
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => void save()}
+            className="btn btn-ghost btn-icon"
+            onClick={() => void remove()}
             disabled={busy !== null}
+            title={`Delete "${activeSet.name}"`}
+            aria-label={`Delete the set "${activeSet.name}"`}
           >
-            {busy === "save" ? "Saving…" : activeSet && name.trim() === activeSet.name ? "Update" : "Save"}
+            <TrashIcon size={14} />
           </button>
-          {activeSet && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-icon"
-              onClick={() => void remove()}
-              disabled={busy !== null}
-              title={`Delete "${activeSet.name}"`}
-              aria-label={`Delete the set "${activeSet.name}"`}
-            >
-              <TrashIcon size={14} />
-            </button>
-          )}
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Three states worth a sentence, in order of how much they matter. */}
-      {error && (
-        <div className="set-bar__note" style={{ color: "var(--break)" }}>
-          {error}
+      {note && (
+        <div
+          className="set-bar__note"
+          role={note.tone === "error" ? "alert" : undefined}
+          style={{
+            color:
+              note.tone === "error"
+                ? "var(--break)"
+                : note.tone === "warn"
+                  ? "var(--drift)"
+                  : "var(--text-3)",
+          }}
+        >
+          {note.tone === "warn" && <AlertTriangleIcon size={12} />}
+          {note.text}
         </div>
       )}
-      {!error && activeSet?.hasMissingConnection && (
-        <div className="set-bar__note" style={{ color: "var(--drift)" }}>
-          <AlertTriangleIcon size={12} />
-          A connection this set used has been deleted. Pick a replacement below,
-          then Update the set.
-        </div>
-      )}
-      {!error && !activeSet?.hasMissingConnection && modified && (
-        <div className="set-bar__note" style={{ color: "var(--text-3)" }}>
-          Changed since it was saved — press Update to keep it, or reopen the set
-          to go back.
-        </div>
-      )}
-      {!error && saved && (
-        <div className="set-bar__note" style={{ color: "var(--text-3)" }}>
-          {saved}
+      {/* Once the comparison is changed again, the confirmation no longer
+          describes the screen — the note about the change says more. */}
+      {!error && done && !hasUnappliedChanges && !modified && (
+        <div className="set-bar__note" role="status" style={{ color: "var(--text-3)" }}>
+          {done}
         </div>
       )}
     </div>

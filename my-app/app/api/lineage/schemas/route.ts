@@ -8,9 +8,11 @@ import { fetchSchemaNames } from "@/lib/postgres";
  * GET /api/lineage/schemas?connectionId=<id>
  *
  * List the schemas on a saved connection so the "Track a schema" flow can offer
- * a dropdown. Reads the connection from the same metadata pool the rest of the
- * lineage feature uses (so it stays consistent with /api/lineage/track), then
- * lists schemas SSL-aware via the shared introspection helper.
+ * a dropdown. Compare's pickers call it too, to refill a schema box the moment
+ * its connection changes. Reads the connection from the same metadata pool the
+ * rest of the lineage feature uses (so it stays consistent with
+ * /api/lineage/track), then lists schemas SSL-aware via the shared
+ * introspection helper — the same one Compare uses, so both show one list.
  *
  * Returns: { schemas: string[] } on success, or { error } with a 4xx/5xx.
  */

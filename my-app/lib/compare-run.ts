@@ -26,12 +26,7 @@ import {
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
-import {
-  fetchSchemaNames,
-  fetchSchemaSnapshot,
-  resolveCompareTargets,
-  POOL_MAX,
-} from "@/lib/postgres";
+import { fetchSchemaNames, fetchSchemaSnapshot, POOL_MAX } from "@/lib/postgres";
 import { mapWithLimit } from "@/lib/concurrency";
 import { compareSchemas, type CompareReport } from "@/lib/compare";
 import { compareRowData, type DataCompareReport } from "@/lib/compare-data";
@@ -59,13 +54,17 @@ import type { ChangeKind } from "@/components/studio/MigrationWorkbench";
 import {
   listComparisonSets,
   markComparisonSetRun,
-  MAX_COMPARISON_TARGETS,
   type ComparisonSet,
 } from "@/lib/comparison-sets";
-import type {
-  ComparisonSetOption,
-  CurrentSelection,
-} from "@/components/studio/ComparisonSetBar";
+import { matchesSet, MAX_COMPARISON_TARGETS } from "@/lib/comparison-set-rules";
+import {
+  databaseIdentity,
+  findDuplicateTargets,
+  missingConnectionMessage,
+  missingSourceMessage,
+  type CurrentSelection,
+} from "@/lib/compare-selection";
+import type { ComparisonSetOption } from "@/components/studio/ComparisonSetBar";
 
 /**
  * How many targets one comparison may hold.
@@ -75,8 +74,9 @@ import type {
  * readable long before the queries become slow. Saved comparison sets are the
  * answer to "I have twenty databases", not a taller page.
  *
- * The number itself lives in lib/comparison-sets because the save endpoint
- * enforces it too, and a limit only one of them knows about is not a limit.
+ * The number itself lives in lib/comparison-set-rules because the save
+ * endpoint enforces it too, and a limit only one of them knows about is not a
+ * limit.
  */
 const MAX_TARGETS = MAX_COMPARISON_TARGETS;
 
@@ -116,12 +116,18 @@ export type ConnectionView = {
 /** One target row in the picker bar. */
 export type TargetSlotView = {
   index: number;
+  /** Null when this target has no saved connection — never picked, or deleted. */
   connectionId: number | null;
-  /** "Name (database)" — what the picker prints for a fixed .env target. */
+  /**
+   * "Name (database)", or — for a connection that has been deleted — the name
+   * a saved set remembers for it, so the reader can tell which one is gone.
+   */
   displayName: string;
   schema: string;
   schemaOptions: string[];
   environment: Environment;
+  /** Why this target has no connection to read, or null when it has one. */
+  missingMessage: string | null;
 };
 
 /** The source row in the picker bar. */
@@ -137,11 +143,17 @@ export type SourceView = {
    * there — in which case `sourceError` is the thing to read.
    */
   detectedVersion: DetectedVersion | null;
+  /**
+   * Why the source has no connection to read — never picked, or deleted since
+   * a saved set was made — or null when it has one. Nothing is compared while
+   * this is set: a stand-in database compared under the source's name would be
+   * a result for a pair nobody chose.
+   */
+  missingMessage: string | null;
 };
 
 /** One target's finished comparison, with the connection details removed. */
-export type OutcomeView = Omit<TargetOutcome, "connection" | "target"> & {
-  displayName: string;
+export type OutcomeView = Omit<TargetOutcome, "connection"> & {
   /**
    * The database this target lives in, so a generated script can be named
    * after it. The report already carries a database name, but a connection
@@ -152,19 +164,19 @@ export type OutcomeView = Omit<TargetOutcome, "connection" | "target"> & {
 
 /** The whole screen in one value. */
 export type CompareScreen =
-  | {
-      kind: "no-connections";
-      /** Why the .env fallback pair could not be used either, if it could not. */
-      resolveError: string | null;
-    }
+  | { kind: "no-connections" }
   | {
       kind: "ready";
       connections: ConnectionView[];
-      usingEnvFallback: boolean;
       canAddTarget: boolean;
       maxTargets: number;
       sets: ComparisonSetOption[];
       activeSetId: number | null;
+      /**
+       * The URL named a saved set that no longer exists. Nothing is run — the
+       * link promised that set, and the default pickers are not it.
+       */
+      setNotFound: boolean;
       setModified: boolean;
       selection: CurrentSelection;
       source: SourceView;
@@ -174,10 +186,11 @@ export type CompareScreen =
       allowDataLoss: boolean;
       compareData: boolean;
       /**
-       * Whether somebody actually asked for this comparison — the Compare
-       * button, a saved set, or a deep link that names a target. False on a
-       * bare /compare, where the pickers hold defaults nobody chose and
-       * `outcomes` is deliberately empty.
+       * Whether somebody actually asked for this comparison: `run=1`, which
+       * the Compare button, a saved set and the links from the dashboard,
+       * Drift and a schema's page all send. False on a bare /compare and after
+       * Add target or Remove — the pickers changed, nobody pressed Compare,
+       * and `outcomes` is deliberately empty.
        */
       asked: boolean;
     };
@@ -192,12 +205,12 @@ function toConnectionView(connection: SavedConnection): ConnectionView {
 }
 
 function toOutcomeView(outcome: TargetOutcome): OutcomeView {
-  // Pulled apart by name rather than spread-and-delete so a field added to
-  // TargetOutcome later cannot reach the browser by accident.
-  const { connection, target, ...rest } = outcome;
+  // The saved connection carries the host, user and password, so it is taken
+  // out by name before anything is sent. Everything else in TargetOutcome
+  // travels to the browser — keep credentials out of it.
+  const { connection, ...rest } = outcome;
   return {
     ...rest,
-    displayName: target.displayName,
     connectionDatabase: connection ? connection.database_name : null,
   };
 }
@@ -237,9 +250,9 @@ type SavedConnection = {
 };
 
 // ---------------------------------------------------------------------------
-// Engine plumbing. The compare itself (form-GET selection, env fallbacks,
-// snapshot fetch, diff) is correctness-critical, so it is unchanged from the
-// two-sided version — it simply runs once per target now instead of once.
+// Engine plumbing: the saved connections and sets this screen reads, and the
+// small helpers that turn a saved connection and a query string into
+// something the comparison below can use.
 // ---------------------------------------------------------------------------
 
 async function getSavedConnections(): Promise<SavedConnection[]> {
@@ -258,8 +271,10 @@ async function getSavedConnections(): Promise<SavedConnection[]> {
 
     return result.rows;
   } catch (error) {
+    // Not swallowed. An empty list here would tell the reader to go and add a
+    // connection they already have; failing says what is actually wrong.
     console.error("Failed to load saved connections:", error);
-    return [];
+    throw error;
   }
 }
 
@@ -277,27 +292,6 @@ async function getComparisonSets(): Promise<ComparisonSet[]> {
     console.error("Failed to read comparison sets:", error);
     return [];
   }
-}
-
-/**
- * Does the selection on screen still match the set it was opened from?
- *
- * Used only to decide whether to say "changed since it was saved". Order
- * matters: a set is an ordered list of targets, and swapping target 1 and
- * target 2 swaps which migration appears first on the page.
- */
-function matchesSet(set: ComparisonSet, selection: CurrentSelection): boolean {
-  return (
-    set.sourceConnectionId === selection.sourceConnectionId &&
-    set.sourceSchema === selection.sourceSchema &&
-    set.allowDataLoss === selection.allowDataLoss &&
-    set.targets.length === selection.targets.length &&
-    set.targets.every(
-      (target, index) =>
-        target.connectionId === selection.targets[index].connectionId &&
-        target.schema === selection.targets[index].schema,
-    )
-  );
 }
 
 function buildTargetFromConnection(
@@ -326,11 +320,6 @@ function buildTargetFromConnection(
   };
 }
 
-function envValue(name: string, fallback: string): string {
-  const value = process.env[name]?.trim();
-  return value && value.length > 0 ? value : fallback;
-}
-
 function pickValue(
   value: string | string[] | undefined,
   fallback: string,
@@ -350,15 +339,25 @@ function pickValue(
  * &targetConnection=7` is how "two targets" is spelled in the URL — and because
  * the connection and schema selects are rendered in step, index i of one list
  * always belongs with index i of the other.
+ *
+ * An empty value is kept, not dropped: `targetConnection=` is how the form
+ * spells "this target has no connection", and dropping it would shift every
+ * later target onto the wrong schema.
  */
-function pickList(value: string | string[] | undefined): string[] {
-  if (typeof value === "string") {
-    return value.trim().length > 0 ? [value.trim()] : [];
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => entry.trim());
-  }
-  return [];
+function paramList(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  return (Array.isArray(value) ? value : [value]).map((entry) => entry.trim());
+}
+
+/**
+ * The first value of a parameter, "" when it is present but empty, and
+ * undefined only when it is absent. Unlike pickValue, "present but empty" is
+ * an answer: the source picker sends it when no connection is picked, and
+ * filling that in with a default would compare a database nobody chose.
+ */
+function firstParam(value: string | string[] | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return (Array.isArray(value) ? (value[0] ?? "") : value).trim();
 }
 
 /**
@@ -422,12 +421,15 @@ type TargetOutcome = {
   /** Position in the form. Also what the "remove" button submits. */
   index: number;
   connection: SavedConnection | null;
-  target: CompareTarget;
+  /** "Name (database)", or the remembered name of a deleted connection. */
+  displayName: string;
   schema: string;
   schemaOptions: string[];
   environment: Environment;
   /**
    * The target names the same database AND the same schema as the source.
+   * "Same database" is the same host, port and database name — not the same
+   * saved entry, since two entries for one database are still one database.
    *
    * Comparing a schema with itself always answers "identical", and rendering
    * that as a report — 0 changes, 0 tables, everything in sync — reads as a
@@ -447,8 +449,16 @@ type TargetOutcome = {
    * every one of them as "unreachable" — including a server that answered
    * perfectly well and simply has no schema by that name, and including a
    * target compared with itself, which was never dialled at all.
+   *
+   * "duplicate" is a target that repeats an earlier one, and "no-connection"
+   * one whose saved connection is gone or was never picked. Neither is dialled.
    */
-  failure: "unreachable" | "schema-missing" | null;
+  failure: "unreachable" | "schema-missing" | "duplicate" | "no-connection" | null;
+  /**
+   * The index of the earlier target this one repeats — same database, same
+   * schema — or null. Its report would be a copy of that one's.
+   */
+  duplicateOf: number | null;
   delta: ReturnType<typeof tallyDelta> | null;
   sqlText: string;
   rollbackText: string;
@@ -481,14 +491,6 @@ type TargetOutcome = {
 };
 
 /**
- * Diff one target against the already-loaded source snapshot and derive
- * everything the report and the workbench need.
- *
- * The source snapshot is passed in rather than fetched here on purpose: it is
- * identical for every target, so reading it once and reusing it turns an N-way
- * compare into N+1 introspections instead of 2N.
- */
-/**
  * Count a script's statements by severity.
  *
  * Shared by the migration and its rollback because the two do not grade alike —
@@ -507,6 +509,14 @@ function tallySeverities(statements: SqlStatement[]): {
   };
 }
 
+/**
+ * Diff one target against the already-loaded source snapshot and derive
+ * everything the report and the workbench need.
+ *
+ * The source snapshot is passed in rather than fetched here on purpose: it is
+ * identical for every target, so reading it once and reusing it turns an N-way
+ * compare into N+1 introspections instead of 2N.
+ */
 async function compareOneTarget(
   source: {
     snapshot: SchemaSnapshot;
@@ -517,11 +527,16 @@ async function compareOneTarget(
   slot: {
     index: number;
     connection: SavedConnection | null;
-    target: CompareTarget;
+    /** Null when the target has no saved connection; `missingMessage` says why. */
+    target: CompareTarget | null;
+    displayName: string;
+    missingMessage: string | null;
     schema: string;
     schemaOptions: string[];
     schemaListError: string | null;
-    onSourceConnection: boolean;
+    /** Same host, port and database as the source — see databaseIdentity. */
+    onSourceDatabase: boolean;
+    duplicateOf: number | null;
   },
   head: TrackedSchemaHead | null,
   allowDataLoss: boolean,
@@ -532,7 +547,8 @@ async function compareOneTarget(
   const empty = {
     index: slot.index,
     connection: slot.connection,
-    target: slot.target,
+    displayName: slot.displayName,
+    duplicateOf: slot.duplicateOf,
     schema: slot.schema,
     schemaOptions: slot.schemaOptions,
     sameAsSource: false,
@@ -557,11 +573,36 @@ async function compareOneTarget(
     versionVerdict: null,
   };
 
+  // Nothing to dial. The message says whether the connection was deleted or
+  // never picked, and the target keeps its place so the reader can fix it —
+  // it is never quietly pointed at some other database instead.
+  if (!slot.target) {
+    return {
+      ...empty,
+      environment: connectionEnvironment,
+      failure: "no-connection",
+      error: slot.missingMessage,
+    };
+  }
+  const target = slot.target;
+
   // Asked before anything is read. A schema against itself has no answer worth
   // fetching, and the "0 changes" it would produce is the one result on this
   // screen a reader can act on wrongly — it looks like two databases agreeing.
-  if (slot.onSourceConnection && slot.schema === source.schema) {
+  if (slot.onSourceDatabase && slot.schema === source.schema) {
     return { ...empty, sameAsSource: true, environment: connectionEnvironment, error: null };
+  }
+
+  // A repeat of an earlier target would be the same report twice — and, with
+  // row data ticked, the same tables read twice. Point at the first instead.
+  if (slot.duplicateOf !== null) {
+    const first = slot.duplicateOf + 1;
+    return {
+      ...empty,
+      environment: connectionEnvironment,
+      failure: "duplicate",
+      error: `Same database and schema as target ${first}, so it is not compared a second time — see target ${first} above.`,
+    };
   }
 
   if (slot.schemaListError) {
@@ -571,7 +612,7 @@ async function compareOneTarget(
       ...empty,
       environment: connectionEnvironment,
       failure: "unreachable",
-      error: `Could not reach ${slot.target.displayName}: ${slot.schemaListError}`,
+      error: `Could not reach ${slot.displayName}: ${slot.schemaListError}`,
     };
   }
   if (slot.schemaOptions.length > 0 && !slot.schemaOptions.includes(slot.schema)) {
@@ -581,14 +622,14 @@ async function compareOneTarget(
       ...empty,
       environment: connectionEnvironment,
       failure: "schema-missing",
-      error: `Schema ${slot.schema} was not found in ${slot.target.displayName}.`,
+      error: `Schema ${slot.schema} was not found in ${slot.displayName}.`,
     };
   }
 
   // The lineage head — the schema's own environment label and its current
   // version — was resolved for every target in one query before this fan-out
   // started, so all that is left here is the target database itself.
-  const snapshot = await fetchSchemaSnapshot(slot.target.config, slot.schema);
+  const snapshot = await fetchSchemaSnapshot(target.config, slot.schema);
 
   const environment = louderEnvironment(
     connectionEnvironment,
@@ -600,7 +641,7 @@ async function compareOneTarget(
       ...empty,
       environment,
       failure: "unreachable",
-      error: `Could not load ${slot.target.displayName}.${slot.schema}: ${snapshot.error}`,
+      error: `Could not load ${target.displayName}.${slot.schema}: ${snapshot.error}`,
     };
   }
 
@@ -608,7 +649,7 @@ async function compareOneTarget(
   // snapshot rather than beside it — same database, and the snapshot already
   // holds a connection, so racing them would only ask the target for two at
   // once to save a few milliseconds.
-  const versionInfo = await fetchSchemaVersionInfo(slot.target.config, slot.schema);
+  const versionInfo = await fetchSchemaVersionInfo(target.config, slot.schema);
   const versionVerdict = determineNewerSchema(source.versionInfo, versionInfo);
 
   const report = compareSchemas(source.snapshot, snapshot.data);
@@ -621,7 +662,7 @@ async function compareOneTarget(
     ? await compareRowData(
         report,
         { config: source.config, schema: source.schema },
-        { config: slot.target.config, schema: slot.schema },
+        { config: target.config, schema: slot.schema },
       )
     : null;
 
@@ -689,11 +730,10 @@ async function compareOneTarget(
 /**
  * Run one comparison and return everything the screen draws.
  *
- * `record` is what writes a row per compared pair into the comparison history,
- * and it is a parameter rather than a query flag on purpose: the screen used to
- * be a server component whose GET wrote those rows, so every reload and every
- * shared link recorded a run that nobody performed. Only the POST asks for it
- * now.
+ * `record` stamps the open saved set's "last run" time, and only the screen's
+ * POST passes it. It is a parameter rather than a query flag on purpose: the
+ * screen used to be a server component whose GET wrote to the database, so
+ * every reload and every shared link counted as a run nobody performed.
  */
 export async function runComparison(
   query: URLSearchParams,
@@ -704,61 +744,77 @@ export async function runComparison(
     getSavedConnections(),
     getComparisonSets(),
   ]);
-  const resolved = resolveCompareTargets();
-
-  // With no saved connections at all we fall back to the .env pair, which is
-  // fixed at one source and one target — there is nothing to add a target from.
-  const envTargets = resolved.ok ? resolved.targets : [];
-  const usingEnvFallback = savedConnections.length === 0 && envTargets.length >= 2;
 
   // Nothing to compare with: point at Connections rather than rendering an
   // empty form that cannot do anything.
-  if (savedConnections.length === 0 && !usingEnvFallback) {
-    return { kind: "no-connections", resolveError: resolved.ok ? null : resolved.error };
+  if (savedConnections.length === 0) {
+    return { kind: "no-connections" };
   }
 
   // -------------------------------------------------------------------------
   // Selection. `source*` / `target*` are the current parameter names; the older
-  // `left*` / `right*` pair is still honoured because every deep link into this
-  // page from the dashboard, Drift and a schema's detail page uses it.
+  // `left*` / `right*` pair is still honoured so links written before the
+  // rename keep working.
   // -------------------------------------------------------------------------
-  const defaultConnectionId = savedConnections[0]?.id
-    ? String(savedConnections[0].id)
-    : "";
+  const defaultConnectionId = String(savedConnections[0].id);
 
   // `?set=<id>` opens a saved comparison. It only seeds the pickers: the moment
   // the form is submitted the selects send real values, and those win. A set
   // that kept overriding them would make the page impossible to edit — you
   // would change a dropdown, press Compare, and watch it snap back.
+  const requestedSetId = pickValue(params.set, "");
   const activeSet =
-    savedSets.find((set) => String(set.id) === pickValue(params.set, "")) ?? null;
+    savedSets.find((set) => String(set.id) === requestedSetId) ?? null;
 
-  const requestedTargetConnections = pickList(
+  const requestedTargetConnections = paramList(
     params.targetConnection ?? params.rightConnection,
   );
-  const requestedTargetSchemas = pickList(params.targetSchema ?? params.rightSchema);
-  const hasExplicitTargets =
-    requestedTargetConnections.length > 0 || requestedTargetSchemas.length > 0;
+  const requestedTargetSchemas = paramList(params.targetSchema ?? params.rightSchema);
+  // Present at all, even empty. The form always sends these, so their presence
+  // is what says "the pickers were submitted" rather than "a set was opened".
+  const hasExplicitTargets = [
+    params.targetConnection,
+    params.rightConnection,
+    params.targetSchema,
+    params.rightSchema,
+  ].some((value) => value !== undefined);
+
+  // A saved-set link whose set has since been deleted. Running it would compare
+  // whatever the pickers default to, under a link that promised something else,
+  // so it only fills the pickers and the screen says why.
+  const setNotFound = requestedSetId !== "" && activeSet === null;
 
   // Did anybody actually ask for this comparison?
   //
-  // A migration generated for a pair nobody chose reads as a recommendation.
-  // Opening a bare /compare used to introspect two live databases picked by
-  // default and lay a script under them. `run=1` is what the Compare button
-  // and every saved-set link add; the deep links from the dashboard, Drift and
-  // a schema's detail page name a target instead, which is a choice too.
-  const asked = pickValue(params.run, "") === "1" || hasExplicitTargets;
+  // A migration generated for a pair nobody chose reads as a recommendation, so
+  // only `run=1` runs one. The Compare button sends it, and so do saved-set
+  // links and the links from the dashboard, Drift and a schema's page. Add
+  // target and Remove do not: they change the pickers, and nobody has pressed
+  // Compare on the result yet.
+  const asked =
+    pickValue(params.run, "") === "1" && !(setNotFound && !hasExplicitTargets);
 
-  const sourceConnectionId = pickValue(
-    params.sourceConnection ?? params.leftConnection,
-    activeSet?.sourceConnectionId
-      ? String(activeSet.sourceConnectionId)
-      : defaultConnectionId,
-  );
+  // The source as the URL names it. Present but empty means the picker was
+  // submitted with nothing chosen, and that stays "no source" — it is not
+  // quietly replaced with the first connection.
+  const requestedSource = firstParam(params.sourceConnection ?? params.leftConnection);
+  const sourceConnectionId =
+    requestedSource ??
+    (activeSet
+      ? activeSet.sourceConnectionId === null
+        ? ""
+        : String(activeSet.sourceConnectionId)
+      : defaultConnectionId);
+  // The name a saved set remembers for a source that has since been deleted,
+  // so the screen can say which one is gone.
+  const sourceMissingLabel =
+    activeSet && activeSet.sourceConnectionId === null && sourceConnectionId === ""
+      ? activeSet.sourceConnectionLabel
+      : null;
 
   /**
-   * What an unconfigured target falls back to — a fresh "Add target", or a slot
-   * in a saved set whose connection has since been deleted.
+   * What a fresh Add target — or the first target on a bare /compare — starts
+   * on.
    *
    * Ordered by environment, not alphabetically. This used to be "the second
    * connection by name", which on this very fixture data meant a blank target
@@ -781,25 +837,34 @@ export async function runComparison(
     ? String(defaultTargetConnection.id)
     : defaultConnectionId;
 
-  // Pair the two lists by index. Length is taken from the longer of them: in
-  // the .env fallback there is no connection picker to submit, so the schemas
-  // arrive on their own and would otherwise be thrown away.
+  /** One target as the URL or the saved set describes it, before any lookup. */
+  type Slot = {
+    connectionId: string;
+    schema: string;
+    /** The name a saved set remembers for a connection that was deleted. */
+    missingLabel: string | null;
+  };
+
+  // Pair the two lists by index. Length is taken from the longer of them, so a
+  // target whose connection is missing from the URL still keeps its schema.
   const slotCount = Math.max(
     requestedTargetConnections.length,
     requestedTargetSchemas.length,
   );
-  let slots = hasExplicitTargets
+  let slots: Slot[] = hasExplicitTargets
     ? Array.from({ length: slotCount }, (_, index) => ({
         connectionId: requestedTargetConnections[index] ?? "",
         schema: requestedTargetSchemas[index] ?? "",
+        missingLabel: null,
       }))
-    : (activeSet?.targets ?? []).map((target) => ({
-        // A deleted connection leaves the slot blank, which falls through to
-        // the default below — the set keeps its shape and the user picks a
-        // replacement, instead of the target vanishing without explanation.
-        connectionId: target.connectionId ? String(target.connectionId) : "",
-        schema: target.schema,
-      }));
+    : (activeSet?.targets ?? []).map((target) =>
+        // A deleted connection keeps its place, empty, under the name the set
+        // remembers. It is never moved onto another database: the reader sees
+        // which one is gone and picks the replacement.
+        target.connectionId === null
+          ? { connectionId: "", schema: target.schema, missingLabel: target.connectionLabel }
+          : { connectionId: String(target.connectionId), schema: target.schema, missingLabel: null },
+      );
 
   // "Remove" submits the index it sits on. The last target is never removable —
   // a comparison with no targets is not a comparison.
@@ -813,56 +878,65 @@ export async function runComparison(
     slots = slots.filter((_, index) => index !== removeIndex);
   }
 
-  // "Add target" appends an unconfigured slot, which then falls back to the
-  // default connection and that connection's first schema.
+  // "Add target" appends a target on the default connection, with that
+  // connection's default schema.
   if (pickValue(params.addTarget, "") === "1" && slots.length < MAX_TARGETS) {
-    slots.push({ connectionId: "", schema: "" });
+    slots.push({ connectionId: defaultTargetConnectionId, schema: "", missingLabel: null });
   }
 
   if (slots.length === 0) {
-    slots = [{ connectionId: "", schema: "" }];
+    slots = [{ connectionId: defaultTargetConnectionId, schema: "", missingLabel: null }];
   }
   slots = slots.slice(0, MAX_TARGETS);
 
+  // No fallbacks. A connection that is not there is reported as missing; a
+  // stand-in compared under its name would be a result for a pair nobody chose.
   const findConnection = (id: string) =>
-    savedConnections.find((connection) => String(connection.id) === id) ?? null;
+    id === ""
+      ? null
+      : savedConnections.find((connection) => String(connection.id) === id) ?? null;
 
-  const sourceConnection = usingEnvFallback
-    ? null
-    : findConnection(sourceConnectionId) ?? savedConnections[0] ?? null;
-
-  const sourceTarget: CompareTarget = sourceConnection
+  const sourceConnection = findConnection(sourceConnectionId);
+  const sourceTarget = sourceConnection
     ? buildTargetFromConnection(sourceConnection, "source")
-    : envTargets[0];
+    : null;
+  const sourceMissingMessage = sourceConnection
+    ? null
+    : missingSourceMessage(sourceConnectionId, sourceMissingLabel);
 
   const targetSlots = slots.map((slot, index) => {
-    const connection = usingEnvFallback
-      ? null
-      : findConnection(slot.connectionId) ??
-        findConnection(defaultTargetConnectionId) ??
-        savedConnections[0] ??
-        null;
+    const connection = findConnection(slot.connectionId);
+    const target = connection
+      ? buildTargetFromConnection(connection, `target-${index}`)
+      : null;
     return {
       index,
       connection,
+      target,
       requestedSchema: slot.schema,
-      target: connection
-        ? buildTargetFromConnection(connection, `target-${index}`)
-        : envTargets[1],
+      missingLabel: slot.missingLabel,
+      displayName: target ? target.displayName : slot.missingLabel || "No connection",
+      missingMessage: connection
+        ? null
+        : missingConnectionMessage(slot.connectionId, slot.missingLabel),
     };
   });
 
   // -------------------------------------------------------------------------
   // Schema lists. Two targets on the same connection ask the same question, so
-  // look each distinct database up once and share the answer.
+  // look each connection up once and share the answer. A side with no
+  // connection has nothing to ask.
   // -------------------------------------------------------------------------
   const configsByKey = new Map<string, CompareTarget>();
-  const keyFor = (connection: SavedConnection | null, target: CompareTarget) =>
-    connection ? `conn:${connection.id}` : `env:${target.id}`;
+  const keyFor = (connection: SavedConnection) => `conn:${connection.id}`;
 
-  configsByKey.set(keyFor(sourceConnection, sourceTarget), sourceTarget);
+  if (sourceConnection && sourceTarget) {
+    configsByKey.set(keyFor(sourceConnection), sourceTarget);
+  }
   for (const slot of targetSlots) {
-    configsByKey.set(keyFor(slot.connection, slot.target), slot.target);
+    if (slot.connection && slot.target) {
+      configsByKey.set(keyFor(slot.connection), slot.target);
+    }
   }
 
   const keys = [...configsByKey.keys()];
@@ -871,8 +945,8 @@ export async function runComparison(
   );
   const schemaLists = new Map(keys.map((key, i) => [key, schemaResults[i]]));
 
-  function schemasFor(connection: SavedConnection | null, target: CompareTarget) {
-    const result = schemaLists.get(keyFor(connection, target));
+  function schemasFor(connection: SavedConnection | null) {
+    const result = connection ? schemaLists.get(keyFor(connection)) : undefined;
     if (!result) return { options: [] as string[], error: null as string | null };
     return result.ok
       ? { options: result.data, error: null }
@@ -880,10 +954,10 @@ export async function runComparison(
   }
 
   /**
-   * Prefer what was asked for, then the configured default, then whatever exists.
+   * Prefer what was asked for, then `public`, then whatever exists.
    *
    * `avoid` names a schema this side should not land on by accident — the
-   * source's, when the target sits on the same connection. Without it a project
+   * source's, when the target is on the same database. Without it a project
    * with one saved connection opened Compare with both sides defaulted to the
    * same schema and rendered "0 changes · 0 tables", which reads as a finding
    * about two databases rather than what it was: the tool comparing something
@@ -891,80 +965,95 @@ export async function runComparison(
    * explicitly requested schema is always honoured, including when it is the
    * same on both sides, because that is then a choice somebody made.
    */
-  function resolveSchema(
-    requested: string,
-    options: string[],
-    envName: string,
-    avoid?: string,
-  ): string {
+  function resolveSchema(requested: string, options: string[], avoid?: string): string {
     if (requested.length > 0) return requested;
-    const preferred = envValue(envName, "public");
     const candidates =
       avoid === undefined ? options : options.filter((schema) => schema !== avoid);
     return (
-      candidates.find((schema) => schema === preferred) ??
+      candidates.find((schema) => schema === "public") ??
       candidates[0] ??
       options[0] ??
-      preferred
+      "public"
     );
   }
 
-  const sourceSchemaInfo = schemasFor(sourceConnection, sourceTarget);
-  const sourceSchema = resolveSchema(
-    pickValue(params.sourceSchema ?? params.leftSchema, activeSet?.sourceSchema ?? ""),
-    sourceSchemaInfo.options,
-    "COMPARE_SCHEMA_A",
-  );
+  const requestedSourceSchema =
+    firstParam(params.sourceSchema ?? params.leftSchema) ?? activeSet?.sourceSchema ?? "";
+  const sourceSchemaInfo = schemasFor(sourceConnection);
+  // A missing source keeps the schema it asked for, so picking a connection
+  // again does not also lose the schema.
+  const sourceSchema = sourceTarget
+    ? resolveSchema(requestedSourceSchema, sourceSchemaInfo.options)
+    : requestedSourceSchema;
   const sourceEnvironment = toEnvironment(sourceConnection?.environment);
+  // Same host, port and database name — not the same saved entry, since two
+  // entries for one database are still one database. See databaseIdentity.
+  const sourceIdentity = sourceTarget ? databaseIdentity(sourceTarget.config) : null;
 
   const resolvedTargets = targetSlots.map((slot) => {
-    const info = schemasFor(slot.connection, slot.target);
+    const info = schemasFor(slot.connection);
     // Only a target on the SAME database has the source's schema to avoid. On a
     // different one, a schema of the same name is a perfectly ordinary thing to
     // compare — dev.public against prod.public is the tool's whole point.
-    const onSourceConnection =
-      keyFor(slot.connection, slot.target) === keyFor(sourceConnection, sourceTarget);
+    const onSourceDatabase =
+      slot.target !== null &&
+      sourceIdentity !== null &&
+      databaseIdentity(slot.target.config) === sourceIdentity;
     return {
       ...slot,
       schemaOptions: info.options,
       schemaListError: info.error,
-      schema: resolveSchema(
-        slot.requestedSchema,
-        info.options,
-        "COMPARE_SCHEMA_B",
-        onSourceConnection ? sourceSchema : undefined,
-      ),
-      onSourceConnection,
+      schema: slot.target
+        ? resolveSchema(
+            slot.requestedSchema,
+            info.options,
+            onSourceDatabase ? sourceSchema : undefined,
+          )
+        : slot.requestedSchema,
+      onSourceDatabase,
     };
   });
 
+  // A target that repeats an earlier one — same database, same schema — is
+  // compared once, under the first. A target that IS the source is left out:
+  // it already says so on its own, and repeats nothing.
+  const duplicateOf = findDuplicateTargets(
+    resolvedTargets.map((slot) =>
+      slot.target && !(slot.onSourceDatabase && slot.schema === sourceSchema)
+        ? `${databaseIdentity(slot.target.config)}|${slot.schema}`
+        : `skip:${slot.index}`,
+    ),
+  );
+
   // -------------------------------------------------------------------------
-  // The compare itself. One source snapshot, then every target in parallel —
-  // a slow or unreachable target holds up only its own section.
+  // The compare itself. One source snapshot, then every target — a slow or
+  // unreachable target holds up only its own section.
   // -------------------------------------------------------------------------
   // An unticked checkbox submits nothing, so "absent" cannot be told apart from
   // "never submitted". The same rule as the targets settles it: while the
-  // selection is still the set's, so is this; once the form has been submitted
-  // the checkbox is authoritative.
+  // selection is still the set's, so are these; once the form has been
+  // submitted the checkboxes are authoritative.
   const allowDataLoss =
     activeSet && !hasExplicitTargets
       ? activeSet.allowDataLoss
       : pickValue(params.allowDataLoss, "") === "1";
+  const compareData =
+    activeSet && !hasExplicitTargets
+      ? activeSet.compareData
+      : pickValue(params.compareData, "") === "1";
 
-  // Row comparison is per-run and never remembered in a saved set: reading a
-  // production table is a decision worth taking again each time, not one a set
-  // loaded from a dropdown can make on the reader's behalf.
-  const compareData = pickValue(params.compareData, "") === "1";
-
-  let sourceError: string | null = sourceSchemaInfo.error
-    ? `Could not reach ${sourceTarget.displayName}: ${sourceSchemaInfo.error}`
-    : null;
-  if (
-    !sourceError &&
-    sourceSchemaInfo.options.length > 0 &&
-    !sourceSchemaInfo.options.includes(sourceSchema)
-  ) {
-    sourceError = `Schema ${sourceSchema} was not found in ${sourceTarget.displayName}.`;
+  // Only asked of a source that exists. A missing one has its own message,
+  // which says whether it was deleted or never picked.
+  let sourceError: string | null = null;
+  if (sourceTarget) {
+    if (sourceSchemaInfo.error) {
+      sourceError = `Could not reach ${sourceTarget.displayName}: ${sourceSchemaInfo.error}`;
+    } else if (
+      sourceSchemaInfo.options.length > 0 &&
+      !sourceSchemaInfo.options.includes(sourceSchema)
+    ) {
+      sourceError = `Schema ${sourceSchema} was not found in ${sourceTarget.displayName}.`;
+    }
   }
 
   let outcomes: TargetOutcome[] = [];
@@ -972,7 +1061,7 @@ export async function runComparison(
   // No outcomes without `asked`: the schema lists above are what the pickers
   // need, and going further would open both databases for a question nobody
   // put. The screen renders the pickers and says so.
-  if (!sourceError && asked) {
+  if (sourceTarget && !sourceError && asked) {
     const snapshot = await fetchSchemaSnapshot(sourceTarget.config, sourceSchema);
     if (!snapshot.ok) {
       sourceError = `Could not load ${sourceTarget.displayName}.${sourceSchema}: ${snapshot.error}`;
@@ -1007,7 +1096,7 @@ export async function runComparison(
               schema: sourceSchema,
               versionInfo: srcVersion,
             },
-            slot,
+            { ...slot, duplicateOf: duplicateOf[slot.index] },
             slot.connection
               ? heads.get(trackedSchemaKey(slot.connection.id, slot.schema)) ?? null
               : null,
@@ -1018,69 +1107,92 @@ export async function runComparison(
     }
   }
 
+  // What the Save button would write: exactly what is on screen right now,
+  // including a side whose connection is gone — null, under the name it had.
+  const selection: CurrentSelection = {
+    sourceConnectionId: sourceConnection ? sourceConnection.id : null,
+    sourceConnectionLabel: sourceTarget?.displayName ?? sourceMissingLabel ?? "",
+    sourceSchema,
+    allowDataLoss,
+    compareData,
+    targets: resolvedTargets.map((slot) => ({
+      connectionId: slot.connection ? slot.connection.id : null,
+      connectionLabel: slot.target ? slot.target.displayName : (slot.missingLabel ?? ""),
+      schema: slot.schema,
+    })),
+  };
+
+  // Compared with the set BEFORE the stamp below. A run only counts as running
+  // the set when it ran the set as saved: an edited selection is a different
+  // comparison, and stamping it would say the set still works when nobody ran
+  // the set.
+  const setModified = activeSet ? !matchesSet(activeSet, selection) : false;
+
   // The sets were read at the top of this render, before we knew whether the
   // comparison would work, so the stamp written below is not in them yet.
   let justRanAt: string | null = null;
 
   const comparedPairs = outcomes.filter((outcome) => outcome.report);
-  if (record && comparedPairs.length > 0) {
+  if (record && comparedPairs.length > 0 && activeSet && !setModified) {
     // A set nobody has run for months is usually a set pointing at a database
     // that no longer exists, so the picker shows when each one last ran.
-    if (activeSet) justRanAt = await markComparisonSetRun(activeSet.id);
+    justRanAt = await markComparisonSetRun(activeSet.id);
   }
 
-  const canAddTarget = !usingEnvFallback && resolvedTargets.length < MAX_TARGETS;
+  const canAddTarget = resolvedTargets.length < MAX_TARGETS;
 
-  // What the Save button would write: exactly what is on screen right now.
-  const selection: CurrentSelection = {
-    sourceConnectionId: sourceConnection ? sourceConnection.id : null,
-    sourceConnectionLabel: sourceTarget.displayName,
-    sourceSchema,
-    allowDataLoss,
-    targets: resolvedTargets.map((slot) => ({
-      connectionId: slot.connection ? slot.connection.id : null,
-      connectionLabel: slot.target.displayName,
-      schema: slot.schema,
-    })),
-  };
-
-  const setOptions: ComparisonSetOption[] = savedSets.map((set) => ({
-    id: set.id,
-    name: set.name,
-    targetCount: set.targets.length,
-    hasProduction: set.targets.some((target) => isProduction(target.environment)),
-    hasMissingConnection:
-      set.sourceConnectionId === null ||
-      set.targets.some((target) => target.connectionId === null),
-    lastRunAt: set.id === activeSet?.id && justRanAt ? justRanAt : set.lastRunAt,
-  }));
+  const setOptions: ComparisonSetOption[] = savedSets.map((set) => {
+    // The source counts as well as the targets: a set that reads production —
+    // row data included — is worth knowing about before anyone opens it.
+    const liveSource =
+      set.sourceConnectionId === null
+        ? null
+        : findConnection(String(set.sourceConnectionId));
+    return {
+      id: set.id,
+      name: set.name,
+      targetCount: set.targets.length,
+      hasProduction:
+        (liveSource !== null && isProduction(toEnvironment(liveSource.environment))) ||
+        set.targets.some((target) => isProduction(target.environment)),
+      compareData: set.compareData,
+      hasMissingConnection:
+        set.sourceConnectionId === null ||
+        set.targets.some((target) => target.connectionId === null),
+      lastRunAt: set.id === activeSet?.id && justRanAt ? justRanAt : set.lastRunAt,
+    };
+  });
 
   return {
     kind: "ready",
     connections: savedConnections.map(toConnectionView),
-    usingEnvFallback,
     canAddTarget,
     maxTargets: MAX_TARGETS,
     sets: setOptions,
     activeSetId: activeSet ? activeSet.id : null,
-    setModified: activeSet ? !matchesSet(activeSet, selection) : false,
+    setNotFound,
+    setModified,
     selection,
     source: {
       connectionId: sourceConnection ? sourceConnection.id : null,
-      displayName: sourceTarget.displayName,
+      displayName: sourceTarget
+        ? sourceTarget.displayName
+        : sourceMissingLabel || "No connection",
       schema: sourceSchema,
       schemaOptions: sourceSchemaInfo.options,
       environment: sourceEnvironment,
       detectedVersion: sourceVersionInfo ? toDetectedVersion(sourceVersionInfo) : null,
+      missingMessage: sourceMissingMessage,
     },
     sourceError,
     targets: resolvedTargets.map((slot) => ({
       index: slot.index,
       connectionId: slot.connection ? slot.connection.id : null,
-      displayName: slot.target.displayName,
+      displayName: slot.displayName,
       schema: slot.schema,
       schemaOptions: slot.schemaOptions,
       environment: toEnvironment(slot.connection?.environment),
+      missingMessage: slot.missingMessage,
     })),
     outcomes: outcomes.map(toOutcomeView),
     allowDataLoss,

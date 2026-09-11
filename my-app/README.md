@@ -300,11 +300,6 @@ Four of those are new enough to say where they live:
   `requireAdmin`, and the `profiles` table is created with the rest of the
   metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS=false` turns the whole thing
   on, and then the Entra keys in §1 have to be set for anyone to get in.
-- **TLS verification is relaxed on the `DATABASE_URL_A`/`DATABASE_URL_B`
-  fallback path only.** Saved connections honour their own `ssl_mode`, including
-  `verify-full`; `normalizeCompareSsl` in `lib/postgres.ts` deliberately accepts
-  any certificate for the env-var path, because hosted providers present chains
-  Node will not verify.
 
 ### Not built at all
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  countedChanges,
   documentToCsv,
   documentToJson,
   documentToMarkdown,
@@ -106,6 +107,8 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
     };
   }, []);
 
+  const counted = countedChanges(doc.totals);
+  const suggested = doc.totals.renameSuggestions;
   const stem = exportFileStem(doc);
 
   async function copyMarkdown() {
@@ -165,7 +168,12 @@ export function ExportBar({ doc }: { doc: DiffDocument }) {
       <span className="export-bar__count">
         {/* "rows" here meant diff entries, four words from a count of database
             rows — the per-target header on this same screen calls them changes. */}
-        {doc.totals.changes} change{doc.totals.changes === 1 ? "" : "s"}
+        {/* The header above counts changes, so this does too: a possible
+            rename is listed in the export but is not one. */}
+        {counted} change{counted === 1 ? "" : "s"}
+        {suggested > 0
+          ? ` \u00b7 ${suggested} possible rename${suggested === 1 ? "" : "s"}`
+          : ""}
         {doc.data
           ? ` \u00b7 ${doc.data.tables.length} table${
               doc.data.tables.length === 1 ? "" : "s"

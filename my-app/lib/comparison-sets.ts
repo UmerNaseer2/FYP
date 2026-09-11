@@ -1,5 +1,19 @@
 import pool, { syncMetadataTables } from "./version-db";
 import { toEnvironment, type Environment } from "./environments";
+import {
+  isNameConflict,
+  validateSaveInput,
+  type SaveComparisonSetInput,
+} from "./comparison-set-rules";
+
+// The rules that need no database live in comparison-set-rules.ts so they can
+// be tested and shared with the browser; re-exported so existing imports of
+// this module keep working.
+export {
+  MAX_COMPARISON_TARGETS,
+  MAX_NAME_LENGTH,
+  type SaveComparisonSetInput,
+} from "./comparison-set-rules";
 
 /**
  * Saved comparison sets — a named source + ordered list of targets that can be
@@ -13,18 +27,6 @@ import { toEnvironment, type Environment } from "./environments";
  * Lives in the same metadata database as `connections` and the lineage tables,
  * and is declared with them as a Sequelize model in `lib/db/models.ts`.
  */
-
-/**
- * How many targets one set (and one comparison) may hold.
- *
- * Defined here rather than on the Compare page because the API validates
- * against it too, and a limit the screen enforces but the endpoint does not is
- * not a limit.
- */
-export const MAX_COMPARISON_TARGETS = 6;
-
-/** Longest set name we store. Long enough to be descriptive, short enough to fit a dropdown. */
-const MAX_NAME_LENGTH = 60;
 
 // ── Row shapes ────────────────────────────────────────────────────────────
 
@@ -51,6 +53,9 @@ export type ComparisonSet = {
   sourceConnectionLabel: string;
   sourceSchema: string;
   allowDataLoss: boolean;
+  /** Also compare the rows of tables both sides have. Part of the set because
+   *  a nightly data check is exactly the kind of run worth saving. */
+  compareData: boolean;
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
@@ -66,6 +71,7 @@ type SetRow = {
   source_connection_label: string | null;
   source_schema: string;
   allow_data_loss: boolean;
+  compare_data: boolean;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
@@ -99,6 +105,7 @@ function toSet(row: SetRow, targets: ComparisonSetTarget[]): ComparisonSet {
     sourceConnectionLabel: label(row.live_source_name, row.source_connection_label),
     sourceSchema: row.source_schema,
     allowDataLoss: row.allow_data_loss,
+    compareData: row.compare_data,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastRunAt: row.last_run_at,
@@ -108,8 +115,8 @@ function toSet(row: SetRow, targets: ComparisonSetTarget[]): ComparisonSet {
 
 const SET_SELECT = `
   SELECT s.id, s.name, s.source_connection_id, s.source_connection_label,
-         s.source_schema, s.allow_data_loss, s.created_at, s.updated_at,
-         s.last_run_at, c.name AS live_source_name
+         s.source_schema, s.allow_data_loss, s.compare_data, s.created_at,
+         s.updated_at, s.last_run_at, c.name AS live_source_name
     FROM comparison_sets s
     LEFT JOIN connections c ON c.id = s.source_connection_id
 `;
@@ -131,7 +138,6 @@ function toTarget(row: TargetRow): ComparisonSetTarget {
   };
 }
 
-/** Every saved set, alphabetically, each with its targets in saved order. */
 /**
  * Names of the saved sets that point at a connection, either as their source or
  * as one of their targets.
@@ -158,6 +164,7 @@ export async function listSetNamesUsingConnection(
   return result.rows.map((r) => r.name);
 }
 
+/** Every saved set, alphabetically, each with its targets in saved order. */
 export async function listComparisonSets(): Promise<ComparisonSet[]> {
   await syncMetadataTables();
 
@@ -195,60 +202,21 @@ export async function getComparisonSet(id: number): Promise<ComparisonSet | null
 
 // ── Writes ────────────────────────────────────────────────────────────────
 
-export type SaveComparisonSetInput = {
-  name: string;
-  sourceConnectionId: number;
-  sourceConnectionLabel: string;
-  sourceSchema: string;
-  allowDataLoss: boolean;
-  targets: {
-    connectionId: number;
-    connectionLabel: string;
-    schema: string;
-  }[];
-};
-
 export type SaveResult =
   | { ok: true; set: ComparisonSet; created: boolean }
-  | { ok: false; error: string };
-
-/** Reject early with a sentence the user can act on, rather than a constraint violation. */
-function validate(input: SaveComparisonSetInput): string | null {
-  const name = input.name.trim();
-  if (name.length === 0) return "Give the set a name so you can find it again.";
-  if (name.length > MAX_NAME_LENGTH) {
-    return `Set names are limited to ${MAX_NAME_LENGTH} characters.`;
-  }
-  if (!Number.isInteger(input.sourceConnectionId) || input.sourceConnectionId <= 0) {
-    return "The source needs to be a saved connection before the set can be saved.";
-  }
-  if (input.sourceSchema.trim().length === 0) {
-    return "The source schema is missing.";
-  }
-  if (input.targets.length === 0) {
-    return "A set needs at least one target.";
-  }
-  if (input.targets.length > MAX_COMPARISON_TARGETS) {
-    return `A set can hold at most ${MAX_COMPARISON_TARGETS} targets.`;
-  }
-  for (const target of input.targets) {
-    if (!Number.isInteger(target.connectionId) || target.connectionId <= 0) {
-      return "Every target needs to be a saved connection before the set can be saved.";
-    }
-    if (target.schema.trim().length === 0) {
-      return "One of the targets has no schema selected.";
-    }
-  }
-  return null;
-}
+  /** `conflict` is true when the name belongs to another set and nobody has
+   *  confirmed replacing it; the screen asks, then sends `overwrite`. */
+  | { ok: false; error: string; conflict: boolean };
 
 /**
- * Save a set, replacing one of the same name if it exists.
+ * Save a set: create it, update the set that is open, or — once the user has
+ * confirmed it — replace another set with the same name.
  *
- * Save and update are one operation on purpose. The alternative — a Save button
- * and a separate Update button — makes the user decide which one they mean
- * before they have thought about it, and gets it wrong often enough to leave
- * "Nightly check" and "Nightly check 2" side by side in the dropdown.
+ * Names are unique regardless of case, because two sets called "Nightly" would
+ * be indistinguishable in the picker. So a save under a name that is taken by
+ * a set other than the open one stops and says so (`conflict`), and replaces
+ * it only when the request carries `overwrite`. That used to happen silently:
+ * typing an existing name into the box wiped out that set's targets.
  *
  * The whole thing runs in a transaction because the targets are deleted before
  * they are re-inserted: a failure halfway through would otherwise leave a set
@@ -257,8 +225,8 @@ function validate(input: SaveComparisonSetInput): string | null {
 export async function saveComparisonSet(
   input: SaveComparisonSetInput
 ): Promise<SaveResult> {
-  const problem = validate(input);
-  if (problem) return { ok: false, error: problem };
+  const problem = validateSaveInput(input);
+  if (problem) return { ok: false, error: problem, conflict: false };
 
   await syncMetadataTables();
 
@@ -267,22 +235,41 @@ export async function saveComparisonSet(
   try {
     await client.query("BEGIN");
 
+    // Two people saving the same new name at the same moment can both pass
+    // this check; the unique index then makes the later one an update of the
+    // earlier. For a list of saved selections that is an acceptable edge — the
+    // alternative is a table lock on every save.
+    const existing = await client.query<{ id: number }>(
+      `SELECT id FROM comparison_sets WHERE lower(name) = lower($1)`,
+      [name]
+    );
+    const existingId = existing.rows[0]?.id ?? null;
+    if (isNameConflict(existingId, input.id, input.overwrite)) {
+      await client.query("ROLLBACK");
+      return {
+        ok: false,
+        error: `A saved set called "${name}" already exists.`,
+        conflict: true,
+      };
+    }
+
     const upsert = await client.query<{ id: number; created: boolean }>(
       // The stored label is what names a side after its connection is deleted,
       // so it must never be blank. A caller that does not send one is not asked
       // to guess: the connection's current name is right here.
       `INSERT INTO comparison_sets
          (name, source_connection_id, source_connection_label, source_schema,
-          allow_data_loss)
+          allow_data_loss, compare_data)
        VALUES ($1, $2,
                COALESCE(NULLIF($3, ''), (SELECT name FROM connections WHERE id = $2), ''),
-               $4, $5)
+               $4, $5, $6)
        ON CONFLICT (lower(name)) DO UPDATE
          SET name = EXCLUDED.name,
              source_connection_id = EXCLUDED.source_connection_id,
              source_connection_label = EXCLUDED.source_connection_label,
              source_schema = EXCLUDED.source_schema,
              allow_data_loss = EXCLUDED.allow_data_loss,
+             compare_data = EXCLUDED.compare_data,
              updated_at = now()
        RETURNING id, (xmax = 0) AS created`,
       [
@@ -291,6 +278,7 @@ export async function saveComparisonSet(
         input.sourceConnectionLabel,
         input.sourceSchema.trim(),
         input.allowDataLoss,
+        input.compareData,
       ]
     );
 
@@ -318,7 +306,7 @@ export async function saveComparisonSet(
     const saved = await getComparisonSet(id);
     return saved
       ? { ok: true, set: saved, created }
-      : { ok: false, error: "The set was saved but could not be read back." };
+      : { ok: false, error: "The set was saved but could not be read back.", conflict: false };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     throw error;
@@ -336,10 +324,10 @@ export async function deleteComparisonSet(id: number): Promise<boolean> {
 }
 
 /**
- * Stamp a set as run. Called from the Compare page after a comparison that was
- * opened from a set, so the picker can say when each one was last exercised —
- * a set nobody has run for two months is usually a set pointing at a database
- * that no longer exists.
+ * Stamp a set as run. Called from the Compare page after a comparison of the
+ * set exactly as it was saved, so the picker can say when each one was last
+ * exercised — a set nobody has run for two months is usually a set pointing at
+ * a database that no longer exists.
  *
  * Returns the timestamp it wrote so the caller can show it without re-reading:
  * the page loads its sets before it knows whether the comparison worked, so

@@ -491,6 +491,8 @@ export class ComparisonSet extends Model<
   declare source_connection_label: CreationOptional<string>;
   declare source_schema: string;
   declare allow_data_loss: CreationOptional<boolean>;
+  /** Also compare the rows of tables both sides have when the set is run. */
+  declare compare_data: CreationOptional<boolean>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare last_run_at: CreationOptional<Date | null>;
@@ -504,6 +506,7 @@ ComparisonSet.init(
     source_connection_label: { type: DataTypes.TEXT, allowNull: false, defaultValue: "" },
     source_schema: { type: DataTypes.TEXT, allowNull: false },
     allow_data_loss: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    compare_data: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     last_run_at: { type: DataTypes.DATE, allowNull: true },

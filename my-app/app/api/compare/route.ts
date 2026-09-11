@@ -15,9 +15,9 @@ export type { CompareScreen };
  * &targetConnection=7" means rather than two that could drift apart.
  *
  * POST rather than GET even though this mostly reads: it can write. `record`
- * asks for a row per compared pair in the comparison history, and the screen
- * only sets it when somebody actually pressed Compare. As a GET this used to
- * record a run every time the page was reloaded or the link was shared.
+ * stamps the open saved set's "last run" time, and the screen only sets it
+ * when somebody actually pressed Compare or opened the set. As a GET this used
+ * to count a run every time the page was reloaded or the link was shared.
  */
 export async function POST(request: NextRequest) {
   const gate = await requireViewer();
@@ -40,7 +40,10 @@ export async function POST(request: NextRequest) {
     // getting here means the run itself broke — usually the metadata store.
     console.error("POST compare error:", error);
     return NextResponse.json(
-      { error: "Could not run this comparison." },
+      {
+        error:
+          "Could not run this comparison. If this keeps happening, check that the app's database is running.",
+      },
       { status: 500 }
     );
   }

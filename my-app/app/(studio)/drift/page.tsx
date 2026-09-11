@@ -488,7 +488,7 @@ function DetailTab({
   }));
 
   const compareHref = view.connection
-    ? `/compare?rightConnection=${view.connection.id}&rightSchema=${encodeURIComponent(view.schemaName)}`
+    ? `/compare?rightConnection=${view.connection.id}&rightSchema=${encodeURIComponent(view.schemaName)}&run=1`
     : null;
 
   return (

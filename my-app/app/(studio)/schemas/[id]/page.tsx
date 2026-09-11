@@ -205,7 +205,7 @@ export default function SchemaDetailPage({
 
   // The compare deep-link only makes sense while the connection still exists.
   const compareHref = detail.connection
-    ? `/compare?rightConnection=${detail.connection.id}&rightSchema=${encodeURIComponent(detail.schemaName)}`
+    ? `/compare?rightConnection=${detail.connection.id}&rightSchema=${encodeURIComponent(detail.schemaName)}&run=1`
     : null;
 
   return (

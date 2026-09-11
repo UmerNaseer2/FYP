@@ -140,6 +140,10 @@ export type DiffDocument = {
   source: { database: string; schema: string };
   target: { database: string; schema: string };
   totals: {
+    /**
+     * Every row in `changes`, rename suggestions included. The number of
+     * changes — the one the Compare header shows — is countedChanges().
+     */
     changes: number;
     added: number;
     dropped: number;

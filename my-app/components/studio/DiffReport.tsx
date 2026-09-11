@@ -435,6 +435,10 @@ function matchTally(match: TableMatch): Tally {
       addedConstraints +
       objects.filter((d) => d.status === "onlyA").length,
     chgs:
+      // An accepted table rename is an ALTER TABLE ... RENAME TO in the script
+      // and a "renamed" row in the export, so it counts here too. Without it a
+      // table whose only change was its name read "~0" beside its renamed pill.
+      (match.exact ? 0 : 1) +
       changedCols +
       changedConstraints +
       objects.filter((d) => d.status === "changedDefinition").length,
