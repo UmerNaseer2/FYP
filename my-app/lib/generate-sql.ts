@@ -141,18 +141,6 @@ export type MigrationOptions = {
    */
   allowDataLoss?: boolean;
   /**
-   * Write the restoring statements idempotently: `ADD COLUMN IF NOT EXISTS`
-   * instead of a bare `ADD COLUMN`, and the same for `CREATE INDEX` and
-   * `CREATE SEQUENCE`.
-   *
-   * Off for a forward migration: if the column is unexpectedly already there,
-   * failing loudly is the right outcome. On for a rollback (generateRollback),
-   * which has to run whether or not the forward script's drops were armed — in
-   * safe mode nothing was dropped, so the restoring statements must be no-ops
-   * rather than errors.
-   */
-  addColumnIfNotExists?: boolean;
-  /**
    * The name of the schema this script will be run against, for the one
    * statement that cannot be written without it: a GRANT or an ALTER OWNER on
    * the schema itself.
@@ -286,19 +274,34 @@ function buildColumnDef(col: ColumnSnapshot, omitNotNull = false): string {
  * itself never came back either. The DO block takes the outcome that loses
  * least: the column is restored, the constraint is not, and PostgreSQL prints
  * exactly what to run once the rows have been backfilled.
+ *
+ * The column itself is looked at first. The first run of a script often puts
+ * NOT NULL on while the table is still empty, so on a second run it is already
+ * there, and testing the rows then would print a notice saying it is missing
+ * when it is not. The same block serves the forward script (a new NOT NULL
+ * column with no default) and the rollback, which is why the notice says the
+ * column has been "left" without it rather than "restored" without it.
  */
 function restoreNotNullStatement(col: ColumnSnapshot, tableName: string): SqlStatement {
   const setNotNull = `ALTER TABLE ${q(tableName)} ALTER COLUMN ${q(col.name)} SET NOT NULL;`;
   const notice =
-    `Column ${q(col.name)} on ${q(tableName)} was restored WITHOUT its NOT NULL: ` +
+    `Column ${q(col.name)} on ${q(tableName)} has been left WITHOUT its NOT NULL: ` +
     `the table already holds rows and the column has no default. ` +
     `Backfill it, then run: ${setNotNull}`;
+  // Finds a row when the column already carries NOT NULL. The table goes in as
+  // a literal of its quoted name so it resolves through search_path, exactly
+  // like the unqualified ALTER TABLE it guards.
+  const alreadyNotNull =
+    `SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(${literal(q(tableName))}) ` +
+    `AND attname = ${literal(col.name)} AND attnotnull`;
 
   return {
     sql: [
       `DO $$`,
       `BEGIN`,
-      `  IF EXISTS (SELECT 1 FROM ${q(tableName)} LIMIT 1) THEN`,
+      `  IF EXISTS (${alreadyNotNull}) THEN`,
+      `    NULL;`,
+      `  ELSIF EXISTS (SELECT 1 FROM ${q(tableName)} LIMIT 1) THEN`,
       `    RAISE NOTICE ${literal(notice)};`,
       `  ELSE`,
       `    ${setNotNull}`,
@@ -307,8 +310,9 @@ function restoreNotNullStatement(col: ColumnSnapshot, tableName: string): SqlSta
       `$$;`,
     ].join("\n"),
     description:
-      `Restore NOT NULL on "${col.name}" in "${tableName}" — applied only if the ` +
-      `table is empty, since there is no value for existing rows`,
+      `Apply NOT NULL on "${col.name}" in "${tableName}" — skipped when it is already ` +
+      `there, and applied only if the table is empty, since there is no value for ` +
+      `existing rows`,
     kind: "ALTER_COLUMN_NULLABILITY",
     severity: "breaking",
     tableName,
@@ -548,6 +552,61 @@ function literal(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/**
+ * Run `statement` only when `existsQuery` finds nothing.
+ *
+ * Every CREATE and ADD a generated script contains is written so the script can
+ * be run twice. After a deploy that was cut off half way, or one that is simply
+ * repeated, a second run skips what is already there instead of stopping on
+ * "already exists", which inside the one transaction the apply route uses would
+ * roll the whole run back. Most statements can say that themselves with IF NOT
+ * EXISTS. PostgreSQL has no IF NOT EXISTS for these statements (ADD CONSTRAINT,
+ * CREATE TYPE, CREATE DOMAIN, ALTER DOMAIN ... ADD CONSTRAINT, CREATE POLICY),
+ * so for those the script asks the catalog first, from a DO block.
+ *
+ * Each lookup has to find exactly what the statement would. An ALTER names its
+ * object the same unqualified way the lookup does, so both resolve through the
+ * search_path the apply route sets. A CREATE is different: it puts the new
+ * object in current_schema(), whatever the name would resolve to elsewhere, so
+ * its lookup reads that one schema (see createTypeStatement).
+ *
+ * The tag is not $$ so a $$ inside a definition cannot end the block. It gains
+ * a number in the rare case the text going inside already holds "$guard$" (a
+ * CHECK or an enum label can hold any text at all), because that copy would end
+ * the block early and leave the rest of it as broken SQL.
+ */
+function onlyIfMissing(existsQuery: string, statement: string): string {
+  let tag = "$guard$";
+  for (let n = 1; statement.includes(tag) || existsQuery.includes(tag); n += 1) {
+    tag = `$guard${n}$`;
+  }
+  return [
+    `DO ${tag}`,
+    "BEGIN",
+    `  IF NOT EXISTS (${existsQuery}) THEN`,
+    `    ${statement}`,
+    "  END IF;",
+    "END",
+    `${tag};`,
+  ].join("\n");
+}
+
+/** The onlyIfMissing lookup for a named constraint on a table. */
+function tableConstraintQuery(tableName: string, constraintName: string): string {
+  return (
+    `SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass(${literal(q(tableName))}) ` +
+    `AND conname = ${literal(constraintName)}`
+  );
+}
+
+/** The onlyIfMissing lookup for a column on a table, by its exact name. */
+function tableColumnQuery(tableName: string, columnName: string): string {
+  return (
+    `SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(${literal(q(tableName))}) ` +
+    `AND attname = ${literal(columnName)} AND attnum > 0 AND NOT attisdropped`
+  );
+}
+
 /** A `-- MANUAL:` line: inert when run, but still visible in the script. */
 function manualNote(text: string, description: string, tableName: string): SqlStatement {
   return objectStatement({
@@ -563,9 +622,10 @@ function manualNote(text: string, description: string, tableName: string): SqlSt
 
 // pg_get_indexdef returns a complete CREATE INDEX with the schema qualifier
 // already stripped at snapshot time, so it replays under search_path as-is.
-function indexCreateSql(index: IndexSnapshot, idempotent: boolean): string {
+// IF NOT EXISTS is spliced in so a second run of the script skips an index that
+// is already there (see onlyIfMissing).
+function indexCreateSql(index: IndexSnapshot): string {
   const definition = index.definition.trim();
-  if (!idempotent) return `${definition};`;
   return `${definition.replace(/^(CREATE\s+(?:UNIQUE\s+)?INDEX)\s+/i, "$1 IF NOT EXISTS ")};`;
 }
 
@@ -579,11 +639,10 @@ function indexCreateSql(index: IndexSnapshot, idempotent: boolean): string {
 function createIndexStatement(
   index: IndexSnapshot,
   tableName: string,
-  idempotent: boolean,
   afterHeldBackDrop = false
 ): SqlStatement {
   return objectStatement({
-    sql: indexCreateSql(index, idempotent),
+    sql: indexCreateSql(index),
     needsArmedDrop: afterHeldBackDrop,
     // A unique index is built against the rows already in the table and refused
     // if two of them collide, so it can abort the migration on real data — the
@@ -737,7 +796,11 @@ function rowSecurityStatements(
 
 function createPolicyStatement(policy: PolicySnapshot, tableName: string): SqlStatement {
   return objectStatement({
-    sql: `CREATE POLICY ${q(policy.name)} ON ${q(tableName)} ${policy.definition};`,
+    sql: onlyIfMissing(
+      `SELECT 1 FROM pg_policy WHERE polrelid = to_regclass(${literal(q(tableName))}) ` +
+        `AND polname = ${literal(policy.name)}`,
+      `CREATE POLICY ${q(policy.name)} ON ${q(tableName)} ${policy.definition};`
+    ),
     description: `Create policy "${policy.name}" on "${tableName}" — check who this lets in`,
     kind: "CREATE_POLICY",
     severity: "breaking",
@@ -978,11 +1041,8 @@ function sequenceClauses(sequence: SequenceOptions): string[] {
   ];
 }
 
-function createSequenceStatement(
-  sequence: SequenceSnapshot,
-  idempotent: boolean
-): SqlStatement {
-  const head = `CREATE SEQUENCE${idempotent ? " IF NOT EXISTS" : ""} ${q(sequence.name)}`;
+function createSequenceStatement(sequence: SequenceSnapshot): SqlStatement {
+  const head = `CREATE SEQUENCE IF NOT EXISTS ${q(sequence.name)}`;
   return objectStatement({
     sql: `${[head, ...sequenceClauses(sequence)].join("\n")};`,
     description: `Create sequence "${sequence.name}"`,
@@ -1011,7 +1071,9 @@ function alterSequenceStatement(sequence: SequenceSnapshot): SqlStatement {
  * syntax error and `ALTER COLUMN id RESTART WITH 5000` is the form. The
  * ALTER SEQUENCE spelling takes all of them bare.
  */
-type SequenceStep = { clause: string; set: boolean; description: string };
+// `warning` is kept apart from `description` so the caller can name the
+// sequence first and still end the sentence with the warning.
+type SequenceStep = { clause: string; set: boolean; description: string; warning?: string };
 
 /**
  * The settings that have to be changed to move a sequence from `target` to
@@ -1076,10 +1138,11 @@ function sequenceOptionSteps(
     steps.push({
       clause: `RESTART WITH ${source.startValue}`,
       set: false,
-      description:
-        `Move the counter to ${source.startValue} — WARNING: the narrower ` +
-        "bounds below cannot be set while it sits outside them, and on a table " +
-        "with rows a counter that moves backwards hands out ids the table has",
+      description: `Move the counter to ${source.startValue}`,
+      warning:
+        "the narrower bounds below cannot be set while it sits outside them, " +
+        "and on a table with rows a counter that moves backwards hands out ids " +
+        "the table already has",
     });
   }
   if (minMoved && !minWidens) steps.push(step(`MINVALUE ${source.minValue}`));
@@ -1151,14 +1214,10 @@ function tunedSerialStatements(
  * first, so the extension lands in the schema being applied to — including on
  * a later replay onto a different schema, which a hard-coded name would miss.
  */
-function createExtensionStatement(
-  extension: ExtensionSnapshot,
-  idempotent: boolean
-): SqlStatement {
-  const exists = idempotent ? " IF NOT EXISTS" : "";
+function createExtensionStatement(extension: ExtensionSnapshot): SqlStatement {
   return objectStatement({
     sql:
-      `CREATE EXTENSION${exists} ${q(extension.name)} ` +
+      `CREATE EXTENSION IF NOT EXISTS ${q(extension.name)} ` +
       `VERSION ${literal(extension.version)};`,
     description: `Install extension "${extension.name}" ${extension.definition}`,
     kind: "CREATE_EXTENSION",
@@ -1187,10 +1246,7 @@ function dropExtensionStatement(extension: ExtensionSnapshot): SqlStatement {
  * option list to write, and `CREATE COLLATION x (provider = default)` is not
  * something PostgreSQL accepts.
  */
-function createCollationStatement(
-  collation: CollationSnapshot,
-  idempotent: boolean
-): SqlStatement | null {
+function createCollationStatement(collation: CollationSnapshot): SqlStatement | null {
   const options: string[] = [];
   if (collation.provider !== "default") options.push(`PROVIDER = ${collation.provider}`);
   if (collation.locale !== null) options.push(`LOCALE = ${literal(collation.locale)}`);
@@ -1204,9 +1260,8 @@ function createCollationStatement(
   if (!collation.deterministic) options.push("DETERMINISTIC = false");
   if (options.length === 0) return null;
 
-  const exists = idempotent ? " IF NOT EXISTS" : "";
   return objectStatement({
-    sql: `CREATE COLLATION${exists} ${q(collation.name)} (${options.join(", ")});`,
+    sql: `CREATE COLLATION IF NOT EXISTS ${q(collation.name)} (${options.join(", ")});`,
     description: `Create collation "${collation.name}"`,
     kind: "CREATE_COLLATION",
     tableName: collation.name,
@@ -1226,10 +1281,21 @@ function dropCollationStatement(collation: CollationSnapshot): SqlStatement {
 }
 
 function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
+  // CREATE TYPE and CREATE DOMAIN have no IF NOT EXISTS, so every kind below
+  // asks the catalog first (see onlyIfMissing). A domain is a row in pg_type
+  // too, so the one lookup serves all four kinds.
+  //
+  // It reads current_schema(), the schema the CREATE puts the type in, instead
+  // of resolving the name. pg_catalog is searched before every other schema, so
+  // a type called "line" or "money" would resolve to the built-in one, the
+  // lookup would find that, and the source's own type would never be made.
+  const typeIsThere =
+    `SELECT 1 FROM pg_type WHERE typname = ${literal(type.name)} ` +
+    `AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())`;
   if (type.kind === "ENUM") {
     const labels = type.labels.map((label) => `  ${literal(label)}`).join(",\n");
     return objectStatement({
-      sql: `CREATE TYPE ${q(type.name)} AS ENUM (\n${labels}\n);`,
+      sql: onlyIfMissing(typeIsThere, `CREATE TYPE ${q(type.name)} AS ENUM (\n${labels}\n);`),
       description: `Create enum "${type.name}"`,
       kind: "CREATE_TYPE",
       tableName: type.name,
@@ -1242,7 +1308,7 @@ function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
       parts.push(`  CONSTRAINT ${q(check.name)} ${check.expression}`);
     }
     return objectStatement({
-      sql: `${parts.join("\n")};`,
+      sql: onlyIfMissing(typeIsThere, `${parts.join("\n")};`),
       description: `Create domain "${type.name}"`,
       kind: "CREATE_TYPE",
       tableName: type.name,
@@ -1251,7 +1317,7 @@ function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
   if (type.kind === "COMPOSITE") {
     const fields = type.attributes.map((attribute) => `  ${attribute}`).join(",\n");
     return objectStatement({
-      sql: `CREATE TYPE ${q(type.name)} AS (\n${fields}\n);`,
+      sql: onlyIfMissing(typeIsThere, `CREATE TYPE ${q(type.name)} AS (\n${fields}\n);`),
       description: `Create composite type "${type.name}"`,
       kind: "CREATE_TYPE",
       tableName: type.name,
@@ -1277,7 +1343,10 @@ function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
     options.push(`multirange_type_name = ${q(range.multirangeName)}`);
   }
   return objectStatement({
-    sql: `CREATE TYPE ${q(type.name)} AS RANGE (${options.join(", ")});`,
+    sql: onlyIfMissing(
+      typeIsThere,
+      `CREATE TYPE ${q(type.name)} AS RANGE (${options.join(", ")});`
+    ),
     description: `Create range type "${type.name}"`,
     kind: "CREATE_TYPE",
     tableName: type.name,
@@ -1445,7 +1514,11 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
     for (const check of domainAddedChecks(left, right)) {
       stmts.push(
         objectStatement({
-          sql: `ALTER DOMAIN ${q(left.name)} ADD CONSTRAINT ${q(check.name)} ${check.expression};`,
+          sql: onlyIfMissing(
+            `SELECT 1 FROM pg_constraint WHERE contypid = to_regtype(${literal(q(left.name))}) ` +
+              `AND conname = ${literal(check.name)}`,
+            `ALTER DOMAIN ${q(left.name)} ADD CONSTRAINT ${q(check.name)} ${check.expression};`
+          ),
           description:
             `Add check "${check.name}" to domain "${left.name}" — WARNING: fails if any ` +
             `existing value breaks it`,
@@ -1878,11 +1951,7 @@ function findPrivilege(
  * its indexes and triggers appear in no diff and would otherwise be dropped on
  * the floor exactly the way its foreign keys once were.
  */
-function objectPhases(
-  report: CompareReport,
-  idempotent: boolean,
-  appliesToSchema: string
-): ObjectPhases {
+function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPhases {
   const phases: ObjectPhases = {
     extensions: [],
     collations: [],
@@ -1920,7 +1989,7 @@ function objectPhases(
         }
         if (diff.status !== "onlyB") {
           const source = findByName(match.left.indexes, diff.name);
-          if (source) phases.indexes.push(createIndexStatement(source, tableName, idempotent));
+          if (source) phases.indexes.push(createIndexStatement(source, tableName));
         }
       } else if (diff.kind === "TRIGGER") {
         if (diff.status === "onlyB") {
@@ -1976,7 +2045,7 @@ function objectPhases(
   // ── Table-scoped objects on tables being CREATED ──────────────────────────
   for (const table of report.tablesOnlyInA) {
     for (const index of table.indexes ?? []) {
-      phases.indexes.push(createIndexStatement(index, table.name, idempotent));
+      phases.indexes.push(createIndexStatement(index, table.name));
     }
     for (const trigger of table.triggers ?? []) {
       phases.triggers.push(...createTriggerStatements(trigger, table.name));
@@ -2069,7 +2138,7 @@ function objectPhases(
     if (diff.kind === "SEQUENCE") {
       if (diff.status === "onlyA") {
         const source = findByName(report.left.sequences, diff.name);
-        if (source) phases.beforeTables.push(createSequenceStatement(source, idempotent));
+        if (source) phases.beforeTables.push(createSequenceStatement(source));
       } else if (diff.status === "onlyB") {
         phases.afterTables.push(
           objectStatement({
@@ -2091,7 +2160,7 @@ function objectPhases(
       const source = findByName(report.left.extensions, diff.name);
       const target = findByName(report.right.extensions, diff.name);
       if (diff.status === "onlyA") {
-        if (source) phases.extensions.push(createExtensionStatement(source, idempotent));
+        if (source) phases.extensions.push(createExtensionStatement(source));
       } else if (diff.status === "onlyB") {
         if (target) phases.extensionDrops.push(dropExtensionStatement(target));
       } else if (source && target) {
@@ -2144,7 +2213,7 @@ function objectPhases(
       if (diff.status === "onlyA") {
         // A collation with nothing to write is one on the database default,
         // which every schema already has; there is nothing to create.
-        const create = source ? createCollationStatement(source, idempotent) : null;
+        const create = source ? createCollationStatement(source) : null;
         if (create) phases.collations.push(create);
       } else if (diff.status === "onlyB") {
         if (target) phases.collationDrops.push(dropCollationStatement(target));
@@ -2359,7 +2428,7 @@ function objectPhases(
     // materialized view came back with none: including the one UNIQUE index
     // REFRESH ... CONCURRENTLY cannot work without.
     for (const index of view.indexes ?? []) {
-      phases.afterViews.push(createIndexStatement(index, view.name, idempotent, held));
+      phases.afterViews.push(createIndexStatement(index, view.name, held));
     }
     for (const trigger of view.triggers ?? []) {
       phases.afterViews.push(
@@ -2393,7 +2462,7 @@ function objectPhases(
       if (diff.status !== "onlyB") {
         const source = findByName(findByName(leftViews, viewName)?.indexes, diff.name);
         if (source) {
-          phases.afterViews.push(createIndexStatement(source, viewName, idempotent));
+          phases.afterViews.push(createIndexStatement(source, viewName));
         }
       }
       continue;
@@ -2482,7 +2551,6 @@ function nextvalSequenceName(columnDefault: string | null): string | null {
 function alterStatementsForMatch(
   match: TableMatch,
   sourceSchema: string,
-  addColumnIfNotExists: boolean,
   sourceSequences: SequenceSnapshot[] | undefined,
   // The target's views, only so a DROP ... CASCADE below can name what it takes
   // with it. `undefined` means the snapshot never recorded views, in which case
@@ -2502,10 +2570,15 @@ function alterStatementsForMatch(
 
   // ── a. Column renames ────────────────────────────────────────────────────
   // Must come before the add/alter steps so they reference the post-rename name.
+  // Each is skipped when the table already has a column by the new name, which
+  // on a second run is the very column the first run renamed.
   for (const colMatch of match.columnMatches) {
     if (!colMatch.exact) {
       stmts.push({
-        sql: `ALTER TABLE ${q(tName)} RENAME COLUMN ${q(colMatch.right.name)} TO ${q(colMatch.left.name)};`,
+        sql: onlyIfMissing(
+          tableColumnQuery(tName, colMatch.left.name),
+          `ALTER TABLE ${q(tName)} RENAME COLUMN ${q(colMatch.right.name)} TO ${q(colMatch.left.name)};`
+        ),
         description: `Rename column "${colMatch.right.name}" → "${colMatch.left.name}" in "${tName}" (${colMatch.score}% match — verify this is a rename before running)`,
         kind: "RENAME_COLUMN",
         severity: "breaking",
@@ -2532,10 +2605,7 @@ function alterStatementsForMatch(
     const tunedSerial = tunedSerialStatements(col, tName);
     stmts.push(...tunedSerial.before);
     stmts.push({
-      sql:
-        `ALTER TABLE ${q(tName)} ADD COLUMN ` +
-        (addColumnIfNotExists ? "IF NOT EXISTS " : "") +
-        `${buildColumnDef(col, risky)};`,
+      sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(col, risky)};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
         (risky ? " — added nullable; the next statement puts NOT NULL back" : ""),
@@ -2589,10 +2659,7 @@ function alterStatementsForMatch(
         destructive: false,
       });
       stmts.push({
-        sql:
-          `ALTER TABLE ${q(tName)} ADD COLUMN ` +
-          (addColumnIfNotExists ? "IF NOT EXISTS " : "") +
-          `${buildColumnDef(colMatch.left)};`,
+        sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(colMatch.left)};`,
         description: colMatch.left.generated
           ? `Rebuild "${colName}" in "${tName}" as ${leftComputed}`
           : `Rebuild "${colName}" in "${tName}" as an ordinary column`,
@@ -2735,9 +2802,17 @@ function alterStatementsForMatch(
       } else if (leftIdentity !== null) {
         // ADD GENERATED is refused while the column still has a default, so a
         // serial target has to give that up first.
+        //
+        // Both steps are skipped once the column is an identity column. On a
+        // second run ADD GENERATED would find one already there, and DROP
+        // DEFAULT is refused outright on an identity column.
+        const alreadyIdentity = `${tableColumnQuery(tName, colName)} AND attidentity <> ''`;
         if (rightSerial) {
           stmts.push({
-            sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP DEFAULT;`,
+            sql: onlyIfMissing(
+              alreadyIdentity,
+              `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP DEFAULT;`
+            ),
             description: `Drop the sequence default on "${colName}" in "${tName}" before it becomes an identity column`,
             kind: "ALTER_COLUMN_DEFAULT",
             severity: "safe",
@@ -2746,10 +2821,12 @@ function alterStatementsForMatch(
           });
         }
         stmts.push({
-          sql:
+          sql: onlyIfMissing(
+            alreadyIdentity,
             `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} ` +
-            `ADD GENERATED ${leftIdentity} AS IDENTITY` +
-            `${identityOptionsSuffix(colMatch.left)};`,
+              `ADD GENERATED ${leftIdentity} AS IDENTITY` +
+              `${identityOptionsSuffix(colMatch.left)};`
+          ),
           description: `Make "${colName}" in "${tName}" an identity column — WARNING: fails unless the column is NOT NULL`,
           kind: "ALTER_COLUMN_DEFAULT",
           severity: generatedChangeSeverity(colMatch.left, colMatch.right),
@@ -2798,6 +2875,22 @@ function alterStatementsForMatch(
         : targetSequence !== null
           ? `ALTER SEQUENCE ${q(targetSequence)} `
           : null;
+      // RESTART is the one step that must not repeat: a second run would move
+      // the counter back to the start again, onto ids handed out since the
+      // first. It is only there so narrower bounds can be set, so it is skipped
+      // once the sequence already has the source's bounds. pg_get_serial_sequence
+      // finds an identity column's sequence as well as a serial's.
+      const sequenceRegclass = identityForm
+        ? `to_regclass(pg_get_serial_sequence(${literal(q(tName))}, ${literal(colName)}))`
+        : targetSequence !== null
+          ? `to_regclass(${literal(q(targetSequence))})`
+          : null;
+      const boundsInPlace =
+        sequenceRegclass === null
+          ? null
+          : `SELECT 1 FROM pg_sequence WHERE seqrelid = ${sequenceRegclass} ` +
+            `AND seqmin = ${leftSequenceOptions.minValue} ` +
+            `AND seqmax = ${leftSequenceOptions.maxValue}`;
       const severity = sequenceOptionsChangeSeverity(
         leftSequenceOptions,
         rightSequenceOptions
@@ -2814,8 +2907,14 @@ function alterStatementsForMatch(
                 destructive: false,
               }
             : {
-                sql: `${prefix}${step.set && identityForm ? "SET " : ""}${step.clause};`,
-                description: `${step.description} on the sequence behind "${colName}" in "${tName}"`,
+                // Only RESTART has set: false — see sequenceOptionSteps.
+                sql:
+                  step.set || boundsInPlace === null
+                    ? `${prefix}${step.set && identityForm ? "SET " : ""}${step.clause};`
+                    : onlyIfMissing(boundsInPlace, `${prefix}${step.clause};`),
+                description:
+                  `${step.description} on the sequence behind "${colName}" in "${tName}"` +
+                  (step.warning ? ` — WARNING: ${step.warning}` : ""),
                 kind: "ALTER_SEQUENCE",
                 severity,
                 tableName: tName,
@@ -2854,7 +2953,7 @@ function alterStatementsForMatch(
         const sourceSequence = sourceSequences?.find((seq) => seq.name === sequenceName);
         stmts.push(
           sourceSequence
-            ? createSequenceStatement(sourceSequence, true)
+            ? createSequenceStatement(sourceSequence)
             : objectStatement({
                 sql: `CREATE SEQUENCE IF NOT EXISTS ${q(sequenceName)};`,
                 description: `Create sequence "${sequenceName}" for "${colName}" in "${tName}"`,
@@ -2939,7 +3038,10 @@ function alterStatementsForMatch(
     const found = lookupConstraintDef(match.left, diff.kind, cName);
     if (!found) continue;
     stmts.push({
-      sql: `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(found.name)} ${found.definition};`,
+      sql: onlyIfMissing(
+        tableConstraintQuery(tName, found.name),
+        `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(found.name)} ${found.definition};`
+      ),
       description: `Add ${diff.kind} "${found.name}" to "${tName}"`,
       kind: "ADD_CONSTRAINT",
       severity: constraintChangeSeverity(diff.kind, "add"),
@@ -2953,7 +3055,10 @@ function alterStatementsForMatch(
     const fk = match.left.foreignKeys.find((f) => f.name === fkName);
     if (!fk) continue;
     fkStmts.push({
-      sql: `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`,
+      sql: onlyIfMissing(
+        tableConstraintQuery(tName, fk.name),
+        `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`
+      ),
       description: `Add FK "${fk.name}" to "${tName}"`,
       kind: "ADD_CONSTRAINT",
       severity: constraintChangeSeverity("FOREIGN KEY", "add"),
@@ -3033,11 +3138,7 @@ export function generateMigration(
   const sourceSchema = report.left.schema;
   const statements: SqlStatement[] = [];
   const warnings: string[] = [];
-  const objects = objectPhases(
-    report,
-    options.addColumnIfNotExists === true,
-    options.appliesToSchema ?? report.right.schema
-  );
+  const objects = objectPhases(report, options.appliesToSchema ?? report.right.schema);
   const rightViews = report.right.views ?? [];
 
   // ── Extensions ────────────────────────────────────────────────────────────
@@ -3068,10 +3169,11 @@ export function generateMigration(
   // ── Rename tables ─────────────────────────────────────────────────────────
   // Similarity-matched tables have different names in A and B.
   // We rename B's table to A's name so subsequent ALTER TABLE statements work.
+  // IF EXISTS so a second run, when the old name is already gone, skips it.
   for (const match of report.matchedTables) {
     if (!match.exact) {
       statements.push({
-        sql: `ALTER TABLE ${q(match.right.name)} RENAME TO ${q(match.left.name)};`,
+        sql: `ALTER TABLE IF EXISTS ${q(match.right.name)} RENAME TO ${q(match.left.name)};`,
         description: `Rename table "${match.right.name}" → "${match.left.name}" (${match.score}% similarity — verify this is a rename and not two unrelated tables)`,
         kind: "RENAME_TABLE",
         severity: "breaking",
@@ -3106,7 +3208,10 @@ export function generateMigration(
 
     for (const fk of table.foreignKeys) {
       fkStatements.push({
-        sql: `ALTER TABLE ${q(table.name)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`,
+        sql: onlyIfMissing(
+          tableConstraintQuery(table.name, fk.name),
+          `ALTER TABLE ${q(table.name)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`
+        ),
         description: `Add FK "${fk.name}" to "${table.name}"`,
         kind: "ADD_CONSTRAINT",
         severity: "info",
@@ -3129,7 +3234,6 @@ export function generateMigration(
     const { stmts, fkStmts } = alterStatementsForMatch(
       match,
       sourceSchema,
-      options.addColumnIfNotExists === true,
       report.left.sequences,
       report.right.views,
     );
@@ -3386,6 +3490,20 @@ export function renderMigrationScript(script: MigrationScript): string {
     );
   }
 
+  // What a second run of this script does, and what it cannot put right. The
+  // wording is careful: suggestBumpLevel (lib/script-status.ts) searches the
+  // whole text, comments included, so spelling out the statements that repeat
+  // by their SQL keywords here would grade a script that only adds things as a
+  // major version.
+  header.push(
+    `--`,
+    `-- Safe to run again. Anything this script creates or adds is skipped when it`,
+    `-- already exists, and so is a new name that is already in place. An object`,
+    `-- whose definition changed is removed and built again on every run, and a`,
+    `-- column type change is converted again. A skipped object is not checked`,
+    `-- against the source, so compare again after running.`,
+  );
+
   if (held > 0) {
     header.push(
       `--`,
@@ -3609,9 +3727,9 @@ function truncatingTypeChangeLabels(report: CompareReport): string[] {
  *     migration in place is not a rollback.
  *
  * Pass the same allowDataLoss the forward migration used. It does not change
- * which statements are emitted — the restoring ones are written idempotently so
- * they are inert when the forward script never dropped anything — it only
- * changes what the header claims was lost.
+ * which statements are emitted — every restoring CREATE and ADD is skipped when
+ * its object is already there, so they are inert when the forward script never
+ * dropped anything — it only changes what the header claims was lost.
  */
 export function generateRollback(
   report: CompareReport,
@@ -3625,7 +3743,6 @@ export function generateRollback(
   const reverseReport = compareSchemas(report.right, report.left);
   const inverse = generateMigration(reverseReport, {
     allowDataLoss: true,
-    addColumnIfNotExists: true,
     // The reversed report has the SOURCE on its right, and this script runs
     // against the target — see the note on the option.
     appliesToSchema: report.right.schema,
@@ -3825,8 +3942,8 @@ export function renderRollbackScript(script: RollbackScript): string {
       header.push(
         `--`,
         `-- The migration ran in SAFE MODE, so it dropped none of the following.`,
-        `-- These statements are written idempotently and will do nothing unless`,
-        `-- the drops were armed or run by hand:`,
+        `-- Each statement below is skipped when the object is already there, so`,
+        `-- they do nothing unless the drops were armed or run by hand:`,
       );
     }
     if (tables.length > 0) {
@@ -3884,8 +4001,9 @@ export function renderRollbackScript(script: RollbackScript): string {
 
   header.push(
     `--`,
-    `-- Run this only if the migration was applied in full. Applying it to a`,
-    `-- target the migration never touched will fail or do nothing.`,
+    `-- Run this after the migration. A second run skips anything already back the`,
+    `-- way it was, except that an object whose definition changed is built again`,
+    `-- and a column type is converted back again.`,
     `-- ================================================================`,
   );
 

@@ -1,5 +1,6 @@
 import {
   containsTransactionControl,
+  doBlockBodies,
   extractEnumAddValues,
   findMightFailStatements,
   findRowDestroyingStatements,
@@ -286,5 +287,94 @@ describe("findMightFailStatements", () => {
   it("says nothing about a plain nullable column or a plain index", () => {
     expect(findMightFailStatements("ALTER TABLE orders ADD COLUMN note text;")).toEqual([]);
     expect(findMightFailStatements("CREATE INDEX ix ON orders (ref);")).toEqual([]);
+  });
+
+  // Generated constraint adds now sit inside a DO block that skips them when
+  // they already exist, and a DO body is blanked whole like any other
+  // dollar-quoted text. The warning must not vanish along with them.
+
+  /** A statement wrapped the way the generator wraps a constraint add. */
+  function guarded(statement: string, tag = "$guard$"): string {
+    return [
+      `DO ${tag}`,
+      "BEGIN",
+      "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('\"orders\"') AND conname = 'c') THEN",
+      `    ${statement}`,
+      "  END IF;",
+      "END",
+      `${tag};`,
+    ].join("\n");
+  }
+
+  const guardedFk =
+    'ALTER TABLE "orders" ADD CONSTRAINT "c" FOREIGN KEY (user_id) REFERENCES users(id);';
+
+  it("still finds a foreign key added inside a guard block", () => {
+    expect(findMightFailStatements(guarded(guardedFk))).toEqual(["FOREIGN KEY constraint"]);
+  });
+
+  it("still finds a CHECK added inside a guard block", () => {
+    expect(
+      findMightFailStatements(guarded('ALTER TABLE "orders" ADD CONSTRAINT "c" CHECK (total >= 0);'))
+    ).toEqual(["CHECK constraint"]);
+  });
+
+  it("does not count the NOT NULL restore, which already skips a table with rows", () => {
+    const sql = [
+      "DO $$",
+      "BEGIN",
+      "  IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('\"orders\"') AND attname = 'note' AND attnotnull) THEN",
+      "    NULL;",
+      "  ELSIF EXISTS (SELECT 1 FROM \"orders\" LIMIT 1) THEN",
+      "    RAISE NOTICE 'Backfill it, then run: ALTER TABLE \"orders\" ALTER COLUMN \"note\" SET NOT NULL;';",
+      "  ELSE",
+      "    ALTER TABLE \"orders\" ALTER COLUMN \"note\" SET NOT NULL;",
+      "  END IF;",
+      "END",
+      "$$;",
+    ].join("\n");
+    expect(findMightFailStatements(sql)).toEqual([]);
+  });
+
+  it("ignores a constraint that is only mentioned in a comment inside a DO block", () => {
+    const sql = guarded("-- was: ADD CONSTRAINT c FOREIGN KEY (user_id) REFERENCES users(id)\n    NULL;");
+    expect(findMightFailStatements(sql)).toEqual([]);
+  });
+
+  it("reads a $guard$ block the same as a $$ one", () => {
+    expect(findMightFailStatements(guarded(guardedFk, "$$"))).toEqual(["FOREIGN KEY constraint"]);
+    expect(findMightFailStatements(guarded(guardedFk))).toEqual(
+      findMightFailStatements(guarded(guardedFk, "$$"))
+    );
+  });
+});
+
+describe("doBlockBodies", () => {
+  it("returns the inside of each DO block, masked, and nothing from outside one", () => {
+    const sql = [
+      "ALTER TABLE a ADD COLUMN x text;",
+      "DO $guard$",
+      "BEGIN",
+      "  -- a note",
+      "  ALTER TABLE b RENAME COLUMN c TO d;",
+      "END",
+      "$guard$;",
+      "DO $$ BEGIN RAISE NOTICE 'drop table'; END $$;",
+    ].join("\n");
+    const bodies = doBlockBodies(sql);
+    expect(bodies).toContain("ALTER TABLE b RENAME COLUMN c TO d;");
+    expect(bodies).toContain("RAISE NOTICE");
+    expect(bodies).not.toContain("ADD COLUMN");
+    expect(bodies).not.toContain("a note");
+    expect(bodies).not.toContain("drop table");
+  });
+
+  it("finds a DO block that has a comment in front of it", () => {
+    expect(doBlockBodies("-- why\nDO $$ BEGIN DROP TABLE t; END $$;")).toContain("DROP TABLE t;");
+  });
+
+  it("returns nothing when there is no DO block", () => {
+    const sql = "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;";
+    expect(doBlockBodies(sql).trim()).toBe("");
   });
 });

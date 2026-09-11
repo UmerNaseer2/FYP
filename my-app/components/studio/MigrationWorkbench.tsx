@@ -372,6 +372,14 @@ export function MigrationWorkbench({
                   </div>
                 )}
 
+                {!showingDown && (
+                  <p className="text-[11px] mb-1.5" style={{ color: "var(--text-3)" }}>
+                    Safe to run twice: anything this script creates or adds, and any new name
+                    it gives, is skipped if it is already there. Changed objects are rebuilt
+                    and column types converted again on every run, so compare again afterwards.
+                  </p>
+                )}
+
                 <textarea
                   className="sql-textarea mono"
                   // The tab strip above names the pane visually, but nothing tied

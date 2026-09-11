@@ -184,30 +184,76 @@ export function findRowDestroyingStatements(sql: string): string[] {
  * whether it actually fails depends on data this app has not read. Every check
  * below is written so that an empty table always passes it.
  *
+ * The inside of a DO block is read too. maskNonCode blanks a dollar-quoted body
+ * whole, and the constraints a generated script adds now live in exactly such
+ * blocks, each behind a lookup that skips it when it is already there (see
+ * onlyIfMissing in lib/generate-sql.ts). Only the constraint and unique-index
+ * checks look inside. The one SET NOT NULL a generated script puts in a DO
+ * block already skips a table that holds rows, so it cannot fail this way and
+ * is deliberately not counted.
+ *
  * Returns the labels it found, in a fixed order, so the screen can name them.
  */
 export function findMightFailStatements(sql: string): string[] {
   const code = maskNonCode(sql);
-  const checks: [RegExp, string][] = [
+  const doBodies = doBlockBodies(sql);
+  // The third item says whether the check also reads the inside of DO blocks.
+  const checks: [RegExp, string, boolean][] = [
     // NOT NULL with no DEFAULT: every existing row would need a value and has
     // none. With a DEFAULT the same statement is fine, so the pattern has to
     // look at the rest of the clause, up to the comma or paren that ends it.
     [/\bADD\s+COLUMN\b(?:\s+IF\s+NOT\s+EXISTS)?[^,;()]*\bNOT\s+NULL\b(?![^,;]*\bDEFAULT\b)/i,
-      "NOT NULL column with no default"],
+      "NOT NULL column with no default", false],
     // Promoting an existing column: fails on the first NULL already stored.
-    [/\bSET\s+NOT\s+NULL\b/i, "SET NOT NULL"],
+    [/\bSET\s+NOT\s+NULL\b/i, "SET NOT NULL", false],
     // Uniqueness applied after the fact: fails on the first duplicate.
-    [/\bADD\s+CONSTRAINT\b[^;]*\bUNIQUE\b/i, "UNIQUE constraint"],
-    [/\bCREATE\s+UNIQUE\s+INDEX\b/i, "UNIQUE index"],
+    [/\bADD\s+CONSTRAINT\b[^;]*\bUNIQUE\b/i, "UNIQUE constraint", true],
+    [/\bCREATE\s+UNIQUE\s+INDEX\b/i, "UNIQUE index", true],
     // A foreign key added to a populated table fails on the first orphan.
-    [/\bADD\s+CONSTRAINT\b[^;]*\bFOREIGN\s+KEY\b/i, "FOREIGN KEY constraint"],
+    [/\bADD\s+CONSTRAINT\b[^;]*\bFOREIGN\s+KEY\b/i, "FOREIGN KEY constraint", true],
     // A CHECK is validated against every existing row when it is added.
-    [/\bADD\s+CONSTRAINT\b[^;]*\bCHECK\b/i, "CHECK constraint"],
+    [/\bADD\s+CONSTRAINT\b[^;]*\bCHECK\b/i, "CHECK constraint", true],
     // A type change casts every row. Narrowing, or a text column holding one
     // unparseable value, and the whole statement stops.
-    [/\bALTER\s+COLUMN\b[^;]*\bTYPE\b/i, "column type change"],
+    [/\bALTER\s+COLUMN\b[^;]*\bTYPE\b/i, "column type change", false],
   ];
-  return checks.filter(([pattern]) => pattern.test(code)).map(([, label]) => label);
+  return checks
+    .filter(
+      ([pattern, , alsoInDoBlocks]) =>
+        pattern.test(code) || (alsoInDoBlocks && pattern.test(doBodies))
+    )
+    .map(([, label]) => label);
+}
+
+/**
+ * The inside of every DO block in a script, masked, one after another.
+ *
+ * maskNonCode blanks a dollar-quoted body whole. That is right for most scans,
+ * but a generated script runs some of its statements from exactly such a body,
+ * behind a lookup that skips them on a second run (see onlyIfMissing in
+ * lib/generate-sql.ts). A scan that has to see those statements reads this as
+ * well as the masked script.
+ */
+export function doBlockBodies(sql: string): string {
+  return splitStatements(sql)
+    .map(stripLeadingComments)
+    .filter((statement) => /^DO\b/i.test(statement))
+    .map(doBlockBody)
+    .join("\n");
+}
+
+/**
+ * The inside of a DO block, masked the same way as the rest of the script: the
+ * text from its first dollar tag up to the next copy of that same tag. The tag
+ * may carry a name ($guard$ as well as $$), and only the same tag closes it.
+ * Empty when the statement has no dollar-quoted body.
+ */
+function doBlockBody(statement: string): string {
+  const tag = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(statement);
+  if (!tag) return "";
+  const start = tag.index + tag[0].length;
+  const end = statement.indexOf(tag[0], start);
+  return maskNonCode(end === -1 ? statement.slice(start) : statement.slice(start, end));
 }
 
 /**

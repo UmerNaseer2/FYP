@@ -14,7 +14,7 @@
 // module reads it. The text search is still here, because a hand-written script
 // or one from an older version has no stamp — but it runs on a masked copy with
 // every comment, literal and quoted identifier blanked out.
-import { maskNonCode } from "./sql-guard";
+import { doBlockBodies, maskNonCode } from "./sql-guard";
 import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
 
 /**
@@ -80,9 +80,14 @@ const DROPS_SOMETHING =
  * string literal or a quoted identifier counts for nothing — which is what
  * makes a safe-mode script, whose drops are all commented out, grade as what it
  * really does rather than as what it describes.
+ *
+ * The inside of a DO block is read as well. maskNonCode blanks it whole, and a
+ * generated script puts some statements there, behind a lookup that skips them
+ * on a second run (see onlyIfMissing in lib/generate-sql.ts). A column rename
+ * written that way is still a rename.
  */
 export function inferChangeTypeFromSql(sql: string): ScriptChangeType {
-  const code = maskNonCode(sql).toLowerCase();
+  const code = `${maskNonCode(sql)}\n${doBlockBodies(sql)}`.toLowerCase();
   if (
     DROPS_SOMETHING.test(code) ||
     /\bset\s+not\s+null\b/.test(code) ||

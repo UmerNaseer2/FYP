@@ -68,6 +68,34 @@ describe("inferChangeTypeFromSql", () => {
   it("leaves a row-only change on patch", () => {
     expect(inferChangeTypeFromSql("TRUNCATE TABLE orders;")).toBe("patch");
   });
+
+  // A generated script runs some statements from inside a DO block, behind a
+  // lookup that skips them on a second run. maskNonCode blanks such a body
+  // whole, so it is read on its own.
+  it("reads the statements inside a DO block", () => {
+    const sql = [
+      "DO $guard$",
+      "BEGIN",
+      "  IF NOT EXISTS (SELECT 1) THEN",
+      '    ALTER TABLE "orders" RENAME COLUMN "a" TO "b";',
+      "  END IF;",
+      "END",
+      "$guard$;",
+    ].join("\n");
+    expect(inferChangeTypeFromSql(sql)).toBe("breaking");
+  });
+
+  it("still ignores a comment or a string inside a DO block", () => {
+    const sql = "DO $$ BEGIN\n  -- DROP TABLE legacy\n  RAISE NOTICE 'drop table';\nEND $$;";
+    expect(inferChangeTypeFromSql(sql)).toBe("patch");
+  });
+
+  // Creating a function runs nothing inside it.
+  it("does not read a function body as if it ran", () => {
+    const sql =
+      "CREATE FUNCTION purge() RETURNS void LANGUAGE plpgsql AS $$ BEGIN DROP TABLE legacy; END $$;";
+    expect(inferChangeTypeFromSql(sql)).toBe("patch");
+  });
 });
 
 describe("readChangeTypeHeader", () => {
