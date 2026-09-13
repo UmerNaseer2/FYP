@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import pool, { syncMetadataTables } from "./version-db";
-import { fingerprintBody, type ApprovalScript } from "./approval-fingerprint";
+import {
+  fingerprintBody,
+  rollbackFingerprintBody,
+  type ApprovalScript,
+} from "./approval-fingerprint";
 
 export type { ApprovalScript };
 
@@ -28,9 +32,23 @@ export type { ApprovalScript };
  * the approval no longer authorises anything — which is the whole point. An
  * approval that could be re-used against different SQL would be worse than no
  * approval, because it would carry a second person's name.
+ *
+ * Rollbacks on production follow the same rule through the same table. The
+ * `action` column says which route may spend a row ("deploy" for the apply
+ * route, "revert" for the revert route), and a rollback's fingerprint is built
+ * under a different header (rollbackFingerprintBody), so an approval for one
+ * can never be spent on the other.
  */
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "used";
+
+/** What an approval authorises: a deploy (apply route) or a rollback (revert route). */
+export type ApprovalAction = "deploy" | "revert";
+
+/** True for "deploy" and "revert", the only two values the table accepts. */
+export function isApprovalAction(value: unknown): value is ApprovalAction {
+  return value === "deploy" || value === "revert";
+}
 
 /** One row of `deploy_approvals`, as every screen and route sees it. */
 export type DeployApproval = {
@@ -50,21 +68,25 @@ export type DeployApproval = {
   self_approved: boolean;
   note: string | null;
   used_at: string | null;
+  action: ApprovalAction;
 };
 
 const COLUMNS = `id, connection_id, schema_name, script_name, target_version,
   run_fingerprint, migration_count, breaking_count, requested_by, requested_at,
-  status, decided_by, decided_at, self_approved, note, used_at`;
+  status, decided_by, decided_at, self_approved, note, used_at, action`;
 
 /**
  * Hash the exact SQL of a run.
  *
  * The text being hashed is built by lib/approval-fingerprint, which the Deploy
  * screen also uses — the screen has to reach the same hex string to know
- * whether the run in front of the user is the approved one.
+ * whether the run in front of the user is the approved one. A deploy hashes
+ * fingerprintBody and a rollback hashes rollbackFingerprintBody, so the same
+ * scripts give two different fingerprints.
  */
-export function runFingerprint(scripts: ApprovalScript[]): string {
-  return createHash("sha256").update(fingerprintBody(scripts), "utf8").digest("hex");
+export function runFingerprint(scripts: ApprovalScript[], action: ApprovalAction): string {
+  const body = action === "revert" ? rollbackFingerprintBody(scripts) : fingerprintBody(scripts);
+  return createHash("sha256").update(body, "utf8").digest("hex");
 }
 
 export async function createApprovalRequest(input: {
@@ -72,13 +94,15 @@ export async function createApprovalRequest(input: {
   schemaName: string;
   scriptName: string;
   targetVersion: string;
+  /** For a rollback: the rollback SQL that will run, newest version first. */
   scripts: ApprovalScript[];
   breakingCount: number;
   requestedBy: string;
   note: string | null;
+  action: ApprovalAction;
 }): Promise<DeployApproval> {
   await syncMetadataTables();
-  const fingerprint = runFingerprint(input.scripts);
+  const fingerprint = runFingerprint(input.scripts, input.action);
 
   // An identical request that is still open is the same request. Returning it
   // rather than inserting a second row keeps the approver from seeing the same
@@ -86,17 +110,18 @@ export async function createApprovalRequest(input: {
   const open = await pool.query<DeployApproval>(
     `SELECT ${COLUMNS} FROM deploy_approvals
       WHERE connection_id = $1 AND schema_name = $2 AND run_fingerprint = $3
+        AND action = $4
         AND status IN ('pending', 'approved')
       ORDER BY id DESC LIMIT 1`,
-    [input.connectionId, input.schemaName, fingerprint]
+    [input.connectionId, input.schemaName, fingerprint, input.action]
   );
   if (open.rows.length > 0) return open.rows[0];
 
   const created = await pool.query<DeployApproval>(
     `INSERT INTO deploy_approvals
        (connection_id, schema_name, script_name, target_version, run_fingerprint,
-        migration_count, breaking_count, requested_by, note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        migration_count, breaking_count, requested_by, note, action)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING ${COLUMNS}`,
     [
       input.connectionId,
@@ -108,12 +133,13 @@ export async function createApprovalRequest(input: {
       input.breakingCount,
       input.requestedBy,
       input.note,
+      input.action,
     ]
   );
   return created.rows[0];
 }
 
-/** Every approval for one target, newest first. */
+/** Every approval for one target, deploys and rollbacks together, newest first. */
 export async function listApprovals(
   connectionId: number,
   schemaName: string,
@@ -141,10 +167,11 @@ export function decisionBlockReason(
   }
   if (bypass) return null;
   if (approval.requested_by.toLowerCase() === deciderEmail.toLowerCase()) {
-    return (
-      "You asked for this deploy, so you cannot approve it. " +
-      "A production run needs a second person."
-    );
+    return approval.action === "revert"
+      ? "You asked for this rollback, so you cannot approve it. " +
+          "A rollback on production needs a second person."
+      : "You asked for this deploy, so you cannot approve it. " +
+          "A production run needs a second person.";
   }
   return null;
 }
@@ -199,26 +226,32 @@ export async function getApproval(id: number): Promise<DeployApproval | null> {
  * and the other is told to ask again. The `status = 'approved'` predicate in
  * the WHERE clause is what makes that a race-free single UPDATE rather than a
  * read followed by a write.
+ *
+ * `action` is required, not defaulted: the apply route passes "deploy" and the
+ * revert route passes "revert", and a caller that forgot to say which would
+ * otherwise quietly spend the wrong kind of approval.
  */
 export async function claimApproval(input: {
   connectionId: number;
   schemaName: string;
   scripts: ApprovalScript[];
+  action: ApprovalAction;
 }): Promise<DeployApproval | null> {
   await syncMetadataTables();
-  const fingerprint = runFingerprint(input.scripts);
+  const fingerprint = runFingerprint(input.scripts, input.action);
   const result = await pool.query<DeployApproval>(
     `UPDATE deploy_approvals
         SET status = 'used', used_at = now()
       WHERE id = (
         SELECT id FROM deploy_approvals
          WHERE connection_id = $1 AND schema_name = $2
-           AND run_fingerprint = $3 AND status = 'approved'
+           AND run_fingerprint = $3 AND action = $4
+           AND status = 'approved'
          ORDER BY id ASC LIMIT 1
          FOR UPDATE SKIP LOCKED
       )
       RETURNING ${COLUMNS}`,
-    [input.connectionId, input.schemaName, fingerprint]
+    [input.connectionId, input.schemaName, fingerprint, input.action]
   );
   return result.rows[0] ?? null;
 }

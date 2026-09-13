@@ -7,8 +7,9 @@ import {
 } from "@/lib/approvals-db";
 
 /**
- * Approve or reject one deploy request — the second half of the two-person
- * rule.
+ * Approve or reject one deploy or rollback request — the second half of the
+ * two-person rule. The row's `action` says which one it is; the rule is the
+ * same for both.
  *
  * Two things make this a real gate rather than a second checkbox:
  *

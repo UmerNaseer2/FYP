@@ -908,14 +908,19 @@ function SchemaCard({
         </div>
       </div>
 
-      <div className="mt-4 flex items-baseline gap-2">
-        <span className="mono text-[18px] font-semibold">{item.headVersion ?? "—"}</span>
+      {/* "lineage" is spelled out because this number is Schema Studio's own
+          counter for the tracked schema, and without the word it reads like
+          the script version Deploy shows as "Applied to target". The title
+          sits on the row so it shows over the number and the seq alike. */}
+      <div
+        className="mt-4 flex items-baseline gap-2"
+        title="Schema Studio's lineage number for this tracked schema. It moves when a deploy or re-baseline changes the structure, and is separate from the script versions in GitHub."
+      >
+        <span className="mono text-[18px] font-semibold">
+          {item.headVersion ? `lineage v${item.headVersion}` : "—"}
+        </span>
         {item.headSeq !== null && (
-          <span
-            className="mono text-[12px]"
-            style={{ color: "var(--text-3)" }}
-            title="The newest version recorded for this schema"
-          >
+          <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
             · seq {String(item.headSeq).padStart(4, "0")} — latest
           </span>
         )}

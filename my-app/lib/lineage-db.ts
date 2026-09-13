@@ -58,10 +58,16 @@ export type DriftStatus = "in_sync" | "drifted" | "unreachable";
 export const BASELINE_VERSION = "1.0.0";
 
 /**
- * Work out the next semver from the current one and the change level. Matches
- * the convention already used in `app/scripts/page.tsx`:
+ * Work out the next LINEAGE version from the current one and the change level:
  *   breaking → bump major, additive → bump minor, patch/unknown → bump patch.
  * Defensive about malformed input (treats missing parts as 0).
+ *
+ * Who calls it: the apply route (app/api/scripts/apply/route.ts) through
+ * recordAppliedMigrationToLineage below, and the re-baseline route
+ * (app/api/lineage/rebaseline/route.ts). Compare (lib/compare-run.ts) calls it
+ * only to preview the next number. This is Schema Studio's own counter for a
+ * tracked schema; script versions in GitHub and in a target's script_patch
+ * are numbered separately and never pass through here.
  */
 export function getNextLineageVersion(
   currentVersion: string | null,

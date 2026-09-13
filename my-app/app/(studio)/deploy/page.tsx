@@ -2057,7 +2057,10 @@ export default function DeployPage() {
                 </div>
                 <div className="ml-auto flex items-center gap-4 flex-wrap">
                   <div className="text-center">
-                    <div className="section-title">Target at</div>
+                    {/* "Applied": the highest script version recorded in the
+                        target's script_patch, the same word Compare and the
+                        Script Editor use. Not the lineage number. */}
+                    <div className="section-title">Applied to target</div>
                     <div className="mono text-[18px] font-semibold mt-1">{currentLabel}</div>
                   </div>
                   <ChevronRightIcon size={20} />

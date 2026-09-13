@@ -37,7 +37,19 @@ function field(value: string): string {
 }
 
 /**
- * Build the text for a run.
+ * The shared spelling: a header line ("<count> <noun>"), then one line per
+ * script. The two public functions below differ only in the noun.
+ */
+function runText(noun: string, scripts: ApprovalScript[]): string {
+  const header = `${scripts.length} ${noun}`;
+  const body = scripts.map(
+    (s) => `${field(s.scriptName)}${field(s.version)}${field(s.sqlContent)}`
+  );
+  return [header, ...body].join("\n");
+}
+
+/**
+ * Build the text for a deploy run.
  *
  * Order is preserved: the same migrations in a different order are a different
  * run and would leave a different database behind. Names and versions are in
@@ -49,9 +61,24 @@ function field(value: string): string {
  * stop matching and read as unapproved, which is the safe direction to fail in.
  */
 export function fingerprintBody(scripts: ApprovalScript[]): string {
-  const header = `${scripts.length} migrations`;
-  const body = scripts.map(
-    (s) => `${field(s.scriptName)}${field(s.version)}${field(s.sqlContent)}`
-  );
-  return [header, ...body].join("\n");
+  return runText("migrations", scripts);
+}
+
+/**
+ * Build the text for a rollback run: the same spelling under an
+ * "<count> rollbacks" header. `sqlContent` is the rollback SQL that will run,
+ * and the scripts go in the order they run, newest version first.
+ *
+ * Why a different header: deploys and rollbacks share one approvals table,
+ * and both are just SQL. With the same header, a rollback whose SQL happened
+ * to match some migration's SQL would get the same fingerprint, and an
+ * approval for one could be spent on the other. The table's `action` column
+ * keeps them apart too; the header means one forgotten `AND action = ...`
+ * still cannot mix them up.
+ *
+ * A rollback is never part of a deploy's fingerprint: approving a deploy says
+ * nothing about undoing it later, which needs its own approval.
+ */
+export function rollbackFingerprintBody(scripts: ApprovalScript[]): string {
+  return runText("rollbacks", scripts);
 }

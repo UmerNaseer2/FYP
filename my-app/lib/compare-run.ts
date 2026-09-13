@@ -34,6 +34,7 @@ import {
   determineNewerSchema,
   fetchSchemaVersionInfo,
   type ChangeLevel,
+  type NewerSchemaVerdict,
   type VersionDetectionResult,
 } from "@/lib/version-detection";
 import {
@@ -160,6 +161,14 @@ export type OutcomeView = Omit<TargetOutcome, "connection"> & {
    * whose URI names it differently is the one the reader recognises.
    */
   connectionDatabase: string | null;
+  /**
+   * The id of the saved connection this target was compared through, or null
+   * when the slot had none (the environment fallback). The Migration Workbench
+   * sends it to the preflight route to read the version already applied to
+   * this target. Only the id travels: the host, user and password stay on the
+   * server.
+   */
+  connectionId: number | null;
 };
 
 /** The whole screen in one value. */
@@ -212,6 +221,7 @@ function toOutcomeView(outcome: TargetOutcome): OutcomeView {
   return {
     ...rest,
     connectionDatabase: connection ? connection.database_name : null,
+    connectionId: connection ? connection.id : null,
   };
 }
 
@@ -487,7 +497,7 @@ type TargetOutcome = {
    * whenever either side has no version to compare, which is the common case
    * and the reason the structural diff below is the real answer.
    */
-  versionVerdict: { newer: "left" | "right" | "same" | "unknown"; reason: string } | null;
+  versionVerdict: NewerSchemaVerdict | null;
 };
 
 /**

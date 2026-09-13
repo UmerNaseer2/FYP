@@ -1,6 +1,8 @@
 import {
+  acceptVersionTable,
   determineNewerSchema,
   normalizeChangeLevel,
+  pickCurrentVersion,
   type VersionDetectionResult,
 } from "@/lib/version-detection";
 
@@ -32,6 +34,146 @@ function detected(
     message: "test fixture",
   };
 }
+
+describe("acceptVersionTable", () => {
+  it("does not take an app's own history table for a version table", () => {
+    // The old "%history%" pattern found this table, and the old reader then
+    // read its first column (id) as the schema's version.
+    expect(acceptVersionTable("order_history", ["id", "name", "created_at"])).toBe(false);
+  });
+
+  it("does not take a name-pattern match whose only version-like column is a name", () => {
+    expect(acceptVersionTable("data_migration_log", ["id", "name", "ran_at"])).toBe(false);
+  });
+
+  it("accepts Flyway's table", () => {
+    const flywayColumns = [
+      "installed_rank",
+      "version",
+      "description",
+      "type",
+      "script",
+      "checksum",
+      "installed_by",
+      "installed_on",
+      "execution_time",
+      "success",
+    ];
+    expect(acceptVersionTable("flyway_schema_history", flywayColumns)).toBe(true);
+  });
+
+  it("accepts a name-pattern match that has a real version column", () => {
+    expect(acceptVersionTable("app_versions", ["id", "version", "created_at"])).toBe(true);
+  });
+
+  it("accepts a known table name with a looser version column", () => {
+    // Laravel's `migrations` table has only `migration`; Rails has `version`.
+    expect(acceptVersionTable("migrations", ["id", "migration", "batch"])).toBe(true);
+    expect(acceptVersionTable("schema_migrations", ["version"])).toBe(true);
+  });
+
+  it("rejects a known table name with no version column at all", () => {
+    expect(acceptVersionTable("schema_version", ["id", "created_at"])).toBe(false);
+  });
+});
+
+describe("pickCurrentVersion", () => {
+  it("ignores a failed run, however high its version", () => {
+    const rows = [
+      { version: "1.3.0", succeeded: false },
+      { version: "1.2.0", succeeded: true },
+      { version: "1.1.0", succeeded: true },
+    ];
+    expect(pickCurrentVersion(rows)?.version).toBe("1.2.0");
+  });
+
+  it("keeps a row whose success is not recorded", () => {
+    const rows = [
+      { version: "3.0.0", succeeded: null },
+      { version: "2.0.0", succeeded: true },
+    ];
+    expect(pickCurrentVersion(rows)?.version).toBe("3.0.0");
+  });
+
+  it("ignores rows with no version, or no number in it", () => {
+    const rows = [{ version: null }, { version: "baseline" }, { version: "2.0.0" }];
+    expect(pickCurrentVersion(rows)?.version).toBe("2.0.0");
+  });
+
+  it("returns null when no row has a usable version", () => {
+    expect(pickCurrentVersion([{ version: null }, { version: "initial" }])).toBeNull();
+    expect(pickCurrentVersion([])).toBeNull();
+  });
+
+  it("compares versions part by part", () => {
+    // As text, "1.9.0" sorts above "1.10.0".
+    expect(pickCurrentVersion([{ version: "1.9.0" }, { version: "1.10.0" }])?.version).toBe(
+      "1.10.0"
+    );
+    // Packed into one number, 1.1000.0 and 2.0.0 come out equal.
+    expect(pickCurrentVersion([{ version: "1.1000.0" }, { version: "2.0.0" }])?.version).toBe(
+      "2.0.0"
+    );
+    expect(pickCurrentVersion([{ version: "2.0.0" }, { version: "1.1000.0" }])?.version).toBe(
+      "2.0.0"
+    );
+  });
+
+  it("reads a missing part as 0, and keeps the first of two equal versions", () => {
+    expect(pickCurrentVersion([{ version: "1.2" }, { version: "1.2.1" }])?.version).toBe("1.2.1");
+    const rows = [
+      { version: "1.2", tag: "newer by date" },
+      { version: "1.2.0", tag: "older by date" },
+    ];
+    expect(pickCurrentVersion(rows)?.tag).toBe("newer by date");
+  });
+
+  it("lets the scheme most rows use win when a table mixes them", () => {
+    // One timestamp-style rank among releases must not outrank 1.4.0 just
+    // because 20240115 is a bigger number.
+    const releases = [{ version: "20240115" }, { version: "1.4.0" }, { version: "1.3.0" }];
+    expect(pickCurrentVersion(releases)?.version).toBe("1.4.0");
+
+    const timestamps = [
+      { version: "20240301120000" },
+      { version: "20240115090000" },
+      { version: "1.0.0" },
+    ];
+    expect(pickCurrentVersion(timestamps)?.version).toBe("20240301120000");
+  });
+
+  it("breaks an even split between schemes in favour of semver", () => {
+    expect(pickCurrentVersion([{ version: "7" }, { version: "1.0.0" }])?.version).toBe("1.0.0");
+  });
+});
+
+describe("determineNewerSchema, part by part", () => {
+  it("does not treat 1.1000.0 and 2.0.0 as the same version", () => {
+    // Both pack to 2,000,000 for display. Ordering must not use that number.
+    const verdict = determineNewerSchema(
+      detected("dev", "1.1000.0", 2_000_000, "semver"),
+      detected("prod", "2.0.0", 2_000_000, "semver")
+    );
+    expect(verdict.newer).toBe("right");
+    expect(verdict.reason).toContain("2.0.0");
+  });
+
+  it("reads 1.2 and 1.2.0 as the same version", () => {
+    const verdict = determineNewerSchema(
+      detected("dev", "1.2", 1_002_000, "semver"),
+      detected("prod", "1.2.0", 1_002_000, "semver")
+    );
+    expect(verdict.newer).toBe("same");
+  });
+
+  it("orders 1.10.0 above 1.9.0", () => {
+    const verdict = determineNewerSchema(
+      detected("dev", "1.10.0", 1_010_000, "semver"),
+      detected("prod", "1.9.0", 1_009_000, "semver")
+    );
+    expect(verdict.newer).toBe("left");
+  });
+});
 
 describe("determineNewerSchema", () => {
   it("names the higher version when both sides count the same way", () => {

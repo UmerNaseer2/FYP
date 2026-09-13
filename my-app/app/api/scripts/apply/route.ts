@@ -5,7 +5,8 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
-import { containsTransactionControl, extractEnumAddValues } from "@/lib/sql-guard";
+import { containsTransactionControl, extractEnumAddValues, hasExecutableSql } from "@/lib/sql-guard";
+import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import {
   isProduction,
@@ -517,7 +518,14 @@ export async function POST(request: NextRequest) {
       // Kept beside the SQL that ran so a schema this migration is later
       // replayed onto — by Version Sync, which reads this ledger — inherits the
       // rollback instead of becoming permanently non-revertable.
-      downSql: raw.down_sql?.trim() || null,
+      //
+      // Only a rollback with a statement that runs is kept. A comment-only one
+      // changes nothing when it runs, so it is stored as NULL: that is what
+      // every reader of this column (preflight, the revert route, Version
+      // Sync, an older build of this app) understands as "no rollback".
+      // hasExecutableSql is the one test for that, used at every boundary.
+      downSql:
+        raw.down_sql && hasExecutableSql(raw.down_sql) ? raw.down_sql.trim() : null,
       // title is VARCHAR(150) — truncate before INSERT so an over-long title
       // cannot roll back an otherwise-successful migration.
       title: (raw.title?.trim() || scriptVersion).slice(0, 150),
@@ -640,6 +648,9 @@ export async function POST(request: NextRequest) {
           version: job.version,
           sqlContent: job.sqlContent,
         })),
+        // Only a deploy approval can clear a deploy. A rollback approval for
+        // the same scripts has action 'revert' and a different fingerprint.
+        action: "deploy",
       });
       if (!claimed) {
         return NextResponse.json(
@@ -865,6 +876,17 @@ export async function POST(request: NextRequest) {
       ledgerReady = ledgerProbe.rows[0]?.present === true;
     }
 
+    // Lock every script family in the run: one lock per family, sorted, before
+    // any per-version lock (lib/family-lock explains both rules). A deploy and
+    // a rollback of the same family name different versions, so only this
+    // lock makes one wait for the other. failedJob is still null here, so a
+    // lock timeout reads as "This run" rather than blaming one migration.
+    await lockScriptFamilies(
+      client,
+      schemaName,
+      queue.map((job) => job.scriptName)
+    );
+
     const outcomes: ScriptOutcome[] = [];
     let lastAppliedAt: string | null = null;
 
@@ -879,10 +901,7 @@ export async function POST(request: NextRequest) {
       // versions hash to different keys, so they never block each other. The lock
       // is released automatically when the transaction ends.
       failedJob = job;
-      await client.query(
-        `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
-        [schemaName, `${job.scriptName}|${job.version}`]
-      );
+      await lockScriptVersion(client, schemaName, job.scriptName, job.version);
 
       // Duplicate check scoped to this script family.
       // Two different script families can legitimately share the same version
@@ -1205,10 +1224,11 @@ export async function POST(request: NextRequest) {
           schema: schemaName,
           results: rolledBackOutcomes(queue, failedJob, "Timed out waiting for a lock."),
           error:
-            `${blocked} waited ${LOCK_TIMEOUT_MS / 1000} seconds for a lock on a ` +
-            `table in "${schemaName}" and gave up, so nothing was applied. ` +
-            `Something else is holding that table — a long query, an open ` +
-            `transaction, another deploy. Try again once it finishes.`,
+            `${blocked} waited ${LOCK_TIMEOUT_MS / 1000} seconds for a lock in ` +
+            `"${schemaName}" and gave up, so nothing was applied. Something else ` +
+            `is holding it — a long query, an open transaction, or a deploy or ` +
+            `rollback of the same script that is still running. Try again once ` +
+            `it finishes.`,
         },
         { status: 503 }
       );

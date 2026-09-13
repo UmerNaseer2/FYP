@@ -1,4 +1,5 @@
 import type { DetectedVersion } from "@/lib/compare-run";
+import type { NewerSchemaVerdict } from "@/lib/version-detection";
 import { ChevronDownIcon } from "@/components/ui/icons";
 
 // ---------------------------------------------------------------------------
@@ -18,8 +19,12 @@ import { ChevronDownIcon } from "@/components/ui/icons";
 // and silently omitting the bar would read as "there was nothing to look for".
 // ---------------------------------------------------------------------------
 
-/** Both sides of the comparison, in the order determineNewerSchema saw them. */
-type Verdict = { newer: "left" | "right" | "same" | "unknown"; reason: string };
+/**
+ * Both sides of the comparison, in the order determineNewerSchema saw them.
+ * The same type determineNewerSchema returns; a type-only import, so nothing
+ * from the server-side detector reaches the browser bundle.
+ */
+type Verdict = NewerSchemaVerdict;
 
 /**
  * Short, safe date. Returns "" for a missing or unparseable timestamp rather

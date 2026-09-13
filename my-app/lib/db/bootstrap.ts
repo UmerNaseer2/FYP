@@ -130,6 +130,13 @@ async function addConstraints(): Promise<void> {
     "deploy_approvals_two_person_check",
     "decided_by IS NULL OR self_approved OR lower(decided_by) <> lower(requested_by)"
   );
+  // Only the two routes that spend approvals: the apply route ('deploy') and
+  // the revert route ('revert').
+  await addCheckConstraint(
+    "deploy_approvals",
+    "deploy_approvals_action_check",
+    "action IN ('deploy', 'revert')"
+  );
 }
 
 /** Indexes over an expression rather than a column — outside what sync() emits. */
@@ -235,6 +242,14 @@ async function backfillOlderTables(): Promise<void> {
   await metadataPool.query(
     `ALTER TABLE comparison_sets
        ADD COLUMN IF NOT EXISTS compare_data BOOLEAN NOT NULL DEFAULT false`
+  );
+
+  // What an approval authorises: a deploy or a rollback. Every row written
+  // before rollbacks needed approval was a deploy, so that is the default.
+  // Added here, before addConstraints puts a CHECK on it.
+  await metadataPool.query(
+    `ALTER TABLE deploy_approvals
+       ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'deploy'`
   );
 
   await alterTimestampColumns();

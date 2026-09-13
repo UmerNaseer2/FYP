@@ -1,10 +1,14 @@
+import { compareSchemas } from "@/lib/compare";
+import { generateRollback, renderRollbackScript } from "@/lib/generate-sql";
 import {
   containsTransactionControl,
   doBlockBodies,
   extractEnumAddValues,
   findMightFailStatements,
   findRowDestroyingStatements,
+  hasExecutableSql,
 } from "@/lib/sql-guard";
+import { column, schema, table } from "./helpers/snapshots";
 
 /**
  * The transaction guard is the one thing standing between a migration and a
@@ -376,5 +380,48 @@ describe("doBlockBodies", () => {
   it("returns nothing when there is no DO block", () => {
     const sql = "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;";
     expect(doBlockBodies(sql).trim()).toBe("");
+  });
+});
+
+/**
+ * "Has text" is not "has a rollback": PostgreSQL runs a file of only comments
+ * and semicolons as an empty query and changes nothing. Every boundary that
+ * decides whether a rollback exists asks hasExecutableSql, so these cases pin
+ * down what counts.
+ */
+describe("hasExecutableSql", () => {
+  // The header the generator writes when a diff has nothing to undo.
+  function emptyRollback() {
+    const same = schema([table("orders", [column("id", { nullable: false })])]);
+    return generateRollback(compareSchemas(same, same));
+  }
+
+  it("finds nothing to run in blank, comment-only or semicolon-only text", () => {
+    for (const sql of ["", "   \n\t", "-- note", "/* x */ ;", ";;"]) {
+      expect(hasExecutableSql(sql)).toBe(false);
+    }
+  });
+
+  it("finds nothing to run in the header-only rollback the generator renders", () => {
+    const script = emptyRollback();
+    expect(script.statements).toEqual([]);
+    expect(hasExecutableSql(renderRollbackScript(script))).toBe(false);
+    // Warnings are written as comments, so even SQL-looking words in one stay inert.
+    const warned = { ...script, warnings: ["Check first;\nDROP TABLE orders;"] };
+    expect(hasExecutableSql(renderRollbackScript(warned))).toBe(false);
+  });
+
+  it("finds a real statement, even after a comment", () => {
+    expect(hasExecutableSql("DROP TABLE t;")).toBe(true);
+    expect(hasExecutableSql("-- note\nALTER TABLE t DROP COLUMN c;")).toBe(true);
+  });
+
+  it("counts the statement around a literal or a dollar-quoted body", () => {
+    expect(hasExecutableSql("SELECT '-- not a comment'")).toBe(true);
+    expect(hasExecutableSql("DO $$ BEGIN RAISE NOTICE 'x'; END $$;")).toBe(true);
+  });
+
+  it("answers false for anything that is not text", () => {
+    expect(hasExecutableSql(undefined as unknown as string)).toBe(false);
   });
 });

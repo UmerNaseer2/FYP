@@ -594,6 +594,8 @@ export class DeployApproval extends Model<
   declare self_approved: CreationOptional<boolean>;
   declare note: CreationOptional<string | null>;
   declare used_at: CreationOptional<Date | null>;
+  /** "deploy" or "revert": which route may spend this approval (ApprovalAction in lib/approvals-db). */
+  declare action: CreationOptional<string>;
 }
 
 DeployApproval.init(
@@ -619,6 +621,15 @@ DeployApproval.init(
     self_approved: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     note: { type: DataTypes.TEXT, allowNull: true },
     used_at: { type: DataTypes.DATE, allowNull: true },
+    // Which route may spend the approval. Rows from before rollbacks needed
+    // approval were all deploys, hence the default; bootstrap adds the column
+    // to older tables (sync() never adds columns) and a CHECK on the values.
+    action: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      defaultValue: "deploy",
+      validate: { isIn: [["deploy", "revert"]] },
+    },
   },
   {
     sequelize,

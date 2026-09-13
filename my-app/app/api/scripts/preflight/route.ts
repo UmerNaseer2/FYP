@@ -4,6 +4,8 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { compareVersions } from "@/lib/script-status";
+import { hasExecutableSql } from "@/lib/sql-guard";
+import type { PoolClient } from "pg";
 
 // One row from script_patch — what we return to the frontend
 export type PatchEntry = {
@@ -13,14 +15,36 @@ export type PatchEntry = {
   change_type: string;
   applied_at: string;
   /**
-   * Whether this row stored its own rollback, and the rollback itself.
-   * Deploy asks the user to confirm a revert before running it, and a
-   * confirmation you cannot read is not one you can give — so the SQL that
-   * will actually run has to travel with the flag. The revert route still
-   * reads the script out of the row itself and never trusts this copy.
+   * The rollback stored on this row, and whether it is a real one.
+   *
+   * has_down_sql is true only when down_sql has a statement that runs
+   * (hasExecutableSql, the one executable-SQL test): Version Sync used to
+   * store comment-only copies, and those are no rollback at all.
+   *
+   * The SQL travels to Deploy so the operator can read what a rollback will
+   * run before confirming it. The revert route does not trust this copy: it
+   * reads the row again inside its own transaction and runs the stored copy.
+   * A registry copy the page sends is used only when the row has none.
    */
   has_down_sql: boolean;
   down_sql: string | null;
+};
+
+/** One row of script_patch_reverted: a version that was rolled back here. */
+export type RevertedEntry = {
+  script_name: string;
+  version: string;
+  title: string | null;
+  change_type: string | null;
+  applied_at: string | null;
+  reverted_at: string;
+};
+
+/** A version of ANOTHER script family, applied after this family's first version. */
+export type OtherScriptEntry = {
+  script_name: string;
+  version: string;
+  applied_at: string;
 };
 
 // The full pre-flight response shape
@@ -34,11 +58,93 @@ export type PreflightResult = {
   // null means the result is unfiltered (all entries in script_patch).
   scriptName: string | null;
   message: string;
+  /**
+   * Rollback history, newest first (at most 50), for this family or for the
+   * whole schema when scriptName is null. [] when the schema has never had a
+   * rollback. Returned in every branch: a family whose only version was
+   * rolled back has an empty timeline but still has a history.
+   */
+  reverted: RevertedEntry[];
+  /**
+   * Other families' versions applied after this family's first version, oldest
+   * first (at most 200). [] without a scriptName or when the family has
+   * nothing applied. Deploy narrows it to the chosen "Roll back to" version.
+   */
+  otherScripts: OtherScriptEntry[];
 };
 
 // Safely quote a PostgreSQL identifier (prevents SQL injection)
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+type Queryable = Pick<PoolClient, "query">;
+
+/**
+ * The rollback history. The audit table is created by the revert route on
+ * the first rollback, so a schema that never had one has no table: ask the
+ * catalog first instead of letting the SELECT fail the whole preflight.
+ */
+async function readReverted(
+  client: Queryable,
+  schemaName: string,
+  scriptName: string | null
+): Promise<RevertedEntry[]> {
+  const quotedSchema = quoteIdent(schemaName);
+  const present = await client.query<{ reg: string | null }>(
+    `SELECT to_regclass($1) AS reg`,
+    [`${quotedSchema}.script_patch_reverted`]
+  );
+  if (!present.rows[0]?.reg) return [];
+
+  // id breaks ties: every version of one batch rollback shares reverted_at
+  // (the transaction start), and a higher id came off later in that batch.
+  const result = await client.query<RevertedEntry>(
+    `SELECT script_name, version, title, change_type, applied_at, reverted_at
+       FROM ${quotedSchema}.script_patch_reverted
+      WHERE ($1::text IS NULL OR script_name = $1)
+      ORDER BY reverted_at DESC, id DESC
+      LIMIT 50`,
+    [scriptName]
+  );
+  return result.rows;
+}
+
+/**
+ * Other families' versions applied after this family's first version. A
+ * rollback of this family may remove something they use (and a DROP ...
+ * CASCADE takes their objects with it), so Deploy lists the ones that came
+ * after the version being rolled back to.
+ *
+ * "After" means a later applied_at, or the same applied_at and a higher
+ * ledger id. Every row one deploy run writes shares one applied_at (it is
+ * the transaction's start time), so a family deployed in the same run as
+ * this family's first version would be missed by applied_at alone. The
+ * revert route uses the same rule, so this list and its refusal agree.
+ * With no applied row the "oldest" subquery is empty and nothing is listed.
+ */
+async function readOtherScripts(
+  client: Queryable,
+  schemaName: string,
+  scriptName: string
+): Promise<OtherScriptEntry[]> {
+  const quotedSchema = quoteIdent(schemaName);
+  const result = await client.query<OtherScriptEntry>(
+    `SELECT other.script_name, other.version, other.applied_at
+       FROM ${quotedSchema}.script_patch AS other
+       JOIN (SELECT applied_at, id
+               FROM ${quotedSchema}.script_patch
+              WHERE script_name = $1 AND applied_at IS NOT NULL
+              ORDER BY applied_at, id
+              LIMIT 1) AS oldest ON true
+      WHERE other.script_name <> $1
+        AND (other.applied_at > oldest.applied_at
+             OR (other.applied_at = oldest.applied_at AND other.id > oldest.id))
+      ORDER BY other.applied_at, other.id
+      LIMIT 200`,
+    [scriptName]
+  );
+  return result.rows;
 }
 
 export async function POST(request: NextRequest) {
@@ -169,6 +275,10 @@ export async function POST(request: NextRequest) {
 
     const hasVersionTable = tableCheck.rows[0]?.exists === true;
 
+    // Read in every branch below: the history does not depend on the ledger
+    // still having rows (or, for a hand-cleaned schema, on it existing).
+    const reverted = await readReverted(client, schemaName, scriptName);
+
     // ─── 5a. No script_patch found ────────────────────────────────────────
     if (!hasVersionTable) {
       const result: PreflightResult = {
@@ -181,6 +291,8 @@ export async function POST(request: NextRequest) {
         message:
           `Schema "${schemaName}" on "${connRow.name}" has no script_patch table. ` +
           `It will be created automatically on first deploy.`,
+        reverted,
+        otherScripts: [],
       };
       return NextResponse.json(result);
     }
@@ -204,13 +316,13 @@ export async function POST(request: NextRequest) {
           AND column_name = 'down_sql'`,
       [schemaName]
     );
-    const downExpr =
-      colCheck.rows.length > 0
-        ? "down_sql, (down_sql IS NOT NULL AND down_sql <> '') AS has_down_sql"
-        : "NULL::text AS down_sql, false AS has_down_sql";
+    // has_down_sql is worked out below, in JS, with hasExecutableSql: a SQL
+    // "<> ''" test counted a comment-only copy as a rollback.
+    const downExpr = colCheck.rows.length > 0 ? "down_sql" : "NULL::text AS down_sql";
 
+    type LedgerRow = Omit<PatchEntry, "has_down_sql">;
     const timelineResult = scriptName
-      ? await client.query<PatchEntry>(
+      ? await client.query<LedgerRow>(
           `SELECT
              version,
              title,
@@ -223,7 +335,7 @@ export async function POST(request: NextRequest) {
            ORDER BY applied_at DESC`,
           [scriptName]
         )
-      : await client.query<PatchEntry>(
+      : await client.query<LedgerRow>(
           `SELECT
              version,
              title,
@@ -235,7 +347,10 @@ export async function POST(request: NextRequest) {
            ORDER BY applied_at DESC`
         );
 
-    const timeline: PatchEntry[] = timelineResult.rows;
+    const timeline: PatchEntry[] = timelineResult.rows.map((row) => ({
+      ...row,
+      has_down_sql: hasExecutableSql(row.down_sql ?? ""),
+    }));
 
     // ─── 6. Handle empty timeline ─────────────────────────────────────────
     if (timeline.length === 0) {
@@ -249,9 +364,14 @@ export async function POST(request: NextRequest) {
         message: scriptName
           ? `No versions of "${scriptName}" have been applied to schema "${schemaName}" yet. All scripts will be treated as pending.`
           : `script_patch table exists in "${schemaName}" but has no entries yet. All scripts will be treated as pending.`,
+        reverted,
+        otherScripts: [],
       };
       return NextResponse.json(result);
     }
+
+    // Only for one family with applied rows (the timeline is non-empty here).
+    const otherScripts = scriptName ? await readOtherScripts(client, schemaName, scriptName) : [];
 
     // ─── 7. Determine the current version ────────────────────────────────
     // "Current" = the highest semver in the (possibly filtered) timeline,
@@ -274,6 +394,8 @@ export async function POST(request: NextRequest) {
       message: scriptName
         ? `"${scriptName}" in schema "${schemaName}" on "${connRow.name}" is at version ${currentVersion}. ${timeline.length} version(s) in history.`
         : `Schema "${schemaName}" on "${connRow.name}" is at version ${currentVersion}. ${timeline.length} version(s) in history.`,
+      reverted,
+      otherScripts,
     };
 
     return NextResponse.json(result);

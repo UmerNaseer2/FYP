@@ -236,6 +236,9 @@ export function MigrationWorkbench({
           schema_name: targetSchema,
           script_name: scriptName,
           version: effectiveVersion,
+          // The level picked above. The route writes it into the file's
+          // "-- Change-type:" line, so Deploy shows the level chosen here.
+          change_level: level,
           sql_content: sql,
           // Saved beside it as v<ver>.down.sql so the version can be undone
           // later from Deploy. Omitted when there is nothing to undo.

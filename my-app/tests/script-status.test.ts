@@ -1,8 +1,16 @@
+import { familyVersions } from "@/lib/registry-push";
 import {
+  FIRST_VERSION,
+  bumpToLevel,
   bumpVersion,
   buildVersionLedger,
+  checkNewVersion,
   compareVersions,
+  highestVersion,
   isValidSemver,
+  levelOfStep,
+  levelToBump,
+  looksLikeVersion,
   normalizeVersion,
   parseSemver,
   suggestBumpLevel,
@@ -45,10 +53,18 @@ describe("bumpVersion", () => {
     expect(bumpVersion("1.4.7", "patch")).toBe("1.4.8");
   });
 
-  it("treats no prior version as 0.0.0", () => {
-    expect(bumpVersion(null, "major")).toBe("1.0.0");
-    expect(bumpVersion(null, "minor")).toBe("0.1.0");
-    expect(bumpVersion("", "patch")).toBe("0.0.1");
+  it("starts a new family at 1.0.0 whatever level is picked", () => {
+    // Bumping from 0.0.0 used to give 0.1.0 or 0.0.1 for a family's first
+    // script; the first version of every family is 1.0.0.
+    for (const level of ["major", "minor", "patch"] as const) {
+      expect(bumpVersion(null, level)).toBe(FIRST_VERSION);
+      expect(bumpVersion("", level)).toBe("1.0.0");
+      expect(bumpVersion("garbage", level)).toBe("1.0.0");
+    }
+  });
+
+  it("reads a v prefix and spaces on the floor", () => {
+    expect(bumpVersion(" v1.2 ", "minor")).toBe("1.3.0");
   });
 
   it("still lands above a four-segment floor", () => {
@@ -74,6 +90,56 @@ describe("suggestBumpLevel", () => {
   it("falls back to patch", () => {
     expect(suggestBumpLevel("COMMENT ON TABLE t IS 'hi';")).toBe("patch");
     expect(suggestBumpLevel("")).toBe("patch");
+  });
+
+  // It used to search the text itself, comments included, so a script that
+  // only mentioned a drop in a comment was suggested as a major version.
+  it("ignores a drop that is only written in a comment", () => {
+    expect(suggestBumpLevel("-- drop table x\nCREATE TABLE y(id int);")).toBe("minor");
+  });
+
+  // Deploy has always called this breaking; the old search called it a patch.
+  it("agrees with Deploy that dropping a view is major", () => {
+    expect(suggestBumpLevel("DROP VIEW v;")).toBe("major");
+  });
+
+  it("no longer calls a changed default or a dropped NOT NULL major", () => {
+    expect(suggestBumpLevel("ALTER TABLE t ALTER COLUMN a SET DEFAULT 0;")).toBe("patch");
+    expect(suggestBumpLevel("ALTER TABLE t ALTER COLUMN a DROP NOT NULL;")).toBe("patch");
+  });
+});
+
+describe("levelToBump and bumpToLevel", () => {
+  it("map breaking/additive/patch onto major/minor/patch and back", () => {
+    expect(levelToBump("breaking")).toBe("major");
+    expect(levelToBump("additive")).toBe("minor");
+    expect(levelToBump("patch")).toBe("patch");
+    expect(bumpToLevel("major")).toBe("breaking");
+    expect(bumpToLevel("minor")).toBe("additive");
+    expect(bumpToLevel("patch")).toBe("patch");
+  });
+});
+
+describe("levelOfStep", () => {
+  it("reads the kind of step from the first part that changes", () => {
+    expect(levelOfStep("1.2.3", "2.0.0")).toBe("breaking");
+    expect(levelOfStep("1.2.3", "1.3.0")).toBe("additive");
+    expect(levelOfStep("1.2.3", "1.2.4")).toBe("patch");
+  });
+
+  it("has no step to read without a previous version", () => {
+    expect(levelOfStep(null, "1.0.0")).toBeNull();
+    expect(levelOfStep("  ", "1.0.0")).toBeNull();
+  });
+
+  it("reads a four-part outside version as the patch step it looks like", () => {
+    expect(levelOfStep("1.2.0.3", "1.2.1")).toBe("patch");
+  });
+
+  it("is not a step when the number stands still or goes backwards", () => {
+    expect(levelOfStep("1.2.3", "1.2.3")).toBeNull();
+    expect(levelOfStep("v1.2", "1.2.0")).toBeNull();
+    expect(levelOfStep("2.0.0", "1.9.9")).toBeNull();
   });
 });
 
@@ -126,5 +192,68 @@ describe("buildVersionLedger", () => {
     expect(byVersion["1.0.0"]).toBe(true);
     expect(byVersion["1.1.0"]).toBe(true);
     expect(byVersion["2.0.0"]).toBe(false);
+  });
+});
+
+describe("looksLikeVersion", () => {
+  it("accepts anything that starts with a digit, after an optional v", () => {
+    expect(looksLikeVersion("1.2")).toBe(true);
+    expect(looksLikeVersion(" v2 ")).toBe(true);
+    // Four parts still set the floor: dropping them would offer a version below it.
+    expect(looksLikeVersion("1.2.0.3")).toBe(true);
+    expect(looksLikeVersion("init")).toBe(false);
+    expect(looksLikeVersion("")).toBe(false);
+    expect(looksLikeVersion(null)).toBe(false);
+  });
+});
+
+describe("highestVersion", () => {
+  it("compares numerically and ignores the v", () => {
+    expect(highestVersion(["1.2.0", "1.10.0", "v1.9.9"])).toBe("1.10.0");
+  });
+
+  it("skips labels that are not versions but keeps four-part ones", () => {
+    expect(highestVersion(["init", "2.0.0.1", "2.0.0"])).toBe("2.0.0.1");
+  });
+
+  it("has no highest for an empty family", () => {
+    expect(highestVersion([])).toBeNull();
+    expect(highestVersion([null, undefined, "init"])).toBeNull();
+  });
+
+  it("is the floor the next version is bumped from", () => {
+    expect(bumpVersion(highestVersion(["1.0.0", "1.4.2"]), "minor")).toBe("1.5.0");
+    expect(bumpVersion(highestVersion([]), "minor")).toBe("1.0.0");
+  });
+});
+
+describe("checkNewVersion", () => {
+  const existing = ["1.0.0", "1.1.0"];
+
+  it("refuses a version that exists, under any spelling", () => {
+    expect(checkNewVersion(existing, "1.1.0")).toEqual({ status: "exists", highest: "1.1.0" });
+    expect(checkNewVersion(existing, "1.1")).toEqual({ status: "exists", highest: "1.1.0" });
+  });
+
+  it("refuses a version below the highest", () => {
+    expect(checkNewVersion(existing, "1.0.5")).toEqual({ status: "not-above", highest: "1.1.0" });
+  });
+
+  it("accepts a version above the highest, or any first version", () => {
+    expect(checkNewVersion(existing, "1.1.1")).toEqual({ status: "ok", highest: "1.1.0" });
+    expect(checkNewVersion([], "1.0.0")).toEqual({ status: "ok", highest: null });
+  });
+});
+
+describe("familyVersions", () => {
+  it("publishes only versions with a migration file and keeps leftover rollbacks apart", () => {
+    const result = familyVersions([
+      { name: "v1.0.0.sql", sha: "sha-1" },
+      { name: "v1.0.0.down.sql", sha: "sha-1-down" },
+      { name: "v1.1.0.down.sql", sha: "sha-orphan" },
+      { name: "README.md", sha: "sha-readme" },
+    ]);
+    expect(result.published).toEqual(["1.0.0"]);
+    expect(result.orphanRollbacks).toEqual({ "1.1.0": "sha-orphan" });
   });
 });

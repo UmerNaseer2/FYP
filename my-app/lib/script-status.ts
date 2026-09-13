@@ -1,9 +1,12 @@
-// Pure, dependency-free helpers for reasoning about migration-script versions:
-// comparing semver-ish strings, and labelling each version of a script family
+// Pure helpers for reasoning about migration-script versions: comparing
+// semver-ish strings, and labelling each version of a script family
 // Applied / Pending / Superseded against a target database's applied history.
 //
 // "Pure" on purpose — no DB, no fetch, no React — so it can be unit-tested in
-// isolation and reused by the deploy page without dragging UI state along.
+// isolation and reused by the deploy page without dragging UI state along. The
+// one import is the SQL reader in change-type, which is pure as well: the
+// editor's suggestion has to come from the same rule Deploy grades with.
+import { inferChangeTypeFromSql, type ScriptChangeType } from "./change-type";
 
 /** Split a version like "v1.2.0" into [1, 2, 0], ignoring stray non-digits. */
 export function versionParts(version: string): number[] {
@@ -61,50 +64,151 @@ export function normalizeVersion(version: string): string | null {
 }
 
 /**
- * The next version after `base`, bumped at `level`. A null/blank/invalid base
- * means "no prior version", so we bump from 0.0.0 (major → 1.0.0, minor →
- * 0.1.0, patch → 0.0.1). The result is always STRICTLY greater than `base`.
+ * The version a family's first script gets, whatever its change level. The
+ * same number as the lineage baseline (BASELINE_VERSION in lib/lineage-db.ts),
+ * repeated here because this module must stay free of database imports.
+ */
+export const FIRST_VERSION = "1.0.0";
+
+/**
+ * True when `version` starts with a number, after an optional leading "v":
+ * "1.2.0", "v2", and an outside four-part "1.2.0.3" all count; "init",
+ * "latest" and "" do not.
+ *
+ * This "digit-first" rule is looser than isValidSemver on purpose. A version
+ * that some other tool applied as 1.2.0.3 is still a real floor, and dropping
+ * it (as the strict check did) let the editor offer a number below what the
+ * target already runs.
+ */
+export function looksLikeVersion(version: string | null | undefined): version is string {
+  return typeof version === "string" && /^v?\d/i.test(version.trim());
+}
+
+/**
+ * The next version after `base`, bumped at `level`.
+ *
+ * No prior version means this is the first release, and a first release is
+ * always 1.0.0 (FIRST_VERSION) at every level: there is nothing earlier for it
+ * to be additive or breaking against, and the level is still recorded with the
+ * script. "No prior version" covers null, a blank string and text that does
+ * not start with a number. Otherwise the result is always STRICTLY greater
+ * than `base`.
  */
 export function bumpVersion(base: string | null, level: BumpLevel): string {
+  if (!looksLikeVersion(base)) return FIRST_VERSION;
   // Use the tolerant versionParts (not strict parseSemver) so an externally
   // introduced 4+ segment floor like "1.2.0.3" still bumps from its first three
-  // parts (→ "1.2.1") instead of collapsing to 0.0.0 and landing below the
-  // floor — which would wedge the picker with every preset disabled.
-  const [major = 0, minor = 0, patch = 0] = base ? versionParts(base) : [];
+  // parts (→ "1.2.1") instead of collapsing and landing below the floor, which
+  // would wedge the picker with every preset disabled.
+  const [major = 0, minor = 0, patch = 0] = versionParts(base.trim());
   if (level === "major") return `${major + 1}.0.0`;
   if (level === "minor") return `${major}.${minor + 1}.0`;
   return `${major}.${minor}.${patch + 1}`;
 }
 
 /**
- * Suggest a bump level by inspecting the SQL. Mirrors the deploy page's
- * change-kind heuristic so the editor's suggestion matches how the script will
- * later be classified:
- *   - "major"  → breaking: DROP / ALTER COLUMN / SET NOT NULL / RENAME
- *   - "minor"  → additive: CREATE TABLE / ADD COLUMN / ADD CONSTRAINT / CREATE INDEX
- *   - "patch"  → everything else (data tweaks, comments, defaults, …)
+ * The highest version in a list, or null when nothing in it looks like a
+ * version (see looksLikeVersion). This is the family's floor: feed it the
+ * version applied to the target together with every version in GitHub, and
+ * bumpVersion(highestVersion(...), level) is the next number on every screen.
+ *
+ * Compared with compareVersions, so "1.10.0" beats "1.9.9". On a tie ("1.2"
+ * and "1.2.0") the first one seen is kept, trimmed but otherwise as written.
+ */
+export function highestVersion(versions: ReadonlyArray<string | null | undefined>): string | null {
+  let highest: string | null = null;
+  for (const version of versions) {
+    if (!looksLikeVersion(version)) continue;
+    const trimmed = version.trim();
+    if (highest === null || compareVersions(trimmed, highest) > 0) highest = trimmed;
+  }
+  return highest;
+}
+
+/** What checkNewVersion found. `highest` is the family's highest version, or null for a new family. */
+export type NewVersionCheck = {
+  status: "exists" | "not-above" | "ok";
+  highest: string | null;
+};
+
+/**
+ * Is `proposed` a new number strictly above every version the family already
+ * has?
+ *   - "exists":    the same version is already there (1.2 and 1.2.0 count as
+ *                  the same, as they do everywhere else).
+ *   - "not-above": it is lower than the family's highest version, so Deploy
+ *                  would sort it below scripts already published and never
+ *                  offer it.
+ *   - "ok":        it is above everything, or the family is empty.
+ * Normalise `proposed` first (normalizePushVersion in lib/registry-push.ts):
+ * this check does not judge the format.
+ */
+export function checkNewVersion(existing: ReadonlyArray<string>, proposed: string): NewVersionCheck {
+  const highest = highestVersion(existing);
+  const taken = existing.some(
+    (version) => looksLikeVersion(version) && compareVersions(version, proposed) === 0,
+  );
+  if (taken) return { status: "exists", highest };
+  if (highest !== null && compareVersions(proposed, highest) < 0) return { status: "not-above", highest };
+  return { status: "ok", highest };
+}
+
+/**
+ * The version step each change level asks for: breaking → major, additive →
+ * minor, patch → patch. The one place the two words for the same idea meet,
+ * so the editor, the push route and Deploy cannot map them differently.
+ */
+export function levelToBump(level: ScriptChangeType): BumpLevel {
+  if (level === "breaking") return "major";
+  if (level === "additive") return "minor";
+  return "patch";
+}
+
+/** The other way round: major → breaking, minor → additive, patch → patch. */
+export function bumpToLevel(bump: BumpLevel): ScriptChangeType {
+  if (bump === "major") return "breaking";
+  if (bump === "minor") return "additive";
+  return "patch";
+}
+
+/**
+ * Suggest a bump level from the SQL.
+ *
+ * This is the same reader Deploy grades an unstamped script with (gradeSql in
+ * lib/change-type.ts), so the editor suggests the level the script will later
+ * be shown as. It used to be a plain substring search of its own, which read
+ * "drop table" inside a comment as a real drop and called DROP VIEW a patch
+ * while Deploy called it breaking.
  */
 export function suggestBumpLevel(sql: string): BumpLevel {
-  const s = (sql ?? "").toLowerCase();
-  if (
-    s.includes("drop table") ||
-    s.includes("drop column") ||
-    s.includes("drop constraint") ||
-    s.includes(" set not null") ||
-    s.includes(" alter column") ||
-    s.includes(" rename ")
-  ) {
-    return "major";
+  return levelToBump(inferChangeTypeFromSql(sql ?? ""));
+}
+
+/**
+ * What kind of step a version number takes from the one before it: a new
+ * major number is a breaking step, a new minor number an additive one, and
+ * anything further right a patch. 1.2.3 → 2.0.0 is breaking, 1.2.3 → 1.3.0 is
+ * additive, 1.2.3 → 1.2.4 is a patch.
+ *
+ * Null when there is no previous version to step from, or when `to` is not
+ * above `from` — a number that stands still or goes backwards is not a step.
+ * Uses the tolerant versionParts, so an outside "1.2.0.3" → "1.2.1" reads as
+ * the patch step it looks like.
+ */
+export function levelOfStep(from: string | null, to: string): ScriptChangeType | null {
+  if (!from || !from.trim()) return null;
+  if (compareVersions(from, to) >= 0) return null;
+  const before = versionParts(from);
+  const after = versionParts(to);
+  const length = Math.max(before.length, after.length, 3);
+  // The first part that differs decides the kind of step.
+  for (let index = 0; index < length; index += 1) {
+    if ((before[index] ?? 0) === (after[index] ?? 0)) continue;
+    if (index === 0) return "breaking";
+    if (index === 1) return "additive";
+    return "patch";
   }
-  if (
-    s.includes("create table") ||
-    s.includes("add column") ||
-    s.includes("add constraint") ||
-    s.includes("create index")
-  ) {
-    return "minor";
-  }
-  return "patch";
+  return null;
 }
 
 // One applied row, as far as the ledger cares (from script_patch via preflight).

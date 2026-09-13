@@ -270,12 +270,14 @@ export default function SchemaDetailPage({
           </div>
         </div>
 
-        {/* Current / HEAD card */}
+        {/* Lineage card. Named "Lineage", not "Current": this is Schema
+            Studio's own counter for the tracked schema, and it must not be
+            read as the script version in GitHub or in script_patch. */}
         <Card className="px-5 py-4 w-full sm:min-w-[260px]">
           <div className="flex items-center justify-between mb-1">
-            <span className="section-title">Current</span>
+            <span className="section-title">Lineage</span>
             <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-              lineage HEAD
+              counts structure changes — not a script version
             </span>
           </div>
           <div className="flex items-baseline gap-2.5 mt-1">
@@ -422,7 +424,14 @@ function DriftBanner({
           <div className="flex-1 min-w-0">
             <h3 className="text-[15px] font-semibold tracking-[-0.005em]">
               The live schema has drifted from{" "}
-              {headVersion ? <span className="mono">v{headVersion}</span> : "its baseline"}.
+              {headVersion ? (
+                <>
+                  lineage <span className="mono">v{headVersion}</span>
+                </>
+              ) : (
+                "its baseline"
+              )}
+              .
             </h3>
             <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
               {summary ??
@@ -489,7 +498,7 @@ function DriftBanner({
         icon={<CheckIcon size={16} />}
         title={
           headVersion
-            ? `Live schema matches v${headVersion}.`
+            ? `Live schema matches lineage v${headVersion}.`
             : "Live schema matches its baseline."
         }
         body={summary ?? "No structural drift was found at the last check."}
@@ -637,7 +646,7 @@ function LineageNodeCard({
           style={{ color: "var(--text-3)" }}
         >
           <span className="mono" style={{ color: "var(--text-2)" }}>
-            v{node.version}
+            lineage v{node.version}
           </span>
           <span>·</span>
           <span>{fmtDate(node.createdAt)}</span>

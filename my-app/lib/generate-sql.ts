@@ -3490,11 +3490,10 @@ export function renderMigrationScript(script: MigrationScript): string {
     );
   }
 
-  // What a second run of this script does, and what it cannot put right. The
-  // wording is careful: suggestBumpLevel (lib/script-status.ts) searches the
-  // whole text, comments included, so spelling out the statements that repeat
-  // by their SQL keywords here would grade a script that only adds things as a
-  // major version.
+  // What a second run of this script does, and what it cannot put right. This
+  // is prose for a person, so it names things in plain words. The SQL reader
+  // (gradeSql in lib/change-type.ts) skips comments, so nothing written here
+  // can change the grade the script gets on another screen.
   header.push(
     `--`,
     `-- Safe to run again. Anything this script creates or adds is skipped when it`,
@@ -3886,6 +3885,33 @@ function commentList(items: string[], indent: string): string[] {
   return lines;
 }
 
+// Word-wrap one generator warning into comment lines of about 76 characters.
+// The first line starts "-- WARNING: " and the rest line up under its text.
+//
+// Splitting on every kind of whitespace is also the safety rule: a line break
+// inside a warning would otherwise start a new line that is NOT a comment, and
+// that text would run as SQL. A word longer than the line (a long table name)
+// gets a line of its own instead of being cut.
+function warningCommentLines(text: string): string[] {
+  const firstPrefix = "-- WARNING: ";
+  const restPrefix = "--          ";
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(/\s+/)) {
+    if (!word) continue;
+    const prefix = lines.length === 0 ? firstPrefix : restPrefix;
+    const next = current ? `${current} ${word}` : word;
+    if (current && prefix.length + next.length > 76) {
+      lines.push(`${prefix}${current}`);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  lines.push(`${lines.length === 0 ? firstPrefix : restPrefix}${current}`);
+  return lines;
+}
+
 /**
  * Render a rollback as plain SQL.
  *
@@ -3915,6 +3941,17 @@ export function renderRollbackScript(script: RollbackScript): string {
     );
   }
   header.push(`--`);
+
+  // The generator's warnings go into the file itself, not only onto the
+  // Workbench's Rollback tab. This text is what gets pushed as v<ver>.down.sql
+  // and what Deploy shows before a rollback runs, and a warning such as "this
+  // recreates the table empty" matters most at exactly that moment. Written
+  // before the nothing-to-undo branch below, so every rollback carries them.
+  if (script.warnings.length > 0) {
+    header.push(`-- Read before running:`);
+    for (const warning of script.warnings) header.push(...warningCommentLines(warning));
+    header.push(`--`);
+  }
 
   if (script.statements.length === 0) {
     header.push(

@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import {
   createApprovalRequest,
+  isApprovalAction,
   listApprovals,
+  type ApprovalAction,
   type ApprovalScript,
 } from "@/lib/approvals-db";
 
 /**
- * Ask for, and read, approval to run a deploy.
+ * Ask for, and read, approval to run a deploy or a rollback on production.
  *
  * The decision half lives in ./[id]/route.ts, because approving is a different
  * action by a different person and deserves its own gate.
@@ -16,6 +18,11 @@ import {
  * goes into a fingerprint and is not stored here. The approver reads the
  * migrations on the Deploy screen, from the registry, which is the copy that
  * will actually run.
+ *
+ * POST takes an optional `action`: "deploy" (the default, so every caller
+ * written before rollbacks needed approval keeps working) or "revert". For a
+ * rollback, `scripts` holds the rollback SQL that will run, newest version
+ * first, exactly as the revert route will claim it.
  */
 
 /** Narrow one entry of the caller's `scripts` array, or explain what is wrong. */
@@ -75,12 +82,27 @@ export async function POST(request: NextRequest) {
     scripts?: unknown[];
     breakingCount?: number;
     note?: string;
+    action?: unknown;
   };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Request body is not valid JSON." }, { status: 400 });
   }
+
+  // Absent or blank means a deploy, so older callers keep working. Anything
+  // else must be one of the two values the table accepts: guessing would
+  // record an approval that no route can ever spend.
+  const rawAction = body.action === undefined || body.action === null || body.action === ""
+    ? "deploy"
+    : body.action;
+  if (!isApprovalAction(rawAction)) {
+    return NextResponse.json(
+      { error: 'action must be "deploy" or "revert".' },
+      { status: 400 }
+    );
+  }
+  const action: ApprovalAction = rawAction;
 
   const connectionId = Number(body.connectionId);
   const schemaName = (body.schemaName ?? "").trim();
@@ -98,7 +120,11 @@ export async function POST(request: NextRequest) {
   }
   if (!Array.isArray(body.scripts) || body.scripts.length === 0) {
     return NextResponse.json(
-      { error: "There are no migrations in this run to approve." },
+      {
+        error: action === "revert"
+          ? "There are no rollbacks in this request to approve."
+          : "There are no migrations in this run to approve.",
+      },
       { status: 400 }
     );
   }
@@ -127,6 +153,7 @@ export async function POST(request: NextRequest) {
       breakingCount,
       requestedBy: gate.principal.email,
       note,
+      action,
     });
     return NextResponse.json({ approval });
   } catch (error) {

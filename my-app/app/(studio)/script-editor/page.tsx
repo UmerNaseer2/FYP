@@ -12,12 +12,15 @@ import {
   RefreshIcon,
 } from "@/components/ui/icons";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import { gradeSql, type SqlGrade } from "@/lib/change-type";
 import {
+  bumpToLevel,
   bumpVersion,
   compareVersions,
   isValidSemver,
+  levelOfStep,
+  levelToBump,
   normalizeVersion,
-  suggestBumpLevel,
   type BumpLevel,
 } from "@/lib/script-status";
 
@@ -44,13 +47,18 @@ const BUMP_DESC: Record<BumpLevel, string> = {
   minor: "adds things — existing queries still work",
   major: "changes or removes things — existing queries can break",
 };
-// The suggestion pill has to read as a phrase mid-sentence, so it needs the
-// short words rather than the whole sentence above.
-const BUMP_SHORT: Record<BumpLevel, string> = {
-  patch: "data or fixes",
-  minor: "additive",
-  major: "breaking",
-};
+/**
+ * The suggestion pill's text, e.g. "SQL reads as breaking (ALTER COLUMN … TYPE)
+ * — unless it only widens the column". The statement words and the "unless"
+ * sentence come straight from gradeSql, so the pill names exactly what drove
+ * the suggestion, and says so when the SQL alone cannot settle it.
+ */
+function gradeSentence(grade: SqlGrade): string {
+  let text = `SQL reads as ${grade.level}`;
+  if (grade.because) text += ` (${grade.because})`;
+  if (grade.unless) text += ` — unless ${grade.unless}`;
+  return text;
+}
 
 /** The highest version in a list, by semver. null for an empty list. */
 function maxVersion(versions: string[]): string | null {
@@ -73,6 +81,9 @@ export default function ScriptEditorPage() {
   // The whole GitHub registry (used to derive existing families + saved versions).
   const [githubScripts, setGithubScripts] = useState<GitHubScript[]>([]);
   const [githubError, setGithubError] = useState("");
+  // True when the pull answered "GitHub is not set up on this server", read
+  // from the response's code rather than the wording of its message.
+  const [githubUnconfigured, setGithubUnconfigured] = useState(false);
   // Starts true: before the pull lands, an empty registry is unknown, not empty.
   const [githubLoading, setGithubLoading] = useState(true);
 
@@ -133,7 +144,10 @@ export default function ScriptEditorPage() {
         const data = await res.json();
         if (!active) return;
         if (Array.isArray(data?.scripts)) setGithubScripts(data.scripts);
-        else if (data?.error) setGithubError(String(data.error));
+        else if (data?.error) {
+          setGithubError(String(data.error));
+          setGithubUnconfigured(data?.code === "github_unconfigured");
+        }
       } catch {
         if (active) setGithubError("Could not reach the GitHub registry.");
       } finally {
@@ -265,7 +279,10 @@ export default function ScriptEditorPage() {
   }, [connectionId, schema, scriptName]);
 
   // ── Version computation ─────────────────────────────────────────────────--
-  const suggestedLevel = useMemo(() => suggestBumpLevel(sql), [sql]);
+  // The same reader Deploy grades scripts with, so the suggestion here is the
+  // level the script will be shown as there.
+  const sqlGrade = useMemo(() => gradeSql(sql), [sql]);
+  const suggestedLevel = levelToBump(sqlGrade.level);
   // Follow the SQL-based suggestion until the user explicitly picks a level.
   const effectiveChoice: BumpLevel | "custom" = choiceTouched ? versionChoice : suggestedLevel;
 
@@ -317,9 +334,16 @@ export default function ScriptEditorPage() {
   const alreadySaved = savedSql !== null && sql === savedSql;
 
   // Without the three env vars the pull failed AND the push would fail the same
-  // way, so there is nothing to save into. Keyed off the route's message — see
-  // app/api/github/pull/route.ts — because that response carries no error code.
-  const githubUnconfigured = githubError.startsWith("GitHub env vars not configured");
+  // way, so there is nothing to save into (githubUnconfigured, set by the pull).
+
+  // The level recorded with the file. A picked bump maps straight to its
+  // level. A custom number takes the level its step above the floor implies,
+  // so the number and the recorded level agree; with no floor (or a number
+  // that is not above it) the SQL reading decides.
+  const changeLevel =
+    effectiveChoice === "custom"
+      ? (normalizedVersion ? levelOfStep(floor, normalizedVersion) : null) ?? sqlGrade.level
+      : bumpToLevel(effectiveChoice);
 
   const canSave =
     !!databaseName &&
@@ -351,6 +375,9 @@ export default function ScriptEditorPage() {
           schema_name: schema,
           script_name: scriptName,
           version: normalizedVersion,
+          // Written into the file's "-- Change-type:" line by the route, so
+          // Deploy shows the level this version was saved as.
+          change_level: changeLevel,
           sql_content: sql,
           // Saved beside the script as v<ver>.down.sql. Without it Deploy has
           // nothing to run, and the version is revertable only by hand.
@@ -678,10 +705,9 @@ export default function ScriptEditorPage() {
                   {sql.trim() && (
                     <span
                       className={`pill ${suggestedLevel === "major" ? "pill-break" : suggestedLevel === "minor" ? "pill-sync" : "pill-pending"}`}
-                      title="A scan for words like DROP TABLE and ADD COLUMN. It does not parse your SQL."
+                      title="Read from the statements that will run; comments and quoted text are ignored. Deploy grades scripts with this same rule."
                     >
-                      keyword scan — reads as {BUMP_SHORT[suggestedLevel]}, so{" "}
-                      {suggestedLevel} is suggested
+                      {gradeSentence(sqlGrade)}
                     </span>
                   )}
                   {patchUnreachable && (

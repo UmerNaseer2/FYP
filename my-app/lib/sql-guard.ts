@@ -335,3 +335,23 @@ export function extractEnumAddValues(sql: string): string[] {
   }
   return statements;
 }
+
+/**
+ * True when a script has at least one statement that would actually run.
+ *
+ * "Has text" is not "has a rollback". PostgreSQL accepts a file of nothing but
+ * comments and semicolons as an empty query and changes nothing, so a
+ * comment-only rollback used to delete the ledger row and report "Rolled back"
+ * while the database stayed exactly as it was. This is the ONE executable-SQL
+ * test, used at every boundary (push, pull, preflight, Deploy, revert, apply),
+ * so every screen and route agree on what counts.
+ *
+ * Built on maskNonCode: a word inside a comment, a string literal, a quoted
+ * name or a dollar-quoted body never counts on its own, while the statement
+ * around it (the SELECT holding the literal, the DO holding the body) does.
+ */
+export function hasExecutableSql(sql: string): boolean {
+  // A caller that forwards a request body unchecked can hand in anything.
+  if (typeof sql !== "string") return false;
+  return maskNonCode(sql).replace(/[;\s]/g, "").length > 0;
+}

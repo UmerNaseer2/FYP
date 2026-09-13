@@ -7,8 +7,20 @@ import {
   toEnvironment,
 } from "@/lib/environments";
 import { diffLedgers, type LedgerEntry } from "@/lib/version-sync";
-import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { createHash } from "node:crypto";
+import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
+import { runFingerprint } from "@/lib/approvals-db";
 import { ROLES, roleAtLeast, toRole } from "@/lib/auth-mode";
+
+// approvals-db reads the metadata database through lib/version-db, which
+// pulls in Sequelize and the models. The parity cases below only hash, so a
+// stand-in pool is enough. The path is relative on purpose: next/jest
+// rewrites the @/ alias inside import statements only.
+jest.mock("../lib/version-db", () => ({
+  __esModule: true,
+  default: { query: jest.fn() },
+  syncMetadataTables: jest.fn(),
+}));
 
 describe("environments", () => {
   it("only accepts the four labels it knows", () => {
@@ -151,5 +163,28 @@ describe("fingerprintBody", () => {
       script("1.0.0", "SELECT 1;\n6:orders5:1.0.09:SELECT 2;"),
     ]);
     expect(split).not.toBe(joined);
+  });
+});
+
+// The Deploy screen hashes fingerprintBody / rollbackFingerprintBody in the
+// browser; the server hashes them in runFingerprint. The two must agree, or
+// an approval asked for on the screen could never be spent by the route.
+describe("runFingerprint parity", () => {
+  const run = [
+    { scriptName: "orders_fix", version: "3.0.0", sqlContent: "DROP TABLE t3;" },
+    { scriptName: "orders_fix", version: "2.0.0", sqlContent: "DROP TABLE t2;" },
+  ];
+  const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+
+  it("hashes fingerprintBody for a deploy", () => {
+    expect(runFingerprint(run, "deploy")).toBe(sha256(fingerprintBody(run)));
+  });
+
+  it("hashes rollbackFingerprintBody for a rollback", () => {
+    expect(runFingerprint(run, "revert")).toBe(sha256(rollbackFingerprintBody(run)));
+  });
+
+  it("never gives a deploy and a rollback of the same scripts the same fingerprint", () => {
+    expect(runFingerprint(run, "deploy")).not.toBe(runFingerprint(run, "revert"));
   });
 });

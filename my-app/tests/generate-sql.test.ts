@@ -311,6 +311,47 @@ describe("generateRollback — restoring a NOT NULL column with no default", () 
     expect(script.nullableOnRestore).toEqual([]);
     expect(renderRollbackScript(script)).toMatch(/"note" text NOT NULL DEFAULT ''/);
   });
+
+  // The warning text, joined back together from its wrapped comment lines.
+  function warningText(sql: string): string {
+    const lines = sql.split("\n");
+    const start = lines.findIndex((line) => line.startsWith("-- WARNING: "));
+    if (start < 0) return "";
+    const parts = [lines[start].slice("-- WARNING: ".length)];
+    for (let index = start + 1; index < lines.length && lines[index].startsWith("--          "); index += 1) {
+      parts.push(lines[index].trim().replace(/^--\s+/, ""));
+    }
+    return parts.join(" ");
+  }
+
+  it("writes the generator's warnings into the rollback, above the statements", () => {
+    // The warnings used to live only in the Workbench panel: the pushed
+    // v<ver>.down.sql and Deploy's preview never said the rollback was lossy.
+    const warning =
+      "The rename of orders to invoices was not confirmed, so this rollback recreates the table empty and its rows are not restored.";
+    const sql = renderRollbackScript({ ...rollback(), warnings: [warning] });
+    expect(sql).toContain("-- WARNING: The rename");
+    expect(warningText(sql)).toBe(warning);
+    expect(sql.indexOf("-- WARNING:")).toBeLessThan(sql.indexOf("ALTER TABLE"));
+    for (const line of sql.split("\n").filter((each) => each.startsWith("-- WARNING") || each.startsWith("--          "))) {
+      expect(line.length).toBeLessThanOrEqual(76);
+    }
+  });
+
+  it("writes no warning lines when there are none", () => {
+    expect(renderRollbackScript({ ...rollback(), warnings: [] })).not.toContain("WARNING:");
+  });
+
+  it("keeps a warning with a line break inside its comment", () => {
+    // A line break in the text must not end the comment and leave SQL behind.
+    const sql = renderRollbackScript({ ...rollback(), warnings: ["first line\nDROP TABLE orders;\rDROP TABLE t2;"] });
+    expect(sql).not.toContain("\r");
+    for (const line of sql.split("\n")) {
+      if (line.includes("DROP TABLE orders") || line.includes("DROP TABLE t2")) {
+        expect(line.startsWith("--")).toBe(true);
+      }
+    }
+  });
 });
 
 /**
@@ -529,8 +570,9 @@ describe("generateMigration — safe to run twice", () => {
     const paragraph = commentParagraph(sql, "Safe to run again");
     // All of it, down to the last line.
     expect(paragraph).toContain("compare again after running.");
-    // suggestBumpLevel reads comments too, so on its own the block has to say
-    // nothing it counts, in either direction.
+    // suggestBumpLevel skips comments now, but the paragraph read on its own as
+    // SQL must still say nothing it counts, in either direction — a pasted copy
+    // of the prose without the dashes is still harmless.
     expect(suggestBumpLevel(paragraph)).toBe("patch");
     expect(suggestBumpLevel(sql)).toBe("minor");
   });
