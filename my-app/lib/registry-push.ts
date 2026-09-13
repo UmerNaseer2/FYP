@@ -306,6 +306,16 @@ export function readChangeLevel(value: unknown): ScriptChangeType | null {
     : null;
 }
 
+// ── The migration's own text ────────────────────────────────────────────────
+
+/**
+ * Shown when the migration has no statement that runs (hasExecutableSql):
+ * blank, or only comments. The one source of this copy for both push screens
+ * and the push route.
+ */
+export const MIGRATION_NO_STATEMENTS =
+  "The migration contains no statements (only comments or blank lines), so it would change nothing.";
+
 // ── The rollback choice ─────────────────────────────────────────────────────
 
 /** Shown when the rollback box holds only comments. */

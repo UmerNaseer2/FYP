@@ -1,36 +1,59 @@
 "use client";
 
-import { useId, useState } from "react";
+import Link from "next/link";
+import { useEffect, useId, useState } from "react";
 import {
   ClipboardIcon,
   CheckIcon,
   RefreshIcon,
   AlertTriangleIcon,
 } from "@/components/ui/icons";
-import { containsTransactionControl } from "@/lib/sql-guard";
+import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
 import { countOf } from "@/lib/plural";
+import { gradeSql, levelWithArticle, louderChangeType, quieterLevelWarning } from "@/lib/change-type";
+import { bumpVersion, highestVersion, levelToBump } from "@/lib/script-status";
+import { readAppliedVersion, readFamilyVersions } from "@/lib/family-reads";
+import {
+  CHANGE_LEVELS,
+  describePush,
+  MIGRATION_NO_STATEMENTS,
+  rollbackChoiceProblem,
+  rollbackToSend,
+  validateScriptName,
+} from "@/lib/registry-push";
+// Type-only imports: compare-run opens the metadata database (pg) and
+// version-detection reads target databases, so a value import would drag
+// server code into the browser bundle.
+import type { DetectedVersion } from "@/lib/compare-run";
+import type { NewerSchemaVerdict } from "@/lib/version-detection";
 
-// The severity bump a migration represents. It lives here now that the Compare
-// workbench owns the save-to-GitHub flow directly (the old hand-off to the
-// standalone /scripts page has been folded in and that page removed).
+// The change level a migration is published as. compare-run imports this name.
 export type ChangeKind = "breaking" | "additive" | "patch";
 
 // ---------------------------------------------------------------------------
-// MigrationWorkbench — the right-hand "Generated migration" panel (Pass 5).
+// MigrationWorkbench — the right-hand "Generated migration" panel on Compare.
 //
-// The server page runs the compare engine + generateMigration and hands us the
-// finished SQL text plus its suggested name/description/severity. Everything
-// here is presentation + light client state: edit the SQL, pick a change level,
-// then push it straight to the GitHub script registry (POST /api/github/push,
-// which authenticates with the workspace PAT server-side — no connection or
-// local DB step needed). Applying a pushed script to a database happens later
-// from the Deploy screen.
+// The server page runs the compare engine and generateMigration, and hands us
+// the finished SQL plus a suggested name, description and change level. Here
+// the user edits the SQL, picks a level, and pushes it to the GitHub script
+// registry (POST /api/github/push; the server holds the token). Applying a
+// pushed script to a database happens later, on Deploy.
 //
-// Deliberately a plain <textarea>, not the mockup's contenteditable+span editor:
-// it's robust, accessible, and beginner-safe. Honest stubs over fake data — the
-// exact next version number is assigned from the schema's lineage when the
-// target is tracked; when it isn't, the user types the version explicitly
-// rather than us fabricating one.
+// The version number is never typed here. It is worked out exactly the way
+// the Script Editor works it out, so both screens offer the same number:
+//   floor = the highest of (the version applied to the target, the versions
+//           already in GitHub); next = floor bumped by the chosen level; a
+//           family with no version anywhere starts at 1.0.0.
+// Push waits until both reads are back, and is refused with a reason (never a
+// guess) when GitHub can't be read. If someone else takes the number first,
+// the server answers 409 and one click pushes the next free number.
+//
+// Every "are you sure" here is a tick the user has to give: a level quieter
+// than the SQL was graded, saving without a rollback, and a push that would
+// move a newer target backwards. Each one names what it is agreeing to.
+//
+// Deliberately a plain <textarea>, not a contenteditable editor: robust,
+// accessible and beginner-safe.
 // ---------------------------------------------------------------------------
 
 type Props = {
@@ -95,24 +118,83 @@ type Props = {
   counts: { breaking: number; safe: number; info: number };
   warnings: string[];
   /**
-   * When the target schema is tracked (Phase 6), the real next version for each
-   * change level, derived from its lineage HEAD. Null when the target isn't
-   * tracked — we then show an honest "track it to assign versions" message
-   * instead of a fabricated number.
+   * The target's saved connection, used to read which version of this script
+   * is already applied there (the same read-only preflight the Script Editor
+   * makes). Null when the target came from the environment fallback: only
+   * GitHub can be checked then, and the panel says so.
    */
-  targetVersions?: {
-    current: string | null;
-    breaking: string;
-    additive: string;
-    patch: string;
-  } | null;
+  targetConnectionId: number | null;
+  /**
+   * Which side's own version table declares the newer version. "right" means
+   * the TARGET is ahead, so this push would move it backwards and needs a
+   * tick. Null when detection gave no verdict.
+   */
+  versionVerdict: NewerSchemaVerdict | null;
+  /** What each side's version table says, for the backwards warning's numbers. */
+  sourceVersion: DetectedVersion | null;
+  targetVersion: DetectedVersion | null;
+  /** "connection.schema" for each side: the same names the version bar above uses. */
+  sourceName: string;
+  targetName: string;
+  /** The same comparison the other way round (buildSwapHref), or null. */
+  swapHref: string | null;
 };
 
-const LEVELS: { kind: ChangeKind; label: string; bump: string }[] = [
-  { kind: "breaking", label: "breaking", bump: "major" },
-  { kind: "additive", label: "additive", bump: "minor" },
-  { kind: "patch", label: "patch", bump: "patch" },
-];
+/** What GitHub said about the family, stamped with the family and refresh it was read for. */
+type FamilyRead =
+  | { key: string; refresh: number; ok: true; versions: string[] }
+  | { key: string; refresh: number; ok: false; error: string };
+
+/** What the target says is applied for this script, stamped with what was asked. */
+type AppliedRead = { key: string; ok: true; version: string | null } | { key: string; ok: false };
+
+/** A version that was pushed but whose rollback was not saved. */
+type RollbackIssue = {
+  /** The server's own words about what happened to the rollback. */
+  error: string;
+  /** False when someone else's rollback is already there: a retry can only be refused. */
+  canRetry: boolean;
+  /** Exactly what was pushed, so a retry attaches the rollback to that version. */
+  body: { database_name: string; schema_name: string; script_name: string; version: string; down_sql: string };
+};
+
+type PushState =
+  | { kind: "idle" }
+  | { kind: "pushing" }
+  | { kind: "ok"; message: string; url: string | null; rollbackIssue: RollbackIssue | null }
+  // offerNext: the server said the number was taken, so offer the next free
+  // one. suggested: the number the server's message names, to spot when
+  // GitHub moved on again before the re-read came back.
+  | { kind: "err"; message: string; offerNext: boolean; suggested: string | null };
+
+type RetryState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "ok"; message: string }
+  // final: retrying again cannot help (a rollback is already there).
+  | { kind: "err"; message: string; final: boolean };
+
+/** The fields of a /api/github/push answer this screen reads. */
+type PushAnswer = {
+  ok?: boolean;
+  code?: string;
+  error?: string;
+  url?: string;
+  version?: string;
+  rollback_saved?: boolean;
+  rollback_error?: string;
+  rollback_error_code?: string;
+  highest_version?: string;
+  suggested?: string;
+};
+
+/**
+ * A version table's value for a sentence: "v2.1.0" for a number, the text
+ * as-is otherwise, so a Flyway "V3__init" never becomes "vV3__init".
+ */
+function asVersion(text: string): string {
+  return /^\d/.test(text) ? `v${text}` : text;
+}
 
 export function MigrationWorkbench({
   initialSql,
@@ -132,11 +214,17 @@ export function MigrationWorkbench({
   suggestedKind,
   counts,
   warnings,
-  targetVersions,
+  targetConnectionId,
+  versionVerdict,
+  sourceVersion,
+  targetVersion,
+  sourceName,
+  targetName,
+  swapHref,
 }: Props) {
-  // Compare can now show one workbench per target, so a hard-coded field id
-  // would repeat down the page: duplicate ids are invalid HTML and every
-  // <label htmlFor> would focus the first workbench's field instead of its own.
+  // Compare can show one workbench per target, so a hard-coded field id would
+  // repeat down the page: duplicate ids are invalid HTML and every <label
+  // htmlFor> would focus the first workbench's field instead of its own.
   const fieldId = useId();
   const [name, setName] = useState(suggestedName);
   const [description, setDescription] = useState(suggestedDescription);
@@ -145,23 +233,37 @@ export function MigrationWorkbench({
   // one the editor is showing:
   const [pane, setPane] = useState<"up" | "down">("up");
   const [rollbackSql, setRollbackSql] = useState(initialRollbackSql);
-  const [level, setLevel] = useState<ChangeKind>(suggestedKind);
+  // null = follow the suggestion. Set once the user clicks a level, after
+  // which edits to the SQL no longer move it (same idea as the Script Editor).
+  const [pickedLevel, setPickedLevel] = useState<ChangeKind | null>(null);
+  // The three ticks. Each is reset when the thing it agreed to changes.
+  const [quieterAck, setQuieterAck] = useState(false);
+  const [pushWithoutRollback, setPushWithoutRollback] = useState(false);
+  const [backwardsAck, setBackwardsAck] = useState(false);
   const [copied, setCopied] = useState(false);
-  // When the target isn't tracked there's no lineage version to assign, so the
-  // user types one. Defaults to a sensible first release.
-  const [manualVersion, setManualVersion] = useState("1.0.0");
-  const [push, setPush] = useState<
-    | { kind: "idle" }
-    | { kind: "pushing" }
-    | { kind: "ok"; message: string; url: string | null }
-    | { kind: "err"; message: string }
-  >({ kind: "idle" });
+  // The two reads the next version is worked out from.
+  const [family, setFamily] = useState<FamilyRead | null>(null);
+  const [familyRefresh, setFamilyRefresh] = useState(0);
+  const [applied, setApplied] = useState<AppliedRead | null>(null);
+  // Versions this screen learned from the server's own answers (our pushes,
+  // and the highest_version of a 409). GitHub's listing can lag a moment
+  // behind a write, so these keep the next number above what we know exists.
+  const [learned, setLearned] = useState<{ key: string; versions: string[] }>({ key: "", versions: [] });
+  // What was last pushed successfully, to stop the same migration being
+  // pushed twice as two versions by a second click.
+  const [lastPushed, setLastPushed] = useState<{
+    key: string;
+    sql: string;
+    downSql: string | undefined;
+    version: string;
+  } | null>(null);
+  const [push, setPush] = useState<PushState>({ kind: "idle" });
+  const [retry, setRetry] = useState<RetryState>({ kind: "idle" });
 
   // Everything below reads the pane the user is currently looking at.
   const showingDown = pane === "down";
   const activeSql = showingDown ? rollbackSql : sql;
   const activeInitial = showingDown ? initialRollbackSql : initialSql;
-  const setActiveSql = showingDown ? setRollbackSql : setSql;
   const activeStatementCount = showingDown ? rollbackStatementCount : statementCount;
   const activeCounts = showingDown ? rollbackCounts : counts;
   const activeManualCount = showingDown ? rollbackManualCount : manualCount;
@@ -173,18 +275,172 @@ export function MigrationWorkbench({
   // down script's own header contains the word ROLLBACK.
   const upTxnViolation = containsTransactionControl(sql);
   const downTxnViolation = containsTransactionControl(rollbackSql);
-  // The inline warning is about the pane on screen; the push button is disabled
+  // The inline warning is about the pane on screen; the push button is blocked
   // by a violation in either script, because both get saved together.
   const txnViolation = showingDown ? downTxnViolation : upTxnViolation;
-  const anyTxnViolation = upTxnViolation || downTxnViolation;
   const lineCount = activeSql.split("\n").length;
-  const bumpWord = LEVELS.find((l) => l.kind === level)?.bump ?? "minor";
-  // Real next version for the selected level when the target is tracked.
-  const nextVersion = targetVersions ? targetVersions[level] : null;
-  // Tracked → use the lineage version; untracked → use the one the user typed.
-  const effectiveVersion = (nextVersion ?? manualVersion).trim();
 
   const inSync = statementCount === 0;
+
+  // ── The script name ──────────────────────────────────────────────────────
+  // The Script Editor's rule: anything but letters, digits, _ and - becomes _.
+  // Computed once, so the preview, the saved path and the message agree.
+  const scriptName = (name.trim() || suggestedName).replace(/[^a-zA-Z0-9_-]/g, "_");
+  // Only an empty or over-long name can still fail after that.
+  const nameProblem = validateScriptName(scriptName);
+  const folder = `${targetDatabase}/${targetSchema}/${scriptName}/`;
+  const familyKey = `${targetDatabase}/${targetSchema}/${scriptName}`;
+
+  // ── The change level ─────────────────────────────────────────────────────
+  // The generator's grade, raised (never lowered) by what edits add: a
+  // hand-typed DROP TABLE makes the suggestion breaking.
+  const grade = gradeSql(sql);
+  const suggestion: ChangeKind =
+    sql === initialSql ? suggestedKind : louderChangeType(suggestedKind, grade.sureLevel);
+  const level: ChangeKind = pickedLevel ?? suggestion;
+
+  // ── The rollback choice (the same rules as the Script Editor) ────────────
+  // What goes out as down_sql: the rollback when it has statements and the
+  // no-rollback box is not ticked, otherwise nothing.
+  const downSql = rollbackToSend(rollbackSql, pushWithoutRollback);
+  const rollbackProblem = rollbackChoiceProblem(rollbackSql, pushWithoutRollback);
+  const rollbackRuns = hasExecutableSql(rollbackSql);
+
+  // ── The two reads behind the next version ────────────────────────────────
+  // Skipped when there is nothing to push, or when the name can't be used
+  // (the server would refuse the read, and the name message says why).
+  const readsWanted = !inSync && nameProblem === null;
+  const appliedKey = `${targetConnectionId}/${targetSchema}/${scriptName}`;
+
+  // (a) The versions already in GitHub. Debounced so typing a name makes one
+  // request, not one per key. Re-run by bumping familyRefresh (after a 409).
+  useEffect(() => {
+    if (!readsWanted) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const read = await readFamilyVersions(targetDatabase, targetSchema, scriptName);
+      if (!cancelled) setFamily({ ...read, key: familyKey, refresh: familyRefresh });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [readsWanted, familyKey, familyRefresh, targetDatabase, targetSchema, scriptName]);
+
+  // (b) The version applied to the target, when it has a saved connection.
+  useEffect(() => {
+    if (!readsWanted || targetConnectionId === null) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const read = await readAppliedVersion(targetConnectionId, targetSchema, scriptName);
+      if (!cancelled) setApplied({ ...read, key: appliedKey });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [readsWanted, appliedKey, targetConnectionId, targetSchema, scriptName]);
+
+  // A read counts only when it answers the CURRENT question: a result for
+  // another name (or from before a refresh) is the same as no result yet.
+  const familyCurrent =
+    family !== null && family.key === familyKey && family.refresh === familyRefresh ? family : null;
+  const familyLoading = readsWanted && familyCurrent === null;
+  const familyError = familyCurrent !== null && !familyCurrent.ok ? familyCurrent.error : null;
+  const appliedCurrent =
+    targetConnectionId !== null && applied !== null && applied.key === appliedKey ? applied : null;
+  const appliedLoading = readsWanted && targetConnectionId !== null && appliedCurrent === null;
+  const appliedKnown = appliedCurrent !== null && appliedCurrent.ok;
+  const appliedVersion = appliedCurrent !== null && appliedCurrent.ok ? appliedCurrent.version : null;
+  // The number is shown (and can be pushed) only once both reads are back
+  // and GitHub answered: before that it would be a guess.
+  const versionsReady = readsWanted && familyCurrent !== null && familyCurrent.ok && !appliedLoading;
+
+  const githubVersions = familyCurrent !== null && familyCurrent.ok ? familyCurrent.versions : [];
+  const learnedVersions = learned.key === familyKey ? learned.versions : [];
+  const githubHighest = highestVersion([...githubVersions, ...learnedVersions]);
+  const floor = highestVersion([appliedVersion, githubHighest]);
+  const bump = levelToBump(level);
+  const nextVersion = bumpVersion(floor, bump);
+  // The push preview: the files it will create and the step it takes.
+  const preview = describePush({ floor, version: nextVersion, withRollback: downSql !== undefined });
+  // A quieter level than the grade is allowed, but only with a tick that
+  // names what it understates. A first version is 1.0.0 at every level, so
+  // there only the recorded level can understate it. Null when no tick is needed.
+  const quieterText = quieterLevelWarning(suggestion, level, grade.because, versionsReady && floor === null);
+
+  // ── Direction ────────────────────────────────────────────────────────────
+  const movesBackwards = versionVerdict?.newer === "right" && !inSync;
+
+  const alreadyPushed =
+    lastPushed !== null &&
+    lastPushed.key === familyKey &&
+    lastPushed.sql === sql &&
+    lastPushed.downSql === downSql;
+
+  /**
+   * Why Push can't be pressed right now, or null when it can. The first
+   * reason wins; it is shown beside the button and as the button's title, so
+   * a disabled button always says what to do about it.
+   */
+  function whyPushIsBlocked(): string | null {
+    if (nameProblem) return nameProblem;
+    if (!hasExecutableSql(sql)) return MIGRATION_NO_STATEMENTS;
+    if (upTxnViolation || downTxnViolation) {
+      return `Remove BEGIN / COMMIT / ROLLBACK from the ${
+        upTxnViolation ? "migration" : "rollback"
+      } script before pushing.`;
+    }
+    if (familyLoading) return `Checking GitHub for the versions of ${scriptName}…`;
+    if (appliedLoading) return `Checking which version of ${scriptName} is applied to ${targetLabel}…`;
+    if (familyError) return familyError;
+    if (rollbackProblem) return rollbackProblem;
+    if (quieterText && !quieterAck) {
+      return `Tick "Publish it as ${level} anyway" under Change level, or pick ${suggestion}.`;
+    }
+    if (movesBackwards && !backwardsAck) {
+      return `Tick the box above to confirm ${targetName} should move back to the older schema.`;
+    }
+    if (alreadyPushed && lastPushed) {
+      return `This exact migration was just pushed as v${lastPushed.version}. Edit it to push a new version.`;
+    }
+    return null;
+  }
+  const blocker = whyPushIsBlocked();
+
+  // An error describes the push as it was. Once anything it depends on is
+  // edited it no longer does, so it is cleared rather than left to disagree
+  // with the screen. A success stays: it is still true.
+  function clearStaleError() {
+    setPush((current) => (current.kind === "err" ? { kind: "idle" } : current));
+  }
+
+  // Remember a version the server told us exists, for this family only.
+  function learn(key: string, version: string) {
+    setLearned((current) => ({
+      key,
+      versions: current.key === key ? [...current.versions, version] : [version],
+    }));
+  }
+
+  function pickLevel(kind: ChangeKind) {
+    setPickedLevel(kind);
+    if (kind !== level) {
+      setQuieterAck(false);
+      clearStaleError();
+    }
+  }
+
+  function editActiveSql(text: string) {
+    if (showingDown) {
+      setRollbackSql(text);
+    } else {
+      setSql(text);
+      // The tick agreed to publishing THIS SQL quieter than graded.
+      setQuieterAck(false);
+    }
+    clearStaleError();
+  }
 
   async function copySql() {
     try {
@@ -205,67 +461,159 @@ export function MigrationWorkbench({
     if (edited && !window.confirm(question)) {
       return;
     }
-    setActiveSql(activeInitial);
+    editActiveSql(activeInitial);
   }
 
-  // Push the migration straight to the GitHub script registry. The server route
-  // holds the PAT, so there's no token or connection to pick here.
+  // Push the migration to the GitHub script registry. The server route holds
+  // the token, so there's no token or connection to pick here.
   async function pushToGitHub() {
-    const scriptName = name.trim() || suggestedName;
-    if (!effectiveVersion) {
-      setPush({ kind: "err", message: "Enter a version number first." });
-      return;
-    }
-    if (anyTxnViolation) {
-      setPush({
-        kind: "err",
-        message: `Remove BEGIN / COMMIT / ROLLBACK from the ${
-          upTxnViolation ? "migration" : "rollback"
-        } script before pushing.`,
-      });
-      return;
-    }
-
+    if (blocker !== null || push.kind === "pushing") return;
+    // Everything is taken from this render, so the answer is reported against
+    // exactly what was sent even if the user edits while it runs.
+    const version = nextVersion;
+    const sentKey = familyKey;
+    const sentSql = sql;
+    const sentDown = downSql;
+    const where = `${targetDatabase}/${targetSchema}/${scriptName}`;
     setPush({ kind: "pushing" });
+    setRetry({ kind: "idle" });
+
+    let res: Response;
+    let data: PushAnswer | null;
     try {
-      const res = await fetch("/api/github/push", {
+      res = await fetch("/api/github/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           database_name: targetDatabase,
           schema_name: targetSchema,
           script_name: scriptName,
-          version: effectiveVersion,
+          version,
           // The level picked above. The route writes it into the file's
           // "-- Change-type:" line, so Deploy shows the level chosen here.
           change_level: level,
-          sql_content: sql,
-          // Saved beside it as v<ver>.down.sql so the version can be undone
-          // later from Deploy. Omitted when there is nothing to undo.
-          down_sql: rollbackSql.trim() ? rollbackSql : undefined,
+          sql_content: sentSql,
+          // Saved beside it as v<ver>.down.sql so Deploy can undo the version.
+          // Left out when there is no rollback that runs, or the box is ticked.
+          down_sql: sentDown,
           description: description.trim() || undefined,
         }),
       });
-      const data = (await res.json()) as {
-        url?: string;
-        rollback_saved?: boolean;
-        error?: string;
-      };
-      if (!res.ok) {
-        setPush({ kind: "err", message: data.error ?? "Push to GitHub failed." });
-        return;
-      }
+      data = (await res.json().catch(() => null)) as PushAnswer | null;
+    } catch {
+      // The request may or may not have reached GitHub. Read GitHub again, so
+      // the number shown next is right either way.
+      setFamilyRefresh((n) => n + 1);
+      setPush({
+        kind: "err",
+        message: `The connection to the server dropped while pushing v${version}, so it is not known whether it was saved. GitHub is being read again: if it now lists v${version}, the push went through.`,
+        offerNext: false,
+        suggested: null,
+      });
+      return;
+    }
+
+    if (!res.ok || !data || data.ok !== true) {
+      // version_exists / version_not_newer carry the highest version GitHub
+      // has. Learn it at once, and re-read the family so the next free number
+      // comes from GitHub itself, not from a guess.
+      const highest = typeof data?.highest_version === "string" ? data.highest_version : null;
+      if (highest !== null) learn(sentKey, highest);
+      const unknownOutcome = !data || data.code === "outcome_unknown";
+      if (highest !== null || unknownOutcome) setFamilyRefresh((n) => n + 1);
+      setPush({
+        kind: "err",
+        message:
+          data?.error ??
+          `The server answered with an error (status ${res.status}) and no explanation. GitHub is being read again to see whether v${version} was saved.`,
+        offerNext: highest !== null,
+        suggested: typeof data?.suggested === "string" ? data.suggested : null,
+      });
+      return;
+    }
+
+    const saved = typeof data.version === "string" ? data.version : version;
+    learn(sentKey, saved);
+    setLastPushed({ key: sentKey, sql: sentSql, downSql: sentDown, version: saved });
+    const url = typeof data.url === "string" ? data.url : null;
+    if (sentDown === undefined) {
       setPush({
         kind: "ok",
-        message:
-          `v${effectiveVersion} pushed to ${targetDatabase}/${targetSchema}/${scriptName} on GitHub` +
-          (data.rollback_saved ? ", with its rollback." : "."),
-        url: data.url ?? null,
+        message: `v${saved} pushed to ${where} on GitHub. No rollback was saved, so Deploy cannot undo this version.`,
+        url,
+        rollbackIssue: null,
       });
-    } catch {
-      setPush({ kind: "err", message: "Network error while pushing to GitHub." });
+    } else if (data.rollback_saved === true) {
+      setPush({
+        kind: "ok",
+        message: `v${saved} pushed to ${where} on GitHub, with its rollback.`,
+        url,
+        rollbackIssue: null,
+      });
+    } else {
+      // The version is saved; only its rollback is not. Say so, and offer to
+      // attach the same rollback to the same version (no new version).
+      setPush({
+        kind: "ok",
+        message: `v${saved} pushed to ${where} on GitHub.`,
+        url,
+        rollbackIssue: {
+          error: data.rollback_error ?? `Its rollback was not saved, so Deploy cannot undo v${saved} yet.`,
+          canRetry: data.rollback_error_code !== "rollback_exists",
+          body: {
+            database_name: targetDatabase,
+            schema_name: targetSchema,
+            script_name: scriptName,
+            version: saved,
+            down_sql: sentDown,
+          },
+        },
+      });
     }
   }
+
+  // Attach mode of the push route: adds the rollback to the version that was
+  // just saved. It never creates a version.
+  async function retryRollback(issue: RollbackIssue) {
+    const { version } = issue.body;
+    setRetry({ kind: "saving" });
+    try {
+      const res = await fetch("/api/github/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attach_rollback: true, ...issue.body }),
+      });
+      const data = (await res.json().catch(() => null)) as PushAnswer | null;
+      if (res.ok && data?.ok === true) {
+        setRetry({ kind: "ok", message: `Rollback saved. Deploy can now undo v${version}.` });
+      } else if (data?.code === "rollback_exists") {
+        // After a dropped connection it may be OUR rollback that is there, so
+        // don't claim it is someone else's.
+        setRetry({
+          kind: "err",
+          message: `v${version} already has a rollback with statements, so nothing more was saved. A saved rollback never changes.`,
+          final: true,
+        });
+      } else {
+        setRetry({
+          kind: "err",
+          message: data?.error ?? `Saving the rollback failed (status ${res.status}) without an explanation from the server.`,
+          final: false,
+        });
+      }
+    } catch {
+      setRetry({
+        kind: "err",
+        message: `The connection to the server dropped while saving the rollback for v${version}, so it is not known whether it was saved. Trying again is safe: if it was saved, the retry changes nothing and says so.`,
+        final: false,
+      });
+    }
+  }
+
+  // The backwards warning's numbers, from each side's own version table.
+  const targetDeclares = targetVersion?.version ? asVersion(targetVersion.version) : "a newer version";
+  const inTable = targetVersion?.table ? ` in its ${targetVersion.table} table` : "";
+  const sourceDeclares = sourceVersion?.version ? asVersion(sourceVersion.version) : "an older version";
 
   return (
     <aside>
@@ -291,9 +639,29 @@ export function MigrationWorkbench({
               id={`${fieldId}-name`}
               className="input mono mt-1"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                clearStaleError();
+              }}
               placeholder="migration_name"
             />
+            {/* The name the file is really saved under, whenever it is not
+                exactly what was typed. */}
+            {scriptName !== "" && name.trim() === "" && (
+              <p className="help mt-1">
+                Saved as <span className="mono">{scriptName}</span>, the suggested name.
+              </p>
+            )}
+            {name.trim() !== "" && scriptName !== name.trim() && (
+              <p className="help mt-1">
+                Saved as <span className="mono">{scriptName}</span> — spaces and symbols become _.
+              </p>
+            )}
+            {nameProblem && (
+              <p className="help mt-1" style={{ color: "var(--break)" }}>
+                {nameProblem}
+              </p>
+            )}
             <label className="label mt-2 block" htmlFor={`${fieldId}-description`}>
               Description
             </label>
@@ -304,6 +672,8 @@ export function MigrationWorkbench({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional title / description for the changelog…"
               rows={2}
+              // The push route refuses a description over 1000 characters.
+              maxLength={1000}
               style={{ resize: "none" }}
             />
           </div>
@@ -390,7 +760,7 @@ export function MigrationWorkbench({
                   // was announced as an unnamed text box.
                   aria-label={showingDown ? "Rollback SQL — editable" : "Migration SQL — editable"}
                   value={activeSql}
-                  onChange={(e) => setActiveSql(e.target.value)}
+                  onChange={(e) => editActiveSql(e.target.value)}
                   spellCheck={false}
                 />
 
@@ -451,10 +821,10 @@ export function MigrationWorkbench({
                       <AlertTriangleIcon size={14} />
                     </span>
                     <div>
-                      <b>Transaction control isn&apos;t allowed.</b> Deploy wraps the whole
+                      <b>{"Transaction control isn't allowed."}</b> Deploy wraps the whole
                       run in one transaction. Remove <span className="mono">BEGIN</span>{" "}
                       / <span className="mono">COMMIT</span> / <span className="mono">ROLLBACK</span>{" "}
-                      before deploying.
+                      before pushing.
                     </div>
                   </div>
                 )}
@@ -479,7 +849,7 @@ export function MigrationWorkbench({
                 )}
               </div>
 
-              {/* Change level + derived version */}
+              {/* Change level + the next version it makes */}
               <div
                 className="px-5 py-4"
                 style={{ borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}
@@ -487,103 +857,217 @@ export function MigrationWorkbench({
                 <div className="flex items-center justify-between mb-3">
                   <span className="section-title">Change level</span>
                   <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                    auto-suggested
+                    {level === suggestion ? "auto-suggested" : `suggested: ${suggestion}`}
                   </span>
                 </div>
                 <div className="seg" role="group" aria-label="Change level">
-                  {LEVELS.map((l) => (
+                  {CHANGE_LEVELS.map((kind) => (
                     <button
-                      key={l.kind}
+                      key={kind}
                       type="button"
-                      className={`lvl-${l.kind}${level === l.kind ? " active" : ""}`}
-                      onClick={() => setLevel(l.kind)}
-                      aria-pressed={level === l.kind}
+                      className={`lvl-${kind}${level === kind ? " active" : ""}`}
+                      onClick={() => pickLevel(kind)}
+                      aria-pressed={level === kind}
                     >
                       <span className="swatch" />
-                      {l.label}
+                      {kind}
                     </button>
                   ))}
                 </div>
 
-                {nextVersion ? (
-                  <div
-                    className="panel p-3 mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
-                    style={{ background: "var(--surface)" }}
-                  >
-                    <div>
-                      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                        Next version in lineage
-                      </div>
-                      <div className="text-[15px] mt-0.5 font-semibold mono">
-                        v{nextVersion}
-                      </div>
-                    </div>
-                    <span className="help break-words sm:text-right sm:max-w-[200px]">
-                      <span className="mono">{targetLabel}</span> is at{" "}
-                      <span className="mono">v{targetVersions?.current ?? "?"}</span>; a{" "}
-                      {bumpWord} change bumps to this.
-                    </span>
-                  </div>
-                ) : (
-                  <div
-                    className="panel p-3 mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
-                    style={{ background: "var(--surface)" }}
-                  >
-                    <div>
-                      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                        Will become
-                      </div>
-                      <div className="text-[15px] mt-0.5 font-semibold">
-                        {bumpWord} bump
-                      </div>
-                    </div>
-                    <span className="help break-words sm:text-right sm:max-w-[200px]">
-                      <span className="mono">{targetLabel}</span>{" "}
-                      isn&apos;t tracked yet — track it to assign exact versions
-                      from its lineage.
-                    </span>
+                {/* A quieter level than the grade needs a tick naming why. */}
+                {quieterText && (
+                  <div className="prod-gate prod-gate--drift mt-3">
+                    <label className="prod-gate__ack" style={{ marginTop: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={quieterAck}
+                        onChange={(e) => {
+                          setQuieterAck(e.target.checked);
+                          clearStaleError();
+                        }}
+                      />
+                      <span>{quieterText}</span>
+                    </label>
                   </div>
                 )}
+
+                <div className="panel p-3 mt-4" style={{ background: "var(--surface)" }}>
+                  {nameProblem ? (
+                    <p className="help">
+                      The next version is worked out once the script name can be used.
+                    </p>
+                  ) : familyLoading || appliedLoading ? (
+                    <p className="help">
+                      {familyLoading
+                        ? `Checking GitHub for the versions of ${scriptName}…`
+                        : `Checking which version of ${scriptName} is applied to ${targetLabel}…`}
+                    </p>
+                  ) : familyError ? (
+                    <div>
+                      <p className="text-[12px]" style={{ color: "var(--break)" }}>
+                        {familyError}
+                      </p>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm mt-2"
+                        onClick={() => setFamilyRefresh((n) => n + 1)}
+                      >
+                        <RefreshIcon size={12} />
+                        Check GitHub again
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                            Next version
+                          </div>
+                          <div className="text-[15px] mt-0.5 font-semibold mono">v{nextVersion}</div>
+                        </div>
+                        <span className="help break-words sm:text-right sm:max-w-[260px]">
+                          {floor === null
+                            ? `First version of this family: v${nextVersion} — the level you pick is still recorded`
+                            : `${
+                                appliedKnown
+                                  ? `Applied to ${targetLabel}: ${appliedVersion ? `v${appliedVersion}` : "none"} · `
+                                  : ""
+                              }In GitHub: ${githubHighest ? `v${githubHighest}` : "none"} · a ${bump} (${level}) change makes v${nextVersion}`}
+                        </span>
+                      </div>
+                      {/* Only GitHub could be checked: say so, since a version
+                          applied to the target could otherwise be missed. */}
+                      {!appliedKnown && (
+                        <p className="help mt-2">
+                          {targetConnectionId === null
+                            ? "The applied version can't be read — this target has no saved connection, so only GitHub is checked."
+                            : `Couldn't read the versions applied to ${targetLabel}; only GitHub is checked.`}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
 
-              {/* Footer: push to the GitHub registry */}
+              {/* Footer: the confirmations, the preview, and Push */}
               <div
                 className="px-5 py-3 space-y-3"
                 style={{ borderTop: "1px solid var(--border)" }}
               >
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  {/* Untracked targets have no lineage version — collect one. */}
-                  {nextVersion ? (
-                    <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                      Pushing as <span className="mono" style={{ color: "var(--text-2)" }}>v{nextVersion}</span>
+                {/* The target's own version table says it is ahead: pushing
+                    would take it back to the older schema. Allowed, never
+                    silent. */}
+                {movesBackwards && (
+                  <div className="prod-gate prod-gate--drift">
+                    <div className="prod-gate__head">
+                      <AlertTriangleIcon size={15} className="ico" />
+                      <span>This would move {targetName} backwards</span>
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <label className="label" htmlFor={`${fieldId}-version`}>
-                        Version
-                      </label>
+                    <p className="prod-gate__body">
+                      {`${targetName} declares ${targetDeclares}${inTable}; ${sourceName} declares ${sourceDeclares}. The script below changes ${targetName} to match the older schema, so it may undo anything that arrived in the newer version.`}
+                    </p>
+                    {swapHref && (
+                      <div className="mt-2">
+                        <Link
+                          href={swapHref}
+                          className="btn btn-ghost btn-sm"
+                          title={`Compare with ${targetName} as the source and ${sourceName} as the target`}
+                        >
+                          Compare the other way instead
+                        </Link>
+                      </div>
+                    )}
+                    <label className="prod-gate__ack">
                       <input
-                        id={`${fieldId}-version`}
-                        className="input mono"
-                        style={{ width: 110 }}
-                        value={manualVersion}
-                        onChange={(e) => setManualVersion(e.target.value)}
-                        placeholder="1.0.0"
+                        type="checkbox"
+                        checked={backwardsAck}
+                        onChange={(e) => {
+                          setBackwardsAck(e.target.checked);
+                          clearStaleError();
+                        }}
                       />
+                      <span>I have checked this and want {targetName} to match the older schema.</span>
+                    </label>
+                  </div>
+                )}
+
+                {/* The rollback's warnings live on the Rollback tab; point at
+                    them from here, since that is where Push is pressed. */}
+                {downSql !== undefined && rollbackWarnings.length > 0 && !showingDown && (
+                  <div className="flex items-center justify-between gap-3 flex-wrap text-[12px]" style={{ color: "var(--text-2)" }}>
+                    <span className="min-w-0 flex-1">
+                      The rollback has {countOf(rollbackWarnings.length, "warning")} about what it
+                      cannot put back — read them before pushing.
+                    </span>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPane("down")}>
+                      Open the Rollback tab
+                    </button>
+                  </div>
+                )}
+
+                {/* Saving without a rollback is a choice, not a default. The
+                    box appears when there is no rollback that runs (or when it
+                    is ticked, so it can be unticked). */}
+                {(!rollbackRuns || pushWithoutRollback) && (
+                  <label
+                    className="flex items-start gap-2 text-[12px]"
+                    style={{ color: "var(--text-2)", cursor: "pointer" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={pushWithoutRollback}
+                      onChange={(e) => {
+                        setPushWithoutRollback(e.target.checked);
+                        clearStaleError();
+                      }}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>Save without a rollback — Deploy will not be able to undo this version</span>
+                  </label>
+                )}
+
+                {/* The push preview: the step, and the exact files. */}
+                {versionsReady && (
+                  <div className="text-[12px] space-y-0.5" style={{ color: "var(--text-2)" }}>
+                    <div>{preview.stepLine}</div>
+                    <div className="min-w-0">
+                      Creates{" "}
+                      {preview.files.map((file, index) => (
+                        <span key={file}>
+                          {index > 0 && " and "}
+                          <span className="mono">{file}</span>
+                        </span>
+                      ))}{" "}
+                      in <span className="mono break-all">{folder}</span>
                     </div>
+                    {preview.noRollbackLine && (
+                      <div style={{ color: "var(--drift)" }}>{preview.noRollbackLine}</div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3 flex-wrap">
+                  {blocker && push.kind !== "pushing" && (
+                    <p className="help min-w-0 flex-1">{blocker}</p>
                   )}
                   <button
                     type="button"
-                    className="btn btn-primary btn-sm"
+                    className="btn btn-primary btn-sm ml-auto"
                     onClick={pushToGitHub}
-                    disabled={push.kind === "pushing" || anyTxnViolation}
+                    disabled={push.kind === "pushing" || blocker !== null}
+                    title={blocker ?? undefined}
                   >
-                    {push.kind === "pushing" ? "Pushing…" : "Push to GitHub"}
+                    {push.kind === "pushing"
+                      ? "Pushing…"
+                      : versionsReady
+                        ? `Push v${nextVersion} to GitHub`
+                        : "Push to GitHub"}
                   </button>
                 </div>
 
                 {/* Inline push result */}
-                {push.kind === "ok" && (
+                {push.kind === "ok" && push.rollbackIssue === null && (
                   <div className="warn-inline" style={{ background: "var(--sync-soft)" }}>
                     <span className="ico" style={{ color: "var(--sync)" }}>
                       <CheckIcon size={14} />
@@ -606,12 +1090,76 @@ export function MigrationWorkbench({
                     </div>
                   </div>
                 )}
+                {push.kind === "ok" && push.rollbackIssue !== null && (
+                  <div className="warn-inline">
+                    <span className="ico">
+                      <AlertTriangleIcon size={14} />
+                    </span>
+                    <div className="min-w-0">
+                      <div>
+                        {push.message}
+                        {push.url && (
+                          <>
+                            {" "}
+                            <a
+                              href={push.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: "var(--brand)", textDecoration: "underline" }}
+                            >
+                              View on GitHub
+                            </a>
+                          </>
+                        )}
+                      </div>
+                      <div className="mt-1">{push.rollbackIssue.error}</div>
+                      {retry.kind === "ok" && (
+                        <div className="mt-1" style={{ color: "var(--sync)" }}>
+                          {retry.message}
+                        </div>
+                      )}
+                      {retry.kind === "err" && <div className="mt-1">{retry.message}</div>}
+                      {push.rollbackIssue.canRetry &&
+                        retry.kind !== "ok" &&
+                        !(retry.kind === "err" && retry.final) && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm mt-2"
+                            disabled={retry.kind === "saving"}
+                            onClick={() => push.rollbackIssue && retryRollback(push.rollbackIssue)}
+                          >
+                            {retry.kind === "saving" ? "Saving the rollback…" : "Retry saving the rollback"}
+                          </button>
+                        )}
+                    </div>
+                  </div>
+                )}
                 {push.kind === "err" && (
                   <div className="warn-inline">
                     <span className="ico">
                       <AlertTriangleIcon size={14} />
                     </span>
-                    <div>{push.message}</div>
+                    <div className="min-w-0">
+                      <div>{push.message}</div>
+                      {push.offerNext && (
+                        <>
+                          {versionsReady && push.suggested !== null && push.suggested !== nextVersion && (
+                            <div className="mt-1">
+                              GitHub changed again since then, so the next free number is now v{nextVersion}.
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm mt-2"
+                            onClick={pushToGitHub}
+                            disabled={blocker !== null}
+                            title={blocker ?? undefined}
+                          >
+                            {versionsReady ? `Push as v${nextVersion} instead` : "Checking GitHub…"}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -619,8 +1167,9 @@ export function MigrationWorkbench({
           )}
         </div>
 
-        {/* "What this will do" — honest about which steps exist today */}
-        {!inSync && (
+        {/* "What this will do": only once the number is known, so it never
+            names a file that would not be written. */}
+        {!inSync && versionsReady && (
           <div className="card p-4">
             <div className="section-title mb-2">What this will do</div>
             <ul className="space-y-1.5 text-[12.5px]" style={{ color: "var(--text-2)" }}>
@@ -628,19 +1177,35 @@ export function MigrationWorkbench({
                 <span style={{ color: "var(--sync)" }}>●</span>
                 <span className="min-w-0">
                   Push this migration to the GitHub registry at{" "}
-                  <span className="mono break-all">{targetDatabase}/{targetSchema}/{name.trim() || suggestedName}/v{effectiveVersion}.sql</span>.
+                  <span className="mono break-all">
+                    {folder}v{nextVersion}.sql
+                  </span>
+                  .
                 </span>
               </li>
-              {rollbackSql.trim() && (
+              {downSql !== undefined ? (
                 <li className="flex gap-2">
                   <span style={{ color: "var(--sync)" }}>●</span>
                   <span className="min-w-0">
                     Save the rollback beside it as{" "}
-                    <span className="mono break-all">v{effectiveVersion}.down.sql</span>, so this
-                    version can be undone later.
+                    <span className="mono break-all">v{nextVersion}.down.sql</span>, so Deploy can
+                    undo this version.
+                  </span>
+                </li>
+              ) : (
+                <li className="flex gap-2">
+                  <span style={{ color: "var(--drift)" }}>●</span>
+                  <span className="min-w-0">
+                    No rollback will be saved — this version cannot be undone from Deploy.
                   </span>
                 </li>
               )}
+              <li className="flex gap-2">
+                <span style={{ color: "var(--sync)" }}>●</span>
+                <span className="min-w-0">
+                  {`Record it as ${levelWithArticle(level)} change in the file's Change-type line: the level Deploy shows for this version.`}
+                </span>
+              </li>
               <li className="flex gap-2">
                 <span style={{ color: "var(--sync)" }}>●</span>
                 <span className="min-w-0">

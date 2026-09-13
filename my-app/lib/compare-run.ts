@@ -39,7 +39,6 @@ import {
 } from "@/lib/version-detection";
 import {
   findTrackedSchemas,
-  getNextLineageVersion,
   trackedSchemaKey,
   type TrackedSchemaHead,
 } from "@/lib/lineage-db";
@@ -65,6 +64,7 @@ import {
   missingSourceMessage,
   type CurrentSelection,
 } from "@/lib/compare-selection";
+import { buildSwapHref } from "@/lib/compare-links";
 import type { ComparisonSetOption } from "@/components/studio/ComparisonSetBar";
 
 /**
@@ -202,6 +202,13 @@ export type CompareScreen =
        * and `outcomes` is deliberately empty.
        */
       asked: boolean;
+      /**
+       * The same comparison the other way round, run at once. The Migration
+       * Workbench offers it when a push would move the target backwards. Null
+       * unless there is exactly one target and both sides have a saved
+       * connection (buildSwapHref).
+       */
+      swapHref: string | null;
     };
 
 function toConnectionView(connection: SavedConnection): ConnectionView {
@@ -487,9 +494,6 @@ type TargetOutcome = {
   counts: { breaking: number; safe: number; info: number };
   overallKind: ChangeKind;
   warnings: string[];
-  targetVersions:
-    | { current: string | null; breaking: string; additive: string; patch: string }
-    | null;
   /** What this schema's own version table says. Null when it could not be read. */
   detectedVersion: DetectedVersion | null;
   /**
@@ -578,7 +582,6 @@ async function compareOneTarget(
     counts: { breaking: 0, safe: 0, info: 0 },
     overallKind: "patch" as ChangeKind,
     warnings: [] as string[],
-    targetVersions: null,
     detectedVersion: null,
     versionVerdict: null,
   };
@@ -721,19 +724,8 @@ async function compareOneTarget(
     counts: { breaking, safe, info },
     overallKind,
     warnings: script.warnings,
-    // When the target schema is tracked, derive the real next version for each
-    // change level from its lineage HEAD. Null when it isn't tracked — the
-    // workbench then shows an honest "track it" message instead of a number.
     detectedVersion: toDetectedVersion(versionInfo),
     versionVerdict,
-    targetVersions: head
-      ? {
-          current: head.headVersion,
-          breaking: getNextLineageVersion(head.headVersion, "breaking"),
-          additive: getNextLineageVersion(head.headVersion, "additive"),
-          patch: getNextLineageVersion(head.headVersion, "patch"),
-        }
-      : null,
   };
 }
 
@@ -1208,5 +1200,6 @@ export async function runComparison(
     allowDataLoss,
     compareData,
     asked,
+    swapHref: buildSwapHref(selection),
   };
 }

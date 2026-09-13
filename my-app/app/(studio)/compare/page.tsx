@@ -992,7 +992,19 @@ function CompareScreenView({ query }: { query: string }) {
                   suggestedKind={outcome.overallKind}
                   counts={outcome.counts}
                   warnings={outcome.warnings}
-                  targetVersions={outcome.targetVersions}
+                  // The Workbench reads the versions applied to this target
+                  // through the saved connection, so it can show the same
+                  // next version the Script Editor shows. Null when the
+                  // target has no saved connection: then only GitHub counts.
+                  targetConnectionId={outcome.connectionId}
+                  // The backwards warning above, repeated next to the Push
+                  // button with the same names, so the two never disagree.
+                  versionVerdict={outcome.versionVerdict}
+                  sourceVersion={source.detectedVersion}
+                  targetVersion={outcome.detectedVersion}
+                  sourceName={`${source.displayName}.${source.schema}`}
+                  targetName={`${outcome.displayName}.${outcome.schema}`}
+                  swapHref={screen.swapHref}
                 />
               </div>
             </>

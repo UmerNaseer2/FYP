@@ -475,6 +475,8 @@ describe("POST /api/github/push, when only the rollback fails", () => {
     expect(body.rollback_saved).toBe(false);
     expect(body.paths).toEqual({ migration: "db/public/orders_fix/v1.2.0.sql", rollback: null });
     expect(body.rollback_error).toContain("v1.2.0 was saved, but its rollback was not");
+    // The screens offer "Retry saving the rollback" on this code.
+    expect(body.rollback_error_code).toBe("rollback_failed");
   });
 
   it("names someone else when a rollback appeared meanwhile", async () => {
@@ -482,6 +484,8 @@ describe("POST /api/github/push, when only the rollback fails", () => {
     const { status, body } = await push({ ...BASE, down_sql: DOWN });
     expect(status).toBe(200);
     expect(body.rollback_error).toContain("someone else");
+    // No retry is offered on this code: a saved rollback never changes.
+    expect(body.rollback_error_code).toBe("rollback_exists");
   });
 
   it("says the rollback's outcome is unknown when the connection drops", async () => {
@@ -492,6 +496,7 @@ describe("POST /api/github/push, when only the rollback fails", () => {
     expect(status).toBe(200);
     expect(body.rollback_saved).toBe(false);
     expect(body.rollback_error).toContain("not known");
+    expect(body.rollback_error_code).toBe("rollback_outcome_unknown");
   });
 });
 

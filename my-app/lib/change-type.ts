@@ -433,6 +433,44 @@ export function louderChangeType(a: ScriptChangeType, b: ScriptChangeType): Scri
 }
 
 /**
+ * The tick both push screens (Migration Workbench, Script Editor) show when
+ * someone picks a QUIETER level than the SQL was graded, e.g. publishes a
+ * DROP TABLE as "additive". Picking quieter is allowed, but only knowingly:
+ * the version number is how everyone downstream judges how risky a version
+ * is, and a quieter level makes it understate the change.
+ *
+ * Returns the tick's label, or null when no tick is needed (the chosen level
+ * is the same as the grade or louder; louder only overstates, which is safe).
+ * `because` names the statement behind a breaking grade, e.g. "DROP TABLE";
+ * it is only mentioned for a breaking grade, since additive and patch have no
+ * single statement to blame. `firstVersion` is true when the family has no
+ * version yet: it becomes 1.0.0 whatever the level, so the label blames the
+ * level recorded with the file instead of the version number.
+ */
+export function quieterLevelWarning(
+  graded: ScriptChangeType,
+  chosen: ScriptChangeType,
+  because: string | null,
+  firstVersion = false,
+): string | null {
+  if (louderChangeType(graded, chosen) === chosen) return null;
+  const why = graded === "breaking" && because ? ` because of ${because}` : "";
+  // A family's first version is 1.0.0 at every level, so there the number
+  // can't understate anything; only the level recorded with the file can.
+  const understated = firstVersion ? "the level recorded with it" : "the version number";
+  return `This is graded ${graded}${why}. Publish it as ${chosen} anyway — ${understated} will understate the change.`;
+}
+
+/**
+ * A level with its article, for sentences like "Recorded as an additive
+ * change": "a breaking", "an additive", "a patch". One place, so no screen
+ * writes "a additive".
+ */
+export function levelWithArticle(level: ScriptChangeType): string {
+  return level === "additive" ? "an additive" : `a ${level}`;
+}
+
+/**
  * The change type of a script: what its stamp says if it has one, otherwise
  * what the SQL itself says. Same as describeChangeType(sql).recorded.
  */
@@ -479,7 +517,7 @@ export function describeChangeType(sql: string): ChangeTypeReading {
   const louderNote =
     declared !== null && declared !== "breaking" && grade.sureLevel === "breaking"
       ? `Marked ${declared}, but its SQL has ${grade.because}, which is always breaking — ` +
-        "it is counted in the breaking checks below."
+        "it is counted in the breaking checks."
       : null;
   return { declared, grade, recorded, countsAsBreaking, louderNote };
 }

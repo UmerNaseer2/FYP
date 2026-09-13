@@ -34,7 +34,10 @@
 //   { attach_rollback: true, database_name, schema_name, script_name, version, down_sql }
 //
 // Responses. Every error is { ok: false, code, error } with a readable error:
-//   200 { ok: true, url, version, paths: { migration, rollback }, rollback_saved, rollback_error? }
+//   200 { ok: true, url, version, paths: { migration, rollback }, rollback_saved,
+//         rollback_error?, rollback_error_code? }
+//       rollback_error_code: rollback_outcome_unknown | rollback_exists | rollback_failed
+//       (rollback_exists: someone else's rollback is there, so a retry cannot help)
 //   400 invalid_input                           nothing was sent to GitHub
 //   404 version_missing                         attach: that version is not saved
 //   409 version_exists | version_not_newer      also carry highest_version and suggested
@@ -67,6 +70,7 @@ import {
   familyVersions,
   findVersionFiles,
   githubErrorCode,
+  MIGRATION_NO_STATEMENTS,
   normalizePushVersion,
   pushCommitMessage,
   readChangeLevel,
@@ -201,7 +205,7 @@ function readInput(raw: unknown): NormalPush | AttachPush | { problem: string } 
     return { problem: "The migration SQL is missing, or was not sent as text." };
   }
   if (!hasExecutableSql(body.sql_content)) {
-    return { problem: "The migration contains no statements (only comments or blank lines), so it would change nothing." };
+    return { problem: MIGRATION_NO_STATEMENTS };
   }
   // Apply and revert refuse these later; refusing them now means a version
   // that can never be deployed is never published.
@@ -370,6 +374,10 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
   const rollbackName = rollbackFileName(version);
   let rollbackSaved = false;
   let rollbackError: string | null = null;
+  // Which of the three rollback failures it was, for screens that offer a
+  // retry: "rollback_exists" means someone else's rollback is already there,
+  // and a saved rollback never changes, so a retry could only be refused.
+  let rollbackErrorCode: "rollback_outcome_unknown" | "rollback_exists" | "rollback_failed" | null = null;
   if (input.downSql !== null) {
     const downRes = await githubFetch(
       config,
@@ -377,11 +385,13 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
       { method: "PUT", body: { message: rollbackCommitMessage("rollback", identity), content: toBase64(input.downSql) } },
     );
     if (!downRes) {
+      rollbackErrorCode = "rollback_outcome_unknown";
       rollbackError = `v${version} was saved, but the connection to GitHub dropped while saving its rollback, so it is not known whether the rollback was saved. Reload the registry to check; if v${version} shows no rollback, save the rollback again.`;
     } else if (downRes.ok) {
       rollbackSaved = true;
     } else {
       await logGitHubAnswer("save rollback", downRes);
+      rollbackErrorCode = downRes.status === 422 ? "rollback_exists" : "rollback_failed";
       rollbackError =
         downRes.status === 422
           ? `A rollback for v${version} was added by someone else a moment ago, so yours was not saved. Check it in the Script Editor.`
@@ -398,7 +408,7 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
       rollback: rollbackSaved ? registryPath(input, rollbackName) : null,
     },
     rollback_saved: rollbackSaved,
-    ...(rollbackError ? { rollback_error: rollbackError } : {}),
+    ...(rollbackError ? { rollback_error: rollbackError, rollback_error_code: rollbackErrorCode } : {}),
   });
 }
 

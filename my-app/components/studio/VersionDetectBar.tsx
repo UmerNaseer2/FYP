@@ -168,7 +168,10 @@ export function VersionDetectBar({
       {verdict && (
         <p className="verdet__why">
           {verdict.newer === "right" && (
-            <b>The migration below would move the target backwards. </b>
+            <b>
+              The migration below would move the target backwards. The push
+              button below asks you to confirm first.{" "}
+            </b>
           )}
           {verdict.reason}
         </p>

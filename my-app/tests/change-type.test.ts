@@ -10,6 +10,8 @@ import {
   gradeSql,
   inferChangeTypeFromSql,
   louderChangeType,
+  levelWithArticle,
+  quieterLevelWarning,
   readChangeTypeHeader,
   stampChangeType,
 } from "@/lib/change-type";
@@ -378,7 +380,7 @@ describe("describeChangeType", () => {
     expect(reading.countsAsBreaking).toBe(true);
     expect(reading.louderNote).toBe(
       "Marked additive, but its SQL has DROP TABLE, which is always breaking — " +
-        "it is counted in the breaking checks below."
+        "it is counted in the breaking checks."
     );
   });
 
@@ -442,6 +444,33 @@ describe("louderChangeType", () => {
   });
 });
 
+describe("quieterLevelWarning — the tick for publishing quieter than graded", () => {
+  it("asks for a tick, naming the statement, when a breaking script is published quieter", () => {
+    expect(quieterLevelWarning("breaking", "additive", "DROP TABLE")).toBe(
+      "This is graded breaking because of DROP TABLE. Publish it as additive anyway — the version number will understate the change.",
+    );
+  });
+
+  it("leaves the reason out when there is no statement to name", () => {
+    expect(quieterLevelWarning("breaking", "patch", null)).toBe(
+      "This is graded breaking. Publish it as patch anyway — the version number will understate the change.",
+    );
+  });
+
+  it("names no statement for an additive grade, even if one is passed", () => {
+    expect(quieterLevelWarning("additive", "patch", "CREATE TABLE")).toBe(
+      "This is graded additive. Publish it as patch anyway — the version number will understate the change.",
+    );
+  });
+
+  it("needs no tick for the same level or a louder one", () => {
+    expect(quieterLevelWarning("additive", "additive", null)).toBeNull();
+    expect(quieterLevelWarning("patch", "breaking", null)).toBeNull();
+    expect(quieterLevelWarning("additive", "breaking", null)).toBeNull();
+    expect(quieterLevelWarning("breaking", "breaking", "DROP TABLE")).toBeNull();
+  });
+});
+
 describe("readChangeTypeHeader", () => {
   it("reads the stamp the generator writes", () => {
     expect(readChangeTypeHeader("-- Change-type: additive\nSELECT 1;")).toBe("additive");
@@ -477,5 +506,26 @@ describe("changeTypeOf — a rendered safe-mode script", () => {
 
   it("grades additive anyway, because nothing destructive will run", () => {
     expect(changeTypeOf(sql)).toBe("additive");
+  });
+});
+
+describe("quieterLevelWarning — a family's first version", () => {
+  it("names the recorded level, not the number, since a first version is 1.0.0 at every level", () => {
+    expect(quieterLevelWarning("breaking", "patch", "DROP TABLE", true)).toBe(
+      "This is graded breaking because of DROP TABLE. Publish it as patch anyway — the level recorded with it will understate the change.",
+    );
+  });
+
+  it("still needs no tick for the same or a louder level", () => {
+    expect(quieterLevelWarning("additive", "breaking", null, true)).toBeNull();
+    expect(quieterLevelWarning("patch", "patch", null, true)).toBeNull();
+  });
+});
+
+describe("levelWithArticle", () => {
+  it("gives each level its article, so no sentence says 'a additive'", () => {
+    expect(levelWithArticle("breaking")).toBe("a breaking");
+    expect(levelWithArticle("additive")).toBe("an additive");
+    expect(levelWithArticle("patch")).toBe("a patch");
   });
 });
