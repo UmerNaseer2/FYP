@@ -1085,6 +1085,32 @@ describe("readPlan — findings", () => {
     expect(concurrently.every((line) => line.startsWith("--"))).toBe(true);
   });
 
+  it("adds an estimated parallel scan's share back up before judging its filter", () => {
+    // Per process, 83,000 of a million rows looked like a twelfth of the
+    // table and passed for selective. In all it is 199,200, a fifth: too many
+    // for an index to help.
+    const catalog = { tableRows: { "public.readings": 1000000 } };
+    const wide = readPlan(envelope(readingsInParallel(83000)), catalog);
+    expect(wide?.findings.map((f) => f.id)).not.toContain("seq-scan:1");
+    expect(wide?.findings.some((f) => f.title.startsWith("Index"))).toBe(false);
+    // One keeping 9,600 in all is still worth an index, and its words give
+    // that total rather than one process's share.
+    const narrow = readPlan(envelope(readingsInParallel(4000)), catalog);
+    const finding = narrow?.findings.find((f) => f.id === "seq-scan:1");
+    expect(finding?.severity).toBe("high");
+    expect(finding?.title).toBe("Index the column v");
+    expect(finding?.detail).toContain("Only about 9,600 rows are expected to match");
+  });
+
+  it("does not judge an estimated parallel scan when the Gather gave no planned count", () => {
+    // Without "Workers Planned" the share cannot be added back up, so the
+    // scan is left alone rather than judged by one process's rows.
+    const plan = readingsInParallel(4000);
+    delete plan["Workers Planned"];
+    const summary = readPlan(envelope(plan), { tableRows: { "public.readings": 1000000 } });
+    expect(summary?.findings.map((f) => f.id)).not.toContain("seq-scan:1");
+  });
+
   it("gives the whole-table read a decision when no one index can serve the filter", () => {
     // An OR across two columns needs an index on each side, so which to build
     // is a judgement: every line of the fix is a comment, the filter it would
@@ -3401,6 +3427,34 @@ function neverNeeded(): Record<string, unknown> {
 }
 
 /**
+ * An estimate for `SELECT * FROM readings WHERE v < 200` on a table of a
+ * million rows, split between two helpers and the main process. The planner
+ * divides the rows by 2.4, so the scan's Plan Rows are one process's share of
+ * the matches, and the Gather's are all of them.
+ */
+function readingsInParallel(perProcess: number): Record<string, unknown> {
+  return {
+    "Node Type": "Gather",
+    "Workers Planned": 2,
+    "Plan Rows": Math.round(perProcess * 2.4),
+    "Total Cost": 12000,
+    Plans: [
+      {
+        "Node Type": "Seq Scan",
+        "Parent Relationship": "Outer",
+        "Parallel Aware": true,
+        "Relation Name": "readings",
+        Schema: "public",
+        Alias: "readings",
+        Filter: "(readings.v < 200)",
+        "Plan Rows": perProcess,
+        "Total Cost": 11000,
+      },
+    ],
+  };
+}
+
+/**
  * A run of a paid-order count in parallel: three processes (two helpers and
  * the main one) each read a third of public.orders and count their share, and
  * the top step adds the three counts up.
@@ -4118,6 +4172,16 @@ describe("explainInWords", () => {
         "176,471 rows (in each process).",
       "Collects the rows from all the processes, giving about 300,000 rows.",
     ]);
+  });
+
+  it("says why an estimated parallel scan keeping a fifth of the table reads it whole", () => {
+    // The share is of the 199,200 rows kept in all, not of one process's 83,000.
+    const lines = words(readingsInParallel(83000), { tableRows: { "public.readings": 1000000 } });
+    expect(lines[0]).toBe(
+      "Reads the whole of public.readings, split between the processes, and keeps about " +
+        "83,000 rows where readings.v < 200 (in each process); about 20% of its rows match, " +
+        "too many for an index to help, so reading the whole table is the right plan."
+    );
   });
 
   it("adds a measured parallel scan's processes up into one count", () => {

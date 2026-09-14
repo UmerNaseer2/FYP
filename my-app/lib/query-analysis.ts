@@ -747,6 +747,13 @@ export type PlanStep = {
    * runs in full, such as the lookup side of a join.
    */
   parallelAware: boolean;
+  /**
+   * For a step the helper processes share (parallelAware): what the planner
+   * divided its estimated rows by to give one process's share, e.g. 2.4 for
+   * two helpers and the main process. Null for every other step, and when
+   * the Gather above gave no planned count. See plannerShareDivisor.
+   */
+  shareDivisor: number | null;
   /** The index an index or bitmap scan reads, e.g. "orders_customer_idx". */
   indexName: string | null;
   /** For a join: "Inner", "Left", "Semi", "Anti", … verbatim. Null otherwise. */
@@ -984,12 +991,14 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
 
   // `inParallel` is passed down rather than looked up later: everything below
   // a Gather runs in the helper processes, and a step only knows that by
-  // having been told on the way down.
+  // having been told on the way down. `plannedWorkers` travels the same way:
+  // the Gather's planned helpers, which set how the rows below were split.
   function walk(
     node: RawPlanNode,
     depth: number,
     parentId: number | null,
-    inParallel: boolean
+    inParallel: boolean,
+    plannedWorkers: number | null
   ): void {
     const id = steps.length;
     const nodeType = str(node, "Node Type") ?? "Step";
@@ -1042,6 +1051,10 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
       tableRows: null,
       inParallel,
       parallelAware: node["Parallel Aware"] === true,
+      shareDivisor:
+        node["Parallel Aware"] === true && plannedWorkers !== null
+          ? plannerShareDivisor(plannedWorkers)
+          : null,
       indexName: str(node, "Index Name"),
       joinType: str(node, "Join Type"),
       subplanName: str(node, "Subplan Name"),
@@ -1055,9 +1068,12 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
     steps.push(step);
 
     const startsParallel = nodeType === "Gather" || nodeType === "Gather Merge";
+    // Planned, not Launched, even in a measured plan: Plan Rows were split by
+    // the helpers the planner counted on, whatever then really started.
+    const childWorkers = startsParallel ? numOrNull(node, "Workers Planned") : plannedWorkers;
     let childInclusive = 0;
     for (const child of childrenOf(node)) {
-      walk(child, depth + 1, id, inParallel || startsParallel);
+      walk(child, depth + 1, id, inParallel || startsParallel, childWorkers);
       const childLoops = numOrNull(child, "Actual Loops");
       const childPerLoop = numOrNull(child, "Actual Total Time");
       if (childPerLoop !== null) childInclusive += childPerLoop * (childLoops ?? 1);
@@ -1070,7 +1086,7 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
     }
   }
 
-  walk(root, 0, null, false);
+  walk(root, 0, null, false, null);
   estimateRuns(steps);
   return steps;
 }
@@ -1217,6 +1233,37 @@ function isInnerSide(step: PlanStep, siblings: PlanStep[]): boolean {
 function totalActualRows(step: PlanStep): number | null {
   if (step.actualRows === null) return null;
   return step.actualRows * (step.loops ?? 1);
+}
+
+/**
+ * What the planner divides a parallel scan's rows by to give one process's
+ * share, for `workers` helpers: each helper counts as one, and the main
+ * process as the time it has left over from collecting their rows, taken to
+ * be 1 - 0.3 per helper and nothing from four helpers up. So 1.7 for one
+ * helper, 2.4 for two, 3.1 for three and 4 for four (PostgreSQL's
+ * get_parallel_divisor). That is with parallel_leader_participation on, the
+ * default; with it off the real divisor is smaller, so a total worked out
+ * from this one can come out too large, never too small.
+ */
+function plannerShareDivisor(workers: number): number {
+  const leader = 1 - 0.3 * workers;
+  return workers + (leader > 0 ? leader : 0);
+}
+
+/**
+ * How many rows a step handed on in all. Measured, across its loops (for a
+ * parallel scan the loops are the processes). Estimated, Plan Rows, except
+ * for a step the helper processes share: its Plan Rows are one process's
+ * share, so they are multiplied back up by what the planner divided them by,
+ * or null when that is not known. Every step below one Gather is taken to be
+ * split the Gather's way; one side of a parallel join planned with a
+ * different number of helpers is off by the difference.
+ */
+function rowsHandedOn(step: PlanStep): number | null {
+  const measured = totalActualRows(step);
+  if (measured !== null) return measured;
+  if (!step.parallelAware) return step.estimatedRows;
+  return step.shareDivisor === null ? null : step.estimatedRows * step.shareDivisor;
 }
 
 /** "1,204" — thousands separators, because plan numbers get long. */
@@ -1999,12 +2046,17 @@ function testsOnlySubqueries(filter: string): boolean {
  * table needs most of it read whatever indexes exist.
  *
  * Both counts are totals across loops, so a scan a nested loop repeats, or
- * one split between parallel workers, is judged by the same share.
+ * one split between parallel workers, is judged by the same share. An
+ * estimated parallel scan's Plan Rows are one process's share, so
+ * rowsHandedOn multiplies them back up: judged per process, a filter keeping
+ * a fifth of the table looked like one keeping a twelfth. When that cannot
+ * be done, the scan is not judged at all.
  */
 function readsManyKeepsFew(step: PlanStep, tableRows: TableRows): boolean {
   if (step.nodeType !== "Seq Scan" || step.filter === null) return false;
+  const kept = rowsHandedOn(step);
+  if (kept === null) return false;
   const scanned = rowsScanned(step, tableRows);
-  const kept = totalActualRows(step) ?? step.estimatedRows;
   return scanned >= LARGE_TABLE_ROWS && kept <= scanned * SELECTIVE_SHARE;
 }
 
@@ -2169,7 +2221,9 @@ function planFindings(
     ) {
       const table = tableName(step);
       const scanned = rowsScanned(step, tableRows);
-      const kept = actualTotal ?? step.estimatedRows;
+      // In all, as readsManyKeepsFew counts it: an estimated parallel scan's
+      // Plan Rows are only one process's share.
+      const kept = rowsHandedOn(step) ?? step.estimatedRows;
       const removedTotal = removedPerLoop === null ? null : removedPerLoop * loops;
 
       // Only a filter that keeps a small share of the table is worth an
@@ -3129,9 +3183,9 @@ function stepTableRows(step: PlanStep): TableRows {
  * uses, so this sentence and that finding can never disagree.
  *
  * Says nothing for a scan that runs many times (the nested-loop rule has its
- * own view of that), one a LIMIT may stop early, or an estimated parallel
- * scan: its Plan Rows are one process's share while the table size is the
- * whole table, so the share worked out from them would be too small.
+ * own view of that), one a LIMIT may stop early, an estimate without the
+ * table's size, or an estimated parallel scan whose rows cannot be added up
+ * across its processes (see rowsHandedOn).
  */
 function wholeReadReason(step: PlanStep, c: Counting, stopsEarly: boolean): string {
   if (step.nodeType !== "Seq Scan" || step.filter === null) return "";
@@ -3139,11 +3193,13 @@ function wholeReadReason(step: PlanStep, c: Counting, stopsEarly: boolean): stri
   // nothing to weigh the whole read against.
   if (testsOnlySubqueries(step.filter)) return "";
   if (stopsEarly || c.perRun) return "";
-  if (!c.measured && (step.parallelAware || step.tableRows === null)) return "";
+  if (!c.measured && step.tableRows === null) return "";
+  // A share of the whole table, so the rows kept in all, not in one process.
+  const kept = rowsHandedOn(step);
+  if (kept === null) return "";
   const tableRows = stepTableRows(step);
   const scanned = rowsScanned(step, tableRows);
   if (scanned < LARGE_TABLE_ROWS || readsManyKeepsFew(step, tableRows)) return "";
-  const kept = totalActualRows(step) ?? step.estimatedRows;
   const percent = Math.min(100, Math.round((kept / scanned) * 100));
   return percent > 50
     ? `; most of its rows match (about ${percent}%), so an index would not help ` +
@@ -4133,7 +4189,7 @@ export function sqlContextFromPlan(
     // A whole-table read with no filter hands on every row it reads, so
     // what it handed on is the table's size, and fresher than the catalog.
     const wholeTable = step.nodeType === "Seq Scan" && step.filter === null;
-    const handedOn = totalActualRows(step) ?? step.estimatedRows;
+    const handedOn = rowsHandedOn(step) ?? step.estimatedRows;
     tables.push({
       schema: step.relationSchema,
       name: step.relation,
