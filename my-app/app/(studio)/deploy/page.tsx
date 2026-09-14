@@ -679,7 +679,7 @@ function pendingRowNotes(
 
   if (reading.louderNote) notes.push({ text: reading.louderNote, warn: true });
 
-  // The level wins everywhere on this page (the pill, the bump, what is
+  // The level wins everywhere on this page (the pill, the Bump summary, what is
   // recorded), so a version number that says otherwise gets a sentence. It is
   // a warning when the number says more than the level: the reader sees, say,
   // a major version that the breaking checks do not count.
@@ -3299,7 +3299,12 @@ export default function DeployPage() {
                             name={script.script_name}
                             kind={kind}
                             sub={`${from} → ${vLabel(script.version)} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
-                            rightPill={bumpWord(kind)}
+                            // The version it lands, as in the run list below. A
+                            // bare "major" here sat beside "v1.1.0 → v1.2.0" and
+                            // contradicted it; the level pill already says what
+                            // kind of change this is, and the note explains a
+                            // number that disagrees with it.
+                            rightPill={vLabel(script.version)}
                             cell={{ status: inRun ? "queued" : "not-in-run" }}
                             selected={inRun}
                             sql={script.sql_content}
@@ -3351,7 +3356,7 @@ export default function DeployPage() {
                           {activeConn.host}:{activeConn.port}/{activeConn.database_name}
                         </div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Migrations</span><span className="mono">{scriptsUpToTarget.length}</span></div>
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Bump</span><span>{bumps}</span></div>
+                        <div className="flex justify-between" title="What the migrations' change types call for: major = breaking, minor = additive, patch = small change. A version number that says otherwise is noted on its row."><span style={{ color: "var(--text-3)" }}>Bump</span><span>{bumps}</span></div>
                         {/* Two rows, because they are two questions. Breaking
                             is what stops working after this succeeds; deletes
                             rows is what you need a backup for. A rename is the
