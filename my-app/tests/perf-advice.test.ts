@@ -331,6 +331,8 @@ describe("analyzeSchemaPerformance", () => {
     const found = one(advice, "duplicate-index");
     expect(found.fixKind).toBe("change");
     expect(runnable(found.fix)).toEqual(['DROP INDEX "public"."orders_b";']);
+    // Nothing wider covers the copy kept, so nothing else drops it.
+    expect(found.fix).not.toContain("covered by the wider");
     // The undo builds the dropped copy again, name and all.
     expect(found.undo).toBe('CREATE INDEX "orders_b" ON "public"."orders" USING btree (customer_id);');
   });
@@ -465,6 +467,58 @@ describe("analyzeSchemaPerformance", () => {
     );
     const drops = advice.flatMap((a) => runnable(a.fix)).filter((l) => l.startsWith("DROP INDEX"));
     expect(drops.sort()).toEqual(['DROP INDEX "public"."a";', 'DROP INDEX "public"."b";']);
+  });
+
+  it("says so when the copy it keeps is itself covered, so the two findings do not read as a disagreement", () => {
+    // The duplicate finding keeps a; the redundant finding drops a. Each is
+    // safe alone, and together they leave c, which serves every lookup a did.
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        table("orders", {
+          indexes: [
+            index("a", ["customer_id"]),
+            index("b", ["customer_id"]),
+            index("c", ["customer_id", "placed_at"]),
+          ],
+        }),
+      ])
+    );
+    const duplicate = one(advice, "duplicate-index");
+    expect(duplicate.fix).toContain('-- Keeps "a"; the others only repeat it.');
+    expect(duplicate.fix).toContain(
+      '-- "a" is itself covered by the wider "c", so another suggestion drops it too; ' +
+        'together they leave "c" to serve these lookups.'
+    );
+    expect(duplicate.keeps).toBe('"public"."a"');
+    const redundant = one(advice, "redundant-index");
+    expect(redundant.fix).toBe('DROP INDEX "public"."a";');
+    expect(redundant.keeps).toBe('"public"."c"');
+    expect(redundant.detail).toContain(
+      "b is an identical copy of a; the suggestion for identical indexes drops it."
+    );
+  });
+
+  it("names every identical copy, and says nothing of copies when there are none", () => {
+    const same = (name: string) => index(name, ["customer_id"]);
+    const withCopies = analyzeSchemaPerformance(
+      snapshot([
+        table("orders", {
+          indexes: [same("a"), same("b"), same("d"), index("c", ["customer_id", "placed_at"])],
+        }),
+      ])
+    );
+    expect(one(withCopies, "redundant-index").detail).toContain(
+      "b and d are identical copies of a; the suggestion for identical indexes drops them."
+    );
+
+    const alone = analyzeSchemaPerformance(
+      snapshot([
+        table("orders", {
+          indexes: [index("narrow", ["customer_id"]), index("wide", ["customer_id", "placed_at"])],
+        }),
+      ])
+    );
+    expect(one(alone, "redundant-index").detail).not.toContain("identical");
   });
 
   it("leaves a narrow index alone when the wider one uses a different method", () => {

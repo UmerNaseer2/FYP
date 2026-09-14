@@ -175,8 +175,16 @@ export function QueryAnalyzer({
           </label>
           <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
             One query that reads data. Unqualified names resolve in{" "}
-            <span className="mono">{target.schema}</span>, then{" "}
-            <span className="mono">public</span>.
+            <span className="mono">{target.schema}</span>
+            {/* The search path is the schema, then public; saying "public,
+                then public" for the public schema would read as a typo. */}
+            {target.schema === "public" ? (
+              "."
+            ) : (
+              <>
+                , then <span className="mono">public</span>.
+              </>
+            )}
           </span>
         </div>
 

@@ -791,6 +791,30 @@ type IndexCopy = {
   parsed: ParsedIndex | null;
 };
 
+/** A non-unique index over plain columns: the only kind one index can cover for another. */
+type PlainIndex = ParsedIndex & { keys: string[] };
+
+/**
+ * An index that serves every lookup `narrow` serves, and more: the same
+ * method, and `narrow`'s columns are the first columns of its own. Undefined
+ * when there is none.
+ *
+ * Plain columns on both sides only (see plainKeys), compared exactly: an
+ * operator class, a collation, an expression or a WHERE changes which lookups
+ * an index serves. And never a unique index, which enforces a rule a wider
+ * index does not.
+ */
+function widerPlainIndex(narrow: ParsedIndex, plain: PlainIndex[]): PlainIndex | undefined {
+  if (narrow.unique || narrow.keys === null) return undefined;
+  const keys = narrow.keys;
+  return plain.find(
+    (other) =>
+      other.method === narrow.method &&
+      other.keys.length > keys.length &&
+      keys.every((column, i) => other.keys[i] === column)
+  );
+}
+
 /**
  * The fix for a group of indexes that do the same job.
  *
@@ -799,11 +823,15 @@ type IndexCopy = {
  * snapshot's order. When two constraints own copies, dropping one means
  * dropping a constraint that code may name, so that is left to a person.
  * The copy kept goes in `keeps` (see withoutRepeatedDrops).
+ *
+ * `plainIndexes` is the table's non-unique indexes over plain columns, to
+ * check whether the copy kept is itself covered by a wider one.
  */
 function duplicateFix(
   schema: string,
   table: TableSnapshot,
-  copies: IndexCopy[]
+  copies: IndexCopy[],
+  plainIndexes: PlainIndex[]
 ): Pick<PerfAdvice, "fix" | "fixKind" | "undo" | "keeps"> {
   const target = qualifiedName(schema, table.name);
   const owned = copies.filter((c) => c.constraint !== null);
@@ -832,6 +860,17 @@ function duplicateFix(
       ? comment`-- Keeps ${quoteIdent(keep.name)}, the index behind the ${keep.constraint}; the others only repeat it.`
       : comment`-- Keeps ${quoteIdent(keep.name)}; the others only repeat it.`,
   ];
+  // The copy kept can itself be the front of a wider index. Then the
+  // redundant-index finding drops it too, and without this line the two
+  // suggestions would read as if they disagreed. Each is safe alone, and run
+  // together they leave the wider index, which serves every lookup these did.
+  const wider = keep.parsed ? widerPlainIndex(keep.parsed, plainIndexes) : undefined;
+  if (wider) {
+    lines.push(
+      comment`-- ${quoteIdent(keep.name)} is itself covered by the wider ${quoteIdent(wider.name)}, so another ` +
+        comment`suggestion drops it too; together they leave ${quoteIdent(wider.name)} to serve these lookups.`
+    );
+  }
   for (const copy of dropped) {
     if (copy.parsed?.unique) {
       lines.push(
@@ -945,6 +984,9 @@ export function analyzeSchemaPerformance(
         .filter((index) => !invalidIndexes.has(index.name) && !REINDEX_LEFTOVER.test(index.name))
         .map((index) => parseIndexDefinition(index.definition))
         .filter((p): p is ParsedIndex => p !== null);
+      // The ones a wider index can cover: the redundant-index rule compares
+      // them, and the duplicate-index fix checks the copy it keeps against them.
+      const plain = parsedIndexes.filter((p): p is PlainIndex => !p.unique && p.keys !== null);
 
       // ── Indexes that do the same job ───────────────────────────────────
       // A unique btree over plain columns is compared by its columns, so the
@@ -990,31 +1032,25 @@ export function analyzeSchemaPerformance(
             "Identical indexes cost the disk and the write work of every copy — " +
             "each INSERT, UPDATE and DELETE maintains all of them — and the " +
             "planner can only ever use one.",
-          ...duplicateFix(schema, table, copies),
+          ...duplicateFix(schema, table, copies, plain),
         });
       }
 
       // ── An index whose columns are the front of another index ──────────
-      // Only plain columns on both sides, compared exactly: an index with an
-      // operator class or a collation serves different lookups than one
-      // without, even over the same column.
-      const plain = parsedIndexes.filter(
-        (p): p is ParsedIndex & { keys: string[] } => !p.unique && p.keys !== null
-      );
+      // Only plain columns on both sides, compared exactly (widerPlainIndex):
+      // an index with an operator class or a collation serves different
+      // lookups than one without, even over the same column.
       for (const [i, narrow] of plain.entries()) {
+        const sameAsNarrow = (o: PlainIndex) => o.method === narrow.method && o.tail === narrow.tail;
         // A second copy of an identical index is already dropped by the
         // duplicate finding above; two findings dropping one index is one too many.
-        if (plain.slice(0, i).some((o) => o.method === narrow.method && o.tail === narrow.tail)) {
-          continue;
-        }
-        const wider = plain.find(
-          (other) =>
-            other !== narrow &&
-            other.method === narrow.method &&
-            other.keys.length > narrow.keys.length &&
-            narrow.keys.every((c, i) => other.keys[i] === c)
-        );
+        if (plain.slice(0, i).some(sameAsNarrow)) continue;
+        const wider = widerPlainIndex(narrow, plain);
         if (!wider) continue;
+        // Its identical copies, which the duplicate finding drops while it
+        // keeps this one. Named here so the two findings read as two halves
+        // of one clean-up, not as a disagreement.
+        const copies = plain.filter((o) => o !== narrow && sameAsNarrow(o)).map((o) => o.name);
         advice.push({
           id: "redundant-index",
           severity: "low",
@@ -1024,7 +1060,12 @@ export function analyzeSchemaPerformance(
             `Any lookup ${narrow.name} can serve, ${wider.name} can serve too — ` +
             `an index on (${wider.keys.join(", ")}) is usable for a query that ` +
             `only constrains (${narrow.keys.join(", ")}). Keeping both pays the ` +
-            `write cost twice for one capability.`,
+            `write cost twice for one capability.` +
+            (copies.length === 0
+              ? ""
+              : copies.length === 1
+                ? ` ${copies[0]} is an identical copy of ${narrow.name}; the suggestion for identical indexes drops it.`
+                : ` ${listInWords(copies)} are identical copies of ${narrow.name}; the suggestion for identical indexes drops them.`),
           fix: `DROP INDEX ${qualifiedName(schema, narrow.name)};`,
           fixKind: "change",
           keeps: qualifiedName(schema, wider.name),
@@ -1860,11 +1901,14 @@ export function attachForeignKeyIndexes<T extends PerfAdvice>(advice: T[]): T[] 
  * The duplicate-index or redundant-index finding is the one kept: its reason
  * holds whatever the counters say, and it comes with an undo of its own.
  *
- * The index such a finding keeps (its `keeps`) is left alone too. The copy
- * to keep is chosen by name, not by use, so it can be the unused one while
- * the copy dropped is the one the queries use: run together, the two DROPs
- * would leave those queries no index at all. Once the other copy is gone the
- * queries move to the one kept, and the next check shows whether they did.
+ * The index such a finding keeps (its `keeps`) is left alone too: the copy
+ * the duplicate-index finding keeps, or the wider index the redundant-index
+ * finding leaves in place. Neither is chosen by use (the copy is the first
+ * one listed, the wider index is picked by its columns), so the one kept can
+ * be the unused one while the one dropped is the one the queries use: run
+ * together, the two DROPs would leave those queries no index at all. Once the
+ * other is gone the queries move to the one kept, and the next check shows
+ * whether they did.
  *
  * Findings are matched on the exact statement. An unused-index fix ends with
  * its DROP INDEX (behind "-- " when it is only a decision); the other findings
