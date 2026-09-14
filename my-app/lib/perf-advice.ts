@@ -634,11 +634,19 @@ function partitionKeyColumns(
  * A partitioned table always gets (c), worded for partitioning: its key has
  * to include the partition key's columns, PostgreSQL cannot enforce one at all
  * over a computed partition key, and ADD ... USING INDEX is refused there.
+ *
+ * `indexes` are the ones (a) may take over: the valid indexes the
+ * duplicate-index finding keeps (see keptCopy). The two findings start ticked
+ * and go into one script, and PostgreSQL renames the index it makes the key,
+ * so a DROP INDEX of a copy taken over here would fail in that script. A copy
+ * of a unique constraint is never among them: the duplicate-index finding
+ * keeps the constraint's own index, and (b) makes the key from its columns.
  */
 function primaryKeyFix(
   schema: string,
   table: TableSnapshot,
-  relations: Set<string>
+  relations: Set<string>,
+  indexes: ParsedIndex[]
 ): Pick<PerfAdvice, "fix" | "fixKind" | "undo"> {
   const target = qualifiedName(schema, table.name);
   const notNull = new Set(table.columns.filter((c) => !c.nullable).map((c) => c.name));
@@ -647,9 +655,8 @@ function primaryKeyFix(
   const taken = [...relations, ...constraintNames(table)];
 
   if (!table.partitioning?.strategy) {
-    for (const index of sortedByName(table.indexes ?? [])) {
-      const parsed = parseIndexDefinition(index.definition);
-      if (!parsed || !parsed.unique || parsed.method !== "btree") continue;
+    for (const parsed of sortedByName(indexes)) {
+      if (!parsed.unique || parsed.method !== "btree") continue;
       if (parsed.keys === null || !allNotNull(parsed.keys)) continue;
       // The index is renamed to the key's name, so its own name is free here.
       const name = constraintName(table.name, "pkey", taken.filter((n) => n !== parsed.name));
@@ -793,6 +800,77 @@ type IndexCopy = {
   parsed: ParsedIndex | null;
 };
 
+/**
+ * The table's indexes that the rules below may keep, take over or compare,
+ * parsed.
+ *
+ * An invalid index is left out. Queries never use it, so it copies nothing,
+ * and counted as a copy it could be the one kept while the valid one is
+ * dropped; PostgreSQL also refuses to make it a primary key. Its own finding
+ * (invalid-index) says what to do with it. A copy that REINDEX CONCURRENTLY
+ * left behind is known by its name too, for when the statistics pass could
+ * not say which indexes are invalid.
+ */
+function usableIndexes(table: TableSnapshot, invalidIndexes: ReadonlySet<string>): ParsedIndex[] {
+  return (table.indexes ?? [])
+    .filter((index) => !invalidIndexes.has(index.name) && !REINDEX_LEFTOVER.test(index.name))
+    .map((index) => parseIndexDefinition(index.definition))
+    .filter((p): p is ParsedIndex => p !== null);
+}
+
+/**
+ * The table's indexes in groups that do the same job. A group of one is an
+ * index, or a constraint's index, with no copy.
+ *
+ * A unique btree over plain columns is compared by its columns, so the index
+ * behind a primary key or unique constraint (which the snapshot does not list
+ * as an index) is caught copying it too. Anything else is compared by its
+ * definition without the name: PostgreSQL prints two genuinely identical
+ * indexes identically, expressions included.
+ */
+function duplicateGroups(table: TableSnapshot, indexes: ParsedIndex[]): IndexCopy[][] {
+  const groups = new Map<string, IndexCopy[]>();
+  const addCopy = (key: string, copy: IndexCopy) =>
+    groups.set(key, [...(groups.get(key) ?? []), copy]);
+  const sameColumns = (keys: string[]) => `plain-unique:${JSON.stringify(keys)}`;
+  // The primary key first, then unique constraints by name: the order in
+  // which the copy to keep is chosen (see keptCopy).
+  const owners = [
+    ...(table.primaryKey ? [{ constraint: table.primaryKey, kind: "primary key" as const }] : []),
+    ...sortedByName(table.uniqueConstraints).map((u) => ({
+      constraint: u,
+      kind: "unique constraint" as const,
+    })),
+  ];
+  for (const { constraint, kind } of owners) {
+    const keys = constraintKeys(constraint);
+    if (keys) addCopy(sameColumns(keys), { name: constraint.name, constraint: kind, parsed: null });
+  }
+  for (const parsed of indexes) {
+    const key =
+      parsed.unique && parsed.method === "btree" && parsed.keys !== null
+        ? sameColumns(parsed.keys)
+        : `definition:${parsed.unique ? "UNIQUE " : ""}${parsed.method} ${parsed.tail}`;
+    addCopy(key, { name: parsed.name, constraint: null, parsed });
+  }
+  return [...groups.values()];
+}
+
+/**
+ * The copy a group keeps: the primary key's index, else a unique
+ * constraint's (neither can be dropped without its constraint), else the
+ * first in the snapshot's order. The duplicate-index fix drops the others,
+ * and the fix for a missing primary key takes over only a copy kept here, so
+ * the two never touch the same index.
+ */
+function keptCopy(copies: IndexCopy[]): IndexCopy {
+  return (
+    copies.find((c) => c.constraint === "primary key") ??
+    copies.find((c) => c.constraint !== null) ??
+    copies[0]
+  );
+}
+
 /** A non-unique index over plain columns: the only kind one index can cover for another. */
 type PlainIndex = ParsedIndex & { keys: string[] };
 
@@ -820,9 +898,9 @@ function widerPlainIndex(narrow: ParsedIndex, plain: PlainIndex[]): PlainIndex |
 /**
  * The fix for a group of indexes that do the same job.
  *
- * One copy is kept: the constraint's index when a constraint owns one (it
- * cannot be dropped without the constraint), otherwise the first in the
- * snapshot's order. When two constraints own copies, dropping one means
+ * One copy is kept (see keptCopy): the constraint's index when a constraint
+ * owns one (it cannot be dropped without the constraint), otherwise the first
+ * in the snapshot's order. When two constraints own copies, dropping one means
  * dropping a constraint that code may name, so that is left to a person.
  * The copy kept goes in `keeps` (see withoutRepeatedDrops).
  *
@@ -838,9 +916,9 @@ function duplicateFix(
   const target = qualifiedName(schema, table.name);
   const owned = copies.filter((c) => c.constraint !== null);
   const plain = copies.filter((c) => c.constraint === null);
+  const keep = keptCopy(copies);
 
   if (owned.length >= 2) {
-    const keep = owned.find((c) => c.constraint === "primary key") ?? owned[0];
     const lines = [
       comment`-- ${listInWords(owned.map((c) => quoteIdent(c.name)))} enforce the same rule on the same ` +
         `columns, so every write checks it more than once.`,
@@ -855,7 +933,6 @@ function duplicateFix(
     return { fixKind: "decision", fix: lines.join("\n") };
   }
 
-  const keep = owned[0] ?? plain[0];
   const dropped = plain.filter((c) => c !== keep);
   const lines = [
     keep.constraint
@@ -921,6 +998,10 @@ export function analyzeSchemaPerformance(
     const columnTypes = new Map(
       table.columns.map((c) => [c.name.toLowerCase(), baseType(c.typeDisplay)])
     );
+    // Worked out once, so the rules that keep, take over or compare indexes
+    // agree on which index each group keeps.
+    const parsedIndexes = usableIndexes(table, invalidIndexes);
+    const groups = duplicateGroups(table, parsedIndexes);
 
     // ── No primary key ───────────────────────────────────────────────────
     // A partition inherits its parent's key, so a missing one there is the
@@ -938,7 +1019,12 @@ export function analyzeSchemaPerformance(
           "other column and may match more rows than intended. Logical " +
           "replication also refuses to publish updates to a table with no " +
           "replica identity.",
-        ...primaryKeyFix(schema, table, relations),
+        ...primaryKeyFix(
+          schema,
+          table,
+          relations,
+          groups.map(keptCopy).flatMap((copy) => (copy.parsed ? [copy.parsed] : []))
+        ),
       });
     }
 
@@ -976,51 +1062,14 @@ export function analyzeSchemaPerformance(
     }
 
     if (table.indexes) {
-      // An invalid index is left out of the two rules that pick an index to
-      // keep. Queries never use it, so it copies nothing, and counted as a
-      // copy it could be the one kept while the valid one is dropped. Its own
-      // finding (invalid-index) says what to do with it. A copy that REINDEX
-      // CONCURRENTLY left behind is known by its name too, for when the
-      // statistics pass could not say which indexes are invalid.
-      const parsedIndexes = table.indexes
-        .filter((index) => !invalidIndexes.has(index.name) && !REINDEX_LEFTOVER.test(index.name))
-        .map((index) => parseIndexDefinition(index.definition))
-        .filter((p): p is ParsedIndex => p !== null);
       // The ones a wider index can cover: the redundant-index rule compares
       // them, and the duplicate-index fix checks the copy it keeps against them.
       const plain = parsedIndexes.filter((p): p is PlainIndex => !p.unique && p.keys !== null);
 
       // ── Indexes that do the same job ───────────────────────────────────
-      // A unique btree over plain columns is compared by its columns, so the
-      // index behind a primary key or unique constraint (which the snapshot
-      // does not list as an index) is caught copying it too. Anything else is
-      // compared by its definition without the name: PostgreSQL prints two
-      // genuinely identical indexes identically, expressions included.
-      const groups = new Map<string, IndexCopy[]>();
-      const addCopy = (key: string, copy: IndexCopy) =>
-        groups.set(key, [...(groups.get(key) ?? []), copy]);
-      const sameColumns = (keys: string[]) => `plain-unique:${JSON.stringify(keys)}`;
-      // The primary key first, then unique constraints by name: the order in
-      // which the copy to keep is chosen.
-      const owners = [
-        ...(table.primaryKey ? [{ constraint: table.primaryKey, kind: "primary key" as const }] : []),
-        ...sortedByName(table.uniqueConstraints).map((u) => ({
-          constraint: u,
-          kind: "unique constraint" as const,
-        })),
-      ];
-      for (const { constraint, kind } of owners) {
-        const keys = constraintKeys(constraint);
-        if (keys) addCopy(sameColumns(keys), { name: constraint.name, constraint: kind, parsed: null });
-      }
-      for (const parsed of parsedIndexes) {
-        const key =
-          parsed.unique && parsed.method === "btree" && parsed.keys !== null
-            ? sameColumns(parsed.keys)
-            : `definition:${parsed.unique ? "UNIQUE " : ""}${parsed.method} ${parsed.tail}`;
-        addCopy(key, { name: parsed.name, constraint: null, parsed });
-      }
-      for (const copies of groups.values()) {
+      // The groups come from duplicateGroups, worked out before the
+      // primary-key rule so that rule takes over only a copy kept here.
+      for (const copies of groups) {
         if (copies.length < 2) continue;
         advice.push({
           id: "duplicate-index",

@@ -14,7 +14,7 @@ import {
   type TableStats,
   type WaitingPartition,
 } from "@/lib/perf-advice";
-import type { FixKind } from "@/lib/perf-sql";
+import { buildFixScript, quoteIdent, type FixKind } from "@/lib/perf-sql";
 import type {
   ColumnSnapshot,
   ConstraintSnapshot,
@@ -974,6 +974,121 @@ describe("the fix for a table with no primary key", () => {
         "-- key's collation or operator class"
     );
     expect(found.fix).not.toContain("ADD PRIMARY KEY");
+  });
+
+  // This finding and the duplicate-index one are both changes, both start
+  // ticked, and so go into one script. PostgreSQL renames the index it makes
+  // the key, so a DROP of that index further down would stop the script.
+
+  /** A unique index as pg_get_indexdef prints it: a name with a space or a capital is quoted. */
+  const uniqueIndex = (name: string, columns: string[]) =>
+    index(name, columns, {
+      isUnique: true,
+      definition: `CREATE UNIQUE INDEX ${quoteIdent(name)} ON t USING btree (${columns.join(", ")})`,
+    });
+
+  /** Two unique indexes on the same NOT NULL column, in the snapshot's (localeCompare) order. */
+  const tags2 = () =>
+    table("Tags2", {
+      primaryKey: null,
+      columns: [column("code", "text", { nullable: false })],
+      indexes: [uniqueIndex("tags2 code a", ["code"]), uniqueIndex("Tags2 code uq", ["code"])],
+    });
+
+  /** A unique constraint, and a unique index that copies it, on a NOT NULL column. */
+  const customers = () =>
+    table("Customers", {
+      primaryKey: null,
+      columns: [column("email", "text", { nullable: false })],
+      uniqueConstraints: [unique("Customers_email_key", ["email"])],
+      indexes: [uniqueIndex("customers email copy", ["email"])],
+    });
+
+  it("takes over the copy the duplicate finding keeps, never one it drops", () => {
+    // The duplicate finding keeps the copy listed first, "tags2 code a".
+    // Character order would pick "Tags2 code uq", the copy it drops.
+    const advice = analyzeSchemaPerformance(snapshot([tags2()]));
+    expect(runnable(one(advice, "no-primary-key").fix)).toEqual([
+      'ALTER TABLE "public"."Tags2" ADD CONSTRAINT "Tags2_pkey" PRIMARY KEY USING INDEX "tags2 code a";',
+    ]);
+    expect(runnable(one(advice, "duplicate-index").fix)).toEqual(['DROP INDEX "public"."Tags2 code uq";']);
+  });
+
+  it("makes the key from a unique constraint's columns when the unique index only copies the constraint", () => {
+    // The duplicate finding keeps the constraint's own index and drops the
+    // copy, so the copy cannot be the key.
+    const advice = analyzeSchemaPerformance(snapshot([customers()]));
+    expect(runnable(one(advice, "no-primary-key").fix)).toEqual([
+      'ALTER TABLE "public"."Customers" ADD CONSTRAINT "Customers_pkey" PRIMARY KEY ("email");',
+    ]);
+    expect(runnable(one(advice, "duplicate-index").fix)).toEqual([
+      'DROP INDEX "public"."customers email copy";',
+    ]);
+  });
+
+  it("never takes over an invalid index, or a copy REINDEX CONCURRENTLY left behind", () => {
+    // PostgreSQL refuses to make an invalid index a key. The leftover copy is
+    // known by its name, for when the statistics pass could not say.
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        table("events", {
+          primaryKey: null,
+          columns: [column("event_id", "bigint", { nullable: false })],
+          indexes: [
+            uniqueIndex("a_bad", ["event_id"]),
+            uniqueIndex("b_ccnew", ["event_id"]),
+            uniqueIndex("c_good", ["event_id"]),
+          ],
+        }),
+      ]),
+      new Set(["a_bad"])
+    );
+    expect(runnable(one(advice, "no-primary-key").fix)).toEqual([
+      'ALTER TABLE "public"."events" ADD CONSTRAINT "events_pkey" PRIMARY KEY USING INDEX "c_good";',
+    ]);
+    // Neither is counted as a copy of c_good, so nothing offers to drop c_good.
+    expect(ids(advice)).not.toContain("duplicate-index");
+  });
+
+  it("gives a script with both findings that never drops the index it makes the key", () => {
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        tags2(),
+        customers(),
+        table("events2", {
+          primaryKey: null,
+          columns: [column("id", "integer", { nullable: false })],
+          uniqueConstraints: [unique("events2_id_key", ["id"])],
+          indexes: [uniqueIndex("events2_id_idx", ["id"])],
+        }),
+      ])
+    );
+    const { changes, rollback } = buildFixScript({
+      connectionName: "Local dev",
+      database: "shop",
+      schema: "public",
+      date: new Date("2026-09-14T10:00:00Z"),
+      items: sortAdvice(advice),
+    });
+    const lines = runnable(changes);
+    const takenOver = lines
+      .map((line) => /PRIMARY KEY USING INDEX (".*");$/.exec(line)?.[1])
+      .filter((name): name is string => name !== undefined);
+    expect(takenOver).toEqual(['"tags2 code a"']);
+    const drops = lines.filter((line) => line.startsWith("DROP INDEX "));
+    for (const name of takenOver) {
+      expect(drops.filter((line) => line.endsWith(`.${name};`))).toEqual([]);
+    }
+    expect(drops.sort()).toEqual([
+      'DROP INDEX "public"."Tags2 code uq";',
+      'DROP INDEX "public"."customers email copy";',
+      'DROP INDEX "public"."events2_id_idx";',
+    ]);
+    expect(lines.filter((line) => line.includes("PRIMARY KEY (")).sort()).toEqual([
+      'ALTER TABLE "public"."Customers" ADD CONSTRAINT "Customers_pkey" PRIMARY KEY ("email");',
+      'ALTER TABLE "public"."events2" ADD CONSTRAINT "events2_pkey" PRIMARY KEY ("id");',
+    ]);
+    expect(rollback).not.toBeNull();
   });
 });
 
