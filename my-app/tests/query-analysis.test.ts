@@ -278,6 +278,49 @@ describe("checkAnalysable — calls that act on the server", () => {
   it("does not read a column that merely shares a prefix as a call", () => {
     expect(checkAnalysable("SELECT dblink_url FROM servers", true)).toBe(null);
   });
+
+  it("refuses a denied call written as a quoted name, only when measuring", () => {
+    // PostgreSQL finds the same function through "pg_try_advisory_lock" as
+    // through the bare name. In a VALUES list or a LIMIT the plan never writes
+    // the call out, so the text is the only place to catch it.
+    const inValues = 'VALUES ("pg_try_advisory_lock"(42))';
+    expect(checkAnalysable(inValues, true)).toContain("pg_try_advisory_lock()");
+    expect(checkAnalysable(inValues, false)).toBe(null);
+    expect(
+      checkAnalysable('SELECT id FROM orders LIMIT "pg_try_advisory_lock"(1)::int', true)
+    ).toContain("pg_try_advisory_lock()");
+    expect(checkAnalysable('SELECT pg_catalog."pg_terminate_backend"(1)', true)).toContain(
+      "pg_terminate_backend()"
+    );
+    expect(checkAnalysable('SELECT "pg_catalog"."pg_cancel_backend" (1)', true)).toContain(
+      "pg_cancel_backend()"
+    );
+    expect(checkAnalysable('SELECT "dblink_exec"(\'dbname=x\', \'DELETE FROM t\')', true)).toContain(
+      "dblink_exec()"
+    );
+  });
+
+  it("lets quoted names that are not denied calls through when measuring", () => {
+    expect(checkAnalysable('SELECT "Customer Id" FROM orders', true)).toBe(null);
+    expect(checkAnalysable('SELECT "dblink" FROM servers', true)).toBe(null);
+    expect(checkAnalysable('SELECT "pg_advisory_lock_count" FROM lock_stats', true)).toBe(null);
+    expect(checkAnalysable('SELECT lower("Name") FROM people', true)).toBe(null);
+    expect(checkAnalysable('SELECT "a""b" FROM t WHERE "x" IN (1)', true)).toBe(null);
+    // Quotes inside a string or a comment are not names at all.
+    expect(checkAnalysable('SELECT \'"pg_terminate_backend"(1)\' AS note', true)).toBe(null);
+    expect(checkAnalysable('SELECT 1 -- "pg_terminate_backend"(1)', true)).toBe(null);
+  });
+
+  it("refuses a name spelled with U& escapes when measuring, since no list can read it", () => {
+    // U&"pg\0074erminate_backend" is pg_terminate_backend with one letter
+    // written as an escape.
+    const sql = 'SELECT U&"pg\\0074erminate_backend"(1)';
+    expect(checkAnalysable(sql, true)).toContain("U&");
+    expect(checkAnalysable(sql, true)).toContain("untick Run it and measure");
+    expect(checkAnalysable(sql, false)).toBe(null);
+    // A U& string is data, not a name.
+    expect(checkAnalysable("SELECT U&'caf\\00e9' AS word", true)).toBe(null);
+  });
 });
 
 describe("checkPlanIsReadOnly", () => {

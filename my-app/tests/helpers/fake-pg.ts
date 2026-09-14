@@ -40,11 +40,17 @@ export type FakeClient = {
   on: (event: string, listener: NoticeListener) => FakeClient;
   off: (event: string, listener: NoticeListener) => FakeClient;
   listenerCount: (event: string) => number;
-  release: () => void;
+  release: (destroy?: boolean | Error) => void;
   /** Every query the route sent, in order. */
   queries: RecordedQuery[];
   /** How many times release() was called. More than once is a bug in the route. */
   releaseCount: number;
+  /**
+   * What release() was last called with. pg closes the connection instead of
+   * returning it to the pool when this is true or an Error; undefined or false
+   * hands it to the next request.
+   */
+  releasedWith: boolean | Error | undefined;
   /** NOTICE listeners still attached when release() was first called (should be 0). */
   listenersAtRelease: number | null;
 };
@@ -55,6 +61,7 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
   const client: FakeClient = {
     queries: [],
     releaseCount: 0,
+    releasedWith: undefined,
     listenersAtRelease: null,
 
     async query(text: string, values?: unknown[]): Promise<FakeResult> {
@@ -90,9 +97,10 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
       return event === "notice" ? listeners.size : 0;
     },
 
-    release(): void {
+    release(destroy?: boolean | Error): void {
       if (client.releaseCount === 0) client.listenersAtRelease = listeners.size;
       client.releaseCount += 1;
+      client.releasedWith = destroy;
     },
   };
 

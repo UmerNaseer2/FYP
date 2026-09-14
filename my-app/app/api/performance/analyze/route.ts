@@ -56,7 +56,9 @@ import {
  *      (ending sessions, reloading settings, writing files, taking advisory
  *      locks that outlive the transaction). READ ONLY does not stop any of
  *      those.
- *   5. A ROLLBACK in a finally, whatever happened.
+ *   5. A ROLLBACK in a finally, whatever happened. After a measured run the
+ *      connection is then closed rather than handed to the next request,
+ *      because some of what a query can do to a session outlives a ROLLBACK.
  *
  * None of this is a sandbox. READ ONLY stops writes to tables and nothing
  * else, and the list in step 4 names known cases, not every possible one: a
@@ -411,7 +413,11 @@ export async function POST(request: NextRequest) {
     }
     // A client whose ROLLBACK failed may still be inside the transaction.
     // release(true) closes it instead of handing it to the next request.
-    client.release(broken);
+    // A measured query is closed the same way: it really ran, and a function
+    // it called can leave something on the session that ROLLBACK does not
+    // undo (a session advisory lock taken inside a function of the user's
+    // own, say, which no check here can see into).
+    client.release(broken || measuring);
   }
 
   const catalog = catalogFromRows(rows);

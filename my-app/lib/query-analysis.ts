@@ -162,10 +162,39 @@ function deniedFunctionIn(text: string): string | null {
   let match = call.exec(text);
   while (match !== null) {
     const name = match[1].toLowerCase();
-    if (DENIED_FUNCTIONS.has(name) || DENIED_PREFIXES.some((p) => name.startsWith(p))) {
-      return name;
-    }
+    if (isDenied(name)) return name;
     match = call.exec(text);
+  }
+  return null;
+}
+
+/** Whether a function called `name` (lower-cased) is one measured mode refuses. */
+function isDenied(name: string): boolean {
+  return DENIED_FUNCTIONS.has(name) || DENIED_PREFIXES.some((p) => name.startsWith(p));
+}
+
+/**
+ * The first denied function called through a quoted name, lower-cased, or null.
+ *
+ * `"pg_try_advisory_lock"(42)` calls the same function as the bare name, and
+ * the ordinary mask blanks quoted names, so deniedFunctionIn never sees it.
+ * `names` is the query masked with its quoted names kept (strings and comments
+ * still blanked), so every `"` left in it opens or closes a name. Reading the
+ * names one after the other keeps each opening quote paired with its own
+ * closing one.
+ */
+function deniedQuotedCallIn(names: string): string | null {
+  const quoted = /"((?:[^"]|"")*)"/g;
+  const openingBracket = /\s*\(/y;
+  let match = quoted.exec(names);
+  while (match !== null) {
+    openingBracket.lastIndex = quoted.lastIndex;
+    if (openingBracket.test(names)) {
+      // "" inside a quoted name stands for one quote character.
+      const name = match[1].replace(/""/g, '"').toLowerCase();
+      if (isDenied(name)) return name;
+    }
+    match = quoted.exec(names);
   }
   return null;
 }
@@ -270,6 +299,24 @@ export function checkAnalysable(sql: string, measure: boolean): string | null {
   if (measure) {
     const denied = deniedFunctionIn(mask);
     if (denied) return deniedMessage(denied, "query");
+
+    // The mask above blanks quoted names, and a quoted name can call a denied
+    // function too. So they are read from a second mask that keeps them. The
+    // plan check cannot stand in for this: a call inside a VALUES list or a
+    // LIMIT never appears in the plan's lines.
+    const names = maskNonCode(sql, { keepQuotedNames: true });
+    // U&"…" spells a name with escapes (U&"pg\0074erminate_backend"), which no
+    // list of names can recognise, so measured mode refuses it outright.
+    if (/\bU&"/i.test(names)) {
+      return (
+        `This query spells a name with U& escapes, so it cannot be checked ` +
+        `for calls that act on the server itself, and cannot be measured here. ` +
+        `Write the name out plainly, or untick Run it and measure to see the ` +
+        `plan without running the query.`
+      );
+    }
+    const quotedDenied = deniedQuotedCallIn(names);
+    if (quotedDenied) return deniedMessage(quotedDenied, "query");
   }
 
   return null;
@@ -325,13 +372,14 @@ export function checkPlanIsReadOnly(steps: PlanStep[]): string | null {
 /**
  * The denied-function check again, this time against the plan.
  *
- * The query text only shows what was typed, and the text check skips a quoted
- * name (`"pg_terminate_backend"(1)`) along with every other quoted thing. The
- * plan writes each call out plainly, schema and quotes resolved. A view is expanded in the plan, so
- * `SELECT * FROM innocent_looking_view` that wraps pg_cancel_backend shows the
- * call here and nowhere else. VERBOSE writes every expression out in full, in
- * each step's Output, Filter and condition lines. Measured mode only, for the
- * same reason as the text check.
+ * The text check reads plain and quoted names alike, but it only sees what was
+ * typed. The plan writes each call out plainly, schema and quotes resolved,
+ * and a view is expanded in it, so `SELECT * FROM innocent_looking_view` that
+ * wraps pg_cancel_backend shows the call here and nowhere else. VERBOSE writes
+ * every expression out in full, in each step's Output, Filter and condition
+ * lines. Not every call reaches a plan line (one in VALUES or LIMIT may be
+ * worked out before the plan is written), which is why the text check comes
+ * first. Measured mode only, for the same reason as the text check.
  */
 export function planMentionsDenied(steps: PlanStep[]): string | null {
   for (const step of steps) {
