@@ -47,6 +47,8 @@ import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { displayVersion } from "@/lib/version-timeline";
 import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
+import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
+import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
 type Connection = {
@@ -284,6 +286,35 @@ export default function ScriptEditorPage() {
     text: "",
   });
   const [fixStatus, setFixStatus] = useState<AttachStatus | null>(null);
+
+  // ── A script handed over from Performance ("Save as a migration") ────────
+  // Run by the banner's Load button. planDraftLoad (lib/migration-draft.ts)
+  // decides what changes; this only applies it. Connection and schema can be
+  // set together because the schema-list effect below clears the list only,
+  // never the chosen schema.
+  function loadDraft(draft: MigrationDraft) {
+    const plan = planDraftLoad(draft, {
+      connectionIds: connections.map((c) => String(c.id)),
+      connectionId,
+      schema,
+    });
+    setSql(plan.sql);
+    setRollbackSql(plan.rollbackSql);
+    // The tick agreed to an earlier script going out without a rollback.
+    setSaveWithoutRollback(false);
+    setDescription(plan.description);
+    if (plan.target) {
+      setConnectionId(plan.target.connectionId);
+      setSchema(plan.target.schema);
+    }
+    // A family picked for another target does not belong to this one.
+    if (plan.resetFamily) {
+      setExistingFamily("");
+      setNewFamily("");
+    }
+    setSaveResult(null);
+    setOfferStatus(null);
+  }
 
   // ── Load connections + the GitHub registry once ─────────────────────────---
   useEffect(() => {
@@ -996,6 +1027,13 @@ export default function ScriptEditorPage() {
         </div>
       ) : (
         <div className="grid gap-4">
+          {/* A script saved on a Performance tab, offered until loaded or discarded. */}
+          <MigrationDraftBanner
+            connections={connections}
+            connectionsLoaded={connectionsLoaded}
+            editorHasContent={sql.trim() !== "" || rollbackSql.trim() !== "" || description.trim() !== ""}
+            onLoad={loadDraft}
+          />
           {/* ── Target ─────────────────────────────────────────────────────── */}
           <div className="card p-5">
             <div className="section-title mb-3">Where this script belongs</div>

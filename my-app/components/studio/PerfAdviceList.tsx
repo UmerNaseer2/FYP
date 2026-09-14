@@ -9,9 +9,13 @@ import {
   SeverityFilter,
   activeFilter,
   type FilterKey,
-  type FindingSeverity,
 } from "./FindingCard";
 import type { PerfTarget } from "./PerfTargetPicker";
+import { FixScriptBuilder } from "./FixScriptBuilder";
+// A type-only import: erased at build time, so nothing from the server side of
+// lib/perf-advice.ts reaches the browser. One definition, shared with the route
+// that produces the response, means the two can never silently disagree.
+import type { AdviceItem, AdviceView } from "@/lib/perf-advice";
 
 /**
  * Spec feature 09 — performance suggestions, as a screen.
@@ -20,36 +24,16 @@ import type { PerfTarget } from "./PerfTargetPicker";
  * things about the presentation are deliberate rather than decorative:
  *
  *  • Every finding says where it came from. "This foreign key has no index" is
- *    simply true of the schema; "this index has never been used" is true of
- *    counters that have been running for an unknown length of time and reset
- *    whenever somebody says so. A reader who cannot tell those apart will
+ *    simply true of the schema; "this index has not been used" is true only of
+ *    what one server's counters saw since they last started, which a reset or
+ *    a crash moves forward. A reader who cannot tell those apart will
  *    eventually drop an index that a quarterly report needs.
- *  • Every finding carries the fix as text you can copy. Advice that stops at
- *    "consider adding an index" makes the reader do the translation, and the
- *    translation is where the mistakes are.
+ *  • Every finding says what kind of fix it carries, above the fix itself: a
+ *    schema change (SQL to save as a migration, with the statement that undoes
+ *    it), maintenance to run by hand, or a decision set out as comments. A
+ *    reader who cannot tell a DROP INDEX from an ANALYZE before copying it
+ *    will one day paste the wrong one into a live server.
  */
-
-/** One finding (mirrors AdviceItem in app/api/performance/advice/route.ts). */
-type AdviceItem = {
-  id: string;
-  severity: FindingSeverity;
-  title: string;
-  object: string;
-  detail: string;
-  fix: string;
-  origin: "structure" | "statistics";
-};
-
-/** The whole response (mirrors AdviceView on the server). */
-type AdviceView = {
-  connectionName: string;
-  database: string;
-  schema: string;
-  advice: AdviceItem[];
-  counts: { high: number; medium: number; low: number; total: number };
-  tablesAnalyzed: number;
-  statsUnavailable: string | null;
-};
 
 const ORIGIN_META: Record<AdviceItem["origin"], { label: string; help: string }> = {
   structure: {
@@ -59,8 +43,8 @@ const ORIGIN_META: Record<AdviceItem["origin"], { label: string; help: string }>
   statistics: {
     label: "From live counters",
     help:
-      "Read from this server's own activity counters, which cover however long " +
-      "it has been since they were last reset.",
+      "Read from this server's own usage counters. They reach back only to their " +
+      "last reset or crash, and they do not include read replicas.",
   },
 };
 
@@ -162,9 +146,8 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
           <div>
             <div className="title">Live counters could not be read</div>
             <div className="body">
-              {view.statsUnavailable} Everything below was worked out from the
-              schema itself, so it is complete — but findings that depend on how
-              the database is actually used are missing.
+              {view.statsUnavailable} The suggestions shown come from the schema
+              itself, and those are complete.
             </div>
           </div>
         </div>
@@ -197,6 +180,9 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
                 object={item.object}
                 detail={item.detail}
                 fix={item.fix}
+                fixKind={item.fixKind}
+                undo={item.undo}
+                action={item.action}
                 badge={<OriginBadge {...ORIGIN_META[item.origin]} />}
               />
             ))}
@@ -205,6 +191,16 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
             Showing {shown.length} of {view.counts.total} suggestion
             {view.counts.total === 1 ? "" : "s"} · most serious first.
           </p>
+          {/* Every suggestion, whatever the filter shows: the ticks say what goes in. */}
+          <FixScriptBuilder
+            items={view.advice}
+            target={{
+              connectionId,
+              connectionName: view.connectionName,
+              database: view.database,
+              schema: view.schema,
+            }}
+          />
         </>
       )}
     </div>

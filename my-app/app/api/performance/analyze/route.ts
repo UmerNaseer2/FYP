@@ -1,22 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { PoolClient } from "pg";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { getPoolForConfig } from "@/lib/postgres";
 import {
-  containsTransactionControl,
-  maskNonCode,
-  splitStatements,
-} from "@/lib/sql-guard";
-import {
+  QUERY_TIMEOUT_SECONDS,
+  buildExplainSql,
+  catalogFromRows,
+  checkAnalysable,
+  checkPlanIsReadOnly,
   describePlan,
+  describeQueryError,
+  explainPrefix,
+  planMentionsDenied,
+  planRelations,
+  planSteps,
   readPlan,
   readSql,
   sortFindings,
-  type TableRows,
+  sqlContextFromPlan,
   summarizeFindings,
-  type PlanSummary,
-  type QueryFinding,
+  toQueryError,
+  type AnalyzeView,
+  type CatalogRows,
+  type PlanStep,
 } from "@/lib/query-analysis";
 
 /**
@@ -29,23 +37,32 @@ import {
  * lib/query-analysis.ts, which never opens a connection; this file is the part
  * that has to be careful.
  *
- * Careful means four things, in order:
+ * Careful means these steps, in this order:
  *
- *   1. One statement. A box holding `SELECT 1; DROP TABLE users` is refused
- *      outright rather than analysed up to the semicolon, because the second
- *      half is the interesting one.
- *   2. No transaction control, for the same reason the deploy route refuses it —
- *      a COMMIT in the middle would end the wrapper the guard below depends on.
- *   3. A READ ONLY transaction, always. Plain EXPLAIN does not execute the
- *      query, but EXPLAIN ANALYZE does, and READ ONLY is what makes running an
- *      unfamiliar statement safe rather than merely unlikely to be a write.
- *   4. A statement timeout, and a ROLLBACK in a finally. Somebody will paste a
- *      query that takes four minutes, and this app should not hold a connection
- *      open waiting for it.
+ *   1. Only one query that reads data gets in (checkAnalysable). One
+ *      statement, no COMMIT, no EXPLAIN of its own, nothing that starts with
+ *      UPDATE / INSERT / DELETE and friends, no SELECT … INTO. All decided from
+ *      the text alone, before any server hears about it.
+ *   2. A READ ONLY transaction, always, with a statement_timeout and a
+ *      lock_timeout. The lock timeout matters because a query stuck behind
+ *      somebody else's ALTER TABLE is waiting, not slow, and should be told so.
+ *   3. A plain EXPLAIN first, which plans the query without running it. Its
+ *      plan is checked for a write or a row lock hiding behind an innocent
+ *      first word (a DELETE inside a WITH block, a SELECT … FOR UPDATE).
+ *   4. Only then, and only when an editor asked to measure, EXPLAIN ANALYZE,
+ *      which really runs the query. Before it runs, the query and its plan are
+ *      checked against a list of functions that act on the server itself
+ *      (ending sessions, reloading settings, writing files, taking advisory
+ *      locks that outlive the transaction). READ ONLY does not stop any of
+ *      those.
+ *   5. A ROLLBACK in a finally, whatever happened.
+ *
+ * None of this is a sandbox. READ ONLY stops writes to tables and nothing
+ * else, and the list in step 4 names known cases, not every possible one: a
+ * user-defined function can call any of them internally. What a query can
+ * really do is decided by the permissions of the database user this
+ * connection signs in as, and the screen says so next to the Measure tick-box.
  */
-
-/** What the plan is worth — see the guards above. */
-type Mode = "estimate" | "measured";
 
 export type AnalyzeRequest = {
   connectionId: number;
@@ -55,34 +72,158 @@ export type AnalyzeRequest = {
   measure?: boolean;
 };
 
-export type AnalyzeView = {
-  connectionName: string;
-  database: string;
-  schema: string;
-  mode: Mode;
-  /** The one-line verdict, e.g. "Ran in 3.1 ms and returned 42 rows…". */
-  headline: string;
-  plan: PlanSummary;
-  /** Findings from the plan and from the query text, merged and ranked. */
-  findings: QueryFinding[];
-  counts: { high: number; medium: number; low: number; total: number };
-};
+// The response shape, AnalyzeView, lives in lib/query-analysis.ts so this
+// route and the screen that reads it share one definition.
+
+/** How long the user's query gets. See QUERY_TIMEOUT_SECONDS for the why. */
+const STATEMENT_TIMEOUT_MS = QUERY_TIMEOUT_SECONDS * 1000;
 
 /**
- * How long a query gets before the server is told to stop.
+ * How long to wait for another session's lock before giving up.
  *
- * Generous enough that a genuinely slow query still produces the measurement
- * that proves it is slow — which is the whole point of asking — and short
- * enough that a runaway one gives the connection back.
+ * Without it, a query queued behind a running ALTER TABLE waited the full
+ * statement timeout and was then reported as a slow query, blaming the query
+ * for somebody else's lock. Five seconds rides out an ordinary short lock and
+ * still lets the error say "locked" rather than "slow".
  */
-const STATEMENT_TIMEOUT_MS = 15_000;
+const LOCK_TIMEOUT_MS = 5_000;
 
 /**
- * The same idea for the supplementary read of pg_class, but shorter. Nothing
- * downstream needs it — the analysis is only less sharp without it — so it gets
- * a third of the patience the user's own query gets.
+ * The same idea for the catalog reads after the plan, but shorter. Nothing
+ * downstream needs them (the analysis is only less sharp without them), so
+ * they get a third of the patience the user's own query gets.
  */
-const SIZE_TIMEOUT_MS = 5_000;
+const CATALOG_TIMEOUT_MS = 5_000;
+
+/** Said when the server answered with something that is not a readable plan. */
+const UNREADABLE_PLAN =
+  "The server answered, but not with a plan this screen can read. That usually " +
+  "means an older PostgreSQL version, or a database that only looks like " +
+  "PostgreSQL. Check the server's version with whoever looks after it.";
+
+/** Every refusal from this route has the same shape: { ok: false, error }. */
+function fail(error: string, status: number) {
+  return NextResponse.json({ ok: false, error }, { status });
+}
+
+// ── The catalog reads ────────────────────────────────────────────────────────
+// Every one takes the plan's tables as two parallel text arrays, $1 the
+// schemas and $2 the names, and unnest pairs them back up on the server. The
+// names are bind parameters, so they never become part of the SQL text.
+
+/**
+ * How many rows each table holds, from the planner's own statistics.
+ * reltuples is -1 until a table has been analysed; GREATEST turns that into 0,
+ * which catalogFromRows reads as "unknown". Only tables, partitioned tables and
+ * materialised views: a view has no rows of its own.
+ */
+const SIZES_SQL = `
+  SELECT n.nspname AS schema_name,
+         c.relname AS table_name,
+         GREATEST(c.reltuples, 0)::bigint AS row_count
+    FROM unnest($1::text[], $2::text[]) AS r(schema_name, table_name)
+    JOIN pg_namespace n ON n.nspname = r.schema_name
+    JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = r.table_name
+   WHERE c.relkind IN ('r', 'p', 'm')`;
+
+/** Each table's columns in table order, with their types as a person writes them. */
+const COLUMNS_SQL = `
+  SELECT n.nspname AS schema_name,
+         c.relname AS table_name,
+         a.attname::text AS column_name,
+         format_type(a.atttypid, a.atttypmod) AS data_type,
+         a.attnotnull AS not_null
+    FROM unnest($1::text[], $2::text[]) AS r(schema_name, table_name)
+    JOIN pg_namespace n ON n.nspname = r.schema_name
+    JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = r.table_name
+    JOIN pg_attribute a ON a.attrelid = c.oid
+   WHERE a.attnum > 0
+     AND NOT a.attisdropped
+   ORDER BY n.nspname, c.relname, a.attnum`;
+
+/**
+ * Each table's indexes, with their key columns in index order.
+ *
+ * Only the first indnkeyatts positions are key columns; the rest are INCLUDE
+ * columns, which cannot be searched on and so are left out. An expression key
+ * (LOWER(email)) has attnum 0, matches no pg_attribute row, and comes back as
+ * NULL. attname is cast to text because node-pg parses text[] into an array
+ * but leaves name[] as a string.
+ */
+const INDEXES_SQL = `
+  SELECT n.nspname AS schema_name,
+         c.relname AS table_name,
+         ic.relname AS index_name,
+         i.indisprimary AS is_primary,
+         i.indisunique AS is_unique,
+         i.indisvalid AS is_valid,
+         ARRAY(
+           SELECT a.attname::text
+             FROM generate_series(0, i.indnkeyatts - 1) AS k(ord)
+             LEFT JOIN pg_attribute a
+               ON a.attrelid = c.oid AND a.attnum = i.indkey[k.ord]
+            ORDER BY k.ord
+         ) AS columns
+    FROM unnest($1::text[], $2::text[]) AS r(schema_name, table_name)
+    JOIN pg_namespace n ON n.nspname = r.schema_name
+    JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = r.table_name
+    JOIN pg_index i ON i.indrelid = c.oid
+    JOIN pg_class ic ON ic.oid = i.indexrelid
+   ORDER BY 1, 2, 3`;
+
+/**
+ * Every relation name already taken in the plan's schemas: tables, indexes,
+ * views, sequences. A suggested index needs a name none of them has.
+ */
+const RELATION_NAMES_SQL = `
+  SELECT n.nspname AS schema_name,
+         c.relname::text AS relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = ANY($1::text[])`;
+
+/** The settings that decide how hard the planner tries with many joins. */
+const SETTINGS_SQL = `
+  SELECT current_setting('join_collapse_limit') AS join_collapse_limit,
+         current_setting('geqo_threshold') AS geqo_threshold,
+         current_setting('geqo') AS geqo`;
+
+/**
+ * Read what the plan cannot say about its own tables, into `rows`.
+ *
+ * Runs on the same client and inside the same READ ONLY transaction as the
+ * EXPLAIN, just before the ROLLBACK, so there is no second connection to open
+ * or to fail to open. The tables come from the plan itself, as the (Schema,
+ * Relation Name) pairs PostgreSQL resolved, so a table reached through public
+ * is read as well as one in the chosen schema.
+ *
+ * Fills `rows` one result at a time. A failure stops at that point and keeps
+ * what was already read; the caller treats the whole read as optional.
+ */
+async function readCatalog(
+  client: PoolClient,
+  steps: PlanStep[],
+  rows: Partial<CatalogRows>
+): Promise<void> {
+  await client.query(`SET LOCAL statement_timeout = ${CATALOG_TIMEOUT_MS}`);
+
+  const { schemas, names } = planRelations(steps);
+  if (names.length > 0) {
+    const pairs = [schemas, names];
+    rows.sizes = (await client.query<CatalogRows["sizes"][number]>(SIZES_SQL, pairs)).rows;
+    rows.columns = (await client.query<CatalogRows["columns"][number]>(COLUMNS_SQL, pairs)).rows;
+    rows.indexes = (await client.query<CatalogRows["indexes"][number]>(INDEXES_SQL, pairs)).rows;
+    const uniqueSchemas = Array.from(new Set(schemas));
+    rows.relationNames = (
+      await client.query<CatalogRows["relationNames"][number]>(RELATION_NAMES_SQL, [
+        uniqueSchemas,
+      ])
+    ).rows;
+  }
+
+  const settings = await client.query<NonNullable<CatalogRows["settings"]>>(SETTINGS_SQL);
+  rows.settings = settings.rows[0] ?? null;
+}
 
 export async function POST(request: NextRequest) {
   // Reading a plan is a read. Running the query — even rolled back — is not
@@ -90,11 +231,14 @@ export async function POST(request: NextRequest) {
   const gate = await requireViewer();
   if (!gate.ok) return gate.response;
 
-  let body: AnalyzeRequest;
+  let body: Partial<AnalyzeRequest> | null;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON in request body." }, { status: 400 });
+    return fail("The request could not be read. Reload the page and try again.", 400);
+  }
+  if (typeof body !== "object" || body === null) {
+    return fail("The request could not be read. Reload the page and try again.", 400);
   }
 
   const connectionId = Number(body.connectionId);
@@ -102,55 +246,17 @@ export async function POST(request: NextRequest) {
   const sql = String(body.sql ?? "");
   const measure = body.measure === true;
 
-  if (!connectionId) {
-    return NextResponse.json({ error: "A connectionId is required." }, { status: 400 });
-  }
-  if (!schema) {
-    return NextResponse.json({ error: "A schema is required." }, { status: 400 });
-  }
-  if (!sql.trim()) {
-    return NextResponse.json({ error: "Enter a query to analyse." }, { status: 400 });
-  }
+  if (!connectionId) return fail("Choose a connection above before analysing a query.", 400);
+  if (!schema) return fail("Choose a schema above before analysing a query.", 400);
 
   if (measure) {
     const editor = await requireEditor();
     if (!editor.ok) return editor.response;
   }
 
-  // ── Guard the text before it goes anywhere near a server ──────────────────
-  // splitStatements keeps a chunk that is nothing but a comment, because its
-  // other callers need the statement text exactly as written. Here the question
-  // is how many statements PostgreSQL would RUN, and a trailing "-- note" is
-  // not one of them — counting it would refuse an ordinary annotated query.
-  const statements = splitStatements(sql).filter(
-    (statement) => maskNonCode(statement).trim().length > 0
-  );
-  if (statements.length === 0) {
-    return NextResponse.json(
-      { error: "There is no SQL here — only comments." },
-      { status: 400 }
-    );
-  }
-  if (statements.length > 1) {
-    return NextResponse.json(
-      {
-        error:
-          `This analyses one query at a time, and there are ${statements.length} here. ` +
-          `Remove the extra statements, or the semicolons between them.`,
-      },
-      { status: 400 }
-    );
-  }
-  if (containsTransactionControl(sql)) {
-    return NextResponse.json(
-      {
-        error:
-          "Remove the COMMIT / ROLLBACK. The plan is taken inside a transaction " +
-          "that is always rolled back, and ending it early would defeat that.",
-      },
-      { status: 400 }
-    );
-  }
+  // ── Decide from the text alone, before any server hears about it ──────────
+  const refused = checkAnalysable(sql, measure);
+  if (refused) return fail(refused, 400);
 
   // ── The saved connection ──────────────────────────────────────────────────
   let conn: {
@@ -175,24 +281,27 @@ export async function POST(request: NextRequest) {
       [connectionId]
     );
     if (result.rows.length === 0) {
-      return NextResponse.json(
-        { error: `No saved connection found with id ${connectionId}.` },
-        { status: 404 }
+      return fail(
+        `No saved connection has id ${connectionId}. It may have been deleted. ` +
+          `Choose a connection above and try again.`,
+        404
       );
     }
     conn = result.rows[0];
   } catch (error) {
     console.error("Query analysis — failed to read connection:", error);
-    return NextResponse.json(
-      { error: "Could not read the saved connection. Is the app database reachable?" },
-      { status: 500 }
+    return fail(
+      "Could not read the saved connection, because the app's own database did " +
+        "not answer. Check that it is running, then try again.",
+      500
     );
   }
 
   if (conn.type !== "PostgreSQL") {
-    return NextResponse.json(
-      { error: "Query analysis reads PostgreSQL plans, so it needs a PostgreSQL connection." },
-      { status: 400 }
+    return fail(
+      "Query analysis reads PostgreSQL plans, so it needs a PostgreSQL connection. " +
+        "Choose one above.",
+      400
     );
   }
 
@@ -209,126 +318,104 @@ export async function POST(request: NextRequest) {
     })
   );
 
-  let client;
+  let client: PoolClient;
   try {
     client = await target.connect();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Query analysis — could not connect:", message);
-    return NextResponse.json(
-      {
-        error:
-          `Could not connect to "${conn.name}" ` +
-          `(${conn.host}:${conn.port}/${conn.database_name}). Details: ${message}`,
-      },
-      { status: 503 }
+    return fail(
+      `Could not connect to "${conn.name}" ` +
+        `(${conn.host}:${conn.port}/${conn.database_name}). Check that the server ` +
+        `is running and that the saved connection details are right, then try ` +
+        `again. Details: ${message}`,
+      503
     );
   }
 
-  // EXPLAIN ANALYZE executes the statement. READ ONLY is what makes that safe:
-  // PostgreSQL itself refuses any write inside the transaction, so an UPDATE
-  // pasted into the box fails with a clear error instead of running.
-  const explain = measure
-    ? `EXPLAIN (ANALYZE, COSTS, TIMING, FORMAT JSON) ${sql}`
-    : `EXPLAIN (COSTS, FORMAT JSON) ${sql}`;
-
   let raw: unknown;
+  const rows: Partial<CatalogRows> = {};
+  // Which EXPLAIN was running when an error arrived. PostgreSQL counts an
+  // error's position from the start of everything it was sent, and the two
+  // EXPLAIN prefixes differ in length.
+  let measuring = false;
   try {
     await client.query("BEGIN READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
     // quote_ident is the server's own quoting, applied server-side, so a schema
     // name never becomes part of the statement text this app assembles.
     await client.query("SELECT set_config('search_path', quote_ident($1) || ', public', true)", [
       schema,
     ]);
-    const result = await client.query(explain);
-    raw = result.rows[0]?.["QUERY PLAN"];
+
+    // ── 1. Plan it without running it ──
+    const estimate = await client.query(buildExplainSql(sql, false));
+    raw = estimate.rows[0]?.["QUERY PLAN"];
+    const steps = planSteps(raw);
+    if (!steps) return fail(UNREADABLE_PLAN, 502);
+
+    // ── 2. Check what the plan says the query really does ──
+    const writes = checkPlanIsReadOnly(steps);
+    if (writes) return fail(writes, 400);
+
+    // ── 3. Only now, and only when asked, run it for real ──
+    if (measure) {
+      const denied = planMentionsDenied(steps);
+      if (denied) return fail(denied, 400);
+      measuring = true;
+      const measured = await client.query(buildExplainSql(sql, true));
+      raw = measured.rows[0]?.["QUERY PLAN"];
+    }
+
+    // ── 4. What the plan cannot say about its own tables ──
+    // Optional. A failure here aborts a transaction that is about to be rolled
+    // back anyway, and every rule still works from the plan's own numbers.
+    try {
+      await readCatalog(client, planSteps(raw) ?? steps, rows);
+    } catch (error) {
+      console.error(
+        "Query analysis — catalog details unavailable:",
+        error instanceof Error ? error.message : error
+      );
+    }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json(
-      {
-        error:
-          message.includes("statement timeout") || message.includes("canceling statement")
-            ? `The query was still running after ${STATEMENT_TIMEOUT_MS / 1000} seconds and was stopped. ` +
-              `Analyse it without running it, or narrow it down first.`
-            : `PostgreSQL would not run this: ${message}`,
-      },
-      { status: 400 }
+    const err = toQueryError(error);
+    console.error("Query analysis — the query failed:", err.code ?? "(no code)", err.message);
+    return fail(
+      describeQueryError(err, schema, QUERY_TIMEOUT_SECONDS, {
+        sql,
+        prefixLength: explainPrefix(measuring).length,
+      }),
+      400
     );
   } finally {
     // Always. The whole safety story above rests on this line, so it does not
     // sit behind a condition and its own failure cannot mask the real error.
+    let broken = false;
     try {
       await client.query("ROLLBACK");
     } catch (error) {
+      broken = true;
       console.error("Query analysis — rollback failed:", error);
     }
-    client.release();
+    // A client whose ROLLBACK failed may still be inside the transaction.
+    // release(true) closes it instead of handing it to the next request.
+    client.release(broken);
   }
 
-  // ── How big the tables in this schema really are ──────────────────────────
-  // A plan says how many rows a step hands on, never how many it reads, so
-  // without this the "whole table read" rule stays quiet on precisely the
-  // queries it exists to catch. Read from the server's own statistics, on the
-  // pool rather than the client above, so a failure here cannot disturb the
-  // transaction that has just been rolled back.
-  //
-  // Not fatal on its own: everything below still works from the plan alone,
-  // just less sharply, and losing the entire analysis because a role cannot
-  // read pg_class would be the wrong trade.
-  //
-  // On its own client and inside its own read-only transaction, for the
-  // statement_timeout: a catch handles a refusal, but nothing handles a hang,
-  // and this runs after the reply to the user is already most of the way built.
-  const tableRows: TableRows = {};
-  const sizeClient = await target.connect();
-  try {
-    await sizeClient.query("BEGIN READ ONLY");
-    await sizeClient.query(`SET LOCAL statement_timeout = ${SIZE_TIMEOUT_MS}`);
-    const sizes = await sizeClient.query<{ table_name: string; row_count: string }>(
-      `SELECT c.relname AS table_name,
-              GREATEST(c.reltuples, 0)::bigint AS row_count
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = $1
-          AND c.relkind IN ('r', 'p', 'm')`,
-      [schema]
-    );
-    await sizeClient.query("COMMIT");
-    for (const row of sizes.rows) {
-      // reltuples is -1 until a table has been analysed, and GREATEST has
-      // already turned that into 0 — which means "unknown", and falls through
-      // to the plan's own number rather than claiming the table is empty.
-      const count = Number(row.row_count);
-      // Keyed with the schema, because that is how readPlan looks a step up:
-      // a plan step reading another schema's table of the same name must not
-      // be measured against this one.
-      if (Number.isFinite(count) && count > 0) {
-        tableRows[`${schema}.${row.table_name}`] = count;
-      }
-    }
-  } catch (error) {
-    console.error("Query analysis — table sizes unavailable:", error);
-    // A rolled-back client is safe to hand back to the pool; one left mid
-    // transaction is not, and this is the only place that knows to do it.
-    await sizeClient.query("ROLLBACK").catch(() => {});
-  } finally {
-    sizeClient.release();
-  }
+  const catalog = catalogFromRows(rows);
+  const plan = readPlan(raw, catalog);
+  if (!plan) return fail(UNREADABLE_PLAN, 502);
 
-  const plan = readPlan(raw, tableRows);
-  if (!plan) {
-    return NextResponse.json(
-      {
-        error:
-          "The server replied, but the plan was not in a shape this app could read. " +
-          "That usually means a PostgreSQL version older than this app expects.",
-      },
-      { status: 502 }
-    );
-  }
-
-  const findings = sortFindings([...plan.findings, ...readSql(sql)]);
+  // The text rules judge the query by its real size too: how many rows come
+  // back, how big each table is, what the primary keys and join settings
+  // are. All of it comes from the plan and catalog already read above, so no
+  // further query is run.
+  const findings = sortFindings([
+    ...plan.findings,
+    ...readSql(sql, sqlContextFromPlan(plan, catalog)),
+  ]);
   const view: AnalyzeView = {
     connectionName: conn.name,
     database: conn.database_name,

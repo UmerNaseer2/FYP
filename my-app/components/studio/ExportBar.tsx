@@ -25,8 +25,12 @@ import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
  * what an export must not have.
  */
 
-/** Hand the browser a file. Revoking on the next frame keeps Safari happy. */
-function downloadText(filename: string, text: string, mime: string) {
+/**
+ * Hand the browser a file. Revoking on the next frame keeps Safari happy.
+ * Exported for the Performance tabs' fix script (FixScriptBuilder.tsx), so the
+ * app starts every download the same way.
+ */
+export function downloadText(filename: string, text: string, mime: string) {
   const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
   const link = document.createElement("a");
   link.href = url;

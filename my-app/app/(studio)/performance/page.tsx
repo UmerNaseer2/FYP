@@ -43,7 +43,8 @@ const TAB_BLURBS: Record<PerfTab, string> = {
   suggestions:
     "What this schema is likely to be slow at, and what to do about it — worked " +
     "out from its structure, and from the server's own record of how these " +
-    "tables are being read. Every suggestion comes with the SQL.",
+    "tables are being read. Schema changes come as SQL you can save as a " +
+    "migration; the rest say what to run or decide.",
   analyse:
     "Paste a query and see what the server would actually do with it, step by " +
     "step and in plain English — plus anything in the plan or the SQL itself " +
@@ -91,7 +92,12 @@ function PerformanceScreen() {
           picker's report effect needs. */}
       <PerfTargetPicker onChange={setTarget} />
 
-      {tab === "analyse" && <QueryAnalyzer target={target} />}
+      {/* ?table=schema.table comes from a Suggestions finding ("almost every
+          read of this table is a sequential scan"); the analyser starts from
+          a commented note about that table instead of an empty box. */}
+      {tab === "analyse" && (
+        <QueryAnalyzer target={target} initialTable={params.get("table")} />
+      )}
       {tab === "trends" && <SchemaTrends target={target} />}
       {tab === "suggestions" && <PerfAdviceList target={target} />}
     </div>

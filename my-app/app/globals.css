@@ -1350,3 +1350,73 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .vtl__sidever { font-family:var(--font-geist-mono), ui-monospace; font-weight:600;
                 text-transform:none; letter-spacing:0; color:var(--text-2); }
 /* ==== end D-f ================================================================= */
+
+/* ============================================================================
+   Query plan: tree, shares and tints (Performance, Analyse tab)
+   components/studio/PlanTree.tsx draws the plan as nested ul/li boxes; the
+   top box is the step that hands the query its rows, and every box feeds the
+   one it hangs from. The lines between boxes are borders on li::before and
+   li::after, the classic CSS org chart: each child draws half of the bar
+   above it and its own drop line, and the first and last child trim the
+   bar's ends. The tints follow shareBand in lib/query-analysis.ts: hot is
+   half of the query or more, warm a fifth or more. Theme tokens only, so
+   light and dark both work.
+   ============================================================================ */
+
+/* A wide plan scrolls inside its own frame; the page never scrolls sideways. */
+.plan-tree-scroll { overflow-x:auto; padding:18px 14px 20px; }
+
+.plan-tree, .plan-tree ul { display:flex; justify-content:center; margin:0; padding:0; list-style:none; }
+/* As wide as the tree: centred when it fits, scrollable from its left edge when it does not. */
+.plan-tree { width:max-content; margin:0 auto; }
+.plan-tree ul { position:relative; padding-top:18px; }
+.plan-tree li { position:relative; display:flex; flex-direction:column; align-items:center; padding:18px 6px 0; }
+
+/* The bar over a row of siblings (half from each child) and each child's drop line. */
+.plan-tree li::before, .plan-tree li::after {
+  content:""; position:absolute; top:0; right:50%; width:50%; height:18px;
+  border-top:1px solid var(--border);
+}
+.plan-tree li::after { right:auto; left:50%; border-left:1px solid var(--border); }
+/* An only child hangs straight from its parent's line (the ul::before below). */
+.plan-tree li:only-child { padding-top:0; }
+.plan-tree li:only-child::before, .plan-tree li:only-child::after { display:none; }
+/* The bar stops at the first and the last child. */
+.plan-tree li:first-child::before, .plan-tree li:last-child::after { border:0 none; }
+.plan-tree li:last-child::before { border-right:1px solid var(--border); border-radius:0 6px 0 0; }
+.plan-tree li:first-child::after { border-radius:6px 0 0 0; }
+/* The line down from a parent box to the bar over its children. */
+.plan-tree ul::before {
+  content:""; position:absolute; top:0; left:50%; height:18px;
+  border-left:1px solid var(--border);
+}
+
+/* One step's box. Long labels wrap inside it rather than widening the tree. */
+.plan-node {
+  width:max-content; min-width:140px; max-width:232px; text-align:left;
+  padding:8px 10px; border:1px solid var(--border); border-radius:10px;
+  background:var(--surface);
+}
+.plan-node-label { overflow-wrap:anywhere; }
+/* Over the top step of a subquery: when it runs (subqueryCaption). */
+.plan-node-caption { font-size:10.5px; font-weight:600; line-height:1.35; color:var(--brand); margin-bottom:3px; }
+/* The top box of a subquery: it runs on its own schedule (once, or once for
+   each row of the box it hangs from), so a dashed edge sets it apart. */
+.plan-node-sub { border-style:dashed; }
+
+/* Tints, shared by a box, a row of the step list and the legend's swatches.
+   A share under a fifth (plan-tint-none) keeps the plain surface. */
+.plan-tint-hot  { background:color-mix(in oklab, var(--break) 9%, var(--surface)); }
+.plan-tint-warm { background:color-mix(in oklab, var(--drift) 9%, var(--surface)); }
+.plan-legend-swatch { display:inline-block; flex:none; width:11px; height:11px; border-radius:3px; border:1px solid var(--border); }
+.plan-node.plan-tint-hot, .plan-legend-swatch.plan-tint-hot { border-color:color-mix(in oklab, var(--break) 45%, var(--border)); }
+.plan-node.plan-tint-warm, .plan-legend-swatch.plan-tint-warm { border-color:color-mix(in oklab, var(--drift) 45%, var(--border)); }
+
+/* The share meter (ShareMeter): a short bar and the percentage beside it. */
+.plan-share-track { flex:none; width:56px; height:4px; border-radius:999px; overflow:hidden; background:var(--surface-3); }
+.plan-share-fill { height:100%; border-radius:999px; background:var(--text-3); }
+.plan-share-fill-hot  { background:var(--break); }
+.plan-share-fill-warm { background:var(--drift); }
+.plan-share-text-none { color:var(--text-3); }
+.plan-share-text-warm { color:var(--drift); font-weight:600; }
+.plan-share-text-hot  { color:var(--break); font-weight:600; }

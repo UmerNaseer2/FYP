@@ -1182,10 +1182,20 @@ export async function fetchSchemaNames(
   }
 }
 
+/**
+ * `options.lockTimeoutMs`, when given, caps how long any one catalog read may
+ * wait for a lock. Some of these reads lock the tables they describe, so a
+ * running ALTER TABLE (or anything else holding ACCESS EXCLUSIVE) makes them
+ * queue until statement_timeout. A caller that would rather say "a table is
+ * locked" quickly than wait 30 seconds passes this. On failure, `code` is the
+ * SQLSTATE PostgreSQL sent, when it sent one (55P03 for a lock wait, 57014
+ * for a timeout).
+ */
 export async function fetchSchemaSnapshot(
   cfg: ClientConfig,
-  schemaName: string
-): Promise<{ ok: true; data: SchemaSnapshot } | { ok: false; error: string }> {
+  schemaName: string,
+  options: { lockTimeoutMs?: number } = {}
+): Promise<{ ok: true; data: SchemaSnapshot } | { ok: false; error: string; code?: string }> {
   const pool = getPoolForConfig(cfg);
   const database = cfg.database ?? "(unknown)";
 
@@ -1376,6 +1386,12 @@ export async function fetchSchemaSnapshot(
     // own default is no limit at all. SET LOCAL scopes it to this transaction,
     // so the pooled connection goes back unchanged for the next borrower.
     await client.query(`SET LOCAL statement_timeout = ${INTROSPECTION_TIMEOUT_MS}`);
+    // Only a whole number of milliseconds reaches the SQL text, so nothing a
+    // caller passes can change the statement.
+    const lockTimeout = options.lockTimeoutMs;
+    if (typeof lockTimeout === "number" && Number.isInteger(lockTimeout) && lockTimeout > 0) {
+      await client.query(`SET LOCAL lock_timeout = ${lockTimeout}`);
+    }
 
     const tableResult = await client.query<TableRow>(
         `SELECT table_name
@@ -2596,7 +2612,10 @@ export async function fetchSchemaSnapshot(
       // Nothing useful to do — the real error is the one being returned.
     }
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: message };
+    // pg puts the SQLSTATE on the error as `code`; passed on so a caller can
+    // tell a lock wait or a timeout from a broken connection.
+    const code = (e as { code?: unknown } | null)?.code;
+    return typeof code === "string" ? { ok: false, error: message, code } : { ok: false, error: message };
   } finally {
     client.release();
   }

@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Card, Pill, type PillTone } from "@/components/ui";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
+// Type-only: erased at build time, so nothing from lib/ reaches the browser.
+import type { FixKind } from "@/lib/perf-sql";
 
 /**
  * One piece of performance advice, however it was arrived at.
@@ -48,15 +51,34 @@ export function FindingCard({
   object,
   detail,
   fix,
+  fixKind,
+  undo,
+  action,
   badge,
+  step,
 }: {
   severity: FindingSeverity;
   title: string;
   object: string;
   detail: string;
   fix: string;
+  /** What kind of fix `fix` is; decides the heading above it. */
+  fixKind: FixKind;
+  /** The statement that takes the fix back out, shown under it when present. */
+  undo?: string;
+  /**
+   * A link to the place in the app where the next step is taken, shown under
+   * the explanation: "Analyse a query on this table", for example.
+   */
+  action?: { label: string; href: string };
   /** Optional extra chip beside the severity pill — e.g. where this came from. */
   badge?: React.ReactNode;
+  /**
+   * The plan step this finding is about, as its id (0-based), or null/absent
+   * when it is not about one step. Shown as "Step 3" — the same number the
+   * plan tree and the step list print — so the reader can find it there.
+   */
+  step?: number | null;
 }) {
   const meta = SEVERITY_META[severity];
   return (
@@ -68,6 +90,15 @@ export function FindingCard({
           <div className="flex items-center gap-2 flex-wrap">
             <Pill tone={meta.tone}>{meta.label}</Pill>
             {badge}
+            {step !== undefined && step !== null && (
+              <span
+                className="mono text-[11px] px-1.5 py-0.5 rounded"
+                style={{ border: "1px solid var(--border)", color: "var(--text-2)" }}
+                title="The step in the plan above that this is about"
+              >
+                Step {step + 1}
+              </span>
+            )}
             <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
               {object}
             </span>
@@ -79,7 +110,15 @@ export function FindingCard({
             {detail}
           </p>
 
-          <FixBlock fix={fix} />
+          {action && (
+            <div>
+              <Link href={action.href} className="btn btn-secondary btn-sm">
+                {action.label}
+              </Link>
+            </div>
+          )}
+
+          <FixBlock fix={fix} fixKind={fixKind} undo={undo} />
         </div>
       </div>
     </Card>
@@ -100,21 +139,70 @@ export function OriginBadge({ label, help }: { label: string; help: string }) {
 }
 
 /**
- * The suggested fix, copyable — usually SQL, sometimes SQL under a sentence.
- *
- * Renders nothing at all when there is no fix. Some findings genuinely have no
- * SQL to hand over ("no index is used anywhere in this plan" is a fact about
- * the whole query, not a missing statement), and an empty code box under those
- * would read as a fix that failed to load.
+ * What the heading above each kind of fix says, so the reader knows what
+ * running it would do before copying anything. The kinds themselves are
+ * defined, with what each one means, in lib/perf-sql.ts.
  */
-export function FixBlock({ fix }: { fix: string }) {
-  const [copied, setCopied] = useState(false);
+export const FIX_KIND_HEADING: Record<FixKind, string> = {
+  change: "Schema change: save it as a migration",
+  maintenance: "Maintenance: run it by hand",
+  query: "Change the query: nothing runs on the server",
+  decision: "Needs your decision",
+};
 
+/**
+ * The heading above the undo: "To put it back" when the fix removes
+ * something (its first statement is a DROP), "To undo" otherwise.
+ *
+ * Under a DROP INDEX the undo is the CREATE INDEX that rebuilds it, and
+ * "To undo" above that would read as if the CREATE were the thing to avoid.
+ */
+export function undoHeading(fix: string): string {
+  const firstStatement = fix
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line !== "" && !line.startsWith("--"));
+  return firstStatement !== undefined && /^DROP\b/i.test(firstStatement)
+    ? "To put it back"
+    : "To undo";
+}
+
+/**
+ * The fix under a heading naming its kind, and under that the statement that
+ * undoes it, when there is one. Both can be copied.
+ *
+ * Renders nothing at all when the fix is empty: an empty code box would read
+ * as a fix that failed to load. Every rule on both tabs sets one, and
+ * tests/helpers/fix-invariants.ts holds each of them to it, so this is a guard
+ * rather than a case the screens rely on.
+ */
+export function FixBlock({
+  fix,
+  fixKind,
+  undo,
+}: {
+  fix: string;
+  fixKind: FixKind;
+  undo?: string;
+}) {
   if (!fix.trim()) return null;
+  return (
+    <div className="space-y-2">
+      <CodeBox heading={FIX_KIND_HEADING[fixKind]} text={fix} />
+      {undo !== undefined && undo.trim() !== "" && (
+        <CodeBox heading={undoHeading(fix)} text={undo} />
+      )}
+    </div>
+  );
+}
+
+/** One block of SQL under a small heading, with its own Copy button. */
+function CodeBox({ heading, text }: { heading: string; text: string }) {
+  const [copied, setCopied] = useState(false);
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(fix);
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -131,18 +219,15 @@ export function FixBlock({ fix }: { fix: string }) {
         className="flex items-center justify-between gap-2 px-3 py-1.5"
         style={{ borderBottom: "1px solid var(--border)" }}
       >
-        <span
-          className="text-[10px] font-semibold uppercase tracking-[0.06em]"
-          style={{ color: "var(--text-3)" }}
-        >
-          Suggested fix
+        <span className="text-[11.5px] font-semibold" style={{ color: "var(--text-2)" }}>
+          {heading}
         </span>
         <button type="button" className="btn btn-ghost btn-xs" onClick={copy}>
           {copied ? <CheckIcon size={11} /> : <ClipboardIcon size={11} />}
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre className="sql px-3 py-2.5 overflow-x-auto whitespace-pre-wrap">{fix}</pre>
+      <pre className="sql px-3 py-2.5 overflow-x-auto whitespace-pre-wrap">{text}</pre>
     </div>
   );
 }
