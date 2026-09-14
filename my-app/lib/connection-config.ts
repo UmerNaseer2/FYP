@@ -1,6 +1,6 @@
 import { Pool, type PoolConfig } from "pg";
 import { parse as parseConnectionString } from "pg-connection-string";
-import { decryptSecret } from "./secret-store";
+import { decryptSecret, UNREADABLE_CREDENTIALS_MESSAGE } from "./secret-store";
 import {
   sslModeFromLegacyBoolean,
   sslModeUsesTls,
@@ -349,7 +349,7 @@ export async function runConnectionTest(input: ConnectionInput): Promise<TestRes
     console.error("Could not prepare the connection:", error);
     return {
       ok: false,
-      error: "This connection's stored credentials can't be read on this server.",
+      error: UNREADABLE_CREDENTIALS_MESSAGE,
       sslRequired: false,
       detail: error instanceof Error ? error.message : String(error),
     };

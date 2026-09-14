@@ -9,7 +9,8 @@ import {
   DEFAULT_SSL_MODE,
 } from "@/lib/connection-validate";
 import { parsePostgresUri } from "@/lib/parse-uri";
-import { checkConnectableHost } from "@/lib/connection-config";
+import { checkConnectableHost, runConnectionTest } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import {
   migrationFileName,
   rollbackFileName,
@@ -404,5 +405,37 @@ describe("checkConnectableHost", () => {
     // Platforms disagree about "0177.0.0.1" — macOS resolves it to the public
     // 177.0.0.1 — so normalising it would block a reachable host on a guess.
     expect(checkConnectableHost("0177.0.0.1").ok).toBe(true);
+  });
+});
+
+describe("runConnectionTest", () => {
+  it("says what to fix when the saved password can't be read here, and dials nothing", async () => {
+    // Not a whole envelope, so decryptSecret throws for it with or without a
+    // key configured: the state the Connections screen's Test has to explain.
+    // db.test is a reserved name that never resolves, in case it ever got that far.
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const result = await runConnectionTest({
+        host: "db.test",
+        port: 5432,
+        database: "sales",
+        user: "app",
+        password: "enc:v1:not-a-whole-envelope",
+        connectionString: null,
+        sslMode: "disable",
+      });
+      expect(result).toEqual({
+        ok: false,
+        error: UNREADABLE_CREDENTIALS_MESSAGE,
+        sslRequired: false,
+        // The cause, for whoever set the key up.
+        detail: expect.any(String),
+      });
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
   });
 });
