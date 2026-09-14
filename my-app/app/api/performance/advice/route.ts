@@ -22,6 +22,7 @@ import {
   type AdviceView,
   type IndexStats,
   type TableStats,
+  type WaitingPartition,
 } from "@/lib/perf-advice";
 
 /**
@@ -53,9 +54,12 @@ import {
  *
  * The structural rules run after pass two, not before, because pass two is
  * what knows which indexes PostgreSQL has marked invalid, and the duplicate
- * and redundant rules must not count those as copies. Pass two also gets the
- * snapshot's foreign keys, so an unused index that the last check of a foreign
- * key goes through is not offered for DROP.
+ * and redundant rules must not count those as copies. That list is read from
+ * pg_index first thing in pass two, so it holds even when a later read of the
+ * pass fails, and it includes a partitioned table's own index, which the
+ * counters never list. Pass two also gets the snapshot's foreign keys, so an
+ * unused index that the last check of a foreign key goes through is not
+ * offered for DROP.
  *
  * Nothing here writes: both passes only read, and pass two runs inside a
  * READ ONLY transaction, which the server enforces.
@@ -77,6 +81,44 @@ const TOOL_TABLES = ["script_patch", "script_patch_reverted"];
 function num(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * The partitions an unfinished partitioned index is waiting for, as the query
+ * below builds them. node-pg parses json itself, so this only checks the
+ * shape. Anything but a list comes back as undefined, and the finding then
+ * falls back to general advice instead of claiming nothing is waiting.
+ */
+function waitingOn(value: unknown): WaitingPartition[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((w): w is Record<string, unknown> => typeof w === "object" && w !== null)
+    .map((w) => ({
+      schema: String(w.schema ?? ""),
+      table: String(w.table ?? ""),
+      partitioned: w.partitioned === true,
+      foreign: w.foreign === true,
+      foreign_below: w.foreign_below === true,
+      attached: typeof w.attached === "string" ? w.attached : null,
+    }));
+}
+
+/** One of an unfinished partitioned index's attached copies, or null. */
+function attachedExample(value: unknown): { schema: string; name: string } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.schema !== "string" || typeof v.name !== "string") return null;
+  return { schema: v.schema, name: v.name };
+}
+
+/** The index at the top of the tree a partition's copy belongs to, or null. */
+function topIndex(value: unknown): { schema: string; table: string; name: string } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.schema !== "string" || typeof v.table !== "string" || typeof v.name !== "string") {
+    return null;
+  }
+  return { schema: v.schema, table: v.table, name: v.name };
 }
 
 export async function GET(request: NextRequest) {
@@ -193,7 +235,8 @@ export async function GET(request: NextRequest) {
   let runtime: AdviceItem[] = [];
   let statsUnavailable: string | null = null;
   // The indexes PostgreSQL has marked invalid, for the structural rules below.
-  // Stays empty when this pass fails.
+  // Filled by the first read of this pass, so a later read failing keeps it.
+  // Empty only when the pass could not even start.
   let invalidIndexes: ReadonlySet<string> = new Set();
   let client: PoolClient | null = null;
   // Set when even ROLLBACK failed. The connection is then in an unknown state,
@@ -207,6 +250,96 @@ export async function GET(request: NextRequest) {
     await client.query(`SET LOCAL statement_timeout = ${STATS_STATEMENT_TIMEOUT_MS}`);
     await client.query(`SET LOCAL lock_timeout = ${STATS_LOCK_TIMEOUT_MS}`);
     await client.query("SET LOCAL search_path = pg_catalog");
+
+    // Every index PostgreSQL has marked invalid, read first so the structural
+    // rules still get this list when a later read below fails. From pg_index
+    // itself, because the per-index counters never list a partitioned table's
+    // own index. Such an index made with ON ONLY (pg_dump writes it that way
+    // too) stays unfinished until every partition has a finished copy
+    // attached, so for those the query also gathers what the finding needs
+    // to say how to finish it:
+    //   • waiting_on: the partitions one level down with no finished copy
+    //     attached, and whether each is partitioned, a foreign table, or has
+    //     a foreign table below it, and which unfinished copy it has, if any;
+    //   • attached_example: one copy that is attached, to attach again when
+    //     nothing is waiting any more (PostgreSQL only checks at that moment);
+    //   • top_index: for a partition's copy, the index at the top of its tree.
+    const invalidRows = await client.query(
+      `SELECT ic.relname                     AS index_name,
+              c.relname                      AS table_name,
+              ix.indisunique                 AS is_unique,
+              ix.indisprimary                AS is_primary,
+              ic.relkind = 'I'               AS is_partitioned,
+              EXISTS (SELECT 1 FROM pg_inherits i
+                       WHERE i.inhrelid = ix.indexrelid) AS is_partition_child,
+              pg_get_indexdef(ix.indexrelid) AS definition,
+              (SELECT pg_get_constraintdef(co.oid)
+                 FROM pg_constraint co
+                WHERE co.conindid = ix.indexrelid
+                  AND co.contype IN ('p', 'u', 'x')) AS constraint_definition,
+              CASE WHEN ic.relkind = 'I' THEN
+                (SELECT COALESCE(json_agg(json_build_object(
+                          'schema', pn.nspname,
+                          'table', pc.relname,
+                          'partitioned', pc.relkind = 'p',
+                          'foreign', pc.relkind = 'f',
+                          'foreign_below', pc.relkind = 'p' AND EXISTS (
+                                             SELECT 1 FROM pg_partition_tree(pc.oid) t
+                                               JOIN pg_class fc ON fc.oid = t.relid
+                                              WHERE fc.relkind = 'f'),
+                          'attached', (SELECT xc.relname
+                                         FROM pg_inherits i
+                                         JOIN pg_index x ON x.indexrelid = i.inhrelid
+                                         JOIN pg_class xc ON xc.oid = i.inhrelid
+                                        WHERE i.inhparent = ix.indexrelid
+                                          AND x.indrelid = p.inhrelid))
+                        ORDER BY pn.nspname, pc.relname), '[]')
+                   FROM pg_inherits p
+                   JOIN pg_class pc ON pc.oid = p.inhrelid
+                   JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                  WHERE p.inhparent = ix.indrelid
+                    AND NOT EXISTS (SELECT 1
+                                      FROM pg_inherits i
+                                      JOIN pg_index x ON x.indexrelid = i.inhrelid
+                                     WHERE i.inhparent = ix.indexrelid
+                                       AND x.indrelid = p.inhrelid
+                                       AND x.indisvalid))
+              END AS waiting_on,
+              CASE WHEN ic.relkind = 'I' THEN
+                (SELECT json_build_object('schema', xn.nspname, 'name', xc.relname)
+                   FROM pg_inherits i
+                   JOIN pg_class xc ON xc.oid = i.inhrelid
+                   JOIN pg_namespace xn ON xn.oid = xc.relnamespace
+                  WHERE i.inhparent = ix.indexrelid
+                  ORDER BY xn.nspname, xc.relname
+                  LIMIT 1)
+              END AS attached_example,
+              CASE WHEN ic.relkind = 'I' AND EXISTS (SELECT 1 FROM pg_inherits i
+                                                      WHERE i.inhrelid = ix.indexrelid) THEN
+                (WITH RECURSIVE up(idx) AS (
+                   SELECT ix.indexrelid
+                   UNION ALL
+                   SELECT i.inhparent FROM pg_inherits i JOIN up ON i.inhrelid = up.idx)
+                 SELECT json_build_object('schema', tn.nspname, 'table', tc.relname, 'name', uc.relname)
+                   FROM up
+                   JOIN pg_class uc ON uc.oid = up.idx
+                   JOIN pg_index ux ON ux.indexrelid = up.idx
+                   JOIN pg_class tc ON tc.oid = ux.indrelid
+                   JOIN pg_namespace tn ON tn.oid = tc.relnamespace
+                  WHERE NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = up.idx))
+              END AS top_index
+         FROM pg_index ix
+         JOIN pg_class ic ON ic.oid = ix.indexrelid
+         JOIN pg_class c ON c.oid = ix.indrelid
+         JOIN pg_namespace n ON n.oid = ic.relnamespace
+        WHERE n.nspname = $1
+          AND NOT ix.indisvalid
+          AND c.relname <> ALL($2::text[])
+        ORDER BY ic.relname`,
+      [schema, TOOL_TABLES]
+    );
+    // Index names are unique within a schema, so a name alone is enough.
+    invalidIndexes = new Set(invalidRows.rows.map((r) => String(r.index_name)));
 
     const tableRows = await client.query(
       `SELECT s.relname                                   AS table_name,
@@ -283,24 +416,52 @@ export async function GET(request: NextRequest) {
       has_statistics: Boolean(r.has_statistics),
     }));
 
-    const indexes: IndexStats[] = indexRows.rows.map((r) => ({
-      table_name: String(r.table_name),
-      index_name: String(r.index_name),
-      idx_scan: num(r.idx_scan),
-      is_unique: Boolean(r.is_unique),
-      is_primary: Boolean(r.is_primary),
-      is_valid: Boolean(r.is_valid),
-      backs_constraint: Boolean(r.backs_constraint),
-      is_partition_child: Boolean(r.is_partition_child),
-      size_bytes: num(r.size_bytes),
-      definition: String(r.definition ?? ""),
-    }));
+    // The counters never list a partitioned table's own index, so an
+    // unfinished one is added from the first read. It holds no rows of its
+    // own (each partition's copy does), so it has no scans and no size.
+    const indexes: IndexStats[] = indexRows.rows
+      .map(
+        (r): IndexStats => ({
+          table_name: String(r.table_name),
+          index_name: String(r.index_name),
+          idx_scan: num(r.idx_scan),
+          is_unique: Boolean(r.is_unique),
+          is_primary: Boolean(r.is_primary),
+          is_valid: Boolean(r.is_valid),
+          backs_constraint: Boolean(r.backs_constraint),
+          is_partition_child: Boolean(r.is_partition_child),
+          is_partitioned: false,
+          size_bytes: num(r.size_bytes),
+          definition: String(r.definition ?? ""),
+        })
+      )
+      .concat(
+        invalidRows.rows
+          .filter((r) => Boolean(r.is_partitioned))
+          .map(
+            (r): IndexStats => ({
+              table_name: String(r.table_name),
+              index_name: String(r.index_name),
+              idx_scan: 0,
+              is_unique: Boolean(r.is_unique),
+              is_primary: Boolean(r.is_primary),
+              is_valid: false,
+              backs_constraint: r.constraint_definition != null,
+              is_partition_child: Boolean(r.is_partition_child),
+              is_partitioned: true,
+              size_bytes: 0,
+              definition: String(r.definition ?? ""),
+              constraint_definition:
+                r.constraint_definition == null ? null : String(r.constraint_definition),
+              waiting_on: waitingOn(r.waiting_on),
+              attached_example: attachedExample(r.attached_example),
+              top_index: topIndex(r.top_index),
+            })
+          )
+      );
 
     const since = counterRows.rows[0]?.counters_since;
     const countersSince = since ? new Date(since).toISOString() : null;
-
-    // Index names are unique within a schema, so a name alone is enough.
-    invalidIndexes = new Set(indexes.filter((i) => !i.is_valid).map((i) => i.index_name));
 
     runtime = analyzeTableStats(
       schema,
@@ -329,8 +490,8 @@ export async function GET(request: NextRequest) {
   // ── The structural rules ──────────────────────────────────────────────────
   // After pass two, so the duplicate and redundant rules can leave out the
   // invalid indexes it found (queries never use one, so it copies nothing).
-  // When pass two failed the set is empty, and a copy that REINDEX
-  // CONCURRENTLY left behind is still known by its name.
+  // When pass two could not even start, the set is empty, and a copy that
+  // REINDEX CONCURRENTLY left behind is still known by its name.
   const structural: AdviceItem[] = analyzeSchemaPerformance(snapshot, invalidIndexes).map(
     (a) => ({ ...a, origin: "structure" })
   );

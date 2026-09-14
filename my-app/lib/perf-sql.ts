@@ -136,14 +136,24 @@ function objectName(first: string, second: string, label: string): string {
  * name in the schema (tables, indexes, views, sequences all share one
  * namespace there), plus any names already suggested in the same report.
  *
+ * `label` is PostgreSQL's own ending for the kind of index: "idx" for a plain
+ * one, "key" for the index of a unique constraint, "excl" for the index of an
+ * exclusion constraint.
+ *
  *   indexName("orders", "customer_id", [])                         →  orders_customer_id_idx
  *   indexName("orders", "customer_id", ["orders_customer_id_idx"]) →  orders_customer_id_idx1
+ *   indexName("logs_p2", "id_created", [], "key")                  →  logs_p2_id_created_key
  */
-export function indexName(table: string, detail: string, takenNames: Iterable<string>): string {
+export function indexName(
+  table: string,
+  detail: string,
+  takenNames: Iterable<string>,
+  label = "idx"
+): string {
   const taken = new Set(takenNames);
-  let name = objectName(table, detail, "idx");
+  let name = objectName(table, detail, label);
   for (let n = 1; taken.has(name); n += 1) {
-    name = objectName(table, detail, `idx${n}`);
+    name = objectName(table, detail, `${label}${n}`);
   }
   return name;
 }

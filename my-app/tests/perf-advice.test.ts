@@ -12,6 +12,7 @@ import {
   type IndexStats,
   type PerfAdvice,
   type TableStats,
+  type WaitingPartition,
 } from "@/lib/perf-advice";
 import type { FixKind } from "@/lib/perf-sql";
 import type {
@@ -1168,6 +1169,7 @@ function indexStat(extra: Partial<IndexStats> = {}): IndexStats {
     is_valid: true,
     backs_constraint: false,
     is_partition_child: false,
+    is_partitioned: false,
     size_bytes: 8192,
     definition: "CREATE INDEX orders_customer_idx ON shop.orders USING btree (customer_id)",
     ...extra,
@@ -1554,6 +1556,580 @@ describe("analyzeTableStats", () => {
     expect(one(advice, "unused-index").undo).toBe(
       'CREATE INDEX "orders_customer_idx" ON "Sales Dept"."orders" USING btree (customer_id);'
     );
+  });
+});
+
+/** A partition an unfinished partitioned index is waiting for: a plain table in "shop", no copy attached. */
+function waiting(table: string, extra: Partial<WaitingPartition> = {}): WaitingPartition {
+  return {
+    schema: "shop",
+    table,
+    partitioned: false,
+    foreign: false,
+    foreign_below: false,
+    attached: null,
+    ...extra,
+  };
+}
+
+/** A partitioned table's own index, not finished, the way the advice route adds it from pg_index. */
+function unfinished(name: string, tableName: string, definition: string, extra: Partial<IndexStats> = {}): IndexStats {
+  return indexStat({
+    table_name: tableName,
+    index_name: name,
+    is_unique: definition.startsWith("CREATE UNIQUE"),
+    is_valid: false,
+    is_partitioned: true,
+    size_bytes: 0,
+    definition,
+    constraint_definition: null,
+    waiting_on: [],
+    attached_example: null,
+    top_index: null,
+    ...extra,
+  });
+}
+
+describe("an unfinished index on a partitioned table", () => {
+  // Built with ON ONLY (pg_dump writes it that way), such an index is marked
+  // finished only once every partition has a finished copy attached. The
+  // finding says what each partition still needs; every way of finishing one
+  // was checked on PostgreSQL 17 (see unfinishedPartitionedIndexAdvice).
+
+  /** The fields for an index a constraint owns, the constraint as pg_get_constraintdef prints it. */
+  function ownedBy(constraint: string): Partial<IndexStats> {
+    return { backs_constraint: true, constraint_definition: constraint };
+  }
+
+  /** The one finding about this index, on its own. */
+  function card(stat: IndexStats): PerfAdvice {
+    return one(indexAdvice([stat]), "unfinished-partitioned-index");
+  }
+
+  /** The finding about `object` ("table.index") among several. */
+  function about(advice: PerfAdvice[], object: string): PerfAdvice {
+    const found = advice.filter((a) => a.id === "unfinished-partitioned-index" && a.object === object);
+    expect(found).toHaveLength(1);
+    return found[0];
+  }
+
+  /** The statements the fix suggests, still commented out, in order. */
+  function steps(fix: string): string[] {
+    return fix.split("\n").filter((line) => /^-- (CREATE|ALTER|DROP|REINDEX|BEGIN|COMMIT)\b.*;$/.test(line));
+  }
+
+  /** The fix with its comment marks taken out and its lines joined, for a sentence that wraps. */
+  function prose(fix: string): string {
+    return fix
+      .split("\n")
+      .map((line) => line.replace(/^-- ?/, ""))
+      .join(" ");
+  }
+
+  it("builds a copy on each partition that has none and attaches it, whatever schema the partition is in", () => {
+    const advice = indexAdvice([
+      unfinished("pl_k", "pl", "CREATE INDEX pl_k ON ONLY shop.pl USING btree (k)", {
+        waiting_on: [waiting("pl2"), waiting("pl3", { schema: "other" })],
+        attached_example: { schema: "shop", name: "pl1_k_idx" },
+      }),
+    ]);
+    // Its own finding, not the one for an index REINDEX can rebuild.
+    expect(ids(advice)).toEqual(["unfinished-partitioned-index"]);
+    const found = advice[0];
+    expect(found.object).toBe("pl.pl_k");
+    expect(found.severity).toBe("medium");
+    expect(found.fixKind).toBe("decision");
+    expect(found.detail).toContain(
+      "2 partitions of pl have no finished copy of this index attached: pl2 and other.pl3."
+    );
+    expect(steps(found.fix)).toEqual([
+      '-- CREATE INDEX CONCURRENTLY "pl2_k_idx" ON "shop"."pl2" USING btree (k);',
+      '-- ALTER INDEX "shop"."pl_k" ATTACH PARTITION "shop"."pl2_k_idx";',
+      '-- CREATE INDEX CONCURRENTLY "pl3_k_idx" ON "other"."pl3" USING btree (k);',
+      '-- ALTER INDEX "shop"."pl_k" ATTACH PARTITION "other"."pl3_k_idx";',
+      '-- DROP INDEX "shop"."pl_k";',
+    ]);
+    expect(found.fix).toContain("-- Run each statement on its own, outside a transaction: CONCURRENTLY is refused");
+    // A restore that is still running looks the same, so the fix says how to tell.
+    expect(found.fix).toContain("FROM pg_stat_progress_create_index");
+    // The partitions still waiting, read afresh, so it can be run between the steps.
+    expect(found.fix).toContain(`--  WHERE ix.indexrelid = '"shop"."pl_k"'::regclass`);
+    expect(prose(found.fix)).toContain("If nothing needs the index, drop it instead:");
+    expect(runnable(found.fix)).toEqual([]);
+    expect(fixProblems(found)).toEqual([]);
+  });
+
+  it("says nothing about a partitioned table's index that is finished", () => {
+    const finished = unfinished("pl_k", "pl", "CREATE INDEX pl_k ON ONLY shop.pl USING btree (k)", {
+      is_valid: true,
+    });
+    expect(indexAdvice([finished])).toEqual([]);
+  });
+
+  it("makes each partition's copy belong to a matching constraint when a constraint owns the index", () => {
+    const uniqueKey = card(
+      unfinished("uq_u", "uq", "CREATE UNIQUE INDEX uq_u ON ONLY shop.uq USING btree (id, created)", {
+        ...ownedBy("UNIQUE (id, created) DEFERRABLE INITIALLY DEFERRED"),
+        waiting_on: [waiting("uq1")],
+      })
+    );
+    expect(steps(uniqueKey.fix)).toEqual([
+      '-- CREATE UNIQUE INDEX CONCURRENTLY "uq1_id_created_key" ON "shop"."uq1" USING btree (id, created);',
+      // DEFERRABLE repeated, so the partition's constraint behaves like the parent's.
+      '-- ALTER TABLE "shop"."uq1" ADD CONSTRAINT "uq1_id_created_key" UNIQUE USING INDEX "uq1_id_created_key" DEFERRABLE INITIALLY DEFERRED;',
+      '-- ALTER INDEX "shop"."uq_u" ATTACH PARTITION "shop"."uq1_id_created_key";',
+      '-- ALTER TABLE "shop"."uq" DROP CONSTRAINT "uq_u";',
+    ]);
+    expect(uniqueKey.detail).toContain("In a partition without a finished copy, values are not guaranteed to be unique.");
+    expect(uniqueKey.detail).toContain(
+      "PostgreSQL refuses a new foreign key pointing at these columns, and an INSERT with ON CONFLICT on them, " +
+        "until the index is finished."
+    );
+    expect(prose(uniqueKey.fix)).toContain(
+      "under the name it was building or one ending in _ccnew; drop that before running it again."
+    );
+
+    const primaryKey = card(
+      unfinished("pk_pkey", "pk", "CREATE UNIQUE INDEX pk_pkey ON ONLY shop.pk USING btree (id, created)", {
+        ...ownedBy("PRIMARY KEY (id, created)"),
+        is_primary: true,
+        waiting_on: [waiting("pk1")],
+      })
+    );
+    expect(steps(primaryKey.fix)).toEqual([
+      '-- CREATE UNIQUE INDEX CONCURRENTLY "pk1_pkey" ON "shop"."pk1" USING btree (id, created);',
+      '-- ALTER TABLE "shop"."pk1" ADD CONSTRAINT "pk1_pkey" PRIMARY KEY USING INDEX "pk1_pkey";',
+      '-- ALTER INDEX "shop"."pk_pkey" ATTACH PARTITION "shop"."pk1_pkey";',
+      '-- ALTER TABLE "shop"."pk" DROP CONSTRAINT "pk_pkey";',
+    ]);
+  });
+
+  it("adds an exclusion constraint to each partition, saying it blocks reads as well as writes", () => {
+    const found = card(
+      unfinished("ex_x", "ex", "CREATE INDEX ex_x ON ONLY shop.ex USING btree (id, created)", {
+        ...ownedBy("EXCLUDE USING btree (id WITH =, created WITH =)"),
+        waiting_on: [waiting("ex1")],
+      })
+    );
+    expect(found.detail).toContain("1 partition of ex has no finished copy of this index attached: ex1.");
+    expect(found.detail).toContain("In a partition without a finished copy, the constraint is not guaranteed to hold.");
+    expect(steps(found.fix)).toEqual([
+      '-- ALTER TABLE "shop"."ex1" ADD CONSTRAINT "ex1_id_created_excl" EXCLUDE USING btree (id WITH =, created WITH =);',
+      '-- ALTER INDEX "shop"."ex_x" ATTACH PARTITION "shop"."ex1_id_created_excl";',
+      '-- ALTER TABLE "shop"."ex" DROP CONSTRAINT "ex_x";',
+    ]);
+    expect(prose(found.fix)).toContain("blocking reads and writes to that partition until it finishes");
+    // Nothing here is CONCURRENTLY, so nothing has to run outside a transaction.
+    expect(found.fix).not.toContain("outside a transaction");
+  });
+
+  it("rebuilds a copy that is attached but not finished, then attaches it again", () => {
+    const uniqueKey = card(
+      unfinished("lf_u", "lf", "CREATE UNIQUE INDEX lf_u ON ONLY shop.lf USING btree (id)", {
+        ...ownedBy("UNIQUE (id)"),
+        waiting_on: [waiting("lf1", { attached: "lf1_u" })],
+      })
+    );
+    expect(steps(uniqueKey.fix)).toEqual([
+      '-- REINDEX INDEX CONCURRENTLY "shop"."lf1_u";',
+      '-- ALTER INDEX "shop"."lf_u" ATTACH PARTITION "shop"."lf1_u";',
+      '-- ALTER TABLE "shop"."lf" DROP CONSTRAINT "lf_u";',
+    ]);
+    expect(prose(uniqueKey.fix)).toContain("that is when PostgreSQL checks whether the whole index is finished");
+    // No new names, so nothing about a name being taken.
+    expect(uniqueKey.fix).not.toContain("already taken");
+
+    const exclusion = card(
+      unfinished("lx_x", "lx", "CREATE INDEX lx_x ON ONLY shop.lx USING btree (id)", {
+        ...ownedBy("EXCLUDE USING btree (id WITH =)"),
+        waiting_on: [waiting("lx1", { attached: "lx1_x" })],
+      })
+    );
+    // REINDEX CONCURRENTLY refuses an exclusion constraint's index.
+    expect(steps(exclusion.fix)).toEqual([
+      '-- REINDEX INDEX "shop"."lx1_x";',
+      '-- ALTER INDEX "shop"."lx_x" ATTACH PARTITION "shop"."lx1_x";',
+      '-- ALTER TABLE "shop"."lx" DROP CONSTRAINT "lx_x";',
+    ]);
+    expect(prose(exclusion.fix)).toContain(
+      "REINDEX INDEX CONCURRENTLY is refused for an exclusion constraint's index"
+    );
+  });
+
+  it("builds without CONCURRENTLY on a partition that is partitioned itself, leaving a copy with a finding of its own to it", () => {
+    const found = card(
+      unfinished("m_k", "m", "CREATE INDEX m_k ON ONLY shop.m USING btree (k)", {
+        waiting_on: [waiting("m1", { partitioned: true, attached: "m1_k" }), waiting("m2", { partitioned: true })],
+      })
+    );
+    expect(steps(found.fix)).toEqual([
+      '-- CREATE INDEX "m2_k_idx" ON "shop"."m2" USING btree (k);',
+      '-- ALTER INDEX "shop"."m_k" ATTACH PARTITION "shop"."m2_k_idx";',
+      '-- DROP INDEX "shop"."m_k";',
+    ]);
+    expect(prose(found.fix)).toContain(
+      'For "shop"."m1": Its copy m1_k is not finished either, and has a finding of its own in this list. ' +
+        "Once that copy is finished, it counts for this partition too."
+    );
+    expect(prose(found.fix)).toContain(
+      "CREATE INDEX CONCURRENTLY is refused on a partition that is partitioned itself"
+    );
+    expect(found.fix).not.toContain("Run each statement on its own");
+
+    // A copy in another schema has its finding there.
+    const elsewhere = card(
+      unfinished("mo_k", "mo", "CREATE INDEX mo_k ON ONLY shop.mo USING btree (k)", {
+        waiting_on: [waiting("mo1", { schema: "other", partitioned: true, attached: "mo1_k" })],
+      })
+    );
+    expect(prose(elsewhere.fix)).toContain(
+      "Its copy other.mo1_k is not finished either, and has a finding of its own when schema other is analysed."
+    );
+    expect(steps(elsewhere.fix)).toEqual(['-- DROP INDEX "shop"."mo_k";']);
+    expect(elsewhere.fix).not.toContain("already taken");
+  });
+
+  it("adds a constraint to a partition that is partitioned itself, and says when that can never work", () => {
+    const found = card(
+      unfinished("mu_u", "mu", "CREATE UNIQUE INDEX mu_u ON ONLY shop.mu USING btree (id)", {
+        ...ownedBy("UNIQUE (id)"),
+        waiting_on: [waiting("mu1", { partitioned: true })],
+      })
+    );
+    expect(steps(found.fix)).toEqual([
+      '-- ALTER TABLE "shop"."mu1" ADD CONSTRAINT "mu1_id_key" UNIQUE (id);',
+      '-- ALTER INDEX "shop"."mu_u" ATTACH PARTITION "shop"."mu1_id_key";',
+      '-- ALTER TABLE "shop"."mu" DROP CONSTRAINT "mu_u";',
+    ]);
+    expect(prose(found.fix)).toContain(
+      "A unique index on a partitioned table has to include every column that table is partitioned by."
+    );
+
+    // A foreign table somewhere below that partition has to be detached first.
+    const withForeign = card(
+      unfinished("uf_u", "uf", "CREATE UNIQUE INDEX uf_u ON ONLY shop.uf USING btree (id, r)", {
+        ...ownedBy("UNIQUE (id, r)"),
+        waiting_on: [waiting("uf1", { partitioned: true, foreign_below: true })],
+      })
+    );
+    const lines = withForeign.fix.split("\n");
+    const listing = lines.indexOf(
+      `-- SELECT t.relid AS foreign_table, t.parentrelid AS parent FROM pg_partition_tree('"shop"."uf1"') t ` +
+        `JOIN pg_class c ON c.oid = t.relid WHERE c.relkind = 'f';`
+    );
+    expect(listing).toBeGreaterThan(-1);
+    expect(lines.indexOf('-- ALTER TABLE "shop"."uf1" ADD CONSTRAINT "uf1_id_r_key" UNIQUE (id, r);')).toBeGreaterThan(
+      listing
+    );
+
+    // An exclusion constraint leaves foreign tables below out, and the fix says so.
+    const exclusion = card(
+      unfinished("mx_x", "mx", "CREATE INDEX mx_x ON ONLY shop.mx USING btree (id)", {
+        ...ownedBy("EXCLUDE USING btree (id WITH =)"),
+        waiting_on: [waiting("mx1", { partitioned: true, foreign_below: true })],
+      })
+    );
+    expect(steps(exclusion.fix)).toEqual([
+      '-- ALTER TABLE "shop"."mx1" ADD CONSTRAINT "mx1_id_excl" EXCLUDE USING btree (id WITH =);',
+      '-- ALTER INDEX "shop"."mx_x" ATTACH PARTITION "shop"."mx1_id_excl";',
+      '-- ALTER TABLE "shop"."mx" DROP CONSTRAINT "mx_x";',
+    ]);
+    expect(prose(exclusion.fix)).toContain("Foreign tables among them are left out.");
+  });
+
+  it("gives a partition's own copy steps too, and points at the index at the top for the drop", () => {
+    const found = card(
+      unfinished("m1_k", "m1", "CREATE INDEX m1_k ON ONLY shop.m1 USING btree (k)", {
+        is_partition_child: true,
+        waiting_on: [waiting("m1a")],
+        top_index: { schema: "shop", table: "m", name: "m_k" },
+      })
+    );
+    expect(found.detail).toContain(
+      "m1 is itself a partition, and this index is part of the index m_k on m, which cannot be finished until this one is."
+    );
+    expect(steps(found.fix)).toEqual([
+      '-- CREATE INDEX CONCURRENTLY "m1a_k_idx" ON "shop"."m1a" USING btree (k);',
+      '-- ALTER INDEX "shop"."m1_k" ATTACH PARTITION "shop"."m1a_k_idx";',
+      // A partition's copy cannot be dropped on its own.
+      '-- DROP INDEX "shop"."m_k";',
+    ]);
+    expect(prose(found.fix)).toContain("drop the one at the top instead, which drops this copy with it:");
+  });
+
+  it("builds the index again without ONLY when a partition is a foreign table", () => {
+    const found = card(
+      unfinished("fp_k", "fp", "CREATE INDEX fp_k ON ONLY shop.fp USING btree (k)", {
+        waiting_on: [waiting("fp2", { foreign: true })],
+        attached_example: { schema: "shop", name: "fp1_k_idx" },
+      })
+    );
+    // No partition that can hold an index is missing one, and nothing is unique.
+    expect(found.severity).toBe("low");
+    expect(found.detail).toContain("fp2 is a foreign table, which PostgreSQL cannot build an index on");
+    expect(found.detail).not.toContain("queries reading it may have no index");
+    expect(steps(found.fix)).toEqual([
+      '-- DROP INDEX "shop"."fp_k";',
+      '-- CREATE INDEX "fp_k" ON "shop"."fp" USING btree (k);',
+    ]);
+    expect(found.fix).toContain(`pg_partition_tree('"shop"."fp"')`);
+    // The DROP is offered once.
+    expect(prose(found.fix)).toContain("If nothing needs the index, the DROP alone is enough.");
+    expect(found.fix).not.toContain("drop it instead");
+
+    // For a partition's copy, it is the index at the top that is built again.
+    const child = card(
+      unfinished("mf1_k", "mf1", "CREATE INDEX mf1_k ON ONLY shop.mf1 USING btree (k)", {
+        is_partition_child: true,
+        waiting_on: [waiting("mf1a"), waiting("mf1b", { foreign: true })],
+        top_index: { schema: "shop", table: "mf", name: "mf_k" },
+      })
+    );
+    expect(steps(child.fix)).toEqual([
+      '-- DROP INDEX "shop"."mf_k";',
+      '-- CREATE INDEX "mf_k" ON "shop"."mf" USING btree (k);',
+    ]);
+    expect(prose(child.fix)).toContain(
+      "it is the index at the top, mf_k on mf, that is built again, with every copy of it."
+    );
+
+    // Not knowing which index is at the top, it says what to look for.
+    const unknownTop = card(
+      unfinished("mg1_k", "mg1", "CREATE INDEX mg1_k ON ONLY shop.mg1 USING btree (k)", {
+        is_partition_child: true,
+        waiting_on: [waiting("mg1b", { foreign: true })],
+      })
+    );
+    expect(steps(unknownTop.fix)).toEqual([]);
+    expect(prose(unknownTop.fix)).toContain(
+      "it is the index at the top of this one's tree that has to be built again."
+    );
+    expect(unknownTop.detail).toContain("part of an index on the table above it");
+  });
+
+  it("adds an exclusion constraint again in one transaction when a partition is a foreign table", () => {
+    const found = card(
+      unfinished("xf_x", "xf", "CREATE INDEX xf_x ON ONLY shop.xf USING btree (id)", {
+        ...ownedBy("EXCLUDE USING btree (id WITH =)"),
+        waiting_on: [waiting("xf1"), waiting("xf2", { foreign: true })],
+      })
+    );
+    // Rows never checked can make the ADD fail; the DROP is then undone with it.
+    expect(steps(found.fix)).toEqual([
+      "-- BEGIN;",
+      '-- ALTER TABLE "shop"."xf" DROP CONSTRAINT "xf_x";',
+      '-- ALTER TABLE "shop"."xf" ADD CONSTRAINT "xf_x" EXCLUDE USING btree (id WITH =);',
+      "-- COMMIT;",
+    ]);
+    expect(prose(found.fix)).toContain("blocking reads and writes to xf until it finishes");
+  });
+
+  it("detaches a foreign table first when the index is unique, since a unique index cannot cover one", () => {
+    const found = card(
+      unfinished("uff_u", "uff", "CREATE UNIQUE INDEX uff_u ON ONLY shop.uff USING btree (id)", {
+        waiting_on: [waiting("uff1"), waiting("uff2", { schema: "remote", foreign: true })],
+      })
+    );
+    expect(found.detail).toContain("A unique index cannot cover a foreign table at all.");
+    expect(steps(found.fix)).toEqual([
+      '-- ALTER TABLE "shop"."uff" DETACH PARTITION "remote"."uff2";',
+      '-- CREATE UNIQUE INDEX CONCURRENTLY "uff1_id_idx" ON "shop"."uff1" USING btree (id);',
+      '-- ALTER INDEX "shop"."uff_u" ATTACH PARTITION "shop"."uff1_id_idx";',
+      '-- DROP INDEX "shop"."uff_u";',
+    ]);
+    expect(prose(found.fix)).toContain("Detaching one takes its rows out of uff as well:");
+
+    // With only foreign tables waiting, what comes after the DETACH depends on what is left.
+    const nothingLeft = card(
+      unfinished("uo_u", "uo", "CREATE UNIQUE INDEX uo_u ON ONLY shop.uo USING btree (id)", {
+        waiting_on: [waiting("uo1", { foreign: true })],
+      })
+    );
+    expect(steps(nothingLeft.fix)).toEqual([
+      '-- ALTER TABLE "shop"."uo" DETACH PARTITION "shop"."uo1";',
+      '-- DROP INDEX "shop"."uo_u";',
+      '-- CREATE UNIQUE INDEX "uo_u" ON "shop"."uo" USING btree (id);',
+    ]);
+    expect(prose(nothingLeft.fix)).toContain("After that, uo has no partitions, so drop the index and build it again");
+
+    const restCovered = card(
+      unfinished("ur_u", "ur", "CREATE UNIQUE INDEX ur_u ON ONLY shop.ur USING btree (id)", {
+        waiting_on: [waiting("ur2", { foreign: true })],
+        attached_example: { schema: "shop", name: "ur1_id_idx" },
+      })
+    );
+    expect(steps(restCovered.fix)).toEqual([
+      '-- ALTER TABLE "shop"."ur" DETACH PARTITION "shop"."ur2";',
+      '-- ALTER INDEX "shop"."ur_u" ATTACH PARTITION "shop"."ur1_id_idx";',
+      '-- DROP INDEX "shop"."ur_u";',
+    ]);
+    expect(prose(restCovered.fix)).toContain(
+      "After that, PostgreSQL checks whether every partition has a finished copy only when one is attached"
+    );
+  });
+
+  it("writes out ten partitions and gives the query that lists every one", () => {
+    const found = card(
+      unfinished("big_k", "big", "CREATE INDEX big_k ON ONLY shop.big USING btree (k)", {
+        waiting_on: Array.from({ length: 12 }, (_, i) => waiting(`big${String(i + 1).padStart(2, "0")}`)),
+      })
+    );
+    expect(found.detail).toContain("big09, big10 and 2 more.");
+    expect(found.fix.split("\n").filter((line) => line.startsWith("-- For "))).toHaveLength(10);
+    expect(found.fix).not.toContain("big11");
+    expect(found.fix).toContain("-- 2 more partitions are waiting as well; this lists every one still waiting:");
+  });
+
+  it("attaches a copy again when every partition is covered but the index is still unfinished", () => {
+    const plain = card(
+      unfinished("cv_k", "cv", "CREATE INDEX cv_k ON ONLY shop.cv USING btree (k)", {
+        attached_example: { schema: "shop", name: "cv1_k_idx" },
+      })
+    );
+    expect(plain.severity).toBe("low");
+    expect(plain.detail).toContain("Every partition of cv now has a finished copy of this index attached");
+    expect(steps(plain.fix)).toEqual([
+      '-- ALTER INDEX "shop"."cv_k" ATTACH PARTITION "shop"."cv1_k_idx";',
+      '-- DROP INDEX "shop"."cv_k";',
+    ]);
+
+    // A unique one still turns away foreign keys and ON CONFLICT until then.
+    const uniqueKey = card(
+      unfinished("cvu_u", "cvu", "CREATE UNIQUE INDEX cvu_u ON ONLY shop.cvu USING btree (id)", {
+        ...ownedBy("UNIQUE (id)"),
+        attached_example: { schema: "shop", name: "cvu1_id_key" },
+      })
+    );
+    expect(uniqueKey.severity).toBe("medium");
+    expect(uniqueKey.detail).toContain("PostgreSQL refuses a new foreign key pointing at these columns");
+    expect(uniqueKey.detail).not.toContain("not guaranteed to be unique");
+    expect(steps(uniqueKey.fix)).toEqual([
+      '-- ALTER INDEX "shop"."cvu_u" ATTACH PARTITION "shop"."cvu1_id_key";',
+      '-- ALTER TABLE "shop"."cvu" DROP CONSTRAINT "cvu_u";',
+    ]);
+  });
+
+  it("builds the index again on a table with no partitions, where that takes a moment", () => {
+    const plain = card(unfinished("np_k", "np", "CREATE INDEX np_k ON ONLY shop.np USING btree (k)"));
+    expect(plain.severity).toBe("low");
+    expect(plain.detail).toContain("np has no partitions at the moment.");
+    expect(prose(plain.fix)).toContain("np has no partitions, so drop the index and build it again");
+    expect(steps(plain.fix)).toEqual([
+      '-- DROP INDEX "shop"."np_k";',
+      '-- CREATE INDEX "np_k" ON "shop"."np" USING btree (k);',
+    ]);
+
+    const primaryKey = card(
+      unfinished("nq_pkey", "nq", "CREATE UNIQUE INDEX nq_pkey ON ONLY shop.nq USING btree (id)", {
+        ...ownedBy("PRIMARY KEY (id)"),
+        is_primary: true,
+      })
+    );
+    expect(primaryKey.severity).toBe("medium");
+    expect(prose(primaryKey.fix)).toContain("nq has no partitions, so drop the constraint and add it again");
+    expect(steps(primaryKey.fix)).toEqual([
+      '-- ALTER TABLE "shop"."nq" DROP CONSTRAINT "nq_pkey";',
+      '-- ALTER TABLE "shop"."nq" ADD CONSTRAINT "nq_pkey" PRIMARY KEY (id);',
+    ]);
+
+    // A partition's copy cannot be dropped alone, so the fix waits for a partition to attach.
+    const child = card(
+      unfinished("mm1_k", "mm1", "CREATE INDEX mm1_k ON ONLY shop.mm1 USING btree (k)", {
+        is_partition_child: true,
+        top_index: { schema: "shop", table: "mm", name: "mm_k" },
+      })
+    );
+    expect(child.fix).toContain(
+      `-- SELECT inhrelid::regclass AS copy FROM pg_inherits WHERE inhparent = '"shop"."mm1_k"'::regclass;`
+    );
+    expect(steps(child.fix)).toEqual(['-- DROP INDEX "shop"."mm_k";']);
+  });
+
+  it("names each new copy the way PostgreSQL would, clear of every name already taken", () => {
+    const advice = indexAdvice([
+      // An index already on the partition, holding the first name PostgreSQL would pick.
+      indexStat({
+        table_name: "pl2",
+        index_name: "pl2_k_idx",
+        definition: "CREATE INDEX pl2_k_idx ON shop.pl2 USING btree (k)",
+      }),
+      unfinished("pl_k", "pl", "CREATE INDEX pl_k ON ONLY shop.pl USING btree (k)", { waiting_on: [waiting("pl2")] }),
+      // A second one over the same column, waiting for the same partition.
+      unfinished("pl_k_hash", "pl", "CREATE INDEX pl_k_hash ON ONLY shop.pl USING hash (k)", {
+        waiting_on: [waiting("pl2")],
+      }),
+      unfinished("logs_k", "logs", "CREATE INDEX logs_k ON ONLY shop.logs USING btree (lower(k), created DESC)", {
+        waiting_on: [waiting("logs_p2")],
+      }),
+      unfinished("odd k", 'Odd "T"', 'CREATE INDEX "odd k" ON ONLY shop."Odd ""T""" USING btree ("my col")', {
+        waiting_on: [waiting('Odd "T" 1')],
+      }),
+    ]);
+    expect(steps(about(advice, "pl.pl_k").fix)[0]).toBe(
+      '-- CREATE INDEX CONCURRENTLY "pl2_k_idx1" ON "shop"."pl2" USING btree (k);'
+    );
+    expect(steps(about(advice, "pl.pl_k_hash").fix)[0]).toBe(
+      '-- CREATE INDEX CONCURRENTLY "pl2_k_idx2" ON "shop"."pl2" USING hash (k);'
+    );
+    // A function call gives its name, and DESC is not part of a column's.
+    expect(steps(about(advice, "logs.logs_k").fix)[0]).toBe(
+      '-- CREATE INDEX CONCURRENTLY "logs_p2_lower_created_idx" ON "shop"."logs_p2" USING btree (lower(k), created DESC);'
+    );
+    expect(steps(about(advice, 'Odd "T".odd k').fix)).toEqual([
+      '-- CREATE INDEX CONCURRENTLY "Odd ""T"" 1_my col_idx" ON "shop"."Odd ""T"" 1" USING btree ("my col");',
+      '-- ALTER INDEX "shop"."odd k" ATTACH PARTITION "shop"."Odd ""T"" 1_my col_idx";',
+      '-- DROP INDEX "shop"."odd k";',
+    ]);
+  });
+
+  it("keeps a partial unique index's INCLUDE and WHERE, and leaves foreign keys out of it", () => {
+    const found = card(
+      unfinished(
+        "ui_u",
+        "ui",
+        "CREATE UNIQUE INDEX ui_u ON ONLY shop.ui USING btree (id, created) INCLUDE (note) WHERE active",
+        { waiting_on: [waiting("ui1")] }
+      )
+    );
+    // A foreign key can never point at a partial index.
+    expect(found.detail).toContain(
+      "PostgreSQL refuses an INSERT with ON CONFLICT on these columns until the index is finished."
+    );
+    expect(found.detail).not.toContain("foreign key");
+    expect(steps(found.fix)[0]).toBe(
+      '-- CREATE UNIQUE INDEX CONCURRENTLY "ui1_id_created_idx" ON "shop"."ui1" USING btree (id, created) INCLUDE (note) WHERE active;'
+    );
+  });
+
+  it("falls back to finding the partitions by hand when it cannot tell how to build a copy", () => {
+    const advice = indexAdvice([
+      // A definition it cannot read, with and without a constraint.
+      unfinished("bad_k", "bad", "garbage", { waiting_on: [waiting("bad1")] }),
+      unfinished("badu_u", "badu", "garbage", { ...ownedBy("UNIQUE (id)"), waiting_on: [waiting("badu1")] }),
+      // Partitions that did not come back as a list.
+      unfinished("und_k", "und", "CREATE INDEX und_k ON ONLY shop.und USING btree (k)", { waiting_on: undefined }),
+      // Owned by a constraint it could not read.
+      unfinished("q_u", "q", "CREATE UNIQUE INDEX q_u ON ONLY shop.q USING btree (id)", {
+        backs_constraint: true,
+        waiting_on: [waiting("q1")],
+      }),
+    ]);
+    expect(advice).toHaveLength(4);
+    for (const found of advice) {
+      expect(found.id).toBe("unfinished-partitioned-index");
+      expect(found.severity).toBe("medium");
+      expect(found.fix).toContain("-- Find which partitions have no finished copy attached:");
+      // Nothing to build without knowing how.
+      expect(steps(found.fix)).toEqual([]);
+    }
+    expect(about(advice, "bad.bad_k").fix).toContain("-- For reference, PostgreSQL prints the index as:\n-- garbage");
+    expect(about(advice, "badu.badu_u").fix).toContain("-- and its constraint as:\n-- UNIQUE (id)");
+    expect(about(advice, "und.und_k").fix).toContain("-- CREATE INDEX und_k ON ONLY shop.und USING btree (k)");
+    const ownerUnknown = about(advice, "q.q_u");
+    expect(prose(ownerUnknown.fix)).toContain(
+      "each partition's index has to belong to a matching constraint of its own"
+    );
+    expect(ownerUnknown.detail).toContain("its values are not guaranteed to be unique");
   });
 });
 
@@ -2018,6 +2594,71 @@ describe("every finding's fix", () => {
         }),
         indexStat({ index_name: evil("orders_n_idx"), is_valid: false }),
         indexStat({ index_name: `${evil("orders_n_idx")}_ccnew`, is_valid: false }),
+        // Unfinished indexes on partitioned tables, one for each way of finishing
+        // one, with such names on the tables, schemas, columns and copies.
+        unfinished(
+          evil("parts_key"),
+          evil("parts"),
+          `CREATE UNIQUE INDEX "${evil("parts_key")}" ON ONLY public."${evil("parts")}" USING btree ("${evil("id")}")`,
+          {
+            backs_constraint: true,
+            constraint_definition: `UNIQUE ("${evil("id")}")`,
+            waiting_on: [
+              waiting(evil("parts_1"), { schema: evil("s1") }),
+              waiting(evil("parts_2"), { schema: evil("s2"), foreign: true }),
+              waiting(evil("parts_3"), { schema: evil("s1"), partitioned: true, attached: evil("parts_3_key") }),
+              waiting(evil("parts_4"), { partitioned: true, foreign_below: true }),
+              waiting(evil("parts_5"), { attached: evil("parts_5_key", "\r") }),
+            ],
+          }
+        ),
+        unfinished(
+          evil("parts_k"),
+          evil("parts"),
+          `CREATE INDEX "${evil("parts_k")}" ON ONLY public."${evil("parts")}" USING btree ("${evil("id")}")`,
+          {
+            waiting_on: [
+              waiting(evil("parts_1"), { schema: evil("s1") }),
+              waiting(evil("parts_3"), { schema: evil("s1"), partitioned: true }),
+              waiting(evil("parts_5"), { attached: evil("parts_5_k", "\r") }),
+            ],
+          }
+        ),
+        unfinished(
+          evil("parts_9_k"),
+          evil("parts_9"),
+          `CREATE INDEX "${evil("parts_9_k")}" ON ONLY public."${evil("parts_9")}" USING btree (k)`,
+          {
+            is_partition_child: true,
+            waiting_on: [waiting(evil("parts_9a"), { schema: evil("s2"), foreign: true })],
+            top_index: { schema: evil("s1"), table: evil("top"), name: evil("top_k") },
+          }
+        ),
+        unfinished(
+          evil("parts_8_k"),
+          evil("parts_8"),
+          `CREATE INDEX "${evil("parts_8_k")}" ON ONLY public."${evil("parts_8")}" USING btree (k)`,
+          { is_partition_child: true, top_index: { schema: evil("s1"), table: evil("top"), name: evil("top_k") } }
+        ),
+        unfinished(
+          evil("slots_excl"),
+          evil("slots"),
+          `CREATE INDEX "${evil("slots_excl")}" ON ONLY public."${evil("slots")}" USING gist ("${evil("during")}")`,
+          {
+            backs_constraint: true,
+            constraint_definition: `EXCLUDE USING gist ("${evil("during")}" WITH &&)`,
+            waiting_on: [waiting(evil("slots_1")), waiting(evil("slots_2"), { schema: evil("s2"), foreign: true })],
+          }
+        ),
+        unfinished(
+          evil("covered_k"),
+          evil("covered"),
+          `CREATE INDEX "${evil("covered_k")}" ON ONLY public."${evil("covered")}" USING btree (k)`,
+          { attached_example: { schema: evil("s1"), name: evil("covered_1_k") } }
+        ),
+        unfinished(evil("odd_k"), evil("odd"), evil("not an index definition", "\r\n"), {
+          waiting_on: [waiting(evil("odd_1"), { schema: evil("s1") })],
+        }),
       ],
       // Ten days, so the unused index gets the decision with the commented-out DROP.
       COUNTERS,
@@ -2038,7 +2679,15 @@ describe("every finding's fix", () => {
         "sequential-scan-heavy",
         "unused-index",
         "invalid-index",
+        "unfinished-partitioned-index",
       ])
+    );
+    // All seven, and only the unreadable one fell back to general steps: the
+    // names went into real statements everywhere else.
+    const partitioned = advice.filter((a) => a.id === "unfinished-partitioned-index");
+    expect(partitioned).toHaveLength(7);
+    expect(partitioned.filter((a) => a.fix.includes("-- Find which partitions have no finished copy attached:"))).toHaveLength(
+      1
     );
     for (const item of advice) expect(fixProblems(item)).toEqual([]);
   });
@@ -2072,6 +2721,7 @@ describe("every finding's fix", () => {
       "serial-not-identity": ["change", "decision"],
       "text-primary-key": ["decision"],
       "timestamp-without-timezone": ["decision"],
+      "unfinished-partitioned-index": ["decision"],
       "unused-index": ["change", "decision"],
     });
   });
