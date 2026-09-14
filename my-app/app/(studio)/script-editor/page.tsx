@@ -47,6 +47,7 @@ import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { displayVersion } from "@/lib/version-timeline";
 import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
+import { Pill } from "@/components/ui/Pill";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
 
@@ -1317,13 +1318,14 @@ export default function ScriptEditorPage() {
                         </span>
                       )}
                       {sql.trim() && (
-                        // The grade wears the colour every screen gives its level.
-                        <span
-                          className={`pill pill-${CHANGE_LEVEL_PILL[sqlGrade.level].tone}`}
+                        // The grade wears the colour and dot every screen gives its
+                        // level (ChangeLevelPill); only the words are longer here.
+                        <Pill
+                          tone={CHANGE_LEVEL_PILL[sqlGrade.level].tone}
                           title="Read from the statements that will run; comments and quoted text are ignored. Deploy grades scripts with this same rule."
                         >
                           {gradeSentence(sqlGrade)}
-                        </span>
+                        </Pill>
                       )}
                       {appliedUnreadable && (
                         <span className="pill pill-drift">

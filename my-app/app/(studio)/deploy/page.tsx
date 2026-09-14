@@ -2619,7 +2619,8 @@ export default function DeployPage() {
         </h1>
         <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
           Pick a target connection, schema and script group, then rehearse or apply the
-          pending migrations. The whole run goes in one transaction — all of them or none.
+          pending migrations: all of them, or up to the version whose Run button you pick.
+          Each run goes in one transaction — all of its migrations or none.
         </p>
         {pullError && (
           <div className="banner mt-3">
