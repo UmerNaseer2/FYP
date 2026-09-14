@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { fetchSchemaSnapshot } from "@/lib/postgres";
 import {
   BASELINE_VERSION,
@@ -118,16 +119,26 @@ export async function POST(request: NextRequest) {
   }
 
   // ── 3. Capture the live baseline snapshot (SSL-aware, like the rest of app) ─
-  const cfg = buildPgConfig({
-    host: conn.host,
-    port: conn.port,
-    database: conn.database_name,
-    user: conn.username,
-    password: conn.password,
-    connectionString: conn.connection_string,
-    ssl: Boolean(conn.ssl),
-    sslMode: conn.ssl_mode,
-  });
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 instead of an error the screen can show.
+  let cfg: ReturnType<typeof buildPgConfig>;
+  try {
+    cfg = buildPgConfig({
+      host: conn.host,
+      port: conn.port,
+      database: conn.database_name,
+      user: conn.username,
+      password: conn.password,
+      connectionString: conn.connection_string,
+      ssl: Boolean(conn.ssl),
+      sslMode: conn.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Track — could not read the saved connection's credentials:", message);
+    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+  }
 
   const snap = await fetchSchemaSnapshot(cfg, schemaName);
   if (!snap.ok) {

@@ -4,6 +4,7 @@ import { requireEditor } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { containsTransactionControl } from "@/lib/sql-guard";
 import { compareVersions, isValidSemver, normalizeVersion } from "@/lib/script-status";
 import {
@@ -327,16 +328,26 @@ export async function POST(request: NextRequest) {
   if (blocked) return fail(409, { error: blocked, environment: targetEnvironment });
 
   // ─── 4. Connect, and start collecting NOTICEs ────────────────────────────
-  const targetConfig = buildPgConfig({
-    host: connRow.host,
-    port: connRow.port,
-    database: connRow.database_name,
-    user: connRow.username,
-    password: connRow.password,
-    connectionString: connRow.connection_string,
-    ssl: Boolean(connRow.ssl),
-    sslMode: connRow.ssl_mode,
-  });
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 with no word on whether anything ran.
+  let targetConfig: ReturnType<typeof buildPgConfig>;
+  try {
+    targetConfig = buildPgConfig({
+      host: connRow.host,
+      port: connRow.port,
+      database: connRow.database_name,
+      user: connRow.username,
+      password: connRow.password,
+      connectionString: connRow.connection_string,
+      ssl: Boolean(connRow.ssl),
+      sslMode: connRow.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Revert — could not read the saved connection's credentials:", message);
+    return fail(500, { error: `Nothing was run. ${UNREADABLE_CREDENTIALS_MESSAGE}` });
+  }
 
   let connected: PoolClient;
   try {

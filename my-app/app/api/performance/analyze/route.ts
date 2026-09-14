@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
 import {
   QUERY_TIMEOUT_SECONDS,
@@ -305,8 +306,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const target = getPoolForConfig(
-    buildPgConfig({
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 instead of { ok: false, error }.
+  let targetConfig: ReturnType<typeof buildPgConfig>;
+  try {
+    targetConfig = buildPgConfig({
       host: conn.host,
       port: conn.port,
       database: conn.database_name,
@@ -315,8 +320,13 @@ export async function POST(request: NextRequest) {
       connectionString: conn.connection_string,
       ssl: Boolean(conn.ssl),
       sslMode: conn.ssl_mode,
-    })
-  );
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Query analysis — could not read the saved connection's credentials:", message);
+    return fail(UNREADABLE_CREDENTIALS_MESSAGE, 500);
+  }
+  const target = getPoolForConfig(targetConfig);
 
   let client: PoolClient;
   try {

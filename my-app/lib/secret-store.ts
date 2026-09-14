@@ -169,3 +169,16 @@ export function decryptSecret(stored: string | null | undefined): string | null 
     );
   }
 }
+
+/**
+ * What a screen says when decryptSecret throws for a saved connection.
+ *
+ * The thrown error names the cause (no key, a changed key, a damaged value) and
+ * belongs in the server log. This says what to do about it, for the person
+ * looking at the screen. Every route that dials a saved connection answers with
+ * it, instead of a bare 500 the page could only call "unreachable".
+ */
+export const UNREADABLE_CREDENTIALS_MESSAGE =
+  "This connection's stored credentials can't be read on this server. Set " +
+  "APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
+  "the Connections screen and enter its password again.";

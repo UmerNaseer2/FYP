@@ -3,6 +3,7 @@ import { requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { fetchSchemaSnapshot } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // GET /api/schema/snapshot?connectionId=<id>&schema=<name>
 //
@@ -69,16 +70,26 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Introspect the target schema ─────────────────────────────────────────
-  const config = buildPgConfig({
-    host: connRow.host,
-    port: connRow.port,
-    database: connRow.database_name,
-    user: connRow.username,
-    password: connRow.password,
-    connectionString: connRow.connection_string,
-    ssl: Boolean(connRow.ssl),
-    sslMode: connRow.ssl_mode,
-  });
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 instead of an error the screen can show.
+  let config: ReturnType<typeof buildPgConfig>;
+  try {
+    config = buildPgConfig({
+      host: connRow.host,
+      port: connRow.port,
+      database: connRow.database_name,
+      user: connRow.username,
+      password: connRow.password,
+      connectionString: connRow.connection_string,
+      ssl: Boolean(connRow.ssl),
+      sslMode: connRow.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Schema snapshot — could not read the saved connection's credentials:", message);
+    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+  }
 
   const snapshot = await fetchSchemaSnapshot(config, schema);
   if (!snapshot.ok) {

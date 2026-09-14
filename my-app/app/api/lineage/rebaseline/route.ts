@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { fetchSchemaSnapshot, type SchemaSnapshot } from "@/lib/postgres";
 import { compareSchemas } from "@/lib/compare";
 import { summarizeStructuralSeverity } from "@/lib/version-detection";
@@ -87,16 +88,26 @@ export async function POST(request: NextRequest) {
   }
 
   // ── 2. Capture the live structure (the new expected snapshot) ──────────────
-  const cfg = buildPgConfig({
-    host: tracked.host,
-    port: tracked.port,
-    database: tracked.database_name,
-    user: tracked.username,
-    password: tracked.password,
-    connectionString: tracked.connection_string,
-    ssl: Boolean(tracked.ssl),
-    sslMode: tracked.ssl_mode,
-  });
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 instead of an error the screen can show.
+  let cfg: ReturnType<typeof buildPgConfig>;
+  try {
+    cfg = buildPgConfig({
+      host: tracked.host,
+      port: tracked.port,
+      database: tracked.database_name,
+      user: tracked.username,
+      password: tracked.password,
+      connectionString: tracked.connection_string,
+      ssl: Boolean(tracked.ssl),
+      sslMode: tracked.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Rebaseline — could not read the saved connection's credentials:", message);
+    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+  }
 
   const live = await fetchSchemaSnapshot(cfg, tracked.schema_name);
   if (!live.ok) {

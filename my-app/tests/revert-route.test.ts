@@ -15,6 +15,7 @@ import {
   type FakeStep,
 } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -40,7 +41,11 @@ let mockClient: FakeClient;
 jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
-jest.mock("../lib/connection-config", () => ({ buildPgConfig: () => ({}) }));
+// Made to throw once to play a saved password this server can't decrypt.
+const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
+jest.mock("../lib/connection-config", () => ({
+  buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
+}));
 
 const mockRecordLineage = jest.fn<Promise<unknown>, unknown[]>(async () => ({ advanced: false }));
 jest.mock("../lib/lineage-db", () => ({
@@ -200,6 +205,31 @@ describe("request checks (before any database)", () => {
     expect(String(res.body.error)).toContain("COMMIT or ROLLBACK");
     expect(mockPoolQuery).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
+  });
+});
+
+describe("credentials", () => {
+  it("says what to fix when the saved password can't be read here, before touching the database", async () => {
+    // What decryptSecret throws for a password saved under another key.
+    mockBuildPgConfig.mockImplementationOnce(() => {
+      throw new Error("Unsupported state or unable to authenticate data");
+    });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({
+      ok: false,
+      success: false,
+      error: `Nothing was run. ${UNREADABLE_CREDENTIALS_MESSAGE}`,
+    });
+    // The cause is for the server log, not the screen.
+    expect(JSON.stringify(res.body)).not.toContain("Unsupported state");
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "Revert — could not read the saved connection's credentials:",
+      "Unsupported state or unable to authenticate data"
+    );
+    expect(mockClient.queries).toEqual([]);
+    expect(mockClient.releaseCount).toBe(0);
+    expect(mockClaim).not.toHaveBeenCalled();
   });
 });
 

@@ -3,6 +3,7 @@ import { requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { normalizeChangeLevel } from "@/lib/change-level";
 import type { LedgerEntry } from "@/lib/version-sync";
 
@@ -91,15 +92,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Version sync ledger — could not read the saved connection's credentials:", message);
-    return NextResponse.json(
-      {
-        error:
-          "This connection's stored credentials can't be read on this server. Set " +
-          "APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
-          "the Connections screen and enter its password again.",
-      },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
   }
   const targetPool = getPoolForConfig(targetConfig);
 

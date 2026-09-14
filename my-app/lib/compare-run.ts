@@ -26,6 +26,7 @@ import {
 } from "@/lib/generate-sql";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
 import { fetchSchemaNames, fetchSchemaSnapshot, POOL_MAX } from "@/lib/postgres";
 import { mapWithLimit } from "@/lib/concurrency";
@@ -129,7 +130,10 @@ export type TargetSlotView = {
   schema: string;
   schemaOptions: string[];
   environment: Environment;
-  /** Why this target has no connection to read, or null when it has one. */
+  /**
+   * Why this target has nothing to read: no saved connection, or one whose
+   * credentials can't be read on this server. Null when it has one it can use.
+   */
   missingMessage: string | null;
 };
 
@@ -313,6 +317,35 @@ async function getComparisonSets(): Promise<ComparisonSet[]> {
   }
 }
 
+/** How Compare names a saved connection: its name, then the database it opens. */
+function connectionDisplayName(connection: SavedConnection): string {
+  return `${connection.name} (${connection.database_name})`;
+}
+
+/**
+ * buildTargetFromConnection, or why it could not be built.
+ *
+ * buildPgConfig decrypts the saved password, and throws when this server's
+ * APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+ * uncaught, that took the whole Compare page down over one side. Caught, the
+ * side stays on screen under its own name and says what to fix.
+ */
+function tryBuildTarget(
+  connection: SavedConnection,
+  id: string,
+): { target: CompareTarget; credentialError: null } | { target: null; credentialError: string } {
+  try {
+    return { target: buildTargetFromConnection(connection, id), credentialError: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Compare — could not read the credentials of "${connection.name}":`, message);
+    return {
+      target: null,
+      credentialError: `Could not use ${connectionDisplayName(connection)}. ${UNREADABLE_CREDENTIALS_MESSAGE}`,
+    };
+  }
+}
+
 function buildTargetFromConnection(
   connection: SavedConnection,
   id: string,
@@ -335,7 +368,7 @@ function buildTargetFromConnection(
   return {
     id,
     config,
-    displayName: `${connection.name} (${connection.database_name})`,
+    displayName: connectionDisplayName(connection),
   };
 }
 
@@ -497,10 +530,14 @@ async function compareOneTarget(
   slot: {
     index: number;
     connection: SavedConnection | null;
-    /** Null when the target has no saved connection; `missingMessage` says why. */
+    /**
+     * Null when the target has no saved connection (`missingMessage` says why)
+     * or has one whose credentials can't be read (`credentialError` says why).
+     */
     target: CompareTarget | null;
     displayName: string;
     missingMessage: string | null;
+    credentialError: string | null;
     schema: string;
     schemaOptions: string[];
     schemaListError: string | null;
@@ -546,6 +583,17 @@ async function compareOneTarget(
   // never picked, and the target keeps its place so the reader can fix it —
   // it is never quietly pointed at some other database instead.
   if (!slot.target) {
+    // A saved connection whose password this server can't decrypt. It is
+    // there, so "no connection" would be wrong; nothing could be dialled, which
+    // is what "unreachable" means here, and the message says what to fix.
+    if (slot.credentialError) {
+      return {
+        ...empty,
+        environment: connectionEnvironment,
+        failure: "unreachable",
+        error: slot.credentialError,
+      };
+    }
     return {
       ...empty,
       environment: connectionEnvironment,
@@ -851,26 +899,29 @@ export async function runComparison(
       ? null
       : savedConnections.find((connection) => String(connection.id) === id) ?? null;
 
+  // A connection that is there but whose credentials can't be read has no
+  // target (nothing to dial) and a credentialError saying why. Its name is
+  // still the one shown: it is the connection the reader picked.
   const sourceConnection = findConnection(sourceConnectionId);
-  const sourceTarget = sourceConnection
-    ? buildTargetFromConnection(sourceConnection, "source")
-    : null;
+  const sourceBuilt = sourceConnection ? tryBuildTarget(sourceConnection, "source") : null;
+  const sourceTarget = sourceBuilt ? sourceBuilt.target : null;
   const sourceMissingMessage = sourceConnection
     ? null
     : missingSourceMessage(sourceConnectionId, sourceMissingLabel);
 
   const targetSlots = slots.map((slot, index) => {
     const connection = findConnection(slot.connectionId);
-    const target = connection
-      ? buildTargetFromConnection(connection, `target-${index}`)
-      : null;
+    const built = connection ? tryBuildTarget(connection, `target-${index}`) : null;
     return {
       index,
       connection,
-      target,
+      target: built ? built.target : null,
+      credentialError: built ? built.credentialError : null,
       requestedSchema: slot.schema,
       missingLabel: slot.missingLabel,
-      displayName: target ? target.displayName : slot.missingLabel || "No connection",
+      displayName: connection
+        ? connectionDisplayName(connection)
+        : slot.missingLabel || "No connection",
       missingMessage: connection
         ? null
         : missingConnectionMessage(slot.connectionId, slot.missingLabel),
@@ -997,9 +1048,11 @@ export async function runComparison(
       ? activeSet.compareData
       : pickValue(params.compareData, "") === "1";
 
-  // Only asked of a source that exists. A missing one has its own message,
-  // which says whether it was deleted or never picked.
-  let sourceError: string | null = null;
+  // Only asked of a source that can be read. A missing one has its own
+  // message, which says whether it was deleted or never picked. One whose
+  // credentials can't be read starts out with that as its error, so nothing
+  // below opens anything and the banner says what to fix.
+  let sourceError: string | null = sourceBuilt ? sourceBuilt.credentialError : null;
   if (sourceTarget) {
     if (sourceSchemaInfo.error) {
       sourceError = `Could not reach ${sourceTarget.displayName}: ${sourceSchemaInfo.error}`;
@@ -1066,13 +1119,17 @@ export async function runComparison(
   // including a side whose connection is gone — null, under the name it had.
   const selection: CurrentSelection = {
     sourceConnectionId: sourceConnection ? sourceConnection.id : null,
-    sourceConnectionLabel: sourceTarget?.displayName ?? sourceMissingLabel ?? "",
+    sourceConnectionLabel: sourceConnection
+      ? connectionDisplayName(sourceConnection)
+      : sourceMissingLabel ?? "",
     sourceSchema,
     allowDataLoss,
     compareData,
     targets: resolvedTargets.map((slot) => ({
       connectionId: slot.connection ? slot.connection.id : null,
-      connectionLabel: slot.target ? slot.target.displayName : (slot.missingLabel ?? ""),
+      connectionLabel: slot.connection
+        ? connectionDisplayName(slot.connection)
+        : (slot.missingLabel ?? ""),
       schema: slot.schema,
     })),
   };
@@ -1130,8 +1187,8 @@ export async function runComparison(
     selection,
     source: {
       connectionId: sourceConnection ? sourceConnection.id : null,
-      displayName: sourceTarget
-        ? sourceTarget.displayName
+      displayName: sourceConnection
+        ? connectionDisplayName(sourceConnection)
         : sourceMissingLabel || "No connection",
       schema: sourceSchema,
       schemaOptions: sourceSchemaInfo.options,
@@ -1147,7 +1204,9 @@ export async function runComparison(
       schema: slot.schema,
       schemaOptions: slot.schemaOptions,
       environment: toEnvironment(slot.connection?.environment),
-      missingMessage: slot.missingMessage,
+      // The picker says why it has nothing to list: no connection, or one
+      // whose credentials can't be read here.
+      missingMessage: slot.missingMessage ?? slot.credentialError,
     })),
     outcomes: outcomes.map(toOutcomeView),
     allowDataLoss,

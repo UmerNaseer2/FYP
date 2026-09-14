@@ -133,18 +133,20 @@ async function measureSizes(
   }
   if (!row || row.type !== "PostgreSQL") return NO_SIZES;
 
-  const cfg = buildPgConfig({
-    host: row.host,
-    port: row.port,
-    database: row.database_name,
-    user: row.username,
-    password: row.password,
-    connectionString: row.connection_string,
-    ssl: Boolean(row.ssl),
-    sslMode: row.ssl_mode,
-  });
-
   try {
+    // Inside the try: buildPgConfig decrypts the saved password and throws when
+    // this server's APP_ENCRYPTION_KEY can't, and a size this job could not
+    // take is recorded as nulls like any other.
+    const cfg = buildPgConfig({
+      host: row.host,
+      port: row.port,
+      database: row.database_name,
+      user: row.username,
+      password: row.password,
+      connectionString: row.connection_string,
+      ssl: Boolean(row.ssl),
+      sslMode: row.ssl_mode,
+    });
     const target = getPoolForConfig(cfg);
     const client = await target.connect();
     try {

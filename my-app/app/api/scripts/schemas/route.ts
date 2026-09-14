@@ -3,6 +3,7 @@ import { requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig, MANAGED_SCHEMAS } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 export async function GET(req: NextRequest) {
   const gate = await requireViewer();
@@ -61,8 +62,12 @@ export async function GET(req: NextRequest) {
   }
 
   // ── 2. Connect to the target database (SSL/URI-aware via buildPgConfig) ──────
-  const targetPool = getPoolForConfig(
-    buildPgConfig({
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 instead of an error the screen can show.
+  let targetConfig: ReturnType<typeof buildPgConfig>;
+  try {
+    targetConfig = buildPgConfig({
       host: connRow.host,
       port: connRow.port,
       database: connRow.database_name,
@@ -71,8 +76,13 @@ export async function GET(req: NextRequest) {
       connectionString: connRow.connection_string,
       ssl: Boolean(connRow.ssl),
       sslMode: connRow.ssl_mode,
-    })
-  );
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Script schemas — could not read the saved connection's credentials:", message);
+    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+  }
+  const targetPool = getPoolForConfig(targetConfig);
 
   let client;
   try {

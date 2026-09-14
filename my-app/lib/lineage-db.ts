@@ -5,6 +5,7 @@ import {
   type SchemaSnapshot,
 } from "./postgres";
 import { buildPgConfig } from "./connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "./secret-store";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import type { ChangeLevel } from "./version-detection";
@@ -800,16 +801,27 @@ export async function computeDriftDetail(
     };
   }
 
-  const cfg = buildPgConfig({
-    host: t.host,
-    port: t.port,
-    database: t.database_name,
-    user: t.username,
-    password: t.password,
-    connectionString: t.connection_string,
-    ssl: Boolean(t.ssl),
-    sslMode: t.ssl_mode,
-  });
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. That is
+  // a database this server can't dial: the same "unreachable" state as above,
+  // not an error that takes the whole drift check down with it.
+  let cfg: ReturnType<typeof buildPgConfig>;
+  try {
+    cfg = buildPgConfig({
+      host: t.host,
+      port: t.port,
+      database: t.database_name,
+      user: t.username,
+      password: t.password,
+      connectionString: t.connection_string,
+      ssl: Boolean(t.ssl),
+      sslMode: t.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Drift check — could not read the credentials of "${t.connection_name}":`, message);
+    return { kind: "unreachable", ...subject, expected: ref, summary: UNREADABLE_CREDENTIALS_MESSAGE };
+  }
   const live = await fetchSchemaSnapshot(cfg, t.schema_name);
   if (!live.ok) {
     return {

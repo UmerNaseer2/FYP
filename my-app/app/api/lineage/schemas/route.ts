@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { fetchSchemaNames } from "@/lib/postgres";
 
 /**
@@ -76,16 +77,27 @@ export async function GET(request: NextRequest) {
   }
 
   // ── List the live schemas (SSL-aware, like the rest of the app) ────────────
-  const cfg = buildPgConfig({
-    host: conn.host,
-    port: conn.port,
-    database: conn.database_name,
-    user: conn.username,
-    password: conn.password,
-    connectionString: conn.connection_string,
-    ssl: Boolean(conn.ssl),
-    sslMode: conn.ssl_mode,
-  });
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500, and the pickers that call this could only
+  // say they had failed to list the schemas.
+  let cfg: ReturnType<typeof buildPgConfig>;
+  try {
+    cfg = buildPgConfig({
+      host: conn.host,
+      port: conn.port,
+      database: conn.database_name,
+      user: conn.username,
+      password: conn.password,
+      connectionString: conn.connection_string,
+      ssl: Boolean(conn.ssl),
+      sslMode: conn.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Lineage schemas — could not read the saved connection's credentials:", message);
+    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+  }
 
   const listed = await fetchSchemaNames(cfg);
   if (!listed.ok) {
