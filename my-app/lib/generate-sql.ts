@@ -3447,11 +3447,7 @@ export function manualNoteCount(statements: SqlStatement[]): number {
  * can do — so it cannot raise the level on its own.
  */
 export function migrationChangeLevel(script: MigrationScript): ChangeLevel {
-  const willRun = script.statements.filter((stmt) => {
-    if (stmt.kind === "MANUAL") return false;
-    const muted = (stmt.destructive || stmt.needsArmedDrop === true) && !script.allowDataLoss;
-    return !muted;
-  });
+  const willRun = statementsThatRun(script);
 
   if (willRun.length === 0) return "patch";
   if (willRun.some((stmt) => stmt.severity === "breaking")) return "breaking";
@@ -3461,10 +3457,31 @@ export function migrationChangeLevel(script: MigrationScript): ChangeLevel {
   return "patch";
 }
 
+/**
+ * The statements that will actually run when this script is applied. Safe mode
+ * comments out the destructive statements (and the ones that do nothing without
+ * them), and a MANUAL note describes work instead of doing it. The change level,
+ * the header's tally and the Compare page's tally all count this one list, so
+ * the three cannot disagree.
+ */
+export function statementsThatRun(script: MigrationScript): SqlStatement[] {
+  return script.statements.filter((stmt) => {
+    if (stmt.kind === "MANUAL") return false;
+    const muted = (stmt.destructive || stmt.needsArmedDrop === true) && !script.allowDataLoss;
+    return !muted;
+  });
+}
+
 export function renderMigrationScript(script: MigrationScript): string {
-  const breaking = script.statements.filter((s) => s.severity === "breaking").length;
-  const safe = script.statements.filter((s) => s.severity === "safe").length;
-  const info = script.statements.filter((s) => s.severity === "info").length;
+  // The tally grades what runs, like the Compare page's: a held-back DROP is
+  // in the file but will not break anything, so "3 breaking" in the header
+  // beside "1 breaking" on the page read as two different scripts.
+  const willRun = statementsThatRun(script);
+  const breaking = willRun.filter((s) => s.severity === "breaking").length;
+  const safe = willRun.filter((s) => s.severity === "safe").length;
+  const info = willRun.filter((s) => s.severity === "info").length;
+  const runsLabel =
+    willRun.length === script.statements.length ? "" : `${willRun.length} run: `;
   const held = script.allowDataLoss ? 0 : script.heldBackCount;
   // The held-back set is not all destructive: a rebuilt matview is in there
   // because it does nothing until its drop runs, not because it deletes.
@@ -3474,7 +3491,7 @@ export function renderMigrationScript(script: MigrationScript): string {
     `-- ================================================================`,
     `-- Migration: ${script.sourceSchema}  →  ${script.targetSchema}`,
     `-- Direction: modifies the RIGHT/TARGET schema to match the LEFT/SOURCE schema`,
-    `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
+    `-- Statements: ${script.statements.length}  (${runsLabel}${breaking} breaking · ${safe} safe · ${info} info)`,
     // Machine-readable, and the only accurate grading of this script that
     // exists: everything downstream sees the file as text and would otherwise
     // have to guess by searching it. See lib/change-type.ts.

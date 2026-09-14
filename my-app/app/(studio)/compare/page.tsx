@@ -937,6 +937,9 @@ function CompareScreenView({ query }: { query: string }) {
                 targetName={`${outcome.displayName}.${outcome.schema}`}
                 target={outcome.detectedVersion}
                 verdict={outcome.versionVerdict}
+                // The Workbench's own test for "nothing to push", so the bar
+                // never warns about a backwards push the button can't make.
+                inSync={outcome.statementCount === 0}
               />
 
               {/* Two-column body: diff canvas (left) + migration draft (right,

@@ -172,6 +172,21 @@ describe("POST /api/deploy/approvals", () => {
     expect(call(1).values[9]).toBe("deploy");
   });
 
+  it("refuses a rollback of more versions than the revert route accepts, before touching the database", async () => {
+    const scripts = Array.from({ length: 51 }, (_, index) => ({
+      script_name: "orders_fix",
+      version: `${51 - index}.0.0`,
+      sql_content: "DROP TABLE t;",
+    }));
+    const res = await request({ ...BODY, scripts, action: "revert" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "A rollback can undo at most 50 versions at a time, and this request lists 51, so it was not " +
+        "sent for approval. Roll back in steps of at most 50 versions, and ask for approval of each."
+    );
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+  });
+
   it("says 'rollbacks' when a rollback request has nothing in it", async () => {
     const res = await request({ ...BODY, scripts: [], action: "revert" });
     expect(res.status).toBe(400);

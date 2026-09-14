@@ -144,6 +144,48 @@ async function download(item: GitHubItem): Promise<string | null> {
   }
 }
 
+/**
+ * The warning for a rollback file with no migration of its own spelling
+ * beside it. The file is ignored either way (files pair by exact name, so
+ * v1.0.0.down.sql is never read as the rollback of v1.0.sql), but the advice
+ * differs, because the push refuses a version the family already has or is
+ * past (checkPushVersion):
+ *   - the same version is there under another spelling: saving it again is
+ *     refused, so say how that version can get a rollback instead;
+ *   - a higher version is published: saving it again is refused as lower than
+ *     the newest, so the only way to clear the warning is to delete the file;
+ *   - otherwise saving that version removes the file first (push step 2).
+ */
+function leftoverRollbackWarning(
+  path: string,
+  version: string,
+  byVersion: Map<string, { up?: GitHubItem; down?: GitHubItem }>,
+): string {
+  const published: { version: string; up: GitHubItem; down?: GitHubItem }[] = [];
+  for (const [other, pair] of byVersion) {
+    if (pair.up) published.push({ version: other, up: pair.up, down: pair.down });
+  }
+
+  const twin = published.find((other) => compareVersions(other.version, version) === 0);
+  if (twin) {
+    const ignored =
+      `${path} is ignored: its name does not match ${twin.up.name}, so it is not read as the rollback of v${twin.version}.`;
+    return twin.down
+      ? `${ignored} v${twin.version} already has its rollback in ${twin.down.name}, so this extra file can be deleted on GitHub.`
+      : `${ignored} v${twin.version} has no rollback yet; add one with "Add a missing rollback" in the Script Editor.`;
+  }
+
+  const leftover = `${path} has no migration beside it (left by an earlier failed save) and is ignored.`;
+  const newest = published.reduce<string | null>(
+    (high, other) => (high === null || compareVersions(other.version, high) > 0 ? other.version : high),
+    null,
+  );
+  if (newest !== null && compareVersions(newest, version) > 0) {
+    return `${leftover} v${version} can't be saved again, because v${newest} is already published and a new version must be higher. Delete this file on GitHub to clear this warning.`;
+  }
+  return `${leftover} Saving v${version} again removes it.`;
+}
+
 /** Every version in one family folder, with its rollback classified. */
 async function readFamily(
   config: GitHubConfig,
@@ -163,15 +205,11 @@ async function readFamily(
 
   await Promise.all(
     [...byVersion.entries()].map(async ([version, { up, down }]) => {
-      // A rollback with no migration beside it was left by a save that failed
-      // half-way. It belongs to no version, so it is not listed; the warning
-      // says so, and the push route removes it when that version is saved.
+      // A rollback with no migration of the same spelling beside it belongs
+      // to no version, so it is not listed; the warning says so, and what (if
+      // anything) removes it.
       if (!up) {
-        if (down) {
-          warnings.push(
-            `${down.path} has no migration beside it (left by an earlier failed save) and is ignored. Saving v${version} again removes it.`,
-          );
-        }
+        if (down) warnings.push(leftoverRollbackWarning(down.path, version, byVersion));
         return;
       }
 

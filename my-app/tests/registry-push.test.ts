@@ -78,6 +78,13 @@ describe("validateScriptName", () => {
     expect(validateScriptName("../x")).toContain(SCRIPT_NAME_RULE);
   });
 
+  // Both screens turn other characters into _, so "@@@" arrives as "___".
+  it("needs at least one letter or digit", () => {
+    expect(validateScriptName("___")).toContain("Add at least one letter or digit");
+    expect(validateScriptName("-_-")).toContain("Add at least one letter or digit");
+    expect(validateScriptName("_7")).toBeNull();
+  });
+
   it("asks for a name when there is none", () => {
     expect(validateScriptName("")).toContain("Give the script a name");
     expect(validateScriptName(undefined)).toContain("Give the script a name");
@@ -150,6 +157,33 @@ describe("findVersionFiles", () => {
 
   it("reports no highest for an empty folder", () => {
     expect(findVersionFiles([], "1.0.0")).toEqual({ up: null, down: null, highest: null });
+  });
+
+  it("pairs a rollback with its migration only when both are spelled the same", () => {
+    // The pull route never reads v1.2.0.down.sql as the rollback of v1.2.sql,
+    // so neither may the push: it is no rollback of v1.2.
+    const mixed: RegistryEntry[] = [
+      { name: "v1.2.sql", sha: "sha-up" },
+      { name: "v1.2.0.down.sql", sha: "sha-other-spelling" },
+    ];
+    expect(findVersionFiles(mixed, "1.2.0")).toEqual({
+      up: { name: "v1.2.sql", sha: "sha-up" },
+      down: null,
+      highest: "1.2",
+    });
+    const paired = [...mixed, { name: "v1.2.down.sql", sha: "sha-down" }];
+    expect(findVersionFiles(paired, "1.2.0").down).toEqual({ name: "v1.2.down.sql", sha: "sha-down" });
+  });
+
+  it("with no migration, picks the leftover that a new save of that version would collide with", () => {
+    const leftovers: RegistryEntry[] = [
+      { name: "v1.2.down.sql", sha: "sha-short" },
+      { name: "v1.2.0.down.sql", sha: "sha-long" },
+    ];
+    expect(findVersionFiles(leftovers, "1.2.0").down).toEqual({ name: "v1.2.0.down.sql", sha: "sha-long" });
+    expect(findVersionFiles(leftovers, "1.2").down).toEqual({ name: "v1.2.down.sql", sha: "sha-short" });
+    // No leftover spelled that way: any rollback of the same version is still found.
+    expect(findVersionFiles(leftovers.slice(0, 1), "1.2.0").down).toEqual({ name: "v1.2.down.sql", sha: "sha-short" });
   });
 });
 

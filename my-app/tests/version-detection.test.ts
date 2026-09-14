@@ -227,14 +227,14 @@ describe("determineNewerSchema", () => {
     // One side blank is worse, because "public records no version" does not say
     // which public the reader should go and look at.
     const versioned = detected("public", "1.0.0", 1_000_000, "semver");
-    expect(determineNewerSchema(versioned, right).reason).toContain("the target schema");
-    expect(determineNewerSchema(right, versioned).reason).toContain("the source schema");
+    expect(determineNewerSchema(versioned, right).reason).toContain("The target schema");
+    expect(determineNewerSchema(right, versioned).reason).toContain("The source schema");
 
     // And the ranking sentences too — "public is newer based on version 2.0.0"
     // is a verdict with no subject.
     const ahead = detected("public", "2.0.0", 2_000_000, "semver");
     expect(determineNewerSchema(ahead, versioned).reason).toBe(
-      "the source schema is newer based on version 2.0.0."
+      "The source schema is newer based on version 2.0.0."
     );
   });
 

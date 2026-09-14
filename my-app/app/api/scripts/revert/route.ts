@@ -6,7 +6,14 @@ import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl } from "@/lib/sql-guard";
 import { compareVersions, isValidSemver, normalizeVersion } from "@/lib/script-status";
-import { checkNewestFirst, loudestChangeLevel, resolveRollback } from "@/lib/rollback-plan";
+import {
+  checkNewestFirst,
+  listVersions,
+  loudestChangeLevel,
+  MAX_ROLLBACK_VERSIONS,
+  resolveRollback,
+  vLabel,
+} from "@/lib/rollback-plan";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
@@ -59,10 +66,6 @@ function quoteIdent(name: string): string {
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_NOT_AVAILABLE = "55P03";
 
-// The most versions one request may undo. A family with more than this many
-// applied versions can still be rolled back, in several steps.
-const MAX_VERSIONS = 50;
-
 // script_patch.change_type is a constrained VARCHAR; these are its legal values,
 // which are also exactly the ChangeLevel union the lineage helper accepts.
 const VALID_CHANGE_TYPES: ChangeLevel[] = ["breaking", "additive", "patch", "unknown"];
@@ -71,18 +74,6 @@ function asChangeLevel(value: string | null): ChangeLevel {
   return VALID_CHANGE_TYPES.includes(value as ChangeLevel)
     ? (value as ChangeLevel)
     : "unknown";
-}
-
-/** "v1.2.0" whether the caller wrote "1.2.0" or "v1.2.0". */
-function vLabel(version: string): string {
-  return `v${version.trim().replace(/^v/i, "")}`;
-}
-
-/** "v3.0.0", "v3.0.0 and v2.0.0", "v3.0.0, v2.0.0 and v1.0.0". */
-function listVersions(versions: string[]): string {
-  const labels = versions.map(vLabel);
-  if (labels.length <= 1) return labels.join("");
-  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 /** Newest version first, the order rollbacks must run in. */
@@ -162,12 +153,19 @@ function parseRequest(body: RevertBody): RevertRequest | string {
       ? [{ version: body.version, down_sql: body.sql_content }]
       : body.registryRollbacks;
 
-  if (
-    !Array.isArray(rawVersions) ||
-    rawVersions.length === 0 ||
-    rawVersions.length > MAX_VERSIONS
-  ) {
-    return `Say which versions to roll back: versions must list 1 to ${MAX_VERSIONS} versions, like ["2.0.0", "1.1.0"].`;
+  if (!Array.isArray(rawVersions) || rawVersions.length === 0) {
+    return `Say which versions to roll back: versions must list 1 to ${MAX_ROLLBACK_VERSIONS} versions, like ["2.0.0", "1.1.0"].`;
+  }
+  // The cap lives in lib/rollback-plan.ts, shared with the Deploy page and
+  // the approvals route: the page never offers a longer rollback, and no
+  // approval is recorded for one this route would refuse. A family further
+  // back than the cap is rolled back in several steps.
+  if (rawVersions.length > MAX_ROLLBACK_VERSIONS) {
+    return (
+      `A rollback can undo at most ${MAX_ROLLBACK_VERSIONS} versions at a time, and this request ` +
+      `lists ${rawVersions.length}. Nothing was rolled back. Roll back in steps: undo the newest ` +
+      `${MAX_ROLLBACK_VERSIONS} first, then roll back again.`
+    );
   }
 
   const versions: string[] = [];
@@ -463,10 +461,14 @@ export async function POST(request: NextRequest) {
       return await refuse(409, {
         code: "not_applied",
         notApplied: missing,
+        // From the Deploy page this means its copy of the ledger is out of
+        // date; the page reads it again when it gets this code.
         error:
           `${listVersions(missing)} of "${name}" ${missing.length === 1 ? "is" : "are"} not ` +
-          `applied to schema "${schemaName}" - there is nothing to roll back. Reload the page; ` +
-          `someone may have rolled it back already.`,
+          `applied to schema "${schemaName}", so ${missing.length === 1 ? "it" : "they"} can't be ` +
+          `rolled back. Nothing was rolled back. Someone may have rolled ` +
+          `${missing.length === 1 ? "it" : "them"} back already: check the database again and ` +
+          `plan the rollback from what is applied now.`,
       });
     }
 
@@ -481,11 +483,15 @@ export async function POST(request: NextRequest) {
       return await refuse(409, {
         code: "not_newest",
         mustAlsoUndo: order.mustAlsoUndo,
+        // The Deploy page always sends the newest versions of the ledger it
+        // read, so from there this means someone deployed since; the page
+        // reads the ledger again when it gets this code.
         error:
           `${listVersions(order.mustAlsoUndo)} of "${name}" ${many ? "are" : "is"} newer than ` +
           `${vLabel(lowest)} and ${many ? "were" : "was"} built on top of it, so ` +
-          `${many ? "they have" : "it has"} to be rolled back too. Pick an earlier ` +
-          `"Roll back to" version to undo them together.`,
+          `${many ? "they have" : "it has"} to be rolled back too, in the same rollback. Nothing ` +
+          `was rolled back. This usually means the list of applied versions was out of date: ` +
+          `check the database again and plan the rollback from what is applied now.`,
       });
     }
 

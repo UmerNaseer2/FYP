@@ -166,6 +166,53 @@ describe("gradeSql — the generator's rules, read from the text", () => {
     expect(gradeSql("DROP INDEX i; CREATE UNIQUE INDEX i ON t(b);").level).toBe("breaking");
   });
 
+  // Only the CREATE that puts the same thing back makes a replacement. Any
+  // other pair takes the trigger or the index away for good.
+  it("still counts a DROP followed by the CREATE of something else", () => {
+    const otherTrigger = [
+      "DROP TRIGGER audit_trg ON orders;",
+      "CREATE TRIGGER other_trg AFTER INSERT ON orders FOR EACH ROW EXECUTE FUNCTION f();",
+    ].join("\n");
+    expect(gradeSql(otherTrigger).sureLevel).toBe("breaking");
+    expect(gradeSql(otherTrigger).because).toBe("DROP TRIGGER");
+    const otherTable =
+      "DROP TRIGGER trg ON orders; CREATE TRIGGER trg AFTER INSERT ON invoices FOR EACH ROW EXECUTE FUNCTION f();";
+    expect(gradeSql(otherTable).sureLevel).toBe("breaking");
+    const otherSchema =
+      "DROP TRIGGER trg ON sales.orders; CREATE TRIGGER trg AFTER INSERT ON public.orders FOR EACH ROW EXECUTE FUNCTION f();";
+    expect(gradeSql(otherSchema).sureLevel).toBe("breaking");
+
+    expect(gradeSql("DROP INDEX i; CREATE INDEX j ON t(b);").level).toBe("breaking");
+    // An index created without a name gets a new one.
+    expect(gradeSql("DROP INDEX i; CREATE INDEX ON t(b);").level).toBe("breaking");
+    expect(gradeSql("DROP INDEX i, j; CREATE INDEX i ON t(b);").level).toBe("breaking");
+    // An index lives in its table's schema.
+    expect(gradeSql("DROP INDEX sales.i; CREATE INDEX i ON public.t(b);").level).toBe("breaking");
+    expect(gradeSql("DROP INDEX sales.i; CREATE INDEX i ON sales.t(b);").level).toBe("additive");
+  });
+
+  it("reads quoted names the way PostgreSQL does", () => {
+    // The generator's own shape: quoted names in the DROP, and PostgreSQL's
+    // text, with the schema in front of the table, in the CREATE.
+    const sameTrigger =
+      'DROP TRIGGER IF EXISTS "Audit" ON "Orders"; ' +
+      'CREATE TRIGGER "Audit" AFTER UPDATE ON public."Orders" FOR EACH ROW EXECUTE FUNCTION f();';
+    expect(gradeSql(sameTrigger).level).toBe("additive");
+    expect(
+      gradeSql('DROP INDEX IF EXISTS "orders_note_idx"; CREATE INDEX orders_note_idx ON orders (note);').level
+    ).toBe("additive");
+
+    // A quoted name keeps its case, so "Audit" and audit are two triggers.
+    const otherCase =
+      'DROP TRIGGER "Audit" ON orders; CREATE TRIGGER audit AFTER UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION f();';
+    expect(gradeSql(otherCase).sureLevel).toBe("breaking");
+
+    // A column called "on" is not the ON that names the table.
+    const quotedOn =
+      'DROP TRIGGER trg ON t; CREATE TRIGGER trg AFTER UPDATE OF "on" ON t FOR EACH ROW EXECUTE FUNCTION f();';
+    expect(gradeSql(quotedOn).level).toBe("additive");
+  });
+
   it("still grades a lone dropped index or trigger breaking", () => {
     expect(gradeSql("DROP INDEX orders_status_idx;").level).toBe("breaking");
     expect(gradeSql("DROP INDEX orders_status_idx;").sureLevel).toBe("patch");
@@ -380,6 +427,23 @@ describe("describeChangeType", () => {
     expect(reading.countsAsBreaking).toBe(true);
     expect(reading.louderNote).toBe(
       "Marked additive, but its SQL has DROP TABLE, which is always breaking — " +
+        "it is counted in the breaking checks."
+    );
+  });
+
+  // The CREATE here adds a different trigger, so audit_trg is gone for good.
+  it("counts a dropped trigger that the next statement does not put back", () => {
+    const reading = describeChangeType(
+      [
+        "-- Change-type: additive",
+        "DROP TRIGGER audit_trg ON orders;",
+        "CREATE TRIGGER other_trg AFTER INSERT ON orders FOR EACH ROW EXECUTE FUNCTION f();",
+      ].join("\n")
+    );
+    expect(reading.recorded).toBe("additive");
+    expect(reading.countsAsBreaking).toBe(true);
+    expect(reading.louderNote).toBe(
+      "Marked additive, but its SQL has DROP TRIGGER, which is always breaking — " +
         "it is counted in the breaking checks."
     );
   });

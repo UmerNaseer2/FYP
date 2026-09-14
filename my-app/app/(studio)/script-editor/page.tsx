@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -90,10 +90,15 @@ type PushAnswer = {
 type FamilyRead = FamilyVersionsRead & { key: string; refresh: number };
 type AppliedRead = AppliedVersionRead & { key: string };
 
-/** The last Save's outcome. "partial": the version is saved, its rollback is not. */
+/**
+ * The last Save's outcome. "partial": the version is saved, its rollback is
+ * not. key/version: the family and version saved. note: it went out without a
+ * rollback. The lines about a missing rollback are dropped once the offer
+ * below Save adds one, so the two boxes never disagree.
+ */
 type SaveResult =
-  | { kind: "ok"; message: string; url: string | null }
-  | { kind: "partial"; message: string; url: string | null; rollbackError: string }
+  | { kind: "ok"; key: string; version: string; message: string; note: string | null; url: string | null }
+  | { kind: "partial"; key: string; version: string; message: string; url: string | null; rollbackError: string }
   | { kind: "err"; message: string };
 
 /** Adding a rollback to a version that is already saved (attach mode), for one family. */
@@ -265,6 +270,10 @@ export default function ScriptEditorPage() {
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
   // Adding the rollback in the box to the version just saved (below Save).
   const [offerStatus, setOfferStatus] = useState<AttachStatus | null>(null);
+  // One rollback save at a time. The buttons disable through state, but two
+  // quick presses (or an edit to the box while a save runs) can let a second
+  // press through before React re-renders; a ref is read and set at once.
+  const attachInFlight = useRef(false);
   // The "Add a missing rollback" card: which saved version, and its rollback.
   const [fix, setFix] = useState<{ key: string; version: string; text: string }>({
     key: "",
@@ -360,16 +369,11 @@ export default function ScriptEditorPage() {
     return Array.from(new Set(names)).sort();
   }, [rows, databaseName, schema]);
 
-  // The sanitizer turns junk like "@@@" or "   " into "___", which is otherwise
-  // truthy and saveable — require at least one real alphanumeric character.
-  const familyValid = /[a-zA-Z0-9]/.test(scriptName);
   // Why the family name can't be used, or null. The push route checks the
   // same rule (validateScriptName), so the page never offers a doomed save.
-  const nameProblem = !scriptName
-    ? null
-    : !familyValid
-      ? "Use at least one letter or number in the family name."
-      : validateScriptName(scriptName);
+  // That includes what the sanitizer leaves of junk like "@@@": "___", which
+  // has no letter or digit in it.
+  const nameProblem = !scriptName ? null : validateScriptName(scriptName);
 
   // A new family that differs from an existing one only by case would create a
   // duplicate, case-variant folder (GitHub paths are case-sensitive). Warn.
@@ -672,8 +676,10 @@ export default function ScriptEditorPage() {
   async function attachRollback(
     row: GitHubScript,
     down: string,
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true } | { ok: false; message: string; hasRollback: boolean }> {
     const shown = bare(row.version);
+    // Set before the first await, so a second press already sees it.
+    attachInFlight.current = true;
     try {
       const res = await fetch("/api/github/push", {
         method: "POST",
@@ -699,6 +705,7 @@ export default function ScriptEditorPage() {
         return {
           ok: false,
           message: `v${shown} already has a rollback with statements, so nothing more was saved. A saved rollback never changes.`,
+          hasRollback: true,
         };
       }
       return {
@@ -707,12 +714,16 @@ export default function ScriptEditorPage() {
           typeof data?.error === "string" && data.error.trim() !== ""
             ? data.error
             : `Saving the rollback failed (status ${res.status}) without an explanation from the server.`,
+        hasRollback: false,
       };
     } catch {
       return {
         ok: false,
         message: `The connection to the server dropped while saving the rollback for v${shown}, so it is not known whether it was saved. Trying again is safe: if it was saved, the retry changes nothing and says so.`,
+        hasRollback: false,
       };
+    } finally {
+      attachInFlight.current = false;
     }
   }
 
@@ -840,11 +851,21 @@ export default function ScriptEditorPage() {
       if (sent.downSql === undefined) {
         setSaveResult({
           kind: "ok",
-          message: `v${saved} saved to ${where} on GitHub. No rollback was saved, so Deploy cannot undo this version.`,
+          key: sent.key,
+          version: saved,
+          message: `v${saved} saved to ${where} on GitHub.`,
+          note: "No rollback was saved, so Deploy cannot undo this version.",
           url,
         });
       } else if (rollbackSaved) {
-        setSaveResult({ kind: "ok", message: `v${saved} saved to ${where} on GitHub, with its rollback.`, url });
+        setSaveResult({
+          kind: "ok",
+          key: sent.key,
+          version: saved,
+          message: `v${saved} saved to ${where} on GitHub, with its rollback.`,
+          note: null,
+          url,
+        });
       } else {
         // The version is saved; only its rollback is not. The offer below
         // Save adds the same rollback to the same version (no new version),
@@ -852,6 +873,8 @@ export default function ScriptEditorPage() {
         if (data.rollback_error_code === "rollback_exists") markRollbackSaved(row, undefined);
         setSaveResult({
           kind: "partial",
+          key: sent.key,
+          version: saved,
           message: `v${saved} saved to ${where} on GitHub.`,
           url,
           rollbackError:
@@ -869,6 +892,7 @@ export default function ScriptEditorPage() {
   // saved with this same migration.
   async function addRollbackToSaved() {
     if (!attachOffer || savedHere === null || savedRow === null || offerSaving) return;
+    if (attachInFlight.current) return;
     const key = familyKey;
     const savedVersion = savedHere.version;
     const shown = bare(savedVersion);
@@ -886,11 +910,24 @@ export default function ScriptEditorPage() {
     } else {
       setOfferStatus({ key, version: shown, kind: "err", message: result.message });
     }
+    if (result.ok || result.hasRollback) {
+      // The version holds a rollback now, so the save box's line about the
+      // missing one is out of date: keep only the line about the version.
+      setSaveResult((current) =>
+        current !== null &&
+        current.kind !== "err" &&
+        current.key === key &&
+        compareVersions(current.version, savedVersion) === 0
+          ? { kind: "ok", key, version: current.version, message: current.message, note: null, url: current.url }
+          : current,
+      );
+    }
   }
 
   // The "Add a missing rollback" card's button.
   async function saveFixRollback() {
     if (fixRow === null || fixBlocker !== null || fixSaving) return;
+    if (attachInFlight.current) return;
     const key = familyKey;
     const row = fixRow;
     const shown = bare(row.version);
@@ -1441,6 +1478,9 @@ export default function ScriptEditorPage() {
                   >
                     {saveResult.message}
                   </div>
+                  {saveResult.kind === "ok" && saveResult.note && (
+                    <div style={{ color: "var(--text-2)" }}>{saveResult.note}</div>
+                  )}
                   {saveResult.kind === "partial" && (
                     <div style={{ color: "var(--text-2)" }}>{saveResult.rollbackError}</div>
                   )}

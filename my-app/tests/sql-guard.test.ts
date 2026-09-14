@@ -1,3 +1,4 @@
+import { gradeSql } from "@/lib/change-type";
 import { compareSchemas } from "@/lib/compare";
 import { generateRollback, renderRollbackScript } from "@/lib/generate-sql";
 import {
@@ -7,6 +8,8 @@ import {
   findMightFailStatements,
   findRowDestroyingStatements,
   hasExecutableSql,
+  maskNonCode,
+  ROW_DESTROYING_NOT_BREAKING,
 } from "@/lib/sql-guard";
 import { column, schema, table } from "./helpers/snapshots";
 
@@ -220,6 +223,30 @@ describe("findRowDestroyingStatements", () => {
 });
 
 /**
+ * Deploy's deletes-rows gate says "this box is the only warning it gets" only
+ * for the kinds the breaking grade misses. That list lives in sql-guard and the
+ * grade lives in change-type, so this checks one against the other: every label
+ * findRowDestroyingStatements can return is either graded breaking for sure or
+ * in ROW_DESTROYING_NOT_BREAKING — never both, never neither.
+ */
+describe("ROW_DESTROYING_NOT_BREAKING", () => {
+  const oneOfEach: [string, string][] = [
+    ["TRUNCATE", "TRUNCATE TABLE orders;"],
+    ["DELETE", "DELETE FROM orders WHERE id = 1;"],
+    ["DROP TABLE", "DROP TABLE orders;"],
+    ["DROP COLUMN", "ALTER TABLE orders DROP COLUMN legacy_ref;"],
+    ["DROP SCHEMA", "DROP SCHEMA archive CASCADE;"],
+    ["DROP DATABASE", "DROP DATABASE shop;"],
+  ];
+
+  it.each(oneOfEach)("%s is listed exactly when the breaking grade misses it", (label, sql) => {
+    expect(findRowDestroyingStatements(sql)).toEqual([label]);
+    const gradedBreaking = gradeSql(sql).sureLevel === "breaking";
+    expect(ROW_DESTROYING_NOT_BREAKING.includes(label)).toBe(!gradedBreaking);
+  });
+});
+
+/**
  * The third question, and the one neither of the others answers: will this
  * statement run at all against a table that already has rows in it? A NOT NULL
  * column with no default breaks nothing and deletes nothing — it simply stops.
@@ -380,6 +407,28 @@ describe("doBlockBodies", () => {
   it("returns nothing when there is no DO block", () => {
     const sql = "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;";
     expect(doBlockBodies(sql).trim()).toBe("");
+  });
+});
+
+describe("maskNonCode", () => {
+  it("blanks comments, literals and quoted names, keeping every position", () => {
+    const sql = `DROP TRIGGER "Audit" ON t; -- why\nSELECT 'x';`;
+    const masked = maskNonCode(sql);
+    expect(masked).toHaveLength(sql.length);
+    expect(masked).not.toContain("Audit");
+    expect(masked).not.toContain("why");
+    expect(masked).not.toContain("x");
+  });
+
+  // Only the change-type reader asks for this, to compare trigger and index names.
+  it("keeps quoted names when asked, and still blanks the rest", () => {
+    const sql = `DROP TRIGGER "Au--dit" ON t; -- why\nSELECT 'x';`;
+    const masked = maskNonCode(sql, { keepQuotedNames: true });
+    expect(masked).toHaveLength(sql.length);
+    // The -- inside the quoted name is part of the name, not a comment.
+    expect(masked).toContain('DROP TRIGGER "Au--dit" ON t;');
+    expect(masked).not.toContain("why");
+    expect(masked).not.toContain("'x'");
   });
 });
 

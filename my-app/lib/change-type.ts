@@ -312,20 +312,191 @@ function addsSomething(statement: string): boolean {
   return false;
 }
 
+/** One statement that will run, read two ways. */
+interface RunningStatement {
+  /** Masked, lower-cased and single-spaced, for the rules above. */
+  code: string;
+  /**
+   * The same statement with comments and string literals blanked but quoted
+   * names kept as written, for isReplacedByNext. Case matters in a quoted name:
+   * "Audit" and audit are two different triggers. Null for a statement inside a
+   * DO block, whose body only comes masked. The generator never replaces a
+   * trigger or an index there, so such a DROP simply counts on its own.
+   */
+  names: string | null;
+}
+
+/**
+ * The words of a statement as SQL reads them: a "quoted name" (kept whole,
+ * spaces and all), a bare word, or a single symbol such as . or (.
+ */
+function sqlWords(text: string): string[] {
+  return text.match(/"(?:[^"]|"")*"|[\w$\u0080-\uffff]+|\S/g) ?? [];
+}
+
+/**
+ * Reads a statement's words from the left. Each helper moves past what it
+ * reads, so the readers below can follow the SQL grammar step by step.
+ */
+function readWords(text: string) {
+  const words = sqlWords(text);
+  let at = 0;
+
+  /** One name, as PostgreSQL stores it: quoted keeps its case, bare folds to lower. */
+  function name(): string | null {
+    const word = words[at];
+    if (word === undefined) return null;
+    if (/^"(?:[^"]|"")+"$/.test(word)) {
+      at += 1;
+      return word.slice(1, -1).replace(/""/g, '"');
+    }
+    if (/^[A-Za-z_\u0080-\uffff][\w$\u0080-\uffff]*$/.test(word)) {
+      at += 1;
+      return word.toLowerCase();
+    }
+    return null;
+  }
+
+  return {
+    /** Move past these keywords when they come next, and say whether they did. */
+    skip(...keywords: string[]): boolean {
+      const next = words.slice(at, at + keywords.length).map((word) => word.toLowerCase());
+      if (next.join(" ") !== keywords.join(" ")) return false;
+      at += keywords.length;
+      return true;
+    },
+    /** Move past the first bare word equal to keyword. A quoted "on" is a name, not ON. */
+    skipPast(keyword: string): boolean {
+      const found = words.findIndex((word, i) => i >= at && word.toLowerCase() === keyword);
+      if (found === -1) return false;
+      at = found + 1;
+      return true;
+    },
+    name,
+    /** A name that may carry a schema in front: public.orders reads as ["public", "orders"]. */
+    qualifiedName(): string[] | null {
+      const first = name();
+      if (first === null) return null;
+      const parts = [first];
+      while (words[at] === ".") {
+        at += 1;
+        const part = name();
+        if (part === null) return null;
+        parts.push(part);
+      }
+      return parts;
+    },
+    /** Whether every word has been read. */
+    done(): boolean {
+      return at === words.length;
+    },
+  };
+}
+
+/** DROP TRIGGER [IF EXISTS] name ON table [CASCADE | RESTRICT]: what it drops. */
+function droppedTrigger(text: string): { name: string; table: string[] } | null {
+  const words = readWords(text);
+  if (!words.skip("drop", "trigger")) return null;
+  words.skip("if", "exists");
+  const name = words.name();
+  if (name === null || !words.skip("on")) return null;
+  const table = words.qualifiedName();
+  if (table === null) return null;
+  if (!words.skip("cascade")) words.skip("restrict");
+  return words.done() ? { name, table } : null;
+}
+
+/** CREATE [OR REPLACE] [CONSTRAINT] TRIGGER name … ON table …: what it creates. */
+function createdTrigger(text: string): { name: string; table: string[] } | null {
+  const words = readWords(text);
+  if (!words.skip("create")) return null;
+  words.skip("or", "replace");
+  words.skip("constraint");
+  if (!words.skip("trigger")) return null;
+  const name = words.name();
+  // The events sit between the name and ON (AFTER INSERT OR UPDATE OF a, b).
+  // None of them can be a bare ON, because ON is a reserved word.
+  if (name === null || !words.skipPast("on")) return null;
+  const table = words.qualifiedName();
+  return table === null ? null : { name, table };
+}
+
+/** DROP INDEX [CONCURRENTLY] [IF EXISTS] name [CASCADE | RESTRICT]: what it drops. */
+function droppedIndex(text: string): string[] | null {
+  const words = readWords(text);
+  if (!words.skip("drop", "index")) return null;
+  words.skip("concurrently");
+  words.skip("if", "exists");
+  const index = words.qualifiedName();
+  if (index === null) return null;
+  if (!words.skip("cascade")) words.skip("restrict");
+  // A comma list drops several indexes, which is never one replacement.
+  return words.done() ? index : null;
+}
+
+/** CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] name ON [ONLY] table …: what it creates. */
+function createdIndex(text: string): { name: string; table: string[] } | null {
+  const words = readWords(text);
+  if (!words.skip("create")) return null;
+  words.skip("unique");
+  if (!words.skip("index")) return null;
+  words.skip("concurrently");
+  words.skip("if", "not", "exists");
+  // An index created without a name gets a new one, so it replaces nothing.
+  if (words.skip("on")) return null;
+  const name = words.name();
+  if (name === null || !words.skip("on")) return null;
+  words.skip("only");
+  const table = words.qualifiedName();
+  return table === null ? null : { name, table };
+}
+
+/**
+ * Whether two names can mean the same object. The last parts must match, and a
+ * schema is compared only when both sides spell one out: the generator writes
+ * DROP TRIGGER … ON "orders" but recreates the trigger from PostgreSQL's own
+ * text, which says ON public.orders.
+ */
+function sameName(a: string[], b: string[]): boolean {
+  if (a[a.length - 1] !== b[b.length - 1]) return false;
+  if (a.length > 1 && b.length > 1) return a[a.length - 2] === b[b.length - 2];
+  return true;
+}
+
 /**
  * The generator's replace idiom: a changed trigger is written as DROP TRIGGER
  * directly followed by CREATE TRIGGER, and a changed index as DROP INDEX
  * directly followed by CREATE INDEX. The generator grades the pair by what is
  * created, so the DROP half is skipped here. The CREATE half is still graded on
  * its own, which keeps a CREATE UNIQUE INDEX breaking.
+ *
+ * Only a pair that recreates the SAME trigger on the same table, or the same
+ * index, is a replacement. "DROP TRIGGER audit ON orders; CREATE TRIGGER other
+ * ON orders" removes audit for good, so its DROP still counts. Anything this
+ * cannot read is not taken for a replacement, which errs loud.
  */
-function isReplacedByNext(statement: string, next: string | undefined): boolean {
-  if (next === undefined) return false;
-  if (/^drop trigger\b/.test(statement)) {
-    return /^create (or replace )?(constraint )?trigger\b/.test(next);
+function isReplacedByNext(statement: RunningStatement, next: RunningStatement | undefined): boolean {
+  if (next === undefined || statement.names === null || next.names === null) return false;
+  if (/^drop trigger\b/.test(statement.code)) {
+    const dropped = droppedTrigger(statement.names);
+    const created = createdTrigger(next.names);
+    return (
+      dropped !== null &&
+      created !== null &&
+      dropped.name === created.name &&
+      sameName(dropped.table, created.table)
+    );
   }
-  if (/^drop index\b/.test(statement)) {
-    return /^create (unique )?index\b/.test(next);
+  if (/^drop index\b/.test(statement.code)) {
+    const dropped = droppedIndex(statement.names);
+    const created = createdIndex(next.names);
+    // CREATE INDEX never takes a schema on the index's name: the index goes
+    // into its table's schema. So that is the schema a DROP INDEX s.i must name.
+    return (
+      dropped !== null &&
+      created !== null &&
+      sameName(dropped, [...created.table.slice(0, -1), created.name])
+    );
   }
   return false;
 }
@@ -346,18 +517,18 @@ function tidy(text: string): string {
  * LOOP also end a piece, so "IF … THEN ALTER TABLE …" is read as a statement
  * starting with ALTER TABLE.
  */
-function statementsThatRun(sql: string): string[] {
-  const out: string[] = [];
+function statementsThatRun(sql: string): RunningStatement[] {
+  const out: RunningStatement[] = [];
   for (const statement of splitStatements(sql)) {
     const code = tidy(maskNonCode(statement));
     if (/^do\b/.test(code)) {
       const body = doBlockBodies(statement).replace(/\b(begin|then|else|loop)\b/gi, ";");
       for (const piece of body.split(";")) {
         const inner = tidy(piece);
-        if (inner) out.push(inner);
+        if (inner) out.push({ code: inner, names: null });
       }
     } else if (code) {
-      out.push(code);
+      out.push({ code, names: maskNonCode(statement, { keepQuotedNames: true }) });
     }
   }
   return out;
@@ -385,8 +556,7 @@ function statementsThatRun(sql: string): string[] {
  * Those come back as "breaking unless…" with the reason, and never override a
  * stamp (see describeChangeType). It also errs loud in one known way: an
  * unquoted column literally named "type" whose default changes reads as a type
- * change. And a DROP INDEX directly followed by the CREATE INDEX of a different
- * index is taken for a replacement.
+ * change.
  */
 export function gradeSql(sql: string): SqlGrade {
   const statements = statementsThatRun(sql);
@@ -395,8 +565,8 @@ export function gradeSql(sql: string): SqlGrade {
   let adds = false;
 
   for (let index = 0; index < statements.length; index += 1) {
-    const statement = statements[index];
-    if (isReplacedByNext(statement, statements[index + 1])) continue;
+    if (isReplacedByNext(statements[index], statements[index + 1])) continue;
+    const statement = statements[index].code;
 
     if (firstAlways === null) {
       firstAlways = ALWAYS_BREAKING.find((rule) => rule.matches(statement)) ?? null;

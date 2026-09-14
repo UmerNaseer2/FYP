@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   DeployIcon,
   RefreshIcon,
@@ -19,6 +20,7 @@ import {
 import {
   compareVersions,
   buildVersionLedger,
+  levelOfStep,
   type LedgerEntry,
 } from "@/lib/script-status";
 import {
@@ -26,8 +28,14 @@ import {
   extractEnumAddValues,
   findMightFailStatements,
   findRowDestroyingStatements,
+  ROW_DESTROYING_NOT_BREAKING,
 } from "@/lib/sql-guard";
-import { changeTypeOf, type ScriptChangeType } from "@/lib/change-type";
+import {
+  describeChangeType,
+  louderChangeType,
+  type ChangeTypeReading,
+  type ScriptChangeType,
+} from "@/lib/change-type";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
@@ -38,7 +46,16 @@ import {
   DEFAULT_ENVIRONMENT,
   type Environment,
 } from "@/lib/environments";
-import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
+import {
+  listVersions,
+  MAX_ROLLBACK_VERSIONS,
+  planRollback,
+  rollbackTargets,
+  vLabel,
+  type RollbackStep,
+} from "@/lib/rollback-plan";
+import type { PulledRollbackState } from "@/lib/registry-push";
 import { useUser } from "@/hooks/useUser";
 
 // ---------------------------------------------------------------------------
@@ -80,9 +97,13 @@ type GitHubScript = {
   sql_content: string;
   /**
    * The rollback saved beside this version in the registry (v<ver>.down.sql).
-   * Absent for versions pushed without one.
+   * Sent only when rollback_state is "usable": the pull leaves out a file that
+   * is blank or only comments, contains COMMIT or ROLLBACK, or could not be
+   * downloaded, and says which in rollback_state.
    */
   down_sql?: string;
+  /** How the rollback file read. Optional: an older pull route did not say. */
+  rollback_state?: PulledRollbackState;
 };
 
 // A saved connection from /api/connections.
@@ -118,6 +139,37 @@ type PreflightResult = {
   schema: string;
   scriptName: string | null;
   message: string;
+  /**
+   * Rollback history for this family, newest first (at most 50). Optional:
+   * an older preflight route did not send it.
+   */
+  reverted?: RevertedEntry[];
+  /**
+   * Other families' versions applied after this family's first version,
+   * oldest first (at most 200). The "Roll back to" panel narrows it to the
+   * versions it would undo. Optional for the same reason.
+   */
+  otherScripts?: OtherScriptEntry[];
+};
+
+// One row of the rollback history (script_patch_reverted). Mirrors
+// RevertedEntry in app/api/scripts/preflight/route.ts.
+type RevertedEntry = {
+  script_name: string;
+  version: string;
+  title: string | null;
+  change_type: string | null;
+  applied_at: string | null;
+  reverted_at: string;
+};
+
+// A version of ANOTHER script family applied after this family's versions.
+// The preflight and the revert route both send these. applied_at is typed as
+// nullable because the revert route's copy comes straight from the ledger.
+type OtherScriptEntry = {
+  script_name: string;
+  version: string;
+  applied_at: string | null;
 };
 
 // Live status of a single migration during a run.
@@ -167,6 +219,34 @@ type ApplyResponse = {
   outcomeUnknown?: boolean;
 };
 
+// The parts of POST /api/scripts/revert's response this page reads. Every
+// refusal carries `error` and every success carries `message`: a sentence that
+// says what happened and what state the target is in now. The page shows it
+// as written, so the screen and the server never tell two different stories.
+type RevertResponse = {
+  success?: boolean;
+  error?: string;
+  message?: string;
+  dryRun?: boolean;
+  /** The versions the route undid, or rehearsed, newest first. */
+  versions?: string[];
+  /**
+   * Other families' versions applied after the oldest version this rollback
+   * undoes, as the server counted them. Sent with a dry run's result and with
+   * the refusal that asks for the other-scripts tick.
+   */
+  otherScripts?: OtherScriptEntry[];
+  /** Production, and nobody else has approved this exact rollback yet. */
+  needsApproval?: boolean;
+  /** The COMMIT did not report back, so nobody knows whether it happened. */
+  outcomeUnknown?: boolean;
+  /**
+   * Why the route refused, as a short code. "not_applied" and "not_newest"
+   * mean this page's copy of the ledger is out of date, so it reads it again.
+   */
+  code?: string;
+};
+
 // ── Phase 6 drift pre-check (lineage) ──────────────────────────────────────
 // The bits we use from POST /api/lineage/drift. The deploy page shows the
 // status + human summary; the full Expected-vs-Actual report belongs to the
@@ -205,6 +285,12 @@ type ApprovalRow = {
   self_approved: boolean;
   note: string | null;
   used_at: string | null;
+  /**
+   * Which route may spend it: "deploy" for a migration run, "revert" for a
+   * rollback. Optional because an older route did not send it, and every row
+   * from before rollbacks needed approval was a deploy.
+   */
+  action?: "deploy" | "revert";
 };
 
 /**
@@ -408,6 +494,7 @@ function MigRow({
   selected,
   sql,
   sqlOpen,
+  notes,
 }: {
   seq: string;
   name: string;
@@ -428,6 +515,12 @@ function MigRow({
   sql?: string;
   /** Start expanded. Used for the breaking ones, which are the point. */
   sqlOpen?: boolean;
+  /**
+   * Short sentences under the row: why it counts as breaking when its label
+   * says less, a version step that disagrees with its level, and whether a
+   * rollback will be saved with it. `warn` colours the ones worth acting on.
+   */
+  notes?: { text: string; warn: boolean }[];
 }) {
   const cls = ["mig-row", cell.status, selected ? "selected" : ""]
     .filter(Boolean)
@@ -442,6 +535,15 @@ function MigRow({
             {kindPill(kind)}
           </div>
           <div className="sub mono">{sub}</div>
+          {notes?.map((note, index) => (
+            <div
+              key={index}
+              className="help mt-0.5"
+              style={note.warn ? { color: "var(--drift)" } : undefined}
+            >
+              {note.text}
+            </div>
+          ))}
         </div>
         <span className="pill pill-outline mono">{rightPill}</span>
         <RightStatus cell={cell} />
@@ -477,11 +579,18 @@ function ProductionGate({
   what,
   acknowledged,
   onAcknowledge,
+  kind = "deploy",
 }: {
   /** What is about to happen, in the user's words. "run 3 migrations", etc. */
   what: string;
   acknowledged: boolean;
   onAcknowledge: (value: boolean) => void;
+  /**
+   * Which warning to give. The deploy copy points at a rollback as the way
+   * back for structure; a rollback cannot point at itself, so its copy says
+   * what it cannot bring back instead.
+   */
+  kind?: "deploy" | "rollback";
 }) {
   return (
     <div className="prod-gate">
@@ -489,12 +598,21 @@ function ProductionGate({
         <AlertTriangleIcon size={15} className="ico" />
         <span>Production target</span>
       </div>
-      <p className="prod-gate__body">
-        This connection is labelled production. Live data is behind it, and a
-        migration that goes wrong here is not something a rollback brings back —
-        a rollback restores structure, not rows. If you need the rows back, you
-        need a backup from before this run.
-      </p>
+      {kind === "rollback" ? (
+        <p className="prod-gate__body">
+          This connection is labelled production. Live data is behind it. A
+          rollback restores structure, not rows: rows it drops are gone, and rows
+          the original migration deleted do not come back. If you need them, you
+          need a backup.
+        </p>
+      ) : (
+        <p className="prod-gate__body">
+          This connection is labelled production. Live data is behind it, and a
+          migration that goes wrong here is not something a rollback brings back —
+          a rollback restores structure, not rows. If you need the rows back, you
+          need a backup from before this run.
+        </p>
+      )}
       <label className="prod-gate__ack">
         <input
           type="checkbox"
@@ -522,6 +640,7 @@ function RiskGate({
   ack,
   acknowledged = false,
   onAcknowledge,
+  children,
 }: {
   /** "break" is red (a migration that destroys structure), "drift" is amber. */
   tone: "break" | "drift";
@@ -539,6 +658,8 @@ function RiskGate({
   ack?: string;
   acknowledged?: boolean;
   onAcknowledge?: (value: boolean) => void;
+  /** Detail between the body and the checkbox, such as the list to check. */
+  children?: React.ReactNode;
 }) {
   return (
     <div className={tone === "drift" ? "prod-gate prod-gate--drift" : "prod-gate"}>
@@ -547,6 +668,7 @@ function RiskGate({
         <span>{title}</span>
       </div>
       <p className="prod-gate__body">{body}</p>
+      {children}
       {ack && (
         <label className="prod-gate__ack">
           <input
@@ -576,8 +698,10 @@ function RiskGate({
  * point of having one.
  */
 function ApprovalPanel({
+  action = "deploy",
   migrationCount,
   targetVersion,
+  versionsLabel = "",
   hashReady,
   hashError,
   loading,
@@ -595,8 +719,20 @@ function ApprovalPanel({
   onRequest,
   onDecide,
 }: {
+  /**
+   * What the approval clears. "revert" is a rollback: it covers the rollback
+   * SQL of the versions being undone, and only the revert route can spend it,
+   * so every sentence below names a rollback instead of a run.
+   */
+  action?: "deploy" | "revert";
+  /**
+   * How many migrations the run holds, or, for a rollback, how many versions
+   * it undoes. 0 means there is nothing an approval could cover yet.
+   */
   migrationCount: number;
   targetVersion: string;
+  /** For a rollback: the versions it undoes, as "v3.0.0 and v2.0.0". */
+  versionsLabel?: string;
   /** False until the run's fingerprint has been computed in the browser. */
   hashReady: boolean;
   hashError: string | null;
@@ -626,8 +762,11 @@ function ApprovalPanel({
           <span>Approval</span>
         </div>
         <p className="appr__body">
-          Pick a target version first — an approval covers one exact set of
-          migrations, so there is nothing to approve yet.
+          {action === "revert"
+            ? "Nothing to approve yet — an approval covers the exact rollback SQL " +
+              "that will run, and not every version above has a rollback that can run."
+            : "Pick a target version first — an approval covers one exact set of " +
+              "migrations, so there is nothing to approve yet."}
         </p>
       </div>
     );
@@ -645,7 +784,9 @@ function ApprovalPanel({
             ? hashError
             : hashReady
               ? "Reading the approvals for this target…"
-              : "Working out which approval covers this run…"}
+              : action === "revert"
+                ? "Working out which approval covers this rollback…"
+                : "Working out which approval covers this run…"}
         </p>
       </div>
     );
@@ -662,9 +803,13 @@ function ApprovalPanel({
           <span>Approval state unknown</span>
         </div>
         <p className="appr__body">
-          The approvals for this target could not be read, so this page cannot
-          say whether this run is cleared. The server checks again when you
-          press Deploy, and refuses the run if nothing covers it.
+          {action === "revert"
+            ? "The approvals for this target could not be read, so this page cannot " +
+              "say whether this rollback is cleared. The server checks again when you " +
+              "press Roll back, and refuses the rollback if nothing covers it."
+            : "The approvals for this target could not be read, so this page cannot " +
+              "say whether this run is cleared. The server checks again when you " +
+              "press Deploy, and refuses the run if nothing covers it."}
         </p>
         {error && (
           <p className="appr__meta" style={{ color: "var(--break)" }}>
@@ -700,12 +845,20 @@ function ApprovalPanel({
 
       {approved ? (
         <>
-          <p className="appr__body">
-            Cleared for exactly these {migrationCount} migration
-            {migrationCount === 1 ? "" : "s"}
-            {targetVersion ? <> through <span className="mono">v{targetVersion}</span></> : null}, and
-            good for one run. Edit any of the SQL and this stops applying.
-          </p>
+          {action === "revert" ? (
+            <p className="appr__body">
+              Cleared to undo exactly {versionsLabel}, with the rollback SQL shown
+              above, and good for one rollback. If any of that SQL changes, this
+              stops applying.
+            </p>
+          ) : (
+            <p className="appr__body">
+              Cleared for exactly these {migrationCount} migration
+              {migrationCount === 1 ? "" : "s"}
+              {targetVersion ? <> through <span className="mono">v{targetVersion}</span></> : null}, and
+              good for one run. Edit any of the SQL and this stops applying.
+            </p>
+          )}
           <p className="appr__meta">
             Requested by {approved.requested_by} · approved by{" "}
             {approved.decided_by ?? "—"}
@@ -724,16 +877,28 @@ function ApprovalPanel({
           <p className="appr__body">
             Requested by {pending.requested_by}
             {approvalTime(pending.requested_at) ? ` · ${approvalTime(pending.requested_at)}` : ""}.
-            Someone else has to read these migrations and clear them before the
-            run can start. A dry run does not need it.
+            {action === "revert"
+              ? " Someone else has to read these rollbacks and clear them before the " +
+                "rollback can run. A dry run does not need it."
+              : " Someone else has to read these migrations and clear them before the " +
+                "run can start. A dry run does not need it."}
           </p>
           {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
           {!isAdmin ? (
-            <p className="appr__meta">Clearing a production run needs the admin role.</p>
-          ) : selfDecision ? (
             <p className="appr__meta">
-              You asked for this deploy, so you cannot approve it. That is the
-              whole rule — it needs someone else.
+              {action === "revert"
+                ? "Clearing a production rollback needs the admin role."
+                : "Clearing a production run needs the admin role."}
+            </p>
+          ) : selfDecision ? (
+            // The server's own words (decisionBlockReason in lib/approvals-db),
+            // so this line and the refusal it would give read the same.
+            <p className="appr__meta">
+              {action === "revert"
+                ? "You asked for this rollback, so you cannot approve it. " +
+                  "A rollback on production needs a second person."
+                : "You asked for this deploy, so you cannot approve it. " +
+                  "A production run needs a second person."}
             </p>
           ) : (
             <>
@@ -758,7 +923,7 @@ function ApprovalPanel({
                   onClick={() => onDecide(pending.id, "approve")}
                 >
                   <CheckIcon size={13} />
-                  Approve this run
+                  {action === "revert" ? "Approve this rollback" : "Approve this run"}
                 </button>
                 <button
                   type="button"
@@ -776,8 +941,11 @@ function ApprovalPanel({
       ) : (
         <>
           <p className="appr__body">
-            This target is labelled production, so the run needs an approval from
-            someone other than you.
+            {action === "revert"
+              ? "This target is labelled production, so the rollback needs an " +
+                "approval from someone other than you."
+              : "This target is labelled production, so the run needs an approval " +
+                "from someone other than you."}
             {latest?.status === "rejected" ? (
               <>
                 {" "}
@@ -786,7 +954,12 @@ function ApprovalPanel({
                 {latest.note ? ` — "${latest.note}"` : ""}.
               </>
             ) : latest?.status === "used" ? (
-              <> An earlier approval for this exact SQL has already been spent on a run.</>
+              <>
+                {" "}
+                {action === "revert"
+                  ? "An earlier approval for this exact SQL has already been spent on a rollback."
+                  : "An earlier approval for this exact SQL has already been spent on a run."}
+              </>
             ) : null}
           </p>
           <input
@@ -823,6 +996,176 @@ function ApprovalPanel({
   );
 }
 
+// The "Roll back to" choice that undoes every applied version of the family.
+// Not a version number, so it can never collide with one.
+const BEFORE_FIRST = "__before_first__";
+
+type RowNote = { text: string; warn: boolean };
+
+// How the pull read a version's rollback file (its rollback_state). Not
+// lib/registry-push's rollbackFileState: that one classifies a file's text,
+// this one only reads the answer the pull already worked out. The pull sets
+// it on every script; without one, the fallback agrees with the apply body,
+// which sends down_sql whenever there is one.
+function pulledRollbackState(script: GitHubScript): PulledRollbackState {
+  return script.rollback_state ?? (script.down_sql ? "usable" : "none");
+}
+
+/**
+ * The short notes under one pending migration in stage 1, in reading order:
+ *   1. its SQL is always breaking though its label says less (counted anyway);
+ *   2. its version number moves by a different step than its level;
+ *   3. whether Deploy will be able to undo it once it is applied.
+ * `reading` is describeChangeType of its SQL, which the row has worked out
+ * already. `previous` is the version it follows on the target: the pending
+ * version before it, or the target's current version for the first one.
+ */
+function pendingRowNotes(
+  script: GitHubScript,
+  reading: ChangeTypeReading,
+  previous: string | null
+): RowNote[] {
+  const notes: RowNote[] = [];
+  const v = vLabel(script.version);
+
+  if (reading.louderNote) notes.push({ text: reading.louderNote, warn: true });
+
+  // The level wins everywhere on this page (the pill, the bump, what is
+  // recorded), so a version number that says otherwise gets a sentence. It is
+  // a warning when the number says more than the level: the reader sees, say,
+  // a major version that the breaking checks do not count.
+  const step = previous ? levelOfStep(previous, script.version) : null;
+  if (previous && step && step !== reading.recorded) {
+    const why = reading.declared
+      ? `this migration is marked ${reading.recorded}`
+      : `its SQL grades as ${reading.recorded}`;
+    const uncounted =
+      step === "breaking" && !reading.countsAsBreaking
+        ? " It is not counted in the breaking checks."
+        : "";
+    notes.push({
+      text:
+        `${v} is a ${bumpWord(step)} step from ${vLabel(previous)}, but ${why}, ` +
+        `so it is recorded as ${reading.recorded}.${uncounted} ` +
+        "Major = breaking, minor = additive, patch = small change.",
+      warn: louderChangeType(step, reading.recorded) === step,
+    });
+  }
+
+  const file = `${v}.down.sql`;
+  const state = pulledRollbackState(script);
+  if (state === "usable") {
+    notes.push({
+      text: `Has a rollback (${file}). Deploying saves it with this version, so Deploy can undo it later.`,
+      warn: false,
+    });
+  } else if (state === "none") {
+    notes.push({
+      text: `No rollback file (${file}) in the registry. Once applied, Deploy can undo it only after one is added in the Script Editor.`,
+      warn: false,
+    });
+  } else if (state === "no_statements") {
+    notes.push({
+      text: `Its rollback file (${file}) is blank or only comments, so it counts as none. Once applied, Deploy can undo it only after a real one is written in the Script Editor.`,
+      warn: false,
+    });
+  } else if (state === "transaction_control") {
+    notes.push({
+      text: `Its rollback file (${file}) contains COMMIT or ROLLBACK, so it is not saved with this version and Deploy cannot run it. Remove those statements in the Script Editor.`,
+      warn: true,
+    });
+  } else {
+    notes.push({
+      text: `Its rollback file (${file}) could not be downloaded, so deploying now does not save it with this version. Reload the page to read it again.`,
+      warn: true,
+    });
+  }
+  return notes;
+}
+
+/**
+ * Why one version in a "Roll back to" plan cannot be undone from Deploy, and
+ * what to do about it. `editor` is true when the fix is in the Script Editor,
+ * so the panel can link there.
+ *
+ * A registry rollback that cannot run never reaches planRollback (the pull
+ * leaves its text out), so the file's rollback_state is what says why.
+ * `registryComplete` is false when the pull could not read part of the
+ * registry: then a file that seems to be missing may only be unread.
+ */
+function rollbackProblemText(
+  step: RollbackStep<GitHubScript>,
+  registryComplete: boolean
+): { text: string; editor: boolean } {
+  const v = vLabel(step.version);
+  const file = `${v}.down.sql`;
+  const fileState = step.registry ? pulledRollbackState(step.registry) : null;
+
+  if ("problem" in step.resolved && step.resolved.problem === "transaction_control") {
+    // The copy saved on the ledger row ends the transaction itself, and the
+    // registry has nothing that could run in its place.
+    const saved =
+      `The rollback saved when ${v} was applied contains COMMIT or ROLLBACK, so it ` +
+      "cannot run inside the transaction that protects this rollback.";
+    if (fileState === null) {
+      return {
+        text: registryComplete
+          ? `${saved} Run it by hand from a SQL console.`
+          : `${saved} Part of the registry could not be read (see the top of the page), so a ${file} that could run instead may be missing. Reload the page to try again, or run it by hand from a SQL console.`,
+        editor: false,
+      };
+    }
+    if (fileState === "unreadable") {
+      return {
+        text: `${saved} ${file} could not be downloaded to run instead. Reload the page to read it again, or run the rollback by hand from a SQL console.`,
+        editor: false,
+      };
+    }
+    if (fileState === "transaction_control") {
+      return {
+        text: `${saved} So does ${file} in the registry. Remove those statements from it in the Script Editor, or run the rollback by hand from a SQL console.`,
+        editor: true,
+      };
+    }
+    return {
+      text: `${saved} A ${file} without them runs instead: write one in the Script Editor, or run the rollback by hand from a SQL console.`,
+      editor: true,
+    };
+  }
+
+  // No rollback that runs, saved or in the registry.
+  if (fileState === null) {
+    return {
+      text: registryComplete
+        ? `${v} has no rollback saved with it and no file in the registry for this schema, so Deploy has nothing to run. Undo it by hand from a SQL console, or fix it forward with a new version.`
+        : `${v} has no rollback saved with it, and no ${file} was read from the registry: part of the registry could not be read (see the top of the page). Reload the page to try again.`,
+      editor: false,
+    };
+  }
+  if (fileState === "unreadable") {
+    return {
+      text: `${v} has no rollback saved with it, and ${file} could not be downloaded from GitHub. Reload the page to read it again.`,
+      editor: false,
+    };
+  }
+  if (fileState === "transaction_control") {
+    return {
+      text: `${v} has no rollback saved with it, and ${file} contains COMMIT or ROLLBACK, so it cannot run inside the transaction that protects this rollback. Remove those statements from it in the Script Editor, or run it by hand from a SQL console.`,
+      editor: true,
+    };
+  }
+  if (fileState === "no_statements") {
+    return {
+      text: `${v} has no rollback saved with it, and ${file} is blank or only comments. Write the rollback in the Script Editor, then open Deploy again.`,
+      editor: true,
+    };
+  }
+  return {
+    text: `${v} has no rollback: none was saved when it was applied, and the registry has no ${file}. Add one in the Script Editor (Add a missing rollback), then open Deploy again.`,
+    editor: true,
+  };
+}
+
 export default function DeployPage() {
   // Who is looking. The approval panel needs two things from this: whether to
   // offer Approve at all (admins decide), and whether this is the same person
@@ -844,6 +1187,10 @@ export default function DeployPage() {
   const [githubScripts, setGithubScripts] = useState<GitHubScript[] | null>(null);
   const [pullLoading, setPullLoading] = useState(false);
   const [pullError, setPullError] = useState<string | null>(null);
+  // What the pull could not read: a family folder, a version file, a rollback
+  // file. The rest of the registry still loads, so the page lists what is
+  // missing instead of letting it pass as "not there".
+  const [pullWarnings, setPullWarnings] = useState<string[]>([]);
 
   // ── Pre-flight + target ──────────────────────────────────────────────────
   const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
@@ -865,7 +1212,6 @@ export default function DeployPage() {
   const [environmentUnknown, setEnvironmentUnknown] = useState(false);
   // Ticked in the ProductionGate. One per destructive action, never shared.
   const [deployAcknowledged, setDeployAcknowledged] = useState(false);
-  const [revertAcknowledged, setRevertAcknowledged] = useState(false);
 
   // Ticked beside the risk they belong to, never shared with each other or
   // with the production tick — three different things to have read.
@@ -881,6 +1227,10 @@ export default function DeployPage() {
   const [hashError, setHashError] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
   const [approvalsLoading, setApprovalsLoading] = useState(false);
+  // Why the list could not be read. Kept apart from a failed request or
+  // decision, because only this one means "the approval state is unknown".
+  const [approvalsReadError, setApprovalsReadError] = useState<string | null>(null);
+  // A deploy approval request or decision that failed.
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalNote, setApprovalNote] = useState("");
@@ -894,13 +1244,50 @@ export default function DeployPage() {
   const [driftResult, setDriftResult] = useState<DriftResult | null>(null);
   const [driftError, setDriftError] = useState<string | null>(null);
 
-  // ── Revert (roll one applied version back off the target) ────────────────
-  // revertVersion is the version whose confirmation panel is open — the button
-  // never fires straight into a rollback, because this is destructive and the
-  // user should read the SQL first.
-  const [revertVersion, setRevertVersion] = useState<string | null>(null);
-  const [revertBusy, setRevertBusy] = useState(false);
-  const [revertError, setRevertError] = useState<string | null>(null);
+  // ── Roll back to (undo the newest applied versions of this family) ──────
+  // rollbackChoice is the version picked in "Roll back to", or BEFORE_FIRST
+  // for "undo every version". null means nothing picked yet; the panel then
+  // offers the smallest rollback there is (see rollbackPick).
+  const [rollbackChoice, setRollbackChoice] = useState<string | null>(null);
+  // Whether the planner (the pick, the preview, the checks and the buttons) is
+  // open. It opens on request, so the deploy below stays the main thing here.
+  const [rollbackOpen, setRollbackOpen] = useState(false);
+  // Which request is in flight, so only its own button says so.
+  const [rollbackBusy, setRollbackBusy] = useState<"dry" | "real" | null>(null);
+  // One database-changing request at a time (a deploy or a rollback). The
+  // buttons disable through state, but two quick presses can both run before
+  // React re-renders; a ref is read and set at once.
+  const writeInFlight = useRef(false);
+  // Why the last request failed, in the revert route's own words, and the
+  // plan it was about. `sticky` keeps the message on screen when the ledger
+  // is read again because of it and the plan changes: after an outcome
+  // nobody knows, and after a refusal caused by an out-of-date ledger.
+  const [rollbackError, setRollbackError] = useState<{
+    key: string;
+    message: string;
+    sticky: boolean;
+  } | null>(null);
+  // A dry run's result, kept with the plan it rehearsed (rollbackKey), so a
+  // different plan never shows another plan's "Dry run passed".
+  const [rollbackDryRun, setRollbackDryRun] = useState<{ key: string; message: string } | null>(null);
+  // The route's message after a real rollback, shown until the next action.
+  const [rollbackDone, setRollbackDone] = useState<{ message: string } | null>(null);
+  // The other families' versions the server found after the oldest version a
+  // plan undoes. Once known for a plan, it replaces the page's estimate.
+  const [rollbackOtherScripts, setRollbackOtherScripts] = useState<{
+    key: string;
+    list: OtherScriptEntry[];
+  } | null>(null);
+  // One tick per risk, never shared with the deploy's ticks.
+  const [rollbackProdAck, setRollbackProdAck] = useState(false);
+  const [rollbackDataLossAck, setRollbackDataLossAck] = useState(false);
+  const [rollbackOtherAck, setRollbackOtherAck] = useState(false);
+  // The rollback's own approval: the fingerprint of the rollback SQL on
+  // screen, and the note and errors of its request and decisions.
+  const [rollbackHash, setRollbackHash] = useState<string | null>(null);
+  const [rollbackHashError, setRollbackHashError] = useState<string | null>(null);
+  const [rollbackApprovalError, setRollbackApprovalError] = useState<string | null>(null);
+  const [rollbackApprovalNote, setRollbackApprovalNote] = useState("");
 
   // ── Stepper + run ────────────────────────────────────────────────────────
   const [stage, setStage] = useState<1 | 2 | 3>(1);
@@ -1053,61 +1440,246 @@ export default function DeployPage() {
   const appliedCount = versionLedger.filter((e) => e.status === "applied").length;
   const pendingCount = versionLedger.filter((e) => e.status === "pending").length;
 
-  // The newest applied version of this family. It is the ONLY one the Revert
-  // button is offered on: a rollback assumes nothing later has touched the same
-  // structure, so undoing v1.0.0 while v2.0.0 is still applied would run the
-  // wrong undo. The revert route enforces the same rule server-side.
-  const newestApplied = useMemo<string | null>(() => {
-    let newest: string | null = null;
-    for (const entry of versionLedger) {
-      if (entry.status !== "applied") continue;
-      if (newest === null || compareVersions(entry.version, newest) > 0) {
-        newest = entry.version;
-      }
-    }
-    return newest;
-  }, [versionLedger]);
-
-  // Registry entry per version of the chosen family, so a ledger row can reach
-  // its stored rollback (down_sql) without re-scanning the pulled scripts.
-  const scriptByVersion = useMemo(() => {
-    const map = new Map<string, GitHubScript>();
-    for (const s of groupedScripts[scriptGroup] ?? []) {
-      if (s.schema_name === schema) map.set(s.version, s);
-    }
-    return map;
-  }, [groupedScripts, scriptGroup, schema]);
-
-  // Versions whose ledger row carries its own rollback, and the script itself.
-  // This is the second source: a version replayed here by Version Sync has no
-  // registry file for this schema, so scriptByVersion cannot reach it, but the
-  // apply route stored its down script on the row. The SQL is kept, not just
-  // the flag, because the confirmation below has to show what will run.
-  const storedRollbacks = useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const row of preflightResult?.timeline ?? []) {
-      if (row.has_down_sql) map.set(row.version, row.down_sql ?? null);
-    }
-    return map;
-  }, [preflightResult]);
-
-  // Can this version be rolled back at all — from a registry file, or from the
-  // copy stored beside the applied row?
-  const canRollBack = useCallback(
-    (version: string) =>
-      Boolean(scriptByVersion.get(version)?.down_sql) ||
-      storedRollbacks.has(version),
-    [scriptByVersion, storedRollbacks]
+  // ── Roll back to ─────────────────────────────────────────────────────────
+  // The registry's versions of this family in this schema. A version with no
+  // rollback saved on its ledger row finds one here (v<ver>.down.sql).
+  const familyRegistry = useMemo(
+    () => (groupedScripts[scriptGroup] ?? []).filter((s) => s.schema_name === schema),
+    [groupedScripts, scriptGroup, schema]
   );
 
-  // Close a stale confirmation panel when the user changes what they're looking
-  // at — a "Roll back v2.0.0" prompt must not survive a switch to another
-  // schema or script family.
+  // The applied versions, newest first. Read from the target's ledger rather
+  // than the registry, so a version with no registry file (replayed here by
+  // Version Sync) is still listed.
+  const appliedNewestFirst = useMemo(
+    () =>
+      (preflightResult?.timeline ?? [])
+        .map((row) => row.version)
+        .sort((a, b) => compareVersions(b, a)),
+    [preflightResult]
+  );
+
+  // The choices, each saying what it undoes, so nobody has to work out that
+  // "roll back to v1.0.0" also takes v1.1.0 off. rollbackTargets leaves out
+  // any choice that undoes more than MAX_ROLLBACK_VERSIONS versions (the
+  // revert route refuses those), so every choice here can run, and a family
+  // further back than that is rolled back in several steps.
+  const rollbackOptions = useMemo(() => {
+    const undone = (count: number) => {
+      const versions = appliedNewestFirst.slice(0, count);
+      return versions.length > 3
+        ? `${versions.length} versions, ${vLabel(versions[0])} down to ${vLabel(versions[versions.length - 1])}`
+        : listVersions(versions);
+    };
+    return rollbackTargets(appliedNewestFirst).map(({ target, undoCount }) =>
+      target !== null
+        ? { value: target, label: `${vLabel(target)} — undo ${undone(undoCount)}` }
+        : {
+            value: BEFORE_FIRST,
+            label:
+              undoCount === 1
+                ? `Before the first version — undo ${vLabel(appliedNewestFirst[0])}`
+                : `Before the first version — undo all ${undoCount} versions`,
+          }
+    );
+  }, [appliedNewestFirst]);
+  // The list above stops short of the oldest version, so the panel says why.
+  const rollbackListCapped = appliedNewestFirst.length > MAX_ROLLBACK_VERSIONS;
+
+  // The picked "Roll back to" version. Until someone picks one, or when the
+  // pick is no longer offered, it is the version below the newest, so the
+  // default undoes as little as possible: one version.
+  const rollbackPick =
+    rollbackChoice !== null && rollbackOptions.some((option) => option.value === rollbackChoice)
+      ? rollbackChoice
+      : appliedNewestFirst[1] ?? BEFORE_FIRST;
+  // The version the family goes back to, or null for "before the first".
+  const rollbackTarget = rollbackPick === BEFORE_FIRST ? null : rollbackPick;
+
+  // What the rollback would do: each version above the pick, newest first,
+  // with the rollback that undoes it. planRollback picks each one with the
+  // revert route's own rule (resolveRollback), so this preview is the SQL
+  // the server will run.
+  const rollbackSteps = useMemo(
+    () => planRollback(preflightResult?.timeline ?? [], familyRegistry, rollbackTarget),
+    [preflightResult, familyRegistry, rollbackTarget]
+  );
+
+  // One string for "this exact plan": the target, the family, and every step
+  // with the SQL that undoes it. The ticks, a dry run's result and the
+  // server's list of other scripts each belong to one plan.
+  const rollbackKey = useMemo(
+    () =>
+      [
+        connectionId,
+        schema,
+        scriptGroup,
+        ...rollbackSteps.map((step) =>
+          "sql" in step.resolved
+            ? `${step.version}:${step.resolved.sql}`
+            : `${step.version}:${step.resolved.problem}`
+        ),
+      ].join("|"),
+    [connectionId, schema, scriptGroup, rollbackSteps]
+  );
+
+  // Versions in the plan that cannot be undone from here, and why.
+  const rollbackProblems = useMemo(
+    () =>
+      rollbackSteps
+        .filter((step) => "problem" in step.resolved)
+        .map((step) => ({
+          version: step.version,
+          ...rollbackProblemText(step, pullWarnings.length === 0),
+        })),
+    [rollbackSteps, pullWarnings]
+  );
+  const rollbackReady = rollbackSteps.length > 0 && rollbackProblems.length === 0;
+
+  // Rollback statements that destroy rows, named per version. A rollback
+  // restores structure; the rows these statements remove do not come back.
+  const rollbackDataLoss = useMemo(
+    () =>
+      rollbackSteps.flatMap((step) => {
+        if (!("sql" in step.resolved)) return [];
+        const kinds = [...new Set(findRowDestroyingStatements(step.resolved.sql))];
+        return kinds.length > 0 ? [{ version: step.version, kinds }] : [];
+      }),
+    [rollbackSteps]
+  );
+
+  // Other families' versions applied after the oldest version this plan
+  // undoes: a rollback can remove something they use, and a DROP ... CASCADE
+  // takes their objects with it. Once a dry run or a refusal has sent the
+  // server's own list for this plan, that list is the answer. Until then the
+  // pre-flight's list is narrowed by time, which errs towards listing too
+  // many: a version deployed in the same moment is kept.
+  const rollbackOthers = useMemo<OtherScriptEntry[]>(() => {
+    if (rollbackOtherScripts && rollbackOtherScripts.key === rollbackKey) {
+      return rollbackOtherScripts.list;
+    }
+    const oldest = rollbackSteps[rollbackSteps.length - 1];
+    if (!oldest) return [];
+    const from = oldest.appliedAt ? new Date(oldest.appliedAt).getTime() : Number.NaN;
+    return (preflightResult?.otherScripts ?? []).filter((other) => {
+      if (Number.isNaN(from) || !other.applied_at) return true;
+      return new Date(other.applied_at).getTime() >= from;
+    });
+  }, [rollbackOtherScripts, rollbackKey, rollbackSteps, preflightResult]);
+
+  // Every approval row for this exact rollback, newest first. The action is
+  // checked as well as the fingerprint: only the revert route spends a
+  // "revert" row, so a deploy's approval can never clear a rollback.
+  const rollbackApprovals = useMemo(
+    () =>
+      rollbackHash
+        ? approvals.filter((a) => a.action === "revert" && a.run_fingerprint === rollbackHash)
+        : [],
+    [approvals, rollbackHash]
+  );
+  const approvedRollback = rollbackApprovals.find((a) => a.status === "approved") ?? null;
+  const pendingRollback = rollbackApprovals.find((a) => a.status === "pending") ?? null;
+  const latestRollback = rollbackApprovals[0] ?? null;
+
+  // What stops both rollback buttons. The server asks for the production tick
+  // on a dry run too, because a dry run runs every statement against the
+  // real target before undoing them.
+  const rollbackBlocked =
+    !rollbackReady ||
+    rollbackBusy !== null ||
+    isDeploying ||
+    (targetIsProduction && !rollbackProdAck) ||
+    (rollbackDataLoss.length > 0 && !rollbackDataLossAck);
+  // What additionally stops the real rollback. The server checks the other
+  // scripts and the approval only on a real run, so the page does the same.
+  const rollbackRunBlocked =
+    rollbackBlocked ||
+    (rollbackOthers.length > 0 && !rollbackOtherAck) ||
+    (targetIsProduction && !approvedRollback);
+  // The line under the buttons: the first reason they are disabled, or what
+  // pressing will do. Same order as the checks above.
+  const rollbackHint = !rollbackReady
+    ? "Every version above needs a rollback that can run before anything runs"
+    : isDeploying
+      ? "A deploy is running on this target — wait for it to finish"
+      : (targetIsProduction && !rollbackProdAck) ||
+          (rollbackDataLoss.length > 0 && !rollbackDataLossAck)
+        ? "Tick every box above to enable this"
+        : rollbackOthers.length > 0 && !rollbackOtherAck
+          ? "Tick the box about the other scripts to roll back — a dry run does not need it"
+          : targetIsProduction && !approvedRollback
+            ? "Rolling back needs a second person's approval — a dry run does not"
+            : "The rollback runs in one transaction — every version above or none";
+  // The last refusal is shown only with the plan it refused; a sticky one
+  // (see rollbackError) is shown whatever the plan.
+  const rollbackErrorShown =
+    rollbackError && (rollbackError.sticky || rollbackError.key === rollbackKey)
+      ? rollbackError.message
+      : null;
+  const rollbackPlannerShown = rollbackOpen && appliedNewestFirst.length > 0;
+  // The oldest version the plan undoes. "Applied since" is measured from it.
+  const rollbackOldest =
+    rollbackSteps.length > 0 ? rollbackSteps[rollbackSteps.length - 1].version : null;
+  // This family's rollbacks on the target, newest first.
+  const revertedHistory = preflightResult?.reverted ?? [];
+
+  // A new target or family starts the panel over: nothing picked, and no
+  // result from another family's rollback left on screen.
   useEffect(() => {
-    setRevertVersion(null);
-    setRevertError(null);
-    setRevertAcknowledged(false);
+    setRollbackChoice(null);
+    setRollbackOpen(false);
+    setRollbackError(null);
+    setRollbackDryRun(null);
+    setRollbackDone(null);
+    setRollbackOtherScripts(null);
+    setRollbackApprovalNote("");
   }, [connectionId, schema, scriptGroup]);
+
+  // The ticks and the approval error belong to one exact plan. The rollback
+  // error carries its own plan instead (see rollbackError), because some have
+  // to stay on screen after the plan changes: an outcome nobody knows, and a
+  // refusal caused by an out-of-date list of applied versions (the page reads
+  // the ledger again, which changes the plan).
+  useEffect(() => {
+    setRollbackProdAck(false);
+    setRollbackDataLossAck(false);
+    setRollbackOtherAck(false);
+    setRollbackApprovalError(null);
+  }, [rollbackKey]);
+
+  // The fingerprint of the rollback on screen, hashed the way the server
+  // hashes it (rollbackFingerprintBody over the steps, newest first, each
+  // version spelled as the ledger spells it), so the approval panel can tell
+  // whether an approval covers exactly this rollback. Production only, and
+  // only when every step has SQL: an approval covers the SQL that runs.
+  useEffect(() => {
+    // Cleared first, so the previous plan's hash never matches for a moment.
+    setRollbackHash(null);
+    setRollbackHashError(null);
+    if (!targetIsProduction || !rollbackReady) return;
+    const body = rollbackFingerprintBody(
+      rollbackSteps.map((step) => ({
+        scriptName: scriptGroup.trim(),
+        version: step.version,
+        sqlContent: "sql" in step.resolved ? step.resolved.sql : "",
+      }))
+    );
+    let cancelled = false;
+    sha256Hex(body)
+      .then((hex) => {
+        if (!cancelled) setRollbackHash(hex);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRollbackHashError(
+          "This browser cannot check the approval — crypto.subtle needs " +
+            "https or localhost. Open the app over https to approve a rollback."
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetIsProduction, rollbackReady, rollbackSteps, scriptGroup]);
 
   // An acknowledgement is for one exact batch against one exact target. Change
   // any part of what would run and it has to be given again — otherwise a tick
@@ -1143,9 +1715,16 @@ export default function DeployPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingScripts, stage]);
 
-  // Summary stats for the chosen batch.
+  // Summary stats for the chosen batch. A migration counts as breaking when
+  // describeChangeType says so: stamped breaking, graded breaking with no
+  // stamp, or holding a statement that is always breaking whatever the stamp.
   const breakingCount = scriptsUpToTarget.filter(
-    (s) => changeTypeOf(s.sql_content) === "breaking"
+    (s) => describeChangeType(s.sql_content).countsAsBreaking
+  ).length;
+  // Of those, the ones whose label says less than their SQL. The breaking
+  // gate says why they are in it.
+  const louderCount = scriptsUpToTarget.filter(
+    (s) => describeChangeType(s.sql_content).louderNote !== null
   ).length;
   const linesOfSql = scriptsUpToTarget.reduce(
     (sum, s) => sum + getSqlLineCount(s.sql_content),
@@ -1154,14 +1733,14 @@ export default function DeployPage() {
   const bumps = useMemo(() => {
     const order: Array<"major" | "minor" | "patch"> = ["major", "minor", "patch"];
     const present = new Set(
-      scriptsUpToTarget.map((s) => bumpWord(changeTypeOf(s.sql_content)))
+      scriptsUpToTarget.map((s) => bumpWord(describeChangeType(s.sql_content).recorded))
     );
     return order.filter((b) => present.has(b)).join(" + ") || "—";
   }, [scriptsUpToTarget]);
   const txnViolationScripts = scriptsUpToTarget.filter((s) => containsTransactionControl(s.sql_content));
   const hasTxnViolation = txnViolationScripts.length > 0;
   // Asked separately from the change type, because they are separate questions.
-  // changeTypeOf answers "how far does the version move", and a TRUNCATE moves
+  // The change type answers "how far does the version move", and a TRUNCATE moves
   // it not at all — so a run that empties a table used to arrive here graded
   // "patch" with the checklist reporting that nothing in it was breaking.
   const dataLossScripts = useMemo(
@@ -1175,6 +1754,16 @@ export default function DeployPage() {
   // and look for, where "3 statements" tells them only that there are three.
   const dataLossKinds = useMemo(
     () => [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].join(", "),
+    [dataLossScripts]
+  );
+  // The kinds in that list the breaking grade never sees. For these the
+  // deletes-rows gate is the only warning on the page. Every DROP it names is
+  // graded breaking as well, so "nothing else catches this" would be wrong there.
+  const unflaggedDataLossKinds = useMemo(
+    () =>
+      [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].filter((kind) =>
+        ROW_DESTROYING_NOT_BREAKING.includes(kind)
+      ),
     [dataLossScripts]
   );
 
@@ -1260,7 +1849,7 @@ export default function DeployPage() {
   useEffect(() => {
     if (!targetIsProduction || !connectionId || !schema || !scriptGroup) {
       setApprovals([]);
-      setApprovalError(null);
+      setApprovalsReadError(null);
       return;
     }
     let cancelled = false;
@@ -1275,16 +1864,16 @@ export default function DeployPage() {
         if (cancelled) return;
         if (!res.ok || !data.approvals) {
           setApprovals([]);
-          setApprovalError(data.error ?? "Could not read the approvals for this target.");
+          setApprovalsReadError(data.error ?? "Could not read the approvals for this target.");
           return;
         }
         setApprovals(data.approvals);
-        setApprovalError(null);
+        setApprovalsReadError(null);
       })
       .catch(() => {
         if (cancelled) return;
         setApprovals([]);
-        setApprovalError("Network error reading the approvals for this target.");
+        setApprovalsReadError("Network error reading the approvals for this target.");
       })
       .finally(() => {
         if (!cancelled) setApprovalsLoading(false);
@@ -1298,7 +1887,13 @@ export default function DeployPage() {
   // id DESC). Anything with a different fingerprint belongs to different SQL
   // and must not count towards this run.
   const runApprovals = useMemo(
-    () => (runHash ? approvals.filter((a) => a.run_fingerprint === runHash) : []),
+    () =>
+      runHash
+        ? approvals.filter(
+            // A row with no action predates rollback approvals, so it is a deploy.
+            (a) => (a.action ?? "deploy") === "deploy" && a.run_fingerprint === runHash
+          )
+        : [],
     [approvals, runHash]
   );
   const approvedRun = runApprovals.find((a) => a.status === "approved") ?? null;
@@ -1329,6 +1924,8 @@ export default function DeployPage() {
     scriptsUpToTarget.length === 0 ||
     hasTxnViolation ||
     isDeploying ||
+    // A rollback in flight is changing the same ledger.
+    rollbackBusy !== null ||
     unacknowledgedGates;
   // What additionally stops a real deploy. A dry run is exempt because the
   // server exempts it: a rehearsal writes nothing, and charging a second person
@@ -1339,13 +1936,25 @@ export default function DeployPage() {
   async function handlePull() {
     setPullLoading(true);
     setPullError(null);
+    setPullWarnings([]);
     try {
       const res = await fetch("/api/github/pull");
-      const data = (await res.json()) as { scripts?: GitHubScript[]; error?: string };
+      const data = (await res.json()) as {
+        scripts?: GitHubScript[];
+        warnings?: unknown;
+        error?: string;
+      };
       if (!res.ok || !data.scripts) {
         setPullError(data.error ?? "Could not fetch scripts from GitHub.");
       } else {
         setGithubScripts(data.scripts);
+        // The parts of the registry the pull could not read. Only strings are
+        // kept, because they go on screen as written.
+        setPullWarnings(
+          Array.isArray(data.warnings)
+            ? data.warnings.filter((warning): warning is string => typeof warning === "string")
+            : []
+        );
       }
     } catch {
       setPullError("Network error fetching scripts from GitHub.");
@@ -1374,7 +1983,9 @@ export default function DeployPage() {
   }
 
   // Bare pre-flight call — also used to refresh the ledger after a run.
-  async function runPreflightCheck(id: string, sch: string, group: string) {
+  // Resolves true when the ledger was read, so a caller can say whether the
+  // page now shows the target as it is.
+  async function runPreflightCheck(id: string, sch: string, group: string): Promise<boolean> {
     setPreflightLoading(true);
     setPreflightError(null);
     try {
@@ -1391,62 +2002,185 @@ export default function DeployPage() {
       if (!res.ok) {
         setPreflightError(data.error ?? "Pre-flight check failed.");
         setPreflightResult(null);
-        return;
+        return false;
       }
       setPreflightResult(data);
+      return true;
     } catch {
       setPreflightError("Network error during pre-flight check.");
       setPreflightResult(null);
+      return false;
     } finally {
       setPreflightLoading(false);
     }
   }
 
-  // Run one version's stored rollback against the target, then re-read the
-  // ledger so the row flips from Applied back to Pending. The server does the
-  // real checking (is it applied, is it the newest); this only refuses to send
-  // a request it already knows is incomplete.
-  async function handleRevert(version: string) {
-    // The registry file when there is one. When there is not, this is left out
-    // of the request and the server runs the copy stored on the ledger row.
-    const downSql = scriptByVersion.get(version)?.down_sql;
-    if (!connectionId || !scriptGroup || !canRollBack(version)) return;
-    // The disabled button already says this, but a disabled button is a hint,
-    // not a rule — this is the rule.
-    if (targetIsProduction && !revertAcknowledged) return;
+  // ── Roll back to ─────────────────────────────────────────────────────────
+  // Run, or rehearse, the rollback on screen. The server reads the ledger
+  // again inside its own transaction and picks each rollback with the same
+  // rule as the preview (resolveRollback). A registry rollback is sent only
+  // for a step that uses one, because that is the only case the server reads.
+  async function handleRollback(dryRun: boolean) {
+    if (writeInFlight.current) return;
+    writeInFlight.current = true;
+    try {
+      await runRollback(dryRun);
+    } finally {
+      writeInFlight.current = false;
+    }
+  }
 
-    setRevertBusy(true);
-    setRevertError(null);
+  async function runRollback(dryRun: boolean) {
+    if (!connectionId || !schema || !scriptGroup) return;
+    // The disabled buttons already say this, but a disabled button is a hint,
+    // not a rule — this is the rule.
+    if (dryRun ? rollbackBlocked : rollbackRunBlocked) return;
+    // Captured now: the plan changes once the ledger is read again below.
+    const key = rollbackKey;
+    const steps = rollbackSteps;
+    const doneLabel = rollbackTarget
+      ? `Rolled back to ${vLabel(rollbackTarget)}`
+      : "Rolled back every version";
+    // A refusal belongs to the plan it refused. An outcome nobody knows, and
+    // a refusal caused by an out-of-date ledger, are sticky: they stay after
+    // the ledger is read again and the plan changes.
+    const fail = (message: string, sticky = false) =>
+      setRollbackError({ key, message, sticky });
+
+    setRollbackBusy(dryRun ? "dry" : "real");
+    setRollbackError(null);
+    setRollbackDone(null);
     try {
       const res = await fetch("/api/scripts/revert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           connectionId: Number(connectionId),
+          schemaName: schema,
           script_name: scriptGroup,
-          version,
-          sql_content: downSql,
-          schemaName: schema || "public",
-          acknowledgeProduction: revertAcknowledged,
+          // Newest first, spelled as the ledger spells them: the order the
+          // server runs them in, and the spelling its approval check hashes.
+          versions: steps.map((step) => step.version),
+          registryRollbacks: steps.flatMap((step) =>
+            "sql" in step.resolved && step.resolved.source === "registry"
+              ? [{ version: step.version, down_sql: step.resolved.sql }]
+              : []
+          ),
+          dryRun,
+          acknowledgeProduction: rollbackProdAck,
+          acknowledgeOtherScripts: rollbackOtherAck,
         }),
       });
-      const data = (await res.json()) as { success?: boolean; message?: string; error?: string };
-      if (!res.ok || !data.success) {
-        setRevertError(data.error ?? "The rollback failed.");
+      // Read as text first: an error page from a proxy is not JSON, and
+      // "Unexpected token <" says nothing about the state of the database.
+      const text = await res.text();
+      let data: RevertResponse = {};
+      try {
+        data = JSON.parse(text) as RevertResponse;
+      } catch {
+        data = {};
+      }
+
+      // The server's own list of other scripts replaces the page's estimate
+      // for this plan, whether it came with a dry run or with a refusal.
+      if (Array.isArray(data.otherScripts)) {
+        setRollbackOtherScripts({ key, list: data.otherScripts });
+      }
+
+      if (data.success !== true) {
+        if (typeof data.error !== "string") {
+          // No answer this page can read. A dry run always ends in ROLLBACK,
+          // so it changed nothing; a real run may have committed.
+          if (dryRun) {
+            fail(
+              `The server's answer to the dry run could not be read (HTTP ${res.status}). ` +
+                "A dry run changes nothing, so it is safe to try again."
+            );
+            return;
+          }
+          fail(
+            `The server's answer could not be read (HTTP ${res.status}), so this page ` +
+              "cannot say whether the rollback ran. The ledger is being read again: " +
+              "check it before you try again.",
+            true
+          );
+          showToast("Rollback outcome unknown — check the ledger", "bad");
+          await refreshAfterRollback();
+          return;
+        }
+        // From this page, "not applied" and "not newest" mean its copy of the
+        // ledger is out of date: it always sends the newest versions of the
+        // ledger it read, so someone deployed or rolled back since then.
+        const staleLedger = data.code === "not_applied" || data.code === "not_newest";
+        const refusal = data.error;
+        // The route's sentence says what happened and what to do next.
+        fail(refusal, data.outcomeUnknown === true || staleLedger);
+        if (data.outcomeUnknown) {
+          showToast("Rollback outcome unknown — check the ledger", "bad");
+          await refreshAfterRollback();
+        } else if (data.needsApproval) {
+          setApprovalReloadKey((reload) => reload + 1);
+        } else if (staleLedger) {
+          // Check the database again, as the route asks, so the picker and
+          // the plan show what is applied now, and say whether that worked.
+          const read = await refreshAfterRollback();
+          fail(
+            read
+              ? `${refusal} This page has checked the database again and now shows what is ` +
+                  "applied, so read the rollback plan again before you run it."
+              : `${refusal} This page could not check the database again. Press Check ` +
+                  "database on Pre-flight before you run anything.",
+            true
+          );
+        }
         return;
       }
-      setRevertVersion(null);
-      showToast(`v${version} rolled back`);
-      // The run panel below still describes the deploy that put this version on
-      // the target, so clear it — leaving it up would contradict the ledger.
+
+      if (dryRun) {
+        setRollbackDryRun({ key, message: data.message ?? "Dry run passed. Nothing changed." });
+        showToast("Dry run passed — nothing changed");
+        return;
+      }
+
+      setRollbackDone({ message: data.message ?? `${doneLabel}.` });
+      showToast(doneLabel);
+      // The next plan starts from the smallest rollback again, closed, so a
+      // second rollback is always a new decision. The run panel still
+      // describes the deploy that put these versions on the target, so clear
+      // it too — leaving it up would contradict the ledger.
+      setRollbackChoice(null);
+      setRollbackOpen(false);
       resetRun();
       setStage(1);
-      await runPreflightCheck(connectionId, schema, scriptGroup);
+      await refreshAfterRollback();
     } catch {
-      setRevertError("Network error while running the rollback.");
+      // The request never came back, so a real rollback may or may not have run.
+      if (dryRun) {
+        fail(
+          "Network error while running the dry run. A dry run changes nothing, so it is " +
+            "safe to try again."
+        );
+      } else {
+        fail(
+          "Network error while running the rollback, so this page cannot say whether it " +
+            "ran. Press Check database and read the ledger before you try again.",
+          true
+        );
+      }
     } finally {
-      setRevertBusy(false);
+      setRollbackBusy(null);
     }
+  }
+
+  // After a rollback, one whose outcome is unknown, or a refusal caused by an
+  // out-of-date ledger: read the ledger and the live schema again, so the
+  // page shows the target as it now is, and read the approvals again (a
+  // production rollback spends one). Resolves true when the ledger was read.
+  async function refreshAfterRollback(): Promise<boolean> {
+    setApprovalReloadKey((reload) => reload + 1);
+    const read = await runPreflightCheck(connectionId, schema, scriptGroup);
+    void runDriftCheck(connectionId, schema);
+    return read;
   }
 
   // ── Approvals ────────────────────────────────────────────────────────────
@@ -1465,6 +2199,7 @@ export default function DeployPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          action: "deploy",
           connectionId: Number(connectionId),
           schemaName: schema || "public",
           scriptName: scriptGroup,
@@ -1493,30 +2228,86 @@ export default function DeployPage() {
     }
   }
 
-  // The second person's half. A 409 here means someone decided it first; their
-  // decision stands, and the reload below puts it on screen.
-  async function handleDecideApproval(id: number, decision: "approve" | "reject") {
-    if (approvalBusy) return;
+  // The same for the rollback on screen. `scripts` holds the rollback SQL
+  // that will run, newest first, exactly as the revert route claims it, so
+  // the fingerprint the server stores is the one it will look for.
+  async function handleRequestRollbackApproval() {
+    if (!connectionId || !schema || !scriptGroup || !rollbackReady || approvalBusy) return;
+
     setApprovalBusy(true);
-    setApprovalError(null);
+    setRollbackApprovalError(null);
+    try {
+      const res = await fetch("/api/deploy/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "revert",
+          connectionId: Number(connectionId),
+          schemaName: schema,
+          scriptName: scriptGroup,
+          // The oldest version this rollback undoes. "Before the first
+          // version" has no version to go back to, so every rollback approval
+          // is labelled by the last version it takes off.
+          targetVersion: rollbackSteps[rollbackSteps.length - 1].version,
+          // For a rollback, the risk the approver weighs is lost rows: how
+          // many of the rollbacks hold a statement that destroys them.
+          breakingCount: rollbackDataLoss.length,
+          note: rollbackApprovalNote.trim() || undefined,
+          scripts: rollbackSteps.map((step) => ({
+            script_name: scriptGroup,
+            version: step.version,
+            sql_content: "sql" in step.resolved ? step.resolved.sql : "",
+          })),
+        }),
+      });
+      const data = (await res.json()) as { approval?: ApprovalRow; error?: string };
+      if (!res.ok || !data.approval) {
+        setRollbackApprovalError(data.error ?? "Could not record the approval request.");
+        return;
+      }
+      setRollbackApprovalNote("");
+      showToast("Approval requested — someone else has to clear it");
+    } catch {
+      setRollbackApprovalError("Network error requesting the approval.");
+    } finally {
+      setApprovalBusy(false);
+      setApprovalReloadKey((key) => key + 1);
+    }
+  }
+
+  // The second person's half. A 409 here means someone decided it first; their
+  // decision stands, and the reload below puts it on screen. `action` says
+  // which panel asked, so its note is sent and any error lands in it.
+  async function handleDecideApproval(
+    id: number,
+    decision: "approve" | "reject",
+    action: "deploy" | "revert"
+  ) {
+    if (approvalBusy) return;
+    const note = action === "revert" ? rollbackApprovalNote : approvalNote;
+    const setError = action === "revert" ? setRollbackApprovalError : setApprovalError;
+    const setNote = action === "revert" ? setRollbackApprovalNote : setApprovalNote;
+    setApprovalBusy(true);
+    setError(null);
     try {
       const res = await fetch(`/api/deploy/approvals/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, note: approvalNote.trim() || undefined }),
+        body: JSON.stringify({ decision, note: note.trim() || undefined }),
       });
       const data = (await res.json()) as { approval?: ApprovalRow; error?: string };
       if (!res.ok || !data.approval) {
-        setApprovalError(data.error ?? "Could not record the decision.");
+        setError(data.error ?? "Could not record the decision.");
         return;
       }
-      setApprovalNote("");
+      setNote("");
+      const what = action === "revert" ? "Rollback" : "Run";
       showToast(
-        decision === "approve" ? "Run approved" : "Run rejected",
+        decision === "approve" ? `${what} approved` : `${what} rejected`,
         decision === "approve" ? "ok" : "bad"
       );
     } catch {
-      setApprovalError("Network error recording the decision.");
+      setError("Network error recording the decision.");
     } finally {
       setApprovalBusy(false);
       setApprovalReloadKey((key) => key + 1);
@@ -1598,6 +2389,12 @@ export default function DeployPage() {
   async function handlePreflight() {
     if (!connectionId || !schema || !scriptGroup) return;
     resetRun();
+    // A fresh read of the target: results and the server's list of other
+    // scripts from before it may no longer be true.
+    setRollbackError(null);
+    setRollbackDryRun(null);
+    setRollbackDone(null);
+    setRollbackOtherScripts(null);
     setStage(1);
     setPreflightResult(null);
     setTargetVersion("");
@@ -1630,12 +2427,28 @@ export default function DeployPage() {
   // the transaction ends in ROLLBACK. Later scripts see the earlier ones' work,
   // which is why the rehearsal has to be one request too.
   async function handleRun(dryRun: boolean) {
+    if (writeInFlight.current) return;
+    writeInFlight.current = true;
+    try {
+      await runBatch(dryRun);
+    } finally {
+      writeInFlight.current = false;
+    }
+  }
+
+  async function runBatch(dryRun: boolean) {
     const batch = scriptsUpToTarget;
     // The disabled buttons say all of this already, but a disabled button is a
     // hint, not a rule — this is the rule. A rehearsal is held to everything
     // except the approval, exactly as the apply route holds it.
     if (dryRun ? runBlocked : deployBlocked) return;
 
+    // A deploy changes the ledger the rollback panel read, so its last result
+    // no longer describes the target.
+    setRollbackError(null);
+    setRollbackDryRun(null);
+    setRollbackDone(null);
+    setRollbackOtherScripts(null);
     setRunScripts(batch);
     // The ledger is re-read before Verify shows, so the live current version is
     // already the new one — the arrow has to remember where the run started.
@@ -1675,9 +2488,15 @@ export default function DeployPage() {
             sql_content: script.sql_content,
             version: script.version,
             title: script.script_name,
-            change_type: changeTypeOf(script.sql_content),
+            // The level this page showed and bumped by: the stamp when there
+            // is one, the SQL's grade otherwise.
+            change_type: describeChangeType(script.sql_content).recorded,
             // Link the applied row back to the GitHub file it came from.
             source_ref: script.path,
+            // The registry's rollback, saved on the applied row so Deploy can
+            // undo this version later even if the file changes or goes. The
+            // pull sends it only when it can run (rollback_state "usable").
+            ...(script.down_sql ? { down_sql: script.down_sql } : {}),
           })),
         }),
       });
@@ -1851,6 +2670,25 @@ export default function DeployPage() {
               <AlertCircleIcon size={16} />
             </span>
             <span>{pullError}</span>
+          </div>
+        )}
+        {/* The pull lists what it could and names what it could not, so a
+            version missing below is never a silent gap. */}
+        {pullWarnings.length > 0 && (
+          <div className="help mt-3 max-w-[80ch]" style={{ color: "var(--drift)" }}>
+            <p>Some of the registry could not be read:</p>
+            <ul className="list-disc pl-5 mt-1 space-y-0.5">
+              {pullWarnings.slice(0, 5).map((warning, index) => (
+                <li key={index} className="break-words">
+                  {warning}
+                </li>
+              ))}
+            </ul>
+            {pullWarnings.length > 5 && <p className="mt-1">{`…and ${pullWarnings.length - 5} more.`}</p>}
+            <p className="mt-1">
+              Everything below is built from what was read. Reload the page to read the
+              registry again.
+            </p>
           </div>
         )}
       </section>
@@ -2075,7 +2913,8 @@ export default function DeployPage() {
 
               {/* Forward view (Phase 3): every GitHub version of this family,
                   labelled Applied / Pending / Superseded against the target's
-                  script_patch history. Always shown once pre-flight has run. */}
+                  script_patch history. Always shown once pre-flight has run.
+                  Undoing versions is the "Roll back" card below it. */}
               {versionLedger.length > 0 && (
                 <div className="card p-4">
                   <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
@@ -2089,184 +2928,358 @@ export default function DeployPage() {
                   </div>
                   <div>
                     {versionLedger.map((entry) => {
-                      // Revert is offered on the newest applied version only —
-                      // see the newestApplied comment above for why.
-                      const canOfferRevert =
-                        entry.status === "applied" && entry.version === newestApplied;
-                      const hasRollback = canRollBack(entry.version);
-                      // Two places a rollback can live: a file in the registry,
-                      // or the copy the apply route stored on the ledger row.
-                      // Whichever one the revert route will run is the one that
-                      // has to be readable here — a confirmation you cannot read
-                      // is not a confirmation.
-                      const registryDownSql =
-                        scriptByVersion.get(entry.version)?.down_sql ?? null;
-                      const storedDownSql = storedRollbacks.get(entry.version) ?? null;
-                      const shownDownSql = registryDownSql ?? storedDownSql;
-                      const downSqlLabel = registryDownSql
-                        ? `v${entry.version}.down.sql`
-                        : "the rollback stored with this version";
-                      const confirming = revertVersion === entry.version;
+                      // A version that is not applied now but was rolled back
+                      // says when, so "pending" is not read as "never deployed".
+                      // The history is newest first: this is its latest rollback.
+                      const rolledBack =
+                        entry.status === "applied"
+                          ? null
+                          : revertedHistory.find(
+                              (row) => compareVersions(row.version, entry.version) === 0
+                            ) ?? null;
                       return (
                         <div
                           key={entry.version}
-                          className="py-1.5"
+                          className="flex items-center justify-between gap-3 py-1.5"
                           style={{ borderTop: "1px solid var(--border)" }}
                         >
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="mono text-[13px]">
-                              v{entry.version}
-                              {!entry.inRegistry && (
-                                <span
-                                  className="ml-2 text-[11px]"
-                                  style={{ color: "var(--text-3)" }}
-                                  title={
-                                    `v${entry.version} is applied to this schema but has no ` +
-                                    `file in the GitHub registry for it — it was applied ` +
-                                    `directly, or replayed here by Version Sync.`
-                                  }
-                                >
-                                  not in registry
-                                </span>
-                              )}
-                              {!entry.inRegistry && (
-                                <span className="help ml-2">
-                                  applied directly, or replayed here by Version Sync
-                                </span>
-                              )}
-                            </span>
-                            <div className="flex items-center gap-2.5">
-                              {entry.status === "applied" && entry.appliedAt && (
-                                <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                                  {fmtDate(entry.appliedAt)}
-                                </span>
-                              )}
-                              {ledgerPill(entry.status)}
-                              {canOfferRevert && (
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost btn-sm"
-                                  disabled={!hasRollback || revertBusy || isDeploying}
-                                  title={
-                                    hasRollback
-                                      ? `Run the stored rollback for v${entry.version} to undo this version`
-                                      : `No rollback stored for v${entry.version}. Versions pushed before rollbacks were saved, or pushed without one, cannot be reverted from here.`
-                                  }
-                                  onClick={() => {
-                                    setRevertError(null);
-                                    setRevertAcknowledged(false);
-                                    setRevertVersion(confirming ? null : entry.version);
-                                  }}
-                                >
-                                  {confirming ? "Close" : "Revert"}
-                                </button>
-                              )}
-                            </div>
+                          <span className="mono text-[13px]">
+                            v{entry.version}
+                            {!entry.inRegistry && (
+                              <span className="ml-2 text-[11px]" style={{ color: "var(--text-3)" }}>
+                                not in registry
+                              </span>
+                            )}
+                            {!entry.inRegistry && (
+                              <span className="help ml-2">
+                                {/* With part of the registry unread, "applied
+                                    directly" is only one of two explanations. */}
+                                {pullWarnings.length > 0
+                                  ? "applied directly, or its file could not be read (see the top of the page)"
+                                  : "applied directly, or replayed here by Version Sync"}
+                              </span>
+                            )}
+                          </span>
+                          <div className="flex items-center gap-2.5">
+                            {rolledBack && (
+                              <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                                {`rolled back ${fmtDate(rolledBack.reverted_at)}`}
+                              </span>
+                            )}
+                            {entry.status === "applied" && entry.appliedAt && (
+                              <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                                {fmtDate(entry.appliedAt)}
+                              </span>
+                            )}
+                            {ledgerPill(entry.status)}
                           </div>
-
-                          {/* A disabled control swallows its own tooltip in most
-                              browsers — no hover, no focus, nothing for a screen
-                              reader — so the reason has to be on the page. */}
-                          {canOfferRevert && !hasRollback && (
-                            <div className="help mt-1">
-                              No rollback stored — v{entry.version} cannot be undone
-                              from here.
-                            </div>
-                          )}
-
-                          {confirming && hasRollback && (
-                            <div className="mt-2 mb-1 space-y-2">
-                              <div className="warn-inline">
-                                <AlertTriangleIcon size={14} className="ico" />
-                                <div className="min-w-0">
-                                  <div className="font-semibold">This restores structure, not data.</div>
-                                  <div className="mt-1" style={{ color: "var(--text-2)" }}>
-                                    Running the rollback for v{entry.version} against{" "}
-                                    <span className="mono">{preflightResult.schema}</span>{" "}
-                                    undoes the structural change and removes v{entry.version} from
-                                    the ledger, so it becomes pending again. Rows this rollback
-                                    drops are gone, and rows the original migration deleted do not
-                                    come back. A backup from before the original migration is the
-                                    only way to get them back.
-                                  </div>
-                                </div>
-                              </div>
-
-                              {shownDownSql ? (
-                                <details>
-                                  <summary
-                                    className="text-[12px] cursor-pointer select-none"
-                                    style={{ color: "var(--text-3)" }}
-                                  >
-                                    Show <span className="mono">{downSqlLabel}</span> (
-                                    {countOf(getSqlLineCount(shownDownSql), "line")})
-                                  </summary>
-                                  {!registryDownSql && (
-                                    <div
-                                      className="text-[12px] mt-1"
-                                      style={{ color: "var(--text-3)" }}
-                                    >
-                                      This version has no file in the registry for{" "}
-                                      <span className="mono">{preflightResult.schema}</span> — it
-                                      was applied here directly, so this is the copy recorded
-                                      beside the applied row.
-                                    </div>
-                                  )}
-                                  <pre className="err-pre">{shownDownSql}</pre>
-                                </details>
-                              ) : (
-                                <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                                  The rollback for this version is recorded on the target and
-                                  could not be read back here, so it cannot be shown before it
-                                  runs.
-                                </div>
-                              )}
-
-                              {revertError && <pre className="err-pre">{revertError}</pre>}
-
-                              {targetIsProduction && (
-                                <ProductionGate
-                                  what={`roll back v${entry.version}`}
-                                  acknowledged={revertAcknowledged}
-                                  onAcknowledge={setRevertAcknowledged}
-                                />
-                              )}
-
-                              {/* The deploy path needs two people and this one
-                                  does not — say so, rather than letting the
-                                  ledger row imply the same rule. */}
-                              <div className="text-[12px]" style={{ color: "var(--drift)" }}>
-                                Unlike a deploy, a rollback does not ask for a second
-                                person. Once you press this it runs.
-                              </div>
-
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  className="btn btn-destructive btn-sm"
-                                  disabled={
-                                    revertBusy ||
-                                    (targetIsProduction && !revertAcknowledged)
-                                  }
-                                  onClick={() => void handleRevert(entry.version)}
-                                >
-                                  {revertBusy ? "Rolling back…" : `Roll back v${entry.version}`}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost btn-sm"
-                                  disabled={revertBusy}
-                                  onClick={() => setRevertVersion(null)}
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          )}
                         </div>
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {/* Roll back: undo the newest applied versions of this family,
+                  newest first, in one transaction. The preview is what the
+                  revert route will run (planRollback shares its rule), and
+                  the panel asks for what the route asks for: the production
+                  tick, a tick for rollbacks that delete rows, a tick for other
+                  scripts applied since, and on production a second person's
+                  approval of this exact rollback SQL. */}
+              {(appliedNewestFirst.length > 0 || rollbackDone || revertedHistory.length > 0) && (
+                <div className="card p-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="section-title">
+                      Roll back · <span className="mono">{scriptGroup}</span>
+                    </div>
+                    {appliedNewestFirst.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        disabled={rollbackBusy !== null}
+                        onClick={() => setRollbackOpen((open) => !open)}
+                      >
+                        {rollbackOpen ? "Close" : "Plan a rollback"}
+                      </button>
+                    )}
+                  </div>
+                  <p className="help mt-1">
+                    {appliedNewestFirst.length === 0
+                      ? `No version of ${scriptGroup} is applied to ${preflightResult.schema} now, so there is nothing to roll back.`
+                      : "Pick a version to go back to: every applied version above it is " +
+                        "undone, newest first, in one transaction — all of them or none. A " +
+                        "rollback restores structure, not rows."}
+                  </p>
+
+                  {rollbackDone && (
+                    <div className="mt-3 space-y-3">
+                      <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                        <span className="flex-none mt-0.5" style={{ color: "var(--sync)" }}>
+                          <CheckIcon size={14} />
+                        </span>
+                        <span>{rollbackDone.message}</span>
+                      </div>
+                      {/* Re-verify: the live schema read again after the rollback. */}
+                      <DriftPanel
+                        phase={driftPhase}
+                        result={driftResult}
+                        error={driftError}
+                        context="rollback"
+                        targetVersion={preflightResult.currentVersion ?? ""}
+                      />
+                    </div>
+                  )}
+
+                  {/* A sticky message (see rollbackError) is shown even with the planner shut. */}
+                  {!rollbackPlannerShown && rollbackErrorShown && (
+                    <pre className="err-pre mt-3">{rollbackErrorShown}</pre>
+                  )}
+
+                  {rollbackPlannerShown && (
+                    <div className="mt-3 space-y-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[12px]" style={{ color: "var(--text-3)" }}>Roll back to</span>
+                        <Select
+                          variant="input"
+                          ariaLabel="Roll back to version"
+                          style={{ width: "auto" }}
+                          mono
+                          disabled={rollbackBusy !== null}
+                          value={rollbackPick}
+                          options={rollbackOptions}
+                          onChange={(value) => setRollbackChoice(value)}
+                        />
+                      </div>
+                      {rollbackListCapped && (
+                        <p className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                          A rollback undoes at most {MAX_ROLLBACK_VERSIONS} versions at a time, so this
+                          list stops at {vLabel(appliedNewestFirst[MAX_ROLLBACK_VERSIONS])}. To go further
+                          back, run this rollback first, then roll back again from there.
+                        </p>
+                      )}
+
+                      <div>
+                        <div className="section-title mb-1">Runs in this order</div>
+                        {rollbackSteps.map((step, index) => {
+                          const v = vLabel(step.version);
+                          const problem =
+                            rollbackProblems.find((entry) => entry.version === step.version) ?? null;
+                          // Open the SQL that deletes rows, as the deploy opens
+                          // its breaking migrations: those are the ones to read.
+                          const deletesRows = rollbackDataLoss.some(
+                            (loss) => loss.version === step.version
+                          );
+                          return (
+                            <div
+                              key={step.version}
+                              className="py-2"
+                              style={{ borderTop: "1px solid var(--border)" }}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="mono text-[13px]">{`${index + 1}. Undo ${v}`}</span>
+                                {step.appliedAt && (
+                                  <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                                    {`applied ${fmtDate(step.appliedAt)}`}
+                                  </span>
+                                )}
+                              </div>
+                              {"sql" in step.resolved ? (
+                                <>
+                                  <div className="help mt-0.5">
+                                    {step.resolved.source === "ledger"
+                                      ? `Runs the rollback saved when ${v} was applied.`
+                                      : `Runs ${v}.down.sql from the registry. No rollback was saved when ${v} was applied.`}
+                                  </div>
+                                  {step.registryDiffers && (
+                                    <div className="help mt-0.5" style={{ color: "var(--drift)" }}>
+                                      {`The registry's ${v}.down.sql differs from the copy saved when ${v} was applied. The saved copy is the one that runs.`}
+                                    </div>
+                                  )}
+                                  <details className="mig-sql" open={deletesRows}>
+                                    <summary>
+                                      <ChevronDownIcon className="chev" size={12} />
+                                      <span>Rollback SQL</span>
+                                      <span className="mono">
+                                        {countOf(getSqlLineCount(step.resolved.sql), "line")}
+                                      </span>
+                                    </summary>
+                                    <pre className="sql">{step.resolved.sql.trim()}</pre>
+                                  </details>
+                                </>
+                              ) : problem ? (
+                                <div className="help mt-0.5" style={{ color: "var(--break)" }}>
+                                  {problem.text}
+                                  {problem.editor && (
+                                    <>
+                                      {" "}
+                                      <Link href="/script-editor" className="underline">
+                                        Open the Script Editor
+                                      </Link>
+                                    </>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {targetIsProduction && (
+                        <ProductionGate
+                          kind="rollback"
+                          what={
+                            rollbackTarget
+                              ? `roll back ${scriptGroup} to ${vLabel(rollbackTarget)}`
+                              : `roll back every version of ${scriptGroup}`
+                          }
+                          acknowledged={rollbackProdAck}
+                          onAcknowledge={setRollbackProdAck}
+                        />
+                      )}
+                      {rollbackDataLoss.length > 0 && (
+                        <RiskGate
+                          tone="break"
+                          title={`${countOf(rollbackDataLoss.length, "rollback")} ${rollbackDataLoss.length === 1 ? "deletes" : "delete"} rows`}
+                          body={
+                            rollbackDataLoss
+                              .map((loss) => `The rollback of ${vLabel(loss.version)} contains ${loss.kinds.join(", ")}.`)
+                              .join(" ") +
+                            " Those take rows out of a live table, and deploying the " +
+                            "version again does not bring them back — it rebuilds " +
+                            "structure, not data. Have a backup you can restore from " +
+                            "before running this."
+                          }
+                          ack="I have read these statements and know which rows they delete."
+                          acknowledged={rollbackDataLossAck}
+                          onAcknowledge={setRollbackDataLossAck}
+                        />
+                      )}
+                      {rollbackOthers.length > 0 && rollbackOldest && (
+                        <RiskGate
+                          tone="drift"
+                          title={`${countOf(rollbackOthers.length, "other script")} applied since ${vLabel(rollbackOldest)}`}
+                          body={
+                            `These were applied to ${preflightResult.schema} after ` +
+                            `${vLabel(rollbackOldest)}, the oldest version this rollback ` +
+                            "undoes. They may use what the rollback removes, and a DROP " +
+                            "... CASCADE takes their objects with it."
+                          }
+                          ack="I have checked these scripts and mean to roll back anyway."
+                          acknowledged={rollbackOtherAck}
+                          onAcknowledge={setRollbackOtherAck}
+                        >
+                          <ul className="mono text-[12px] space-y-0.5">
+                            {rollbackOthers.slice(0, 10).map((other) => (
+                              <li key={`${other.script_name}@${other.version}`}>
+                                {`${other.script_name} ${vLabel(other.version)}`}
+                                {other.applied_at ? ` · applied ${fmtDate(other.applied_at)}` : ""}
+                              </li>
+                            ))}
+                          </ul>
+                          {rollbackOthers.length > 10 && (
+                            <div className="help mt-1">{`…and ${rollbackOthers.length - 10} more.`}</div>
+                          )}
+                          {/* Until the server has listed them for this plan,
+                              the list is the database check's, narrowed by time. */}
+                          {rollbackOtherScripts?.key !== rollbackKey && (
+                            <div className="help mt-1">
+                              From the last database check. A dry run lists them again
+                              from the ledger.
+                            </div>
+                          )}
+                        </RiskGate>
+                      )}
+                      {targetIsProduction && (
+                        <ApprovalPanel
+                          action="revert"
+                          migrationCount={rollbackReady ? rollbackSteps.length : 0}
+                          targetVersion={rollbackOldest ?? ""}
+                          versionsLabel={listVersions(rollbackSteps.map((step) => step.version))}
+                          hashReady={rollbackHash !== null}
+                          hashError={rollbackHashError}
+                          loading={approvalsLoading}
+                          error={rollbackApprovalError ?? approvalsReadError}
+                          unreadable={approvalsReadError !== null && approvals.length === 0}
+                          busy={approvalBusy}
+                          approved={approvedRollback}
+                          pending={pendingRollback}
+                          latest={latestRollback}
+                          viewerEmail={user?.email ?? ""}
+                          isAdmin={isAdmin}
+                          bypass={bypass}
+                          note={rollbackApprovalNote}
+                          onNoteChange={setRollbackApprovalNote}
+                          onRequest={handleRequestRollbackApproval}
+                          onDecide={(id, decision) => void handleDecideApproval(id, decision, "revert")}
+                        />
+                      )}
+
+                      {rollbackErrorShown && <pre className="err-pre">{rollbackErrorShown}</pre>}
+                      {rollbackDryRun && rollbackDryRun.key === rollbackKey && (
+                        <div className="flex items-start gap-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                          <span className="flex-none mt-0.5" style={{ color: "var(--sync)" }}>
+                            <CheckIcon size={14} />
+                          </span>
+                          <span>{rollbackDryRun.message}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          disabled={rollbackBlocked}
+                          onClick={() => void handleRollback(true)}
+                        >
+                          <EyeIcon size={13} />
+                          {rollbackBusy === "dry" ? "Running the dry run…" : "Dry run the rollback"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-destructive btn-sm"
+                          disabled={rollbackRunBlocked}
+                          onClick={() => void handleRollback(false)}
+                        >
+                          {rollbackBusy === "real"
+                            ? "Rolling back…"
+                            : rollbackTarget
+                              ? `Roll back to ${vLabel(rollbackTarget)}`
+                              : "Roll back every version"}
+                        </button>
+                      </div>
+                      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                        {rollbackHint}
+                      </div>
+                      {!targetIsProduction && (
+                        <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                          Outside production a rollback runs as soon as you press it — no
+                          second person is needed.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {revertedHistory.length > 0 && (
+                    <div className="mt-4">
+                      <div className="section-title mb-1">Rollback history</div>
+                      {revertedHistory.slice(0, 10).map((row) => (
+                        <div
+                          key={`${row.version}@${row.reverted_at}`}
+                          className="flex items-center justify-between gap-3 py-1.5"
+                          style={{ borderTop: "1px solid var(--border)" }}
+                        >
+                          <span className="mono text-[13px]">{vLabel(row.version)}</span>
+                          <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                            {`${row.applied_at ? `applied ${fmtDate(row.applied_at)} · ` : ""}rolled back ${fmtDate(row.reverted_at)}`}
+                          </span>
+                        </div>
+                      ))}
+                      {revertedHistory.length > 10 && (
+                        <div className="help mt-1">{`…and ${revertedHistory.length - 10} more.`}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2312,8 +3325,13 @@ export default function DeployPage() {
 
                     <div>
                       {pendingScripts.map((script, i) => {
-                        const kind = changeTypeOf(script.sql_content);
+                        const reading = describeChangeType(script.sql_content);
+                        const kind = reading.recorded;
                         const from = i === 0 ? currentLabel : `v${pendingScripts[i - 1].version}`;
+                        // The version this one follows on the target, for the
+                        // step note. null on a fresh target: there is no step.
+                        const previous =
+                          i === 0 ? preflightResult.currentVersion : pendingScripts[i - 1].version;
                         const inRun = targetVersion
                           ? compareVersions(script.version, targetVersion) <= 0
                           : false;
@@ -2328,7 +3346,8 @@ export default function DeployPage() {
                             cell={{ status: inRun ? "queued" : "not-in-run" }}
                             selected={inRun}
                             sql={script.sql_content}
-                            sqlOpen={inRun && kind === "breaking"}
+                            sqlOpen={inRun && reading.countsAsBreaking}
+                            notes={pendingRowNotes(script, reading, previous)}
                           />
                         );
                       })}
@@ -2369,7 +3388,7 @@ export default function DeployPage() {
                             is what stops working after this succeeds; deletes
                             rows is what you need a backup for. A rename is the
                             first and not the second. */}
-                        <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
+                        <div className="flex justify-between" title="Migrations marked breaking, or containing SQL that is always breaking"><span style={{ color: "var(--text-3)" }}>Breaking</span><span className="mono">{breakingCount}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Deletes rows</span><span className="mono">{dataLossScripts.length}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Lines of SQL</span><span className="mono">{linesOfSql}</span></div>
                         <div className="flex justify-between"><span style={{ color: "var(--text-3)" }}>Strategy</span><span>one transaction</span></div>
@@ -2396,7 +3415,15 @@ export default function DeployPage() {
                               "already there. Anything reading the old shape — an app, a " +
                               "view, a report — stops working the moment this commits. The " +
                               "breaking ones in the list on the left are open already, " +
-                              "showing the statements they will run."
+                              "showing the statements they will run." +
+                              (louderCount === 0
+                                ? ""
+                                : louderCount === 1
+                                  ? " One of them is marked less than breaking but has a " +
+                                    "statement that is always breaking, so it is counted here."
+                                  : ` ${louderCount} of them are marked less than breaking but ` +
+                                    "have a statement that is always breaking, so they are " +
+                                    "counted here.")
                             }
                             ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`}
                             acknowledged={breakingAcknowledged}
@@ -2406,14 +3433,21 @@ export default function DeployPage() {
                         {dataLossScripts.length > 0 && (
                           <RiskGate
                             tone="break"
-                            title={`${dataLossScripts.length} migration${dataLossScripts.length === 1 ? "" : "s"} deletes rows`}
+                            title={`${dataLossScripts.length} ${dataLossScripts.length === 1 ? "migration deletes" : "migrations delete"} rows`}
                             body={
                               `This run contains ${dataLossKinds}. Those take rows out of ` +
                               "a live table, and no rollback puts them back — a down " +
-                              "script rebuilds structure, not data. Nothing else on this " +
-                              "page catches this: a TRUNCATE changes no structure, so it " +
-                              "is graded a patch and shows no breaking pill. Have a " +
-                              "backup you can restore from before running this."
+                              "script rebuilds structure, not data. " +
+                              (unflaggedDataLossKinds.length === 0
+                                ? ""
+                                : unflaggedDataLossKinds.length === 1
+                                  ? `A ${unflaggedDataLossKinds[0]} changes no structure, so it is never ` +
+                                    "graded breaking and gets no breaking pill — this box is the only " +
+                                    "warning it gets. "
+                                  : `${unflaggedDataLossKinds.join(" and ")} change no structure, so they ` +
+                                    "are never graded breaking and get no breaking pill — this box is " +
+                                    "the only warning they get. ") +
+                              "Have a backup you can restore from before running this."
                             }
                             ack="I have read these statements and know which rows they delete."
                             acknowledged={dataLossAcknowledged}
@@ -2503,8 +3537,8 @@ export default function DeployPage() {
                             hashReady={runHash !== null}
                             hashError={hashError}
                             loading={approvalsLoading}
-                            error={approvalError}
-                            unreadable={approvalError !== null && approvals.length === 0}
+                            error={approvalError ?? approvalsReadError}
+                            unreadable={approvalsReadError !== null && approvals.length === 0}
                             busy={approvalBusy}
                             approved={approvedRun}
                             pending={pendingRun}
@@ -2515,7 +3549,7 @@ export default function DeployPage() {
                             note={approvalNote}
                             onNoteChange={setApprovalNote}
                             onRequest={handleRequestApproval}
-                            onDecide={handleDecideApproval}
+                            onDecide={(id, decision) => void handleDecideApproval(id, decision, "deploy")}
                           />
                         )}
                       </div>
@@ -2594,7 +3628,13 @@ export default function DeployPage() {
                         </ChecklistItem>
                         {breakingCount > 0 ? (
                           <ChecklistItem ok={breakingAcknowledged}>
-                            Breaking changes · {breakingCount}{" "}
+                            {/* Counted as describeChangeType counts: marked
+                                breaking, or containing SQL that is always
+                                breaking whatever the mark says. */}
+                            Breaking changes · {breakingCount}
+                            {louderCount > 0
+                              ? `, including ${louderCount} marked less than breaking whose SQL is always breaking`
+                              : ""}{" "}
                             {breakingAcknowledged ? "· acknowledged" : "· need acknowledging"}
                           </ChecklistItem>
                         ) : (
@@ -2632,7 +3672,7 @@ export default function DeployPage() {
                           </ChecklistItem>
                         )}
                         {targetIsProduction &&
-                          (approvalError && !approvedRun ? (
+                          (approvalsReadError && !approvedRun ? (
                             // "not requested yet" would be a reading of a list
                             // this page never managed to read.
                             <ChecklistItem info>Approval · could not be read</ChecklistItem>
@@ -2670,7 +3710,7 @@ export default function DeployPage() {
                             <ChecklistItem ok>
                               Drift check · in sync
                               {driftResult.expectedVersion ? (
-                                <> with <span className="mono">v{driftResult.expectedVersion}</span></>
+                                <> with lineage <span className="mono">v{driftResult.expectedVersion}</span></>
                               ) : null}
                             </ChecklistItem>
                           ) : driftResult.status === "drifted" ? (
@@ -2772,7 +3812,10 @@ export default function DeployPage() {
 
           <div>
             {runScripts.map((script, i) => {
-              const kind = changeTypeOf(script.sql_content);
+              // The same reading as the pending list: the pill is the recorded
+              // level, and a script counted as breaking for its SQL says so.
+              const reading = describeChangeType(script.sql_content);
+              const kind = reading.recorded;
               const cell = runStatus[scriptKey(script)] ?? { status: "queued" };
               const ran = cell.statements !== undefined ? ` · ${fmtStatements(cell.statements)}` : "";
               const subByStatus: Record<RunStatus, string> = {
@@ -2799,6 +3842,7 @@ export default function DeployPage() {
                   rightPill={`v${script.version}`}
                   cell={cell}
                   sql={script.sql_content}
+                  notes={reading.louderNote ? [{ text: reading.louderNote, warn: true }] : undefined}
                 />
               );
             })}
@@ -3022,8 +4066,8 @@ export default function DeployPage() {
 
 // Drift pre-check panel (Phase 6). Renders the real lineage drift state for the
 // chosen target — or an honest "not tracked" message — in place of the old stub.
-// Shared by the stage-1 pre-check and the stage-3 post-deploy verify; the copy
-// shifts slightly via `context`.
+// Shared by the stage-1 pre-check, the stage-3 post-deploy verify and the check
+// after a rollback; the copy shifts slightly via `context`.
 function DriftPanel({
   phase,
   result,
@@ -3034,14 +4078,18 @@ function DriftPanel({
   phase: DriftPhase;
   result: DriftResult | null;
   error: string | null;
-  context: "precheck" | "verify";
+  /**
+   * "precheck" before a deploy, "verify" after one, "rollback" after a
+   * rollback. The last two re-read a schema that has just changed.
+   */
+  context: "precheck" | "verify" | "rollback";
   targetVersion: string;
 }) {
   // Defaults cover the loading state; each case below overrides what it needs.
   let icon = <span className="spin" style={{ width: 16, height: 16 }} />;
   let circle: React.CSSProperties = { background: "var(--surface-3)", color: "var(--text-3)" };
   let title =
-    context === "verify" ? "Re-checking the schema…" : "Checking the target for drift…";
+    context === "precheck" ? "Checking the target for drift…" : "Re-checking the schema…";
   let body: React.ReactNode = "Comparing the live schema against its tracked snapshot.";
   let pillClass = "pill pill-neutral";
   let pillText = "checking";
@@ -3055,7 +4103,7 @@ function DriftPanel({
     icon = <DriftIcon size={16} />;
     title = "Target schema isn't tracked";
     body =
-      "Track this schema on the Dashboard to capture a baseline snapshot — drift checks then compare the live structure against it. Until then this deploy assumes the target matches its migration ledger.";
+      "Track this schema on the Dashboard to capture a baseline snapshot — drift checks then compare the live structure against it. Until then Deploy assumes the target matches its migration ledger.";
     pillText = "not tracked";
   } else if (phase === "error") {
     icon = <AlertCircleIcon size={16} />;
@@ -3063,7 +4111,9 @@ function DriftPanel({
     body = error ?? "Something went wrong running the drift check.";
     pillText = "error";
   } else if (phase === "ready" && result) {
-    const v = result.expectedVersion ? `v${result.expectedVersion}` : "its snapshot";
+    // The snapshot's number is Schema Studio's lineage counter, not a script
+    // version, so it says so, the way the dashboard labels it.
+    const v = result.expectedVersion ? `lineage v${result.expectedVersion}` : "its snapshot";
     if (result.status === "unreachable") {
       icon = <AlertTriangleIcon size={16} />;
       circle = {
@@ -3077,9 +4127,9 @@ function DriftPanel({
       icon = <CheckIcon size={16} />;
       circle = { background: "var(--sync-soft)", color: "var(--sync)" };
       title =
-        context === "verify"
-          ? `Verified — live schema matches ${v}`
-          : `No drift — target matches ${v}`;
+        context === "precheck"
+          ? `No drift — target matches ${v}`
+          : `Verified — live schema matches ${v}`;
       body = result.summary;
       pillClass = "pill pill-sync";
       pillText = "in sync";
@@ -3096,9 +4146,18 @@ function DriftPanel({
           {result.summary}{" "}
           {context === "verify" ? (
             <>
-              Re-snapshot the target on the Dashboard to record{" "}
-              <span className="mono">v{targetVersion}</span> as its new expected baseline.
+              Re-snapshot the target on the Dashboard to record its structure after{" "}
+              <span className="mono">v{targetVersion}</span> as the new expected baseline.
             </>
+          ) : context === "rollback" ? (
+            /* The revert route records the structure it leaves as the new
+               baseline, and its message says "Lineage advanced to ..." when it
+               did, so drift seen here is not the rollback itself. */
+            "A rollback records the structure it leaves as the new baseline, so this " +
+            "drift is not the rollback itself. Either that record failed (the message " +
+            "above says “Lineage advanced to …” when it worked), or something changed " +
+            "the schema outside Schema Studio. Check the difference on the Dashboard " +
+            "before re-snapshotting the target there."
           ) : (
             "Review before deploying — the live structure differs from its tracked snapshot."
           )}

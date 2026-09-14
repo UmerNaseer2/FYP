@@ -161,6 +161,18 @@ describe("request checks (before any database)", () => {
     expect(mockClient.queries).toEqual([]);
   });
 
+  it("refuses more versions than one rollback may undo, in words a person can act on", async () => {
+    const versions = Array.from({ length: 51 }, (_, index) => `${51 - index}.0.0`);
+    const res = await revert({ ...BASE, versions });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "A rollback can undo at most 50 versions at a time, and this request lists 51. Nothing was " +
+        "rolled back. Roll back in steps: undo the newest 50 first, then roll back again."
+    );
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+    expect(mockClient.queries).toEqual([]);
+  });
+
   it("refuses a registry rollback for a version the request does not undo", async () => {
     const res = await revert({
       ...BASE,
@@ -316,8 +328,9 @@ describe("ledger checks", () => {
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("not_applied");
     expect(String(res.body.error)).toBe(
-      'v4.0.0 of "orders_fix" is not applied to schema "sales" - there is nothing to roll back. ' +
-        "Reload the page; someone may have rolled it back already."
+      'v4.0.0 of "orders_fix" is not applied to schema "sales", so it can\'t be rolled back. ' +
+        "Nothing was rolled back. Someone may have rolled it back already: check the database " +
+        "again and plan the rollback from what is applied now."
     );
     expect(count(mockClient, "ROLLBACK")).toBe(1);
   });
@@ -328,6 +341,11 @@ describe("ledger checks", () => {
     expect(res.body.code).toBe("not_newest");
     expect(res.body.mustAlsoUndo).toEqual(["3.0.0"]);
     expect(String(res.body.error)).toContain("v3.0.0 of \"orders_fix\" is newer than v2.0.0");
+    // The page reads the ledger again on this code, and the advice matches.
+    expect(String(res.body.error)).toContain(
+      "Nothing was rolled back. This usually means the list of applied versions was out of date: " +
+        "check the database again and plan the rollback from what is applied now."
+    );
     expect(ran(mockClient, "DROP TABLE t2;")).toBe(false);
   });
 

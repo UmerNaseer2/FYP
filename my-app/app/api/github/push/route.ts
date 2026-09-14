@@ -433,6 +433,9 @@ async function attachRollback(config: GitHubConfig, input: AttachPush, files: Re
   // The rollback goes beside its migration under the SAME spelling of the
   // version (an old v1.0.sql gets v1.0.down.sql): the pull route pairs the
   // two files by name, so another spelling would never be read as its rollback.
+  // findVersionFiles returns `down` only when it is spelled that way, so a
+  // v1.0.0.down.sql beside v1.0.sql is neither read nor replaced here: it is
+  // not this version's rollback, and v1.0.down.sql is added instead.
   const upVersion = parseRegistryFileName(up.name)?.version ?? version;
   const rollbackName = down ? down.name : rollbackFileName(upVersion);
   const rollbackUrl = contentsFileUrl(config, input.database, input.schema, scriptName, rollbackName);

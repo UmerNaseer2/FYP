@@ -7,6 +7,7 @@ import {
   type ApprovalAction,
   type ApprovalScript,
 } from "@/lib/approvals-db";
+import { MAX_ROLLBACK_VERSIONS } from "@/lib/rollback-plan";
 
 /**
  * Ask for, and read, approval to run a deploy or a rollback on production.
@@ -26,15 +27,18 @@ import {
  */
 
 /** Narrow one entry of the caller's `scripts` array, or explain what is wrong. */
-function parseScript(value: unknown, index: number): ApprovalScript | string {
+function parseScript(value: unknown, index: number, action: ApprovalAction): ApprovalScript | string {
   const raw = (value ?? {}) as Record<string, unknown>;
   const scriptName = String(raw.script_name ?? "").trim();
   const version = String(raw.version ?? "").trim();
   const sqlContent = String(raw.sql_content ?? "");
+  // For a rollback, `scripts` holds rollbacks, so "Migration 2" would send
+  // the reader looking in the wrong list.
+  const which = `${action === "revert" ? "Rollback" : "Migration"} ${index + 1}`;
 
-  if (!scriptName) return `Migration ${index + 1} has no script name.`;
-  if (!version) return `Migration ${index + 1} has no version.`;
-  if (!sqlContent.trim()) return `Migration ${index + 1} has no SQL.`;
+  if (!scriptName) return `${which} has no script name.`;
+  if (!version) return `${which} has no version.`;
+  if (!sqlContent.trim()) return `${which} has no SQL.`;
   return { scriptName, version, sqlContent };
 }
 
@@ -128,10 +132,24 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
+  // The revert route refuses a rollback of more than MAX_ROLLBACK_VERSIONS
+  // versions, so an approval for one could never be spent. Refuse it here,
+  // before a second person spends time approving it.
+  if (action === "revert" && body.scripts.length > MAX_ROLLBACK_VERSIONS) {
+    return NextResponse.json(
+      {
+        error:
+          `A rollback can undo at most ${MAX_ROLLBACK_VERSIONS} versions at a time, and this ` +
+          `request lists ${body.scripts.length}, so it was not sent for approval. Roll back in ` +
+          `steps of at most ${MAX_ROLLBACK_VERSIONS} versions, and ask for approval of each.`,
+      },
+      { status: 400 }
+    );
+  }
 
   const scripts: ApprovalScript[] = [];
   for (let i = 0; i < body.scripts.length; i++) {
-    const parsed = parseScript(body.scripts[i], i);
+    const parsed = parseScript(body.scripts[i], i, action);
     if (typeof parsed === "string") {
       return NextResponse.json({ error: parsed }, { status: 400 });
     }

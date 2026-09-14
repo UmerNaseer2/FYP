@@ -593,6 +593,10 @@ export function determineNewerSchema(
   const collides = left.schema === right.schema;
   const leftName = collides ? "the source schema" : left.schema;
   const rightName = collides ? "the target schema" : right.schema;
+  // The same two names at the start of a sentence. Only the role phrases take a
+  // capital: a schema's own name is printed exactly as it is spelled.
+  const leftStart = collides ? "The source schema" : left.schema;
+  const rightStart = collides ? "The target schema" : right.schema;
 
   if (
     left.versionScheme !== null &&
@@ -602,7 +606,7 @@ export function determineNewerSchema(
     return {
       newer: "unknown",
       reason:
-        `${leftName} numbers itself as ${left.detectedVersion} and ` +
+        `${leftStart} numbers itself as ${left.detectedVersion} and ` +
         `${rightName} as ${right.detectedVersion}. Those are not the same ` +
         `kind of version, so neither one is "ahead" of the other.`,
     };
@@ -617,14 +621,14 @@ export function determineNewerSchema(
     if (order > 0) {
       return {
         newer: "left",
-        reason: `${leftName} is newer based on version ${left.detectedVersion}.`,
+        reason: `${leftStart} is newer based on version ${left.detectedVersion}.`,
       };
     }
 
     if (order < 0) {
       return {
         newer: "right",
-        reason: `${rightName} is newer based on version ${right.detectedVersion}.`,
+        reason: `${rightStart} is newer based on version ${right.detectedVersion}.`,
       };
     }
 
@@ -643,7 +647,7 @@ export function determineNewerSchema(
           ? "Neither schema records a version of its own, "
           : `Neither ${leftName} nor ${rightName} records a version of its own, `) +
         "so the structural diff is the whole answer."
-      : `${blank[0] === left ? leftName : rightName} records no version of its ` +
+      : `${blank[0] === left ? leftStart : rightStart} records no version of its ` +
         "own, so there is nothing to rank the two against.";
 
   return { newer: "unknown", reason };

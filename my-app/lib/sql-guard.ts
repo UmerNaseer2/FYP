@@ -20,8 +20,13 @@
  * the next closer disappeared before the scan ran. A script could hide a COMMIT
  * in that gap and be waved past the guard. A scanner cannot be fooled that way,
  * because it only ever recognises an opener while it is actually reading code.
+ *
+ * keepQuotedNames leaves "quoted names" as they are and still blanks the rest.
+ * The change-type reader needs it to tell DROP TRIGGER "Audit" from a CREATE
+ * TRIGGER of some other trigger. Every guard uses the default, which blanks
+ * them, so a keyword hidden in a quoted name never counts as code.
  */
-export function maskNonCode(sql: string): string {
+export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } = {}): string {
   const out = sql.split("");
   // A dollar-quote tag is empty or starts with a letter/underscore, which is
   // what keeps a `$1` placeholder from being read as an opening tag. Sticky so
@@ -73,7 +78,9 @@ export function maskNonCode(sql: string): string {
           break;
         }
       }
-      blank(i, Math.min(j, sql.length));
+      // The scan still steps over a kept name whole, so a -- or a quote
+      // inside it is never read as the start of something else.
+      if (!(ch === '"' && options.keepQuotedNames)) blank(i, Math.min(j, sql.length));
       i = j;
       continue;
     }
@@ -161,6 +168,18 @@ export function findRowDestroyingStatements(sql: string): string[] {
   ];
   return checks.filter(([pattern]) => pattern.test(code)).map(([, label]) => label);
 }
+
+/**
+ * The labels findRowDestroyingStatements can return that the breaking grade
+ * never catches. TRUNCATE and DELETE move no structure, so changeTypeOf grades
+ * them patch and Deploy shows no breaking pill for them. Every DROP in that
+ * list is always breaking as well, so the reader already has one warning for it.
+ *
+ * Deploy uses this to say when its deletes-rows gate is the only warning a
+ * statement gets. tests/sql-guard.test.ts checks it against gradeSql, so the
+ * two modules cannot drift apart.
+ */
+export const ROW_DESTROYING_NOT_BREAKING: readonly string[] = ["TRUNCATE", "DELETE"];
 
 /**
  * Statements that can fail when they meet the rows already in the table, even

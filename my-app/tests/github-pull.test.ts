@@ -159,6 +159,40 @@ describe("GET /api/github/pull", () => {
     }
   });
 
+  it("explains a rollback whose name does not match its migration, and one the family is past", async () => {
+    registry([
+      file(`${FAMILY}/v0.9.0.down.sql`),
+      file(`${FAMILY}/v1.0.sql`),
+      file(`${FAMILY}/v1.0.0.down.sql`),
+      file(`${FAMILY}/v2.0.0.sql`),
+      file(`${FAMILY}/v2.0.0.down.sql`),
+      file(`${FAMILY}/v2.0.down.sql`),
+    ]);
+    serve(`${FAMILY}/v1.0.sql`, UP1);
+    serve(`${FAMILY}/v2.0.0.sql`, UP2);
+    serve(`${FAMILY}/v2.0.0.down.sql`, DOWN1);
+
+    const { status, body } = await pull();
+    expect(status).toBe(200);
+    // Files pair by exact name: v1.0.0.down.sql is not the rollback of v1.0.sql.
+    const scripts = body.scripts as Array<{ version: string; rollback_state: string }>;
+    expect(scripts.map((script) => [script.version, script.rollback_state])).toEqual([
+      ["1.0", "none"],
+      ["2.0.0", "usable"],
+    ]);
+    // None of these says "saving again removes it": the push refuses v0.9.0
+    // (below v2.0.0), v1.0.0 (v1.0 exists) and v2.0 (v2.0.0 exists).
+    expect(body.warnings).toEqual([
+      `${FAMILY}/v0.9.0.down.sql has no migration beside it (left by an earlier failed save) and is ignored. ` +
+        "v0.9.0 can't be saved again, because v2.0.0 is already published and a new version must be higher. " +
+        "Delete this file on GitHub to clear this warning.",
+      `${FAMILY}/v1.0.0.down.sql is ignored: its name does not match v1.0.sql, so it is not read as the rollback of v1.0. ` +
+        'v1.0 has no rollback yet; add one with "Add a missing rollback" in the Script Editor.',
+      `${FAMILY}/v2.0.down.sql is ignored: its name does not match v2.0.0.sql, so it is not read as the rollback of v2.0.0. ` +
+        "v2.0.0 already has its rollback in v2.0.0.down.sql, so this extra file can be deleted on GitHub.",
+    ]);
+  });
+
   it("labels a rollback that runs nothing and one that ends the transaction, and sends neither", async () => {
     registry([
       file(`${FAMILY}/v1.0.0.sql`),

@@ -93,7 +93,12 @@ export function validateRegistrySegment(
 
 /**
  * Check a script (family) name: letters, digits, _ and - only, 1 to 150
- * characters. Returns the problem in plain words, or null when it is fine.
+ * characters, and at least one letter or digit. Returns the problem in plain
+ * words, or null when it is fine.
+ *
+ * The last rule matters because both screens turn every other character into
+ * _, so "@@@" arrives here as "___": a folder name that says nothing about the
+ * script. The screens and the push route all ask this one function.
  */
 export function validateScriptName(value: unknown): string | null {
   if (typeof value !== "string" || value === "") {
@@ -104,6 +109,9 @@ export function validateScriptName(value: unknown): string | null {
   }
   if (!SCRIPT_NAME_PATTERN.test(value)) {
     return `This script name can't be used. ${SCRIPT_NAME_RULE} Replace spaces and other characters with _ or -.`;
+  }
+  if (!/[A-Za-z0-9]/.test(value)) {
+    return "This script name is only _ and - characters. Add at least one letter or digit, so the name says what the script is for.";
   }
   return null;
 }
@@ -175,25 +183,39 @@ function readEntry(entry: RegistryEntry): { version: string; isDown: boolean } |
  *              earlier save that failed half-way)
  *   - highest: the highest version among the MIGRATION files, as written
  *              ("2.0"), so a leftover rollback never raises the floor
- * Versions match with compareVersions, so an existing v1.0.sql blocks 1.0.0.
+ * The migration matches with compareVersions, so an existing v1.0.sql blocks
+ * 1.0.0. Its rollback must be spelled exactly like it (v1.0.sql pairs with
+ * v1.0.down.sql), because that is how the pull route pairs the two files: a
+ * v1.0.0.down.sql beside v1.0.sql is never read as its rollback, so it is not
+ * returned as one here either. With no migration, the leftover spelled like
+ * `version` wins, since that is the name a new save of `version` writes.
  */
 export function findVersionFiles(
   entries: ReadonlyArray<RegistryEntry>,
   version: string,
 ): { up: RegistryFileRef | null; down: RegistryFileRef | null; highest: string | null } {
-  let up: RegistryFileRef | null = null;
-  let down: RegistryFileRef | null = null;
+  let up: { ref: RegistryFileRef; version: string } | null = null;
+  const downs: { ref: RegistryFileRef; version: string }[] = [];
   const migrations: string[] = [];
   for (const entry of entries) {
     const file = readEntry(entry);
     if (!file) continue;
     if (!file.isDown) migrations.push(file.version);
     if (compareVersions(file.version, version) !== 0) continue;
-    const ref = { name: entry.name, sha: entry.sha };
-    if (file.isDown) down = down ?? ref;
-    else up = up ?? ref;
+    const found = { ref: { name: entry.name, sha: entry.sha }, version: file.version };
+    if (file.isDown) downs.push(found);
+    else up = up ?? found;
   }
-  return { up, down, highest: highestVersion(migrations) };
+
+  // The rollback file spelled exactly like `spelling`, if the folder has one.
+  const spelledLike = (spelling: string) => downs.find((down) => down.version === spelling)?.ref ?? null;
+  let down: RegistryFileRef | null;
+  if (up) {
+    down = spelledLike(up.version);
+  } else {
+    down = spelledLike(version) ?? downs[0]?.ref ?? null;
+  }
+  return { up: up ? up.ref : null, down, highest: highestVersion(migrations) };
 }
 
 /** What a family folder holds, read by familyVersions. */

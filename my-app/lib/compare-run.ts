@@ -22,6 +22,7 @@ import {
   renderMigrationScript,
   renderRollbackScript,
   type SqlStatement,
+  statementsThatRun,
 } from "@/lib/generate-sql";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -689,13 +690,10 @@ async function compareOneTarget(
 
   // The tally grades the run, not the file: safe mode comments its destructive
   // statements out, so counting them made a script that does nothing advertise
-  // a breaking change and propose a major version bump. Same predicate
-  // migrationChangeLevel uses, so the two cannot disagree.
-  const willRun = script.statements.filter(
-    (s) =>
-      s.kind !== "MANUAL" &&
-      !((s.destructive || s.needsArmedDrop === true) && !allowDataLoss),
-  );
+  // a breaking change and propose a major version bump. statementsThatRun is
+  // the list migrationChangeLevel and the SQL header count too, so none of the
+  // three can disagree.
+  const willRun = statementsThatRun(script);
   const { breaking, safe, info } = tallySeverities(willRun);
 
   // migrationChangeLevel also answers "unknown", which it never reaches from a

@@ -635,6 +635,25 @@ describe("POST /api/github/push, adding a rollback to a saved version", () => {
     });
   });
 
+  it("adds the rollback under the migration's own spelling when another spelling is in the folder", async () => {
+    // Pull never reads v1.2.0.down.sql as the rollback of v1.2.sql, so it is
+    // neither read nor replaced: the rollback goes where pull will find it.
+    answers[`GET ${FOLDER}`] = listing(["v1.2.sql", "u"], ["v1.2.0.down.sql", "other"]);
+    answers[`PUT ${fileUrl("v1.2.down.sql")}`] = saved("v1.2.down.sql");
+    const { status, body } = await push(ATTACH);
+    expect(status).toBe(200);
+    expect(body.rollback_saved).toBe(true);
+    expect(body.paths).toEqual({
+      migration: "db/public/orders_fix/v1.2.sql",
+      rollback: "db/public/orders_fix/v1.2.down.sql",
+    });
+    const [put] = writes();
+    expect(put.body).not.toHaveProperty("sha");
+    expect(put.body?.message).toBe(rollbackCommitMessage("add_missing", IDENTITY));
+    expect(decoded(put)).toBe(DOWN);
+    expect(calls.some((call) => call.url === DOWN_URL)).toBe(false);
+  });
+
   it("says the outcome is unknown when the connection drops", async () => {
     answers[`GET ${FOLDER}`] = listing(["v1.2.0.sql", "u"]);
     answers[`PUT ${DOWN_URL}`] = () => {

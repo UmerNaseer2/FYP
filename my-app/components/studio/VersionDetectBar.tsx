@@ -14,6 +14,8 @@ import { ChevronDownIcon } from "@/components/ui/icons";
 // The reason it earns space above the diff: a sync runs source → target, and if
 // the TARGET is the side declaring the higher version, the migration below
 // would move a newer schema backwards. That is worth a colour, not a footnote.
+// Unless the two structures already match: then there is no migration, nothing
+// moves, and the bar says that instead of warning about a push that can't happen.
 // When neither side records a version — the common case — the bar shrinks to
 // one line that says so, because "we looked and found nothing" is information
 // and silently omitting the bar would read as "there was nothing to look for".
@@ -117,12 +119,15 @@ export function VersionDetectBar({
   targetName,
   target,
   verdict,
+  inSync,
 }: {
   sourceName: string;
   source: DetectedVersion | null;
   targetName: string;
   target: DetectedVersion | null;
   verdict: Verdict | null;
+  /** The migration has no statements: the structures already match. */
+  inSync: boolean;
 }) {
   const sourceHas = Boolean(source && source.table);
   const targetHas = Boolean(target && target.table);
@@ -142,9 +147,10 @@ export function VersionDetectBar({
   }
 
   // Only the backwards direction is coloured. A source that is ahead is the
-  // normal direction of a sync and does not need to shout about it.
+  // normal direction of a sync and does not need to shout about it. With the
+  // structures in sync nothing would move, so there is nothing to warn about.
   const tone =
-    verdict && verdict.newer === "right"
+    verdict && verdict.newer === "right" && !inSync
       ? " verdet--back"
       : verdict && verdict.newer === "left"
         ? " verdet--fwd"
@@ -167,12 +173,20 @@ export function VersionDetectBar({
 
       {verdict && (
         <p className="verdet__why">
-          {verdict.newer === "right" && (
-            <b>
-              The migration below would move the target backwards. The push
-              button below asks you to confirm first.{" "}
-            </b>
-          )}
+          {/* The same test as the push button's backwards tick (newer is the
+              target, and the migration has statements), so the two agree. */}
+          {verdict.newer === "right" &&
+            (inSync ? (
+              <b>
+                The structures already match, so there is nothing to push. Only
+                the declared versions differ:{" "}
+              </b>
+            ) : (
+              <b>
+                The migration below would move the target backwards. The push
+                button below asks you to confirm first.{" "}
+              </b>
+            ))}
           {verdict.reason}
         </p>
       )}

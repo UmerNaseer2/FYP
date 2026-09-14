@@ -62,6 +62,35 @@ export function versionsToUndo(applied: ReadonlyArray<string>, target: string | 
     .sort((left, right) => compareVersions(right, left));
 }
 
+/**
+ * The most versions one rollback may undo. One number for three places, so
+ * they agree: the revert route refuses a longer list, the approvals route
+ * will not record an approval for one (no rollback could ever spend it), and
+ * the Deploy page offers only "Roll back to" choices within it. A family with
+ * more applied versions can still go all the way back, in several rollbacks.
+ */
+export const MAX_ROLLBACK_VERSIONS = 50;
+
+/** One "Roll back to" choice: where the family goes back to (null for "before the first version") and how many versions that undoes. */
+export type RollbackTarget = { target: string | null; undoCount: number };
+
+/**
+ * The "Roll back to" choices, given the applied versions newest first: each
+ * version below the newest (undoing every version above it), then "before
+ * the first version" (undoing all of them). A choice that would undo more
+ * than MAX_ROLLBACK_VERSIONS versions is left out, so the screen never offers
+ * a rollback the revert route refuses.
+ */
+export function rollbackTargets(appliedNewestFirst: ReadonlyArray<string>): RollbackTarget[] {
+  const targets: RollbackTarget[] = appliedNewestFirst
+    .slice(1, MAX_ROLLBACK_VERSIONS + 1)
+    .map((target, index) => ({ target, undoCount: index + 1 }));
+  if (appliedNewestFirst.length > 0 && appliedNewestFirst.length <= MAX_ROLLBACK_VERSIONS) {
+    targets.push({ target: null, undoCount: appliedNewestFirst.length });
+  }
+  return targets;
+}
+
 /** Whether a set of versions to undo is exactly the newest ones applied. */
 export type NewestFirstCheck =
   | { ok: true }
@@ -112,6 +141,93 @@ export function checkNewestFirst(
 
   if (mustAlsoUndo.length === 0 && duplicates.length === 0 && notApplied.length === 0) return { ok: true };
   return { ok: false, mustAlsoUndo, duplicates, notApplied };
+}
+
+// ─── Version labels, for messages ───────────────────────────────────────────
+// The revert route's messages and the Deploy screen's rollback panel name the
+// same versions, so both use these two and read the same way.
+
+/** "v1.2.0" whether the caller wrote "1.2.0" or "v1.2.0". */
+export function vLabel(version: string): string {
+  return `v${version.trim().replace(/^v/i, "")}`;
+}
+
+/** "v3.0.0", "v3.0.0 and v2.0.0", "v3.0.0, v2.0.0 and v1.0.0". */
+export function listVersions(versions: ReadonlyArray<string>): string {
+  const labels = versions.map(vLabel);
+  if (labels.length <= 1) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+// ─── A whole "roll back to" plan, for the Deploy screen ─────────────────────
+
+/** One applied version of the family, as the pre-flight read reports it. */
+export type AppliedRollbackRow = {
+  version: string;
+  applied_at: string | null;
+  down_sql?: string | null;
+};
+
+/** One step of a rollback plan: a version to undo, and what undoes it. */
+export type RollbackStep<Registry> = {
+  /**
+   * The version as the ledger spells it. The revert request and the approval
+   * fingerprint both use this spelling: the route claims approvals over the
+   * ledger's own text, so a registry "1.1" would not match a ledger "1.1.0".
+   */
+  version: string;
+  appliedAt: string | null;
+  /** The rollback that will run, or why none can: the same pick the revert route makes. */
+  resolved: ResolvedRollback;
+  /** The registry's entry for this version ("1.1" matches "1.1.0"), or null when it has none. */
+  registry: Registry | null;
+  /**
+   * True when the copy saved with the version runs and the registry holds a
+   * different rollback for it (the file was edited later). The saved copy
+   * still wins; the screen says so, so nobody assumes the file they can see
+   * in GitHub is the one that runs.
+   */
+  registryDiffers: boolean;
+};
+
+// Line endings and blank lines at either end are not a difference worth
+// reporting: apply stores the rollback trimmed, and Windows editors add \r.
+function sameRollbackText(left: string, right: string): boolean {
+  const tidy = (text: string) => text.replace(/\r\n/g, "\n").trim();
+  return tidy(left) === tidy(right);
+}
+
+/**
+ * Plan a "roll back to `target`": each applied version above it, newest
+ * first, with the rollback that will undo it. A null target means "before
+ * the first version", so every applied version.
+ *
+ * `registry` is the family's versions from the GitHub registry. Each entry
+ * comes back unchanged on its step, so the caller keeps whatever else it
+ * knows about the file (for example, why its rollback could not be read).
+ */
+export function planRollback<Registry extends { version: string; down_sql?: string | null }>(
+  applied: ReadonlyArray<AppliedRollbackRow>,
+  registry: ReadonlyArray<Registry>,
+  target: string | null,
+): RollbackStep<Registry>[] {
+  const steps: RollbackStep<Registry>[] = [];
+  for (const version of versionsToUndo(applied.map((row) => row.version), target)) {
+    // versionsToUndo hands back the same strings, so an exact match finds the row.
+    const row = applied.find((candidate) => candidate.version === version);
+    if (!row) continue;
+    const entry = registry.find((candidate) => compareVersions(candidate.version, version) === 0) ?? null;
+    const registryText = entry?.down_sql ?? null;
+    const resolved = resolveRollback(row.down_sql, registryText);
+    const registryDiffers =
+      "sql" in resolved &&
+      resolved.source === "ledger" &&
+      typeof registryText === "string" &&
+      hasExecutableSql(registryText) &&
+      !sameRollbackText(resolved.sql, registryText);
+    steps.push({ version, appliedAt: row.applied_at, resolved, registry: entry, registryDiffers });
+  }
+  return steps;
 }
 
 // Same ranks as the apply route's loudestChangeType: the loudest level in a

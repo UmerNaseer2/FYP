@@ -6,6 +6,7 @@ import {
   migrationChangeLevel,
   renderMigrationScript,
   renderRollbackScript,
+  statementsThatRun,
   type MigrationOptions,
 } from "@/lib/generate-sql";
 import { suggestBumpLevel } from "@/lib/script-status";
@@ -24,6 +25,36 @@ import type {
 function migration(source: SchemaSnapshot, target: SchemaSnapshot, options: MigrationOptions = {}) {
   return generateMigration(compareSchemas(source, target), options);
 }
+
+describe("renderMigrationScript — header tally", () => {
+  // The Compare page counts only the statements that run. The header used to
+  // count the held-back drops too, so it said "3 breaking" beside a page that
+  // said "1 breaking" for the same script.
+  const source = schema([table("customers", [column("id", { nullable: false }), column("full_name")])]);
+  const target = schema([table("customers", [column("id", { nullable: false }), column("legacy_code")])]);
+
+  it("counts only the statements that run when drops are held back", () => {
+    const script = migration(source, target);
+    const run = statementsThatRun(script);
+    expect(run.length).toBeLessThan(script.statements.length);
+    const breaking = run.filter((s) => s.severity === "breaking").length;
+    const safe = run.filter((s) => s.severity === "safe").length;
+    const info = run.filter((s) => s.severity === "info").length;
+    expect(renderMigrationScript(script)).toContain(
+      `-- Statements: ${script.statements.length}  (${run.length} run: ${breaking} breaking · ${safe} safe · ${info} info)`
+    );
+    // The DROP COLUMN is breaking, but it is commented out, so it is not counted.
+    expect(breaking).toBe(0);
+  });
+
+  it("keeps the plain tally when every statement runs", () => {
+    const script = migration(source, target, { allowDataLoss: true });
+    expect(statementsThatRun(script)).toHaveLength(script.statements.length);
+    const sql = renderMigrationScript(script);
+    expect(sql).toMatch(/-- Statements: \d+  \(\d+ breaking · \d+ safe · \d+ info\)/);
+    expect(sql).not.toMatch(/-- Statements: .* run: /);
+  });
+});
 
 describe("generateMigration — direction", () => {
   it("creates a table the target is missing", () => {

@@ -148,31 +148,41 @@ type FamilyRead =
 /** What the target says is applied for this script, stamped with what was asked. */
 type AppliedRead = { key: string; ok: true; version: string | null } | { key: string; ok: false };
 
-/** A version that was pushed but whose rollback was not saved. */
-type RollbackIssue = {
-  /** The server's own words about what happened to the rollback. */
-  error: string;
-  /** False when someone else's rollback is already there: a retry can only be refused. */
-  canRetry: boolean;
-  /** Exactly what was pushed, so a retry attaches the rollback to that version. */
-  body: { database_name: string; schema_name: string; script_name: string; version: string; down_sql: string };
-};
-
 type PushState =
   | { kind: "idle" }
   | { kind: "pushing" }
-  | { kind: "ok"; message: string; url: string | null; rollbackIssue: RollbackIssue | null }
+  // key/version: the family and version saved, so a rollback added to it
+  // later can update this box. rollbackLine: what became of the rollback when
+  // it was not saved with the version (null when it was); cleared once GitHub
+  // holds one, so this box never disagrees with the offer below it.
+  // rollbackFailed: a rollback was sent and not saved, so the box is amber.
+  | {
+      kind: "ok";
+      key: string;
+      version: string;
+      message: string;
+      rollbackLine: string | null;
+      rollbackFailed: boolean;
+      url: string | null;
+    }
   // offerNext: the server said the number was taken, so offer the next free
   // one. suggested: the number the server's message names, to spot when
   // GitHub moved on again before the re-read came back.
   | { kind: "err"; message: string; offerNext: boolean; suggested: string | null };
 
-type RetryState =
-  | { kind: "idle" }
-  | { kind: "saving" }
-  | { kind: "ok"; message: string }
-  // final: retrying again cannot help (a rollback is already there).
-  | { kind: "err"; message: string; final: boolean };
+/** The last push that saved a version, as it was sent. */
+type PushedVersion = {
+  key: string;
+  sql: string;
+  version: string;
+  /** The rollback sent with that push, or null when none was sent. */
+  sentDown: string | null;
+  /** GitHub holds a rollback with statements for it, so none can be added any more. */
+  hasRollback: boolean;
+};
+
+/** Adding a rollback to the version just pushed, stamped with that version. */
+type AttachStatus = { key: string; version: string; kind: "saving" | "ok" | "err"; message: string };
 
 /** The fields of a /api/github/push answer this screen reads. */
 type PushAnswer = {
@@ -249,16 +259,12 @@ export function MigrationWorkbench({
   // and the highest_version of a 409). GitHub's listing can lag a moment
   // behind a write, so these keep the next number above what we know exists.
   const [learned, setLearned] = useState<{ key: string; versions: string[] }>({ key: "", versions: [] });
-  // What was last pushed successfully, to stop the same migration being
-  // pushed twice as two versions by a second click.
-  const [lastPushed, setLastPushed] = useState<{
-    key: string;
-    sql: string;
-    downSql: string | undefined;
-    version: string;
-  } | null>(null);
+  // What was last pushed successfully. Pushing the same migration again would
+  // publish a copy of it as the next version, so that is blocked, and the
+  // rollback is offered for the version already pushed instead.
+  const [lastPushed, setLastPushed] = useState<PushedVersion | null>(null);
   const [push, setPush] = useState<PushState>({ kind: "idle" });
-  const [retry, setRetry] = useState<RetryState>({ kind: "idle" });
+  const [attach, setAttach] = useState<AttachStatus | null>(null);
 
   // Everything below reads the pane the user is currently looking at.
   const showingDown = pane === "down";
@@ -286,7 +292,8 @@ export function MigrationWorkbench({
   // The Script Editor's rule: anything but letters, digits, _ and - becomes _.
   // Computed once, so the preview, the saved path and the message agree.
   const scriptName = (name.trim() || suggestedName).replace(/[^a-zA-Z0-9_-]/g, "_");
-  // Only an empty or over-long name can still fail after that.
+  // A name can still fail after that: over-long, or left with no letter or
+  // digit ("@@@" becomes "___"). The push route asks the same function.
   const nameProblem = validateScriptName(scriptName);
   const folder = `${targetDatabase}/${targetSchema}/${scriptName}/`;
   const familyKey = `${targetDatabase}/${targetSchema}/${scriptName}`;
@@ -372,11 +379,20 @@ export function MigrationWorkbench({
   // ── Direction ────────────────────────────────────────────────────────────
   const movesBackwards = versionVerdict?.newer === "right" && !inSync;
 
-  const alreadyPushed =
-    lastPushed !== null &&
-    lastPushed.key === familyKey &&
-    lastPushed.sql === sql &&
-    lastPushed.downSql === downSql;
+  // ── The same migration again (the Script Editor's rule) ──────────────────
+  // Judged on the migration alone: a rollback written or changed since does
+  // not make it a new version. What the person usually means is to add that
+  // rollback to the version already pushed, so the offer below Push does that.
+  const pushedHere = lastPushed !== null && lastPushed.key === familyKey ? lastPushed : null;
+  const sameMigration = pushedHere !== null && pushedHere.sql === sql;
+  const attachOffer =
+    pushedHere !== null &&
+    sameMigration &&
+    !pushedHere.hasRollback &&
+    downSql !== undefined &&
+    !downTxnViolation;
+  const attachHere = attach !== null && attach.key === familyKey ? attach : null;
+  const attachSaving = attachHere?.kind === "saving";
 
   /**
    * Why Push can't be pressed right now, or null when it can. The first
@@ -394,15 +410,25 @@ export function MigrationWorkbench({
     if (familyLoading) return `Checking GitHub for the versions of ${scriptName}…`;
     if (appliedLoading) return `Checking which version of ${scriptName} is applied to ${targetLabel}…`;
     if (familyError) return familyError;
+    if (pushedHere !== null && sameMigration) {
+      const pushed = pushedHere.version;
+      if (attachOffer) {
+        return `Add the rollback to v${pushed} with the button below, rather than pushing the same migration again.`;
+      }
+      if (pushedHere.hasRollback) {
+        return `v${pushed} was pushed with this same migration and already has a rollback, which can't be changed. Edit the migration to push a new version.`;
+      }
+      if (rollbackRuns && pushWithoutRollback) {
+        return `v${pushed} was pushed with this same migration. Edit the migration to push a new version, or untick Save without a rollback to add the rollback on the Rollback tab to v${pushed}.`;
+      }
+      return `v${pushed} was pushed with this same migration. Edit the migration to push a new version, or write a rollback on the Rollback tab to add to v${pushed}.`;
+    }
     if (rollbackProblem) return rollbackProblem;
     if (quieterText && !quieterAck) {
       return `Tick "Publish it as ${level} anyway" under Change level, or pick ${suggestion}.`;
     }
     if (movesBackwards && !backwardsAck) {
       return `Tick the box above to confirm ${targetName} should move back to the older schema.`;
-    }
-    if (alreadyPushed && lastPushed) {
-      return `This exact migration was just pushed as v${lastPushed.version}. Edit it to push a new version.`;
     }
     return null;
   }
@@ -476,7 +502,8 @@ export function MigrationWorkbench({
     const sentDown = downSql;
     const where = `${targetDatabase}/${targetSchema}/${scriptName}`;
     setPush({ kind: "pushing" });
-    setRetry({ kind: "idle" });
+    // The last offer's outcome was about the version pushed before this one.
+    setAttach(null);
 
     let res: Response;
     let data: PushAnswer | null;
@@ -534,81 +561,132 @@ export function MigrationWorkbench({
 
     const saved = typeof data.version === "string" ? data.version : version;
     learn(sentKey, saved);
-    setLastPushed({ key: sentKey, sql: sentSql, downSql: sentDown, version: saved });
     const url = typeof data.url === "string" ? data.url : null;
     if (sentDown === undefined) {
+      setLastPushed({ key: sentKey, sql: sentSql, version: saved, sentDown: null, hasRollback: false });
       setPush({
         kind: "ok",
-        message: `v${saved} pushed to ${where} on GitHub. No rollback was saved, so Deploy cannot undo this version.`,
+        key: sentKey,
+        version: saved,
+        message: `v${saved} pushed to ${where} on GitHub.`,
+        rollbackLine: "No rollback was saved, so Deploy cannot undo this version.",
+        rollbackFailed: false,
         url,
-        rollbackIssue: null,
       });
     } else if (data.rollback_saved === true) {
+      setLastPushed({ key: sentKey, sql: sentSql, version: saved, sentDown, hasRollback: true });
       setPush({
         kind: "ok",
+        key: sentKey,
+        version: saved,
         message: `v${saved} pushed to ${where} on GitHub, with its rollback.`,
+        rollbackLine: null,
+        rollbackFailed: false,
         url,
-        rollbackIssue: null,
       });
     } else {
-      // The version is saved; only its rollback is not. Say so, and offer to
-      // attach the same rollback to the same version (no new version).
+      // The version is saved; only its rollback is not. The offer below Push
+      // adds the rollback to this same version (no new version), unless
+      // someone else's rollback is already there: a saved rollback never changes.
+      setLastPushed({
+        key: sentKey,
+        sql: sentSql,
+        version: saved,
+        sentDown,
+        hasRollback: data.rollback_error_code === "rollback_exists",
+      });
       setPush({
         kind: "ok",
+        key: sentKey,
+        version: saved,
         message: `v${saved} pushed to ${where} on GitHub.`,
+        rollbackLine: data.rollback_error ?? `Its rollback was not saved, so Deploy cannot undo v${saved} yet.`,
+        rollbackFailed: true,
         url,
-        rollbackIssue: {
-          error: data.rollback_error ?? `Its rollback was not saved, so Deploy cannot undo v${saved} yet.`,
-          canRetry: data.rollback_error_code !== "rollback_exists",
-          body: {
-            database_name: targetDatabase,
-            schema_name: targetSchema,
-            script_name: scriptName,
-            version: saved,
-            down_sql: sentDown,
-          },
-        },
       });
     }
   }
 
-  // Attach mode of the push route: adds the rollback to the version that was
-  // just saved. It never creates a version.
-  async function retryRollback(issue: RollbackIssue) {
-    const { version } = issue.body;
-    setRetry({ kind: "saving" });
+  // The offer below Push: add the rollback on the Rollback tab to the version
+  // just pushed with this same migration. This is the push route's attach
+  // mode: it never creates a version, and it refuses when the version already
+  // has a rollback with statements.
+  async function addRollbackToPushed() {
+    if (!attachOffer || pushedHere === null || downSql === undefined || attachSaving) return;
+    // Taken from this render, so the answer is reported against what was sent.
+    const key = familyKey;
+    const version = pushedHere.version;
+    const text = downSql;
+    setAttach({ key, version, kind: "saving", message: "" });
+
+    let outcome: { kind: "ok" | "err"; message: string; hasRollback: boolean };
     try {
       const res = await fetch("/api/github/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attach_rollback: true, ...issue.body }),
+        body: JSON.stringify({
+          attach_rollback: true,
+          database_name: targetDatabase,
+          schema_name: targetSchema,
+          script_name: scriptName,
+          version,
+          down_sql: text,
+        }),
       });
       const data = (await res.json().catch(() => null)) as PushAnswer | null;
       if (res.ok && data?.ok === true) {
-        setRetry({ kind: "ok", message: `Rollback saved. Deploy can now undo v${version}.` });
+        outcome = { kind: "ok", message: `Rollback saved. Deploy can now undo v${version}.`, hasRollback: true };
       } else if (data?.code === "rollback_exists") {
         // After a dropped connection it may be OUR rollback that is there, so
-        // don't claim it is someone else's.
-        setRetry({
+        // don't claim it is someone else's. Either way none can be added now.
+        outcome = {
           kind: "err",
           message: `v${version} already has a rollback with statements, so nothing more was saved. A saved rollback never changes.`,
-          final: true,
-        });
+          hasRollback: true,
+        };
       } else {
-        setRetry({
+        outcome = {
           kind: "err",
           message: data?.error ?? `Saving the rollback failed (status ${res.status}) without an explanation from the server.`,
-          final: false,
-        });
+          hasRollback: false,
+        };
       }
     } catch {
-      setRetry({
+      outcome = {
         kind: "err",
         message: `The connection to the server dropped while saving the rollback for v${version}, so it is not known whether it was saved. Trying again is safe: if it was saved, the retry changes nothing and says so.`,
-        final: false,
-      });
+        hasRollback: false,
+      };
+    }
+
+    // Only this click's own status is replaced: a push started meanwhile
+    // cleared it, and this answer is then about a version no longer shown.
+    setAttach((current) =>
+      current !== null && current.key === key && current.version === version && current.kind === "saving"
+        ? { key, version, kind: outcome.kind, message: outcome.message }
+        : current,
+    );
+    if (outcome.hasRollback) {
+      // No rollback can be added to it any more, so the offer goes; and the
+      // push box's line about the missing rollback is out of date, so it goes too.
+      setLastPushed((current) =>
+        current !== null && current.key === key && current.version === version
+          ? { ...current, hasRollback: true }
+          : current,
+      );
+      setPush((current) =>
+        current.kind === "ok" && current.key === key && current.version === version
+          ? { ...current, rollbackLine: null, rollbackFailed: false }
+          : current,
+      );
     }
   }
+
+  // "Retry" only when the rollback on the tab is the one the push failed to save.
+  const attachLabel =
+    pushedHere !== null && pushedHere.sentDown !== null && pushedHere.sentDown === downSql
+      ? "Retry saving the rollback"
+      : `Add this rollback to v${pushedHere !== null ? pushedHere.version : ""}`;
 
   // The backwards warning's numbers, from each side's own version table.
   const targetDeclares = targetVersion?.version ? asVersion(targetVersion.version) : "a newer version";
@@ -928,7 +1006,9 @@ export function MigrationWorkbench({
                         </div>
                         <span className="help break-words sm:text-right sm:max-w-[260px]">
                           {floor === null
-                            ? `First version of this family: v${nextVersion} — the level you pick is still recorded`
+                            ? // The push preview below already says "First version of this
+                              // family"; this line says why, in the same shape as the one below.
+                              `${appliedKnown ? `Applied to ${targetLabel}: none · ` : ""}In GitHub: none · a new family starts at v${nextVersion}; the level you pick is still recorded`
                             : `${
                                 appliedKnown
                                   ? `Applied to ${targetLabel}: ${appliedVersion ? `v${appliedVersion}` : "none"} · `
@@ -1066,34 +1146,15 @@ export function MigrationWorkbench({
                   </button>
                 </div>
 
-                {/* Inline push result */}
-                {push.kind === "ok" && push.rollbackIssue === null && (
-                  <div className="warn-inline" style={{ background: "var(--sync-soft)" }}>
-                    <span className="ico" style={{ color: "var(--sync)" }}>
-                      <CheckIcon size={14} />
-                    </span>
-                    <div>
-                      {push.message}
-                      {push.url && (
-                        <>
-                          {" "}
-                          <a
-                            href={push.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: "var(--brand)", textDecoration: "underline" }}
-                          >
-                            View on GitHub
-                          </a>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {push.kind === "ok" && push.rollbackIssue !== null && (
-                  <div className="warn-inline">
-                    <span className="ico">
-                      <AlertTriangleIcon size={14} />
+                {/* Inline push result: green, or amber when a rollback was
+                    sent and not saved. */}
+                {push.kind === "ok" && (
+                  <div
+                    className="warn-inline"
+                    style={push.rollbackFailed ? undefined : { background: "var(--sync-soft)" }}
+                  >
+                    <span className="ico" style={push.rollbackFailed ? undefined : { color: "var(--sync)" }}>
+                      {push.rollbackFailed ? <AlertTriangleIcon size={14} /> : <CheckIcon size={14} />}
                     </span>
                     <div className="min-w-0">
                       <div>
@@ -1112,26 +1173,39 @@ export function MigrationWorkbench({
                           </>
                         )}
                       </div>
-                      <div className="mt-1">{push.rollbackIssue.error}</div>
-                      {retry.kind === "ok" && (
-                        <div className="mt-1" style={{ color: "var(--sync)" }}>
-                          {retry.message}
-                        </div>
-                      )}
-                      {retry.kind === "err" && <div className="mt-1">{retry.message}</div>}
-                      {push.rollbackIssue.canRetry &&
-                        retry.kind !== "ok" &&
-                        !(retry.kind === "err" && retry.final) && (
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm mt-2"
-                            disabled={retry.kind === "saving"}
-                            onClick={() => push.rollbackIssue && retryRollback(push.rollbackIssue)}
-                          >
-                            {retry.kind === "saving" ? "Saving the rollback…" : "Retry saving the rollback"}
-                          </button>
-                        )}
+                      {push.rollbackLine && <div className="mt-1">{push.rollbackLine}</div>}
                     </div>
+                  </div>
+                )}
+
+                {/* Add the rollback on the Rollback tab to the version just
+                    pushed with this same migration. Its outcome stays after
+                    the offer goes away. */}
+                {(attachOffer || (attachHere !== null && attachHere.kind !== "saving")) && (
+                  <div className="panel p-3">
+                    {attachOffer && pushedHere !== null && (
+                      <>
+                        <p className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                          {`This adds the rollback on the Rollback tab to v${pushedHere.version} as v${pushedHere.version}.down.sql; no new version is made. A saved rollback cannot be changed afterwards, so read it carefully first.`}
+                        </p>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm mt-2"
+                          disabled={attachSaving}
+                          onClick={addRollbackToPushed}
+                        >
+                          {attachSaving ? "Saving the rollback…" : attachLabel}
+                        </button>
+                      </>
+                    )}
+                    {attachHere !== null && attachHere.kind !== "saving" && (
+                      <p
+                        className={`text-[12.5px]${attachOffer ? " mt-2" : ""}`}
+                        style={{ color: attachHere.kind === "ok" ? "var(--sync)" : "var(--drift)" }}
+                      >
+                        {attachHere.message}
+                      </p>
+                    )}
                   </div>
                 )}
                 {push.kind === "err" && (
