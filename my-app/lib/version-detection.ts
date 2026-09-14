@@ -11,6 +11,17 @@ import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
 export { normalizeChangeLevel };
 export type { ChangeLevel };
 
+// Script groups: the per-group head rule and the group-by-group verdict. Pure,
+// so the browser's timeline and this detector read one rule.
+import {
+  compareFamilyHeads,
+  displayVersion,
+  familyGaps,
+  familyHeadRows,
+  familyHeadsOf,
+  hasFamilyHeads,
+  listNames,
+} from "./version-timeline";
 
 /** How a schema numbers itself: dotted semver, or a plain running number. */
 export type VersionScheme = "semver" | "numeric";
@@ -28,6 +39,8 @@ export type VersionTimelineEntry = {
    * failed run never counts as the current version.
    */
   succeeded?: boolean | null;
+  /** The script group (script_patch.script_name), or null when the table has no such column. */
+  scriptName?: string | null;
 };
 
 export type VersionDetectionResult = {
@@ -42,6 +55,14 @@ export type VersionDetectionResult = {
    */
   versionScheme: VersionScheme | null;
   timeline: VersionTimelineEntry[];
+  /**
+   * Each script group's highest version, read from the whole table rather than
+   * from `timeline`, which stops at TIMELINE_ROW_LIMIT rows. Null when the
+   * table has no script_name column or no row names a group. Versions only
+   * compare inside one group, so when both sides have these,
+   * determineNewerSchema judges group by group.
+   */
+  familyHeads: Record<string, string> | null;
   fallbackMode: boolean;
   message: string;
 };
@@ -484,6 +505,8 @@ async function readTimeline(
       sourceTable: tableName,
       changeLevel: inferChangeLevel(row, changeTypeColumn),
       succeeded: successColumn ? readSuccess(row[successColumn]) : null,
+      scriptName:
+        scriptNameColumn && row[scriptNameColumn] != null ? String(row[scriptNameColumn]) : null,
     };
   });
 
@@ -492,6 +515,47 @@ async function readTimeline(
   // newest first whatever the column types are.
   timeline.sort(newestFirst);
   return { timeline, truncated: result.rows.length >= TIMELINE_ROW_LIMIT };
+}
+
+/**
+ * Each script group's highest version, read from the whole table.
+ *
+ * A second, small query rather than a reading of the timeline: the timeline
+ * stops at TIMELINE_ROW_LIMIT rows, and a group whose newest version is older
+ * than that would lose its head. DISTINCT keeps one row per version however
+ * often the table repeats it. Only a table with a script_name column has
+ * groups; for any other table nothing is read and the answer is null.
+ */
+async function readFamilyHeads(
+  cfg: ClientConfig,
+  schemaName: string,
+  tableName: string,
+  columns: string[]
+): Promise<Record<string, string> | null> {
+  const scriptNameColumn = findColumn(columns, ["script_name"]);
+  const versionColumn = findColumn(columns, VERSION_COLUMNS);
+  if (!scriptNameColumn || !versionColumn) return null;
+  // A failed run is not a head (familyHeadsOf skips it), so read Flyway-style
+  // success along with the version when the table has it.
+  const successColumn = findColumn(columns, ["success"]);
+  const selected = successColumn
+    ? [scriptNameColumn, versionColumn, successColumn]
+    : [scriptNameColumn, versionColumn];
+
+  const pool = getPoolForConfig(cfg);
+  const result = await pool.query<Record<string, unknown>>(
+    `SELECT DISTINCT ${selected.map((column) => q(column)).join(", ")} ` +
+      `FROM ${q(schemaName)}.${q(tableName)}`
+  );
+
+  const heads = familyHeadsOf(
+    result.rows.map((row) => ({
+      scriptName: row[scriptNameColumn] != null ? String(row[scriptNameColumn]) : null,
+      version: row[versionColumn] != null ? String(row[versionColumn]) : null,
+      failed: successColumn ? readSuccess(row[successColumn]) === false : false,
+    }))
+  );
+  return hasFamilyHeads(heads) ? heads : null;
 }
 
 export async function fetchSchemaVersionInfo(
@@ -510,6 +574,7 @@ export async function fetchSchemaVersionInfo(
         comparableValue: null,
         versionScheme: null,
         timeline: [],
+        familyHeads: null,
         fallbackMode: true,
         message: "no version table in this schema",
       };
@@ -517,6 +582,7 @@ export async function fetchSchemaVersionInfo(
 
     const { tableName, columns } = found;
     const { timeline, truncated } = await readTimeline(cfg, schemaName, tableName, columns);
+    const familyHeads = await readFamilyHeads(cfg, schemaName, tableName, columns);
     // The current version is the highest one that ran, not simply the first row.
     const current = pickCurrentVersion(timeline);
     // When no row reads as a version number, still show the newest row — but
@@ -533,6 +599,7 @@ export async function fetchSchemaVersionInfo(
       comparableValue: parsed ? parsed.value : null,
       versionScheme: parsed ? parsed.scheme : null,
       timeline,
+      familyHeads,
       fallbackMode: false,
       message: truncated
         ? `Version table found: ${tableName} — only the newest ` +
@@ -550,6 +617,7 @@ export async function fetchSchemaVersionInfo(
       comparableValue: null,
       versionScheme: null,
       timeline: [],
+      familyHeads: null,
       fallbackMode: true,
       message: `could not read a version table — ${message}`,
     };
@@ -557,11 +625,11 @@ export async function fetchSchemaVersionInfo(
 }
 
 /**
- * Which side a version verdict points at. A small union on purpose: a later
- * change can add a member (a "diverged" answer for script families that
- * disagree, say) without reshaping the verdict every screen reads.
+ * Which side a version verdict points at. "diverged" is for script groups
+ * that disagree: each side is ahead in at least one group (compareFamilyHeads),
+ * so neither side is simply newer and neither is simply outdated.
  */
-export type NewerSide = "left" | "right" | "same" | "unknown";
+export type NewerSide = "left" | "right" | "same" | "diverged" | "unknown";
 
 /** The verdict, and the sentence the screen prints under it. */
 export type NewerSchemaVerdict = { newer: NewerSide; reason: string };
@@ -570,6 +638,16 @@ export type NewerSchemaVerdict = { newer: NewerSide; reason: string };
 function rankableParts(side: VersionDetectionResult): number[] | null {
   if (side.comparableValue === null) return null;
   return readVersionParts(side.detectedVersion)?.parts ?? null;
+}
+
+/**
+ * A side's version as a verdict prints it: "v1.2.0" when the side keeps script
+ * groups (this app wrote the version), exactly as written otherwise. The
+ * version bar's headline and the timeline print versions by the same rule
+ * (displayVersion), so all three show one spelling.
+ */
+function shownVersion(side: VersionDetectionResult): string {
+  return displayVersion(side.detectedVersion ?? "", hasFamilyHeads(side.familyHeads));
 }
 
 /**
@@ -598,6 +676,34 @@ export function determineNewerSchema(
   const leftStart = collides ? "The source schema" : left.schema;
   const rightStart = collides ? "The target schema" : right.schema;
 
+  // Script groups first. A table that names its scripts (script_patch) keeps
+  // several version lines at once, and "the highest version in the table"
+  // mixes them: users_migration v3.0.0 would outrank orders_migration v1.0.0,
+  // though the two say nothing about each other. With groups on both sides,
+  // each group is judged on its own.
+  if (hasFamilyHeads(left.familyHeads) && hasFamilyHeads(right.familyHeads)) {
+    const rows = familyHeadRows(left.familyHeads, right.familyHeads);
+    const { verdict, leftAheadIn, rightAheadIn } = compareFamilyHeads(
+      left.familyHeads,
+      right.familyHeads
+    );
+    if (verdict === "right-behind") {
+      return { newer: "left", reason: `${rightStart} is behind in ${familyGaps(rows, "right")}.` };
+    }
+    if (verdict === "left-behind") {
+      return { newer: "right", reason: `${leftStart} is behind in ${familyGaps(rows, "left")}.` };
+    }
+    if (verdict === "diverged") {
+      return {
+        newer: "diverged",
+        reason:
+          `Diverged: ${leftName} is ahead in ${listNames(leftAheadIn)}, ` +
+          `${rightName} in ${listNames(rightAheadIn)}, so neither schema is simply newer.`,
+      };
+    }
+    return { newer: "same", reason: "Both schemas are at the same version in every script group." };
+  }
+
   if (
     left.versionScheme !== null &&
     right.versionScheme !== null &&
@@ -606,8 +712,8 @@ export function determineNewerSchema(
     return {
       newer: "unknown",
       reason:
-        `${leftStart} numbers itself as ${left.detectedVersion} and ` +
-        `${rightName} as ${right.detectedVersion}. Those are not the same ` +
+        `${leftStart} numbers itself as ${shownVersion(left)} and ` +
+        `${rightName} as ${shownVersion(right)}. Those are not the same ` +
         `kind of version, so neither one is "ahead" of the other.`,
     };
   }
@@ -621,14 +727,14 @@ export function determineNewerSchema(
     if (order > 0) {
       return {
         newer: "left",
-        reason: `${leftStart} is newer based on version ${left.detectedVersion}.`,
+        reason: `${leftStart} is newer based on version ${shownVersion(left)}.`,
       };
     }
 
     if (order < 0) {
       return {
         newer: "right",
-        reason: `${rightStart} is newer based on version ${right.detectedVersion}.`,
+        reason: `${rightStart} is newer based on version ${shownVersion(right)}.`,
       };
     }
 

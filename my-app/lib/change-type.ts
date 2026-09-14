@@ -595,11 +595,53 @@ export function inferChangeTypeFromSql(sql: string): ScriptChangeType {
   return gradeSql(sql).level;
 }
 
-/** The louder of two levels: breaking, then additive, then patch. */
-export function louderChangeType(a: ScriptChangeType, b: ScriptChangeType): ScriptChangeType {
-  if (a === "breaking" || b === "breaking") return "breaking";
-  if (a === "additive" || b === "additive") return "additive";
-  return "patch";
+/**
+ * The one ranking of change levels, quietest first: unknown, patch, additive,
+ * breaking. Every "which level is louder" question in the app reads this table
+ * (the level a deploy records, the level a rollback records, the push screens'
+ * quieter-level tick), so no two places can rank the levels differently.
+ *
+ * "unknown" is the lowest because it is not really a level: it is what a legacy
+ * script_patch row, or a caller that sent nothing, carries. A missing answer
+ * never outranks a real one.
+ */
+export const CHANGE_LEVEL_RANK: Readonly<Record<ChangeLevel, number>> = {
+  unknown: 0,
+  patch: 1,
+  additive: 2,
+  breaking: 3,
+};
+
+/**
+ * The louder of two levels, by CHANGE_LEVEL_RANK. On a tie it keeps the first
+ * one, so pass what the SQL says first and what a caller supplied second: the
+ * supplied level can raise the answer but never lower it. For example
+ * louderChangeType("patch", "unknown") is "patch".
+ *
+ * Generic so it takes either kind of level: two ScriptChangeTypes give back a
+ * ScriptChangeType, and a pair that may hold "unknown" gives back a ChangeLevel.
+ */
+export function louderChangeType<Level extends ChangeLevel>(computed: Level, supplied: Level): Level {
+  return CHANGE_LEVEL_RANK[supplied] > CHANGE_LEVEL_RANK[computed] ? supplied : computed;
+}
+
+/**
+ * The loudest level in a list, for recording one level for a whole run (a
+ * deploy of several migrations, or a rollback of several versions). A run that
+ * holds one breaking migration is a breaking run. An empty list is "unknown".
+ */
+export function loudestChangeLevel(levels: ReadonlyArray<ChangeLevel>): ChangeLevel {
+  let loudest: ChangeLevel = "unknown";
+  for (const level of levels) loudest = louderChangeType(loudest, level);
+  return loudest;
+}
+
+/**
+ * True for the three levels a script can carry. False for "unknown" and for
+ * anything that is not a level at all, such as a typo in a request body.
+ */
+export function isScriptChangeType(value: unknown): value is ScriptChangeType {
+  return value === "breaking" || value === "additive" || value === "patch";
 }
 
 /**

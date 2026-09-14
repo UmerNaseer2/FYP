@@ -10,6 +10,7 @@ import {
   planRollback,
   resolveRollback,
   rollbackTargets,
+  versionRange,
   versionsToUndo,
   vLabel,
 } from "@/lib/rollback-plan";
@@ -119,6 +120,15 @@ describe("vLabel and listVersions", () => {
     expect(listVersions(["3.0.0"])).toBe("v3.0.0");
     expect(listVersions(["3.0.0", "2.0.0"])).toBe("v3.0.0 and v2.0.0");
     expect(listVersions(["3.0.0", "v2.0.0", "1.0.0"])).toBe("v3.0.0, v2.0.0 and v1.0.0");
+  });
+
+  // The Deploy page's "Run …", "Deploy …" and "Dry run …" buttons name the
+  // range they select with this, first version to last, in run order.
+  it("names a run's range by its first and last version", () => {
+    expect(versionRange([])).toBe("");
+    expect(versionRange(["5.0.1"])).toBe("v5.0.1");
+    expect(versionRange(["5.0.1", "v5.0.2"])).toBe("v5.0.1 → v5.0.2");
+    expect(versionRange(["5.0.1", "5.0.2", "6.0.0"])).toBe("v5.0.1 → v6.0.0");
   });
 });
 

@@ -9,7 +9,9 @@ import {
   describeChangeType,
   gradeSql,
   inferChangeTypeFromSql,
+  isScriptChangeType,
   louderChangeType,
+  loudestChangeLevel,
   levelWithArticle,
   quieterLevelWarning,
   readChangeTypeHeader,
@@ -505,6 +507,32 @@ describe("louderChangeType", () => {
     expect(louderChangeType("patch", "breaking")).toBe("breaking");
     expect(louderChangeType("additive", "patch")).toBe("additive");
     expect(louderChangeType("patch", "patch")).toBe("patch");
+  });
+
+  it("ranks unknown below patch, so a missing level never outranks a real one", () => {
+    expect(louderChangeType("patch", "unknown")).toBe("patch");
+    expect(louderChangeType("unknown", "patch")).toBe("patch");
+    expect(louderChangeType("unknown", "unknown")).toBe("unknown");
+    expect(louderChangeType("additive", "breaking")).toBe("breaking");
+    expect(louderChangeType("breaking", "additive")).toBe("breaking");
+  });
+});
+
+describe("loudestChangeLevel", () => {
+  it("records the loudest level in a run, and unknown for an empty one", () => {
+    expect(loudestChangeLevel(["patch", "breaking", "additive"])).toBe("breaking");
+    expect(loudestChangeLevel(["unknown", "patch"])).toBe("patch");
+    expect(loudestChangeLevel(["unknown"])).toBe("unknown");
+    expect(loudestChangeLevel([])).toBe("unknown");
+  });
+});
+
+describe("isScriptChangeType", () => {
+  it("accepts exactly the three levels a script can carry", () => {
+    expect(["breaking", "additive", "patch"].every(isScriptChangeType)).toBe(true);
+    for (const value of ["unknown", "Breaking", "major", "", null, undefined, 3]) {
+      expect(isScriptChangeType(value)).toBe(false);
+    }
   });
 });
 

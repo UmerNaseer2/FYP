@@ -5,7 +5,6 @@
 // Pure on purpose (no DB, no fetch, no React): the Deploy page and the revert
 // route both import it, so the screen always shows the same SQL, and the same
 // list of versions, that the server will run.
-import type { ChangeLevel } from "./change-level";
 import { compareVersions } from "./script-status";
 import { containsTransactionControl, hasExecutableSql } from "./sql-guard";
 
@@ -159,6 +158,19 @@ export function listVersions(versions: ReadonlyArray<string>): string {
   return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
+/**
+ * The versions a deploy runs, as the buttons that run them name it: "v5.0.1"
+ * for one, "v5.0.1 → v5.0.2" for several (the first and last as given, so
+ * pass them in the order they run), "" for none. The count is left to the
+ * caller, since only some labels show it.
+ */
+export function versionRange(versions: ReadonlyArray<string>): string {
+  if (versions.length === 0) return "";
+  const first = vLabel(versions[0]);
+  const last = vLabel(versions[versions.length - 1]);
+  return versions.length === 1 ? first : `${first} → ${last}`;
+}
+
 // ─── A whole "roll back to" plan, for the Deploy screen ─────────────────────
 
 /** One applied version of the family, as the pre-flight read reports it. */
@@ -230,19 +242,8 @@ export function planRollback<Registry extends { version: string; down_sql?: stri
   return steps;
 }
 
-// Same ranks as the apply route's loudestChangeType: the loudest level in a
-// batch is the one recorded for the whole run.
-const LEVEL_RANK: Record<ChangeLevel, number> = { unknown: 0, patch: 1, additive: 2, breaking: 3 };
-
-/**
- * The loudest change level in a list (breaking > additive > patch > unknown),
- * for recording one level for a multi-version rollback. An empty list is
- * "unknown".
- */
-export function loudestChangeLevel(levels: ReadonlyArray<ChangeLevel>): ChangeLevel {
-  let loudest: ChangeLevel = "unknown";
-  for (const level of levels) {
-    if (LEVEL_RANK[level] > LEVEL_RANK[loudest]) loudest = level;
-  }
-  return loudest;
-}
+// The loudest change level in a list, recorded as one level for a
+// multi-version rollback. It lives with the one ranking of levels in
+// lib/change-type.ts; it is re-exported here because the revert route already
+// reads it from this module.
+export { loudestChangeLevel } from "./change-type";

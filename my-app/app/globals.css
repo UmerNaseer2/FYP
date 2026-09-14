@@ -342,26 +342,6 @@ body {
 .vsync-side__sub { font-size:11px; color:var(--text-3); }
 .vsync-swap { align-self:center; flex:none; margin-top:14px; }
 
-/* Source timeline rail */
-.vsync-rail { display:flex; align-items:flex-start; overflow-x:auto; padding:6px 2px 12px; }
-.vsync-node { position:relative; flex:none; min-width:92px; display:flex; flex-direction:column;
-              align-items:center; gap:4px; padding:0 14px; }
-.vsync-node::before, .vsync-node::after { content:""; position:absolute; top:8px; height:2px; background:var(--border); }
-.vsync-node::before { left:0; right:50%; }
-.vsync-node::after  { left:50%; right:0; }
-.vsync-node:first-child::before, .vsync-node:last-child::after { display:none; }
-.vsync-node__dot { position:relative; z-index:1; width:15px; height:15px; border-radius:999px;
-                   background:var(--surface); border:2px solid var(--border-strong); }
-.vsync-node.is-applied .vsync-node__dot { background:var(--sync); border-color:var(--sync); }
-.vsync-node.is-missing .vsync-node__dot { background:var(--surface); border-color:var(--brand);
-                                          box-shadow:0 0 0 3px var(--brand-soft); }
-.vsync-node__ver { font-size:12px; font-weight:600; color:var(--text); }
-.vsync-node.is-missing .vsync-node__ver { color:var(--brand); }
-.vsync-node__fam { font-size:9.5px; color:var(--text-3); max-width:84px; overflow:hidden;
-                   text-overflow:ellipsis; white-space:nowrap; }
-.vsync-node__state { font-size:9px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-3); }
-.vsync-node.is-missing .vsync-node__state { color:var(--brand); }
-
 /* Read-only stored SQL */
 .vsync-sql { background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:11px 13px;
              font-size:12px; line-height:1.55; color:var(--text); white-space:pre-wrap; word-break:break-word;
@@ -764,23 +744,6 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .verdet__more > summary .chev { flex:none; transition: transform .15s ease;
                                 transform: rotate(-90deg); }
 .verdet__more[open] > summary .chev { transform: rotate(0deg); }
-.verdet__cols { display:grid; grid-template-columns:repeat(2, minmax(0,1fr));
-                gap:10px 18px; margin-top:8px; }
-.verdet__col h4 { font-size:10.5px; font-weight:600; letter-spacing:.05em;
-                  text-transform:uppercase; color:var(--text-3); margin-bottom:4px;
-                  overflow-wrap:anywhere; }
-.verdet__entry { display:flex; align-items:baseline; gap:7px; padding:3px 0;
-                 font-size:11.5px; border-top:1px solid var(--border); }
-.verdet__col .verdet__entry:first-of-type { border-top:none; }
-.verdet__dot { width:7px; height:7px; border-radius:999px; flex:none;
-               align-self:center; background:var(--text-3); }
-.verdet__dot.lvl-breaking { background:var(--break); }
-.verdet__dot.lvl-additive { background:var(--pending); }
-.verdet__dot.lvl-patch    { background:var(--text-3); }
-.verdet__label { color:var(--text-2); overflow-wrap:anywhere; min-width:0; }
-.verdet__when { margin-left:auto; color:var(--text-3); white-space:nowrap;
-                font-variant-numeric:tabular-nums; }
-@media (max-width: 700px) { .verdet__cols { grid-template-columns:1fr; } }
 
 /* rename suggestion chip */
 .rename { padding:8px 12px; border-radius:8px; background: color-mix(in oklab, var(--drift) 10%, transparent);
@@ -1203,10 +1166,9 @@ summary.obj-header::-webkit-details-marker { display:none; }
   .mig-row { flex-wrap:wrap; }
 }
 
-/* Version Sync: keep stored SQL + timeline usable on a phone. */
+/* Version Sync: keep stored SQL usable on a phone. */
 @media (max-width: 480px) {
   .vsync-sql { max-height:220px; overflow-x:auto; white-space:pre-wrap; word-break:break-word; }
-  .vsync-node { min-width:64px; }
 }
 
 /* Script Editor: the semver segmented control + textarea. */
@@ -1269,3 +1231,115 @@ summary.obj-header::-webkit-details-marker { display:none; }
   .responsive-table tr.group-head td { padding:0; }
   .responsive-table tr.group-head td::before { display:none; }
 }
+
+/* ==== D-c: (Outdated), script-group heads, version timeline ====================
+   VersionDetectBar prints (Outdated) after the side that is behind and, when
+   both sides keep script groups, a small table of each group's head.
+   VersionTimeline (components/studio/VersionTimeline.tsx) lines up two sides'
+   versions on one axis; Compare, Version Sync and Deploy all draw it. Tokens
+   only, so the dark palette follows on its own. */
+.verdet__outdated { color:var(--drift); font-size:11.5px; font-weight:600; }
+.verdet__fam { margin-top:8px; overflow-x:auto; }
+.verdet__fam table { border-collapse:collapse; font-size:11.5px; }
+.verdet__fam th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:.05em;
+                  text-transform:uppercase; color:var(--text-3); padding:3px 16px 3px 0; }
+.verdet__fam td { padding:3px 16px 3px 0; border-top:1px solid var(--border);
+                  color:var(--text); white-space:nowrap; }
+.verdet__fam td.is-none { font-style:italic; color:var(--text-3); }
+.verdet__fam .verdet__outdated { font-style:normal; }
+
+.vtl { margin-top:8px; }
+.vtl__note { font-size:11.5px; line-height:1.5; color:var(--text-3); margin-bottom:6px; }
+.vtl__note p + p { margin-top:3px; }
+.vtl__empty { font-size:12px; font-style:italic; color:var(--text-3); }
+.vtl__scroll { overflow-x:auto; border:1px solid var(--border); border-radius:8px;
+               background:var(--surface); }
+.vtl__table { width:100%; min-width:460px; border-collapse:collapse; font-size:12px; }
+.vtl__table thead th { text-align:left; vertical-align:bottom; padding:6px 10px;
+                       font-size:10.5px; font-weight:600; letter-spacing:.05em;
+                       text-transform:uppercase; color:var(--text-3);
+                       background:var(--surface-2); border-bottom:1px solid var(--border); }
+.vtl__sidename { overflow-wrap:anywhere; }
+.vtl__outdated { color:var(--drift); text-transform:none; letter-spacing:0; }
+.vtl__group th { text-align:left; padding:7px 10px 4px; font-size:11px; font-weight:600;
+                 color:var(--text-2); background:var(--surface-2); border-top:1px solid var(--border); }
+.vtl__table tbody tr:first-child > th { border-top:none; }
+.vtl__row { cursor:pointer; }
+.vtl__row > td { padding:5px 10px; border-top:1px solid var(--border); vertical-align:middle; }
+.vtl__table tbody tr:first-child > td { border-top:none; }
+.vtl__row:hover > td, .vtl__row.is-open > td { background:var(--surface-2); }
+.vtl__toggle { display:inline-flex; align-items:center; gap:7px; min-width:0; padding:0;
+               background:none; border:0; font:inherit; color:var(--text); text-align:left;
+               cursor:pointer; }
+.vtl__toggle:focus-visible { outline:2px solid var(--brand); outline-offset:2px; border-radius:4px; }
+.vtl__chev { flex:none; color:var(--text-3); transition:transform .15s ease; }
+.vtl__row.is-open .vtl__chev { transform:rotate(90deg); }
+.vtl__dot { display:inline-block; width:7px; height:7px; border-radius:999px; flex:none;
+            background:var(--border-strong); }
+.vtl__dot.lvl-breaking { background:var(--break); }
+.vtl__dot.lvl-additive { background:var(--pending); }
+.vtl__dot.lvl-patch    { background:var(--text-3); }
+.vtl__ver { font-family:var(--font-geist-mono), ui-monospace; font-weight:600; white-space:nowrap; }
+.vtl__label { font-size:11.5px; color:var(--text-3); overflow-wrap:anywhere; }
+.vtl__side { white-space:nowrap; }
+.vtl__cell { display:inline-flex; align-items:center; gap:6px; }
+.vtl__mark { display:inline-flex; align-items:center; justify-content:center; flex:none;
+             box-sizing:border-box; width:12px; height:12px; border-radius:999px;
+             font-size:9px; font-weight:700; line-height:1; }
+.vtl__mark.is-on      { background:var(--brand); }
+.vtl__mark.is-off     { border:1.5px solid var(--border-strong); }
+.vtl__mark.is-unknown { border:1.5px dashed var(--text-3); color:var(--text-3); }
+.vtl__mark.is-failed  { background:var(--break); }
+.vtl__head { padding:1px 5px; border-radius:4px; font-size:9.5px; font-weight:700;
+             letter-spacing:.06em; color:var(--brand); background:var(--brand-soft);
+             border:1px solid color-mix(in oklab, var(--brand) 35%, transparent); }
+.vtl__when { font-size:11px; color:var(--text-3); font-variant-numeric:tabular-nums; }
+.vtl__actions { text-align:right; white-space:nowrap; cursor:default; }
+.vtl__actions > * + * { margin-left:6px; }
+.vtl__scriptrow > td { padding:4px 10px 10px; background:var(--surface-2); }
+.vtl__script { display:flex; flex-direction:column; gap:6px; }
+.vtl__scripthead { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px;
+                   font-size:11.5px; color:var(--text-2); }
+.vtl__scriptnote, .vtl__noscript { font-size:11.5px; color:var(--text-3); }
+.vtl__noscript { font-style:italic; }
+.vtl__sql { margin:0; padding:10px 12px; max-height:280px; overflow:auto;
+            white-space:pre-wrap; overflow-wrap:anywhere; font-size:11.5px; line-height:1.5;
+            color:var(--text); background:var(--surface); border:1px solid var(--border);
+            border-radius:8px; }
+.vtl__switch { display:inline-flex; border:1px solid var(--border-strong); border-radius:7px;
+               overflow:hidden; }
+.vtl__switch button { padding:2px 9px; border:0; font:inherit; font-size:11px;
+                      color:var(--text-2); background:var(--surface); cursor:pointer; }
+.vtl__switch button + button { border-left:1px solid var(--border-strong); }
+.vtl__switch button[aria-pressed="true"] { color:var(--brand); background:var(--brand-soft); font-weight:600; }
+.vtl__legend { display:flex; flex-wrap:wrap; align-items:center; gap:4px 14px; margin-top:6px;
+               font-size:11px; color:var(--text-3); }
+.vtl__legend > span { display:inline-flex; align-items:center; gap:5px; }
+.vtl__hint { margin-left:auto; }
+@media (max-width: 640px) {
+  .vtl__hint { margin-left:0; }
+  .vtl__table thead th, .vtl__row > td { padding-left:8px; padding-right:8px; }
+}
+/* ==== end D-c ================================================================= */
+
+/* ==== D-d: Deploy run selection ===============================================
+   The approval panel's line about an approval for another selection, the
+   "Run ..." button under each pending migration, and the cards that a "Run ..."
+   or "Roll back to here..." button moves focus to (focus is set by the page,
+   never by Tab, so the card needs no ring of its own). */
+.appr__other { border-top:1px solid var(--border); margin-top:10px; padding-top:8px; }
+.mig-row__action { margin-top:6px; }
+.card[tabindex="-1"]:focus { outline:none; }
+/* ==== end D-d ================================================================= */
+
+/* ==== D-e: Version Sync replay dialog and run list ============================ */
+/* The replay check can hold a long run's SQL, its risk gates and an approval,
+   so its middle scrolls while its title and buttons stay in view. 88px is the
+   modal's own padding: 24px around the card and 20px inside it, top and bottom. */
+.vsync-dialog { display:flex; flex-direction:column; max-height:calc(100vh - 88px); max-height:calc(100dvh - 88px); }
+.vsync-dialog__body { overflow-y:auto; min-height:0; flex:1 1 auto; margin-top:12px; padding-right:4px; }
+.vsync-dialog__foot { border-top:1px solid var(--border); margin-top:12px; padding-top:12px; }
+.vsync-runlist { display:flex; flex-direction:column; gap:6px; }
+.vsync-runlist summary { cursor:pointer; font-size:12.5px; color:var(--text-2); }
+.vsync-stopnote { font-size:12px; color:var(--text-3); }
+/* ==== end D-e ================================================================= */

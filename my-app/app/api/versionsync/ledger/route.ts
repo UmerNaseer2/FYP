@@ -142,7 +142,11 @@ export async function GET(request: NextRequest) {
     );
 
     const entries: LedgerEntry[] = res.rows.map((r) => {
-      const sql = typeof r.sql_content === "string" && r.sql_content.length > 0 ? r.sql_content : null;
+      // Blank SQL counts as none: the apply route refuses a script whose SQL is
+      // only whitespace, so a row like that cannot be replayed and must not be
+      // offered as if it could.
+      const sql =
+        typeof r.sql_content === "string" && r.sql_content.trim() !== "" ? r.sql_content : null;
       return {
         scriptName: r.script_name,
         version: r.version,

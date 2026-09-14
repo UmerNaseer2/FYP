@@ -1,10 +1,19 @@
 import {
   acceptVersionTable,
   determineNewerSchema,
+  fetchSchemaVersionInfo,
   normalizeChangeLevel,
   pickCurrentVersion,
   type VersionDetectionResult,
 } from "@/lib/version-detection";
+import { createFakeClient, queriesMatching, type FakeClient, type FakeStep } from "./helpers/fake-pg";
+
+// fetchSchemaVersionInfo reads through getPoolForConfig. The fake answers each
+// query from the steps a test lists, so nothing here reaches a database.
+let mockClient: FakeClient;
+jest.mock("../lib/postgres", () => ({
+  getPoolForConfig: () => mockClient,
+}));
 
 /**
  * Everything here is about READING what a foreign schema says about itself,
@@ -20,7 +29,8 @@ function detected(
   schema: string,
   version: string | null,
   comparable: number | null,
-  scheme: "semver" | "numeric" | null
+  scheme: "semver" | "numeric" | null,
+  familyHeads: Record<string, string> | null = null
 ): VersionDetectionResult {
   return {
     schema,
@@ -30,6 +40,7 @@ function detected(
     comparableValue: comparable,
     versionScheme: scheme,
     timeline: [],
+    familyHeads,
     fallbackMode: version === null,
     message: "test fixture",
   };
@@ -256,6 +267,203 @@ describe("determineNewerSchema", () => {
     ]) {
       expect(verdict.reason.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("determineNewerSchema, script group by script group", () => {
+  // A script_patch keeps several version lines at once. The overall version
+  // (the highest in the whole table) is set to point the other way in some of
+  // these: with groups on both sides, only the groups count.
+  const withGroups = (schema: string, version: string, heads: Record<string, string>) =>
+    detected(schema, version, 1, "semver", heads);
+
+  it("is the same when every group has the same head, however it is spelled", () => {
+    const verdict = determineNewerSchema(
+      withGroups("dev", "3.0.0", { users_migration: "3.0.0", orders_migration: "1.0.0" }),
+      withGroups("prod", "3.0.0", { users_migration: "v3.0.0", orders_migration: "1.0.0" })
+    );
+    expect(verdict).toEqual({
+      newer: "same",
+      reason: "Both schemas are at the same version in every script group.",
+    });
+  });
+
+  it("says left when the target is behind in one group and ahead in none", () => {
+    const verdict = determineNewerSchema(
+      withGroups("dev", "3.0.0", { users_migration: "3.0.0", orders_migration: "1.0.0" }),
+      withGroups("prod", "1.0.0", { users_migration: "1.0.0", orders_migration: "1.0.0" })
+    );
+    expect(verdict).toEqual({
+      newer: "left",
+      reason: "prod is behind in users_migration (v1.0.0 vs v3.0.0).",
+    });
+  });
+
+  it("follows the groups, not the highest version in the table", () => {
+    // dev's highest version is orders_migration's 5.0.0, which says nothing
+    // about users_migration, where dev is behind.
+    const verdict = determineNewerSchema(
+      withGroups("dev", "5.0.0", { orders_migration: "5.0.0", users_migration: "1.0.0" }),
+      withGroups("prod", "3.0.0", { orders_migration: "5.0.0", users_migration: "3.0.0" })
+    );
+    expect(verdict).toEqual({
+      newer: "right",
+      reason: "dev is behind in users_migration (v1.0.0 vs v3.0.0).",
+    });
+  });
+
+  it("says diverged when each side is ahead in a group, and names both", () => {
+    const verdict = determineNewerSchema(
+      withGroups("dev", "3.0.0", { users_migration: "3.0.0", orders_migration: "1.0.0" }),
+      withGroups("prod", "2.0.0", { users_migration: "1.0.0", orders_migration: "2.0.0" })
+    );
+    expect(verdict).toEqual({
+      newer: "diverged",
+      reason:
+        "Diverged: dev is ahead in users_migration, prod in orders_migration, " +
+        "so neither schema is simply newer.",
+    });
+  });
+
+  it("counts a group only one side has as that side being ahead", () => {
+    const verdict = determineNewerSchema(
+      withGroups("dev", "1.0.0", { users_migration: "1.0.0", billing: "1.0.0" }),
+      withGroups("prod", "1.0.0", { users_migration: "1.0.0" })
+    );
+    expect(verdict).toEqual({ newer: "left", reason: "prod is behind in billing (none vs v1.0.0)." });
+  });
+
+  it("names the sides by role when both schemas are called the same thing", () => {
+    const left = withGroups("public", "3.0.0", { users_migration: "3.0.0", orders_migration: "1.0.0" });
+    const diverged = withGroups("public", "2.0.0", { users_migration: "1.0.0", orders_migration: "2.0.0" });
+    expect(determineNewerSchema(left, diverged).reason).toBe(
+      "Diverged: the source schema is ahead in users_migration, the target schema in " +
+        "orders_migration, so neither schema is simply newer."
+    );
+    const ahead = withGroups("public", "3.0.0", { users_migration: "3.0.0", orders_migration: "2.0.0" });
+    expect(determineNewerSchema(left, ahead).reason).toBe(
+      "The source schema is behind in orders_migration (v1.0.0 vs v2.0.0)."
+    );
+  });
+
+  it("cuts a long list of groups so the reason stays one sentence", () => {
+    const behind = { a: "1.0.0", b: "1.0.0", c: "1.0.0", d: "1.0.0", e: "1.0.0" };
+    const ahead = { a: "2.0.0", b: "2.0.0", c: "2.0.0", d: "2.0.0", e: "2.0.0" };
+    expect(determineNewerSchema(withGroups("dev", "2.0.0", ahead), withGroups("prod", "1.0.0", behind)).reason).toBe(
+      "prod is behind in a (v1.0.0 vs v2.0.0), b (v1.0.0 vs v2.0.0), c (v1.0.0 vs v2.0.0) and 2 more."
+    );
+  });
+
+  it("uses the one overall version when only one side has groups", () => {
+    const verdict = determineNewerSchema(
+      detected("dev", "2.0.0", 2_000_000, "semver", { users_migration: "2.0.0" }),
+      detected("prod", "1.0.0", 1_000_000, "semver")
+    );
+    // dev keeps script groups, so its version was written by this app and
+    // reads v2.0.0, the way the version bar's headline prints it.
+    expect(verdict).toEqual({ newer: "left", reason: "dev is newer based on version v2.0.0." });
+  });
+});
+
+describe("fetchSchemaVersionInfo", () => {
+  const cfg = {} as Parameters<typeof fetchSchemaVersionInfo>[0];
+
+  /** The two catalog reads that find the version table and list its columns. */
+  function catalogSteps(table: string, columns: string[]): FakeStep[] {
+    // Both catalog queries have an ORDER BY too, so they go before any step
+    // that matches on ORDER BY.
+    return [
+      { match: /information_schema\.tables/, rows: [{ table_name: table }] },
+      { match: /information_schema\.columns/, rows: columns.map((column_name) => ({ column_name })) },
+    ];
+  }
+
+  it("reads each script group's head from the whole table, and each entry's group", async () => {
+    mockClient = createFakeClient([
+      ...catalogSteps("script_patch", ["id", "script_name", "version", "change_type", "applied_at", "sql_content"]),
+      {
+        match: /SELECT DISTINCT/,
+        rows: [
+          { script_name: "users_migration", version: "3.0.0" },
+          { script_name: "users_migration", version: "1.0.0" },
+          // Not among the rows the timeline read, and still this group's head.
+          { script_name: "orders_migration", version: "1.0.0" },
+        ],
+      },
+      {
+        match: /ORDER BY/,
+        rows: [
+          {
+            script_name: "users_migration",
+            version: "3.0.0",
+            change_type: "breaking",
+            applied_at: new Date("2026-01-03T00:00:00Z"),
+          },
+          {
+            script_name: "users_migration",
+            version: "1.0.0",
+            change_type: "additive",
+            applied_at: new Date("2026-01-02T00:00:00Z"),
+          },
+        ],
+      },
+    ]);
+
+    const info = await fetchSchemaVersionInfo(cfg, "public");
+    expect(info.familyHeads).toEqual({ users_migration: "3.0.0", orders_migration: "1.0.0" });
+    expect(info.timeline.map((entry) => entry.scriptName)).toEqual(["users_migration", "users_migration"]);
+    expect(info.detectedVersion).toBe("3.0.0");
+
+    // One row per version, from the whole table: no ORDER BY, no LIMIT.
+    const heads = queriesMatching(mockClient, /SELECT DISTINCT/);
+    expect(heads).toHaveLength(1);
+    expect(heads[0].text).toBe('SELECT DISTINCT "script_name", "version" FROM "public"."script_patch"');
+  });
+
+  it("reads a success column too, so a failed run is not a head", async () => {
+    mockClient = createFakeClient([
+      ...catalogSteps("schema_version", ["script_name", "version", "success", "applied_at"]),
+      {
+        match: /SELECT DISTINCT/,
+        rows: [
+          { script_name: "g", version: "2.0.0", success: false },
+          { script_name: "g", version: "1.0.0", success: true },
+        ],
+      },
+    ]);
+
+    const info = await fetchSchemaVersionInfo(cfg, "public");
+    expect(info.familyHeads).toEqual({ g: "1.0.0" });
+    expect(queriesMatching(mockClient, /SELECT DISTINCT/)[0].text).toBe(
+      'SELECT DISTINCT "script_name", "version", "success" FROM "public"."schema_version"'
+    );
+  });
+
+  it("reads no groups from a table without a script_name column", async () => {
+    mockClient = createFakeClient([
+      ...catalogSteps("flyway_schema_history", ["installed_rank", "version", "description", "installed_on", "success"]),
+      {
+        match: /ORDER BY/,
+        rows: [{ installed_rank: 1, version: "1.0", description: "init", installed_on: "2024-01-01", success: true }],
+      },
+    ]);
+
+    const info = await fetchSchemaVersionInfo(cfg, "public");
+    expect(info.familyHeads).toBeNull();
+    expect(info.timeline[0].scriptName).toBeNull();
+    expect(queriesMatching(mockClient, /SELECT DISTINCT/)).toHaveLength(0);
+  });
+
+  it("has no groups when there is no version table, or it cannot be read", async () => {
+    mockClient = createFakeClient([]);
+    expect((await fetchSchemaVersionInfo(cfg, "public")).familyHeads).toBeNull();
+
+    mockClient = createFakeClient([
+      { match: /information_schema\.tables/, error: { message: "permission denied for schema public" } },
+    ]);
+    const failed = await fetchSchemaVersionInfo(cfg, "public");
+    expect(failed.familyHeads).toBeNull();
+    expect(failed.message).toContain("permission denied for schema public");
   });
 });
 

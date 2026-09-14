@@ -44,6 +44,8 @@ import {
   type PulledRollbackState,
 } from "@/lib/registry-push";
 import { countOf } from "@/lib/plural";
+import { vLabel } from "@/lib/rollback-plan";
+import { displayVersion } from "@/lib/version-timeline";
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
 type Connection = {
@@ -1271,8 +1273,8 @@ export default function ScriptEditorPage() {
                             : floor === null
                               ? "First version of this family"
                               : `Applied to ${targetLabel}: ${
-                                  appliedUnreadable ? "unknown" : appliedVersion ? `v${appliedVersion}` : "none"
-                                } · In GitHub: ${githubHighest ? `v${githubHighest}` : "none"}`}
+                                  appliedUnreadable ? "unknown" : appliedVersion ? displayVersion(appliedVersion, true) : "none"
+                                } · In GitHub: ${githubHighest ? vLabel(githubHighest) : "none"}`}
                         </span>
                       )}
                       {sql.trim() && (

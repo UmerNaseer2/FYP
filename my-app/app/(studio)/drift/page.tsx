@@ -12,6 +12,7 @@ import {
   type PillTone,
 } from "@/components/ui";
 import { isProduction } from "@/lib/environments";
+import { displayVersion } from "@/lib/version-timeline";
 import {
   DriftIcon,
   AlertTriangleIcon,
@@ -576,7 +577,7 @@ function DetailTab({
             <div className="section-title mb-1">Expected ↔ Actual</div>
             <h2 className="text-[16px] font-semibold tracking-[-0.005em]">
               {view.expected.version
-                ? `Lineage v${view.expected.version} vs the live database`
+                ? `Lineage ${displayVersion(view.expected.version, true)} vs the live database`
                 : "Expected snapshot vs the live database"}
             </h2>
           </div>
@@ -710,7 +711,7 @@ function DriftHero({
             <h3 className="text-[15px] font-semibold tracking-[-0.005em]">
               The live schema has drifted from{" "}
               {view.expected.version ? (
-                <span className="mono">v{view.expected.version}</span>
+                <span className="mono">{displayVersion(view.expected.version, true)}</span>
               ) : (
                 "its expected snapshot"
               )}
@@ -736,7 +737,7 @@ function DriftHero({
         icon={<CheckIcon size={16} />}
         title={
           view.expected.version
-            ? `Live schema matches v${view.expected.version}.`
+            ? `Live schema matches ${displayVersion(view.expected.version, true)}.`
             : "Live schema matches its expected snapshot."
         }
         body={view.summary}

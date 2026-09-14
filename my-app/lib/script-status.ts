@@ -1,6 +1,8 @@
 // Pure helpers for reasoning about migration-script versions: comparing
 // semver-ish strings, and labelling each version of a script family
-// Applied / Pending / Superseded against a target database's applied history.
+// Applied / Pending / Skipped against a target database's applied history.
+// Skipped means never applied and at or below the highest applied version, so
+// a deploy (which only moves forward) will never run it.
 //
 // "Pure" on purpose — no DB, no fetch, no React — so it can be unit-tested in
 // isolation and reused by the deploy page without dragging UI state along. The
@@ -17,6 +19,29 @@ export function versionParts(version: string): number[] {
 }
 
 /**
+ * One spelling of a version, for matching: "v1.2.0", "1.2.0" and "1.2" all
+ * give "1.2.0", and "1.2.3.0" gives "1.2.3". Two versions get the same key
+ * exactly when compareVersions says they are equal, so a Map or Set keyed on
+ * it matches versions the way every comparison on screen does. Matching the
+ * raw strings used to list "v1.2.0" in script_patch and the registry's "1.2.0"
+ * as two different versions.
+ *
+ * For a strict version (one to three numbers) this is the same text as
+ * normalizeVersion. Unlike normalizeVersion it never returns null: a ledger
+ * row written by another tool ("1.2.0.3") still has to be matched.
+ *
+ * A key is for matching only. Show and send a version as it was written.
+ */
+export function versionKey(version: string): string {
+  const parts = versionParts(version);
+  // compareVersions pads the shorter side with zeros, so "1.2" is "1.2.0"...
+  while (parts.length < 3) parts.push(0);
+  // ...and for the same reason a 0 after the third part changes nothing.
+  while (parts.length > 3 && parts[parts.length - 1] === 0) parts.pop();
+  return parts.join(".");
+}
+
+/**
  * Compare two versions as a sort comparator: negative if left < right, positive
  * if left > right, 0 if equal. Pads to 3 segments so "1.2" and "1.2.0" match.
  */
@@ -28,10 +53,10 @@ export function compareVersions(left: string, right: string): number {
     const diff = (a[index] ?? 0) - (b[index] ?? 0);
     if (diff !== 0) return diff;
   }
-  // All numeric segments match → treat as equal. We deliberately do NOT fall
-  // back to a string compare here: "v1.2.0", "1.2.0", and "1.2" are the same
-  // version, and the ledger relies on that equality. De-duplication of GitHub
-  // versions is done by exact string match elsewhere, not via this comparator.
+  // All numeric segments match → treat as equal. There is deliberately no
+  // fallback to a string compare: "v1.2.0", "1.2.0", and "1.2" are the same
+  // version, and the ledger relies on that equality. Code that needs a Map or
+  // Set key for a version uses versionKey, which follows this same rule.
   return 0;
 }
 
@@ -217,12 +242,23 @@ export type AppliedVersion = {
   applied_at: string | null;
 };
 
-export type LedgerStatus = "applied" | "pending" | "superseded";
+export type LedgerStatus = "applied" | "pending" | "skipped";
 
 export type LedgerEntry = {
+  /**
+   * The version as shown: the registry's spelling when the registry holds it
+   * (the file name, e.g. "1.2.0"), else the spelling script_patch stores.
+   */
   version: string;
   status: LedgerStatus;
   appliedAt: string | null;
+  /**
+   * The version exactly as script_patch stores it ("v1.2.0" say), or null when
+   * it is not applied. Anything sent back to the database about this row, such
+   * as a rollback, uses this spelling: the database looks rows up by it, and
+   * neither `version` nor the versionKey is guaranteed to be that text.
+   */
+  appliedVersion: string | null;
   /**
    * Whether the GitHub registry holds this version for this schema. False for a
    * version that reached the database some other way — a Version Sync replay,
@@ -240,11 +276,14 @@ export type LedgerEntry = {
  * in. This is the "forward view (pending vs applied)" computed from the
  * intersection of GitHub and script_patch only.
  *
- *   - applied    → the version is in the target's script_patch history.
- *   - pending    → in GitHub, not applied, and ABOVE the current applied version
- *                  (so the forward-only deploy will pick it up).
- *   - superseded → in GitHub, not applied, but at/below the current version
- *                  (left behind by an out-of-order apply; not in the run).
+ *   - applied → the version is in the target's script_patch history.
+ *   - pending → in GitHub, not applied, and ABOVE the current applied version,
+ *               so a deploy will run it.
+ *   - skipped → in GitHub, never applied, and AT OR BELOW the current version.
+ *               Deploys only move forward, so it will never run; the fix is to
+ *               save its change again as a new version above the current one.
+ *               It is left behind when a later version reached the database
+ *               first (a hotfix line, or a version applied from elsewhere).
  *
  * An applied version that GitHub does not have for this schema is still listed,
  * marked inRegistry: false. Leaving it out used to hide it entirely — a Version
@@ -252,18 +291,20 @@ export type LedgerEntry = {
  * screen showed a stale "current version" and offered to roll back an older one
  * while a newer one was in fact applied.
  *
+ * Versions are matched with versionKey, so "v1.2.0" applied and "1.2.0" in the
+ * registry are one applied row, not an applied row plus a skipped duplicate.
+ *
  * Returns entries sorted ascending by version.
  */
 export function buildVersionLedger(
   githubVersions: string[],
   appliedHistory: AppliedVersion[]
 ): LedgerEntry[] {
-  // Map each applied version to its timestamp (first wins if duplicated).
-  const appliedAtByVersion = new Map<string, string | null>();
+  // Each applied version by its key (the first row wins if one is duplicated).
+  const appliedByKey = new Map<string, AppliedVersion>();
   for (const row of appliedHistory) {
-    if (!appliedAtByVersion.has(row.version)) {
-      appliedAtByVersion.set(row.version, row.applied_at);
-    }
+    const key = versionKey(row.version);
+    if (!appliedByKey.has(key)) appliedByKey.set(key, row);
   }
 
   // Current = the highest applied version by semver (not by apply order, since
@@ -275,27 +316,58 @@ export function buildVersionLedger(
     }
   }
 
-  // De-duplicate the GitHub versions, then add any applied version GitHub does
-  // not have, then sort ascending.
-  const inRegistry = new Set<string>(githubVersions);
-  const versions: string[] = [...inRegistry];
-  for (const version of appliedAtByVersion.keys()) {
-    if (!inRegistry.has(version)) versions.push(version);
+  // Each registry version by its key, in the registry's own spelling (the
+  // first one seen wins if two files spell the same version differently).
+  const registryByKey = new Map<string, string>();
+  for (const version of githubVersions) {
+    const key = versionKey(version);
+    if (!registryByKey.has(key)) registryByKey.set(key, version);
   }
-  versions.sort(compareVersions);
 
-  return versions.map((version) => {
-    if (appliedAtByVersion.has(version)) {
+  // Every version either side knows about, once each.
+  const keys = new Set<string>([...registryByKey.keys(), ...appliedByKey.keys()]);
+
+  const entries: LedgerEntry[] = [...keys].map((key) => {
+    const row = appliedByKey.get(key) ?? null;
+    const registryVersion = registryByKey.get(key) ?? null;
+    // A key comes from one of the two maps, so one of these is always set.
+    const version = registryVersion ?? row?.version ?? key;
+    if (row) {
       return {
         version,
-        status: "applied" as const,
-        appliedAt: appliedAtByVersion.get(version) ?? null,
-        inRegistry: inRegistry.has(version),
+        status: "applied",
+        appliedAt: row.applied_at ?? null,
+        appliedVersion: row.version,
+        inRegistry: registryVersion !== null,
       };
     }
-    if (current === null || compareVersions(version, current) > 0) {
-      return { version, status: "pending" as const, appliedAt: null, inRegistry: true };
-    }
-    return { version, status: "superseded" as const, appliedAt: null, inRegistry: true };
+    // Not applied, so it came from the registry.
+    const status: LedgerStatus =
+      current === null || compareVersions(version, current) > 0 ? "pending" : "skipped";
+    return { version, status, appliedAt: null, appliedVersion: null, inRegistry: true };
   });
+
+  return entries.sort((a, b) => compareVersions(a.version, b.version));
+}
+
+/**
+ * The versions a run "through `version`" deploys: every pending version from
+ * the lowest up to and including `version`, lowest first. [] when `version` is
+ * empty or is not one of the pending versions, so a stale pick never turns
+ * into a run of something else.
+ *
+ * This is the one definition of a partial run. Deploys only move forward, so a
+ * run never jumps over an earlier pending version to reach a later one: had
+ * the later one landed first, the earlier one would be below the target's
+ * version and could never run (Skipped).
+ */
+export function pendingPrefixThrough<T extends { version: string }>(
+  pending: ReadonlyArray<T>,
+  version: string | null | undefined
+): T[] {
+  if (!version) return [];
+  if (!pending.some((entry) => compareVersions(entry.version, version) === 0)) return [];
+  return [...pending]
+    .sort((a, b) => compareVersions(a.version, b.version))
+    .filter((entry) => compareVersions(entry.version, version) <= 0);
 }

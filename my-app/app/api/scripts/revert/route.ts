@@ -15,6 +15,7 @@ import {
   vLabel,
 } from "@/lib/rollback-plan";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
+import { analyseRunRisk } from "@/lib/deploy-risk";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import {
@@ -106,6 +107,12 @@ type RevertBody = {
   acknowledgeProduction?: unknown;
   /** Set by a screen only after somebody checked the later scripts from other families. */
   acknowledgeOtherScripts?: unknown;
+  /**
+   * Set by a screen only after somebody ticked the warning that the rollback
+   * deletes rows. Needed whenever the rollback SQL that will run holds a
+   * TRUNCATE, DELETE or a DROP that takes rows with it, dry runs included.
+   */
+  acknowledgeDataLoss?: unknown;
 };
 
 type RevertRequest = {
@@ -118,6 +125,7 @@ type RevertRequest = {
   dryRun: boolean;
   acknowledgeProduction: boolean;
   acknowledgeOtherScripts: boolean;
+  acknowledgeDataLoss: boolean;
 };
 
 /**
@@ -224,6 +232,7 @@ function parseRequest(body: RevertBody): RevertRequest | string {
     dryRun: body.dryRun === true,
     acknowledgeProduction: body.acknowledgeProduction === true,
     acknowledgeOtherScripts: body.acknowledgeOtherScripts === true,
+    acknowledgeDataLoss: body.acknowledgeDataLoss === true,
   };
 }
 
@@ -522,6 +531,32 @@ export async function POST(request: NextRequest) {
         });
       }
       plan.push({ row, sql: resolved.sql, source: resolved.source });
+    }
+
+    // ─── 8b. A rollback that deletes rows needs a tick ─────────────────────
+    // Undoing a version often means DROP TABLE or DROP COLUMN, and the rows
+    // those take go with them: deploying the version again brings the
+    // structure back, not the rows. The Deploy screen asks for a tick about
+    // that before either button. This is the same check on the same SQL (the
+    // rollback text that will run, picked above) with the same helper
+    // (lib/deploy-risk), so a caller that skipped the warning cannot run past
+    // it. A dry run needs the tick too: it really runs the SQL. Checked before
+    // the approval claim in step 10, so a refusal here spends nothing.
+    const lost = analyseRunRisk(
+      plan.map((step) => ({ scriptName: name, version: step.row.version, sqlContent: step.sql }))
+    ).dataLoss;
+    if (lost.length > 0 && !parsed.acknowledgeDataLoss) {
+      const named = lost.map((entry) => `${vLabel(entry.version)} runs ${entry.kinds.join(", ")}`);
+      return await refuse(409, {
+        code: "data_loss",
+        needsAcknowledgement: ["data_loss"],
+        dataLoss: lost.map((entry) => ({ version: entry.version, kinds: entry.kinds })),
+        error:
+          `Rolling back ${listVersions(lost.map((entry) => entry.version))} of "${name}" ` +
+          `deletes rows (${named.join("; ")}), and deploying again brings back the ` +
+          `structure, not the rows. Nothing was rolled back. Tick the box about deleted ` +
+          `rows, then ${dryRun ? "start the dry run" : "roll back"} again.`,
+      });
     }
 
     // ─── 9. Later scripts from other families ──────────────────────────────

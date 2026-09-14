@@ -8,6 +8,7 @@ import {
   type ApprovalScript,
 } from "@/lib/approvals-db";
 import { MAX_ROLLBACK_VERSIONS } from "@/lib/rollback-plan";
+import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
 
 /**
  * Ask for, and read, approval to run a deploy or a rollback on production.
@@ -24,6 +25,13 @@ import { MAX_ROLLBACK_VERSIONS } from "@/lib/rollback-plan";
  * written before rollbacks needed approval keeps working) or "revert". For a
  * rollback, `scripts` holds the rollback SQL that will run, newest version
  * first, exactly as the revert route will claim it.
+ *
+ * The breaking count the approver is shown is worked out here, from the SQL
+ * (lib/deploy-risk), and never taken from the caller: for a deploy it is the
+ * migrations that count as breaking, for a rollback the rollbacks that delete
+ * rows. Each script may carry an optional `change_type`, which can raise its
+ * grade but never lower it, so a screen can make a run look riskier to the
+ * approver, never safer.
  */
 
 /** Narrow one entry of the caller's `scripts` array, or explain what is wrong. */
@@ -84,7 +92,6 @@ export async function POST(request: NextRequest) {
     scriptName?: string;
     targetVersion?: string;
     scripts?: unknown[];
-    breakingCount?: number;
     note?: string;
     action?: unknown;
   };
@@ -148,18 +155,26 @@ export async function POST(request: NextRequest) {
   }
 
   const scripts: ApprovalScript[] = [];
+  // The same scripts as the risk check reads them, each with the change_type
+  // the caller sent. Kept apart from `scripts`, whose name, version and SQL are
+  // all the fingerprint covers.
+  const riskScripts: RiskScript[] = [];
   for (let i = 0; i < body.scripts.length; i++) {
     const parsed = parseScript(body.scripts[i], i, action);
     if (typeof parsed === "string") {
       return NextResponse.json({ error: parsed }, { status: 400 });
     }
     scripts.push(parsed);
+    const sent = (body.scripts[i] ?? {}) as Record<string, unknown>;
+    riskScripts.push({ ...parsed, changeType: sent.change_type });
   }
 
   const note = (body.note ?? "").trim().slice(0, 500) || null;
-  const breakingCount = Number.isFinite(Number(body.breakingCount))
-    ? Math.max(0, Math.trunc(Number(body.breakingCount)))
-    : 0;
+  // Worked out from the SQL; a breakingCount in the body is ignored. For a
+  // rollback the risk the approver weighs is lost rows, which deploying again
+  // does not bring back.
+  const risk = analyseRunRisk(riskScripts);
+  const breakingCount = action === "revert" ? risk.dataLoss.length : risk.breaking.length;
 
   try {
     const approval = await createApprovalRequest({

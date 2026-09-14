@@ -34,10 +34,11 @@ import { compareRowData, type DataCompareReport } from "@/lib/compare-data";
 import {
   determineNewerSchema,
   fetchSchemaVersionInfo,
-  type ChangeLevel,
+  pickCurrentVersion,
   type NewerSchemaVerdict,
   type VersionDetectionResult,
 } from "@/lib/version-detection";
+import { toDetectedVersion, type DetectedVersion } from "@/lib/detected-version";
 import {
   findTrackedSchemas,
   trackedSchemaKey,
@@ -378,60 +379,14 @@ function firstParam(value: string | string[] | undefined): string | undefined {
   return (Array.isArray(value) ? (value[0] ?? "") : value).trim();
 }
 
-/**
- * How many timeline entries travel to the browser with each schema.
- *
- * The detector reads up to 200 rows so it can sort them and pick the latest;
- * the screen shows a handful for context. Sending all 200 for the source and
- * every target would be most of the page's weight for rows nobody scrolls to.
- */
-const VERSION_TIMELINE_SHOWN = 5;
+// What the screen shows of each schema's own version table. The type and its
+// trimming live in lib/detected-version.ts, which has no database imports, so
+// the browser can import the type and a test can check the trimming.
+export type { DetectedVersion } from "@/lib/detected-version";
 
-/**
- * What a schema's OWN version table says about itself.
- *
- * Not the same thing as the lineage this app keeps: this is read out of the
- * target database, from whatever it already uses — Flyway's
- * flyway_schema_history, Liquibase, a hand-rolled schema_version, our own
- * script_patch. A schema that tracks its versions somewhere is telling you
- * which side is ahead, and that is worth knowing before you generate a
- * migration for it.
- */
-export type DetectedVersion = {
-  /** Where the version was read from, or null when the schema has no such table. */
-  table: string | null;
-  /** The latest version the table records, as written there. */
-  version: string | null;
-  /** The most recent few entries, newest first. */
-  recent: {
-    version: string | null;
-    label: string;
-    appliedAt: string | null;
-    changeLevel: ChangeLevel;
-  }[];
-  /** Which table was found, or why there is no answer. Shown as-is. */
-  message: string;
-};
-
-/** Trim a full detection result down to what the screen renders. */
-function toDetectedVersion(info: VersionDetectionResult): DetectedVersion {
-  return {
-    table: info.tableName,
-    version: info.detectedVersion,
-    recent: info.timeline.slice(0, VERSION_TIMELINE_SHOWN).map((entry) => ({
-      version: entry.version,
-      // The detector falls back to the version string for its label when the
-      // table has no title column, which renders as the version printed twice.
-      // Plenty of those tables do carry a description — use it instead.
-      label:
-        entry.label === entry.version
-          ? (entry.description ?? entry.label)
-          : entry.label,
-      appliedAt: entry.appliedAt,
-      changeLevel: entry.changeLevel,
-    })),
-    message: info.message,
-  };
+/** One schema's detection result, trimmed for the screen. */
+function detectedFor(info: VersionDetectionResult): DetectedVersion {
+  return toDetectedVersion(info, pickCurrentVersion(info.timeline));
 }
 
 /** One target's fully-resolved comparison, or the reason it could not run. */
@@ -722,7 +677,7 @@ async function compareOneTarget(
     counts: { breaking, safe, info },
     overallKind,
     warnings: script.warnings,
-    detectedVersion: toDetectedVersion(versionInfo),
+    detectedVersion: detectedFor(versionInfo),
     versionVerdict,
   };
 }
@@ -1181,7 +1136,7 @@ export async function runComparison(
       schema: sourceSchema,
       schemaOptions: sourceSchemaInfo.options,
       environment: sourceEnvironment,
-      detectedVersion: sourceVersionInfo ? toDetectedVersion(sourceVersionInfo) : null,
+      detectedVersion: sourceVersionInfo ? detectedFor(sourceVersionInfo) : null,
       missingMessage: sourceMissingMessage,
     },
     sourceError,

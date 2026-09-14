@@ -21,6 +21,7 @@ import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
+import { CompareVersionTimeline } from "@/components/studio/CompareVersionTimeline";
 import { ComparisonSetBar } from "@/components/studio/ComparisonSetBar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -354,6 +355,11 @@ function CompareScreenView({ query }: { query: string }) {
   const [screen, setScreen] = useState<CompareScreen | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Counts the comparison's successful runs. The version timeline is keyed on
+  // it: a re-run of the same query (after Save, say) keeps this component, and
+  // without a new key the timeline would keep the history it loaded for the
+  // run before.
+  const [runSerial, setRunSerial] = useState(0);
 
   // `record` asks the server to stamp the open saved set's "last run" time. It
   // goes once per URL that carries `run=1` — Compare, opening a set, or a link
@@ -405,6 +411,7 @@ function CompareScreenView({ query }: { query: string }) {
       if (response.ok && data) {
         setScreen(data as CompareScreen);
         setError(null);
+        setRunSerial((serial) => serial + 1);
       } else {
         setError(data?.error ?? "Could not run this comparison.");
       }
@@ -940,6 +947,26 @@ function CompareScreenView({ query }: { query: string }) {
                 // The Workbench's own test for "nothing to push", so the bar
                 // never warns about a backwards push the button can't make.
                 inSync={outcome.statementCount === 0}
+                timeline={
+                  <CompareVersionTimeline
+                    key={runSerial}
+                    left={{
+                      label: "Source",
+                      name: `${source.displayName}.${source.schema}`,
+                      detected: source.detectedVersion,
+                      connectionId: source.connectionId,
+                      schema: source.schema,
+                    }}
+                    right={{
+                      label: "Target",
+                      name: `${outcome.displayName}.${outcome.schema}`,
+                      detected: outcome.detectedVersion,
+                      connectionId: outcome.connectionId,
+                      schema: outcome.schema,
+                    }}
+                    verdict={outcome.versionVerdict}
+                  />
+                }
               />
 
               {/* Two-column body: diff canvas (left) + migration draft (right,

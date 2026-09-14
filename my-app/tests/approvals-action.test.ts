@@ -142,9 +142,64 @@ describe("POST /api/deploy/approvals", () => {
     schemaName: "sales",
     scriptName: "orders_fix",
     targetVersion: "2.0.0",
-    breakingCount: 1,
     scripts: RUN.map((s) => ({ script_name: s.scriptName, version: s.version, sql_content: s.sqlContent })),
   };
+
+  /** Answer the dedupe read and the INSERT, then send the request. */
+  async function recorded(body: Record<string, unknown>) {
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 1 }] });
+    return request(body);
+  }
+
+  // breaking_count is the INSERT's seventh value.
+  const storedBreakingCount = () => call(1).values[6];
+
+  it("counts the breaking migrations from the SQL, ignoring a count the caller sends", async () => {
+    const res = await recorded({
+      ...BODY,
+      breakingCount: 99,
+      scripts: [
+        { script_name: "orders_fix", version: "3.0.0", sql_content: "DROP TABLE t3;" },
+        { script_name: "orders_fix", version: "2.0.0", sql_content: "CREATE TABLE t2 (id int);" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(storedBreakingCount()).toBe(1);
+  });
+
+  it("lets a script's change_type raise it to breaking, never lower it", async () => {
+    const res = await recorded({
+      ...BODY,
+      scripts: [
+        // "additive" cannot quiet a DROP TABLE...
+        { script_name: "orders_fix", version: "3.0.0", sql_content: "DROP TABLE t3;", change_type: "additive" },
+        // ...and "breaking" makes a CREATE TABLE count.
+        {
+          script_name: "orders_fix", version: "2.0.0",
+          sql_content: "CREATE TABLE t2 (id int);", change_type: "breaking",
+        },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(storedBreakingCount()).toBe(2);
+  });
+
+  it("counts, for a rollback, the rollbacks that delete rows", async () => {
+    const res = await recorded({
+      ...BODY,
+      action: "revert",
+      breakingCount: 0,
+      scripts: [
+        // TRUNCATE deletes rows without being graded breaking; a CREATE INDEX does neither.
+        { script_name: "orders_fix", version: "3.0.0", sql_content: "TRUNCATE t3;" },
+        { script_name: "orders_fix", version: "2.0.0", sql_content: "CREATE INDEX i2 ON t2 (id);" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(storedBreakingCount()).toBe(1);
+  });
 
   it("refuses an action it does not know, before touching the database", async () => {
     const res = await request({ ...BODY, action: "delete" });

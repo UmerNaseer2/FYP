@@ -43,10 +43,10 @@ const REVERTED = [
   },
 ];
 
-function timelineRow(version: string, down_sql: string | null) {
+function timelineRow(version: string, down_sql: string | null, sql_content: string | null = `SELECT ${version.length};`) {
   return {
     version, title: `v${version}`, description: null, change_type: "additive",
-    applied_at: "2026-01-01T00:00:00.000Z", down_sql,
+    applied_at: "2026-01-01T00:00:00.000Z", down_sql, sql_content,
   };
 }
 
@@ -56,15 +56,27 @@ function target(options: {
   revertedTable?: boolean;
   timeline?: Record<string, unknown>[];
   others?: Record<string, unknown>[];
+  /** The optional script_patch columns the catalog reports (both by default). */
+  columns?: string[];
 }): FakeStep[] {
+  const columns = options.columns ?? ["down_sql", "sql_content"];
   return [
     { match: /information_schema\.tables/, rows: [{ exists: options.ledger !== false }] },
     { match: /to_regclass/, rows: [{ reg: options.revertedTable ? '"sales".script_patch_reverted' : null }] },
     { match: /FROM "sales"\.script_patch_reverted/, rows: options.revertedTable ? REVERTED : [] },
-    { match: /column_name = 'down_sql'/, rows: [{ column_name: "down_sql" }] },
+    {
+      match: /column_name IN \('down_sql', 'sql_content'\)/,
+      rows: columns.map((column_name) => ({ column_name })),
+    },
     { match: /script_name <> \$1/, rows: options.others ?? [] },
     { match: /SELECT\s+version,\s+title,\s+description/, rows: options.timeline ?? [] },
   ];
+}
+
+/** The timeline SELECT the route sent, with whitespace squeezed. */
+function timelineQuery(client: FakeClient): string {
+  const query = queriesMatching(client, /SELECT\s+version,\s+title,\s+description/)[0];
+  return query.text.replace(/\s+/g, " ");
 }
 
 async function preflight(body: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -166,10 +178,65 @@ it("lists other families applied after this family's first version", async () =>
   expect(sql).toContain("ORDER BY other.applied_at, other.id LIMIT 200");
 });
 
+// D4: Deploy shows the SQL that actually ran for an applied version. For a
+// version with no registry file (a Version Sync replay) the ledger copy is
+// the only one there is.
+it("returns the SQL each applied version ran", async () => {
+  mockClient = createFakeClient(
+    target({
+      timeline: [
+        timelineRow("2.0.0", null, "ALTER TABLE orders ADD COLUMN note text;"),
+        timelineRow("1.0.0", null, null),
+      ],
+    })
+  );
+  const res = await preflight(FAMILY);
+  expect(res.status).toBe(200);
+  const timeline = res.body.timeline as { version: string; sql_content: string | null }[];
+  expect(timeline.map((entry) => [entry.version, entry.sql_content])).toEqual([
+    ["2.0.0", "ALTER TABLE orders ADD COLUMN note text;"],
+    ["1.0.0", null],
+  ]);
+
+  // One catalog question covers both optional columns, and both are read.
+  const check = queriesMatching(mockClient, /information_schema\.columns/)[0];
+  expect(check.values).toEqual(["sales"]);
+  expect(check.text).toContain("column_name IN ('down_sql', 'sql_content')");
+  expect(timelineQuery(mockClient)).toContain("applied_at, down_sql, sql_content FROM \"sales\".script_patch WHERE script_name = $1");
+});
+
+it("reads sql_content as null on a ledger written before the column existed", async () => {
+  mockClient = createFakeClient(
+    target({ columns: ["down_sql"], timeline: [timelineRow("1.0.0", "DROP TABLE t1;", null)] })
+  );
+  const res = await preflight(FAMILY);
+  expect(res.status).toBe(200);
+  // The SELECT names only columns that exist, so an old table still answers.
+  const sql = timelineQuery(mockClient);
+  expect(sql).toContain("down_sql, NULL::text AS sql_content FROM");
+  const timeline = res.body.timeline as { sql_content: string | null; has_down_sql: boolean }[];
+  expect(timeline[0]).toMatchObject({ sql_content: null, has_down_sql: true });
+});
+
+it("reads both optional columns as null when the table has neither", async () => {
+  mockClient = createFakeClient(
+    target({ columns: [], timeline: [timelineRow("1.0.0", null, null)] })
+  );
+  const res = await preflight(FAMILY);
+  expect(res.status).toBe(200);
+  expect(timelineQuery(mockClient)).toContain("NULL::text AS down_sql, NULL::text AS sql_content FROM");
+  expect((res.body.timeline as Record<string, unknown>[])[0]).toMatchObject({
+    down_sql: null, has_down_sql: false, sql_content: null,
+  });
+});
+
 it("reads the whole schema's history and no other-family list without a scriptName", async () => {
   mockClient = createFakeClient(target({ revertedTable: true, timeline: [timelineRow("1.0.0", null)] }));
   const res = await preflight({ connectionId: 7, schemaName: "sales" });
   expect(res.body.otherScripts).toEqual([]);
   expect(queriesMatching(mockClient, /FROM "sales"\.script_patch_reverted/)[0].values).toEqual([null]);
   expect(queriesMatching(mockClient, /script_name <> \$1/)).toHaveLength(0);
+  // The unscoped read carries the applied SQL too.
+  expect(timelineQuery(mockClient)).toContain("applied_at, down_sql, sql_content FROM \"sales\".script_patch ORDER BY");
+  expect((res.body.timeline as Record<string, unknown>[])[0]).toHaveProperty("sql_content", "SELECT 5;");
 });

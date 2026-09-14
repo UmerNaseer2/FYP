@@ -27,6 +27,7 @@ import {
 import { Select } from "@/components/ui/Select";
 import { useNow } from "@/hooks/useNow";
 import { describeCadence } from "@/lib/drift-schedule";
+import { displayVersion } from "@/lib/version-timeline";
 import {
   DashboardIcon,
   CheckIcon,
@@ -917,7 +918,7 @@ function SchemaCard({
         title="Schema Studio's lineage number for this tracked schema. It moves when a deploy or re-baseline changes the structure, and is separate from the script versions in GitHub."
       >
         <span className="mono text-[18px] font-semibold">
-          {item.headVersion ? `lineage v${item.headVersion}` : "—"}
+          {item.headVersion ? `lineage ${displayVersion(item.headVersion, true)}` : "—"}
         </span>
         {item.headSeq !== null && (
           <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>

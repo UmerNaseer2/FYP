@@ -14,6 +14,7 @@ import {
 } from "@/components/ui";
 import { ENVIRONMENT_META, isProduction } from "@/lib/environments";
 import { countOf } from "@/lib/plural";
+import { displayVersion } from "@/lib/version-timeline";
 import {
   ChevronLeftIcon,
   CheckIcon,
@@ -282,7 +283,7 @@ export default function SchemaDetailPage({
           </div>
           <div className="flex items-baseline gap-2.5 mt-1">
             <span className="mono text-[26px] font-semibold tracking-[-0.01em]">
-              {detail.headVersion ? `v${detail.headVersion}` : "—"}
+              {detail.headVersion ? displayVersion(detail.headVersion, true) : "—"}
             </span>
             {detail.headSeq !== null && (
               <span className="mono text-[13px]" style={{ color: "var(--text-3)" }}>
@@ -426,7 +427,7 @@ function DriftBanner({
               The live schema has drifted from{" "}
               {headVersion ? (
                 <>
-                  lineage <span className="mono">v{headVersion}</span>
+                  lineage <span className="mono">{displayVersion(headVersion, true)}</span>
                 </>
               ) : (
                 "its baseline"
@@ -498,7 +499,7 @@ function DriftBanner({
         icon={<CheckIcon size={16} />}
         title={
           headVersion
-            ? `Live schema matches lineage v${headVersion}.`
+            ? `Live schema matches lineage ${displayVersion(headVersion, true)}.`
             : "Live schema matches its baseline."
         }
         body={summary ?? "No structural drift was found at the last check."}

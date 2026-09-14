@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   DeployIcon,
@@ -15,21 +15,21 @@ import {
   ChevronDownIcon,
   EyeIcon,
   LogoIcon,
-  UsersIcon,
 } from "@/components/ui/icons";
 import {
   compareVersions,
   buildVersionLedger,
   levelOfStep,
+  pendingPrefixThrough,
+  versionKey,
   type LedgerEntry,
 } from "@/lib/script-status";
 import {
   containsTransactionControl,
-  extractEnumAddValues,
-  findMightFailStatements,
   findRowDestroyingStatements,
   ROW_DESTROYING_NOT_BREAKING,
 } from "@/lib/sql-guard";
+import { analyseRunRisk } from "@/lib/deploy-risk";
 import {
   describeChangeType,
   louderChangeType,
@@ -52,11 +52,25 @@ import {
   MAX_ROLLBACK_VERSIONS,
   planRollback,
   rollbackTargets,
+  versionRange,
   vLabel,
   type RollbackStep,
 } from "@/lib/rollback-plan";
 import type { PulledRollbackState } from "@/lib/registry-push";
+import { normalizeChangeLevel } from "@/lib/change-level";
+import {
+  displayVersion,
+  mergeTimelines,
+  outdatedSideOfEntries,
+  timelineKey,
+  type TimelineEntry,
+  type TimelineRow,
+  type TimelineStatus,
+} from "@/lib/version-timeline";
 import { useUser } from "@/hooks/useUser";
+import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
+import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
+import { VersionTimeline } from "@/components/studio/VersionTimeline";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
@@ -73,13 +87,25 @@ import { useUser } from "@/hooks/useUser";
 //     the run back, so there is no partial deploy to unwind by hand. The same
 //     call with dryRun rehearses the batch and always ends in ROLLBACK.
 //
-// Honest-stub rule ("stub, don't fake"): two pieces depend on schema snapshots
-// that don't exist until a later phase, so they are shown clearly stubbed and
-// never wired to fake-but-real-looking data:
-//   • the drift pre-check (stage 1) and
-//   • the post-deploy verify re-diff (stage 3).
-// Everything else — versions, pending list, per-step timing, the ledger
-// re-read after a run — is real.
+// Nothing on this screen is stubbed. The drift pre-check (stage 1) and the
+// verify re-diff after a run (stage 3) are live: runDriftCheck finds the
+// target's lineage snapshot (/api/lineage/lookup) and diffs the live schema
+// against it (/api/lineage/drift), and DriftPanel draws the answer (the
+// rollback card reuses it). Versions, the pending list, per-step timing and
+// the ledger re-read after a run are all read from the target too.
+//
+// Each registry version of the family is Applied, Pending or Skipped
+// (buildVersionLedger in lib/script-status). Skipped means never applied and
+// below the version applied to the target. Deploys only move forward, so a
+// skipped version never runs; the version timeline, the up-to-date card and
+// the run panel each say so, so none of them reads as still to do.
+//
+// The pending list selects rather than runs: each row's "Run …" button (and
+// "Run all (N)…") picks the pending versions up to that row
+// (pendingPrefixThrough), and the Deploy and Dry run buttons name that range.
+// The approval hash, a clean rehearsal and the recovery bar all compare the
+// selection by its fingerprintBody text, so none of them can speak for a
+// different range or for SQL a re-pull has changed.
 // ---------------------------------------------------------------------------
 
 // The deploy screen's own name for a script's change type. The grading itself
@@ -128,6 +154,11 @@ type PatchEntry = {
   has_down_sql?: boolean;
   /** The rollback stored on the row. Optional for the same reason. */
   down_sql?: string | null;
+  /**
+   * The SQL that ran, as the ledger row stored it: the only copy for a
+   * version Version Sync replayed. Optional for the same reason.
+   */
+  sql_content?: string | null;
 };
 
 // What /api/scripts/preflight returns.
@@ -219,6 +250,14 @@ type ApplyResponse = {
   outcomeUnknown?: boolean;
 };
 
+// The change_type this page sends with a migration, to the apply route and to
+// the approvals route: its stamp when it has one, its SQL's grade otherwise.
+// The page's own risk reading (runRisk) is given the same value, so the boxes
+// on this page and the server's checks read every migration the same way.
+function changeTypeSent(sql: string): ScriptChangeType {
+  return describeChangeType(sql).recorded;
+}
+
 // The parts of POST /api/scripts/revert's response this page reads. Every
 // refusal carries `error` and every success carries `message`: a sentence that
 // says what happened and what state the target is in now. The page shows it
@@ -267,59 +306,6 @@ type DriftResult = {
 // Where the lineage drift check stands for the chosen target.
 type DriftPhase = "idle" | "loading" | "untracked" | "ready" | "error";
 
-// ── Deploy approvals (the two-person rule) ─────────────────────────────────
-// One row of `deploy_approvals`, exactly as /api/deploy/approvals returns it.
-// Mirrors DeployApproval in lib/approvals-db, which cannot be imported here —
-// that module opens a database pool, and this file runs in the browser.
-type ApprovalRow = {
-  id: number;
-  target_version: string;
-  run_fingerprint: string;
-  migration_count: number;
-  breaking_count: number;
-  requested_by: string;
-  requested_at: string;
-  status: "pending" | "approved" | "rejected" | "used";
-  decided_by: string | null;
-  decided_at: string | null;
-  self_approved: boolean;
-  note: string | null;
-  used_at: string | null;
-  /**
-   * Which route may spend it: "deploy" for a migration run, "revert" for a
-   * rollback. Optional because an older route did not send it, and every row
-   * from before rollbacks needed approval was a deploy.
-   */
-  action?: "deploy" | "revert";
-};
-
-/**
- * Hash the text of a run the same way the server does.
- *
- * The server uses node:crypto and this uses the Web Crypto API, but both hash
- * the string lib/approval-fingerprint builds, so the two hex strings match and
- * this screen can tell whether the run in front of the user is the approved
- * one. crypto.subtle only exists in a secure context — https or localhost — so
- * the caller has to cope with this throwing rather than assume it cannot.
- */
-async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(text)
-  );
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/** A short, readable stamp for an approval's timeline. */
-function approvalTime(iso: string | null): string {
-  if (!iso) return "";
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleString();
-}
-
 // Version comparison + the Applied/Pending ledger live in lib/script-status so
 // they can be unit-tested in isolation; compareVersions is imported above.
 function sortGitHubScriptsByVersion(scripts: GitHubScript[]): GitHubScript[] {
@@ -365,30 +351,135 @@ function fmtDate(iso: string | null): string {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-// Applied / Pending / Superseded → status pill for the version ledger.
-function ledgerPill(status: LedgerEntry["status"]) {
-  if (status === "applied") {
-    return (
-      <span className="pill pill-sync">
-        <span className="dot" />
-        applied
-      </span>
-    );
+// Applied / Pending / Skipped (the version ledger, lib/script-status) → the
+// "This database" status in the version timeline.
+//
+// - `current` is the version applied to the target ("v5.0.2"). A skipped
+//   version's tooltip names it, so the reason it will not run is one hover
+//   away.
+// - `rolledBack` is the version's latest rollback, given only when it is not
+//   applied now. The status then says when it was rolled back, so "Pending"
+//   is not read as "never deployed". The status word stays Pending or
+//   Skipped, because that word is what a deploy will do with it.
+// - `pullWarned` says part of the registry could not be read. That is a
+//   second reason an applied version can have no registry file.
+function ledgerStatus(
+  entry: LedgerEntry,
+  rolledBack: RevertedEntry | null,
+  current: string,
+  pullWarned: boolean
+): TimelineStatus {
+  if (entry.status === "applied") {
+    if (entry.inRegistry) return { text: "Applied", tone: "applied" };
+    return {
+      text: "Applied — no registry file",
+      tone: "applied",
+      title: pullWarned
+        ? "Applied to this database, but the registry has no file for it: applied directly, " +
+          "replayed here by Version Sync, or its file could not be read (see the top of the page)."
+        : "Applied to this database, but the registry has no file for it: applied directly, " +
+          "or replayed here by Version Sync.",
+    };
   }
-  if (status === "pending") {
+  // " · rolled back 3 Sep 2026", or without the date when it is unreadable.
+  const undone = rolledBack ? fmtDate(rolledBack.reverted_at) : "";
+  const note = rolledBack ? ` · rolled back${undone ? ` ${undone}` : ""}` : "";
+  if (entry.status === "pending") {
+    return {
+      text: `Pending${note}`,
+      tone: "pending",
+      title: rolledBack
+        ? rolledBackTitle(rolledBack, "pending", current)
+        : "Not applied to this database yet. A deploy that includes it runs it.",
+    };
+  }
+  return {
+    text: `Skipped${note}`,
+    tone: "skipped",
+    title: rolledBack
+      ? rolledBackTitle(rolledBack, "skipped", current)
+      : `Never applied, and below ${current}, the version applied to the target. ` +
+        "Deploys only move forward, so this version will not run.",
+  };
+}
+
+// The note above the version timeline that explains its Skipped rows: what
+// happened, that a deploy will not run them, and how to still ship the change
+// (the Script Editor saves a change as the family's next version, above the
+// version applied to the target).
+function skippedNote(skipped: ReadonlyArray<string>, current: string): string {
+  if (skipped.length === 1) {
     return (
-      <span className="pill pill-pending">
-        <span className="dot" />
-        pending
-      </span>
+      `Skipped: ${listVersions(skipped)} was never applied and is below ${current}, ` +
+      `the version applied to the target. Deploys only move forward, so it will not run. ` +
+      `If its change is still needed, save it in the Script Editor as a new version above ${current}.`
     );
   }
   return (
-    <span className="pill pill-neutral">
-      <span className="dot" style={{ background: "var(--text-3)" }} />
-      superseded
-    </span>
+    `Skipped: ${listVersions(skipped)} were never applied and are below ${current}, ` +
+    `the version applied to the target. Deploys only move forward, so they will not run. ` +
+    `If their changes are still needed, save them in the Script Editor as new versions above ${current}.`
   );
+}
+
+// Tooltip for "rolled back <date>" on a version that is not applied now: when
+// it ran, when it was undone, and whether a deploy would run it again. A
+// pending version is in the next deploy's list; a skipped one is below the
+// target's version, and deploys only move forward.
+function rolledBackTitle(row: RevertedEntry, status: LedgerEntry["status"], current: string): string {
+  const applied = fmtDate(row.applied_at);
+  const undone = fmtDate(row.reverted_at);
+  const history =
+    (applied ? `Applied ${applied}, then rolled back` : "Rolled back") +
+    (undone ? ` ${undone}` : "") +
+    ", so it is not applied now.";
+  return status === "pending"
+    ? `${history} A deploy that includes it runs it again.`
+    : `${history} It is below ${current}, the version applied to the target, so a deploy will not run it again.`;
+}
+
+// The text an approval of this batch is hashed from (lib/approval-fingerprint,
+// the same text the server hashes). The rehearsal pin and the recovery bar
+// compare these strings directly: equal text means the same scripts, in the
+// same order, with the same SQL, so no hashing is needed to tell.
+function batchBody(scripts: ReadonlyArray<GitHubScript>): string {
+  return fingerprintBody(
+    scripts.map((s) => ({ scriptName: s.script_name, version: s.version, sqlContent: s.sql_content }))
+  );
+}
+
+// How the selected batch differs from one that already ran (a rehearsal, or
+// the run on screen), so the page can say why that run no longer speaks for
+// the selection. null when it still does (the same body).
+// - "nothing": nothing is selected now (a re-read found it all applied).
+// - "scripts": the same versions, but the SQL changed (a re-pull).
+// - "range":   a different set of versions.
+type SelectionChange = "nothing" | "range" | "scripts";
+function selectionChange(
+  ranBody: string | null,
+  ran: ReadonlyArray<GitHubScript>,
+  selected: ReadonlyArray<GitHubScript>,
+  selectedBody: string
+): SelectionChange | null {
+  if (ranBody !== null && ranBody === selectedBody) return null;
+  if (selected.length === 0) return "nothing";
+  const sameVersions =
+    ran.length === selected.length &&
+    ran.every((s, i) => versionKey(s.version) === versionKey(selected[i].version));
+  return sameVersions ? "scripts" : "range";
+}
+
+// Names for two different runs of one family, so a sentence that sets them
+// side by side never prints the same words twice. The range reads
+// "v5.0.1 → v6.0.0". If the ranges read the same, the counts tell them apart
+// ("(3)" and "(2)" when a version between them was added or removed). Failing
+// that, every version is listed.
+function nameTwoRuns(ran: ReadonlyArray<string>, now: ReadonlyArray<string>): [string, string] {
+  const a = versionRange(ran);
+  const b = versionRange(now);
+  if (a !== b) return [a, b];
+  if (ran.length !== now.length) return [`${a} (${ran.length})`, `${b} (${now.length})`];
+  return [listVersions(ran), listVersions(now)];
 }
 
 // Change-kind → status pill.
@@ -495,6 +586,7 @@ function MigRow({
   sql,
   sqlOpen,
   notes,
+  action,
 }: {
   seq: string;
   name: string;
@@ -521,6 +613,8 @@ function MigRow({
    * rollback will be saved with it. `warn` colours the ones worth acting on.
    */
   notes?: { text: string; warn: boolean }[];
+  /** A control under the notes. The pending list puts its "Run …" button here. */
+  action?: ReactNode;
 }) {
   const cls = ["mig-row", cell.status, selected ? "selected" : ""]
     .filter(Boolean)
@@ -544,6 +638,7 @@ function MigRow({
               {note.text}
             </div>
           ))}
+          {action && <div className="mig-row__action">{action}</div>}
         </div>
         <span className="pill pill-outline mono">{rightPill}</span>
         <RightStatus cell={cell} />
@@ -558,439 +653,6 @@ function MigRow({
           </summary>
           <pre className="sql">{sql.trim()}</pre>
         </details>
-      )}
-    </div>
-  );
-}
-
-/**
- * The gate in front of anything that runs SQL on a production database.
- *
- * Everything else on this page can be undone or retried. This cannot: the
- * migration commits on a live database with real rows in it. So a production
- * target does not just get a louder colour, it gets a stop — the button below
- * stays disabled until someone reads this and ticks the box.
- *
- * The tick is deliberately per-action and short-lived. It is cleared whenever
- * the target, the schema, the script family or the version range changes, so it
- * can never be carried from the dev run you meant to the prod run you did not.
- */
-function ProductionGate({
-  what,
-  acknowledged,
-  onAcknowledge,
-  kind = "deploy",
-}: {
-  /** What is about to happen, in the user's words. "run 3 migrations", etc. */
-  what: string;
-  acknowledged: boolean;
-  onAcknowledge: (value: boolean) => void;
-  /**
-   * Which warning to give. The deploy copy points at a rollback as the way
-   * back for structure; a rollback cannot point at itself, so its copy says
-   * what it cannot bring back instead.
-   */
-  kind?: "deploy" | "rollback";
-}) {
-  return (
-    <div className="prod-gate">
-      <div className="prod-gate__head">
-        <AlertTriangleIcon size={15} className="ico" />
-        <span>Production target</span>
-      </div>
-      {kind === "rollback" ? (
-        <p className="prod-gate__body">
-          This connection is labelled production. Live data is behind it. A
-          rollback restores structure, not rows: rows it drops are gone, and rows
-          the original migration deleted do not come back. If you need them, you
-          need a backup.
-        </p>
-      ) : (
-        <p className="prod-gate__body">
-          This connection is labelled production. Live data is behind it, and a
-          migration that goes wrong here is not something a rollback brings back —
-          a rollback restores structure, not rows. If you need the rows back, you
-          need a backup from before this run.
-        </p>
-      )}
-      <label className="prod-gate__ack">
-        <input
-          type="checkbox"
-          checked={acknowledged}
-          onChange={(event) => onAcknowledge(event.target.checked)}
-        />
-        <span>I understand, and I mean to {what} against production.</span>
-      </label>
-    </div>
-  );
-}
-
-/**
- * A second stop, for a risk that is not "this is production".
- *
- * The Deploy screen used to print `breakingCount` and a red drift row and then
- * let you press Deploy anyway — information on screen that gated nothing. Each
- * of these now has to be read and ticked, for the same reason the production
- * gate exists: being on screen was not enough.
- */
-function RiskGate({
-  tone,
-  title,
-  body,
-  ack,
-  acknowledged = false,
-  onAcknowledge,
-  children,
-}: {
-  /** "break" is red (a migration that destroys structure), "drift" is amber. */
-  tone: "break" | "drift";
-  title: string;
-  body: string;
-  /**
-   * The sentence beside the checkbox, in the user's words.
-   *
-   * Optional, and leaving it out drops the checkbox — the panel then states
-   * something true about the run that the reader cannot do anything about.
-   * A tick box over a fact nobody can change is not a decision, it is a toll,
-   * and every one of those makes the boxes that ARE decisions cheaper to tick
-   * without reading.
-   */
-  ack?: string;
-  acknowledged?: boolean;
-  onAcknowledge?: (value: boolean) => void;
-  /** Detail between the body and the checkbox, such as the list to check. */
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className={tone === "drift" ? "prod-gate prod-gate--drift" : "prod-gate"}>
-      <div className="prod-gate__head">
-        <AlertTriangleIcon size={15} className="ico" />
-        <span>{title}</span>
-      </div>
-      <p className="prod-gate__body">{body}</p>
-      {children}
-      {ack && (
-        <label className="prod-gate__ack">
-          <input
-            type="checkbox"
-            checked={acknowledged}
-            onChange={(event) => onAcknowledge?.(event.target.checked)}
-          />
-          <span>{ack}</span>
-        </label>
-      )}
-    </div>
-  );
-}
-
-/**
- * The two-person rule, on screen.
- *
- * The gate itself is the apply route's: it claims an approval row before it
- * runs anything, so nothing here can talk a production deploy into starting.
- * What this panel does is make the state readable — who asked, who cleared it,
- * and whether the approval still covers the SQL currently selected — and give
- * the two people the buttons for their halves of it.
- *
- * An approval is pinned to a fingerprint of the exact SQL. That is why the
- * panel says "these N migrations" rather than "this deploy": change one
- * character of one migration and the approval stops matching, which is the
- * point of having one.
- */
-function ApprovalPanel({
-  action = "deploy",
-  migrationCount,
-  targetVersion,
-  versionsLabel = "",
-  hashReady,
-  hashError,
-  loading,
-  error,
-  unreadable,
-  busy,
-  approved,
-  pending,
-  latest,
-  viewerEmail,
-  isAdmin,
-  bypass,
-  note,
-  onNoteChange,
-  onRequest,
-  onDecide,
-}: {
-  /**
-   * What the approval clears. "revert" is a rollback: it covers the rollback
-   * SQL of the versions being undone, and only the revert route can spend it,
-   * so every sentence below names a rollback instead of a run.
-   */
-  action?: "deploy" | "revert";
-  /**
-   * How many migrations the run holds, or, for a rollback, how many versions
-   * it undoes. 0 means there is nothing an approval could cover yet.
-   */
-  migrationCount: number;
-  targetVersion: string;
-  /** For a rollback: the versions it undoes, as "v3.0.0 and v2.0.0". */
-  versionsLabel?: string;
-  /** False until the run's fingerprint has been computed in the browser. */
-  hashReady: boolean;
-  hashError: string | null;
-  loading: boolean;
-  error: string | null;
-  /** The list could not be read at all — not the same as "there are none". */
-  unreadable: boolean;
-  busy: boolean;
-  /** The approval that covers this exact run, if there is one. */
-  approved: ApprovalRow | null;
-  pending: ApprovalRow | null;
-  /** Newest row for this run whatever its state — explains a rejection. */
-  latest: ApprovalRow | null;
-  viewerEmail: string;
-  isAdmin: boolean;
-  bypass: boolean;
-  note: string;
-  onNoteChange: (value: string) => void;
-  onRequest: () => void;
-  onDecide: (id: number, decision: "approve" | "reject") => void;
-}) {
-  if (migrationCount === 0) {
-    return (
-      <div className="appr">
-        <div className="appr__head" style={{ color: "var(--text-2)" }}>
-          <UsersIcon size={15} className="ico" />
-          <span>Approval</span>
-        </div>
-        <p className="appr__body">
-          {action === "revert"
-            ? "Nothing to approve yet — an approval covers the exact rollback SQL " +
-              "that will run, and not every version above has a rollback that can run."
-            : "Pick a target version first — an approval covers one exact set of " +
-              "migrations, so there is nothing to approve yet."}
-        </p>
-      </div>
-    );
-  }
-
-  if (hashError || !hashReady || loading) {
-    return (
-      <div className="appr">
-        <div className="appr__head" style={{ color: "var(--text-2)" }}>
-          <UsersIcon size={15} className="ico" />
-          <span>Approval</span>
-        </div>
-        <p className="appr__body">
-          {hashError
-            ? hashError
-            : hashReady
-              ? "Reading the approvals for this target…"
-              : action === "revert"
-                ? "Working out which approval covers this rollback…"
-                : "Working out which approval covers this run…"}
-        </p>
-      </div>
-    );
-  }
-
-  // An unreadable list is not an empty one — the same rule this page already
-  // states for connections. Falling through to "Needs a second person" reports
-  // the approval state as read when nothing managed to read it.
-  if (unreadable) {
-    return (
-      <div className="appr appr--wait">
-        <div className="appr__head">
-          <UsersIcon size={15} className="ico" />
-          <span>Approval state unknown</span>
-        </div>
-        <p className="appr__body">
-          {action === "revert"
-            ? "The approvals for this target could not be read, so this page cannot " +
-              "say whether this rollback is cleared. The server checks again when you " +
-              "press Roll back, and refuses the rollback if nothing covers it."
-            : "The approvals for this target could not be read, so this page cannot " +
-              "say whether this run is cleared. The server checks again when you " +
-              "press Deploy, and refuses the run if nothing covers it."}
-        </p>
-        {error && (
-          <p className="appr__meta" style={{ color: "var(--break)" }}>
-            {error}
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  // Why this person may not decide this request. The same rule runs server-side
-  // and again as a CHECK constraint on the table — this copy exists so the
-  // button is not offered in the first place, not to enforce anything.
-  const selfDecision =
-    pending !== null &&
-    !bypass &&
-    pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
-
-  const tone = approved ? "ok" : pending ? "wait" : "no";
-
-  return (
-    <div className={`appr appr--${tone}`}>
-      <div className="appr__head">
-        {approved ? <CheckIcon size={15} className="ico" /> : <UsersIcon size={15} className="ico" />}
-        <span>
-          {approved
-            ? "Approved by a second person"
-            : pending
-              ? "Waiting for a second person"
-              : "Needs a second person"}
-        </span>
-      </div>
-
-      {approved ? (
-        <>
-          {action === "revert" ? (
-            <p className="appr__body">
-              Cleared to undo exactly {versionsLabel}, with the rollback SQL shown
-              above, and good for one rollback. If any of that SQL changes, this
-              stops applying.
-            </p>
-          ) : (
-            <p className="appr__body">
-              Cleared for exactly these {migrationCount} migration
-              {migrationCount === 1 ? "" : "s"}
-              {targetVersion ? <> through <span className="mono">v{targetVersion}</span></> : null}, and
-              good for one run. Edit any of the SQL and this stops applying.
-            </p>
-          )}
-          <p className="appr__meta">
-            Requested by {approved.requested_by} · approved by{" "}
-            {approved.decided_by ?? "—"}
-            {approvalTime(approved.decided_at) ? ` · ${approvalTime(approved.decided_at)}` : ""}
-          </p>
-          {approved.self_approved && (
-            <p className="appr__meta">
-              Self-approved under the auth bypass — recorded on the row, because
-              with the bypass on there is only one principal to be.
-            </p>
-          )}
-          {approved.note && <p className="appr__meta">Note: {approved.note}</p>}
-        </>
-      ) : pending ? (
-        <>
-          <p className="appr__body">
-            Requested by {pending.requested_by}
-            {approvalTime(pending.requested_at) ? ` · ${approvalTime(pending.requested_at)}` : ""}.
-            {action === "revert"
-              ? " Someone else has to read these rollbacks and clear them before the " +
-                "rollback can run. A dry run does not need it."
-              : " Someone else has to read these migrations and clear them before the " +
-                "run can start. A dry run does not need it."}
-          </p>
-          {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
-          {!isAdmin ? (
-            <p className="appr__meta">
-              {action === "revert"
-                ? "Clearing a production rollback needs the admin role."
-                : "Clearing a production run needs the admin role."}
-            </p>
-          ) : selfDecision ? (
-            // The server's own words (decisionBlockReason in lib/approvals-db),
-            // so this line and the refusal it would give read the same.
-            <p className="appr__meta">
-              {action === "revert"
-                ? "You asked for this rollback, so you cannot approve it. " +
-                  "A rollback on production needs a second person."
-                : "You asked for this deploy, so you cannot approve it. " +
-                  "A production run needs a second person."}
-            </p>
-          ) : (
-            <>
-              {/* A placeholder is not a name: it vanishes on the first
-                  keystroke, and this note is read back later as audit copy. */}
-              <input
-                className="input mt-2"
-                style={{ fontSize: "12px" }}
-                aria-label="Note for the approval record"
-                placeholder="Optional note for the record"
-                value={note}
-                onChange={(event) => onNoteChange(event.target.value)}
-              />
-              <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
-                Stored with the approval and shown in the audit log.
-              </p>
-              <div className="appr__actions">
-                <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  disabled={busy}
-                  onClick={() => onDecide(pending.id, "approve")}
-                >
-                  <CheckIcon size={13} />
-                  {action === "revert" ? "Approve this rollback" : "Approve this run"}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-secondary"
-                  disabled={busy}
-                  onClick={() => onDecide(pending.id, "reject")}
-                >
-                  <XIcon size={13} />
-                  Reject
-                </button>
-              </div>
-            </>
-          )}
-        </>
-      ) : (
-        <>
-          <p className="appr__body">
-            {action === "revert"
-              ? "This target is labelled production, so the rollback needs an " +
-                "approval from someone other than you."
-              : "This target is labelled production, so the run needs an approval " +
-                "from someone other than you."}
-            {latest?.status === "rejected" ? (
-              <>
-                {" "}
-                The last request for this exact SQL was rejected by{" "}
-                {latest.decided_by ?? "someone"}
-                {latest.note ? ` — "${latest.note}"` : ""}.
-              </>
-            ) : latest?.status === "used" ? (
-              <>
-                {" "}
-                {action === "revert"
-                  ? "An earlier approval for this exact SQL has already been spent on a rollback."
-                  : "An earlier approval for this exact SQL has already been spent on a run."}
-              </>
-            ) : null}
-          </p>
-          <input
-            className="input mt-2"
-            style={{ fontSize: "12px" }}
-            aria-label="Note for the record — shown to whoever approves this"
-            placeholder="Optional note for the approver"
-            value={note}
-            onChange={(event) => onNoteChange(event.target.value)}
-          />
-          <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
-            Whoever approves this will see it.
-          </p>
-          <div className="appr__actions">
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              disabled={busy}
-              onClick={onRequest}
-            >
-              <UsersIcon size={13} />
-              {latest ? "Request approval again" : "Request approval"}
-            </button>
-          </div>
-        </>
-      )}
-
-      {error && (
-        <p className="appr__meta" style={{ color: "var(--break)" }}>
-          {error}
-        </p>
       )}
     </div>
   );
@@ -1197,6 +859,12 @@ export default function DeployPage() {
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [targetVersion, setTargetVersion] = useState<string>("");
+  // Where a "Run …" button takes the reader: the run panel, at its first
+  // unticked box or else its Deploy button. And where "Roll back to here…" in
+  // the version timeline takes them: the Roll back card.
+  const runPanelRef = useRef<HTMLDivElement>(null);
+  const deployButtonRef = useRef<HTMLButtonElement>(null);
+  const rollbackCardRef = useRef<HTMLDivElement>(null);
 
   // ── Environment of the chosen target ─────────────────────────────────────
   // The connection carries one label; the tracked schema can carry a louder one
@@ -1243,6 +911,11 @@ export default function DeployPage() {
   const [driftPhase, setDriftPhase] = useState<DriftPhase>("idle");
   const [driftResult, setDriftResult] = useState<DriftResult | null>(null);
   const [driftError, setDriftError] = useState<string | null>(null);
+  // The last drift result on record for this target, as the lineage lookup
+  // reported it before this check ran. The apply route holds a run to that
+  // record, so when this check fails the drift tick is still asked for (see
+  // driftGateStatus).
+  const [storedDriftStatus, setStoredDriftStatus] = useState<DriftResult["status"] | null>(null);
 
   // ── Roll back to (undo the newest applied versions of this family) ──────
   // rollbackChoice is the version picked in "Roll back to", or BEFORE_FIRST
@@ -1304,9 +977,19 @@ export default function DeployPage() {
   // that started it so the whole stage-2 view can say so, including after it
   // finishes and the button is no longer in the picture.
   const [runIsDryRun, setRunIsDryRun] = useState(false);
+  // What the last clean dry run rehearsed (its batchBody), or null. "Deploy
+  // for real" deploys the current selection, so it is offered only while the
+  // selection's body is this one: a rehearsal of v5.0.1 → v5.0.2 must not
+  // clear a deploy of v5.0.1 → v6.0.0, nor SQL that a re-pull has changed.
+  const [rehearsedBody, setRehearsedBody] = useState<string | null>(null);
   // A failure that belongs to the run rather than to any one migration — a
   // rejected request, an unreadable response, a connection that never landed.
   const [runError, setRunError] = useState<string | null>(null);
+  // True when the server turned the last run away (a 4xx answer): it checked
+  // the request and applied none of it. The rows and the recovery bar then say
+  // "refused" rather than "rolled back", which would describe a run that never
+  // got going.
+  const [runRefused, setRunRefused] = useState(false);
 
   const timerRef = useRef<number | null>(null);
   const runStartRef = useRef(0);
@@ -1417,14 +1100,21 @@ export default function DeployPage() {
     );
   }, [scriptGroup, preflightResult, groupedScripts, schema]);
 
-  // Everything we'd apply to reach the chosen target version (ascending order).
-  const scriptsUpToTarget = useMemo(() => {
-    if (!targetVersion) return [];
-    return pendingScripts.filter((s) => compareVersions(s.version, targetVersion) <= 0);
-  }, [pendingScripts, targetVersion]);
+  // What a run to the chosen version applies, oldest first: the pending
+  // versions up to and including it. pendingPrefixThrough is the one rule for
+  // a partial run; a pick that is not pending gives an empty run, never every
+  // version below it.
+  const scriptsUpToTarget = useMemo(
+    () => pendingPrefixThrough(pendingScripts, targetVersion),
+    [pendingScripts, targetVersion]
+  );
+  // The selection's body and the body of the run on screen. The approval
+  // hash, the rehearsal pin and the recovery bar all compare these.
+  const selectionBody = useMemo(() => batchBody(scriptsUpToTarget), [scriptsUpToTarget]);
+  const runBody = useMemo(() => batchBody(runScripts), [runScripts]);
 
   // Forward view (Phase 3): every GitHub version of the chosen family labelled
-  // Applied / Pending / Superseded against the target's applied history. Both
+  // Applied / Pending / Skipped against the target's applied history. Both
   // inputs are scoped to one (database, schema, script_name) — scopedScripts is
   // already database-filtered, the schema filter narrows it, and the preflight
   // timeline is the target DB's script_patch for this exact family — so two
@@ -1439,6 +1129,23 @@ export default function DeployPage() {
 
   const appliedCount = versionLedger.filter((e) => e.status === "applied").length;
   const pendingCount = versionLedger.filter((e) => e.status === "pending").length;
+  // Versions a deploy will never run: never applied and below the target's
+  // version. The ledger, the up-to-date card and the run panel all name them.
+  const skippedVersions = versionLedger
+    .filter((e) => e.status === "skipped")
+    .map((e) => e.version);
+
+  // A version we asked for is not a version we read — never print one as the
+  // other. A failed ledger read leaves preflightResult null, and "fresh" there
+  // would be a claim about the target that nothing has checked.
+  // vLabel, not a bare "v" prefix: the ledger may store "v5.0.2", and the
+  // label must read "v5.0.2", not "vv5.0.2". Declared up here because the
+  // version timeline's statuses name it.
+  const currentLabel = !preflightResult
+    ? "unknown"
+    : preflightResult.currentVersion
+      ? vLabel(preflightResult.currentVersion)
+      : "fresh";
 
   // ── Roll back to ─────────────────────────────────────────────────────────
   // The registry's versions of this family in this schema. A version with no
@@ -1623,6 +1330,61 @@ export default function DeployPage() {
   // This family's rollbacks on the target, newest first.
   const revertedHistory = preflightResult?.reverted ?? [];
 
+  // ── Version timeline ─────────────────────────────────────────────────────
+  // The registry's versions of this family (left) against the target's
+  // ledger rows (right), one row per version, newest first (mergeTimelines).
+  // A registry file's dot is read from its SQL the way the pending list and
+  // the run read it (describeChangeType); a ledger row's dot is the
+  // change_type it stored when it ran. The right-hand status is the version
+  // ledger's Applied / Pending / Skipped, so the timeline, the pending list
+  // and the up-to-date card never disagree about a version.
+  const timeline = useMemo(() => {
+    const left: TimelineEntry[] = familyRegistry.map((s) => ({
+      scriptName: scriptGroup,
+      version: s.version,
+      appliedAt: null,
+      changeType: describeChangeType(s.sql_content).recorded,
+      sqlContent: s.sql_content,
+    }));
+    const right: TimelineEntry[] = (preflightResult?.timeline ?? []).map((row) => ({
+      scriptName: scriptGroup,
+      version: row.version,
+      appliedAt: row.applied_at,
+      changeType: normalizeChangeLevel(row.change_type),
+      sqlContent: row.sql_content ?? null,
+      // Deploy stores the family's name as the title, which says nothing
+      // beside the family's own heading. Any other title is shown.
+      label: row.title && row.title !== scriptGroup ? row.title : null,
+    }));
+    const reverted = preflightResult?.reverted ?? [];
+    const rows = mergeTimelines(left, right).map((row) => {
+      const entry = versionLedger.find((e) => timelineKey(e.version) === row.key);
+      if (!entry) return row;
+      // A version that is not applied now but was rolled back says when. The
+      // history is newest first, so this is its latest rollback. Matched on
+      // the family and on versionKey, so "v1.2" there finds "1.2.0" here.
+      const rolledBack =
+        entry.status === "applied"
+          ? null
+          : reverted.find(
+              (r) => r.script_name === scriptGroup && versionKey(r.version) === versionKey(entry.version)
+            ) ?? null;
+      return { ...row, rightStatus: ledgerStatus(entry, rolledBack, currentLabel, pullWarnings.length > 0) };
+    });
+    // "(Outdated)" goes on the side that is behind, by the version detector's
+    // rule (each side's newest version): the database when the registry has a
+    // newer version (so something is pending), the registry when the
+    // database's newest version is above every file the registry has.
+    return { rows, outdatedSide: outdatedSideOfEntries(left, right) };
+  }, [familyRegistry, preflightResult, scriptGroup, versionLedger, currentLabel, pullWarnings]);
+
+  // Every version the Roll back card offers to go back to ("Before the first
+  // version" has no row of its own). Each one's row gets "Roll back to here…",
+  // which only picks it in that card: nothing runs from the timeline.
+  const revertableVersions = rollbackOptions
+    .filter((option) => option.value !== BEFORE_FIRST)
+    .map((option) => option.value);
+
   // A new target or family starts the panel over: nothing picked, and no
   // result from another family's rollback left on screen.
   useEffect(() => {
@@ -1715,17 +1477,30 @@ export default function DeployPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingScripts, stage]);
 
+  // What the chosen batch risks, from one reading of its SQL. The same helper
+  // (lib/deploy-risk) decides what the apply route refuses without a tick and
+  // the breaking count an approver is shown, so every box this page asks for
+  // is a box the server asks for too. Each migration is read with the
+  // change_type runBatch sends with it, exactly as the server will read it.
+  const runRisk = useMemo(
+    () =>
+      analyseRunRisk(
+        scriptsUpToTarget.map((s) => ({
+          scriptName: s.script_name,
+          version: s.version,
+          sqlContent: s.sql_content,
+          changeType: changeTypeSent(s.sql_content),
+        }))
+      ),
+    [scriptsUpToTarget]
+  );
   // Summary stats for the chosen batch. A migration counts as breaking when
   // describeChangeType says so: stamped breaking, graded breaking with no
   // stamp, or holding a statement that is always breaking whatever the stamp.
-  const breakingCount = scriptsUpToTarget.filter(
-    (s) => describeChangeType(s.sql_content).countsAsBreaking
-  ).length;
+  const breakingCount = runRisk.breaking.length;
   // Of those, the ones whose label says less than their SQL. The breaking
   // gate says why they are in it.
-  const louderCount = scriptsUpToTarget.filter(
-    (s) => describeChangeType(s.sql_content).louderNote !== null
-  ).length;
+  const louderCount = runRisk.breaking.filter((entry) => entry.louderNote !== null).length;
   const linesOfSql = scriptsUpToTarget.reduce(
     (sum, s) => sum + getSqlLineCount(s.sql_content),
     0
@@ -1743,17 +1518,12 @@ export default function DeployPage() {
   // The change type answers "how far does the version move", and a TRUNCATE moves
   // it not at all — so a run that empties a table used to arrive here graded
   // "patch" with the checklist reporting that nothing in it was breaking.
-  const dataLossScripts = useMemo(
-    () =>
-      scriptsUpToTarget
-        .map((s) => ({ script: s, statements: findRowDestroyingStatements(s.sql_content) }))
-        .filter((entry) => entry.statements.length > 0),
-    [scriptsUpToTarget]
-  );
+  // The migrations that delete rows, each with the statements that do it.
+  const dataLossScripts = runRisk.dataLoss;
   // Named rather than counted: "TRUNCATE, DELETE" tells the reader what to go
   // and look for, where "3 statements" tells them only that there are three.
   const dataLossKinds = useMemo(
-    () => [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].join(", "),
+    () => [...new Set(dataLossScripts.flatMap((entry) => entry.kinds))].join(", "),
     [dataLossScripts]
   );
   // The kinds in that list the breaking grade never sees. For these the
@@ -1761,7 +1531,7 @@ export default function DeployPage() {
   // graded breaking as well, so "nothing else catches this" would be wrong there.
   const unflaggedDataLossKinds = useMemo(
     () =>
-      [...new Set(dataLossScripts.flatMap((entry) => entry.statements))].filter((kind) =>
+      [...new Set(dataLossScripts.flatMap((entry) => entry.kinds))].filter((kind) =>
         ROW_DESTROYING_NOT_BREAKING.includes(kind)
       ),
     [dataLossScripts]
@@ -1777,15 +1547,9 @@ export default function DeployPage() {
   // Warned about, not gated. The run is one transaction, so a failure here
   // leaves the target exactly as it was; making the user tick a box to proceed
   // would spend a confirmation on the one outcome that costs nothing.
-  const mightFailScripts = useMemo(
-    () =>
-      scriptsUpToTarget
-        .map((s) => ({ script: s, statements: findMightFailStatements(s.sql_content) }))
-        .filter((entry) => entry.statements.length > 0),
-    [scriptsUpToTarget]
-  );
+  const mightFailScripts = runRisk.mightFail;
   const mightFailKinds = useMemo(
-    () => [...new Set(mightFailScripts.flatMap((entry) => entry.statements))].join(", "),
+    () => [...new Set(mightFailScripts.flatMap((entry) => entry.kinds))].join(", "),
     [mightFailScripts]
   );
 
@@ -1798,10 +1562,8 @@ export default function DeployPage() {
   // undo everything — six times over — has even opened, and PostgreSQL has no
   // statement that removes an enum value, so a failed run leaves them behind
   // for good. Small and usually harmless, but the page said the opposite of it.
-  const enumAdditions = useMemo(
-    () => extractEnumAddValues(scriptsUpToTarget.map((s) => s.sql_content).join("\n")),
-    [scriptsUpToTarget]
-  );
+  // runRisk reads them across the whole batch, the way the apply route hoists them.
+  const enumAdditions = runRisk.enumAdditions;
 
   // ── What the approval covers ─────────────────────────────────────────────
   // Hash the batch the same way the server does, so this screen can say
@@ -1814,16 +1576,9 @@ export default function DeployPage() {
       setHashError(null);
       return;
     }
-    const body = fingerprintBody(
-      scriptsUpToTarget.map((s) => ({
-        scriptName: s.script_name,
-        version: s.version,
-        sqlContent: s.sql_content,
-      }))
-    );
     let cancelled = false;
     setHashError(null);
-    sha256Hex(body)
+    sha256Hex(selectionBody)
       .then((hex) => {
         if (!cancelled) setRunHash(hex);
       })
@@ -1841,7 +1596,9 @@ export default function DeployPage() {
     return () => {
       cancelled = true;
     };
-  }, [scriptsUpToTarget]);
+    // The body, not the array: a re-read that finds the same scripts builds
+    // a new array, and the hash of the same text is the same hash.
+  }, [scriptsUpToTarget.length, selectionBody]);
 
   // Approvals are only read for a production target, because production is the
   // only place the server asks for one. Fetching them elsewhere would put a
@@ -1899,14 +1656,57 @@ export default function DeployPage() {
   const approvedRun = runApprovals.find((a) => a.status === "approved") ?? null;
   const pendingRun = runApprovals.find((a) => a.status === "pending") ?? null;
   const latestRun = runApprovals[0] ?? null;
+  // The newest approved, unspent deploy approval for this target that is not
+  // for this selection: approved for another range, or for SQL that has
+  // changed since. The approval panel names it, so "Needs a second person"
+  // never sits beside an approval without saying why it does not count.
+  const otherApproval = useMemo(
+    () =>
+      !approvedRun && runHash
+        ? approvals.find(
+            (a) =>
+              (a.action ?? "deploy") === "deploy" &&
+              a.status === "approved" &&
+              a.run_fingerprint !== runHash
+          ) ?? null
+        : null,
+    [approvals, approvedRun, runHash]
+  );
+  // The pending version that range ends at, as the registry spells it, so
+  // "Select that range" can pick it. null when it is not pending any more (it
+  // ran, or left the registry); the panel then says it cannot be selected.
+  const otherApprovalVersion = otherApproval
+    ? pendingScripts.find((s) => versionKey(s.version) === versionKey(otherApproval.target_version))
+        ?.version ?? null
+    : null;
   // What stops a run starting at all. Deploy and Dry run share it: a rehearsal
   // writes nothing but still executes every statement against the real target,
   // so the same preconditions apply to both.
   // A drift result that is not "in sync" means the target is not the database
   // these migrations were written against. That is a reason to stop and look,
   // not a reason to forbid the run outright — so it is a tick, like production.
-  const driftBlocks =
-    driftPhase === "ready" && driftResult !== null && driftResult.status !== "in_sync";
+  //
+  // Which drift result the tick answers for, or null when none needs one. A
+  // check that finished speaks for itself (it is also the new record). A check
+  // that failed this time falls back to the last result on record: the apply
+  // route holds a run to that same record and refuses without the tick when it
+  // says drifted or unreachable, so the page asks for the tick too rather than
+  // send a run the server will turn away.
+  const driftGateStatus: "drifted" | "unreachable" | null =
+    driftPhase === "ready" && driftResult !== null && driftResult.status !== "in_sync"
+      ? driftResult.status
+      : driftPhase === "error" &&
+          (storedDriftStatus === "drifted" || storedDriftStatus === "unreachable")
+        ? storedDriftStatus
+        : null;
+  // True when the tick is about the record because this check failed.
+  const driftGateFromRecord = driftGateStatus !== null && driftPhase === "error";
+  const driftBlocks = driftGateStatus !== null;
+  // A drift check that is still running holds both runs back. Its result
+  // replaces the record the apply route holds a run to, and until it lands
+  // this page cannot show the tick that record may ask for, so a run sent now
+  // could be refused over a warning the reader never saw.
+  const driftChecking = driftPhase === "loading";
   // Every box the reader has to tick, in one place.
   //
   // It is one name rather than a repeated expression because it is read twice —
@@ -1926,11 +1726,49 @@ export default function DeployPage() {
     isDeploying ||
     // A rollback in flight is changing the same ledger.
     rollbackBusy !== null ||
+    driftChecking ||
     unacknowledgedGates;
   // What additionally stops a real deploy. A dry run is exempt because the
   // server exempts it: a rehearsal writes nothing, and charging a second person
   // for a rehearsal would make the careful path the expensive one.
   const deployBlocked = runBlocked || (targetIsProduction && !approvedRun);
+
+  // ── The selection, by name ───────────────────────────────────────────────
+  // Deploy and Dry run start scriptsUpToTarget: the range the last "Run …"
+  // button picked. Every label that names it is built here from that list,
+  // so the buttons, "Deploy to", the summary and the approval panel all read
+  // the same range: "Deploy v5.0.1 → v5.0.2 (2)", "Dry run v5.0.1 → v5.0.2".
+  const selectionVersions = scriptsUpToTarget.map((s) => s.version);
+  const selectionCount = selectionVersions.length;
+  const selectionRange = versionRange(selectionVersions);
+  const deployLabel =
+    selectionCount === 0
+      ? "Deploy"
+      : `Deploy ${selectionRange}${selectionCount > 1 ? ` (${selectionCount})` : ""}` +
+        (targetIsProduction ? " to production" : "");
+  const dryRunLabel = selectionCount === 0 ? "Dry run" : `Dry run ${selectionRange}`;
+  // The version the selection ends at, for "Deploy to" and the summary.
+  const selectionLastLabel =
+    selectionCount > 0 ? vLabel(selectionVersions[selectionCount - 1]) : "—";
+
+  // The run on screen (the Run stage) against the selection. "Deploy for
+  // real" after a clean rehearsal and "Run again" after a failed run both
+  // start the selection, not the batch on screen, so each is offered only
+  // while the two are the same; otherwise its card says what changed.
+  const runVersions = runScripts.map((s) => s.version);
+  const runRange = versionRange(runVersions);
+  const runLastVersion = runVersions.length > 0 ? runVersions[runVersions.length - 1] : "";
+  const rehearsalChange = selectionChange(rehearsedBody, runScripts, scriptsUpToTarget, selectionBody);
+  const repeatChange = selectionChange(runBody, runScripts, scriptsUpToTarget, selectionBody);
+  const [ranName, nowName] = nameTwoRuns(runVersions, selectionVersions);
+  // Pre-flight boxes still to tick for the selection, said on the Run stage
+  // too, whose buttons they hold back. (While the drift check runs, those
+  // buttons say so themselves.)
+  const untickedOnPreflight = unacknowledgedGates && !driftChecking;
+  // The pending rows in the selection, marked in the list by the script
+  // itself rather than by comparing versions, so the list cannot mark a row
+  // the run would leave out.
+  const inRunKeys = new Set(scriptsUpToTarget.map((s) => scriptKey(s)));
 
   // ── Data loaders ─────────────────────────────────────────────────────────
   async function handlePull() {
@@ -2069,6 +1907,9 @@ export default function DeployPage() {
           dryRun,
           acknowledgeProduction: rollbackProdAck,
           acknowledgeOtherScripts: rollbackOtherAck,
+          // The revert route reads the same rows-deleting statements from the
+          // same rollback SQL, and refuses without this tick, dry runs included.
+          acknowledgeDataLoss: rollbackDataLossAck,
         }),
       });
       // Read as text first: an error page from a proxy is not JSON, and
@@ -2204,12 +2045,14 @@ export default function DeployPage() {
           schemaName: schema || "public",
           scriptName: scriptGroup,
           targetVersion,
-          breakingCount,
           note: approvalNote.trim() || undefined,
+          // No count is sent: the server counts the breaking migrations from
+          // this SQL, read with the same change_type the run will send.
           scripts: scriptsUpToTarget.map((script) => ({
             script_name: script.script_name,
             version: script.version,
             sql_content: script.sql_content,
+            change_type: changeTypeSent(script.sql_content),
           })),
         }),
       });
@@ -2249,9 +2092,8 @@ export default function DeployPage() {
           // version" has no version to go back to, so every rollback approval
           // is labelled by the last version it takes off.
           targetVersion: rollbackSteps[rollbackSteps.length - 1].version,
-          // For a rollback, the risk the approver weighs is lost rows: how
-          // many of the rollbacks hold a statement that destroys them.
-          breakingCount: rollbackDataLoss.length,
+          // No count is sent. For a rollback the risk the approver weighs is
+          // lost rows, and the server counts the rollbacks below that delete them.
           note: rollbackApprovalNote.trim() || undefined,
           scripts: rollbackSteps.map((step) => ({
             script_name: scriptGroup,
@@ -2318,6 +2160,7 @@ export default function DeployPage() {
     setDriftPhase("idle");
     setDriftResult(null);
     setDriftError(null);
+    setStoredDriftStatus(null);
     setEnvironmentUnknown(false);
     // An acknowledgement belongs to one drift result. Dropping it here means a
     // fresh check always has to be read again, rather than inheriting a tick
@@ -2338,6 +2181,7 @@ export default function DeployPage() {
     setDriftPhase("loading");
     setDriftError(null);
     setDriftResult(null);
+    setStoredDriftStatus(null);
     setDriftAcknowledged(false);
     setEnvironmentUnknown(false);
     try {
@@ -2357,11 +2201,16 @@ export default function DeployPage() {
         tracked?: boolean;
         trackedSchemaId?: number;
         environment?: string;
+        /** The last drift result on record, which the apply route holds a run to. */
+        driftStatus?: DriftResult["status"] | null;
       };
       // Worth keeping even when the drift check itself can't run: the warning
       // above the Deploy button needs this, and an untracked schema simply has
       // no label of its own to add.
       setSchemaEnvironment(toEnvironment(lookup.environment));
+      // Kept for the same reason: if the drift check below fails, this record
+      // is what the apply route will hold the run to.
+      setStoredDriftStatus(lookup.driftStatus ?? null);
       if (!lookup.tracked || !lookup.trackedSchemaId) {
         setDriftPhase("untracked");
         return;
@@ -2412,8 +2261,62 @@ export default function DeployPage() {
     setRunStatus({});
     setRunComplete(false);
     setRunError(null);
+    setRunRefused(false);
     setRunIsDryRun(false);
+    setRehearsedBody(null);
     setElapsedMs(0);
+  }
+
+  // ── Picking the run ──────────────────────────────────────────────────────
+  // The pending list's "Run …" buttons select rather than run: the run
+  // becomes every pending version up to that row (pendingPrefixThrough), the
+  // rows outside it read "not in this run", and focus moves on to what is
+  // left to do. Nothing runs until Deploy or Dry run is pressed.
+  function selectRun(version: string) {
+    if (version !== targetVersion) {
+      // The acknowledgement effect's rule: a tick is for one batch. Cleared
+      // here too, in the same render as the new selection, so the focus below
+      // finds these boxes already unticked instead of racing the effect.
+      setDeployAcknowledged(false);
+      setBreakingAcknowledged(false);
+      setDataLossAcknowledged(false);
+      setDriftAcknowledged(false);
+    }
+    setTargetVersion(version);
+    // After React has drawn the new selection's gates.
+    window.requestAnimationFrame(focusNextStep);
+  }
+
+  // The run panel's first box still to tick, else its Deploy button when it
+  // can be pressed, else the panel itself.
+  function focusNextStep() {
+    const panel = runPanelRef.current;
+    if (!panel) return;
+    const box = panel.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]:not(:checked):not(:disabled)'
+    );
+    const button = deployButtonRef.current;
+    const target: HTMLElement = box ?? (button && !button.disabled ? button : panel);
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
+  }
+
+  // "Roll back to here…" in the version timeline: pick that version in the
+  // Roll back card and open its planner. The card then works as it always
+  // does (preview, ticks, approval); nothing runs from the timeline.
+  function rollBackTo(row: TimelineRow) {
+    const option = rollbackOptions.find(
+      (candidate) => candidate.value !== BEFORE_FIRST && timelineKey(candidate.value) === row.key
+    );
+    if (!option) return;
+    setRollbackChoice(option.value);
+    setRollbackOpen(true);
+    window.requestAnimationFrame(() => {
+      const card = rollbackCardRef.current;
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+      card.focus({ preventScroll: true });
+    });
   }
 
   // ── The deploy run ───────────────────────────────────────────────────────
@@ -2442,6 +2345,8 @@ export default function DeployPage() {
     // hint, not a rule — this is the rule. A rehearsal is held to everything
     // except the approval, exactly as the apply route holds it.
     if (dryRun ? runBlocked : deployBlocked) return;
+    // This run replaces the one on screen, and with it any rehearsal pin.
+    setRehearsedBody(null);
 
     // A deploy changes the ledger the rollback panel read, so its last result
     // no longer describes the target.
@@ -2455,6 +2360,7 @@ export default function DeployPage() {
     setRunFromVersion(currentLabel);
     setRunIsDryRun(dryRun);
     setRunError(null);
+    setRunRefused(false);
     // Every migration goes to "running" at once because they really do run
     // together. Ticking them off one at a time would be a story about a loop
     // that no longer exists.
@@ -2473,6 +2379,13 @@ export default function DeployPage() {
 
     let outcomes: ApplyOutcome[] | null = null;
     let failure: string | null = null;
+    // Whether this page cannot say how the run ended. Only three things leave
+    // it not knowing: the request never completed, the answer could not be
+    // read, or the server itself says its COMMIT did not report back. Any other
+    // answer is the server's own account of what happened.
+    let outcomeUnknown = false;
+    // The server turned the run away (a 4xx): it applied none of it.
+    let refused = false;
 
     try {
       const res = await fetch("/api/scripts/apply", {
@@ -2483,14 +2396,20 @@ export default function DeployPage() {
           schemaName: schema || "public",
           dryRun,
           acknowledgeProduction: deployAcknowledged,
+          // The other three ticks. The route reads the same risks from the
+          // same SQL (lib/deploy-risk) and refuses a run with a risk nobody
+          // ticked, so each box on this page is also a rule on the server.
+          acknowledgeBreaking: breakingAcknowledged,
+          acknowledgeDataLoss: dataLossAcknowledged,
+          acknowledgeDrift: driftAcknowledged,
           scripts: batch.map((script) => ({
             script_name: script.script_name,
             sql_content: script.sql_content,
             version: script.version,
             title: script.script_name,
-            // The level this page showed and bumped by: the stamp when there
-            // is one, the SQL's grade otherwise.
-            change_type: describeChangeType(script.sql_content).recorded,
+            // The level this page showed and bumped by. The server stores it
+            // only when it is louder than what the SQL says, never quieter.
+            change_type: changeTypeSent(script.sql_content),
             // Link the applied row back to the GitHub file it came from.
             source_ref: script.path,
             // The registry's rollback, saved on the applied row so Deploy can
@@ -2521,6 +2440,13 @@ export default function DeployPage() {
           `The apply API answered ${res.status} with a response this page could ` +
           `not read. Re-check the target before retrying.`;
       }
+      outcomeUnknown = data === null || data.outcomeUnknown === true;
+      // Every 4xx but one is the server turning the run away before any of its
+      // SQL ran. The exception is 422: a dry run whose SQL did run, until
+      // PostgreSQL refused to use a new enum value inside it. That is a
+      // rehearsal that failed, so it keeps the "failed" wording.
+      refused =
+        !outcomeUnknown && res.status >= 400 && res.status < 500 && res.status !== 422;
     } catch {
       // A genuine transport failure: the request may or may not have reached the
       // server, so this must not claim nothing happened.
@@ -2530,27 +2456,26 @@ export default function DeployPage() {
         "The request to the server never completed, so this page cannot say " +
         "whether the migrations ran. Go back to Pre-flight and press Check " +
         "database to read what the target actually has before you retry.";
+      outcomeUnknown = true;
     }
 
     // Map the server's verdict onto the rows.
     //
-    // Where there is no verdict at all AND the run failed, the row is "not
-    // known" rather than "skipped": the server reporting nothing is not the
-    // server reporting that nothing happened. That is the transport failure
-    // above, and the 502-shaped body the parser could not read — both of which
-    // reach this page from a request that may have run the whole migration.
-    // The banner already says so; the rows used to contradict it.
-    // One name, because three surfaces need the same answer: the rows, the
-    // toast, and the recovery bar. A failure with no verdict at all is the one
-    // case where "nothing was applied" is a guess.
-    const outcomeUnknown = !outcomes && Boolean(failure);
+    // A row the server said nothing about is "not known" only when the whole
+    // outcome is (outcomeUnknown above): then the server reporting nothing is
+    // not the server reporting that nothing happened, because the request may
+    // have run every migration. Any other answer says the run did not commit
+    // (a refusal before anything ran lists no rows at all), so a row it leaves
+    // out was skipped. One answer, because three surfaces need it: the rows,
+    // the toast, and the recovery bar.
     const unreported: RunStatus = outcomeUnknown ? "unknown" : "skipped";
+    // The server's answer for one script of this batch, if it gave one.
+    const outcomeOf = (script: GitHubScript) =>
+      outcomes?.find((o) => o.script_name === script.script_name && o.version === script.version);
     setRunStatus(() => {
       const next: Record<string, RunCell> = {};
       for (const script of batch) {
-        const outcome = outcomes?.find(
-          (o) => o.script_name === script.script_name && o.version === script.version
-        );
+        const outcome = outcomeOf(script);
         next[scriptKey(script)] = outcome
           ? { status: outcome.status, error: outcome.error, statements: outcome.statements }
           : { status: unreported };
@@ -2558,6 +2483,13 @@ export default function DeployPage() {
       return next;
     });
     setRunError(failure);
+    setRunRefused(refused);
+    // A clean rehearsal pins what it rehearsed. "Clean" is the rehearsal
+    // card's own rule (every script came back rehearsed), so the card and the
+    // pin always appear together.
+    if (dryRun && batch.length > 0 && batch.every((script) => outcomeOf(script)?.status === "rehearsed")) {
+      setRehearsedBody(batchBody(batch));
+    }
 
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
@@ -2581,16 +2513,21 @@ export default function DeployPage() {
       showToast(
         outcomeUnknown
           ? "Deploy outcome not known — check the target before retrying"
-          : dryRun
-            ? "Dry run failed — nothing was written"
-            : "Deploy failed — nothing was applied",
+          : refused
+            ? dryRun
+              ? "Dry run refused — nothing was run"
+              : "Deploy refused — nothing was applied"
+            : dryRun
+              ? "Dry run failed — nothing was written"
+              : "Deploy failed — nothing was applied",
         "bad"
       );
     } else if (dryRun) {
       showToast(`Dry run clean · ${batch.length} migration${batch.length === 1 ? "" : "s"} rehearsed`);
     } else {
       setStage(3);
-      showToast(`Deploy complete · up to v${targetVersion}`);
+      // The batch's own last version: the selection can move after this.
+      showToast(`Deploy complete · up to ${vLabel(batch[batch.length - 1].version)}`);
     }
   }
 
@@ -2642,15 +2579,6 @@ export default function DeployPage() {
     { n: 2, name: "Run", sub: "one transaction · all or nothing" },
     { n: 3, name: "Verify", sub: "ledger re-read" },
   ];
-
-  // A version we asked for is not a version we read — never print one as the
-  // other. A failed ledger read leaves preflightResult null, and "fresh" there
-  // would be a claim about the target that nothing has checked.
-  const currentLabel = !preflightResult
-    ? "unknown"
-    : preflightResult.currentVersion
-      ? `v${preflightResult.currentVersion}`
-      : "fresh";
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
@@ -2905,78 +2833,51 @@ export default function DeployPage() {
                   <div className="text-center">
                     <div className="section-title">Deploy to</div>
                     <div className="mono text-[18px] font-semibold mt-1" style={{ color: "var(--brand)" }}>
-                      {targetVersion ? `v${targetVersion}` : "—"}
+                      {selectionLastLabel}
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Forward view (Phase 3): every GitHub version of this family,
-                  labelled Applied / Pending / Superseded against the target's
-                  script_patch history. Always shown once pre-flight has run.
-                  Undoing versions is the "Roll back" card below it. */}
+              {/* The version timeline: every version of this family, the
+                  registry's file on the left and the target's ledger row on
+                  the right, newest first. The right-hand status is the version
+                  ledger's Applied / Pending / Skipped, the same one the pending
+                  list below runs from. Always shown once pre-flight has run.
+                  "Roll back to here…" only picks that version in the Roll back
+                  card below, which does the undoing. */}
               {versionLedger.length > 0 && (
                 <div className="card p-4">
                   <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
                     <div className="section-title">
-                      Version ledger · <span className="mono">{scriptGroup}</span>
+                      Version timeline · <span className="mono">{scriptGroup}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="pill pill-sync"><span className="dot" />{appliedCount} applied</span>
                       <span className="pill pill-pending"><span className="dot" />{pendingCount} pending</span>
+                      {/* The same colour as the Skipped status in the rows. */}
+                      {skippedVersions.length > 0 && (
+                        <span className="pill pill-drift"><span className="dot" />{skippedVersions.length} skipped</span>
+                      )}
                     </div>
                   </div>
-                  <div>
-                    {versionLedger.map((entry) => {
-                      // A version that is not applied now but was rolled back
-                      // says when, so "pending" is not read as "never deployed".
-                      // The history is newest first: this is its latest rollback.
-                      const rolledBack =
-                        entry.status === "applied"
-                          ? null
-                          : revertedHistory.find(
-                              (row) => compareVersions(row.version, entry.version) === 0
-                            ) ?? null;
-                      return (
-                        <div
-                          key={entry.version}
-                          className="flex items-center justify-between gap-3 py-1.5"
-                          style={{ borderTop: "1px solid var(--border)" }}
-                        >
-                          <span className="mono text-[13px]">
-                            v{entry.version}
-                            {!entry.inRegistry && (
-                              <span className="ml-2 text-[11px]" style={{ color: "var(--text-3)" }}>
-                                not in registry
-                              </span>
-                            )}
-                            {!entry.inRegistry && (
-                              <span className="help ml-2">
-                                {/* With part of the registry unread, "applied
-                                    directly" is only one of two explanations. */}
-                                {pullWarnings.length > 0
-                                  ? "applied directly, or its file could not be read (see the top of the page)"
-                                  : "applied directly, or replayed here by Version Sync"}
-                              </span>
-                            )}
-                          </span>
-                          <div className="flex items-center gap-2.5">
-                            {rolledBack && (
-                              <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                                {`rolled back ${fmtDate(rolledBack.reverted_at)}`}
-                              </span>
-                            )}
-                            {entry.status === "applied" && entry.appliedAt && (
-                              <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                                {fmtDate(entry.appliedAt)}
-                              </span>
-                            )}
-                            {ledgerPill(entry.status)}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {/* Skipped rows would read as "still to do" without this. */}
+                  {skippedVersions.length > 0 && (
+                    <p className="help mb-3">{skippedNote(skippedVersions, currentLabel)}</p>
+                  )}
+                  {/* Roll back to here… is withheld while a rollback runs: it
+                      would change the choice under a running request. */}
+                  <VersionTimeline
+                    leftLabel="Registry (GitHub)"
+                    rightLabel="This database"
+                    rows={timeline.rows}
+                    outdatedSide={timeline.outdatedSide}
+                    revertableVersions={revertableVersions}
+                    revertableFamily={scriptGroup}
+                    onRevert={rollbackBusy === null ? rollBackTo : undefined}
+                    leftNoScript="The registry file for this version is empty."
+                    rightNoScript="The ledger row for this version did not store its SQL (rows written before the ledger kept a copy have none)."
+                  />
                 </div>
               )}
 
@@ -2988,7 +2889,7 @@ export default function DeployPage() {
                   scripts applied since, and on production a second person's
                   approval of this exact rollback SQL. */}
               {(appliedNewestFirst.length > 0 || rollbackDone || revertedHistory.length > 0) && (
-                <div className="card p-4">
+                <div className="card p-4" ref={rollbackCardRef} tabIndex={-1}>
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="section-title">
                       Roll back · <span className="mono">{scriptGroup}</span>
@@ -3288,16 +3189,25 @@ export default function DeployPage() {
                   <div className="w-12 h-12 rounded-full grid place-items-center mx-auto mb-3" style={{ background: "var(--sync-soft)", color: "var(--sync)" }}>
                     <CheckIcon size={22} />
                   </div>
-                  <div className="text-[15px] font-semibold">Already up to date</div>
+                  <div className="text-[15px] font-semibold">You’re up-to-date!</div>
                   <p className="help mt-1">
                     No pending migrations for <span className="mono">{scriptGroup}</span> in{" "}
                     <span className="mono">{preflightResult.schema}</span>. The ledger is at{" "}
                     <span className="mono">{currentLabel}</span>.
                   </p>
+                  {/* Skipped versions are not pending, so they do not stop this
+                      card; one line keeps them from going unmentioned. */}
+                  {skippedVersions.length > 0 && (
+                    <p className="help mt-1">
+                      {`${countOf(skippedVersions.length, "older version")} ${
+                        skippedVersions.length === 1 ? "was" : "were"
+                      } never applied and will not run. See Skipped in the version timeline above.`}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="grid gap-6 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]">
-                  {/* Left: pending list + (stubbed) drift pre-check */}
+                  {/* Left: pending list + drift pre-check */}
                   <div className="space-y-4">
                     <div className="flex items-end justify-between gap-3 flex-wrap">
                       <div>
@@ -3305,49 +3215,76 @@ export default function DeployPage() {
                         <h2 className="text-[18px] font-semibold tracking-[-0.005em] mt-1">
                           {pendingScripts.length} pending · {scriptsUpToTarget.length} in this run
                         </h2>
+                        {/* Skipped versions are not in the list below, so say
+                            why rather than leave them missing without a word. */}
+                        {skippedVersions.length > 0 && (
+                          <p className="help mt-1">
+                            {`Not in this run: ${listVersions(skippedVersions)} ${
+                              skippedVersions.length === 1 ? "was" : "were"
+                            } skipped — never applied and below ${currentLabel}, the version applied to the target. See Skipped in the version timeline above.`}
+                          </p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[12px]" style={{ color: "var(--text-3)" }}>Deploy up to</span>
-                        <Select
-                          variant="input"
-                          ariaLabel="Deploy up to version"
-                          style={{ width: "auto" }}
-                          mono
-                          value={targetVersion}
-                          options={pendingScripts.map((s, i) => ({
-                            value: s.version,
-                            label: `v${s.version}${i === pendingScripts.length - 1 ? " (latest)" : ""}`,
-                          }))}
-                          onChange={(value) => setTargetVersion(value)}
-                        />
-                      </div>
+                      {/* Every pending version at once. Each row's own
+                          "Run …" picks a shorter run, from the first pending
+                          version up to that row. */}
+                      {pendingScripts.length > 1 && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          disabled={isDeploying}
+                          title="Selects every pending version for the run below. Nothing runs until you press Deploy or Dry run."
+                          onClick={() => selectRun(pendingScripts[pendingScripts.length - 1].version)}
+                        >
+                          {`Run all (${pendingScripts.length})…`}
+                        </button>
+                      )}
                     </div>
 
                     <div>
                       {pendingScripts.map((script, i) => {
                         const reading = describeChangeType(script.sql_content);
                         const kind = reading.recorded;
-                        const from = i === 0 ? currentLabel : `v${pendingScripts[i - 1].version}`;
+                        const from = i === 0 ? currentLabel : vLabel(pendingScripts[i - 1].version);
                         // The version this one follows on the target, for the
                         // step note. null on a fresh target: there is no step.
                         const previous =
                           i === 0 ? preflightResult.currentVersion : pendingScripts[i - 1].version;
-                        const inRun = targetVersion
-                          ? compareVersions(script.version, targetVersion) <= 0
-                          : false;
+                        // In the run when the selection holds this script, so
+                        // the rows marked here are exactly what Deploy sends.
+                        const inRun = inRunKeys.has(scriptKey(script));
+                        // This row's button selects every pending version up to
+                        // it. A run always starts at the first pending version:
+                        // deploys only move forward, one version after another.
+                        const through = pendingPrefixThrough(pendingScripts, script.version);
+                        const runLabel =
+                          through.length <= 1
+                            ? `Run ${vLabel(script.version)}…`
+                            : `Run ${versionRange(through.map((s) => s.version))} (${through.length})…`;
                         return (
                           <MigRow
                             key={scriptKey(script)}
                             seq={String(i + 1).padStart(2, "0")}
                             name={script.script_name}
                             kind={kind}
-                            sub={`${from} → v${script.version} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
+                            sub={`${from} → ${vLabel(script.version)} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
                             rightPill={bumpWord(kind)}
                             cell={{ status: inRun ? "queued" : "not-in-run" }}
                             selected={inRun}
                             sql={script.sql_content}
                             sqlOpen={inRun && reading.countsAsBreaking}
                             notes={pendingRowNotes(script, reading, previous)}
+                            action={
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                disabled={isDeploying}
+                                title="Selects this range for the run below. Nothing runs until you press Deploy or Dry run."
+                                onClick={() => selectRun(script.version)}
+                              >
+                                {runLabel}
+                              </button>
+                            }
                           />
                         );
                       })}
@@ -3365,12 +3302,12 @@ export default function DeployPage() {
 
                   {/* Right: summary + checklist */}
                   <aside className="space-y-4">
-                    <div className="card p-5">
+                    <div className="card p-5" ref={runPanelRef} tabIndex={-1}>
                       <div className="section-title mb-2">Summary</div>
                       <div className="vline mt-2">
                         <span className="vchip">{currentLabel}</span>
                         <ChevronRightIcon size={16} />
-                        <span className="vchip next"><b>{targetVersion ? `v${targetVersion}` : "—"}</b></span>
+                        <span className="vchip next"><b>{selectionLastLabel}</b></span>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-2 gap-x-4 mt-4 text-[12.5px]">
                         {/* The target is named at the top of the page, which is
@@ -3503,28 +3440,43 @@ export default function DeployPage() {
                             }
                           />
                         )}
-                        {driftBlocks && driftResult && (
+                        {driftGateStatus !== null && (
                           <RiskGate
                             tone="drift"
                             title={
-                              driftResult.status === "drifted"
-                                ? "The target has drifted"
-                                : "The target could not be checked"
+                              driftGateFromRecord
+                                ? driftGateStatus === "drifted"
+                                  ? "The last drift check found the target drifted"
+                                  : "The last drift check could not reach the target"
+                                : driftGateStatus === "drifted"
+                                  ? "The target has drifted"
+                                  : "The target could not be checked"
                             }
                             body={
-                              driftResult.status === "drifted"
-                                ? "The live schema no longer matches the snapshot these " +
-                                  "migrations were written against, so a migration may hit " +
-                                  "an object that is not the one it expects. Read the drift " +
-                                  "report on the left before running this."
-                                : "The drift check could not reach the target, so nothing " +
-                                  "here has confirmed what state it is in. The run will " +
-                                  "still connect — this only means it starts unverified."
+                              driftGateFromRecord
+                                ? "This drift check failed, so nothing here has confirmed " +
+                                  "what state the target is in now, and the last check on " +
+                                  "record found it " +
+                                  (driftGateStatus === "drifted"
+                                    ? "different from the snapshot these migrations were written against. "
+                                    : "unreachable. ") +
+                                  "The server holds a run to that last result. Press Check " +
+                                  "database to run the drift check again, or tick below to run anyway."
+                                : driftGateStatus === "drifted"
+                                  ? "The live schema no longer matches the snapshot these " +
+                                    "migrations were written against, so a migration may hit " +
+                                    "an object that is not the one it expects. Read the drift " +
+                                    "report on the left before running this."
+                                  : "The drift check could not reach the target, so nothing " +
+                                    "here has confirmed what state it is in. The run will " +
+                                    "still connect — this only means it starts unverified."
                             }
                             ack={
-                              driftResult.status === "drifted"
-                                ? "I have read the drift and mean to run anyway."
-                                : "I mean to run without a drift check."
+                              driftGateFromRecord
+                                ? "I mean to run without a drift check that passed."
+                                : driftGateStatus === "drifted"
+                                  ? "I have read the drift and mean to run anyway."
+                                  : "I mean to run without a drift check."
                             }
                             acknowledged={driftAcknowledged}
                             onAcknowledge={setDriftAcknowledged}
@@ -3550,6 +3502,11 @@ export default function DeployPage() {
                             onNoteChange={setApprovalNote}
                             onRequest={handleRequestApproval}
                             onDecide={(id, decision) => void handleDecideApproval(id, decision, "deploy")}
+                            otherApproval={otherApproval}
+                            onSelectOther={
+                              otherApprovalVersion ? () => selectRun(otherApprovalVersion) : undefined
+                            }
+                            runButton={deployLabel}
                           />
                         )}
                       </div>
@@ -3562,10 +3519,12 @@ export default function DeployPage() {
                         className={`btn btn-lg w-full mt-2 ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
                         disabled={deployBlocked}
                         onClick={() => handleRun(false)}
+                        ref={deployButtonRef}
                       >
                         <DeployIcon size={14} />
-                        Deploy {scriptsUpToTarget.length} migration{scriptsUpToTarget.length === 1 ? "" : "s"}
-                        {targetIsProduction ? " to production" : ""}
+                        {/* Names the range it deploys, as the "Run …" button that
+                            picked it did: "Deploy v5.0.1 → v5.0.2 (2)". */}
+                        {deployLabel}
                       </button>
                       {/* A rehearsal writes nothing, but it really runs the SQL —
                           including any statement that takes a heavy lock — so it
@@ -3575,14 +3534,17 @@ export default function DeployPage() {
                         className="btn btn-secondary w-full mt-2"
                         disabled={runBlocked}
                         onClick={() => handleRun(true)}
+                        title="Runs this SQL on the target inside one transaction, then rolls it back: nothing is written."
                       >
                         <EyeIcon size={14} />
-                        Dry run — execute and roll back
+                        {dryRunLabel}
                       </button>
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
                         {hasTxnViolation
                           ? "Remove the COMMIT or ROLLBACK from the versions named in " +
                             "the checklist, then pull again"
+                          : driftChecking
+                            ? "Checking the target for drift first — these unlock when the check finishes"
                           : unacknowledgedGates
                             ? "Tick every box above to enable this"
                             : targetIsProduction && !approvedRun
@@ -3613,7 +3575,7 @@ export default function DeployPage() {
                           </ChecklistItem>
                         )}
                         <ChecklistItem ok>
-                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">v{preflightResult.currentVersion}</span></> : "fresh — no versions yet"}
+                          Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh — no versions yet"}
                         </ChecklistItem>
                         <ChecklistItem ok={!hasTxnViolation}>
                           {/* A count leaves the reader to open every script and
@@ -3621,7 +3583,7 @@ export default function DeployPage() {
                               and state the rule the apply route enforces. */}
                           {hasTxnViolation
                             ? `COMMIT or ROLLBACK found in ${txnViolationScripts
-                                .map((s) => `v${s.version}`)
+                                .map((s) => vLabel(s.version))
                                 .join(", ")} — the run is already one transaction, so ` +
                               "remove them from the SQL"
                             : "No transaction-control in SQL"}
@@ -3702,15 +3664,22 @@ export default function DeployPage() {
                         {driftPhase === "untracked" && (
                           <ChecklistItem stub>Drift check · target not tracked</ChecklistItem>
                         )}
-                        {driftPhase === "error" && (
-                          <ChecklistItem ok={false}>Drift check · check failed</ChecklistItem>
-                        )}
+                        {driftPhase === "error" &&
+                          (driftGateFromRecord ? (
+                            <ChecklistItem ok={driftAcknowledged}>
+                              Drift check · check failed, and the last check on record found
+                              the target {driftGateStatus === "drifted" ? "drifted" : "unreachable"}
+                              {driftAcknowledged ? " · acknowledged" : ""}
+                            </ChecklistItem>
+                          ) : (
+                            <ChecklistItem ok={false}>Drift check · check failed</ChecklistItem>
+                          ))}
                         {driftPhase === "ready" && driftResult && (
                           driftResult.status === "in_sync" ? (
                             <ChecklistItem ok>
                               Drift check · in sync
                               {driftResult.expectedVersion ? (
-                                <> with lineage <span className="mono">v{driftResult.expectedVersion}</span></>
+                                <> with lineage <span className="mono">{vLabel(driftResult.expectedVersion)}</span></>
                               ) : null}
                             </ChecklistItem>
                           ) : driftResult.status === "drifted" ? (
@@ -3764,9 +3733,13 @@ export default function DeployPage() {
                       ? "Run finished"
                       : allRehearsed
                         ? "Dry run finished — nothing was written"
-                        : runIsDryRun
-                          ? "Dry run halted"
-                          : "Run halted — nothing was applied"}
+                        : runRefused
+                          ? runIsDryRun
+                            ? "Dry run refused — nothing was run"
+                            : "Run refused — nothing was applied"
+                          : runIsDryRun
+                            ? "Dry run halted"
+                            : "Run halted — nothing was applied"}
               </div>
               <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
                 {/* The enum values are lifted out and committed before the
@@ -3828,8 +3801,14 @@ export default function DeployPage() {
                 rehearsed: `rehearsed · rolled back with the run${ran}`,
                 // The row says what happened; the err-pre below says what
                 // Postgres said — one each, not both twice.
-                failed: "failed · the whole run was rolled back",
-                skipped: "skipped · the run rolled back before this one could commit",
+                // A refused run never got going, so there is nothing to have
+                // rolled back; the row names the refusal instead.
+                failed: runRefused
+                  ? "refused · the server's reason is below"
+                  : "failed · the whole run was rolled back",
+                skipped: runRefused
+                  ? "skipped · the server refused the run, and nothing in it was applied"
+                  : "skipped · the run rolled back before this one could commit",
                 unknown: "not known · the commit never reported back — read script_patch",
               };
               return (
@@ -3839,7 +3818,7 @@ export default function DeployPage() {
                   name={script.script_name}
                   kind={kind}
                   sub={subByStatus[cell.status]}
-                  rightPill={`v${script.version}`}
+                  rightPill={vLabel(script.version)}
                   cell={cell}
                   sql={script.sql_content}
                   notes={reading.louderNote ? [{ text: reading.louderNote, warn: true }] : undefined}
@@ -3881,7 +3860,7 @@ export default function DeployPage() {
                   Then it was rolled back: no ledger rows, no lineage advance, no schema
                   change. The ledger has been re-read and still reads{" "}
                   <span className="mono">
-                    {preflightResult?.currentVersion ? `v${preflightResult.currentVersion}` : "no versions yet"}
+                    {preflightResult?.currentVersion ? vLabel(preflightResult.currentVersion) : "no versions yet"}
                   </span>.
                 </div>
                 {targetIsProduction && !approvedRun && (
@@ -3890,15 +3869,34 @@ export default function DeployPage() {
                     someone else to clear the real run.
                   </div>
                 )}
+                {/* Deploy for real deploys the selection, not the batch above,
+                    so it waits while the two differ: another range picked, the
+                    SQL re-pulled, or the re-read ledger moved what is pending. */}
+                {rehearsalChange !== null && (
+                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                    {rehearsalChange === "range"
+                      ? `You rehearsed ${ranName}; the selection is now ${nowName}. Rehearse this selection, or pick the rehearsed range again.`
+                      : rehearsalChange === "scripts"
+                        ? `The registry’s copy of ${runRange} has changed since you rehearsed it, so this rehearsal no longer covers what would run. Go back to Pre-flight and rehearse it again.`
+                        : `You rehearsed ${runRange}, but nothing is selected to deploy now. Go back to Pre-flight to see what is pending.`}
+                  </div>
+                )}
+                {rehearsalChange === null && untickedOnPreflight && (
+                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                    Pre-flight has boxes that are not ticked for this run. Go back to
+                    Pre-flight to tick them.
+                  </div>
+                )}
               </div>
               <button
                 type="button"
                 className={`btn btn-sm ${targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                disabled={deployBlocked}
+                disabled={deployBlocked || rehearsalChange !== null}
                 onClick={() => handleRun(false)}
               >
                 <DeployIcon size={13} />
-                Deploy for real
+                {/* The drift check re-runs after every run (see driftChecking). */}
+                {driftChecking ? "Checking the target for drift…" : "Deploy for real"}
               </button>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setStage(1)}>
                 Back to Pre-flight
@@ -3918,7 +3916,11 @@ export default function DeployPage() {
               <AlertCircleIcon size={16} />
               <div className="flex-1 min-w-0">
                 <div className="text-[13.5px] font-semibold">
-                  {runOutcomeUnknown ? "Run outcome not known." : "Run did not complete."}
+                  {runOutcomeUnknown
+                    ? "Run outcome not known."
+                    : runRefused
+                      ? "Run refused."
+                      : "Run did not complete."}
                 </div>
                 <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
                   {/* Only a response we actually read licenses the claim that
@@ -3929,19 +3931,56 @@ export default function DeployPage() {
                     ? "This page never saw the run finish, so it cannot say what the " +
                       "target has now. Press Check database on Pre-flight and read the " +
                       "ledger before you run this again."
+                    : runRefused
+                    ? "The server refused this run, so none of the migrations above " +
+                      "are applied. Its reason is in the card above."
                     : "The run rolled back, so none of the migrations above are " +
                       "applied. Anything that had to commit before the transaction " +
                       "opened is still there — the ledger table on a first deploy, and " +
                       "any enum value listed on Pre-flight. The ledger has been re-read."}
                 </div>
+                {/* Run again starts the selection, not the batch above, so it
+                    waits while the two differ. That also keeps a run whose
+                    commit may have landed from going out twice: the re-read
+                    ledger moves what is pending, and with it the selection. */}
+                {repeatChange !== null && (
+                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                    {repeatChange === "range"
+                      ? `Pre-flight now selects ${nowName}, and this ${runIsDryRun ? "rehearsal" : "run"} was ${ranName}, so it cannot be repeated from here. Go back to Pre-flight to start the one you want.`
+                      : repeatChange === "scripts"
+                        ? `The registry’s copy of ${runRange} has changed since this ${runIsDryRun ? "rehearsal" : "run"}, so it cannot be repeated from here. Go back to Pre-flight to read the new SQL and start it from there.`
+                        : `Nothing is selected to run now, so this ${runIsDryRun ? "rehearsal" : "run"} cannot be repeated from here. Go back to Pre-flight to see what is pending.`}
+                  </div>
+                )}
+                {repeatChange === null && untickedOnPreflight && (
+                  <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                    Pre-flight has boxes that are not ticked for this run. Go back to
+                    Pre-flight to tick them.
+                  </div>
+                )}
+                {repeatChange === null &&
+                  !untickedOnPreflight &&
+                  !driftChecking &&
+                  !runIsDryRun &&
+                  targetIsProduction &&
+                  !approvedRun && (
+                    <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
+                      Deploy needs a second person&apos;s approval. Go back to Pre-flight to
+                      ask for one.
+                    </div>
+                  )}
               </div>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                disabled={runIsDryRun ? runBlocked : deployBlocked}
+                disabled={(runIsDryRun ? runBlocked : deployBlocked) || repeatChange !== null}
                 onClick={() => handleRun(runIsDryRun)}
               >
-                {runIsDryRun ? "Rehearse again" : "Run again"}
+                {driftChecking
+                  ? "Checking the target for drift…"
+                  : runIsDryRun
+                    ? "Rehearse again"
+                    : "Run again"}
               </button>
               <button type="button" className="btn btn-primary btn-sm" onClick={() => setStage(1)}>
                 Back to Pre-flight
@@ -3983,7 +4022,7 @@ export default function DeployPage() {
                     now reports{" "}
                     <span className="mono" style={{ color: "var(--text)" }}>
                       {preflightResult.currentVersion
-                        ? `v${preflightResult.currentVersion}`
+                        ? vLabel(preflightResult.currentVersion)
                         : "no versions yet"}
                     </span>{" "}
                     in its migration ledger.
@@ -3998,7 +4037,9 @@ export default function DeployPage() {
                 <div className="vline mt-4">
                   <span className="vchip">{runFromVersion}</span>
                   <ChevronRightIcon size={16} />
-                  <span className="vchip ok"><b>v{targetVersion}</b></span>
+                  {/* The batch that ran, not the selection: Pre-flight can move
+                      the selection after a deploy. */}
+                  <span className="vchip ok"><b>{runLastVersion ? vLabel(runLastVersion) : "—"}</b></span>
                   <span className="text-[12px] ml-2" style={{ color: "var(--text-3)" }}>
                     {fmtSecs(elapsedMs)} · {appliedScripts.length} migration{appliedScripts.length === 1 ? "" : "s"} in one transaction · 0 errors
                   </span>
@@ -4023,7 +4064,7 @@ export default function DeployPage() {
                   <div key={scriptKey(s)} className="ssr">
                     <span className="mono">
                       <span style={{ color: "var(--text-3)" }}>{String(i + 1).padStart(2, "0")}</span>{" "}
-                      {s.script_name} <span style={{ color: "var(--text-3)" }}>v{s.version}</span>
+                      {s.script_name} <span style={{ color: "var(--text-3)" }}>{vLabel(s.version)}</span>
                     </span>
                     <span className="pill pill-sync">
                       <span className="dot" />
@@ -4042,7 +4083,7 @@ export default function DeployPage() {
                 result={driftResult}
                 error={driftError}
                 context="verify"
-                targetVersion={targetVersion}
+                targetVersion={runLastVersion}
               />
             </div>
           </div>
@@ -4113,7 +4154,7 @@ function DriftPanel({
   } else if (phase === "ready" && result) {
     // The snapshot's number is Schema Studio's lineage counter, not a script
     // version, so it says so, the way the dashboard labels it.
-    const v = result.expectedVersion ? `lineage v${result.expectedVersion}` : "its snapshot";
+    const v = result.expectedVersion ? `lineage ${displayVersion(result.expectedVersion, true)}` : "its snapshot";
     if (result.status === "unreachable") {
       icon = <AlertTriangleIcon size={16} />;
       circle = {
@@ -4147,7 +4188,7 @@ function DriftPanel({
           {context === "verify" ? (
             <>
               Re-snapshot the target on the Dashboard to record its structure after{" "}
-              <span className="mono">v{targetVersion}</span> as the new expected baseline.
+              <span className="mono">{vLabel(targetVersion)}</span> as the new expected baseline.
             </>
           ) : context === "rollback" ? (
             /* The revert route records the structure it leaves as the new

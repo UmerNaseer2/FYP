@@ -7,17 +7,22 @@ import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { containsTransactionControl, extractEnumAddValues, hasExecutableSql } from "@/lib/sql-guard";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
-import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
+import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
+import {
+  analyseRunRisk,
+  checkForwardOnly,
+  listLabels,
+  readScriptLevel,
+  scriptLabel,
+  type ForwardOnlyProblem,
+} from "@/lib/deploy-risk";
 import {
   isProduction,
   louderEnvironment,
   productionBlockReason,
   toEnvironment,
 } from "@/lib/environments";
-
-// Valid values the script_patch table accepts for change_type
-const VALID_CHANGE_TYPES = ["breaking", "additive", "patch", "unknown"] as const;
-type ChangeType = (typeof VALID_CHANGE_TYPES)[number];
 
 // script_patch.version is VARCHAR(20)
 const MAX_VERSION_LENGTH = 20;
@@ -42,7 +47,12 @@ type ScriptJob = {
   downSql: string | null;
   title: string;
   description: string | null;
-  changeType: ChangeType;
+  /**
+   * The level stored in script_patch.change_type and handed to lineage: the
+   * SQL's own level, raised to the caller's change_type when that is louder
+   * (lib/deploy-risk's readScriptLevel). Never "unknown".
+   */
+  changeType: ScriptChangeType;
   sourceRef: string | null;
 };
 
@@ -286,35 +296,54 @@ async function addEnumValuesOutsideTransaction(
  */
 function describeRun(queue: ScriptJob[]): string {
   const last = queue[queue.length - 1];
-  const tail = `${last.scriptName} v${last.version}`;
+  // scriptLabel, so a version stored as "v1.2.0" reads "v1.2.0", not "vv1.2.0".
+  const tail = scriptLabel(last.scriptName, last.version);
   return queue.length === 1 ? tail : `${queue.length} migrations (through ${tail})`;
 }
 
 /**
- * How loud the run is as a whole: the loudest change type any migration in it
- * carries.
+ * Whether this schema has a script_patch table yet. A schema that has never
+ * been deployed to has none: a real apply creates it in step 7, a dry run
+ * never does.
  *
- * The lineage advance takes one change level for the whole run, and it decides
- * how the version bumps. A run holding one breaking migration is a breaking run
- * — averaging it down to the last script's level would record a minor bump over
- * a change that broke something. "patch" and "unknown" share a rank because
- * getNextLineageVersion treats them identically.
+ * Asked rather than found out from a failing read: inside an open
+ * transaction PostgreSQL marks the WHOLE transaction aborted on any error,
+ * so every later statement would fail with 25P02.
  */
-const CHANGE_TYPE_RANK: Record<ChangeType, number> = {
-  patch: 1,
-  unknown: 1,
-  additive: 2,
-  breaking: 3,
-};
-
-function loudestChangeType(queue: ScriptJob[]): ChangeType {
-  return queue.reduce<ChangeType>(
-    (loudest, job) =>
-      CHANGE_TYPE_RANK[job.changeType] > CHANGE_TYPE_RANK[loudest]
-        ? job.changeType
-        : loudest,
-    "patch"
+async function ledgerExists(client: PoolClient, quotedSchema: string): Promise<boolean> {
+  const probe = await client.query<{ present: boolean }>(
+    `SELECT to_regclass($1) IS NOT NULL AS present`,
+    [`${quotedSchema}.script_patch`]
   );
+  return probe.rows[0]?.present === true;
+}
+
+/**
+ * Check the run against the versions this schema has already applied: each
+ * version of a script must be above every version of it in script_patch.
+ * The rule itself is lib/deploy-risk's checkForwardOnly; this only reads the
+ * ledger for it, and only the run's own scripts. The caller makes sure the
+ * table exists.
+ */
+async function checkAgainstLedger(
+  client: PoolClient,
+  quotedSchema: string,
+  queue: ScriptJob[]
+): Promise<ForwardOnlyProblem | null> {
+  const applied = await client.query<{ script_name: string; version: string | null }>(
+    `SELECT script_name, version
+     FROM ${quotedSchema}.script_patch
+     WHERE script_name = ANY($1::text[])`,
+    [[...new Set(queue.map((job) => job.scriptName))]]
+  );
+  const appliedByFamily: Record<string, string[]> = {};
+  for (const row of applied.rows) {
+    if (typeof row.version !== "string") continue;
+    const versions = appliedByFamily[row.script_name] ?? [];
+    versions.push(row.version);
+    appliedByFamily[row.script_name] = versions;
+  }
+  return checkForwardOnly(queue, appliedByFamily);
 }
 
 /**
@@ -381,6 +410,19 @@ export async function POST(request: NextRequest) {
      */
     acknowledgeProduction?: boolean;
     /**
+     * The three risk ticks. The route works each risk out again from the SQL
+     * (lib/deploy-risk) and refuses a run whose risk has no tick (409,
+     * needsAcknowledgement), so a caller that skipped a warning cannot run
+     * past it:
+     * - acknowledgeBreaking: a migration in the run is breaking;
+     * - acknowledgeDataLoss: a migration deletes rows (TRUNCATE, DELETE, a DROP);
+     * - acknowledgeDrift: the last drift check found the target drifted, or
+     *   could not reach it.
+     */
+    acknowledgeBreaking?: boolean;
+    acknowledgeDataLoss?: boolean;
+    acknowledgeDrift?: boolean;
+    /**
      * Run the scripts and then throw the work away instead of committing it.
      *
      * A rehearsal, not a review: the SQL really executes against the real target
@@ -434,10 +476,6 @@ export async function POST(request: NextRequest) {
   }
 
   const queue: ScriptJob[] = [];
-  // Two migrations in one run cannot share a (script_name, version) pair: the
-  // second INSERT would hit the unique index halfway through and take the whole
-  // run down with it. Catching it here says which two, before anything runs.
-  const seenKeys = new Set<string>();
 
   for (let index = 0; index < rawScripts.length; index++) {
     const raw = rawScripts[index];
@@ -498,18 +536,6 @@ export async function POST(request: NextRequest) {
 
     const scriptName = raw.script_name.trim();
     const scriptVersion = raw.version.trim();
-    const key = `${scriptName}|${scriptVersion}`;
-    if (seenKeys.has(key)) {
-      return NextResponse.json(
-        {
-          error:
-            `This run lists ${scriptName} v${scriptVersion} twice. ` +
-            "Each migration can appear only once.",
-        },
-        { status: 400 }
-      );
-    }
-    seenKeys.add(key);
 
     queue.push({
       scriptName,
@@ -530,13 +556,29 @@ export async function POST(request: NextRequest) {
       // cannot roll back an otherwise-successful migration.
       title: (raw.title?.trim() || scriptVersion).slice(0, 150),
       description: raw.description?.trim() || null,
-      // Normalise change_type — default to "unknown" if missing or invalid.
-      changeType: VALID_CHANGE_TYPES.includes(raw.change_type as ChangeType)
-        ? (raw.change_type as ChangeType)
-        : "unknown",
+      // The SQL's own level (its stamp, else what its statements read as),
+      // raised to the caller's change_type when that is louder and never
+      // lowered by it; a missing or "unknown" change_type is ignored. The rule
+      // lives in lib/deploy-risk, so the Deploy page's tick and this row agree.
+      changeType: readScriptLevel({
+        sqlContent: raw.sql_content,
+        changeType: raw.change_type,
+      }).stored,
       // Normalise source_ref — trim, and treat a blank string as "no source".
       sourceRef: raw.source_ref?.trim() || null,
     });
+  }
+
+  // ─── 2b. Versions of one script run once each, oldest first ─────────────
+  //
+  // Checked on the run alone, before anything is opened. The same version
+  // twice ("1.2" and "1.2.0" count as the same) would hit the ledger's unique
+  // index halfway through; a lower version listed after a higher one would
+  // run on top of structure the higher one already changed. The target's own
+  // ledger is checked against the same rule in steps 6c and 8a.
+  const orderProblem = checkForwardOnly(queue, {});
+  if (orderProblem) {
+    return NextResponse.json({ error: orderProblem.message }, { status: 400 });
   }
 
   // Used by every message that names the run as a whole.
@@ -592,9 +634,10 @@ export async function POST(request: NextRequest) {
   // decide whether to show the warning — so what the button demanded and what
   // this route requires can never drift apart.
   //
-  // A tracked-schemas read that fails must not quietly downgrade the target to
-  // "unset": that would turn an outage into permission. The connection's own
-  // label still applies, and it is the one that says "prod" in practice.
+  // A tracked-schemas read that fails stops the run with a 503. Carrying on
+  // with the connection's label alone would turn an outage into permission
+  // twice over: a "prod" label set on the schema would be missed, and so
+  // would the drift state step 4b-2 checks.
   //
   // A dry run is gated too, deliberately. It commits nothing, but it really runs
   // the script: a migration that rewrites a large table holds ACCESS EXCLUSIVE on
@@ -603,11 +646,26 @@ export async function POST(request: NextRequest) {
   // would make the quiet way to lock a production table the one nobody has to
   // confirm.
   let schemaEnvironment = toEnvironment(null);
+  // What the last drift check saved for this schema. Null when the schema is
+  // not tracked or has never been checked.
+  let storedDriftStatus: DriftStatus | null = null;
   try {
     const tracked = await findTrackedSchema(connectionId, schemaName);
-    if (tracked) schemaEnvironment = tracked.environment;
+    if (tracked) {
+      schemaEnvironment = tracked.environment;
+      storedDriftStatus = tracked.driftStatus;
+    }
   } catch (error) {
-    console.error("Apply — could not read the tracked schema's environment:", error);
+    console.error("Apply — could not read the tracked schema:", error);
+    return NextResponse.json(
+      {
+        error:
+          "Could not read this schema's tracking record, so its environment label and " +
+          "drift state are unknown. Nothing ran. Try again in a moment; if it keeps " +
+          "failing, check that the app's metadata database is running.",
+      },
+      { status: 503 }
+    );
   }
   const targetEnvironment = louderEnvironment(
     toEnvironment(connRow.environment),
@@ -619,6 +677,69 @@ export async function POST(request: NextRequest) {
   );
   if (blocked) {
     return NextResponse.json({ error: blocked, environment: targetEnvironment }, { status: 409 });
+  }
+
+  // ─── 4b-2. Every risk in the run has a tick ──────────────────────────────
+  //
+  // The Deploy screen asks for a tick under each risk it finds: a breaking
+  // migration, a migration that deletes rows, a target whose last drift check
+  // was not clean. Those ticks used to live only on the screen, so any other
+  // caller could run straight past them. The route now reads the same SQL
+  // with the same helper (lib/deploy-risk) and refuses a run whose risks have
+  // no tick.
+  //
+  // A dry run needs the ticks too: it really runs the SQL against the target,
+  // and the screen asks for the same ticks before either button. Checked
+  // before the approval claim in 4c, so a refusal here spends nothing.
+  //
+  // job.changeType is already the louder of the SQL's level and the caller's,
+  // so it counts as breaking exactly when the caller's own value would.
+  const risk = analyseRunRisk(queue);
+  const needsAcknowledgement: Array<"breaking" | "data_loss" | "drift"> = [];
+  const unticked: string[] = [];
+  if (risk.breaking.length > 0 && body.acknowledgeBreaking !== true) {
+    needsAcknowledgement.push("breaking");
+    const labels = risk.breaking.map((entry) => entry.label);
+    unticked.push(`${listLabels(labels)} ${labels.length === 1 ? "is" : "are"} breaking`);
+  }
+  if (risk.dataLoss.length > 0 && body.acknowledgeDataLoss !== true) {
+    needsAcknowledgement.push("data_loss");
+    const labels = risk.dataLoss.map((entry) => `${entry.label} (${entry.kinds.join(", ")})`);
+    unticked.push(`${listLabels(labels)} ${labels.length === 1 ? "deletes" : "delete"} rows`);
+  }
+  // The drift state is the one the last check saved, and it may be old, so
+  // the message says how to refresh it.
+  const driftUnsettled = storedDriftStatus === "drifted" || storedDriftStatus === "unreachable";
+  if (driftUnsettled && body.acknowledgeDrift !== true) {
+    needsAcknowledgement.push("drift");
+    unticked.push(
+      storedDriftStatus === "drifted"
+        ? `the last drift check found schema "${schemaName}" different from its tracked baseline`
+        : `the last drift check could not reach schema "${schemaName}"`
+    );
+  }
+  if (needsAcknowledgement.length > 0) {
+    return NextResponse.json(
+      {
+        success: false,
+        dryRun,
+        schema: schemaName,
+        needsAcknowledgement,
+        results: queue.map((job) => ({
+          script_name: job.scriptName,
+          version: job.version,
+          status: "skipped" as const,
+        })),
+        error:
+          `This ${dryRun ? "dry run" : "deploy"} was refused because a risk in it has no ` +
+          `tick: ${unticked.join("; ")}. Nothing ran. Tick the box under each of those ` +
+          `warnings, then ${dryRun ? "start the dry run" : "deploy"} again.` +
+          (needsAcknowledgement.includes("drift")
+            ? " If you think the drift result is out of date, run the drift check again first."
+            : ""),
+      },
+      { status: 409 }
+    );
   }
 
   // ─── 4c. Production needs a second person, not a second checkbox ──────────
@@ -656,11 +777,15 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           {
             error:
+              // Deploy and Version Sync both run through this route, so the
+              // way forward names neither screen: it is the one the reader
+              // pressed Run on, which asks for approval of what it sent.
               `This target is labelled production, so the run needs an approval ` +
               `from someone other than you. Nothing here is approved for these ` +
-              `exact ${queue.length} migration${queue.length === 1 ? "" : "s"} — ` +
-              `request approval on the Deploy screen, or re-request it if the SQL ` +
-              `has changed since it was approved.`,
+              `exact ${queue.length} migration${queue.length === 1 ? "" : "s"}, so ` +
+              `nothing ran. Request approval for these exact scripts on the screen ` +
+              `you are running them from, or request it again if the SQL has ` +
+              `changed since it was approved.`,
             environment: targetEnvironment,
             needsApproval: true,
           },
@@ -779,6 +904,49 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // ─── 6c. Forward only, against what the target has already run ──────────
+  //
+  // Each version of a script must be above every version of it already in
+  // this schema's script_patch. Pre-flight worked the pending list out when
+  // the screen loaded, but that list can be stale, and another caller can
+  // send any versions it likes. Checked here, before step 7 writes anything
+  // outside the transaction (the ledger table, hoisted enum values), so a
+  // refused run leaves the target exactly as it was. Step 8a checks again
+  // under the family locks, where the answer can no longer change.
+  try {
+    const problem = (await ledgerExists(client, quotedSchema))
+      ? await checkAgainstLedger(client, quotedSchema, queue)
+      : null;
+    if (problem) {
+      client.release();
+      await releaseClaimedApproval();
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, queue[problem.index], problem.reason),
+          error: problem.message,
+        },
+        { status: 409 }
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Apply — could not read the versions already applied:", message);
+    client.release();
+    await releaseClaimedApproval();
+    return NextResponse.json(
+      {
+        error:
+          `Could not read which versions schema "${schemaName}" has already applied, so ` +
+          `nothing ran. Try again; if it keeps failing, check that the target database is ` +
+          `reachable. Details: ${message}`,
+      },
+      { status: 503 }
+    );
+  }
+
   // Track whether BEGIN has been issued so the catch block only ROLLBACK-s
   // when there is actually an active transaction to roll back.
   let transactionStarted = false;
@@ -867,14 +1035,7 @@ export async function POST(request: NextRequest) {
     // error, so a failed read would leave every later statement returning 25P02
     // and the rehearsal would report nothing at all. A real apply skips the
     // question: step 7 just created the table.
-    let ledgerReady = true;
-    if (dryRun) {
-      const ledgerProbe = await client.query<{ present: boolean }>(
-        `SELECT to_regclass($1) IS NOT NULL AS present`,
-        [`${quotedSchema}.script_patch`]
-      );
-      ledgerReady = ledgerProbe.rows[0]?.present === true;
-    }
+    const ledgerReady = dryRun ? await ledgerExists(client, quotedSchema) : true;
 
     // Lock every script family in the run: one lock per family, sorted, before
     // any per-version lock (lib/family-lock explains both rules). A deploy and
@@ -886,6 +1047,45 @@ export async function POST(request: NextRequest) {
       schemaName,
       queue.map((job) => job.scriptName)
     );
+
+    // ─── 8a. Forward only, now that nobody else can change the answer ──────
+    //
+    // Step 6c checked this before anything ran, but another deploy or
+    // rollback of the same script could have committed between that read and
+    // the family locks above. Under the locks the ledger cannot change until
+    // this transaction ends, so this is the check that counts. The per-version
+    // check in the loop below stays as a second guard.
+    if (ledgerReady) {
+      const problem = await checkAgainstLedger(client, quotedSchema, queue);
+      if (problem) {
+        failedJob = queue[problem.index];
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        // Step 7 ran before 6c's answer went stale, so on a real run the enum
+        // values it added are already committed, and PostgreSQL cannot remove
+        // an enum value. Say so rather than claim nothing changed at all.
+        const leftBehind = dryRun
+          ? []
+          : extractEnumAddValues(queue.map((job) => job.sqlContent).join("\n"));
+        return NextResponse.json(
+          {
+            success: false,
+            dryRun,
+            schema: schemaName,
+            results: rolledBackOutcomes(queue, failedJob, problem.reason),
+            error:
+              problem.message +
+              (leftBehind.length > 0
+                ? ` The enum value${leftBehind.length === 1 ? "" : "s"} this run adds ` +
+                  `(${leftBehind.join(", ")}) ${leftBehind.length === 1 ? "was" : "were"} ` +
+                  `added before this check and ${leftBehind.length === 1 ? "stays" : "stay"}, ` +
+                  "because PostgreSQL cannot remove an enum value."
+                : ""),
+          },
+          { status: 409 }
+        );
+      }
+    }
 
     const outcomes: ScriptOutcome[] = [];
     let lastAppliedAt: string | null = null;
@@ -1068,9 +1268,11 @@ export async function POST(request: NextRequest) {
         connectionId,
         schemaName,
         targetConfig,
-        // "breaking|additive|patch|unknown" ⊆ ChangeLevel. The loudest level in
-        // the run wins: a run holding one breaking migration is a breaking run.
-        changeLevel: loudestChangeType(queue),
+        // The loudest level in the run wins: a run holding one breaking
+        // migration is a breaking run, and averaging it down would record a
+        // minor bump over a change that broke something. The ranking lives in
+        // lib/change-type.
+        changeLevel: loudestChangeLevel(queue.map((job) => job.changeType)),
         name: describeRun(queue),
         sqlRef: lastJob.sourceRef,
       });
@@ -1143,7 +1345,7 @@ export async function POST(request: NextRequest) {
             `run's outcome is not known: PostgreSQL may have committed it and ` +
             `lost the connection on the way back, or may never have committed ` +
             `at all. Do not re-run this blindly. Read the script_patch table in ` +
-            `schema "${schemaName}" — a row for v${lastJob.version} means the ` +
+            `schema "${schemaName}" — a row for ${scriptLabel(lastJob.scriptName, lastJob.version)} means the ` +
             `run landed and there is nothing left to do. PostgreSQL said: ${message}`,
         },
         { status: 500 }

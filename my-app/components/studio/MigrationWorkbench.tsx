@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/icons";
 import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
 import { countOf } from "@/lib/plural";
+import { vLabel } from "@/lib/rollback-plan";
+import { displayVersion } from "@/lib/version-timeline";
 import { gradeSql, levelWithArticle, louderChangeType, quieterLevelWarning } from "@/lib/change-type";
 import { bumpVersion, highestVersion, levelToBump } from "@/lib/script-status";
 import { readAppliedVersion, readFamilyVersions } from "@/lib/family-reads";
@@ -26,6 +28,7 @@ import {
 // server code into the browser bundle.
 import type { DetectedVersion } from "@/lib/compare-run";
 import type { NewerSchemaVerdict } from "@/lib/version-detection";
+import { backwardsWarning } from "@/lib/compare-timeline";
 
 // The change level a migration is published as. compare-run imports this name.
 export type ChangeKind = "breaking" | "additive" | "patch";
@@ -198,14 +201,6 @@ type PushAnswer = {
   suggested?: string;
 };
 
-/**
- * A version table's value for a sentence: "v2.1.0" for a number, the text
- * as-is otherwise, so a Flyway "V3__init" never becomes "vV3__init".
- */
-function asVersion(text: string): string {
-  return /^\d/.test(text) ? `v${text}` : text;
-}
-
 export function MigrationWorkbench({
   initialSql,
   statementCount,
@@ -377,7 +372,16 @@ export function MigrationWorkbench({
   const quieterText = quieterLevelWarning(suggestion, level, grade.because, versionsReady && floor === null);
 
   // ── Direction ────────────────────────────────────────────────────────────
-  const movesBackwards = versionVerdict?.newer === "right" && !inSync;
+  // The warning's words when pushing would take the target back (its own
+  // version table is ahead, everywhere or in some script groups, and the
+  // migration has statements), or null. The version bar above colours itself
+  // on the same test, so the bar and this tick always agree.
+  const backwards = backwardsWarning(
+    versionVerdict,
+    inSync,
+    { name: sourceName, detected: sourceVersion },
+    { name: targetName, detected: targetVersion }
+  );
 
   // ── The same migration again (the Script Editor's rule) ──────────────────
   // Judged on the migration alone: a rollback written or changed since does
@@ -427,9 +431,7 @@ export function MigrationWorkbench({
     if (quieterText && !quieterAck) {
       return `Tick "Publish it as ${level} anyway" under Change level, or pick ${suggestion}.`;
     }
-    if (movesBackwards && !backwardsAck) {
-      return `Tick the box above to confirm ${targetName} should move back to the older schema.`;
-    }
+    if (backwards && !backwardsAck) return backwards.blocker;
     return null;
   }
   const blocker = whyPushIsBlocked();
@@ -687,11 +689,6 @@ export function MigrationWorkbench({
     pushedHere !== null && pushedHere.sentDown !== null && pushedHere.sentDown === downSql
       ? "Retry saving the rollback"
       : `Add this rollback to v${pushedHere !== null ? pushedHere.version : ""}`;
-
-  // The backwards warning's numbers, from each side's own version table.
-  const targetDeclares = targetVersion?.version ? asVersion(targetVersion.version) : "a newer version";
-  const inTable = targetVersion?.table ? ` in its ${targetVersion.table} table` : "";
-  const sourceDeclares = sourceVersion?.version ? asVersion(sourceVersion.version) : "an older version";
 
   return (
     <aside>
@@ -1002,18 +999,18 @@ export function MigrationWorkbench({
                           <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
                             Next version
                           </div>
-                          <div className="text-[15px] mt-0.5 font-semibold mono">v{nextVersion}</div>
+                          <div className="text-[15px] mt-0.5 font-semibold mono">{vLabel(nextVersion)}</div>
                         </div>
                         <span className="help break-words sm:text-right sm:max-w-[260px]">
                           {floor === null
                             ? // The push preview below already says "First version of this
                               // family"; this line says why, in the same shape as the one below.
-                              `${appliedKnown ? `Applied to ${targetLabel}: none · ` : ""}In GitHub: none · a new family starts at v${nextVersion}; the level you pick is still recorded`
+                              `${appliedKnown ? `Applied to ${targetLabel}: none · ` : ""}In GitHub: none · a new family starts at ${vLabel(nextVersion)}; the level you pick is still recorded`
                             : `${
                                 appliedKnown
-                                  ? `Applied to ${targetLabel}: ${appliedVersion ? `v${appliedVersion}` : "none"} · `
+                                  ? `Applied to ${targetLabel}: ${appliedVersion ? displayVersion(appliedVersion, true) : "none"} · `
                                   : ""
-                              }In GitHub: ${githubHighest ? `v${githubHighest}` : "none"} · a ${bump} (${level}) change makes v${nextVersion}`}
+                              }In GitHub: ${githubHighest ? vLabel(githubHighest) : "none"} · a ${bump} (${level}) change makes ${vLabel(nextVersion)}`}
                         </span>
                       </div>
                       {/* Only GitHub could be checked: say so, since a version
@@ -1035,19 +1032,19 @@ export function MigrationWorkbench({
                 className="px-5 py-3 space-y-3"
                 style={{ borderTop: "1px solid var(--border)" }}
               >
-                {/* The target's own version table says it is ahead: pushing
-                    would take it back to the older schema. Allowed, never
-                    silent. */}
-                {movesBackwards && (
+                {/* The target's own version table says it is ahead, everywhere
+                    or in some script groups: pushing would take it back.
+                    Allowed, never silent. */}
+                {backwards && (
                   <div className="prod-gate prod-gate--drift">
                     <div className="prod-gate__head">
                       <AlertTriangleIcon size={15} className="ico" />
-                      <span>This would move {targetName} backwards</span>
+                      <span>{backwards.head}</span>
                     </div>
-                    <p className="prod-gate__body">
-                      {`${targetName} declares ${targetDeclares}${inTable}; ${sourceName} declares ${sourceDeclares}. The script below changes ${targetName} to match the older schema, so it may undo anything that arrived in the newer version.`}
-                    </p>
-                    {swapHref && (
+                    <p className="prod-gate__body">{backwards.body}</p>
+                    {/* Not when they have diverged: the other way round would
+                        move the source back instead. */}
+                    {swapHref && backwards.offerSwap && (
                       <div className="mt-2">
                         <Link
                           href={swapHref}
@@ -1067,7 +1064,7 @@ export function MigrationWorkbench({
                           clearStaleError();
                         }}
                       />
-                      <span>I have checked this and want {targetName} to match the older schema.</span>
+                      <span>{backwards.ack}</span>
                     </label>
                   </div>
                 )}
@@ -1262,7 +1259,7 @@ export function MigrationWorkbench({
                   <span style={{ color: "var(--sync)" }}>●</span>
                   <span className="min-w-0">
                     Save the rollback beside it as{" "}
-                    <span className="mono break-all">v{nextVersion}.down.sql</span>, so Deploy can
+                    <span className="mono break-all">{vLabel(nextVersion)}.down.sql</span>, so Deploy can
                     undo this version.
                   </span>
                 </li>

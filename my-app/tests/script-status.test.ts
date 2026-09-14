@@ -13,7 +13,9 @@ import {
   looksLikeVersion,
   normalizeVersion,
   parseSemver,
+  pendingPrefixThrough,
   suggestBumpLevel,
+  versionKey,
   versionParts,
 } from "@/lib/script-status";
 
@@ -43,6 +45,57 @@ describe("version parsing", () => {
   it("normalises to X.Y.Z", () => {
     expect(normalizeVersion("v2.1")).toBe("2.1.0");
     expect(normalizeVersion("nope")).toBeNull();
+  });
+});
+
+describe("versionKey", () => {
+  it("gives every spelling of one version the same key", () => {
+    expect(versionKey("v1.2")).toBe("1.2.0");
+    expect(versionKey("v1.2.0")).toBe("1.2.0");
+    expect(versionKey("1.2.0")).toBe("1.2.0");
+    expect(versionKey("1.2.3.0")).toBe(versionKey("1.2.3"));
+    expect(versionKey("1.2.0.3")).toBe("1.2.0.3");
+  });
+
+  // RD4: one key rule, and it may never disagree with the comparator.
+  it("is equal exactly when compareVersions says the versions are equal", () => {
+    const versions = ["1", "v1", "1.0", "1.0.0", "1.0.0.0", "1.2", "v1.2.0", "1.2.0.0", "1.2.0.3",
+      "1.2.3", "1.2.3.0", "1.10.0", "1.9.0", "2", "V2.0.0", "10.0.0"];
+    for (const a of versions) {
+      for (const b of versions) {
+        expect([a, b, versionKey(a) === versionKey(b)]).toEqual([a, b, compareVersions(a, b) === 0]);
+      }
+    }
+  });
+
+  it("is normalizeVersion's answer for every strict version", () => {
+    for (const version of ["2", "v2.1", "1.2.3", "V10.0.1"]) {
+      expect(versionKey(version)).toBe(normalizeVersion(version));
+    }
+  });
+});
+
+describe("pendingPrefixThrough", () => {
+  const pending = [{ version: "5.0.1" }, { version: "5.0.2" }, { version: "6.0.0" }];
+  const versionsOf = (list: { version: string }[]) => list.map((entry) => entry.version);
+
+  it("runs every pending version up to and including the one picked", () => {
+    expect(versionsOf(pendingPrefixThrough(pending, "5.0.2"))).toEqual(["5.0.1", "5.0.2"]);
+    expect(versionsOf(pendingPrefixThrough(pending, "5.0.1"))).toEqual(["5.0.1"]);
+    expect(versionsOf(pendingPrefixThrough(pending, "6.0.0"))).toEqual(["5.0.1", "5.0.2", "6.0.0"]);
+  });
+
+  it("runs nothing for a version that is not pending, or no version at all", () => {
+    expect(pendingPrefixThrough(pending, "5.0.3")).toEqual([]);
+    expect(pendingPrefixThrough(pending, "4.0.0")).toEqual([]);
+    expect(pendingPrefixThrough(pending, "")).toEqual([]);
+    expect(pendingPrefixThrough(pending, null)).toEqual([]);
+    expect(pendingPrefixThrough([], "5.0.1")).toEqual([]);
+  });
+
+  it("matches the picked version under any spelling and keeps version order", () => {
+    const unsorted = [{ version: "6.0.0" }, { version: "5.0.1" }, { version: "5.0.2" }];
+    expect(versionsOf(pendingPrefixThrough(unsorted, "v5.0.2"))).toEqual(["5.0.1", "5.0.2"]);
   });
 });
 
@@ -146,7 +199,7 @@ describe("levelOfStep", () => {
 describe("buildVersionLedger", () => {
   const applied = (version: string) => ({ version, applied_at: "2026-01-01T00:00:00Z" });
 
-  it("labels applied, pending and superseded against the target history", () => {
+  it("labels applied, pending and skipped against the target history", () => {
     const ledger = buildVersionLedger(
       ["1.0.0", "1.1.0", "1.2.0", "1.3.0"],
       [applied("1.0.0"), applied("1.2.0")]
@@ -157,8 +210,35 @@ describe("buildVersionLedger", () => {
     expect(byVersion["1.2.0"]).toBe("applied");
     // Below the high-water mark and never applied — an out-of-order apply left
     // it behind, and a forward-only deploy will not pick it up.
-    expect(byVersion["1.1.0"]).toBe("superseded");
+    expect(byVersion["1.1.0"]).toBe("skipped");
     expect(byVersion["1.3.0"]).toBe("pending");
+  });
+
+  it("matches an applied v1.2.0 to registry 1.2.0 as one applied row with inRegistry true", () => {
+    const ledger = buildVersionLedger(["1.2.0", "1.3.0"], [applied("v1.2.0")]);
+    expect(ledger).toEqual([
+      // Shown in the registry's spelling; the stored spelling is kept for the database.
+      { version: "1.2.0", status: "applied", appliedAt: "2026-01-01T00:00:00Z", appliedVersion: "v1.2.0", inRegistry: true },
+      { version: "1.3.0", status: "pending", appliedAt: null, appliedVersion: null, inRegistry: true },
+    ]);
+  });
+
+  it("registry 1.2 and applied 1.2.0 are one row", () => {
+    const ledger = buildVersionLedger(["1.1", "1.2"], [applied("1.2.0")]);
+    expect(ledger.map((e) => [e.version, e.status, e.appliedVersion, e.inRegistry])).toEqual([
+      ["1.1", "skipped", null, true],
+      ["1.2", "applied", "1.2.0", true],
+    ]);
+  });
+
+  it("shows the ledger's spelling for an applied version the registry does not hold", () => {
+    const ledger = buildVersionLedger(["1.0.0"], [applied("v2.0")]);
+    expect(ledger[1]).toMatchObject({ version: "v2.0", status: "applied", appliedVersion: "v2.0", inRegistry: false });
+  });
+
+  it("lists two registry files that spell one version differently once", () => {
+    const ledger = buildVersionLedger(["1.2", "1.2.0"], []);
+    expect(ledger.map((e) => e.version)).toEqual(["1.2"]);
   });
 
   it("sorts ascending by version", () => {

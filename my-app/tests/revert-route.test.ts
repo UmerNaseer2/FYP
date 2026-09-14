@@ -76,7 +76,11 @@ const V3: LedgerRow = {
   applied_at: "2026-03-01T00:00:00.000Z", down_sql: "DROP TABLE t3;",
 };
 
-const BASE = { connectionId: 7, schemaName: "sales", script_name: "orders_fix" };
+// Every rollback above is a DROP TABLE, which deletes rows, so the route asks
+// for the data-loss tick. BASE carries it, so each test reaches the check it
+// is about; the "rows the rollback deletes" tests leave it out on purpose.
+const UNTICKED = { connectionId: 7, schemaName: "sales", script_name: "orders_fix" };
+const BASE = { ...UNTICKED, acknowledgeDataLoss: true };
 
 function connectionRow(environment: string) {
   return {
@@ -482,6 +486,63 @@ describe("other script families", () => {
     const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun: true });
     expect(res.status).toBe(200);
     expect(res.body.otherScripts).toEqual(others);
+  });
+});
+
+describe("rows the rollback deletes", () => {
+  it("refuses until they are ticked, dry run included, before any rollback SQL runs", async () => {
+    for (const dryRun of [false, true]) {
+      mockClient = createFakeClient(ledger());
+      const res = await revert({ ...UNTICKED, versions: ["3.0.0"], dryRun });
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        ok: false,
+        success: false,
+        code: "data_loss",
+        needsAcknowledgement: ["data_loss"],
+        dataLoss: [{ version: "3.0.0", kinds: ["DROP TABLE"] }],
+      });
+      expect(res.body.error).toBe(
+        'Rolling back v3.0.0 of "orders_fix" deletes rows (v3.0.0 runs DROP TABLE), and deploying ' +
+          "again brings back the structure, not the rows. Nothing was rolled back. Tick the box " +
+          `about deleted rows, then ${dryRun ? "start the dry run" : "roll back"} again.`
+      );
+      expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+      expect(queriesMatching(mockClient, /DELETE FROM/)).toHaveLength(0);
+      expect(count(mockClient, "ROLLBACK")).toBe(1);
+      expect(count(mockClient, "COMMIT")).toBe(0);
+    }
+  });
+
+  it("names only the rollbacks that delete rows", async () => {
+    mockClient = createFakeClient(
+      ledger({ rows: [V1, V2, { ...V3, down_sql: "CREATE TABLE t3_restored (id int);" }] })
+    );
+    const res = await revert({ ...UNTICKED, versions: ["2.0.0", "3.0.0"] });
+    expect(res.status).toBe(409);
+    expect(res.body.dataLoss).toEqual([{ version: "2.0.0", kinds: ["DROP TABLE"] }]);
+    expect(String(res.body.error)).toContain('Rolling back v2.0.0 of "orders_fix" deletes rows');
+  });
+
+  it("claims no production approval while the tick is missing", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
+    const res = await revert({ ...UNTICKED, versions: ["3.0.0"], acknowledgeProduction: true });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("data_loss");
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockRelease).not.toHaveBeenCalled();
+  });
+
+  it("asks for no tick when no rollback deletes rows, a commented-out DROP included", async () => {
+    mockClient = createFakeClient(
+      ledger({
+        rows: [V1, V2, { ...V3, down_sql: "-- DROP TABLE t3;\nCREATE TABLE t3_restored (id int);" }],
+      })
+    );
+    const res = await revert({ ...UNTICKED, versions: ["3.0.0"] });
+    expect(res.status).toBe(200);
+    expect(count(mockClient, "COMMIT")).toBe(1);
   });
 });
 

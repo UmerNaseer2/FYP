@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import Link from "next/link";
 import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Skeleton, ConfirmDialog } from "@/components/ui";
+import { Modal, Skeleton } from "@/components/ui";
 import {
   VersionSyncIcon,
   ConnectionsIcon,
@@ -14,7 +14,27 @@ import {
   InfoIcon,
 } from "@/components/ui/icons";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
-import { diffLedgers, type LedgerEntry } from "@/lib/version-sync";
+import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
+import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
+import { VersionTimeline } from "@/components/studio/VersionTimeline";
+import { useUser } from "@/hooks/useUser";
+import {
+  cutForwardOnly,
+  diffLedgers,
+  entryKey,
+  headsByFamily,
+  type LedgerEntry,
+} from "@/lib/version-sync";
+import {
+  displayVersion,
+  ledgerTimelineEntries,
+  mergeTimelines,
+  outdatedSideOfEntries,
+} from "@/lib/version-timeline";
+import { analyseRunRisk, listLabels, readScriptLevel, scriptLabel } from "@/lib/deploy-risk";
+import { ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-guard";
+import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { countOf } from "@/lib/plural";
 import {
   isProduction,
   louderEnvironment,
@@ -23,11 +43,21 @@ import {
   type Environment,
 } from "@/lib/environments";
 
-// Version Sync (version replay). Pick a Source (ahead) and a Target (behind);
-// we diff their applied-script ledgers and show the versions the Target is
-// missing, each with its stored SQL (read-only — it's history). Applying the
-// missing scripts to catch the Target up lands in P4; here the run controls are
-// present but inert.
+// Version Sync (version replay). Pick a Source (ahead) and a Target (behind).
+// The page compares their applied-script ledgers (lib/version-sync) and shows:
+//   - the versions the Target is missing and can still take, each with the SQL
+//     the Source's ledger stored for it (read-only: it is history);
+//   - the versions the Target lacks but is already past ("Cannot be replayed
+//     forward"): a replay only moves forward, so none of those can run;
+//   - the versions only the Target has (the schemas have diverged);
+//   - both ledgers side by side, as a Source vs Target timeline.
+// Run, Run through and Run all each open the replay check (ReplayDialog, at the
+// bottom of this file): what the run risks, a dry run, the Target's last drift
+// check, and a production approval where one is needed. Confirming it sends the
+// versions to /api/scripts/apply as ONE request, which runs them in ONE
+// transaction. Every run stops before the first version the route would refuse
+// — one with no stored SQL, or one that does not move its script group forward
+// — so the screen never offers a run the server is certain to turn down.
 
 type Connection = {
   id: number;
@@ -39,21 +69,10 @@ type Connection = {
 };
 type Phase = "idle" | "loading" | "error" | "ready";
 
-/** A confirmed-but-not-yet-run replay: exactly what the dialog is promising. */
-type PendingApply = {
-  /** The versions that will be sent — the selection up to the first gap. */
-  runnable: LedgerEntry[];
-  /** The first version with no stored SQL, when the batch stops before one. */
-  stoppedBefore: LedgerEntry | null;
-  /** How many versions after that gap stay missing. */
-  skipped: number;
-};
-
 const fmtDate = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
 };
-const entryKey = (e: { scriptName: string; version: string }) => JSON.stringify([e.scriptName, e.version]);
 
 /** Everything one side (Source or Target) needs: connection + schema + its ledger. */
 function useLedgerSource() {
@@ -183,6 +202,196 @@ function changeTone(t: string): string {
   return t === "breaking" ? "pill-break" : t === "additive" ? "pill-sync" : "pill-pending";
 }
 
+/** How far a replay of some versions, in order, gets before the apply route would refuse one. */
+type Reach = {
+  /** The leading versions that can run. */
+  runnable: LedgerEntry[];
+  /** The first version the route would refuse, or null when every one can run. */
+  stoppedBefore: LedgerEntry | null;
+  reason: "no-sql" | "out-of-order" | null;
+  /** For "out-of-order": the version it would have had to be above. */
+  blockedBy: string | null;
+};
+
+/**
+ * Cut a replay before the first version the apply route would refuse.
+ *
+ * Two things stop a run, and the route refuses the WHOLE run for either one:
+ *   - "no-sql": the Source applied the version before this tool stored the SQL
+ *     it ran, so there is nothing to send (the route refuses blank SQL);
+ *   - "out-of-order": the version does not move its script group forward
+ *     (cutForwardOnly in lib/version-sync, which follows the route's rule).
+ * Whichever comes first in the list is the one the run stops before.
+ */
+function reachOf(entries: LedgerEntry[], targetEntries: LedgerEntry[]): Reach {
+  const cut = cutForwardOnly(entries, targetEntries);
+  const gap = cut.runnable.findIndex((e) => !e.hasSql);
+  if (gap === -1) return cut;
+  return {
+    runnable: cut.runnable.slice(0, gap),
+    stoppedBefore: cut.runnable[gap],
+    reason: "no-sql",
+    blockedBy: null,
+  };
+}
+
+/** Why a run stops before `reach.stoppedBefore`, as one sentence ("" when it does not stop). */
+function stopSentence(reach: Reach): string {
+  const stop = reach.stoppedBefore;
+  if (!stop) return "";
+  const label = scriptLabel(stop.scriptName, stop.version);
+  if (reach.reason === "no-sql") {
+    return `${label} was applied to the Source before this tool stored the SQL it ran, so there is nothing to replay for it.`;
+  }
+  // For a missing version blockedBy is always a version earlier in the same
+  // list (the list only holds versions above the Target's head), which is why
+  // this can say the Source applied it first.
+  const before = scriptLabel(stop.scriptName, reach.blockedBy ?? "");
+  return (
+    `The Source applied ${label} after ${before}, and ${label} is not above it, ` +
+    `so the server would refuse it: a replay only moves forward.`
+  );
+}
+
+/**
+ * How a failed call to the apply route ended, which decides what the page may
+ * claim about the Target afterwards.
+ *   refused     — the route turned the run down before it touched the Target:
+ *                 a missing tick or approval, a schema that is not there, a
+ *                 Target it could not connect to. Nothing ran.
+ *   rolled-back — the run reached the Target and its transaction did not
+ *                 commit, so none of its versions were applied. Enum values
+ *                 added before the transaction opened stay (the route's own
+ *                 error says so where it knows).
+ *   unknown     — nothing here saw how the run ended: the request never came
+ *                 back, the reply could not be read, or the COMMIT itself
+ *                 failed to report back.
+ */
+type ApplyFailure = "refused" | "rolled-back" | "unknown";
+
+/** The four ticks the apply route checks, sent with a dry run as well as a real one. */
+type ReplayFlags = {
+  acknowledgeProduction: boolean;
+  acknowledgeBreaking: boolean;
+  acknowledgeDataLoss: boolean;
+  acknowledgeDrift: boolean;
+};
+
+type ReplayOutcome = { ok: true } | { ok: false; failure: ApplyFailure; error: string };
+
+/** The fields of an apply-route reply this page reads. */
+type ApplyReply = {
+  success?: boolean;
+  error?: string;
+  outcomeUnknown?: boolean;
+  needsAcknowledgement?: unknown;
+  results?: unknown;
+};
+
+/**
+ * Send versions to the apply route as ONE run, which it applies in ONE
+ * transaction: every version in it applies, or none does.
+ *
+ * Reading a failure: the route puts a per-script `results` list in a failure
+ * body once the run has reached the Target — including failures in the setup,
+ * lock and ledger steps, where every row reads "skipped" because no single
+ * migration was running. So "has results" is what separates rolled-back from
+ * refused, not "every row skipped". The two exceptions come before the run
+ * touches the Target and still carry results: a 400 (the schema is not there)
+ * and a request for ticks (needsAcknowledgement).
+ */
+async function sendReplay({
+  connectionId,
+  schemaName,
+  sourceSchema,
+  entries,
+  dryRun,
+  flags,
+}: {
+  connectionId: string;
+  schemaName: string;
+  sourceSchema: string;
+  entries: LedgerEntry[];
+  dryRun: boolean;
+  flags: ReplayFlags;
+}): Promise<ReplayOutcome> {
+  let res: Response;
+  try {
+    res = await fetch("/api/scripts/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        connectionId: Number(connectionId),
+        schemaName,
+        dryRun,
+        ...flags,
+        scripts: entries.map((e) => ({
+          script_name: e.scriptName,
+          version: e.version,
+          sql_content: e.sqlContent ?? "",
+          // Carried across so the replayed version is revertable on the
+          // Target too, not just on the Source it came from.
+          down_sql: e.downSql ?? undefined,
+          change_type: e.changeType,
+          source_ref: `version-sync: replayed from ${sourceSchema}`,
+        })),
+      }),
+    });
+  } catch {
+    return { ok: false, failure: "unknown", error: "Could not reach the server." };
+  }
+
+  // Read the body as text first: a proxy error or a Next.js error page is
+  // HTML, and letting res.json() throw would report "could not reach the
+  // server" about a request that reached it.
+  let data: ApplyReply | null = null;
+  try {
+    const parsed: unknown = JSON.parse(await res.text());
+    data = parsed !== null && typeof parsed === "object" ? (parsed as ApplyReply) : null;
+  } catch {
+    data = null;
+  }
+  if (data === null) {
+    return {
+      ok: false,
+      failure: "unknown",
+      error: `The server answered ${res.status} with a reply this page could not read.`,
+    };
+  }
+  // `success` as well as the status, so a future soft-failure shape is never
+  // read as applied.
+  if (res.ok && data.success === true) return { ok: true };
+
+  const error =
+    typeof data.error === "string" && data.error.trim() !== ""
+      ? data.error
+      : `The server answered ${res.status} with no message.`;
+  if (data.outcomeUnknown === true || res.ok) return { ok: false, failure: "unknown", error };
+  if (res.status === 400 || Array.isArray(data.needsAcknowledgement)) {
+    return { ok: false, failure: "refused", error };
+  }
+  if (Array.isArray(data.results)) return { ok: false, failure: "rolled-back", error };
+  return { ok: false, failure: "refused", error };
+}
+
+/** What a failed replay's banner says. */
+type ApplyError = {
+  title: string;
+  detail: string;
+  /** The run's outcome is not known: the banner offers to read the Target's ledger again. */
+  unknown?: boolean;
+};
+
+/** Ledger entries as the risk checks read them: the same fields the apply route is sent. */
+function riskScriptsOf(entries: ReadonlyArray<LedgerEntry>) {
+  return entries.map((e) => ({
+    scriptName: e.scriptName,
+    version: e.version,
+    sqlContent: e.sqlContent ?? "",
+    changeType: e.changeType,
+  }));
+}
+
 export default function VersionSyncPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
@@ -218,6 +427,13 @@ export default function VersionSyncPage() {
     return diffLedgers(source.entries, target.entries);
   }, [source.entries, target.entries]);
 
+  // How far a run down the missing list can get before the apply route would
+  // refuse a version (reachOf). Run buttons are offered only on rows it reaches.
+  const reach = useMemo(() => {
+    if (diff === null || target.entries === null) return null;
+    return reachOf(diff.missing, target.entries);
+  }, [diff, target.entries]);
+
   // Only the Target is written to, so only the Target's label gates anything.
   // The Source still shows its own pill, because replaying prod history onto a
   // dev box is a very different act from the reverse and the pair is worth
@@ -225,12 +441,10 @@ export default function VersionSyncPage() {
   const sourceEnvironment = sideEnvironment(source, connections);
   const targetEnvironment = sideEnvironment(target, connections);
   const targetIsProduction = isProduction(targetEnvironment);
+  const targetDatabase =
+    connections.find((c) => String(c.id) === target.connectionId)?.database_name ?? "";
 
-  const missingKeys = useMemo(
-    () => new Set((diff?.missing ?? []).map(entryKey)),
-    [diff],
-  );
-  // Multi-family? Then show the family on each timeline node.
+  // More than one script group? Then a version is named with its group.
   const multiFamily = useMemo(
     () => new Set((source.entries ?? []).map((e) => e.scriptName)).size > 1,
     [source.entries],
@@ -244,198 +458,101 @@ export default function VersionSyncPage() {
     target.setSchema(ss);
   }
 
-  // ── Apply (replay) ──────────────────────────────────────────────────────--
+  // ── Replay ────────────────────────────────────────────────────────────────
+  // The versions the replay check is open for (null = closed).
+  const [pendingRun, setPendingRun] = useState<LedgerEntry[] | null>(null);
   const [applying, setApplying] = useState(false);
   const [progress, setProgress] = useState("");
-  const [applyError, setApplyError] = useState("");
+  const [applyError, setApplyError] = useState<ApplyError | null>(null);
   const [applyDone, setApplyDone] = useState("");
-  const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
 
-  // The confirm dialog has to promise the number of scripts that will actually
-  // run, so the batch is cut here rather than inside runEntries: a version with
-  // no stored SQL stops the run before it, and the dialog used to count the
-  // whole selection — including the versions the run could never reach.
+  // Open the replay check for these versions. The buttons only offer runs that
+  // reach their last version, so this refusal only shows if the ledgers moved
+  // under the list; it is here so a run the route would refuse is never sent.
   function requestApply(entries: LedgerEntry[]) {
-    if (entries.length === 0) return;
-    const firstGap = entries.findIndex((e) => !e.hasSql);
-    const runnable = firstGap === -1 ? entries : entries.slice(0, firstGap);
-    const gap = firstGap === -1 ? null : entries[firstGap];
-    if (runnable.length === 0) {
+    if (entries.length === 0 || target.entries === null) return;
+    const check = reachOf(entries, target.entries);
+    if (check.stoppedBefore) {
       setApplyDone("");
-      setApplyError(
-        `${gap?.scriptName} v${gap?.version} has no stored script, so there is ` +
-        `nothing that can be replayed.`
-      );
+      setApplyError({ title: "Replay not started — nothing ran", detail: stopSentence(check) });
       return;
     }
-    setApplyError("");
+    setApplyError(null);
     setApplyDone("");
-    setPendingApply({
-      runnable,
-      stoppedBefore: gap,
-      skipped: firstGap === -1 ? 0 : entries.length - firstGap - 1,
-    });
+    setPendingRun(entries);
   }
 
-  /**
-   * How a failed replay ended, which decides what the banner may claim.
-   *
-   * "refused" is the run ending before any script SQL was sent — an
-   * unapproved production target, a missing acknowledgement, a target that
-   * could not be connected to, a schema that does not exist. Saying "the
-   * transaction rolled back" there describes a transaction that never existed
-   * and hides the actual problem, which is usually one the reader can fix.
-   * "unknown" is the commit that did not report back, or a reply this page
-   * could not read at all; neither of those saw how the run ended, so neither
-   * may say nothing was applied.
-   */
-  type ApplyFailure = "refused" | "rolled-back" | "unknown";
-
-  async function applyBatch(
-    entries: LedgerEntry[],
-    acknowledgeProduction: boolean,
-  ): Promise<{ ok: true } | { ok: false; error: string; failure: ApplyFailure }> {
-    try {
-      const res = await fetch("/api/scripts/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          connectionId: Number(target.connectionId),
-          schemaName: target.schema,
-          acknowledgeProduction,
-          scripts: entries.map((e) => ({
-            script_name: e.scriptName,
-            version: e.version,
-            sql_content: e.sqlContent ?? "",
-            // Carried across so the replayed version is revertable on the
-            // Target too, not just on the Source it came from.
-            down_sql: e.downSql ?? undefined,
-            change_type: e.changeType,
-            source_ref: `version-sync: replayed from ${source.schema}`,
-          })),
-        }),
-      });
-      // Read the body as text first: a proxy error or a Next.js error page is
-      // HTML, and letting res.json() throw here would report "could not reach
-      // the server" about a request that reached it.
-      const raw = await res.text();
-      let data: {
-        success?: boolean;
-        error?: string;
-        outcomeUnknown?: boolean;
-        results?: unknown;
-      } | null = null;
-      try {
-        data = JSON.parse(raw) as {
-          success?: boolean;
-          error?: string;
-          outcomeUnknown?: boolean;
-          results?: unknown;
-        };
-      } catch {
-        data = null;
-      }
-      // `success` as well as the status: the route answers 200 only on success
-      // today, but a caller that reads just the status would silently treat a
-      // future soft-failure shape as applied.
-      if (!res.ok || !data?.success) {
-        // 4xx here is always the route declining before it opened a
-        // transaction — the request was wrong or unapproved. A body this page
-        // could not parse is a proxy or framework error page, which says
-        // nothing about what the database did.
-        //
-        // The status alone cannot separate the 5xx cases: the apply route
-        // answers 503 both for a target it could not connect to (nothing ran)
-        // and for a lock timeout inside the transaction (rolled back). It only
-        // puts a per-script `results` array in a failure body once it has a
-        // queue to report on, so a 5xx without one never got as far as running
-        // the scripts.
-        const reachedTheRun = res.status >= 500 && Array.isArray(data?.results);
-        const failure: ApplyFailure = data?.outcomeUnknown
-          ? "unknown"
-          : data === null
-            ? "unknown"
-            : reachedTheRun
-              ? "rolled-back"
-              : "refused";
-        return {
-          ok: false,
-          error: data?.error ?? `the apply API answered ${res.status}.`,
-          failure,
-        };
-      }
-      return { ok: true };
-    } catch {
-      return {
-        ok: false,
-        error: "Could not reach the server.",
-        failure: "unknown",
-      };
-    }
-  }
-
-  // Replay entries onto the Target in ONE request, which the apply route runs in
-  // ONE transaction. All of them or none: a replay that failed halfway used to
-  // leave the earlier versions applied and the Target stranded mid-chain, which
-  // is the exact state Version Sync exists to get a schema out of.
-  //
-  // An entry with no stored script cannot be replayed at all, so the run stops
-  // BEFORE it: everything up to that point is sent as one atomic batch and the
-  // gap is reported. Sending the whole list and letting the server discover the
-  // hole would just fail the run. requestApply does that cut, so the confirm
-  // dialog and this run agree on how many scripts are involved.
-  async function runEntries(pending: PendingApply, acknowledgeProduction: boolean) {
-    // A disabled confirm button is a hint; this is the rule. If the Target is
-    // production and nobody ticked the box, nothing runs.
-    if (targetIsProduction && !acknowledgeProduction) return;
-
-    // Already cut to the runnable versions by requestApply, so what runs here
-    // is exactly what the dialog counted.
-    const batch = pending.runnable;
-    const gap = pending.stoppedBefore;
-
+  // Replay the versions onto the Target in ONE request, which the apply route
+  // runs in ONE transaction. All of them or none: a replay that failed halfway
+  // used to leave the earlier versions applied and the Target stranded
+  // mid-chain, which is the exact state Version Sync exists to get a schema
+  // out of. `flags` are the ticks given in the replay check.
+  async function runEntries(entries: LedgerEntry[], flags: ReplayFlags) {
     setApplying(true);
-    setApplyError("");
+    setApplyError(null);
     setApplyDone("");
-
     setProgress(
-      batch.length === 1
-        ? `Applying ${batch[0].scriptName} v${batch[0].version}…`
-        : `Applying ${batch.length} versions in one transaction…`
+      entries.length === 1
+        ? `Replaying ${scriptLabel(entries[0].scriptName, entries[0].version)} onto ${target.schema}…`
+        : `Replaying ${entries.length} versions onto ${target.schema} in one transaction…`,
     );
 
-    const result = await applyBatch(batch, acknowledgeProduction);
+    const result = await sendReplay({
+      connectionId: target.connectionId,
+      schemaName: target.schema,
+      sourceSchema: source.schema,
+      entries,
+      dryRun: false,
+      flags,
+    });
     setProgress("");
     setApplying(false);
 
     if (!result.ok) {
-      setApplyError(
-        `Replay failed: ${result.error} ` +
-        (result.failure === "refused"
-          ? "Nothing ran — the replay stopped before any SQL was sent."
-          : result.failure === "unknown"
-            ? `Whether it was applied is not known: nothing here saw how the run ` +
-              `ended. Read the ledger on ${target.schema} before trying again.`
-            : "Nothing was applied — the transaction rolled back.")
-      );
+      if (result.failure === "refused") {
+        setApplyError({ title: "Replay refused — nothing ran", detail: result.error });
+      } else if (result.failure === "rolled-back") {
+        // The one part of a run that can outlive its rollback.
+        const enumNote =
+          analyseRunRisk(riskScriptsOf(entries)).enumAdditions.length > 0
+            ? " Any enum value the run added before its transaction opened stays: PostgreSQL has no statement that removes one."
+            : "";
+        setApplyError({
+          title: "Replay failed — none of its versions were applied",
+          detail: result.error + enumNote,
+        });
+      } else {
+        setApplyError({
+          title: "Replay result not known",
+          detail:
+            `${result.error} Nothing here saw how the run ended. ` +
+            `Read the Target's ledger again before you run anything else.`,
+          unknown: true,
+        });
+      }
       return;
     }
 
+    // Mark the versions applied here, as the route recorded them (trimmed
+    // version, graded change type), so the list and timeline update without a
+    // re-read and a loading flash.
     const appliedAt = new Date().toISOString();
-    for (const e of batch) target.appendEntry({ ...e, appliedAt });
-    setApplyDone(
-      `Applied ${batch.length} script${batch.length === 1 ? "" : "s"} to ${target.schema}.` +
-      (gap
-        ? ` Stopped before ${gap.scriptName} v${gap.version}, which has no stored script.`
-        : "")
-    );
+    for (const e of entries) {
+      target.appendEntry({
+        ...e,
+        version: e.version.trim(),
+        changeType: readScriptLevel({ sqlContent: e.sqlContent ?? "", changeType: e.changeType }).stored,
+        appliedAt,
+      });
+    }
+    setApplyDone(`Replayed ${countOf(entries.length, "version")} onto ${target.schema}.`);
   }
 
   // Clear any apply feedback when the Source/Target selection changes, so a
-  // stale "Applied N scripts" / error banner never lingers over a new pair.
+  // stale "Replayed N versions" / error banner never lingers over a new pair.
   useEffect(() => {
     setApplyDone("");
-    setApplyError("");
+    setApplyError(null);
     setProgress("");
   }, [source.connectionId, source.schema, target.connectionId, target.schema]);
 
@@ -452,10 +569,10 @@ export default function VersionSyncPage() {
         <div className="section-title mb-2">Version Sync</div>
         <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Catch a schema up by version.</h1>
         <p className="text-[13.5px] mt-1.5 max-w-[68ch]" style={{ color: "var(--text-2)" }}>
-          Replay the actual scripts already applied to an ahead schema onto a behind one, version by
-          version — preserving the lineage (unlike a structural compare, which jumps straight to the
-          end state). A replay writes to the target&apos;s ledger only, never to the GitHub
-          registry. Pick a <b>Source</b> (ahead) and a <b>Target</b>{" "}
+          Replay the exact scripts an ahead schema already ran onto a behind one, in the order it
+          ran them — keeping the version history (a structural compare jumps straight to the end
+          state instead). A replay records each version in the Target&apos;s own ledger, never in
+          the GitHub registry. Pick a <b>Source</b> (ahead) and a <b>Target</b>{" "}
           (behind) to see what&apos;s missing.
         </p>
       </div>
@@ -483,6 +600,8 @@ export default function VersionSyncPage() {
       ) : (
         <>
           {/* ── Source → Target pickers ──────────────────────────────────── */}
+          {/* Locked while a replay runs: the run's banner and the ledgers it
+              updates belong to the pair it was started on. */}
           <div className="card p-5">
             <div className="vsync-pickers">
               <SidePicker
@@ -492,12 +611,14 @@ export default function VersionSyncPage() {
                 connections={connections}
                 loaded={connectionsLoaded}
                 environment={sourceEnvironment}
+                locked={applying}
               />
               <button
                 type="button"
                 className="vsync-swap btn btn-ghost btn-sm"
                 title="Swap Source and Target"
                 aria-label="Swap source and target"
+                disabled={applying}
                 onClick={swap}
               >
                 <VersionSyncIcon size={16} />
@@ -509,6 +630,7 @@ export default function VersionSyncPage() {
                 connections={connections}
                 loaded={connectionsLoaded}
                 environment={targetEnvironment}
+                locked={applying}
               />
             </div>
           </div>
@@ -548,7 +670,7 @@ export default function VersionSyncPage() {
                 <Skeleton width="70%" height={14} />
                 <p className="help" style={{ color: "var(--text-3)" }}>Reading both ledgers…</p>
               </div>
-            ) : diff ? (
+            ) : diff && reach ? (
               <>
                 {sameTarget && (
                   <div className="banner mb-5">
@@ -564,7 +686,8 @@ export default function VersionSyncPage() {
                 <Result
                   diff={diff}
                   source={source}
-                  missingKeys={missingKeys}
+                  target={target}
+                  reach={reach}
                   multiFamily={multiFamily}
                   apply={{
                     applying,
@@ -572,6 +695,10 @@ export default function VersionSyncPage() {
                     error: applyError,
                     done: applyDone,
                     onRun: requestApply,
+                    onReread: () => {
+                      setApplyError(null);
+                      target.retry();
+                    },
                     targetIsProduction,
                   }}
                 />
@@ -581,76 +708,20 @@ export default function VersionSyncPage() {
         </>
       )}
 
-      <ConfirmDialog
-        open={pendingApply !== null}
-        onClose={() => setPendingApply(null)}
-        onConfirm={(acknowledged) => {
-          const pending = pendingApply;
-          setPendingApply(null);
-          if (pending) void runEntries(pending, acknowledged);
+      <ReplayDialog
+        entries={pendingRun}
+        onClose={() => setPendingRun(null)}
+        onReplay={(flags) => {
+          const run = pendingRun;
+          setPendingRun(null);
+          if (run) void runEntries(run, flags);
         }}
-        destructive
-        confirmLabel={
-          pendingApply && pendingApply.runnable.length > 1
-            ? `Apply ${pendingApply.runnable.length}${targetIsProduction ? " to production" : ""}`
-            : targetIsProduction
-              ? "Apply to production"
-              : "Apply"
-        }
-        title={
-          pendingApply && pendingApply.runnable.length === 1
-            ? `Apply ${pendingApply.runnable[0].scriptName} v${pendingApply.runnable[0].version}?`
-            : `Apply ${pendingApply?.runnable.length ?? 0} scripts to the Target?`
-        }
-        acknowledge={
-          targetIsProduction
-            ? `I understand, and I mean to replay ${pendingApply?.runnable.length ?? 0} script${
-                (pendingApply?.runnable.length ?? 0) === 1 ? "" : "s"
-              } against production.`
-            : undefined
-        }
-        description={
-          <>
-            This runs on <b className="mono">{target.schema}</b> ({connections.find((c) => String(c.id) === target.connectionId)?.database_name}) —
-            a live database — and is recorded in that schema&apos;s own applied-script ledger. It
-            does not add anything to the GitHub registry, so these versions will show on Deploy as
-            applied with no registry file behind them.
-            {pendingApply?.stoppedBefore && (
-              <span className="block mt-2">
-                This stops before{" "}
-                <b className="mono">
-                  {pendingApply.stoppedBefore.scriptName} v{pendingApply.stoppedBefore.version}
-                </b>{" "}
-                — that version has no stored script
-                {pendingApply.skipped > 0
-                  ? `, so the ${pendingApply.skipped} version${
-                      pendingApply.skipped === 1 ? "" : "s"
-                    } after it cannot be replayed either.`
-                  : ", so it stays missing."}
-              </span>
-            )}
-            {targetIsProduction && (
-              <span className="block mt-2" style={{ color: "var(--break)" }}>
-                The Target is labelled production. A replay that goes wrong here is not
-                something a rollback brings back — a rollback restores structure, not rows.
-              </span>
-            )}
-            {targetIsProduction && (
-              <span className="block mt-2" style={{ color: "var(--break)" }}>
-                Ticking this box is not enough on its own. A production run also needs
-                an approval from someone else, granted for these exact scripts — the
-                same hand cannot both tick and press. Request it on the Deploy screen
-                with this connection and schema selected; without one the replay is
-                refused and nothing runs.
-              </span>
-            )}
-            {diff && diff.diverged.length > 0 && (
-              <span className="block mt-2" style={{ color: "var(--drift)" }}>
-                The schemas have diverged, so a replayed script may conflict with the Target&apos;s own changes.
-              </span>
-            )}
-          </>
-        }
+        connectionId={target.connectionId}
+        schema={target.schema}
+        databaseName={targetDatabase}
+        sourceSchema={source.schema}
+        pageEnvironment={targetEnvironment}
+        diverged={diff?.diverged.length ?? 0}
       />
     </div>
   );
@@ -658,10 +729,12 @@ export default function VersionSyncPage() {
 
 // ── One side's picker (connection + schema) ──────────────────────────────────
 function SidePicker({
-  side, label, sub, connections, loaded, environment,
+  side, label, sub, connections, loaded, environment, locked,
 }: {
   side: Side; label: string; sub: string; connections: Connection[]; loaded: boolean;
   environment: Environment;
+  /** True while a replay runs: the pair cannot change under it. */
+  locked: boolean;
 }) {
   return (
     <div className="vsync-side">
@@ -682,6 +755,7 @@ function SidePicker({
               variant="input"
               ariaLabel={`${label} connection`}
               value={side.connectionId}
+              disabled={locked}
               placeholder="Select a connection…"
               options={connections.map((c) => ({ value: String(c.id), label: `${c.name} — ${c.host}/${c.database_name}` }))}
               onChange={(v) => { side.setConnectionId(v); side.setSchema(""); }}
@@ -691,7 +765,7 @@ function SidePicker({
               mono
               ariaLabel={`${label} schema`}
               value={side.schema}
-              disabled={side.schemasLoading || !side.connectionId}
+              disabled={locked || side.schemasLoading || !side.connectionId}
               placeholder={
                 !side.connectionId ? "Pick a connection first" : side.schemasLoading ? "Loading schemas…" : "Select a schema…"
               }
@@ -714,30 +788,107 @@ function SidePicker({
 type ApplyCtl = {
   applying: boolean;
   progress: string;
-  error: string;
+  error: ApplyError | null;
   done: string;
+  /** Open the replay check for these versions. */
   onRun: (entries: LedgerEntry[]) => void;
-  /** Draw the run buttons red when the Target is live, same as Deploy does. */
+  /** Read the Target's ledger again, after a run whose outcome is not known. */
+  onReread: () => void;
+  /** Draw Run all red when the Target is live, same as Deploy does. */
   targetIsProduction: boolean;
 };
 
-// ── The diff result: status, timeline, missing list ──────────────────────────
+const SYNC_BANNER = {
+  background: "var(--sync-soft)",
+  borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)",
+};
+const DRIFT_BANNER = {
+  background: "color-mix(in oklab, var(--drift) 8%, var(--surface))",
+  borderColor: "color-mix(in oklab, var(--drift) 35%, var(--border))",
+};
+
+// ── The diff result: status, missing list, what cannot run, timeline ────────
 function Result({
-  diff, source, missingKeys, multiFamily, apply,
+  diff, source, target, reach, multiFamily, apply,
 }: {
   diff: ReturnType<typeof diffLedgers>;
   source: Side;
-  missingKeys: Set<string>;
+  target: Side;
+  reach: Reach;
   multiFamily: boolean;
   apply: ApplyCtl;
 }) {
-  const sourceEntries = source.entries ?? [];
+  const sourceEntries = useMemo(() => source.entries ?? [], [source.entries]);
+  const targetEntries = useMemo(() => target.entries ?? [], [target.entries]);
   const sourceEmpty = sourceEntries.length === 0;
-  // "Caught up" = the Target has every Source version (missing is empty). Any
+  // "Up to date" = nothing is left to replay forward (missing is empty). Any
   // divergence (Target-only versions) is a separate concern, shown in its own
-  // banner — it must NOT flip this to the "N behind" branch (which would then
-  // render a nonsensical "0 versions behind").
+  // banner — it must NOT flip this to the "N behind" branch.
   const inSync = diff.upToDate;
+
+  const missing = diff.missing;
+  const total = missing.length;
+  // The run buttons: rows 0..reachable-1 can run; the row at `reachable` (if
+  // any) is where every run stops, and the rows after it wait behind it.
+  const reachable = reach.runnable.length;
+  const stop = reach.stoppedBefore;
+  const stopLabel = stop ? scriptLabel(stop.scriptName, stop.version) : "";
+  const waiting = stop ? total - reachable - 1 : 0;
+  // Run all only when it runs the whole list and is not the same as Run.
+  const showRunAll = reachable === total && total > 1;
+  // A version named alone ("v1.2.0") is enough with one script group.
+  const runLabel = (e: LedgerEntry) =>
+    multiFamily ? scriptLabel(e.scriptName, e.version) : displayVersion(e.version, true);
+
+  const targetHeads = useMemo(() => headsByFamily(targetEntries), [targetEntries]);
+  const belowCount = diff.belowTarget.length;
+
+  // The timeline reads the same ledgers the list does, matched by the same key.
+  const sourceTimeline = useMemo(() => ledgerTimelineEntries(sourceEntries), [sourceEntries]);
+  const targetTimeline = useMemo(() => ledgerTimelineEntries(targetEntries), [targetEntries]);
+  const timelineRows = useMemo(
+    () => mergeTimelines(sourceTimeline, targetTimeline),
+    [sourceTimeline, targetTimeline],
+  );
+  const outdatedSide = useMemo(
+    () => outdatedSideOfEntries(sourceTimeline, targetTimeline),
+    [sourceTimeline, targetTimeline],
+  );
+  const pairKey = JSON.stringify([source.connectionId, source.schema, target.connectionId, target.schema]);
+
+  const upToDateHelp =
+    (belowCount === 1
+      ? "1 version the Source has is not on the Target, but the Target is already at or past it in that script, so a replay cannot run it — see Cannot be replayed forward below."
+      : belowCount > 1
+        ? `${belowCount} versions the Source has are not on the Target, but the Target is already at or past them in their scripts, so a replay cannot run them — see Cannot be replayed forward below.`
+        : "The Target has every version the Source has.") +
+    (diff.diverged.length > 0
+      ? ` It also has ${countOf(diff.diverged.length, "version")} the Source does not — see below.`
+      : "");
+
+  const listHelp =
+    "These are the exact scripts the Source ran, in the order it ran them. A replay runs them " +
+    "onto the Target in that order, as one transaction: every version in it applies, or none does." +
+    (reachable >= 1
+      ? " Run replays the first version" +
+        (reachable > 1 ? "; Run through replays every version from the top of the list down to that one" : "") +
+        (showRunAll ? "; Run all replays the whole list" : "") +
+        ". Each opens a check of what will run, and nothing runs until you confirm it there."
+      : "");
+
+  // What to do about the version every run stops before.
+  const stopFix =
+    reach.reason === "no-sql"
+      ? (reachable > 0
+          ? `Replay ${reachable === 1 ? "the version" : "the versions"} before it first; then, if`
+          : "If") +
+        ` the GitHub registry still has ${stopLabel}, deploy it to the Target from the Deploy screen, and this list moves past it.`
+      : reach.reason === "out-of-order" && stop
+        ? `Replay ${reachable === 1 ? "the version" : "the versions"} listed before it first: once ` +
+          `${scriptLabel(stop.scriptName, reach.blockedBy ?? "")} is on the Target, ${stopLabel} moves to ` +
+          `Cannot be replayed forward` +
+          (waiting > 0 ? ", and the list carries on with the versions after it." : ".")
+        : "";
 
   return (
     <div className="space-y-5">
@@ -751,14 +902,19 @@ function Result({
       {apply.error && (
         <div className="banner">
           <AlertTriangleIcon size={16} className="ico" />
-          <div className="body"><div className="title">{apply.error}</div></div>
+          <div className="body">
+            <div className="title">{apply.error.title}</div>
+            <div className="help mt-0.5">{apply.error.detail}</div>
+            {apply.error.unknown && (
+              <button className="btn btn-secondary btn-sm mt-2" onClick={apply.onReread}>
+                <RefreshIcon size={13} /> Read the Target&apos;s ledger again
+              </button>
+            )}
+          </div>
         </div>
       )}
       {apply.done && (
-        <div
-          className="banner"
-          style={{ background: "var(--sync-soft)", borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)" }}
-        >
+        <div className="banner" style={SYNC_BANNER}>
           <CheckIcon size={16} className="ico" />
           <div className="body"><div className="title" style={{ color: "var(--sync)" }}>{apply.done}</div></div>
         </div>
@@ -776,148 +932,84 @@ function Result({
           </div>
         </div>
       ) : inSync ? (
-        <div
-          className="banner"
-          style={{ background: "var(--sync-soft)", borderColor: "color-mix(in oklab, var(--sync) 30%, transparent)" }}
-        >
+        <div className="banner" style={SYNC_BANNER}>
           <CheckIcon size={16} className="ico" />
           <div className="body">
-            <div className="title" style={{ color: "var(--sync)" }}>
-              {diff.diverged.length > 0 ? "Caught up on the Source." : "You’re up to date."}
-            </div>
-            <div className="help mt-0.5">
-              The Target has every version the Source has
-              {diff.diverged.length > 0 ? " (plus some of its own — see below)." : "."}
-            </div>
+            <div className="title" style={{ color: "var(--sync)" }}>You’re up-to-date!</div>
+            <div className="help mt-0.5">{upToDateHelp}</div>
           </div>
         </div>
       ) : (
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="pill pill-pending">
-              {diff.missing.length} {diff.missing.length === 1 ? "version" : "versions"} behind
-            </span>
-            {diff.missingWithoutSql > 0 && (
-              <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
-                {diff.missingWithoutSql} without stored SQL
-              </span>
-            )}
-          </div>
-          {/* The pill's title attribute is the only place this used to be
-              explained, and a span cannot be focused to read it — so the
-              consequence (the run stops early) is on screen instead. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="pill pill-pending">{countOf(total, "version")} behind</span>
           {diff.missingWithoutSql > 0 && (
-            <p className="help mt-2">
-              {diff.missingWithoutSql} of these were applied before this tool stored SQL, so they
-              cannot be replayed. A run stops at the first one — the versions after it stay missing.
-            </p>
+            <span className="pill pill-drift" title="Applied before SQL was stored — can't be replayed">
+              {diff.missingWithoutSql} without stored SQL
+            </span>
           )}
         </div>
       )}
 
-      {/* Divergence warning */}
-      {diff.diverged.length > 0 && (
-        <div
-          className="banner"
-          style={{ background: "color-mix(in oklab, var(--drift) 8%, var(--surface))", borderColor: "color-mix(in oklab, var(--drift) 35%, var(--border))" }}
-        >
-          <AlertTriangleIcon size={16} className="ico" style={{ color: "var(--drift)" }} />
-          <div className="body">
-            <div className="title">These schemas have diverged.</div>
-            <div className="help mt-0.5">
-              The Target has {diff.diverged.length}{" "}
-              {diff.diverged.length === 1 ? "version" : "versions"}{" "}
-              the Source doesn&apos;t — they&apos;re on different branches.
-              Review before syncing; nothing is merged automatically.
-            </div>
-            {/* "Review before syncing" needs something to review — a bare
-                pill per version showed the name and nothing else, so the
-                stored script is one click away here. */}
-            {diff.diverged.map((e) => (
-              <details key={entryKey(e)} className="mt-1">
-                <summary className="help">
-                  {e.scriptName} v{e.version} — {e.changeType}
-                </summary>
-                <pre className="vsync-sql mono mt-2">
-                  {e.sqlContent ?? "No stored script for this version."}
-                </pre>
-              </details>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Timeline */}
-      {!sourceEmpty && (
-        <div>
-          <h2 className="section-title mb-2">Source timeline</h2>
-          <div className="vsync-rail">
-            {sourceEntries.map((e) => {
-              const missing = missingKeys.has(entryKey(e));
-              return (
-                <div key={entryKey(e)} className={`vsync-node${missing ? " is-missing" : " is-applied"}`}>
-                  <span className="vsync-node__dot" />
-                  <span className="vsync-node__ver mono">v{e.version}</span>
-                  {multiFamily && <span className="vsync-node__fam mono">{e.scriptName}</span>}
-                  <span className="vsync-node__state">{missing ? "missing" : "on target"}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Missing list */}
-      {diff.missing.length > 0 && (
+      {total > 0 && (
         <div>
           <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-            <h2 className="section-title">To apply ({diff.missing.length})</h2>
-            <div className="flex items-center gap-2">
-              {/* Not "Bump by 1" — the Script Editor's version bump means
-                  changing a version number, and this runs one script. */}
-              <button
-                className="btn btn-secondary btn-sm"
-                disabled={apply.applying || !diff.missing[0]?.hasSql}
-                onClick={() => apply.onRun([diff.missing[0]])}
-              >
-                Run next only
-              </button>
+            <h2 className="section-title">Missing on the Target ({total})</h2>
+            {showRunAll && (
               <button
                 className={`btn btn-sm ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
-                disabled={apply.applying || diff.missing.length === 0}
-                onClick={() => apply.onRun(diff.missing)}
+                disabled={apply.applying}
+                title="Replay every version in this list, in one transaction"
+                onClick={() => apply.onRun(missing)}
               >
                 {apply.applying ? <RefreshIcon size={13} className="spin-icon" /> : null}
-                Run all{apply.targetIsProduction ? " on production" : ""}
+                Run all ({total})…
               </button>
-            </div>
+            )}
           </div>
-          <p className="help mb-3" style={{ color: "var(--text-3)" }}>
-            The exact scripts already applied to the Source. Running them onto the Target catches it up —
-            in order, and all of them in one transaction, so a replay that fails part way leaves the
-            Target where it started rather than stranded mid-chain. Run next only applies the first
-            missing version; Run all sends the rest as one transaction.
-          </p>
+          <p className="help mb-3" style={{ color: "var(--text-3)" }}>{listHelp}</p>
+
+          {stop && (
+            <div className="warn-inline mb-3">
+              <span className="ico"><AlertTriangleIcon size={14} /></span>
+              <span>
+                <b>A run stops before {stopLabel}.</b>{" "}
+                {stopSentence(reach)}
+                {waiting > 0 ? ` The ${countOf(waiting, "version")} after it wait behind it.` : ""}{" "}
+                {stopFix}
+              </span>
+            </div>
+          )}
 
           <div className="space-y-3">
-            {diff.missing.map((e) => (
+            {missing.map((e, i) => (
               <div key={entryKey(e)} className="card p-4">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`pill ${changeTone(e.changeType)}`}>{e.changeType}</span>
-                    <span className="mono text-[14px] font-semibold">v{e.version}</span>
+                    <span className="mono text-[14px] font-semibold">{displayVersion(e.version, true)}</span>
                     <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
                       {e.scriptName} · applied to Source {fmtDate(e.appliedAt)}
                     </span>
                   </div>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    disabled={apply.applying || !e.hasSql}
-                    title={e.hasSql ? "Apply this version to the Target" : "No stored script to replay"}
-                    onClick={() => apply.onRun([e])}
-                  >
-                    Run
-                  </button>
+                  {i < reachable ? (
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={apply.applying}
+                      title={
+                        i === 0
+                          ? "Replay this version onto the Target"
+                          : `Replay the first ${i + 1} versions in this list, through this one, in one transaction`
+                      }
+                      onClick={() => apply.onRun(missing.slice(0, i + 1))}
+                    >
+                      {i === 0 ? "Run…" : `Run through ${runLabel(e)} (${i + 1})…`}
+                    </button>
+                  ) : i === reachable ? (
+                    <span className="vsync-stopnote">Runs stop before this version</span>
+                  ) : (
+                    <span className="vsync-stopnote">Can&apos;t be reached yet: runs stop before {stopLabel}</span>
+                  )}
                 </div>
                 {e.hasSql ? (
                   <pre className="vsync-sql mono mt-3">{e.sqlContent}</pre>
@@ -932,6 +1024,687 @@ function Result({
           </div>
         </div>
       )}
+
+      {/* Versions the Target lacks but is already past */}
+      {belowCount > 0 && (
+        <div className="banner" style={DRIFT_BANNER}>
+          <AlertTriangleIcon size={16} className="ico" style={{ color: "var(--drift)" }} />
+          <div className="body">
+            <div className="title">Cannot be replayed forward ({belowCount})</div>
+            <div className="help mt-0.5">
+              The Target already runs a version of each of these scripts that is at or above the one
+              listed, and a replay only moves forward, so the server refuses them. To bring one
+              of these changes over, write it as a new version in the Script Editor and deploy it.
+            </div>
+            {diff.belowTarget.map((e) => (
+              <details key={entryKey(e)} className="mt-1">
+                <summary className="help">
+                  {scriptLabel(e.scriptName, e.version)} — {e.changeType} · the Target runs{" "}
+                  {scriptLabel(e.scriptName, targetHeads.get(e.scriptName) ?? "")}
+                </summary>
+                <pre className="vsync-sql mono mt-2">
+                  {e.sqlContent ?? "No stored script for this version."}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Divergence warning */}
+      {diff.diverged.length > 0 && (
+        <div className="banner" style={DRIFT_BANNER}>
+          <AlertTriangleIcon size={16} className="ico" style={{ color: "var(--drift)" }} />
+          <div className="body">
+            <div className="title">These schemas have diverged.</div>
+            <div className="help mt-0.5">
+              The Target has {countOf(diff.diverged.length, "version")}{" "}
+              the Source doesn&apos;t — they&apos;re on different branches.
+              Review before syncing; nothing is merged automatically.
+            </div>
+            {/* "Review before syncing" needs something to review, so the
+                stored script is one click away here. */}
+            {diff.diverged.map((e) => (
+              <details key={entryKey(e)} className="mt-1">
+                <summary className="help">
+                  {scriptLabel(e.scriptName, e.version)} — {e.changeType}
+                </summary>
+                <pre className="vsync-sql mono mt-2">
+                  {e.sqlContent ?? "No stored script for this version."}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Both ledgers, side by side. Keyed on the pair: the table keeps which
+          rows are open, and that belongs to one pair. */}
+      {(sourceEntries.length > 0 || targetEntries.length > 0) && (
+        <div>
+          <h2 className="section-title mb-2">Source vs Target</h2>
+          <VersionTimeline
+            key={pairKey}
+            leftLabel="Source"
+            rightLabel="Target"
+            rows={timelineRows}
+            outdatedSide={outdatedSide}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── The replay check ─────────────────────────────────────────────────────────
+
+/** What the Target's tracking record says, as far as a replay cares. */
+type TrackingRecord =
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | { state: "ready"; environment: Environment; drift: "in_sync" | "drifted" | "unreachable" | null };
+
+type ReplayDialogProps = {
+  /** The versions to replay, in order; null while the dialog is closed. */
+  entries: LedgerEntry[] | null;
+  onClose: () => void;
+  /** Confirmed: run it, sending these ticks. */
+  onReplay: (flags: ReplayFlags) => void;
+  connectionId: string;
+  schema: string;
+  databaseName: string;
+  sourceSchema: string;
+  /** The Target's environment as the page reads it (connection and schema labels). */
+  pageEnvironment: Environment;
+  /** How many versions only the Target has. */
+  diverged: number;
+};
+
+/**
+ * The check a replay goes through before anything runs: what it holds and
+ * risks, a dry run, and the ticks and approval the apply route will ask for.
+ *
+ * The body is its own component, mounted each time the dialog opens, so no
+ * tick, dry-run result or approval note carries over from one run to the next.
+ */
+function ReplayDialog(props: ReplayDialogProps) {
+  const titleId = useId();
+  const { entries, onClose } = props;
+  return (
+    <Modal open={entries !== null} onClose={onClose} width={640} labelledBy={titleId}>
+      {entries !== null && entries.length > 0 && (
+        <ReplayBody {...props} entries={entries} titleId={titleId} />
+      )}
+    </Modal>
+  );
+}
+
+function ReplayBody({
+  entries,
+  titleId,
+  onClose,
+  onReplay,
+  connectionId,
+  schema,
+  databaseName,
+  sourceSchema,
+  pageEnvironment,
+  diverged,
+}: Omit<ReplayDialogProps, "entries"> & { entries: LedgerEntry[]; titleId: string }) {
+  const { user, isAdmin, bypass } = useUser();
+  const count = entries.length;
+  const first = entries[0];
+  const last = entries[count - 1];
+  const runName = count === 1 ? scriptLabel(first.scriptName, first.version) : countOf(count, "version");
+
+  // ── The Target's tracking record ──────────────────────────────────────────
+  // The apply route reads two things from it before it runs anything: whether
+  // the schema is labelled production, and what its last drift check found.
+  // This reads the same record, so the ticks below are the ticks it asks for.
+  const [record, setRecord] = useState<TrackingRecord>({ state: "loading" });
+  const [recordTry, setRecordTry] = useState(0);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/lineage/lookup?connectionId=${encodeURIComponent(connectionId)}&schemaName=${encodeURIComponent(schema)}`,
+          { cache: "no-store" },
+        );
+        const data = (await res.json()) as {
+          tracked?: boolean;
+          environment?: string;
+          driftStatus?: string | null;
+          error?: string;
+        };
+        if (!active) return;
+        if (!res.ok) {
+          setRecord({ state: "error", message: data.error ?? `The tracking lookup answered ${res.status}.` });
+          return;
+        }
+        // An untracked schema has no label of its own and no drift check.
+        const tracked = data.tracked === true;
+        const drift =
+          tracked &&
+          (data.driftStatus === "in_sync" || data.driftStatus === "drifted" || data.driftStatus === "unreachable")
+            ? data.driftStatus
+            : null;
+        setRecord({ state: "ready", environment: toEnvironment(tracked ? data.environment : undefined), drift });
+      } catch {
+        if (active) setRecord({ state: "error", message: "Could not reach the server, or could not read its reply." });
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [connectionId, schema, recordTry]);
+
+  const ready = record.state === "ready";
+  // The louder of the page's reading and the record's, as the route does.
+  const environment =
+    record.state === "ready" ? louderEnvironment(pageEnvironment, record.environment) : pageEnvironment;
+  const production = isProduction(environment);
+  const drift = record.state === "ready" && (record.drift === "drifted" || record.drift === "unreachable");
+
+  // ── What the run risks (the same reading the route makes) ─────────────────
+  const risk = useMemo(() => analyseRunRisk(riskScriptsOf(entries)), [entries]);
+  const breakingCount = risk.breaking.length;
+  const louderCount = risk.breaking.filter((b) => b.louderNote !== null).length;
+  const dataLossCount = risk.dataLoss.length;
+  const dataLossKinds = [...new Set(risk.dataLoss.flatMap((d) => d.kinds))];
+  const unflaggedKinds = dataLossKinds.filter((kind) => ROW_DESTROYING_NOT_BREAKING.includes(kind));
+  const mightFailKinds = [...new Set(risk.mightFail.flatMap((m) => m.kinds))].join(", ");
+  const enumCount = risk.enumAdditions.length;
+  const listed = (e: LedgerEntry, list: ReadonlyArray<{ scriptName: string; version: string }>) =>
+    list.some((r) => r.scriptName === e.scriptName && r.version === e.version);
+
+  // ── The ticks ─────────────────────────────────────────────────────────────
+  const [prodAck, setProdAck] = useState(false);
+  const [breakingAck, setBreakingAck] = useState(false);
+  const [dataLossAck, setDataLossAck] = useState(false);
+  const [driftAck, setDriftAck] = useState(false);
+  const unticked =
+    (production && !prodAck) ||
+    (breakingCount > 0 && !breakingAck) ||
+    (dataLossCount > 0 && !dataLossAck) ||
+    (drift && !driftAck);
+  // Each flag is true only for a risk this run has AND a box the reader ticked.
+  const flags: ReplayFlags = {
+    acknowledgeProduction: production && prodAck,
+    acknowledgeBreaking: breakingCount > 0 && breakingAck,
+    acknowledgeDataLoss: dataLossCount > 0 && dataLossAck,
+    acknowledgeDrift: drift && driftAck,
+  };
+
+  // ── Production approval ───────────────────────────────────────────────────
+  // The route claims an approval by the run's fingerprint: these exact
+  // scripts, in this order, on this schema. Worked out here the same way
+  // (lib/approval-fingerprint), so the panel can say whether one covers it.
+  const fingerprint = useMemo(
+    () =>
+      fingerprintBody(
+        entries.map((e) => ({
+          scriptName: e.scriptName.trim(),
+          version: e.version.trim(),
+          sqlContent: e.sqlContent ?? "",
+        })),
+      ),
+    [entries],
+  );
+  const [runHash, setRunHash] = useState<string | null>(null);
+  const [hashError, setHashError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    sha256Hex(fingerprint).then(
+      (hash) => {
+        if (active) setRunHash(hash);
+      },
+      () => {
+        if (active) {
+          setHashError(
+            "This browser cannot check the approval — crypto.subtle needs https or localhost. Open the app over https to approve a run.",
+          );
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [fingerprint]);
+
+  const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(true);
+  const [approvalsReadError, setApprovalsReadError] = useState<string | null>(null);
+  const [approvalsTry, setApprovalsTry] = useState(0);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approvalNotice, setApprovalNotice] = useState("");
+  const [approvalNote, setApprovalNote] = useState("");
+
+  // Only a production run needs one, so only then is the list read.
+  useEffect(() => {
+    if (!production) return;
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/deploy/approvals?connectionId=${encodeURIComponent(connectionId)}&schemaName=${encodeURIComponent(schema)}`,
+          { cache: "no-store" },
+        );
+        const data = (await res.json()) as { approvals?: ApprovalRow[]; error?: string };
+        if (!active) return;
+        if (res.ok && Array.isArray(data.approvals)) {
+          setApprovals(data.approvals);
+          setApprovalsReadError(null);
+        } else {
+          setApprovalsReadError(data.error ?? "Could not read the approvals for this target.");
+        }
+      } catch {
+        if (active) setApprovalsReadError("Network error reading the approvals for this target.");
+      } finally {
+        if (active) setApprovalsLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [production, connectionId, schema, approvalsTry]);
+
+  function reloadApprovals() {
+    setApprovalsLoading(true);
+    setApprovalsTry((t) => t + 1);
+  }
+
+  const runApprovals =
+    runHash === null
+      ? []
+      : approvals.filter((a) => (a.action ?? "deploy") === "deploy" && a.run_fingerprint === runHash);
+  const approved = runApprovals.find((a) => a.status === "approved") ?? null;
+  const pending = runApprovals.find((a) => a.status === "pending") ?? null;
+  const latest = runApprovals[0] ?? null;
+
+  async function requestApproval() {
+    setApprovalBusy(true);
+    setApprovalError(null);
+    setApprovalNotice("");
+    // The route matches an approval by fingerprint alone, so the script name
+    // here only labels the request for whoever clears it.
+    const families = [...new Set(entries.map((e) => e.scriptName.trim()))];
+    try {
+      const res = await fetch("/api/deploy/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "deploy",
+          connectionId: Number(connectionId),
+          schemaName: schema,
+          scriptName: families.length === 1 ? families[0] : listLabels(families),
+          targetVersion: last.version.trim(),
+          note: approvalNote.trim() || undefined,
+          scripts: entries.map((e) => ({
+            script_name: e.scriptName,
+            version: e.version,
+            sql_content: e.sqlContent ?? "",
+            change_type: e.changeType,
+          })),
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as { approval?: ApprovalRow; error?: string } | null;
+      if (!res.ok || !data?.approval) {
+        setApprovalError(data?.error ?? "Could not record the approval request.");
+        return;
+      }
+      setApprovalNote("");
+      setApprovalNotice("Approval requested — someone else has to clear it.");
+      reloadApprovals();
+    } catch {
+      setApprovalError("Network error requesting the approval.");
+    } finally {
+      setApprovalBusy(false);
+    }
+  }
+
+  async function decide(id: number, decision: "approve" | "reject") {
+    setApprovalBusy(true);
+    setApprovalError(null);
+    setApprovalNotice("");
+    try {
+      const res = await fetch(`/api/deploy/approvals/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, note: approvalNote.trim() || undefined }),
+      });
+      const data = (await res.json().catch(() => null)) as { approval?: ApprovalRow; error?: string } | null;
+      if (!res.ok || !data?.approval) {
+        setApprovalError(data?.error ?? "Could not record the decision.");
+        return;
+      }
+      setApprovalNote("");
+      setApprovalNotice(decision === "approve" ? "Run approved." : "Run rejected.");
+      reloadApprovals();
+    } catch {
+      setApprovalError("Network error recording the decision.");
+    } finally {
+      setApprovalBusy(false);
+    }
+  }
+
+  // ── Dry run ───────────────────────────────────────────────────────────────
+  const [dryRunning, setDryRunning] = useState(false);
+  const [dryResult, setDryResult] = useState<{ ok: boolean; title: string; detail: string } | null>(null);
+
+  async function rehearse() {
+    setDryRunning(true);
+    setDryResult(null);
+    const result = await sendReplay({ connectionId, schemaName: schema, sourceSchema, entries, dryRun: true, flags });
+    setDryRunning(false);
+    if (result.ok) {
+      setDryResult({
+        ok: true,
+        title: `Dry run clean: rehearsed ${countOf(count, "version")} on ${schema}. Nothing was written.`,
+        detail: "",
+      });
+      return;
+    }
+    setDryResult({
+      ok: false,
+      title:
+        result.failure === "refused"
+          ? "Dry run refused — nothing was run"
+          : result.failure === "rolled-back"
+            ? "Dry run failed — nothing was written"
+            : "Dry run result not known",
+      detail:
+        result.failure === "unknown"
+          ? `${result.error} A dry run never commits, so the Target is unchanged. Try it again.`
+          : result.error,
+    });
+  }
+
+  // ── What the buttons may do ───────────────────────────────────────────────
+  // The same rule as Deploy: every box ticked for both buttons, and on
+  // production an approval for exactly this run before Replay.
+  const runBlocked = !ready || unticked || dryRunning || approvalBusy;
+  const replayBlocked = runBlocked || (production && approved === null);
+  const replayLabel = `Replay ${countOf(count, "version")}${production ? " on production" : ""}`;
+  const hint =
+    record.state === "loading"
+      ? "Both buttons wait for the Target's tracking record."
+      : record.state === "error"
+        ? "Both buttons stay off until the Target's tracking record can be read."
+        : unticked
+          ? "Tick every box above to turn on Dry run and Replay."
+          : production && approved === null
+            ? "Replay also needs the approval above. A dry run does not."
+            : "";
+
+  const louderSentence =
+    louderCount === 0
+      ? ""
+      : breakingCount === 1
+        ? " It is marked less than breaking but has a statement that is always breaking, so it is counted here."
+        : louderCount === 1
+          ? " One of them is marked less than breaking but has a statement that is always breaking, so it is counted here."
+          : ` ${louderCount} of them are marked less than breaking but have a statement that is always breaking, so they are counted here.`;
+  const unflaggedSentence =
+    unflaggedKinds.length === 0
+      ? ""
+      : unflaggedKinds.length === 1
+        ? `A ${unflaggedKinds[0]} changes no structure, so it is never graded breaking and gets no breaking pill — this box is the only warning it gets. `
+        : `${unflaggedKinds.join(" and ")} change no structure, so they are never graded breaking and get no breaking pill — this box is the only warning they get. `;
+  const oneEnum = enumCount === 1;
+
+  return (
+    <div className="vsync-dialog">
+      <div>
+        <h4 id={titleId} className="text-[15px] font-semibold">
+          Replay {runName} onto {schema}?
+        </h4>
+        <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
+          {"This runs on "}
+          <b className="mono">{schema}</b>
+          {`${databaseName ? ` (${databaseName})` : ""} — a live database — as one transaction: every version in it applies, or none does${
+            enumCount > 0 ? " — apart from the enum values named below" : ""
+          }. Each version is recorded in that schema's applied-script ledger, just as a Deploy run records it; nothing is written to GitHub.`}
+        </p>
+        {diverged > 0 && (
+          <p className="text-[13px] mt-2" style={{ color: "var(--drift)" }}>
+            {`The schemas have diverged: the Target has ${countOf(diverged, "version")} the Source does not, so a replayed script may clash with the Target's own changes.`}
+          </p>
+        )}
+      </div>
+
+      <div className="vsync-dialog__body">
+        <div className="section-title mb-2">What runs, in order</div>
+        <div className="vsync-runlist">
+          {entries.map((e, i) => (
+            <details key={entryKey(e)} open={listed(e, risk.breaking) || listed(e, risk.dataLoss)}>
+              <summary>
+                {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> — {e.changeType}
+              </summary>
+              <pre className="vsync-sql mono mt-2">{e.sqlContent}</pre>
+            </details>
+          ))}
+        </div>
+
+        <div className="space-y-3 mt-4">
+          {record.state === "loading" && (
+            <p className="help">{"Checking the Target's tracking record…"}</p>
+          )}
+          {record.state === "error" && (
+            <div className="banner">
+              <AlertTriangleIcon size={16} className="ico" />
+              <div className="body">
+                <div className="title">{"Could not read the Target's tracking record"}</div>
+                <div className="help mt-0.5">
+                  {`${record.message} Dry run and Replay stay off until it can be read, because the record says whether ${schema} is production and what its last drift check found — the two things the server checks before it runs anything. Nothing has run.`}
+                </div>
+                <button
+                  className="btn btn-secondary btn-sm mt-2"
+                  onClick={() => {
+                    setRecord({ state: "loading" });
+                    setRecordTry((t) => t + 1);
+                  }}
+                >
+                  <RefreshIcon size={13} /> Try again
+                </button>
+              </div>
+            </div>
+          )}
+
+          {production && (
+            <ProductionGate
+              what={`replay ${countOf(count, "version")}`}
+              acknowledged={prodAck}
+              onAcknowledge={setProdAck}
+            />
+          )}
+
+          {breakingCount > 0 && (
+            <RiskGate
+              tone="break"
+              title={`${breakingCount} breaking migration${breakingCount === 1 ? "" : "s"}`}
+              body={
+                "A breaking migration drops or rewrites structure that is already there. Anything " +
+                "reading the old shape — an app, a view, a report — stops working the moment this " +
+                "commits. The breaking ones are open in the list above, showing the statements they " +
+                "will run." +
+                louderSentence
+              }
+              ack={`I have read the ${breakingCount === 1 ? "breaking migration" : "breaking migrations"} and know what stops working.`}
+              acknowledged={breakingAck}
+              onAcknowledge={setBreakingAck}
+            />
+          )}
+
+          {dataLossCount > 0 && (
+            <RiskGate
+              tone="break"
+              title={`${dataLossCount} ${dataLossCount === 1 ? "migration deletes" : "migrations delete"} rows`}
+              body={
+                `This replay contains ${dataLossKinds.join(", ")}. Those take rows out of a live table, ` +
+                "and no rollback puts them back — a down script rebuilds structure, not data. " +
+                unflaggedSentence +
+                "Have a backup you can restore from before running this."
+              }
+              ack="I have read these statements and know which rows they delete."
+              acknowledged={dataLossAck}
+              onAcknowledge={setDataLossAck}
+            >
+              <ul className="prod-gate__body" style={{ paddingLeft: 18, listStyle: "disc" }}>
+                {risk.dataLoss.map((d) => (
+                  <li key={d.label}>
+                    <span className="mono">{d.label}</span>: {d.kinds.join(", ")}
+                  </li>
+                ))}
+              </ul>
+            </RiskGate>
+          )}
+
+          {risk.mightFail.length > 0 && (
+            // No tick: the replay is one transaction, so this is the risk that
+            // costs nothing when it happens.
+            <div className="warn-inline">
+              <span className="ico">
+                <AlertTriangleIcon size={14} />
+              </span>
+              <span>
+                <b>{countOf(risk.mightFail.length, "version")} may be refused by the data already in the table.</b>{" "}
+                {`This replay contains ${mightFailKinds}. Those are valid SQL that PostgreSQL checks against every existing row — one NULL, one duplicate or one value that will not cast and the statement stops. Nothing is half-applied if that happens: the replay is one transaction, so it rolls back and the Target is left as it is now. A dry run finds this out without writing anything.`}
+              </span>
+            </div>
+          )}
+
+          {enumCount > 0 && (
+            <RiskGate
+              tone="drift"
+              title={oneEnum ? "1 enum value runs before the transaction" : `${enumCount} enum values run before the transaction`}
+              body={
+                "PostgreSQL will not let a value added by ALTER TYPE … ADD VALUE be used by another " +
+                "statement in the same transaction, so the run adds " +
+                (oneEnum ? "this one first, on its own. It commits" : "these first, on their own. They commit") +
+                " straight away. If the run then fails, everything else is rolled back and " +
+                (oneEnum ? "this stays" : "these stay") +
+                " — there is no statement in PostgreSQL that removes an enum value, so it cannot be " +
+                "undone by hand either. A label nothing uses does no harm; it is simply the one part " +
+                "of the run that is not all-or-nothing. A dry run cannot lift them out without leaving " +
+                "them behind, so it runs them inside the transaction instead — which is why rehearsing " +
+                "a script that uses its own new value fails where the real run succeeds."
+              }
+            >
+              <ul className="prod-gate__body" style={{ paddingLeft: 18, listStyle: "disc" }}>
+                {risk.enumAdditions.map((value) => (
+                  <li key={value} className="mono">{value}</li>
+                ))}
+              </ul>
+            </RiskGate>
+          )}
+
+          {drift && record.state === "ready" && (
+            <RiskGate
+              tone="drift"
+              title={
+                record.drift === "drifted"
+                  ? "The last drift check found the target drifted"
+                  : "The last drift check could not reach the target"
+              }
+              body={
+                `The last drift check on record ${
+                  record.drift === "drifted"
+                    ? `found ${schema} different from the snapshot it is tracked against`
+                    : `could not reach ${schema}`
+                }. The server holds every run on ${schema} to that result, a dry run included, ` +
+                "until a drift check passes. Run the drift check again on the Drift screen, or " +
+                "tick below to run anyway."
+              }
+              ack="I mean to run without a drift check that passed."
+              acknowledged={driftAck}
+              onAcknowledge={setDriftAck}
+            >
+              <p className="prod-gate__body">
+                <Link href="/drift" style={{ textDecoration: "underline" }}>
+                  Open the Drift screen
+                </Link>
+              </p>
+            </RiskGate>
+          )}
+
+          {production && (
+            <ApprovalPanel
+              migrationCount={count}
+              targetVersion={last.version.trim()}
+              hashReady={runHash !== null}
+              hashError={hashError}
+              loading={approvalsLoading}
+              error={approvalError ?? approvalsReadError}
+              unreadable={approvalsReadError !== null && approvals.length === 0}
+              busy={approvalBusy}
+              approved={approved}
+              pending={pending}
+              latest={latest}
+              viewerEmail={user?.email ?? ""}
+              isAdmin={isAdmin}
+              bypass={bypass}
+              note={approvalNote}
+              onNoteChange={setApprovalNote}
+              onRequest={() => void requestApproval()}
+              onDecide={(id, decision) => void decide(id, decision)}
+              runButton={replayLabel}
+            />
+          )}
+          {approvalNotice && (
+            <p className="help" style={{ color: "var(--sync)" }}>{approvalNotice}</p>
+          )}
+
+          {dryResult &&
+            (dryResult.ok ? (
+              <div className="banner" style={SYNC_BANNER}>
+                <CheckIcon size={16} className="ico" />
+                <div className="body">
+                  <div className="title" style={{ color: "var(--sync)" }}>{dryResult.title}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="banner">
+                <AlertTriangleIcon size={16} className="ico" />
+                <div className="body">
+                  <div className="title">{dryResult.title}</div>
+                  <div className="help mt-0.5">{dryResult.detail}</div>
+                </div>
+              </div>
+            ))}
+        </div>
+      </div>
+
+      <div className="vsync-dialog__foot">
+        {hint && <p className="help mb-2">{hint}</p>}
+        <div className="flex justify-end gap-2 flex-wrap">
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={runBlocked}
+            title="Rehearse the replay: it runs inside a transaction that is always rolled back, so nothing is written"
+            onClick={() => void rehearse()}
+          >
+            {dryRunning ? (
+              <>
+                <RefreshIcon size={13} className="spin-icon" /> Rehearsing…
+              </>
+            ) : (
+              "Dry run"
+            )}
+          </button>
+          <button
+            className={`btn btn-sm ${production ? "btn-destructive" : "btn-primary"}`}
+            disabled={replayBlocked}
+            onClick={() => onReplay(flags)}
+          >
+            {replayLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -28,6 +28,14 @@ export type PatchEntry = {
    */
   has_down_sql: boolean;
   down_sql: string | null;
+  /**
+   * The SQL that ran for this version, as the ledger row stored it. It is
+   * the only copy for a version that reached the database without a registry
+   * file (a Version Sync replay, say), so Deploy shows it for an applied
+   * version. null when the row has none, or the table was written by an older
+   * build without the column. History only: nothing runs it again from here.
+   */
+  sql_content: string | null;
 };
 
 /** One row of script_patch_reverted: a version that was rolled back here. */
@@ -307,18 +315,21 @@ export async function POST(request: NextRequest) {
     // believe "users_migration v1.0.0" is already applied (1.0.0 < 2.0.0).
     const quotedSchema = quoteIdent(schemaName);
 
-    // down_sql is added lazily by the apply route, so a script_patch written by
-    // an older build of this tool will not have it. Ask the catalog rather than
-    // letting the SELECT fail on the whole timeline.
+    // down_sql and sql_content are added lazily by the apply route (ADD COLUMN
+    // IF NOT EXISTS), so a script_patch written by an older build of this tool,
+    // or by another tool, may lack either. Ask the catalog rather than letting
+    // the SELECT fail on the whole timeline; a missing column reads as NULL.
     const colCheck = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = 'script_patch'
-          AND column_name = 'down_sql'`,
+          AND column_name IN ('down_sql', 'sql_content')`,
       [schemaName]
     );
+    const columns = new Set(colCheck.rows.map((row) => row.column_name));
     // has_down_sql is worked out below, in JS, with hasExecutableSql: a SQL
     // "<> ''" test counted a comment-only copy as a rollback.
-    const downExpr = colCheck.rows.length > 0 ? "down_sql" : "NULL::text AS down_sql";
+    const downExpr = columns.has("down_sql") ? "down_sql" : "NULL::text AS down_sql";
+    const sqlExpr = columns.has("sql_content") ? "sql_content" : "NULL::text AS sql_content";
 
     type LedgerRow = Omit<PatchEntry, "has_down_sql">;
     const timelineResult = scriptName
@@ -329,7 +340,8 @@ export async function POST(request: NextRequest) {
              description,
              change_type,
              applied_at,
-             ${downExpr}
+             ${downExpr},
+             ${sqlExpr}
            FROM ${quotedSchema}.script_patch
            WHERE script_name = $1
            ORDER BY applied_at DESC`,
@@ -342,7 +354,8 @@ export async function POST(request: NextRequest) {
              description,
              change_type,
              applied_at,
-             ${downExpr}
+             ${downExpr},
+             ${sqlExpr}
            FROM ${quotedSchema}.script_patch
            ORDER BY applied_at DESC`
         );
