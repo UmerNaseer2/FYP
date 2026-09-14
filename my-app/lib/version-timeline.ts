@@ -358,6 +358,26 @@ export function outdatedSideOfEntries(
 }
 
 /**
+ * A version's title for the timeline, or null when it would only repeat what
+ * the row already shows. A run given no title records the version itself as
+ * its title (the apply route's fallback), and some rows carry the script
+ * group's name, which the group heading already prints. "2.0.0" beside
+ * v2.0.0 is the same words twice, so both read as no title.
+ */
+export function versionTitle(
+  title: string | null | undefined,
+  version: string,
+  scriptName: string | null
+): string | null {
+  const text = title?.trim() ?? "";
+  if (text === "") return null;
+  if (scriptName !== null && text === scriptName.trim()) return null;
+  // timelineKey reads "v2.0.0" and "2.0.0" as the same version.
+  if (timelineKey(text) === timelineKey(version)) return null;
+  return text;
+}
+
+/**
  * script_patch rows as timeline entries: the rows GET /api/versionsync/ledger
  * sends, which Compare loads for one side and Version Sync holds for both.
  */
@@ -370,9 +390,7 @@ export function ledgerTimelineEntries(entries: ReadonlyArray<SyncLedgerEntry>): 
     // this same function, so a row gets the same dot whichever way it was read.
     changeType: normalizeChangeLevel(entry.changeType),
     sqlContent: entry.sqlContent,
-    // script_patch has no title column. The detector would label a row with
-    // its script group, which the timeline already prints as the heading.
-    label: null,
+    label: versionTitle(entry.title, entry.version, entry.scriptName),
   }));
 }
 

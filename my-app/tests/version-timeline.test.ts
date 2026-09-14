@@ -14,6 +14,7 @@ import {
   pushMovesTargetBack,
   scriptsMatch,
   timelineKey,
+  versionTitle,
   type TimelineEntry,
   type TimelineRow,
 } from "@/lib/version-timeline";
@@ -428,6 +429,8 @@ function ledgerRow(version: string, extra: Partial<LedgerEntry> = {}): LedgerEnt
     hasSql: true,
     sqlContent: "CREATE TABLE t (id int);",
     downSql: null,
+    title: null,
+    description: null,
     ...extra,
   };
 }
@@ -449,6 +452,44 @@ describe("ledgerTimelineEntries", () => {
       label: null,
     });
     expect(entries[1].sqlContent).toBeNull();
+  });
+
+  it("labels a row with its title, unless the title only repeats the version or group", () => {
+    const entries = ledgerTimelineEntries([
+      ledgerRow("2.0.0", { title: "Drop legacy code" }),
+      // What the apply route records for a run given no title.
+      ledgerRow("2.0.1", { title: "2.0.1" }),
+      // What Deploy records: the script group's name.
+      ledgerRow("2.0.2", { title: "users_migration" }),
+    ]);
+    expect(entries.map((item) => item.label)).toEqual(["Drop legacy code", null, null]);
+  });
+});
+
+describe("versionTitle", () => {
+  it("keeps a title that says something", () => {
+    expect(versionTitle("Drop legacy code", "2.0.0", "app_core")).toBe("Drop legacy code");
+    expect(versionTitle("  Add orders  ", "3.0.0", null)).toBe("Add orders");
+  });
+
+  it("drops a title that is blank, the version, or the script group", () => {
+    expect(versionTitle(null, "2.0.0", "app_core")).toBeNull();
+    expect(versionTitle(undefined, "2.0.0", "app_core")).toBeNull();
+    expect(versionTitle("   ", "2.0.0", "app_core")).toBeNull();
+    expect(versionTitle("2.0.0", "2.0.0", "app_core")).toBeNull();
+    // One version, two spellings.
+    expect(versionTitle("v2.0.0", "2.0.0", "app_core")).toBeNull();
+    expect(versionTitle("2.0.0", "v2.0.0", "app_core")).toBeNull();
+    expect(versionTitle("app_core", "2.0.0", "app_core")).toBeNull();
+  });
+
+  it("keeps a different version or a name that only starts like one", () => {
+    // A title naming another version is not this one repeated.
+    expect(versionTitle("2.0.1", "2.0.0", "app_core")).toBe("2.0.1");
+    expect(versionTitle("2.0.0 hotfix", "2.0.0", "app_core")).toBe("2.0.0 hotfix");
+    // Non-version names are matched exactly as written.
+    expect(versionTitle("init", "init", null)).toBeNull();
+    expect(versionTitle("Init schema", "init", null)).toBe("Init schema");
   });
 });
 

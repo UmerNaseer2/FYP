@@ -8,6 +8,7 @@
 // Moving them changed nothing about how they behave.
 // ---------------------------------------------------------------------------
 import { CheckIcon, UsersIcon, XIcon } from "@/components/ui/icons";
+import { utcStamp } from "@/lib/format-date";
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { versionKey } from "@/lib/script-status";
@@ -55,14 +56,6 @@ export async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-}
-
-/** A short, readable stamp for an approval's timeline. */
-export function approvalTime(iso: string | null): string {
-  if (!iso) return "";
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleString();
 }
 
 /**
@@ -233,6 +226,28 @@ export function ApprovalPanel({
     !bypass &&
     pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
 
+  // Under the auth bypass everyone is the same principal, so the person who
+  // asked is also the only one who can clear it — the server allows that and
+  // marks the row self_approved. "Someone else has to clear them" above an
+  // Approve button offered to the requester would contradict itself, and so
+  // would "Needs a second person" before anything has been requested.
+  const soleApprover = bypass && isAdmin;
+  const bypassSelf =
+    pending !== null &&
+    soleApprover &&
+    pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
+  const pendingWhy = bypassSelf
+    ? action === "revert"
+      ? " With the auth bypass on there is only one principal, so you clear these " +
+        "rollbacks yourself, and the row records it as a self-approval."
+      : " With the auth bypass on there is only one principal, so you clear these " +
+        "migrations yourself, and the row records it as a self-approval."
+    : action === "revert"
+      ? " Someone else has to read these rollbacks and clear them before the " +
+        "rollback can run."
+      : " Someone else has to read these migrations and clear them before the " +
+        "run can start.";
+
   const tone = approved ? "ok" : pending ? "wait" : "no";
 
   // Why the approval named under the panel does not clear this run. With a
@@ -256,11 +271,21 @@ export function ApprovalPanel({
       <div className="appr__head">
         {approved ? <CheckIcon size={15} className="ico" /> : <UsersIcon size={15} className="ico" />}
         <span>
+          {/* A self-approval is only possible under the auth bypass. Calling it
+              "a second person" would contradict the line below that says so.
+              Under the bypass nobody else exists to wait for either, so the
+              waiting and needed states do not name one. */}
           {approved
-            ? "Approved by a second person"
+            ? approved.self_approved
+              ? "Self-approved under the auth bypass"
+              : "Approved by a second person"
             : pending
-              ? "Waiting for a second person"
-              : "Needs a second person"}
+              ? bypassSelf
+                ? "Waiting for your approval"
+                : "Waiting for a second person"
+              : soleApprover
+                ? "Needs an approval"
+                : "Needs a second person"}
         </span>
       </div>
 
@@ -283,12 +308,12 @@ export function ApprovalPanel({
           <p className="appr__meta">
             Requested by {approved.requested_by} · approved by{" "}
             {approved.decided_by ?? "—"}
-            {approvalTime(approved.decided_at) ? ` · ${approvalTime(approved.decided_at)}` : ""}
+            {utcStamp(approved.decided_at) ? ` · ${utcStamp(approved.decided_at)}` : ""}
           </p>
           {approved.self_approved && (
             <p className="appr__meta">
-              Self-approved under the auth bypass — recorded on the row, because
-              with the bypass on there is only one principal to be.
+              Recorded on the row as a self-approval, because with the bypass on
+              there is only one principal to be.
             </p>
           )}
           {approved.note && <p className="appr__meta">Note: {approved.note}</p>}
@@ -297,12 +322,8 @@ export function ApprovalPanel({
         <>
           <p className="appr__body">
             Requested by {pending.requested_by}
-            {approvalTime(pending.requested_at) ? ` · ${approvalTime(pending.requested_at)}` : ""}.
-            {action === "revert"
-              ? " Someone else has to read these rollbacks and clear them before the " +
-                "rollback can run. A dry run does not need it."
-              : " Someone else has to read these migrations and clear them before the " +
-                "run can start. A dry run does not need it."}
+            {utcStamp(pending.requested_at) ? ` · ${utcStamp(pending.requested_at)}` : ""}.
+            {pendingWhy} A dry run does not need it.
           </p>
           {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
           {!isAdmin ? (
@@ -362,11 +383,19 @@ export function ApprovalPanel({
       ) : (
         <>
           <p className="appr__body">
-            {action === "revert"
-              ? "This target is labelled production, so the rollback needs an " +
-                "approval from someone other than you."
-              : "This target is labelled production, so the run needs an approval " +
-                "from someone other than you."}
+            {soleApprover
+              ? action === "revert"
+                ? "This target is labelled production, so the rollback needs an " +
+                  "approval. With the auth bypass on there is only one principal, so " +
+                  "you request it and then clear it yourself."
+                : "This target is labelled production, so the run needs an approval. " +
+                  "With the auth bypass on there is only one principal, so you " +
+                  "request it and then clear it yourself."
+              : action === "revert"
+                ? "This target is labelled production, so the rollback needs an " +
+                  "approval from someone other than you."
+                : "This target is labelled production, so the run needs an approval " +
+                  "from someone other than you."}
             {latest?.status === "rejected" ? (
               <>
                 {" "}

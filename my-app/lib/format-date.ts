@@ -23,3 +23,15 @@ export function shortUtcDate(iso: string | null): string {
     timeZone: "UTC",
   });
 }
+
+/**
+ * A moment to the minute in UTC, e.g. "2026-09-08 01:43 UTC" — the stamp
+ * Drift, the schema page and Version Sync print. "" for a missing or
+ * unparseable timestamp, as above.
+ */
+export function utcStamp(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}

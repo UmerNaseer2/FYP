@@ -77,6 +77,8 @@ const entry = (over: Partial<LedgerEntry> & { version: string }): LedgerEntry =>
   hasSql: true,
   sqlContent: "SELECT 1;",
   downSql: null,
+  title: null,
+  description: null,
   ...over,
 });
 

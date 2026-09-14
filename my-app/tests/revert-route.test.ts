@@ -18,9 +18,14 @@ import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
+// The caller. A test sets mockBypass to play the auth bypass's one principal.
+let mockBypass = false;
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: false } }),
+  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: mockBypass } }),
 }));
+afterEach(() => {
+  mockBypass = false;
+});
 
 // The metadata database: only the saved-connection lookup reaches it.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
@@ -213,10 +218,30 @@ describe("production", () => {
     const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
     expect(res.status).toBe(403);
     expect(res.body.needsApproval).toBe(true);
+    expect(res.body.error).toBe(
+      "Rolling back on production needs a second person's approval. Ask for it in the " +
+        "Approvals panel, then press Roll back again."
+    );
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
     expect(mockRelease).not.toHaveBeenCalled();
     expect(mockClient.listenersAtRelease).toBe(0);
+  });
+
+  it("asks for an approval, not a second person, under the auth bypass", async () => {
+    // With the bypass on there is one principal, and it clears its own
+    // request, so the refusal must not send it looking for someone else.
+    mockBypass = true;
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    expect(res.status).toBe(403);
+    expect(res.body.needsApproval).toBe(true);
+    expect(res.body.error).toBe(
+      "Rolling back on production needs an approval. Request it in the Approvals " +
+        "panel and approve it there yourself (the auth bypass is on), then press " +
+        "Roll back again."
+    );
+    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
   });
 
   it("claims a 'revert' approval for the ledger SQL, newest first, and keeps it spent", async () => {

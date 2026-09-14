@@ -826,18 +826,26 @@ export async function POST(request: NextRequest) {
         action: "deploy",
       });
       if (!claimed) {
+        // Under the auth bypass there is one principal, and it may clear its
+        // own request (decisionBlockReason in lib/approvals-db), so "someone
+        // other than you" would send the reader looking for nobody.
+        const approver = gate.principal.bypass ? "" : " from someone other than you";
+        // One migration or several, so the sentence reads as English either
+        // way ("these exact 1 migration" did not).
+        const one = queue.length === 1;
+        const what = one ? "this exact migration" : `these exact ${queue.length} migrations`;
+        const them = one ? "it" : "them";
+        const their = one ? "its" : "their";
         return answerBeforeRun(
           {
             error:
               // Deploy and Version Sync both run through this route, so the
               // way forward names neither screen: it is the one the reader
               // pressed Run on, which asks for approval of what it sent.
-              `This target is labelled production, so the run needs an approval ` +
-              `from someone other than you. Nothing here is approved for these ` +
-              `exact ${queue.length} migration${queue.length === 1 ? "" : "s"}, so ` +
-              `nothing ran. Request approval for these exact scripts on the screen ` +
-              `you are running them from, or request it again if the SQL has ` +
-              `changed since it was approved.`,
+              `This target is labelled production, so the run needs an approval` +
+              `${approver}. No approval covers ${what}, so nothing ran. ` +
+              `Request approval for ${them} on the screen you are running ${them} from, ` +
+              `or request a new approval if ${their} SQL has changed since the last one.`,
             environment: targetEnvironment,
             needsApproval: true,
           },

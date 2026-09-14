@@ -12,9 +12,14 @@ import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
+// The caller. A test sets mockBypass to play the auth bypass's one principal.
+let mockBypass = false;
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: false } }),
+  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: mockBypass } }),
 }));
+afterEach(() => {
+  mockBypass = false;
+});
 
 // The metadata database: only the saved-connection lookup reaches it.
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
@@ -217,6 +222,63 @@ describe("saved credentials this server can't read", () => {
     );
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
+  });
+});
+
+describe("production approval", () => {
+  // A real run on production spends an approval claimed for these exact
+  // scripts. With none to claim, the route refuses before the first write and
+  // says who can clear one. Under the auth bypass there is one principal and it
+  // clears its own request, so "someone other than you" would be untrue.
+  beforeEach(() => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  });
+
+  it("refuses a real run nothing approves, and asks for someone other than you", async () => {
+    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    expect(res.status).toBe(403);
+    expect(res.body.needsApproval).toBe(true);
+    expect(res.body.nothingRan).toBe(true);
+    expect(res.body.error).toBe(
+      "This target is labelled production, so the run needs an approval from someone other than " +
+        "you. No approval covers this exact migration, so nothing ran. Request approval for it on " +
+        "the screen you are running it from, or request a new approval if its SQL has changed " +
+        "since the last one."
+    );
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+  });
+
+  it("asks for an approval, not a second person, under the auth bypass", async () => {
+    mockBypass = true;
+    const res = await apply({
+      ...BASE,
+      acknowledgeProduction: true,
+      scripts: [job("1.0.0", "CREATE TABLE a (id int);"), job("1.1.0", "CREATE TABLE b (id int);")],
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.needsApproval).toBe(true);
+    expect(res.body.error).toBe(
+      "This target is labelled production, so the run needs an approval. No approval covers " +
+        "these exact 2 migrations, so nothing ran. Request approval for them on the screen you " +
+        "are running them from, or request a new approval if their SQL has changed since the last one."
+    );
+    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+  });
+
+  it("runs once an approval is claimed, and needs none for a dry run", async () => {
+    mockClaim.mockResolvedValue({ id: 9 });
+    const real = await apply({ ...SAFE, acknowledgeProduction: true });
+    expect(real.status).toBe(200);
+    expect(count(mockClient, "COMMIT")).toBe(1);
+
+    mockClaim.mockReset();
+    mockClaim.mockResolvedValue(null);
+    mockClient = createFakeClient(target());
+    const rehearsal = await apply({ ...SAFE, acknowledgeProduction: true, dryRun: true });
+    expect(rehearsal.status).toBe(200);
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(count(mockClient, "COMMIT")).toBe(0);
   });
 });
 

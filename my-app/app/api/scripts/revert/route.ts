@@ -634,9 +634,15 @@ export async function POST(request: NextRequest) {
       if (!claimed) {
         return await refuse(403, {
           needsApproval: true,
-          error:
-            "Rolling back on production needs a second person's approval. Ask for it in the " +
-            "Approvals panel, then press Roll back again.",
+          // Under the auth bypass there is one principal, and it may clear its
+          // own request (decisionBlockReason in lib/approvals-db), so there is
+          // no second person to ask.
+          error: gate.principal.bypass
+            ? "Rolling back on production needs an approval. Request it in the Approvals " +
+              "panel and approve it there yourself (the auth bypass is on), then press " +
+              "Roll back again."
+            : "Rolling back on production needs a second person's approval. Ask for it in the " +
+              "Approvals panel, then press Roll back again.",
         });
       }
       claimedApprovalId = claimed.id;

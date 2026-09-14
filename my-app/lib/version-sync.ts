@@ -22,6 +22,12 @@ import { readApplyFailure, type ApplyFailure } from "./apply-failure";
 export type LedgerEntry = {
   scriptName: string;
   version: string;
+  /**
+   * The row's level as its pill shows it: "breaking", "additive", "patch" or
+   * "unknown". The ledger route reads change_type with normalizeChangeLevel,
+   * so an old ledger's "major" arrives as "breaking" and a replay sends a word
+   * the apply route counts, instead of one it ignores.
+   */
   changeType: string;
   /** ISO timestamp. The replay order follows this. */
   appliedAt: string;
@@ -36,6 +42,13 @@ export type LedgerEntry = {
    * migrations.
    */
   downSql: string | null;
+  /**
+   * The row's title and description, or null when it has none. A replay
+   * writes them on the Target's row too, so the version reads the same on
+   * both sides instead of taking its own number as its title.
+   */
+  title: string | null;
+  description: string | null;
 };
 
 export type LedgerDiff = {

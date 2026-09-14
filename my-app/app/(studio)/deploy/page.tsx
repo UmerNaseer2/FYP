@@ -64,6 +64,7 @@ import {
   mergeTimelines,
   outdatedSideOfEntries,
   timelineKey,
+  versionTitle,
   type TimelineEntry,
   type TimelineRow,
   type TimelineStatus,
@@ -991,8 +992,11 @@ export default function DeployPage() {
     : preflightResult !== null
       ? "read"
       : "failed";
+  // A server message can end without a full stop ('... does not exist'), and
+  // the next sentence follows it, so one is added when it is missing.
+  const rereadReason = (preflightError ?? "the pre-flight check failed").trim();
   const ledgerRereadFailed =
-    `The ledger could not be read again: ${preflightError ?? "the pre-flight check failed."} ` +
+    `The ledger could not be read again: ${rereadReason}${/[.!?]$/.test(rereadReason) ? "" : "."} ` +
     "Press Check database on Pre-flight to read it.";
 
   const timerRef = useRef<number | null>(null);
@@ -1319,7 +1323,9 @@ export default function DeployPage() {
         : rollbackOthers.length > 0 && !rollbackOtherAck
           ? "Tick the box about the other scripts to roll back — a dry run does not need it"
           : targetIsProduction && !approvedRollback
-            ? "Rolling back needs a second person's approval — a dry run does not"
+            ? // The panel above says who clears it: a second person, or you
+              // yourself under the auth bypass.
+              "Rolling back on production needs an approval — a dry run does not"
             : "The rollback runs in one transaction — every version above or none";
   // The last refusal is shown only with the plan it refused; a sticky one
   // (see rollbackError) is shown whatever the plan.
@@ -1356,9 +1362,10 @@ export default function DeployPage() {
       appliedAt: row.applied_at,
       changeType: normalizeChangeLevel(row.change_type),
       sqlContent: row.sql_content ?? null,
-      // Deploy stores the family's name as the title, which says nothing
-      // beside the family's own heading. Any other title is shown.
-      label: row.title && row.title !== scriptGroup ? row.title : null,
+      // A title that is only the script group's name or the version itself
+      // says nothing beside the group heading and the version, so it is not
+      // shown. Any other title is.
+      label: versionTitle(row.title, row.version, scriptGroup),
     }));
     const reverted = preflightResult?.reverted ?? [];
     const rows = mergeTimelines(left, right).map((row) => {
@@ -2071,7 +2078,12 @@ export default function DeployPage() {
         return;
       }
       setApprovalNote("");
-      showToast("Approval requested — someone else has to clear it");
+      // Under the auth bypass the one principal clears its own request.
+      showToast(
+        bypass && isAdmin
+          ? "Approval requested — with the auth bypass on, you clear it yourself"
+          : "Approval requested — someone else has to clear it"
+      );
     } catch {
       setApprovalError("Network error requesting the approval.");
     } finally {
@@ -2117,7 +2129,12 @@ export default function DeployPage() {
         return;
       }
       setRollbackApprovalNote("");
-      showToast("Approval requested — someone else has to clear it");
+      // Under the auth bypass the one principal clears its own request.
+      showToast(
+        bypass && isAdmin
+          ? "Approval requested — with the auth bypass on, you clear it yourself"
+          : "Approval requested — someone else has to clear it"
+      );
     } catch {
       setRollbackApprovalError("Network error requesting the approval.");
     } finally {
@@ -3561,7 +3578,7 @@ export default function DeployPage() {
                           : unacknowledgedGates
                             ? "Tick every box above to enable this"
                             : targetIsProduction && !approvedRun
-                              ? "Deploy needs a second person's approval — a dry run does not"
+                              ? "Deploy on production needs an approval — a dry run does not"
                               : enumAdditions.length > 0
                               ? "All migrations run in one transaction — all of them or " +
                                 "none, apart from the enum values noted above"
@@ -3653,10 +3670,15 @@ export default function DeployPage() {
                             <ChecklistItem info>Approval · could not be read</ChecklistItem>
                           ) : (
                             <ChecklistItem ok={Boolean(approvedRun)}>
+                              {/* Under the auth bypass the one principal clears its
+                                  own request, and the row says so (self_approved). */}
                               {approvedRun
-                                ? `Approved by ${approvedRun.decided_by ?? "a second person"}`
+                                ? `Approved by ${approvedRun.decided_by ?? "a second person"}` +
+                                  (approvedRun.self_approved ? " · self-approved under the auth bypass" : "")
                                 : pendingRun
-                                  ? "Approval requested · waiting for a second person"
+                                  ? bypass && isAdmin
+                                    ? "Approval requested · waiting for you to clear it"
+                                    : "Approval requested · waiting for a second person"
                                   : "Approval · not requested yet"}
                             </ChecklistItem>
                           ))}
@@ -3900,8 +3922,10 @@ export default function DeployPage() {
                 </div>
                 {targetIsProduction && !approvedRun && (
                   <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
-                    A clean rehearsal is not an approval. Go back to Pre-flight to ask
-                    someone else to clear the real run.
+                    {/* Names no approver: under the auth bypass you clear it
+                        yourself, and the Pre-flight panel says which it is. */}
+                    A clean rehearsal is not an approval. Go back to Pre-flight to
+                    request approval for the real run.
                   </div>
                 )}
                 {/* Deploy for real deploys the selection, not the batch above,
@@ -3968,12 +3992,15 @@ export default function DeployPage() {
                     ? "This page never saw the run finish, so it cannot say what the " +
                       "target has now. Press Check database on Pre-flight and read the " +
                       "ledger before you run this again."
-                    : runRefused
-                    ? "The server refused this run, so none of the migrations above " +
-                      "are applied. Its reason is in the card above."
-                    : runNotStarted
-                    ? "The server stopped before the run started, so nothing was " +
-                      "written to the target. Its reason is in the card above."
+                    : runRefused || runNotStarted
+                    ? (runRefused
+                        ? "The server refused this run, so none of the migrations above " +
+                          "are applied. Its reason is in the card above."
+                        : "The server stopped before the run started, so nothing was " +
+                          "written to the target. Its reason is in the card above.") +
+                      // Nothing ran, so the re-read is only news when it failed:
+                      // then Pre-flight has nothing pending, and this says why.
+                      (ledgerReread === "failed" ? ` ${ledgerRereadFailed}` : "")
                     : (runIsDryRun
                         ? "The dry run rolled back, so nothing was written to the target."
                         : "The run rolled back, so none of the migrations above are " +
@@ -3990,7 +4017,10 @@ export default function DeployPage() {
                     waits while the two differ. That also keeps a run whose
                     commit may have landed from going out twice: the re-read
                     ledger moves what is pending, and with it the selection. */}
-                {repeatChange !== null && (
+                {/* After a failed re-read nothing is pending because the ledger
+                    could not be read, and the line above already says to press
+                    Check database. "Nothing is selected" would hide that. */}
+                {repeatChange !== null && !(repeatChange === "nothing" && ledgerReread === "failed") && (
                   <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
                     {repeatChange === "range"
                       ? `Pre-flight now selects ${nowName}, and this ${runIsDryRun ? "rehearsal" : "run"} was ${ranName}, so it cannot be repeated from here. Go back to Pre-flight to start the one you want.`
@@ -4012,8 +4042,10 @@ export default function DeployPage() {
                   targetIsProduction &&
                   !approvedRun && (
                     <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
-                      Deploy needs a second person&apos;s approval. Go back to Pre-flight to
-                      ask for one.
+                      {/* Names no approver: under the auth bypass you clear it
+                          yourself, and the Pre-flight panel says which it is. */}
+                      Deploy on production needs an approval. Go back to Pre-flight to
+                      request one.
                     </div>
                   )}
               </div>

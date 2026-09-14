@@ -34,6 +34,7 @@ import {
   ledgerTimelineEntries,
   mergeTimelines,
   outdatedSideOfEntries,
+  versionTitle,
 } from "@/lib/version-timeline";
 import { analyseRunRisk, readScriptLevel, scriptLabel } from "@/lib/deploy-risk";
 import { changeLevelWord, normalizeChangeLevel } from "@/lib/change-level";
@@ -312,6 +313,10 @@ async function sendReplay({
           // Target too, not just on the Source it came from.
           down_sql: e.downSql ?? undefined,
           change_type: e.changeType,
+          // The Source's own words for the version. Without them the apply
+          // route titles the Target's row with the bare version number.
+          title: e.title ?? undefined,
+          description: e.description ?? undefined,
           source_ref: `version-sync: replayed from ${sourceSchema}`,
         })),
       }),
@@ -950,50 +955,56 @@ function Result({
           )}
 
           <div className="space-y-3">
-            {missing.map((e, i) => (
-              <div key={entryKey(e)} className="card p-4">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <ChangeLevelPill level={normalizeChangeLevel(e.changeType)} />
-                    <span className="mono text-[14px] font-semibold">{displayVersion(e.version, true)}</span>
-                    <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                      {e.scriptName} · applied to Source {fmtDate(e.appliedAt)}
-                    </span>
+            {missing.map((e, i) => {
+              // The Source's own title for this version, or null when it
+              // would only repeat the version number or the script group.
+              const title = versionTitle(e.title, e.version, e.scriptName);
+              return (
+                <div key={entryKey(e)} className="card p-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <ChangeLevelPill level={normalizeChangeLevel(e.changeType)} />
+                      <span className="mono text-[14px] font-semibold">{displayVersion(e.version, true)}</span>
+                      {title !== null && <span className="text-[13px] font-medium">{title}</span>}
+                      <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                        {e.scriptName} · applied to Source {fmtDate(e.appliedAt)}
+                      </span>
+                    </div>
+                    {i < reachable ? (
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={apply.applying}
+                        title={
+                          i === 0
+                            ? `Replay ${runLabel(e)} onto the Target`
+                            : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
+                              `through ${runLabel(e)}, onto the Target in one transaction`
+                        }
+                        onClick={() => apply.onRun(missing.slice(0, i + 1))}
+                      >
+                        {/* Named the way Deploy names its Run buttons: the one
+                            version, or the first and last with how many. */}
+                        {i === 0
+                          ? `Run ${runLabel(e)}…`
+                          : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
+                      </button>
+                    ) : i === reachable ? (
+                      <span className="vsync-stopnote">Runs stop before this version</span>
+                    ) : (
+                      <span className="vsync-stopnote">Can&apos;t be reached yet: runs stop before {stopLabel}</span>
+                    )}
                   </div>
-                  {i < reachable ? (
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      disabled={apply.applying}
-                      title={
-                        i === 0
-                          ? `Replay ${runLabel(e)} onto the Target`
-                          : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
-                            `through ${runLabel(e)}, onto the Target in one transaction`
-                      }
-                      onClick={() => apply.onRun(missing.slice(0, i + 1))}
-                    >
-                      {/* Named the way Deploy names its Run buttons: the one
-                          version, or the first and last with how many. */}
-                      {i === 0
-                        ? `Run ${runLabel(e)}…`
-                        : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
-                    </button>
-                  ) : i === reachable ? (
-                    <span className="vsync-stopnote">Runs stop before this version</span>
+                  {e.hasSql ? (
+                    <pre className="vsync-sql mono mt-3">{e.sqlContent}</pre>
                   ) : (
-                    <span className="vsync-stopnote">Can&apos;t be reached yet: runs stop before {stopLabel}</span>
+                    <div className="vsync-nosql mt-3">
+                      <InfoIcon size={14} />
+                      No stored script — this version was applied before SQL was tracked, so it can&apos;t be replayed.
+                    </div>
                   )}
                 </div>
-                {e.hasSql ? (
-                  <pre className="vsync-sql mono mt-3">{e.sqlContent}</pre>
-                ) : (
-                  <div className="vsync-nosql mt-3">
-                    <InfoIcon size={14} />
-                    No stored script — this version was applied before SQL was tracked, so it can&apos;t be replayed.
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -1129,7 +1140,11 @@ function ReplayBody({
   const count = entries.length;
   const first = entries[0];
   const last = entries[count - 1];
-  const runName = count === 1 ? scriptLabel(first.scriptName, first.version) : countOf(count, "version");
+  // The script groups this run replays. A run across groups goes through no
+  // one version (app_core can reach 3.1.0 while reports reaches 1.0.0), so the
+  // approval panel names a target version only when there is a single group.
+  const families = [...new Set(entries.map((e) => e.scriptName.trim()))];
+  const runName = count === 1 ?scriptLabel(first.scriptName, first.version) : countOf(count, "version");
 
   // ── The Target's tracking record ──────────────────────────────────────────
   // The apply route reads two things from it before it runs anything: whether
@@ -1306,7 +1321,6 @@ function ReplayBody({
     // script_name), and this dialog finds its approvals by fingerprint too. A
     // run across script groups is labelled "version-sync", not a list of every
     // group's name joined into one, which read as one long script name.
-    const families = [...new Set(entries.map((e) => e.scriptName.trim()))];
     try {
       const res = await fetch("/api/deploy/approvals", {
         method: "POST",
@@ -1332,7 +1346,13 @@ function ReplayBody({
         return;
       }
       setApprovalNote("");
-      setApprovalNotice("Approval requested — someone else has to clear it.");
+      // Under the auth bypass the one principal clears its own request, with
+      // the Approve button the panel shows right under this line.
+      setApprovalNotice(
+        bypass && isAdmin
+          ? "Approval requested — with the auth bypass on, you clear it yourself below."
+          : "Approval requested — someone else has to clear it."
+      );
       reloadApprovals();
     } catch {
       setApprovalError("Network error requesting the approval.");
@@ -1456,14 +1476,28 @@ function ReplayBody({
       <div className="vsync-dialog__body">
         <div className="section-title mb-2">What runs, in order</div>
         <div className="vsync-runlist">
-          {entries.map((e, i) => (
-            <details key={entryKey(e)} open={listed(e, risk.breaking) || listed(e, risk.dataLoss)}>
-              <summary>
-                {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> — {changeLevelWord(e.changeType)}
-              </summary>
-              <pre className="vsync-sql mono mt-2">{e.sqlContent}</pre>
-            </details>
-          ))}
+          {entries.map((e, i) => {
+            // The level the Target records: the Source's, raised to what the
+            // SQL itself reads as when that is louder (the apply route's rule,
+            // readScriptLevel). The Source may have recorded less, so the line
+            // says so rather than listing "patch" for a row that lands as
+            // "additive".
+            const recorded = readScriptLevel({ sqlContent: e.sqlContent ?? "", changeType: e.changeType }).stored;
+            const sourceLevel = normalizeChangeLevel(e.changeType);
+            return (
+              <details key={entryKey(e)} open={listed(e, risk.breaking) || listed(e, risk.dataLoss)}>
+                <summary>
+                  {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> — {recorded}
+                  {sourceLevel === "unknown"
+                    ? " (the Source recorded no level, so the Target records what its SQL reads as)"
+                    : sourceLevel !== recorded
+                      ? ` (the Source recorded ${sourceLevel}, but its SQL reads as ${recorded}, so the Target records ${recorded})`
+                      : null}
+                </summary>
+                <pre className="vsync-sql mono mt-2">{e.sqlContent}</pre>
+              </details>
+            );
+          })}
         </div>
 
         <div className="space-y-3 mt-4">
@@ -1611,7 +1645,7 @@ function ReplayBody({
           {production && (
             <ApprovalPanel
               migrationCount={count}
-              targetVersion={last.version.trim()}
+              targetVersion={families.length === 1 ? last.version.trim() : ""}
               hashReady={runHash !== null}
               hashError={hashError}
               loading={approvalsLoading}

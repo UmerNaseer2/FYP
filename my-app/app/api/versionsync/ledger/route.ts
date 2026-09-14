@@ -3,6 +3,7 @@ import { requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { normalizeChangeLevel } from "@/lib/change-level";
 import type { LedgerEntry } from "@/lib/version-sync";
 
 // GET /api/versionsync/ledger?connectionId=<id>&schema=<name>
@@ -138,12 +139,17 @@ export async function GET(request: NextRequest) {
     const colCheck = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = 'script_patch'
-          AND column_name IN ('sql_content', 'down_sql', 'id')`,
+          AND column_name IN ('sql_content', 'down_sql', 'title', 'description', 'id')`,
       [schema]
     );
     const present = new Set(colCheck.rows.map((r) => r.column_name));
     const sqlExpr = present.has("sql_content") ? "sql_content" : "NULL::text AS sql_content";
     const downExpr = present.has("down_sql") ? "down_sql" : "NULL::text AS down_sql";
+    // The title and description travel with a replay, so the Target's row
+    // reads "Drop legacy code" as the Source's does, not the version again.
+    // A script_patch made by another tool may have neither column.
+    const titleExpr = present.has("title") ? "title" : "NULL::text AS title";
+    const descriptionExpr = present.has("description") ? "description" : "NULL::text AS description";
 
     // The order the rows were written, which is the order they ran. One deploy
     // writes all its rows in one transaction, so they share one applied_at;
@@ -161,11 +167,16 @@ export async function GET(request: NextRequest) {
       applied_at: Date | string;
       sql_content: string | null;
       down_sql: string | null;
+      title: string | null;
+      description: string | null;
     }>(
-      `SELECT script_name, version, change_type, applied_at, ${sqlExpr}, ${downExpr}
+      `SELECT script_name, version, change_type, applied_at, ${sqlExpr}, ${downExpr}, ${titleExpr}, ${descriptionExpr}
        FROM ${q}.script_patch
        ORDER BY ${order}`
     );
+    // Blank reads as none, the same as the apply route writes it.
+    const textOrNull = (value: string | null) =>
+      typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 
     const entries: LedgerEntry[] = res.rows.map((r) => {
       // Blank SQL counts as none: the apply route refuses a script whose SQL is
@@ -176,12 +187,18 @@ export async function GET(request: NextRequest) {
       return {
         scriptName: r.script_name,
         version: r.version,
-        changeType: r.change_type,
+        // The level its pill shows. A ledger from another tool can say "major"
+        // or "Minor"; the apply route only counts the app's own words, so a
+        // replay sending "major" would be recorded at whatever the SQL reads
+        // as, quieter than the pill beside it said.
+        changeType: normalizeChangeLevel(r.change_type),
         appliedAt: r.applied_at instanceof Date ? r.applied_at.toISOString() : String(r.applied_at),
         hasSql: sql !== null,
         sqlContent: sql,
         downSql:
           typeof r.down_sql === "string" && r.down_sql.length > 0 ? r.down_sql : null,
+        title: textOrNull(r.title),
+        description: textOrNull(r.description),
       };
     });
 
