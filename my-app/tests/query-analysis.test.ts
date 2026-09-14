@@ -141,6 +141,7 @@ function contextTable(over: Partial<SqlContextTable> = {}): SqlContextTable {
     rows: 0,
     filter: null,
     readsAll: false,
+    feedsPlainAggregate: false,
     selectiveScan: false,
     indexCond: null,
     columnTypes: {},
@@ -2220,6 +2221,8 @@ describe("sqlContextFromPlan", () => {
           rows: 1000000,
           filter: null,
           readsAll: true,
+          // Its rows go into a join, not a count.
+          feedsPlainAggregate: false,
           selectiveScan: false,
           indexCond: null,
           columnTypes: { id: "integer", status: "text" },
@@ -2231,6 +2234,7 @@ describe("sqlContextFromPlan", () => {
           rows: 50000,
           filter: "(c.country = 'NZ'::text)",
           readsAll: false,
+          feedsPlainAggregate: false,
           // 50,000 rows read to keep ten.
           selectiveScan: true,
           indexCond: null,
@@ -3053,7 +3057,9 @@ describe("readSql — COUNT(*) over a whole table", () => {
     return sqlContext({
       topNodeType: "Aggregate",
       expectedRows: 1,
-      tables: [contextTable({ readsAll: true, rows: 1200000, ...table })],
+      tables: [
+        contextTable({ readsAll: true, feedsPlainAggregate: true, rows: 1200000, ...table }),
+      ],
     });
   }
 
@@ -3073,6 +3079,15 @@ describe("readSql — COUNT(*) over a whole table", () => {
     // The name may be a view with a WHERE of its own: the plan shows the
     // filter that the text cannot.
     expect(ids(readSql(sql, countOf({ readsAll: false })))).not.toContain("unfiltered-count");
+  });
+
+  it("leaves a count alone when its rows pass through something that caps or groups them", () => {
+    // The subquery reads orders with no filter, but the count is of ten rows:
+    // the plan says the scan's rows do not go straight into the count.
+    const text = "SELECT count(*) FROM (SELECT * FROM orders LIMIT 10) s";
+    expect(ids(readSql(text, countOf({ feedsPlainAggregate: false })))).not.toContain(
+      "unfiltered-count"
+    );
   });
 
   it("doubles a single quote in the schema name inside the string literal", () => {
@@ -3103,6 +3118,208 @@ describe("readSql — COUNT(*) over a whole table", () => {
     const fromPlan = readPlan(envelope(plan))?.findings ?? [];
     const merged = sortFindings([...fromPlan, ...readSql(sql, contextOf(plan))]);
     expect(ids(merged)).toEqual(["unfiltered-count"]);
+  });
+
+  // The plans below have the shapes PostgreSQL 17 gives these queries.
+
+  /** public.orders read whole, as the step under a count. */
+  function ordersScan(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      "Node Type": "Seq Scan",
+      "Parent Relationship": "Outer",
+      "Relation Name": "orders",
+      Schema: "public",
+      Alias: "orders",
+      "Plan Rows": 1200000,
+      "Total Cost": 18000,
+      ...over,
+    };
+  }
+
+  /** One step of a plan, over the steps under it. */
+  function planStep(
+    nodeType: string,
+    over: Record<string, unknown>,
+    ...inputs: Record<string, unknown>[]
+  ): Record<string, unknown> {
+    return {
+      "Node Type": nodeType,
+      "Parent Relationship": "Outer",
+      "Plan Rows": 1,
+      "Total Cost": 20000,
+      ...over,
+      Plans: inputs,
+    };
+  }
+
+  /** A total with no GROUP BY, the way PostgreSQL plans count(*). */
+  const plain = { Strategy: "Plain", "Partial Mode": "Simple" };
+
+  /** Each helper's share of orders in a parallel plan: 1.2 million in all. */
+  const ordersShare = () => ordersScan({ "Parallel Aware": true, "Plan Rows": 500000 });
+
+  /** What readSql says about the text, given the context the plan makes. */
+  function saysOf(text: string, plan: Record<string, unknown>): string[] {
+    return ids(readSql(text, contextOf(plan)));
+  }
+
+  it("follows a parallel count up to the step that finishes the total", () => {
+    // Each helper adds up its own share (a Partial aggregate) and the step
+    // above the Gather adds the shares together.
+    const plan = planStep(
+      "Aggregate",
+      { ...plain, "Partial Mode": "Finalize" },
+      planStep(
+        "Gather",
+        { "Workers Planned": 2, "Plan Rows": 2 },
+        planStep("Aggregate", { ...plain, "Partial Mode": "Partial" }, ordersShare())
+      )
+    );
+    const finding = findingOf(readSql(sql, contextOf(plan)), "unfiltered-count");
+    expect(finding?.detail).toContain("orders holds about 1.2 million rows");
+  });
+
+  it.each([
+    {
+      label: "through a sort",
+      text: "SELECT count(*) FROM (SELECT * FROM orders ORDER BY amount) s",
+      plan: planStep("Aggregate", plain, planStep("Sort", { "Plan Rows": 1200000 }, ordersScan())),
+    },
+    {
+      label: "inside a subquery of its own",
+      text: "SELECT (SELECT count(*) FROM orders) AS n",
+      plan: planStep(
+        "Result",
+        {},
+        planStep(
+          "Aggregate",
+          { ...plain, "Parent Relationship": "InitPlan", "Subplan Name": "InitPlan 1" },
+          ordersScan()
+        )
+      ),
+    },
+  ])("still sees a count of the whole table $label", ({ text, plan }) => {
+    expect(saysOf(text, plan)).toContain("unfiltered-count");
+  });
+
+  const grouped = planStep(
+    "Aggregate",
+    plain,
+    planStep(
+      "Aggregate",
+      { Strategy: "Hashed", "Group Key": ["orders.customer_id"], "Plan Rows": 5000 },
+      ordersScan()
+    )
+  );
+
+  it.each([
+    {
+      label: "a LIMIT",
+      text: "SELECT count(*) FROM (SELECT * FROM orders LIMIT 10) s",
+      plan: planStep("Aggregate", plain, planStep("Limit", { "Plan Rows": 10 }, ordersScan())),
+    },
+    {
+      label: "an OFFSET",
+      text: "SELECT count(*) FROM (SELECT * FROM orders OFFSET 5) s",
+      plan: planStep("Aggregate", plain, planStep("Limit", { "Plan Rows": 1199995 }, ordersScan())),
+    },
+    {
+      label: "a GROUP BY",
+      text: "SELECT count(*) FROM (SELECT customer_id FROM orders GROUP BY customer_id) s",
+      plan: grouped,
+    },
+    {
+      label: "a DISTINCT",
+      text: "SELECT count(*) FROM (SELECT DISTINCT customer_id FROM orders) s",
+      plan: grouped,
+    },
+    {
+      // Grouping sets name no single Group Key: only the strategy says the
+      // rows are grouped.
+      label: "a ROLLUP",
+      text: "SELECT count(*) FROM (SELECT customer_id FROM orders GROUP BY ROLLUP (customer_id)) s",
+      plan: planStep(
+        "Aggregate",
+        plain,
+        planStep(
+          "Aggregate",
+          {
+            Strategy: "Mixed",
+            "Grouping Sets": [{ "Hash Keys": [["orders.customer_id"]] }, { "Group Keys": [[]] }],
+            "Plan Rows": 5001,
+          },
+          ordersScan()
+        )
+      ),
+    },
+    {
+      label: "a join to a function's rows",
+      text: "SELECT count(*) FROM orders, generate_series(1, 3)",
+      plan: planStep(
+        "Aggregate",
+        plain,
+        planStep(
+          "Nested Loop",
+          { "Join Type": "Inner", "Plan Rows": 3600000 },
+          ordersScan(),
+          {
+            "Node Type": "Function Scan",
+            "Parent Relationship": "Inner",
+            "Function Name": "generate_series",
+            Alias: "generate_series",
+            "Plan Rows": 3,
+            "Total Cost": 0.03,
+          }
+        )
+      ),
+    },
+    {
+      label: "a WITH query's LIMIT",
+      text: "WITH x AS MATERIALIZED (SELECT * FROM orders LIMIT 10) SELECT count(*) FROM x",
+      plan: planStep(
+        "Aggregate",
+        plain,
+        planStep(
+          "Limit",
+          { "Parent Relationship": "InitPlan", "Subplan Name": "CTE x", "Plan Rows": 10 },
+          ordersScan()
+        ),
+        {
+          "Node Type": "CTE Scan",
+          "Parent Relationship": "Outer",
+          "CTE Name": "x",
+          Alias: "x",
+          "Plan Rows": 10,
+          "Total Cost": 0.2,
+        }
+      ),
+    },
+  ])("leaves a count alone when $label stands between it and the table", ({ text, plan }) => {
+    expect(saysOf(text, plan)).not.toContain("unfiltered-count");
+  });
+
+  it("leaves a count alone that a HAVING then tests", () => {
+    // The HAVING is the Filter of the step that finishes the total, above
+    // the helpers' partial counts.
+    const plan = planStep(
+      "Aggregate",
+      { ...plain, "Partial Mode": "Finalize", Filter: "(count(*) > 0)" },
+      planStep(
+        "Gather",
+        { "Workers Planned": 2, "Plan Rows": 2 },
+        planStep("Aggregate", { ...plain, "Partial Mode": "Partial" }, ordersShare())
+      )
+    );
+    expect(saysOf("SELECT max(amount) FROM orders HAVING count(*) > 0", plan)).not.toContain(
+      "unfiltered-count"
+    );
+  });
+
+  it("leaves count(*) OVER () to the missing-WHERE finding: every row comes back", () => {
+    const plan = planStep("WindowAgg", { "Plan Rows": 1200000 }, ordersScan());
+    const said = saysOf("SELECT count(*) OVER () FROM orders", plan);
+    expect(said).not.toContain("unfiltered-count");
+    expect(said).toContain("missing-where");
   });
 });
 

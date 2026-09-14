@@ -772,6 +772,12 @@ export type PlanStep = {
    */
   partialMode: string | null;
   /**
+   * How an Aggregate adds rows up: "Plain" for one total over all of them,
+   * "Sorted" or "Hashed" for one per group (GROUP BY, DISTINCT), "Mixed" for
+   * grouping sets such as ROLLUP. A SetOp gives one too. Null for other steps.
+   */
+  strategy: string | null;
+  /**
    * For a Gather: the helper processes launched (measured) or planned
    * (estimate). Null for every other step.
    */
@@ -1060,6 +1066,7 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
       subplanName: str(node, "Subplan Name"),
       cteName: str(node, "CTE Name"),
       partialMode: str(node, "Partial Mode"),
+      strategy: str(node, "Strategy"),
       // Launched is what really happened; Planned is all an estimate has.
       workers: numOrNull(node, "Workers Launched") ?? numOrNull(node, "Workers Planned"),
       // Needs the parent's expressions, so estimateRuns sets it.
@@ -4002,6 +4009,13 @@ export type SqlContextTable = {
    */
   readsAll: boolean;
   /**
+   * True when every row this step hands on goes straight into one total with
+   * no GROUP BY and no HAVING, as in `SELECT count(*) FROM orders`. False
+   * when something between the two caps, groups, joins or filters the rows:
+   * a count over `(SELECT * FROM orders LIMIT 10)` is of ten rows.
+   */
+  feedsPlainAggregate: boolean;
+  /**
    * True when the plan reads this table in full to keep a small share of it,
    * judged as the seq-scan rule judges it: where an index on what the Filter
    * compares would pay.
@@ -4085,6 +4099,59 @@ const REPEATING_STEPS: ReadonlySet<string> = new Set([
 function mainInput(steps: PlanStep[], step: PlanStep): PlanStep | undefined {
   const children = childrenOfStep(steps, step);
   return children.find((c) => c.parentRelationship === "Outer") ?? children[0];
+}
+
+/**
+ * Steps that hand on every row they get, once each: a Gather collects the
+ * parallel helpers' rows, a Sort or a Materialize reorders or keeps them, and
+ * a Subquery Scan or a Result passes them up. Only with no filter of their
+ * own, which feedsPlainAggregate checks.
+ */
+const ROW_KEEPING_STEPS: ReadonlySet<string> = new Set([
+  "Gather",
+  "Gather Merge",
+  "Sort",
+  "Incremental Sort",
+  "Materialize",
+  "Subquery Scan",
+  "Result",
+]);
+
+/**
+ * True when every row this step hands on reaches one total over all of them:
+ * an Aggregate with no GROUP BY and no HAVING, with only row-keeping steps
+ * between the two.
+ *
+ * `SELECT count(*) FROM (SELECT * FROM orders LIMIT 10) s` reads orders with
+ * no filter, but a Limit sits between the scan and the count, so the count is
+ * ten, not the table's size. A GROUP BY, a DISTINCT or a join in between
+ * changes what is counted the same way. In a parallel plan each helper adds
+ * up its own share first (a "Partial" aggregate) and the step above the
+ * Gather finishes the total, so the walk goes on up to that one.
+ */
+function feedsPlainAggregate(steps: PlanStep[], step: PlanStep): boolean {
+  let current = step;
+  while (current.parentId !== null) {
+    // A subquery's rows go to the step that asked for them, not up the tree:
+    // a WITH query's LIMIT, say, above a scan that a CTE Scan then reads.
+    if (current.parentRelationship === "InitPlan" || current.parentRelationship === "SubPlan") {
+      return false;
+    }
+    const parent = steps[current.parentId];
+    if (parent.nodeType === "Aggregate") {
+      // A HAVING is the Filter of the step that finishes the total.
+      if (parent.strategy !== "Plain" || parent.filter !== null) return false;
+      if (parent.partialMode !== "Partial") return true;
+    } else if (
+      !ROW_KEEPING_STEPS.has(parent.nodeType) ||
+      parent.filter !== null ||
+      detailValue(parent, "One-Time Filter") !== null
+    ) {
+      return false;
+    }
+    current = parent;
+  }
+  return false;
 }
 
 /**
@@ -4198,6 +4265,7 @@ export function sqlContextFromPlan(
       filter: step.filter,
       // joinCond holds an index scan's Index Cond, which narrows it too.
       readsAll: WHOLE_TABLE_SCANS.has(step.nodeType) && step.filter === null && step.joinCond === null,
+      feedsPlainAggregate: feedsPlainAggregate(steps, step),
       selectiveScan: readsManyKeepsFew(step, tableRows),
       // A bitmap heap scan keeps its index's condition as the Recheck Cond.
       indexCond: step.joinCond ?? detailValue(step, "Recheck Cond"),
@@ -5290,11 +5358,18 @@ export function readSql(sql: string, context?: SqlContext): QueryFinding[] {
   // row count, so it reads the whole table. Only with the plan to say how
   // big the table is, and only for one table: across a join the count is of
   // joined rows, which no statistic holds. And only when the plan reads all
-  // of it: a view with its own WHERE counts fewer rows than the table's
-  // statistic holds.
+  // of it straight into the count: a view with its own WHERE counts fewer
+  // rows than the table's statistic holds, and so does a count over
+  // `(SELECT * FROM orders LIMIT 10)` or over a GROUP BY's groups.
   const counted = context !== undefined && context.tables.length === 1 ? context.tables[0] : null;
   const countsAll = inCode(mask, /\bCOUNT\s*\(\s*\*\s*\)/i) && !hasWhere && !groupedAtTop;
-  if (counted !== null && counted.readsAll && counted.rows >= LARGE_TABLE_ROWS && countsAll) {
+  if (
+    counted !== null &&
+    counted.readsAll &&
+    counted.feedsPlainAggregate &&
+    counted.rows >= LARGE_TABLE_ROWS &&
+    countsAll
+  ) {
     // Single quotes doubled: the name sits inside a string literal.
     const literal =
       counted.schema === null ? null : qualifiedName(counted.schema, counted.name).replace(/'/g, "''");
