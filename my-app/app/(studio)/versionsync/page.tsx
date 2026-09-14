@@ -17,13 +17,17 @@ import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
+import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { useUser } from "@/hooks/useUser";
 import {
   cutForwardOnly,
   diffLedgers,
   entryKey,
   headsByFamily,
+  readReplayAnswer,
   type LedgerEntry,
+  type ReplayAnswer,
+  type ReplayOutcome,
 } from "@/lib/version-sync";
 import {
   displayVersion,
@@ -31,7 +35,8 @@ import {
   mergeTimelines,
   outdatedSideOfEntries,
 } from "@/lib/version-timeline";
-import { analyseRunRisk, listLabels, readScriptLevel, scriptLabel } from "@/lib/deploy-risk";
+import { analyseRunRisk, readScriptLevel, scriptLabel } from "@/lib/deploy-risk";
+import { changeLevelWord, normalizeChangeLevel } from "@/lib/change-level";
 import { ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-guard";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import { countOf } from "@/lib/plural";
@@ -51,7 +56,7 @@ import {
 //     forward"): a replay only moves forward, so none of those can run;
 //   - the versions only the Target has (the schemas have diverged);
 //   - both ledgers side by side, as a Source vs Target timeline.
-// Run, Run through and Run all each open the replay check (ReplayDialog, at the
+// Each row's Run button and Run all open the replay check (ReplayDialog, at the
 // bottom of this file): what the run risks, a dry run, the Target's last drift
 // check, and a production approval where one is needed. Confirming it sends the
 // versions to /api/scripts/apply as ONE request, which runs them in ONE
@@ -198,10 +203,6 @@ function sideEnvironment(side: Side, connections: Connection[]): Environment {
   return louderEnvironment(toEnvironment(conn?.environment), side.schemaEnvironment);
 }
 
-function changeTone(t: string): string {
-  return t === "breaking" ? "pill-break" : t === "additive" ? "pill-sync" : "pill-pending";
-}
-
 /** How far a replay of some versions, in order, gets before the apply route would refuse one. */
 type Reach = {
   /** The leading versions that can run. */
@@ -253,22 +254,6 @@ function stopSentence(reach: Reach): string {
   );
 }
 
-/**
- * How a failed call to the apply route ended, which decides what the page may
- * claim about the Target afterwards.
- *   refused     — the route turned the run down before it touched the Target:
- *                 a missing tick or approval, a schema that is not there, a
- *                 Target it could not connect to. Nothing ran.
- *   rolled-back — the run reached the Target and its transaction did not
- *                 commit, so none of its versions were applied. Enum values
- *                 added before the transaction opened stay (the route's own
- *                 error says so where it knows).
- *   unknown     — nothing here saw how the run ended: the request never came
- *                 back, the reply could not be read, or the COMMIT itself
- *                 failed to report back.
- */
-type ApplyFailure = "refused" | "rolled-back" | "unknown";
-
 /** The four ticks the apply route checks, sent with a dry run as well as a real one. */
 type ReplayFlags = {
   acknowledgeProduction: boolean;
@@ -277,28 +262,22 @@ type ReplayFlags = {
   acknowledgeDrift: boolean;
 };
 
-type ReplayOutcome = { ok: true } | { ok: false; failure: ApplyFailure; error: string };
-
-/** The fields of an apply-route reply this page reads. */
-type ApplyReply = {
-  success?: boolean;
-  error?: string;
-  outcomeUnknown?: boolean;
-  needsAcknowledgement?: unknown;
-  results?: unknown;
-};
-
 /**
  * Send versions to the apply route as ONE run, which it applies in ONE
  * transaction: every version in it applies, or none does.
  *
- * Reading a failure: the route puts a per-script `results` list in a failure
- * body once the run has reached the Target — including failures in the setup,
- * lock and ledger steps, where every row reads "skipped" because no single
- * migration was running. So "has results" is what separates rolled-back from
- * refused, not "every row skipped". The two exceptions come before the run
- * touches the Target and still carry results: a 400 (the schema is not there)
- * and a request for ticks (needsAcknowledgement).
+ * The answer is read by readReplayAnswer (lib/version-sync), which reads a
+ * failure with readApplyFailure (lib/apply-failure), the same reading Deploy
+ * uses:
+ *   refused      a 4xx other than 422: the route turned the run away and none
+ *                of its versions were applied;
+ *   not-started  a 5xx the route marks nothingRan: it stopped before its
+ *                first write, so nothing ran;
+ *   rolled-back  the run reached its transaction and did not commit;
+ *   unknown      nothing here saw how it ended.
+ * A `results` list in the answer says nothing about which: the route's ledger
+ * refusals (409) list the run's scripts too, and reading "has results" as
+ * "rolled back" used to turn those refusals into "Replay failed".
  */
 async function sendReplay({
   connectionId,
@@ -338,48 +317,26 @@ async function sendReplay({
       }),
     });
   } catch {
-    return { ok: false, failure: "unknown", error: "Could not reach the server." };
+    return readReplayAnswer(null, null);
   }
 
   // Read the body as text first: a proxy error or a Next.js error page is
   // HTML, and letting res.json() throw would report "could not reach the
   // server" about a request that reached it.
-  let data: ApplyReply | null = null;
+  let data: ReplayAnswer | null = null;
   try {
     const parsed: unknown = JSON.parse(await res.text());
-    data = parsed !== null && typeof parsed === "object" ? (parsed as ApplyReply) : null;
+    data = parsed !== null && typeof parsed === "object" ? (parsed as ReplayAnswer) : null;
   } catch {
     data = null;
   }
-  if (data === null) {
-    return {
-      ok: false,
-      failure: "unknown",
-      error: `The server answered ${res.status} with a reply this page could not read.`,
-    };
-  }
-  // `success` as well as the status, so a future soft-failure shape is never
-  // read as applied.
-  if (res.ok && data.success === true) return { ok: true };
-
-  const error =
-    typeof data.error === "string" && data.error.trim() !== ""
-      ? data.error
-      : `The server answered ${res.status} with no message.`;
-  if (data.outcomeUnknown === true || res.ok) return { ok: false, failure: "unknown", error };
-  if (res.status === 400 || Array.isArray(data.needsAcknowledgement)) {
-    return { ok: false, failure: "refused", error };
-  }
-  if (Array.isArray(data.results)) return { ok: false, failure: "rolled-back", error };
-  return { ok: false, failure: "refused", error };
+  return readReplayAnswer(res.status, data);
 }
 
-/** What a failed replay's banner says. */
+/** What a failed replay's banner says. Every one offers to read the Target's ledger again. */
 type ApplyError = {
   title: string;
   detail: string;
-  /** The run's outcome is not known: the banner offers to read the Target's ledger again. */
-  unknown?: boolean;
 };
 
 /** Ledger entries as the risk checks read them: the same fields the apply route is sent. */
@@ -474,7 +431,7 @@ export default function VersionSyncPage() {
     const check = reachOf(entries, target.entries);
     if (check.stoppedBefore) {
       setApplyDone("");
-      setApplyError({ title: "Replay not started — nothing ran", detail: stopSentence(check) });
+      setApplyError({ title: "Replay did not start — nothing ran", detail: stopSentence(check) });
       return;
     }
     setApplyError(null);
@@ -510,7 +467,14 @@ export default function VersionSyncPage() {
 
     if (!result.ok) {
       if (result.failure === "refused") {
-        setApplyError({ title: "Replay refused — nothing ran", detail: result.error });
+        // "None of its versions", not "nothing ran": the route's last
+        // forward-only check runs under its locks, after a real run has
+        // committed the enum values it adds, and answers 409 too. Its error
+        // names the enum values that stay.
+        setApplyError({ title: "Replay refused — none of its versions were applied", detail: result.error });
+      } else if (result.failure === "not-started") {
+        // A 5xx the route marks nothingRan: it stopped before its first write.
+        setApplyError({ title: "Replay did not start — nothing ran", detail: result.error });
       } else if (result.failure === "rolled-back") {
         // The one part of a run that can outlive its rollback.
         const enumNote =
@@ -527,7 +491,6 @@ export default function VersionSyncPage() {
           detail:
             `${result.error} Nothing here saw how the run ended. ` +
             `Read the Target's ledger again before you run anything else.`,
-          unknown: true,
         });
       }
       return;
@@ -792,7 +755,7 @@ type ApplyCtl = {
   done: string;
   /** Open the replay check for these versions. */
   onRun: (entries: LedgerEntry[]) => void;
-  /** Read the Target's ledger again, after a run whose outcome is not known. */
+  /** Read the Target's ledger again, after any failed run: the list may be out of date. */
   onReread: () => void;
   /** Draw Run all red when the Target is live, same as Deploy does. */
   targetIsProduction: boolean;
@@ -869,12 +832,14 @@ function Result({
   const listHelp =
     "These are the exact scripts the Source ran, in the order it ran them. A replay runs them " +
     "onto the Target in that order, as one transaction: every version in it applies, or none does." +
-    (reachable >= 1
-      ? " Run replays the first version" +
-        (reachable > 1 ? "; Run through replays every version from the top of the list down to that one" : "") +
-        (showRunAll ? "; Run all replays the whole list" : "") +
-        ". Each opens a check of what will run, and nothing runs until you confirm it there."
-      : "");
+    (reachable === 0
+      ? ""
+      : reachable === 1
+        ? " The Run button replays the first version. It opens a check of what will run, " +
+          "and nothing runs until you confirm it there."
+        : " Each Run button replays the versions from the top of the list down to its own row" +
+          (showRunAll ? ", and Run all replays the whole list" : "") +
+          ". Each opens a check of what will run, and nothing runs until you confirm it there.");
 
   // What to do about the version every run stops before.
   const stopFix =
@@ -905,11 +870,14 @@ function Result({
           <div className="body">
             <div className="title">{apply.error.title}</div>
             <div className="help mt-0.5">{apply.error.detail}</div>
-            {apply.error.unknown && (
-              <button className="btn btn-secondary btn-sm mt-2" onClick={apply.onReread}>
-                <RefreshIcon size={13} /> Read the Target&apos;s ledger again
-              </button>
-            )}
+            {/* On every failure, not only an unknown one: a refusal can mean
+                the Target moved under this list (another deploy or a
+                rollback), and a list read before that offers runs that no
+                longer fit. */}
+            <button className="btn btn-secondary btn-sm mt-2" onClick={apply.onReread}>
+              <RefreshIcon size={13} />{" "}
+              Read the Target&apos;s ledger again
+            </button>
           </div>
         </div>
       )}
@@ -986,7 +954,7 @@ function Result({
               <div key={entryKey(e)} className="card p-4">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`pill ${changeTone(e.changeType)}`}>{e.changeType}</span>
+                    <ChangeLevelPill level={normalizeChangeLevel(e.changeType)} />
                     <span className="mono text-[14px] font-semibold">{displayVersion(e.version, true)}</span>
                     <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
                       {e.scriptName} · applied to Source {fmtDate(e.appliedAt)}
@@ -998,12 +966,17 @@ function Result({
                       disabled={apply.applying}
                       title={
                         i === 0
-                          ? "Replay this version onto the Target"
-                          : `Replay the first ${i + 1} versions in this list, through this one, in one transaction`
+                          ? `Replay ${runLabel(e)} onto the Target`
+                          : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
+                            `through ${runLabel(e)}, onto the Target in one transaction`
                       }
                       onClick={() => apply.onRun(missing.slice(0, i + 1))}
                     >
-                      {i === 0 ? "Run…" : `Run through ${runLabel(e)} (${i + 1})…`}
+                      {/* Named the way Deploy names its Run buttons: the one
+                          version, or the first and last with how many. */}
+                      {i === 0
+                        ? `Run ${runLabel(e)}…`
+                        : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
                     </button>
                   ) : i === reachable ? (
                     <span className="vsync-stopnote">Runs stop before this version</span>
@@ -1039,7 +1012,7 @@ function Result({
             {diff.belowTarget.map((e) => (
               <details key={entryKey(e)} className="mt-1">
                 <summary className="help">
-                  {scriptLabel(e.scriptName, e.version)} — {e.changeType} · the Target runs{" "}
+                  {scriptLabel(e.scriptName, e.version)} — {changeLevelWord(e.changeType)} · the Target runs{" "}
                   {scriptLabel(e.scriptName, targetHeads.get(e.scriptName) ?? "")}
                 </summary>
                 <pre className="vsync-sql mono mt-2">
@@ -1067,7 +1040,7 @@ function Result({
             {diff.diverged.map((e) => (
               <details key={entryKey(e)} className="mt-1">
                 <summary className="help">
-                  {scriptLabel(e.scriptName, e.version)} — {e.changeType}
+                  {scriptLabel(e.scriptName, e.version)} — {changeLevelWord(e.changeType)}
                 </summary>
                 <pre className="vsync-sql mono mt-2">
                   {e.sqlContent ?? "No stored script for this version."}
@@ -1089,6 +1062,7 @@ function Result({
             rightLabel="Target"
             rows={timelineRows}
             outdatedSide={outdatedSide}
+            showHeadVersions
           />
         </div>
       )}
@@ -1327,8 +1301,11 @@ function ReplayBody({
     setApprovalBusy(true);
     setApprovalError(null);
     setApprovalNotice("");
-    // The route matches an approval by fingerprint alone, so the script name
-    // here only labels the request for whoever clears it.
+    // The script name only labels the request. The route claims an approval by
+    // its connection, schema and run fingerprint (claimApproval never reads
+    // script_name), and this dialog finds its approvals by fingerprint too. A
+    // run across script groups is labelled "version-sync", not a list of every
+    // group's name joined into one, which read as one long script name.
     const families = [...new Set(entries.map((e) => e.scriptName.trim()))];
     try {
       const res = await fetch("/api/deploy/approvals", {
@@ -1338,7 +1315,7 @@ function ReplayBody({
           action: "deploy",
           connectionId: Number(connectionId),
           schemaName: schema,
-          scriptName: families.length === 1 ? families[0] : listLabels(families),
+          scriptName: families.length === 1 ? families[0] : "version-sync",
           targetVersion: last.version.trim(),
           note: approvalNote.trim() || undefined,
           scripts: entries.map((e) => ({
@@ -1411,9 +1388,11 @@ function ReplayBody({
       title:
         result.failure === "refused"
           ? "Dry run refused — nothing was run"
-          : result.failure === "rolled-back"
-            ? "Dry run failed — nothing was written"
-            : "Dry run result not known",
+          : result.failure === "not-started"
+            ? "Dry run did not start — nothing was run"
+            : result.failure === "rolled-back"
+              ? "Dry run failed — nothing was written"
+              : "Dry run result not known",
       detail:
         result.failure === "unknown"
           ? `${result.error} A dry run never commits, so the Target is unchanged. Try it again.`
@@ -1480,7 +1459,7 @@ function ReplayBody({
           {entries.map((e, i) => (
             <details key={entryKey(e)} open={listed(e, risk.breaking) || listed(e, risk.dataLoss)}>
               <summary>
-                {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> — {e.changeType}
+                {i + 1}. <span className="mono">{scriptLabel(e.scriptName, e.version)}</span> — {changeLevelWord(e.changeType)}
               </summary>
               <pre className="vsync-sql mono mt-2">{e.sqlContent}</pre>
             </details>

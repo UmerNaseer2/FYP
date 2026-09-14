@@ -220,6 +220,22 @@ describe("findRowDestroyingStatements", () => {
       findRowDestroyingStatements("ALTER TABLE orders DROP COLUMN legacy_ref;")
     ).toEqual(["DROP COLUMN"]);
   });
+
+  it("reads the inside of a DO block, where a cleanup safe to run twice keeps its DELETE", () => {
+    const guarded = [
+      "DO $$ BEGIN",
+      "  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'orders_archive') THEN",
+      "    DELETE FROM orders WHERE archived;",
+      "  END IF;",
+      "END $$;",
+    ].join("\n");
+    expect(findRowDestroyingStatements(guarded)).toEqual(["DELETE"]);
+    expect(findRowDestroyingStatements("DO $$ BEGIN TRUNCATE orders; END $$;")).toEqual(["TRUNCATE"]);
+    // The body is masked too: a word in a string or a comment there is not a statement.
+    expect(
+      findRowDestroyingStatements("DO $$ BEGIN RAISE NOTICE 'delete from orders'; -- truncate later\nEND $$;")
+    ).toEqual([]);
+  });
 });
 
 /**

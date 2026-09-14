@@ -1343,3 +1343,10 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .vsync-runlist summary { cursor:pointer; font-size:12.5px; color:var(--text-2); }
 .vsync-stopnote { font-size:12px; color:var(--text-3); }
 /* ==== end D-e ================================================================= */
+
+/* ==== D-f: head versions in the version timeline's column headings ============
+   "Source — v1.2.0": the heading row is upper case, and a version keeps its
+   own case, the way "(Outdated)" does. */
+.vtl__sidever { font-family:var(--font-geist-mono), ui-monospace; font-weight:600;
+                text-transform:none; letter-spacing:0; color:var(--text-2); }
+/* ==== end D-f ================================================================= */

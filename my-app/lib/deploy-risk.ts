@@ -158,11 +158,23 @@ export function analyseRunRisk(scripts: ReadonlyArray<RiskScript>): RunRisk {
 export type ForwardOnlyProblem = {
   /** Which job in the run (0-based). */
   index: number;
-  /** The whole refusal, for the card. Ends "Nothing ran." */
+  /** The whole refusal, for the card: `refusal`, then "Nothing ran." */
   message: string;
+  /**
+   * The refusal without that closing "Nothing ran.": what is wrong and what to
+   * do next. For the route's one refusal that comes after something was
+   * written (step 8a, once an enum value was added), which has to end by
+   * saying what did happen instead.
+   */
+  refusal: string;
   /** A few words for that job's own row in the results. */
   reason: string;
 };
+
+/** One forward-only problem, its refusal closed with "Nothing ran." in one place. */
+function problemAt(index: number, reason: string, refusal: string): ForwardOnlyProblem {
+  return { index, reason, refusal, message: `${refusal} Nothing ran.` };
+}
 
 /**
  * The forward-only rule: each version of a script must be strictly above every
@@ -192,13 +204,15 @@ export function checkForwardOnly(
     // The same version, however it is spelled, is already in the ledger.
     const recorded = applied.find((row) => versionKey(row) === versionKey(version));
     if (recorded !== undefined) {
-      return {
+      // "Check the target database again" names no button on purpose:
+      // Deploy and Version Sync both show this sentence, and each has its own
+      // control for reading the target again.
+      return problemAt(
         index,
-        reason: "Already applied to this schema.",
-        message:
-          `${label} is already applied (recorded as "${recorded}"). ` +
-          "Refresh Pre-flight to see what is pending now. Nothing ran.",
-      };
+        "Already applied to this schema.",
+        `${label} is already applied (recorded as "${recorded}"). ` +
+          "Check the target database again to see what is pending now."
+      );
     }
 
     // A higher version is applied, so this one would run under structure a
@@ -206,34 +220,30 @@ export function checkForwardOnly(
     // because re-ordering the run cannot fix this one.
     const highestApplied = highestVersion(applied);
     if (highestApplied !== null && compareVersions(version, highestApplied) < 0) {
-      return {
+      return problemAt(
         index,
-        reason: "A higher version is already applied.",
-        message:
-          `${label} cannot run: ${vLabel(highestApplied)} is already applied and deploys only ` +
-          "move forward. Refresh Pre-flight to see what is pending now. Nothing ran.",
-      };
+        "A higher version is already applied.",
+        `${label} cannot run: ${vLabel(highestApplied)} is already applied and deploys only ` +
+          "move forward. Check the target database again to see what is pending now."
+      );
     }
 
     const earlier = runMark.get(scriptName);
     if (earlier !== undefined && compareVersions(version, earlier) === 0) {
-      return {
+      return problemAt(
         index,
-        reason: "Listed twice in this run.",
-        message:
-          `${label} is listed twice in this run (also as ${vLabel(earlier)}), and each version ` +
-          "can run only once. If the registry holds both files, delete one of them, then run " +
-          "again. Nothing ran.",
-      };
+        "Listed twice in this run.",
+        `${label} is listed twice in this run (also as ${vLabel(earlier)}), and each version ` +
+          "can run only once. If the registry holds both files, delete one of them, then run again."
+      );
     }
     if (earlier !== undefined && compareVersions(version, earlier) < 0) {
-      return {
+      return problemAt(
         index,
-        reason: "Out of order in this run.",
-        message:
-          `${label} is listed after ${vLabel(earlier)} in this run. Versions of one script must ` +
-          "run in ascending order. Nothing ran.",
-      };
+        "Out of order in this run.",
+        `${label} is listed after ${vLabel(earlier)} in this run. Versions of one script must ` +
+          "run in ascending order."
+      );
     }
     runMark.set(scriptName, version);
   }

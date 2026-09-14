@@ -6,7 +6,7 @@ import {
   productionBlockReason,
   toEnvironment,
 } from "@/lib/environments";
-import { cutForwardOnly, diffLedgers, entryKey, type LedgerEntry } from "@/lib/version-sync";
+import { cutForwardOnly, diffLedgers, entryKey, readReplayAnswer, type LedgerEntry } from "@/lib/version-sync";
 import { checkForwardOnly } from "@/lib/deploy-risk";
 import { createHash } from "node:crypto";
 import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
@@ -98,6 +98,20 @@ describe("diffLedgers", () => {
     ];
     const diff = diffLedgers(source, []);
     expect(diff.missing.map((e) => e.version)).toEqual(["1.2.0", "1.1.0"]);
+  });
+
+  it("keeps the ledger's own order for versions one run applied together", () => {
+    // One deploy writes all its ledger rows in one transaction, so they share
+    // one applied_at. The ledger route sends them in the order they were
+    // written (by id); sorting them again by version would put orders 1.1.0
+    // before users 2.0.0, an order the Source never ran them in.
+    const sameRun = "2026-03-01T10:00:00.000Z";
+    const source = [
+      entry({ scriptName: "users", version: "2.0.0", appliedAt: sameRun }),
+      entry({ scriptName: "orders", version: "1.1.0", appliedAt: sameRun }),
+    ];
+    const diff = diffLedgers(source, []);
+    expect(diff.missing.map((e) => `${e.scriptName} ${e.version}`)).toEqual(["users 2.0.0", "orders 1.1.0"]);
   });
 
   it("surfaces target-only entries as diverged rather than merging them", () => {
@@ -347,5 +361,94 @@ describe("runFingerprint parity", () => {
 
   it("never gives a deploy and a rollback of the same scripts the same fingerprint", () => {
     expect(runFingerprint(run, "deploy")).not.toBe(runFingerprint(run, "revert"));
+  });
+});
+
+describe("readReplayAnswer", () => {
+  // How Version Sync reads the apply route's answer. The route marks every
+  // answer it gives before its first write with nothingRan, and its refusals
+  // after it has read the Target (forward-only, the ledger check under its
+  // locks) still list the run's scripts in `results`. So a results list does
+  // not mean the run rolled back: reading it that way called a refusal
+  // "Replay failed" and a 503 from before the first write "refused".
+  it("reads a success only when the status and the body both say so", () => {
+    expect(readReplayAnswer(200, { success: true })).toEqual({ ok: true });
+    expect(readReplayAnswer(200, { success: false, error: "Odd reply." })).toEqual({
+      ok: false,
+      failure: "unknown",
+      error: "Odd reply.",
+    });
+    // The status half: a body that says success under an error status (a
+    // proxy, or a future route shape) is not an applied replay.
+    expect(readReplayAnswer(500, { success: true })).toEqual({
+      ok: false,
+      failure: "rolled-back",
+      error: "The server answered 500 with no message.",
+    });
+    expect(readReplayAnswer(409, { success: true })).toMatchObject({ ok: false, failure: "refused" });
+  });
+
+  it("reads a 409 that lists the run's scripts as refused, not rolled back", () => {
+    const forwardOnly = {
+      success: false,
+      nothingRan: true,
+      results: [{ scriptName: "orders", version: "1.1.0", status: "skipped" }],
+      error: "orders v1.1.0 cannot run: v1.2.0 is already applied and deploys only move forward. Nothing ran.",
+    };
+    expect(readReplayAnswer(409, forwardOnly)).toMatchObject({ ok: false, failure: "refused" });
+    // The ledger check under the run's locks answers 409 with results and no nothingRan.
+    expect(readReplayAnswer(409, { success: false, results: [], error: "Already applied." })).toMatchObject({
+      failure: "refused",
+    });
+  });
+
+  it("reads a request for ticks as refused", () => {
+    const ticks = { success: false, nothingRan: true, needsAcknowledgement: ["breaking"], error: "Tick the box." };
+    expect(readReplayAnswer(409, ticks)).toMatchObject({ failure: "refused" });
+  });
+
+  it("reads a server error from before the first write as not started", () => {
+    expect(readReplayAnswer(503, { success: false, nothingRan: true, error: "Could not connect." })).toMatchObject({
+      failure: "not-started",
+    });
+    expect(readReplayAnswer(500, { success: false, nothingRan: true, error: "Could not read." })).toMatchObject({
+      failure: "not-started",
+    });
+  });
+
+  it("reads a server error from inside the transaction as rolled back", () => {
+    expect(readReplayAnswer(500, { success: false, results: [], error: "syntax error" })).toMatchObject({
+      failure: "rolled-back",
+    });
+    expect(readReplayAnswer(503, { success: false, results: [], error: "Lock timeout." })).toMatchObject({
+      failure: "rolled-back",
+    });
+    // A dry run PostgreSQL stopped at a new enum value: a rehearsal that failed.
+    expect(readReplayAnswer(422, { success: false, results: [], error: "Enum." })).toMatchObject({
+      failure: "rolled-back",
+    });
+  });
+
+  it("reads a COMMIT that did not report back as not known", () => {
+    expect(readReplayAnswer(500, { success: false, outcomeUnknown: true, error: "COMMIT." })).toMatchObject({
+      failure: "unknown",
+    });
+  });
+
+  it("says what it could not read when there is no answer", () => {
+    expect(readReplayAnswer(null, null)).toEqual({ ok: false, failure: "unknown", error: "Could not reach the server." });
+    expect(readReplayAnswer(502, null)).toEqual({
+      ok: false,
+      failure: "unknown",
+      error: "The server answered 502 with a reply this page could not read.",
+    });
+  });
+
+  it("names the status when the error is blank", () => {
+    expect(readReplayAnswer(500, { success: false, error: "  " })).toEqual({
+      ok: false,
+      failure: "rolled-back",
+      error: "The server answered 500 with no message.",
+    });
   });
 });

@@ -25,7 +25,11 @@ let mockClient: FakeClient;
 jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
-jest.mock("../lib/connection-config", () => ({ buildPgConfig: () => ({}) }));
+// Set to throw to play a saved secret this server can't decrypt.
+const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
+jest.mock("../lib/connection-config", () => ({
+  buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
+}));
 
 type RouteModule = typeof import("../app/api/scripts/preflight/route");
 let POST: RouteModule["POST"];
@@ -105,11 +109,31 @@ beforeEach(() => {
   guard = guardGitHub();
   mockPoolQuery.mockReset();
   mockPoolQuery.mockResolvedValue({ rows: [CONNECTION] });
+  mockBuildPgConfig.mockReset();
+  mockBuildPgConfig.mockReturnValue({});
 });
 
 afterEach(() => {
   guard.restore();
   expect(guard.unexpected).toEqual([]);
+});
+
+it("says the saved credentials can't be read when this server can't decrypt them", async () => {
+  mockBuildPgConfig.mockImplementation(() => {
+    throw new Error("Unsupported state or unable to authenticate data");
+  });
+  mockClient = createFakeClient(target({}));
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+  const res = await preflight(FAMILY);
+  errorSpy.mockRestore();
+  // A JSON answer with a reason, not a bare 500 Deploy can only call a network error.
+  expect(res.status).toBe(500);
+  expect(res.body.error).toBe(
+    "This connection's stored credentials can't be read on this server. Set " +
+      "APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
+      "the Connections screen and enter its password again."
+  );
+  expect(mockClient.queries).toEqual([]);
 });
 
 it("counts only a rollback with a statement that runs", async () => {

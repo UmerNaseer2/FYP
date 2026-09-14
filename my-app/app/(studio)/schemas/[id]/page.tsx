@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/icons";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
+import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
@@ -32,7 +33,6 @@ import type {
   LineageNode,
   DriftStatus,
 } from "@/lib/lineage-db";
-import type { ChangeLevel } from "@/lib/version-detection";
 
 /**
  * Phase 8 — Schema detail / Lineage timeline.
@@ -76,20 +76,6 @@ function driftMeta(status: DriftStatus | null): { tone: PillTone; label: string 
       return { tone: "break", label: "Unreachable" };
     default:
       return { tone: "neutral", label: "Not checked" };
-  }
-}
-
-/** Change-level → pill tone + label (baseline is shown as its own brand pill). */
-function levelMeta(level: ChangeLevel): { tone: PillTone; label: string } {
-  switch (level) {
-    case "breaking":
-      return { tone: "break", label: "breaking" };
-    case "additive":
-      return { tone: "pending", label: "additive" };
-    case "patch":
-      return { tone: "sync", label: "patch" };
-    default:
-      return { tone: "neutral", label: "unknown" };
   }
 }
 
@@ -594,7 +580,6 @@ function LineageNodeCard({
   isHead: boolean;
   drifted: boolean;
 }) {
-  const level = levelMeta(node.changeLevel);
   const snap = node.snapshot;
   const previewNames = snap ? snap.tableNames.slice(0, 8) : [];
   const moreCount = snap ? Math.max(0, snap.tableNames.length - previewNames.length) : 0;
@@ -637,7 +622,9 @@ function LineageNodeCard({
           {node.isBaseline ? (
             <Pill tone="brand">baseline</Pill>
           ) : (
-            <Pill tone={level.tone}>{level.label}</Pill>
+            // The pill every screen draws for a change level; a baseline
+            // keeps its own brand pill above.
+            <ChangeLevelPill level={node.changeLevel} />
           )}
         </div>
 

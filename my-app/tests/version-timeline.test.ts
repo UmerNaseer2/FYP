@@ -5,6 +5,7 @@ import {
   familyHeadRows,
   familyHeadsOf,
   hasFamilyHeads,
+  headVersionOf,
   ledgerTimelineEntries,
   listNames,
   mergeTimelines,
@@ -448,5 +449,37 @@ describe("ledgerTimelineEntries", () => {
       label: null,
     });
     expect(entries[1].sqlContent).toBeNull();
+  });
+});
+
+describe("headVersionOf", () => {
+  it("names the version each side's HEAD marker is on", () => {
+    const rows = mergeTimelines(
+      [entry("1.0.0"), entry("v1.2.0"), entry("1.1.0")],
+      [entry("1.0.0"), entry("1.1.0", "users_migration", { failed: true })]
+    );
+    expect(headVersionOf(rows, "left")).toBe("v1.2.0");
+    // A failed run is never a head, so the right side is still at 1.0.0.
+    expect(headVersionOf(rows, "right")).toBe("v1.0.0");
+    // The very rows the timeline marks HEAD.
+    expect(rows.find((row) => row.isLeftHead)?.key).toBe(timelineKey("1.2.0"));
+    expect(rows.find((row) => row.isRightHead)?.key).toBe(timelineKey("1.0.0"));
+  });
+
+  it("names none when the rows hold more than one script group", () => {
+    const rows = mergeTimelines([entry("2.0.0"), entry("1.0.0", "orders_migration")], [entry("1.0.0")]);
+    expect(headVersionOf(rows, "left")).toBeNull();
+    expect(headVersionOf(rows, "right")).toBeNull();
+  });
+
+  it("names none for a side with no version", () => {
+    expect(headVersionOf(mergeTimelines([entry("1.0.0")], []), "right")).toBeNull();
+    expect(headVersionOf([], "left")).toBeNull();
+  });
+
+  it("prints a version from a table without script groups as that table wrote it", () => {
+    const rows = mergeTimelines([entry("1.4", null)], [entry("1.3", null)]);
+    expect(headVersionOf(rows, "left")).toBe("1.4");
+    expect(headVersionOf(rows, "right")).toBe("1.3");
   });
 });

@@ -150,11 +150,17 @@ export function containsTransactionControl(sql: string): boolean {
  *
  * The scan runs on maskNonCode's output for the same reason every other scan in
  * this file does: a keyword in a comment or a string literal is not a statement.
+ * maskNonCode blanks a dollar-quoted body whole, though, and the inside of a DO
+ * block is code: `DO $$ BEGIN IF … THEN DELETE FROM orders …; END IF; END $$`
+ * is the usual way to write a cleanup that is safe to run twice. So the DO
+ * bodies are read as well (masked in the same way), or that DELETE would reach
+ * the target with no warning and no data-loss tick.
  *
  * Returns the keywords it found, in a fixed order, so the screen can name them.
  */
 export function findRowDestroyingStatements(sql: string): string[] {
   const code = maskNonCode(sql);
+  const doBodies = doBlockBodies(sql);
   const checks: [RegExp, string][] = [
     [/\bTRUNCATE\b/i, "TRUNCATE"],
     [/\bDELETE\s+FROM\b/i, "DELETE"],
@@ -166,7 +172,9 @@ export function findRowDestroyingStatements(sql: string): string[] {
     [/\bDROP\s+SCHEMA\b/i, "DROP SCHEMA"],
     [/\bDROP\s+DATABASE\b/i, "DROP DATABASE"],
   ];
-  return checks.filter(([pattern]) => pattern.test(code)).map(([, label]) => label);
+  return checks
+    .filter(([pattern]) => pattern.test(code) || pattern.test(doBodies))
+    .map(([, label]) => label);
 }
 
 /**

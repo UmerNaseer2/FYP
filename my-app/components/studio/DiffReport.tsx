@@ -21,6 +21,7 @@ import type {
   TableSnapshot,
 } from "@/lib/compare-types";
 import { CheckIcon } from "@/components/ui/icons";
+import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 
 // ---------------------------------------------------------------------------
 // DiffReport — the reusable diff canvas.
@@ -524,18 +525,9 @@ function DeltaChips({ adds, chgs, rems, sides }: Tally & { sides: ReportSides })
   );
 }
 
+// The pill every screen draws for a change level (ChangeLevelPill).
 function LevelPill({ level }: { level: "breaking" | "additive" }) {
-  return level === "breaking" ? (
-    <span className="pill pill-break">
-      <span className="dot" />
-      breaking
-    </span>
-  ) : (
-    <span className="pill pill-pending">
-      <span className="dot" />
-      additive
-    </span>
-  );
+  return <ChangeLevelPill level={level} />;
 }
 
 function ChevronDown() {

@@ -379,6 +379,20 @@ function rolledBackOutcomes(
 // client-side pre-check uses the exact same rule (and the dollar-quote-aware
 // stripping) as this server route — see containsTransactionControl import above.
 
+/**
+ * Every answer the route gives before step 7, its first write to the target.
+ *
+ * nothingRan says so in a field as well as in words, because the status does
+ * not: a 4xx always means nothing ran, but a 500 or 503 here looks the same as
+ * a run that reached its transaction and rolled back (a lock timeout after
+ * BEGIN is a 503 too). A screen that cannot tell them apart sends the operator
+ * looking for a ledger table or an enum value that was never written.
+ * lib/apply-failure is the reading of it.
+ */
+function answerBeforeRun(body: Record<string, unknown>, init: { status: number }) {
+  return NextResponse.json({ ...body, nothingRan: true }, init);
+}
+
 export async function POST(request: NextRequest) {
   const gate = await requireEditor();
   if (!gate.ok) return gate.response;
@@ -437,7 +451,7 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
+    return answerBeforeRun(
       { error: "Invalid JSON in request body." },
       { status: 400 }
     );
@@ -458,7 +472,7 @@ export async function POST(request: NextRequest) {
 
   // ─── 2. Validate every script in the run ─────────────────────────────────
   if (!connectionId) {
-    return NextResponse.json(
+    return answerBeforeRun(
       { error: "connectionId is required." },
       { status: 400 }
     );
@@ -469,7 +483,7 @@ export async function POST(request: NextRequest) {
     : [body];
 
   if (rawScripts.length === 0) {
-    return NextResponse.json(
+    return answerBeforeRun(
       { error: "scripts must contain at least one migration." },
       { status: 400 }
     );
@@ -484,26 +498,26 @@ export async function POST(request: NextRequest) {
     const at = rawScripts.length > 1 ? ` (script ${index + 1} of ${rawScripts.length})` : "";
 
     if (!raw?.script_name?.trim()) {
-      return NextResponse.json(
+      return answerBeforeRun(
         { error: `script_name is required${at}.` },
         { status: 400 }
       );
     }
     if (!raw.sql_content?.trim()) {
-      return NextResponse.json(
+      return answerBeforeRun(
         { error: `sql_content is required and cannot be empty${at}.` },
         { status: 400 }
       );
     }
     if (!raw.version?.trim()) {
-      return NextResponse.json(
+      return answerBeforeRun(
         { error: `version is required (e.g. '1.2.0')${at}.` },
         { status: 400 }
       );
     }
     // script_patch.version is VARCHAR(20) — catch this before hitting the DB
     if (raw.version.trim().length > MAX_VERSION_LENGTH) {
-      return NextResponse.json(
+      return answerBeforeRun(
         { error: `version must be ${MAX_VERSION_LENGTH} characters or fewer${at}.` },
         { status: 400 }
       );
@@ -511,7 +525,7 @@ export async function POST(request: NextRequest) {
 
     // ─── 3. Guard against embedded COMMIT / ROLLBACK in the script ─────────
     if (containsTransactionControl(raw.sql_content)) {
-      return NextResponse.json(
+      return answerBeforeRun(
         {
           error:
             `sql_content must not contain COMMIT or ROLLBACK statements${at}. ` +
@@ -524,7 +538,7 @@ export async function POST(request: NextRequest) {
     // run it later — and the revert route opens its own transaction too. Reject
     // it now rather than at revert time, when the user needs it to work.
     if (raw.down_sql && containsTransactionControl(raw.down_sql)) {
-      return NextResponse.json(
+      return answerBeforeRun(
         {
           error:
             `down_sql must not contain COMMIT or ROLLBACK statements${at}. ` +
@@ -578,7 +592,7 @@ export async function POST(request: NextRequest) {
   // ledger is checked against the same rule in steps 6c and 8a.
   const orderProblem = checkForwardOnly(queue, {});
   if (orderProblem) {
-    return NextResponse.json({ error: orderProblem.message }, { status: 400 });
+    return answerBeforeRun({ error: orderProblem.message }, { status: 400 });
   }
 
   // Used by every message that names the run as a whole.
@@ -611,7 +625,7 @@ export async function POST(request: NextRequest) {
     );
 
     if (result.rows.length === 0) {
-      return NextResponse.json(
+      return answerBeforeRun(
         { error: `No saved connection found with id ${connectionId}.` },
         { status: 404 }
       );
@@ -621,8 +635,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — failed to fetch connection record:", message);
-    return NextResponse.json(
-      { error: "Could not read saved connection. Is the app database reachable?" },
+    return answerBeforeRun(
+      {
+        error:
+          "Could not read the saved connection, so nothing ran. Try again in a moment; if it " +
+          "keeps failing, check that the app's metadata database is running.",
+      },
       { status: 500 }
     );
   }
@@ -657,7 +675,7 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error("Apply — could not read the tracked schema:", error);
-    return NextResponse.json(
+    return answerBeforeRun(
       {
         error:
           "Could not read this schema's tracking record, so its environment label and " +
@@ -676,7 +694,7 @@ export async function POST(request: NextRequest) {
     body.acknowledgeProduction === true
   );
   if (blocked) {
-    return NextResponse.json({ error: blocked, environment: targetEnvironment }, { status: 409 });
+    return answerBeforeRun({ error: blocked, environment: targetEnvironment }, { status: 409 });
   }
 
   // ─── 4b-2. Every risk in the run has a tick ──────────────────────────────
@@ -719,7 +737,7 @@ export async function POST(request: NextRequest) {
     );
   }
   if (needsAcknowledgement.length > 0) {
-    return NextResponse.json(
+    return answerBeforeRun(
       {
         success: false,
         dryRun,
@@ -741,6 +759,40 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
+
+  // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
+  //
+  // Before the approval claim in 4c, although it is numbered after it.
+  // buildPgConfig decrypts the saved password, and that throws when this
+  // server's APP_ENCRYPTION_KEY is missing or is not the key the password was
+  // saved with. After the claim, that throw left the approval spent on a run
+  // that never started, and the bare 500 it gave had no message to show.
+  let targetConfig: ReturnType<typeof buildPgConfig>;
+  try {
+    targetConfig = buildPgConfig({
+      host: connRow.host,
+      port: connRow.port,
+      database: connRow.database_name,
+      user: connRow.username,
+      password: connRow.password,
+      connectionString: connRow.connection_string,
+      ssl: Boolean(connRow.ssl),
+      sslMode: connRow.ssl_mode,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Apply — could not read the saved connection's credentials:", message);
+    return answerBeforeRun(
+      {
+        error:
+          "This connection's stored credentials can't be read on this server, so nothing ran. " +
+          "Set APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
+          "the Connections screen and enter its password again.",
+      },
+      { status: 500 }
+    );
+  }
+  const targetPool = getPoolForConfig(targetConfig);
 
   // ─── 4c. Production needs a second person, not a second checkbox ──────────
   //
@@ -774,7 +826,7 @@ export async function POST(request: NextRequest) {
         action: "deploy",
       });
       if (!claimed) {
-        return NextResponse.json(
+        return answerBeforeRun(
           {
             error:
               // Deploy and Version Sync both run through this route, so the
@@ -795,8 +847,13 @@ export async function POST(request: NextRequest) {
       claimedApprovalId = claimed.id;
     } catch (error) {
       console.error("Apply — could not claim a deploy approval:", error);
-      return NextResponse.json(
-        { error: "Could not check the deploy approval for this production target." },
+      return answerBeforeRun(
+        {
+          error:
+            "Could not check the deploy approval for this production target, so nothing ran. " +
+            "Try again in a moment; if it keeps failing, check that the app's metadata " +
+            "database is running.",
+        },
         { status: 500 }
       );
     }
@@ -821,19 +878,6 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ─── 5. Build the target DB config (SSL/URI-aware via buildPgConfig) ──────
-  const targetConfig = buildPgConfig({
-    host: connRow.host,
-    port: connRow.port,
-    database: connRow.database_name,
-    user: connRow.username,
-    password: connRow.password,
-    connectionString: connRow.connection_string,
-    ssl: Boolean(connRow.ssl),
-    sslMode: connRow.ssl_mode,
-  });
-  const targetPool = getPoolForConfig(targetConfig);
-
   // ─── 6. Connect to the target database ───────────────────────────────────
   let client;
   try {
@@ -844,12 +888,12 @@ export async function POST(request: NextRequest) {
     // This return is outside the try/finally below, so the claim taken in 4c
     // would otherwise stay spent on a run that never opened a connection.
     await releaseClaimedApproval();
-    return NextResponse.json(
+    return answerBeforeRun(
       {
         error:
           `Could not connect to target database ` +
-          `(${connRow.host}:${connRow.port}/${connRow.database_name}). ` +
-          `Check that the database is running and the credentials are correct. ` +
+          `(${connRow.host}:${connRow.port}/${connRow.database_name}), so nothing ran. ` +
+          `Check that the database is running and the credentials are correct, then try again. ` +
           `Details: ${message}`,
       },
       { status: 503 }
@@ -875,7 +919,7 @@ export async function POST(request: NextRequest) {
     if (exists.rows.length === 0) {
       client.release();
       await releaseClaimedApproval();
-      return NextResponse.json(
+      return answerBeforeRun(
         {
           success: false,
           dryRun,
@@ -898,8 +942,12 @@ export async function POST(request: NextRequest) {
     console.error("Apply — could not check the target schema:", message);
     client.release();
     await releaseClaimedApproval();
-    return NextResponse.json(
-      { error: `Could not check whether schema "${schemaName}" exists: ${message}` },
+    return answerBeforeRun(
+      {
+        error:
+          `Could not check whether schema "${schemaName}" exists, so nothing ran. Try again; ` +
+          `if it keeps failing, check that the target database is reachable. Details: ${message}`,
+      },
       { status: 503 }
     );
   }
@@ -920,7 +968,7 @@ export async function POST(request: NextRequest) {
     if (problem) {
       client.release();
       await releaseClaimedApproval();
-      return NextResponse.json(
+      return answerBeforeRun(
         {
           success: false,
           dryRun,
@@ -936,7 +984,7 @@ export async function POST(request: NextRequest) {
     console.error("Apply — could not read the versions already applied:", message);
     client.release();
     await releaseClaimedApproval();
-    return NextResponse.json(
+    return answerBeforeRun(
       {
         error:
           `Could not read which versions schema "${schemaName}" has already applied, so ` +
@@ -1063,10 +1111,18 @@ export async function POST(request: NextRequest) {
         transactionStarted = false;
         // Step 7 ran before 6c's answer went stale, so on a real run the enum
         // values it added are already committed, and PostgreSQL cannot remove
-        // an enum value. Say so rather than claim nothing changed at all.
+        // an enum value. Say so rather than claim nothing changed at all:
+        // problem.message ends "Nothing ran.", which is not true then, so the
+        // refusal gets an ending that says what did happen. No migration ran:
+        // this check comes before the first one. extractEnumAddValues gives
+        // the whole statements, so they are quoted last, after the sentence.
         const leftBehind = dryRun
           ? []
           : extractEnumAddValues(queue.map((job) => job.sqlContent).join("\n"));
+        const added =
+          leftBehind.length === 1
+            ? "the enum value it adds was added before this check and stays"
+            : `the ${leftBehind.length} enum values it adds were added before this check and stay`;
         return NextResponse.json(
           {
             success: false,
@@ -1074,13 +1130,10 @@ export async function POST(request: NextRequest) {
             schema: schemaName,
             results: rolledBackOutcomes(queue, failedJob, problem.reason),
             error:
-              problem.message +
-              (leftBehind.length > 0
-                ? ` The enum value${leftBehind.length === 1 ? "" : "s"} this run adds ` +
-                  `(${leftBehind.join(", ")}) ${leftBehind.length === 1 ? "was" : "were"} ` +
-                  `added before this check and ${leftBehind.length === 1 ? "stays" : "stay"}, ` +
-                  "because PostgreSQL cannot remove an enum value."
-                : ""),
+              leftBehind.length > 0
+                ? `${problem.refusal} No migration in this run ran, but ${added}, because PostgreSQL ` +
+                  `cannot remove an enum value: ${leftBehind.join(" ")}`
+                : problem.message,
           },
           { status: 409 }
         );

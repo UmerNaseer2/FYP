@@ -238,8 +238,12 @@ export async function POST(request: NextRequest) {
   }
 
   // ─── 3. Connect to the target database (SSL/URI-aware via buildPgConfig) ──
-  const targetPool = getPoolForConfig(
-    buildPgConfig({
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 Deploy could only call a network error.
+  let targetConfig: ReturnType<typeof buildPgConfig>;
+  try {
+    targetConfig = buildPgConfig({
       host: connRow.host,
       port: connRow.port,
       database: connRow.database_name,
@@ -248,8 +252,21 @@ export async function POST(request: NextRequest) {
       connectionString: connRow.connection_string,
       ssl: Boolean(connRow.ssl),
       sslMode: connRow.ssl_mode,
-    })
-  );
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Preflight — could not read the saved connection's credentials:", message);
+    return NextResponse.json(
+      {
+        error:
+          "This connection's stored credentials can't be read on this server. Set " +
+          "APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
+          "the Connections screen and enter its password again.",
+      },
+      { status: 500 }
+    );
+  }
+  const targetPool = getPoolForConfig(targetConfig);
 
   let client;
   try {

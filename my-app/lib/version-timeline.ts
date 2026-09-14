@@ -526,3 +526,20 @@ export function mergeTimelines(
   }
   return merged;
 }
+
+/**
+ * One side's head as its column heading prints it ("v1.2.0"), or null.
+ *
+ * Read off the rows' own HEAD marks (markHead), so the heading and the HEAD
+ * marker cannot name two different versions. Null when the rows hold more
+ * than one script group, because each group then has a head of its own and
+ * the markers say which; null too when the side has no head in the rows.
+ */
+export function headVersionOf(rows: ReadonlyArray<TimelineRow>, side: "left" | "right"): string | null {
+  const families = new Set(rows.map((row) => row.family));
+  if (families.size !== 1) return null;
+  const head = rows.find((row) => (side === "left" ? row.isLeftHead : row.isRightHead));
+  const entry = head ? head[side] : null;
+  if (!head || !entry) return null;
+  return displayVersion(entry.version, head.family !== null);
+}

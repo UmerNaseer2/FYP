@@ -25,10 +25,21 @@ jest.mock("../lib/version-db", () => ({
 }));
 
 let mockClient: FakeClient;
+// Set to make the target turn the connection itself away.
+let mockConnectError: Error | null = null;
 jest.mock("../lib/postgres", () => ({
-  getPoolForConfig: () => ({ connect: async () => mockClient }),
+  getPoolForConfig: () => ({
+    connect: async () => {
+      if (mockConnectError) throw mockConnectError;
+      return mockClient;
+    },
+  }),
 }));
-jest.mock("../lib/connection-config", () => ({ buildPgConfig: () => ({}) }));
+// Set to throw to play a saved secret this server can't decrypt.
+const mockBuildPgConfig = jest.fn<unknown, unknown[]>(() => ({}));
+jest.mock("../lib/connection-config", () => ({
+  buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
+}));
 
 // The tracked-schema record: its environment label and the last drift result.
 const mockFindTracked = jest.fn<Promise<unknown>, unknown[]>(async () => null);
@@ -112,6 +123,9 @@ beforeEach(() => {
   mockClaim.mockReset();
   mockClaim.mockResolvedValue(null);
   mockClient = createFakeClient(target());
+  mockConnectError = null;
+  mockBuildPgConfig.mockReset();
+  mockBuildPgConfig.mockReturnValue({});
   // The route logs its failures; the assertions below read the responses.
   consoleSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
   logSpy = jest.spyOn(console, "log").mockImplementation(() => undefined);
@@ -158,6 +172,16 @@ describe("a risk with no tick", () => {
     expect(res.body.needsAcknowledgement).toEqual(["data_loss"]);
   });
 
+  it("asks for the data-loss tick on a DELETE inside a DO block", async () => {
+    const sql =
+      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM orders WHERE archived) THEN " +
+      "DELETE FROM orders WHERE archived; END IF; END $$;";
+    const res = await apply({ ...BASE, scripts: [job("1.0.2", sql)] });
+    expect(res.status).toBe(409);
+    expect(res.body.needsAcknowledgement).toEqual(["data_loss"]);
+    expect(mockClient.queries).toEqual([]);
+  });
+
   it("asks for the breaking tick when the caller sends 'breaking' with a script", async () => {
     const res = await apply({ ...BASE, scripts: [job("1.0.0", "CREATE TABLE orders (id int);", { change_type: "breaking" })] });
     expect(res.status).toBe(409);
@@ -170,6 +194,27 @@ describe("a risk with no tick", () => {
     const res = await apply({ ...DROPS, acknowledgeProduction: true });
     expect(res.status).toBe(409);
     expect(res.body.needsAcknowledgement).toEqual(["breaking", "data_loss"]);
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockClient.queries).toEqual([]);
+  });
+});
+
+describe("saved credentials this server can't read", () => {
+  it("refuses before the production approval is claimed, so none is left spent", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 9 });
+    // buildPgConfig throws only when it can't decrypt the saved password.
+    mockBuildPgConfig.mockImplementation(() => {
+      throw new Error("Unsupported state or unable to authenticate data");
+    });
+    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    expect(res.status).toBe(500);
+    expect(res.body.nothingRan).toBe(true);
+    expect(res.body.error).toBe(
+      "This connection's stored credentials can't be read on this server, so nothing ran. " +
+        "Set APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
+        "the Connections screen and enter its password again."
+    );
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
   });
@@ -211,6 +256,7 @@ describe("the last drift check", () => {
         "unknown. Nothing ran. Try again in a moment; if it keeps failing, check that the app's " +
         "metadata database is running."
     );
+    expect(res.body.nothingRan).toBe(true);
     expect(mockClient.queries).toEqual([]);
     expect(mockClaim).not.toHaveBeenCalled();
   });
@@ -252,9 +298,10 @@ describe("forward only", () => {
     expect(res.body.results).toEqual([
       { script_name: "orders_fix", version: "1.5.0", status: "failed", error: "A higher version is already applied." },
     ]);
+    expect(res.body.nothingRan).toBe(true);
     expect(res.body.error).toBe(
       "orders_fix v1.5.0 cannot run: v2.0.0 is already applied and deploys only move forward. " +
-        "Refresh Pre-flight to see what is pending now. Nothing ran."
+        "Check the target database again to see what is pending now. Nothing ran."
     );
     // Only the run's own families are read.
     expect(queriesMatching(mockClient, /SELECT script_name, version/)[0].values).toEqual([["orders_fix"]]);
@@ -287,8 +334,18 @@ describe("forward only", () => {
     expect(res.body.results).toEqual([
       { script_name: "orders_fix", version: "1.5.0", status: "failed", error: "Already applied to this schema." },
     ]);
-    expect(String(res.body.error)).toContain('orders_fix v1.5.0 is already applied (recorded as "1.5.0").');
-    expect(String(res.body.error)).toContain("because PostgreSQL cannot remove an enum value.");
+    // Step 7 hoisted the enum value before this refusal, so something was
+    // written and the answer must not say otherwise.
+    expect(res.body.nothingRan).toBeUndefined();
+    // The whole answer. It used to end the refusal with "Nothing ran." and
+    // then say the enum value stays, which cannot both be true.
+    expect(res.body.error).toBe(
+      'orders_fix v1.5.0 is already applied (recorded as "1.5.0"). ' +
+        "Check the target database again to see what is pending now. " +
+        "No migration in this run ran, but the enum value it adds was added before this check and stays, " +
+        "because PostgreSQL cannot remove an enum value: ALTER TYPE mood ADD VALUE IF NOT EXISTS 'calm';"
+    );
+    expect(String(res.body.error)).not.toContain("Nothing ran");
 
     const texts = queryTexts(mockClient);
     const reread = mockClient.queries.findLastIndex((q) => /SELECT script_name, version/.test(q.text));
@@ -298,6 +355,38 @@ describe("forward only", () => {
     expect(count(mockClient, "ROLLBACK")).toBe(1);
     expect(count(mockClient, "COMMIT")).toBe(0);
     expect(queriesMatching(mockClient, /INSERT INTO "sales"\.script_patch/)).toHaveLength(0);
+  });
+
+  it("says 'Nothing ran.' when the same re-check stops a dry run, which hoists no enum value", async () => {
+    // The same race as above, on a dry run. A dry run skips step 7, so the
+    // enum value was never added and the plain refusal is the true one.
+    let reads = 0;
+    mockClient = createFakeClient(
+      target([
+        { match: /to_regclass/, rows: [{ present: true }] },
+        {
+          match: /SELECT script_name, version/,
+          when: () => {
+            reads += 1;
+            return reads >= 2;
+          },
+          rows: [{ script_name: "orders_fix", version: "1.5.0" }],
+        },
+      ])
+    );
+    const res = await apply({
+      ...BASE,
+      dryRun: true,
+      scripts: [job("1.5.0", "ALTER TYPE mood ADD VALUE IF NOT EXISTS 'calm';")],
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      'orders_fix v1.5.0 is already applied (recorded as "1.5.0"). ' +
+        "Check the target database again to see what is pending now. Nothing ran."
+    );
+    expect(queryTexts(mockClient).some((text) => /ALTER TYPE/.test(text))).toBe(false);
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
+    expect(count(mockClient, "COMMIT")).toBe(0);
   });
 });
 
@@ -344,5 +433,119 @@ describe("the level stored", () => {
     });
     expect(res.status).toBe(200);
     expect(mockRecordLineage.mock.calls[0][0]).toMatchObject({ changeLevel: "additive" });
+  });
+});
+
+describe("an answer given before the first write", () => {
+  // Step 7 (the ledger table and the enum hoist) is the route's first write to
+  // the target. Every answer before it says nothingRan, so a screen can tell a
+  // run that never started from one that rolled back: a 500 or 503 alone
+  // could be either.
+  type Case = {
+    when: string;
+    body: Record<string, unknown>;
+    arrange: () => void;
+    status: number;
+    says: string;
+  };
+  const cases: Case[] = [
+    {
+      when: "the saved connection cannot be read",
+      body: SAFE,
+      arrange: () => mockPoolQuery.mockRejectedValue(new Error("metadata database is down")),
+      status: 500,
+      says:
+        "Could not read the saved connection, so nothing ran. Try again in a moment; if it keeps " +
+        "failing, check that the app's metadata database is running.",
+    },
+    {
+      when: "the production approval cannot be checked",
+      body: { ...SAFE, acknowledgeProduction: true },
+      arrange: () => {
+        mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+        mockClaim.mockRejectedValue(new Error("metadata database is down"));
+      },
+      status: 500,
+      says:
+        "Could not check the deploy approval for this production target, so nothing ran. Try again " +
+        "in a moment; if it keeps failing, check that the app's metadata database is running.",
+    },
+    {
+      when: "the target turns the connection away",
+      body: SAFE,
+      arrange: () => {
+        mockConnectError = new Error("connection refused");
+      },
+      status: 503,
+      says:
+        "Could not connect to target database (db.test:5432/sales), so nothing ran. Check that the " +
+        "database is running and the credentials are correct, then try again. Details: connection refused",
+    },
+    {
+      when: "the schema check fails",
+      body: SAFE,
+      arrange: () => {
+        mockClient = createFakeClient(
+          target([{ match: /information_schema\.schemata/, error: { message: "connection reset" } }])
+        );
+      },
+      status: 503,
+      says:
+        'Could not check whether schema "sales" exists, so nothing ran. Try again; if it keeps failing, ' +
+        "check that the target database is reachable. Details: connection reset",
+    },
+    {
+      when: "the ledger cannot be read",
+      body: SAFE,
+      arrange: () => {
+        mockClient = createFakeClient(target([{ match: /to_regclass/, error: { message: "connection reset" } }]));
+      },
+      status: 503,
+      says:
+        'Could not read which versions schema "sales" has already applied, so nothing ran. Try again; ' +
+        "if it keeps failing, check that the target database is reachable. Details: connection reset",
+    },
+  ];
+
+  it.each(cases)("says nothingRan on the $status when $when, and writes nothing", async ({ body, arrange, status, says }) => {
+    arrange();
+    const res = await apply(body);
+    expect(res.status).toBe(status);
+    expect(res.body.error).toBe(says);
+    expect(res.body.nothingRan).toBe(true);
+    expect(res.body.results).toBeUndefined();
+    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+  });
+
+  it("says nothingRan on a refusal as well", async () => {
+    const ticks = await apply(DROPS);
+    expect(ticks.status).toBe(409);
+    expect(ticks.body.nothingRan).toBe(true);
+
+    const order = await apply({
+      ...BASE,
+      scripts: [job("3.0.0", "CREATE TABLE t3 (id int);"), job("2.0.0", "CREATE TABLE t2 (id int);")],
+    });
+    expect(order.status).toBe(400);
+    expect(order.body.nothingRan).toBe(true);
+
+    mockClient = createFakeClient([{ match: /information_schema\.schemata/, rows: [] }]);
+    const missing = await apply(SAFE);
+    expect(missing.status).toBe(400);
+    expect(missing.body.nothingRan).toBe(true);
+  });
+
+  it("does not say it once the run has written anything", async () => {
+    const done = await apply(SAFE);
+    expect(done.status).toBe(200);
+    expect(done.body.nothingRan).toBeUndefined();
+
+    mockClient = createFakeClient(
+      target([{ match: /CREATE TABLE orders/, error: { message: "permission denied for schema sales" } }])
+    );
+    const failed = await apply(SAFE);
+    expect(failed.status).toBe(500);
+    expect(failed.body.nothingRan).toBeUndefined();
+    expect(count(mockClient, "ROLLBACK")).toBe(1);
   });
 });

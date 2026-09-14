@@ -123,6 +123,17 @@ describe("analyseRunRisk", () => {
     expect(risk.breaking.map((entry) => entry.version)).toEqual(["2.0.0"]);
   });
 
+  it("counts a DELETE inside a DO block as data loss, the only warning it gets", () => {
+    const sql =
+      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM orders WHERE archived) THEN " +
+      "DELETE FROM orders WHERE archived; END IF; END $$;";
+    const risk = analyseRunRisk([script("1.0.2", sql)]);
+    expect(risk.dataLoss).toEqual([
+      { label: "orders_fix v1.0.2", scriptName: "orders_fix", version: "1.0.2", kinds: ["DELETE"] },
+    ]);
+    expect(risk.breaking).toEqual([]);
+  });
+
   it("warns about statements existing rows can refuse, and reads enum additions across the run", () => {
     const risk = analyseRunRisk([
       script("1.3.0", "ALTER TABLE orders ADD COLUMN ref text NOT NULL;"),
@@ -159,7 +170,7 @@ describe("checkForwardOnly", () => {
     expect(problem).toMatchObject({ index: 0, reason: "A higher version is already applied." });
     expect(problem?.message).toBe(
       "orders_fix v4.0.0 cannot run: v5.0.0 is already applied and deploys only move forward. " +
-        "Refresh Pre-flight to see what is pending now. Nothing ran."
+        "Check the target database again to see what is pending now. Nothing ran."
     );
   });
 
@@ -203,6 +214,10 @@ describe("checkForwardOnly", () => {
     ];
     for (const problem of problems) {
       expect(problem?.message.endsWith("Nothing ran.")).toBe(true);
+      // The same refusal without that ending, for the route's one refusal
+      // that comes after something was written (step 8a).
+      expect(problem?.message).toBe(`${problem?.refusal} Nothing ran.`);
+      expect(problem?.refusal).not.toContain("Nothing ran");
     }
   });
 });

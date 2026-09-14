@@ -14,7 +14,8 @@
 // - a filled marker in the column of each side that records the version, an
 //   empty one where it does not, and "?" where that side's list stops before
 //   this version (so a gap is never a guess);
-// - HEAD at each side's current version;
+// - HEAD at each side's current version (and, where the screen asks, that
+//   version in the side's column heading);
 // - a coloured dot for the change level (breaking / additive / patch);
 // - an optional status word per side, set by the screen (Deploy's Applied,
 //   Pending, Skipped).
@@ -23,8 +24,10 @@
 
 import { Fragment, useId, useState, type ReactNode } from "react";
 import type { ChangeLevel } from "@/lib/change-level";
+import { shortUtcDate } from "@/lib/format-date";
 import {
   displayVersion,
+  headVersionOf,
   scriptsMatch,
   timelineKey,
   type TimelineEntry,
@@ -46,6 +49,14 @@ export type VersionTimelineProps = {
   rows: TimelineRow[];
   /** The side the screen's verdict calls behind. Its column heading gets "(Outdated)". */
   outdatedSide: Side | null;
+  /**
+   * Print each side's head version beside its name ("Source — v1.2.0"), so
+   * the heading says where each side is, not only which one is behind. Only
+   * when the rows hold one script group: with several, each group has its own
+   * head and the HEAD markers say which. The version is the one the HEAD
+   * marker is on (headVersionOf), so the two cannot disagree.
+   */
+  showHeadVersions?: boolean;
   /**
    * The versions the screen can roll back to (Deploy's Roll back panel offers
    * several). Each one's row gets a button that calls onRevert. Matched like
@@ -86,14 +97,12 @@ const STATUS_PILL: Record<TimelineStatus["tone"], string> = {
 };
 
 /**
- * Short, safe date. "" for a missing or unparseable timestamp rather than
- * "Invalid Date": a version table found in the wild can hold anything.
+ * Short, safe date: the UTC day, so it names the same day as the "… UTC"
+ * stamps a screen prints beside the timeline. "" for a missing or unparseable
+ * timestamp: a version table found in the wild can hold anything.
  */
 function fmtDate(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return shortUtcDate(iso);
 }
 
 /** A row's identity on screen. Two groups can hold the same version, so both parts count. */
@@ -106,11 +115,20 @@ function storedSql(entry: TimelineEntry | null): string | null {
   return entry && entry.sqlContent && entry.sqlContent.trim() !== "" ? entry.sqlContent : null;
 }
 
-/** One column heading: the side's name, and "(Outdated)" when the verdict says it is behind. */
-function SideHeading({ label, outdated }: { label: string; outdated: boolean }) {
+/**
+ * One column heading: the side's name, its head version when the screen asks
+ * for it, and "(Outdated)" when the verdict says it is behind.
+ */
+function SideHeading({ label, head, outdated }: { label: string; head: string | null; outdated: boolean }) {
   return (
     <th scope="col" className="vtl__sidehead">
       <span className="vtl__sidename">{label}</span>
+      {head !== null && (
+        <>
+          {" — "}
+          <span className="vtl__sidever">{head}</span>
+        </>
+      )}
       {outdated && (
         <>
           {" "}
@@ -267,6 +285,7 @@ export function VersionTimeline({
   rightLabel,
   rows,
   outdatedSide,
+  showHeadVersions = false,
   revertableVersions = [],
   revertableFamily,
   onRevert,
@@ -301,6 +320,8 @@ export function VersionTimeline({
   const anyFailed = rows.some((row) => row.left?.failed || row.right?.failed);
   const anyHead = rows.some((row) => row.isLeftHead || row.isRightHead);
   const anyUngraded = rows.some((row) => row.changeType === "unknown");
+  const leftHead = showHeadVersions ? headVersionOf(rows, "left") : null;
+  const rightHead = showHeadVersions ? headVersionOf(rows, "right") : null;
   // The hint promises a script, so it shows only when at least one row has one.
   const anyScript = rows.some((row) => storedSql(row.left) !== null || storedSql(row.right) !== null);
 
@@ -323,8 +344,8 @@ export function VersionTimeline({
               <thead>
                 <tr>
                   <th scope="col">Version</th>
-                  <SideHeading label={leftLabel} outdated={outdatedSide === "left"} />
-                  <SideHeading label={rightLabel} outdated={outdatedSide === "right"} />
+                  <SideHeading label={leftLabel} head={leftHead} outdated={outdatedSide === "left"} />
+                  <SideHeading label={rightLabel} head={rightHead} outdated={outdatedSide === "right"} />
                   {hasActions && (
                     <th scope="col">
                       <span className="sr-only">Actions</span>

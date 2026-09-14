@@ -30,6 +30,7 @@ import {
   ROW_DESTROYING_NOT_BREAKING,
 } from "@/lib/sql-guard";
 import { analyseRunRisk } from "@/lib/deploy-risk";
+import { readApplyFailure, type ApplyFailure } from "@/lib/apply-failure";
 import {
   describeChangeType,
   louderChangeType,
@@ -71,21 +72,29 @@ import { useUser } from "@/hooks/useUser";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
+import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
+import { shortUtcDate } from "@/lib/format-date";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
 //
 // This is the Pass-6 reskin of the deploy panel that used to live inside the
-// legacy /scripts page. The backend flow is reused verbatim (it is proven):
+// legacy /scripts page. The page previews the run and asks for a tick on each
+// risk it finds; the server does not take its word for any of it.
+// /api/scripts/apply reads the same risks again (lib/deploy-risk) and refuses
+// a run that is out of order, has a risk left unticked, or needs an approval
+// it does not have. The flow:
 //   • GitHub is the source of truth for migration scripts (/api/github/pull).
 //   • /api/scripts/preflight reads the target DB's script_patch ledger and
-//     tells us the current version + applied history.
+//     returns the current version + applied history.
 //   • pendingScripts = GitHub scripts for (schema, group) whose semver is
 //     greater than the target's current version.
 //   • /api/scripts/apply takes the WHOLE batch in one request and runs it in
 //     one transaction. All of them or none of them — a failure anywhere rolls
-//     the run back, so there is no partial deploy to unwind by hand. The same
-//     call with dryRun rehearses the batch and always ends in ROLLBACK.
+//     the run back, so there is no partial deploy to unwind by hand. A real run
+//     first commits the ledger table and any enum value the batch adds, which
+//     no rollback can take back. The same call with dryRun skips those two and
+//     rehearses the batch in a transaction that always ends in ROLLBACK.
 //
 // Nothing on this screen is stubbed. The drift pre-check (stage 1) and the
 // verify re-diff after a run (stage 3) are live: runDriftCheck finds the
@@ -248,6 +257,11 @@ type ApplyResponse = {
   dryRunLimitation?: boolean;
   /** Set when the COMMIT did not report back — see the route's catch block. */
   outcomeUnknown?: boolean;
+  /**
+   * Set on every answer the route gives before its first write to the target
+   * (answerBeforeRun there). lib/apply-failure is the one reading of it.
+   */
+  nothingRan?: boolean;
 };
 
 // The change_type this page sends with a migration, to the apply route and to
@@ -342,13 +356,11 @@ function fmtSecs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-// Short, safe date for the ledger's applied rows. Returns "" for a missing or
-// unparseable timestamp rather than "Invalid Date".
+// Short, safe date for the ledger's applied rows: the UTC day, the same day
+// the version timeline on this screen shows for the same row. Returns "" for a
+// missing or unparseable timestamp rather than "Invalid Date".
 function fmtDate(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return shortUtcDate(iso);
 }
 
 // Applied / Pending / Skipped (the version ledger, lib/script-status) → the
@@ -482,32 +494,6 @@ function nameTwoRuns(ran: ReadonlyArray<string>, now: ReadonlyArray<string>): [s
   return [listVersions(ran), listVersions(now)];
 }
 
-// Change-kind → status pill.
-function kindPill(kind: ChangeKind) {
-  if (kind === "breaking") {
-    return (
-      <span className="pill pill-break">
-        <span className="dot" />
-        breaking
-      </span>
-    );
-  }
-  if (kind === "additive") {
-    return (
-      <span className="pill pill-pending">
-        <span className="dot" />
-        additive
-      </span>
-    );
-  }
-  return (
-    <span className="pill pill-neutral">
-      <span className="dot" style={{ background: "var(--text-3)" }} />
-      patch
-    </span>
-  );
-}
-
 // The right-hand status cell of a mig-row.
 function RightStatus({ cell }: { cell: RunCell }) {
   if (cell.status === "running") {
@@ -626,7 +612,7 @@ function MigRow({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="name">{name}</span>
-            {kindPill(kind)}
+            <ChangeLevelPill level={kind} />
           </div>
           <div className="sub mono">{sub}</div>
           {notes?.map((note, index) => (
@@ -985,11 +971,29 @@ export default function DeployPage() {
   // A failure that belongs to the run rather than to any one migration — a
   // rejected request, an unreadable response, a connection that never landed.
   const [runError, setRunError] = useState<string | null>(null);
-  // True when the server turned the last run away (a 4xx answer): it checked
-  // the request and applied none of it. The rows and the recovery bar then say
-  // "refused" rather than "rolled back", which would describe a run that never
-  // got going.
-  const [runRefused, setRunRefused] = useState(false);
+  // How the last run failed, as lib/apply-failure reads the answer; null after
+  // a success and before any run. A refused run (a 4xx) and one that never
+  // started (a 5xx the server marks nothingRan) never got going, so the rows,
+  // the header and the recovery bar name what happened rather than saying
+  // "rolled back", which would describe a run that did. An unknown outcome
+  // shows in the rows themselves (runOutcomeUnknown below).
+  const [runFailure, setRunFailure] = useState<ApplyFailure | null>(null);
+  const runRefused = runFailure === "refused";
+  const runNotStarted = runFailure === "not-started";
+  // What the ledger re-read after a run found (runBatch starts it right after
+  // runComplete). While it is in flight the old reading is still on screen,
+  // and a failed one sets preflightResult to null (nothing else does once a
+  // run has started), so neither may be described as a re-read ledger. The
+  // failure is said here on the Run step, because its preflightError banner
+  // only shows on Pre-flight and Verify.
+  const ledgerReread: "reading" | "read" | "failed" = preflightLoading
+    ? "reading"
+    : preflightResult !== null
+      ? "read"
+      : "failed";
+  const ledgerRereadFailed =
+    `The ledger could not be read again: ${preflightError ?? "the pre-flight check failed."} ` +
+    "Press Check database on Pre-flight to read it.";
 
   const timerRef = useRef<number | null>(null);
   const runStartRef = useRef(0);
@@ -1447,13 +1451,18 @@ export default function DeployPage() {
   // any part of what would run and it has to be given again — otherwise a tick
   // meant for two patch migrations on dev could carry over to a breaking one on
   // production. targetVersion is in here because it decides how far the run
-  // goes, not just where.
+  // goes, not just where. selectionBody is the run itself, the string the
+  // approval hash and the rehearsal pin are taken from: it also changes when
+  // the start of the run moves under the same target version (a rollback
+  // re-reads the ledger and the run grows back over what it undid) or when
+  // anything in the run changes on a re-pull. It is a string, so a re-read
+  // that finds the same run leaves the ticks alone.
   useEffect(() => {
     setDeployAcknowledged(false);
     setBreakingAcknowledged(false);
     setDataLossAcknowledged(false);
     setDriftAcknowledged(false);
-  }, [connectionId, schema, scriptGroup, targetVersion]);
+  }, [connectionId, schema, scriptGroup, targetVersion, selectionBody]);
 
   // The schema's own label belongs to one (connection, schema) pair. Drop it the
   // moment that pair changes, so a prod schema's label can never linger over a
@@ -2261,7 +2270,7 @@ export default function DeployPage() {
     setRunStatus({});
     setRunComplete(false);
     setRunError(null);
-    setRunRefused(false);
+    setRunFailure(null);
     setRunIsDryRun(false);
     setRehearsedBody(null);
     setElapsedMs(0);
@@ -2360,7 +2369,7 @@ export default function DeployPage() {
     setRunFromVersion(currentLabel);
     setRunIsDryRun(dryRun);
     setRunError(null);
-    setRunRefused(false);
+    setRunFailure(null);
     // Every migration goes to "running" at once because they really do run
     // together. Ticking them off one at a time would be a story about a loop
     // that no longer exists.
@@ -2379,13 +2388,10 @@ export default function DeployPage() {
 
     let outcomes: ApplyOutcome[] | null = null;
     let failure: string | null = null;
-    // Whether this page cannot say how the run ended. Only three things leave
-    // it not knowing: the request never completed, the answer could not be
-    // read, or the server itself says its COMMIT did not report back. Any other
-    // answer is the server's own account of what happened.
-    let outcomeUnknown = false;
-    // The server turned the run away (a 4xx): it applied none of it.
-    let refused = false;
+    // How the run failed, if it did: lib/apply-failure's reading of the answer,
+    // so the rows, the toast, the header and the recovery bar tell one story.
+    // Stays null on a success.
+    let failureKind: ApplyFailure | null = null;
 
     try {
       const res = await fetch("/api/scripts/apply", {
@@ -2439,14 +2445,12 @@ export default function DeployPage() {
           data?.error ??
           `The apply API answered ${res.status} with a response this page could ` +
           `not read. Re-check the target before retrying.`;
+        // Unknown when the body could not be read or the server says its
+        // COMMIT did not report back; refused on any 4xx but 422 (a dry run
+        // whose SQL did run); not started on a 5xx marked nothingRan; rolled
+        // back otherwise.
+        failureKind = readApplyFailure(res.status, data);
       }
-      outcomeUnknown = data === null || data.outcomeUnknown === true;
-      // Every 4xx but one is the server turning the run away before any of its
-      // SQL ran. The exception is 422: a dry run whose SQL did run, until
-      // PostgreSQL refused to use a new enum value inside it. That is a
-      // rehearsal that failed, so it keeps the "failed" wording.
-      refused =
-        !outcomeUnknown && res.status >= 400 && res.status < 500 && res.status !== 422;
     } catch {
       // A genuine transport failure: the request may or may not have reached the
       // server, so this must not claim nothing happened.
@@ -2456,18 +2460,22 @@ export default function DeployPage() {
         "The request to the server never completed, so this page cannot say " +
         "whether the migrations ran. Go back to Pre-flight and press Check " +
         "database to read what the target actually has before you retry.";
-      outcomeUnknown = true;
+      failureKind = readApplyFailure(null, null);
     }
+
+    // Whether this page cannot say how the run ended: the request never
+    // completed, the answer could not be read, or the server says its COMMIT
+    // did not report back. Any other answer is the server's own account.
+    const outcomeUnknown = failureKind === "unknown";
 
     // Map the server's verdict onto the rows.
     //
     // A row the server said nothing about is "not known" only when the whole
     // outcome is (outcomeUnknown above): then the server reporting nothing is
     // not the server reporting that nothing happened, because the request may
-    // have run every migration. Any other answer says the run did not commit
-    // (a refusal before anything ran lists no rows at all), so a row it leaves
-    // out was skipped. One answer, because three surfaces need it: the rows,
-    // the toast, and the recovery bar.
+    // have run every migration. Any other answer says the run did not commit,
+    // so a row it leaves out was skipped. One answer, because three surfaces
+    // need it: the rows, the toast, and the recovery bar.
     const unreported: RunStatus = outcomeUnknown ? "unknown" : "skipped";
     // The server's answer for one script of this batch, if it gave one.
     const outcomeOf = (script: GitHubScript) =>
@@ -2483,7 +2491,7 @@ export default function DeployPage() {
       return next;
     });
     setRunError(failure);
-    setRunRefused(refused);
+    setRunFailure(failureKind);
     // A clean rehearsal pins what it rehearsed. "Clean" is the rehearsal
     // card's own rule (every script came back rehearsed), so the card and the
     // pin always appear together.
@@ -2513,13 +2521,17 @@ export default function DeployPage() {
       showToast(
         outcomeUnknown
           ? "Deploy outcome not known — check the target before retrying"
-          : refused
+          : failureKind === "refused"
             ? dryRun
               ? "Dry run refused — nothing was run"
               : "Deploy refused — nothing was applied"
-            : dryRun
-              ? "Dry run failed — nothing was written"
-              : "Deploy failed — nothing was applied",
+            : failureKind === "not-started"
+              ? dryRun
+                ? "Dry run did not start — nothing was run"
+                : "Deploy did not start — nothing was applied"
+              : dryRun
+                ? "Dry run failed — nothing was written"
+                : "Deploy failed — nothing was applied",
         "bad"
       );
     } else if (dryRun) {
@@ -2872,6 +2884,7 @@ export default function DeployPage() {
                     rightLabel="This database"
                     rows={timeline.rows}
                     outdatedSide={timeline.outdatedSide}
+                    showHeadVersions
                     revertableVersions={revertableVersions}
                     revertableFamily={scriptGroup}
                     onRevert={rollbackBusy === null ? rollBackTo : undefined}
@@ -3737,17 +3750,25 @@ export default function DeployPage() {
                           ? runIsDryRun
                             ? "Dry run refused — nothing was run"
                             : "Run refused — nothing was applied"
-                          : runIsDryRun
-                            ? "Dry run halted"
-                            : "Run halted — nothing was applied"}
+                          : runNotStarted
+                            ? runIsDryRun
+                              ? "Dry run did not start — nothing was run"
+                              : "Run did not start — nothing was applied"
+                            : runIsDryRun
+                              ? "Dry run halted"
+                              : "Run halted — nothing was applied"}
               </div>
               <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
                 {/* The enum values are lifted out and committed before the
                     transaction opens, so the unqualified promise is false for
-                    exactly this run — the same exception the gate above states. */}
+                    exactly this run — the same exception the gate above states.
+                    A refused run or one that did not start stopped before that
+                    step (the only refusal after it names its enum values in its
+                    own card below), so the exception would claim a commit that
+                    never happened. */}
                 {runIsDryRun
                   ? "Every migration really runs against the target, inside one transaction that always ends in ROLLBACK."
-                  : enumAdditions.length > 0
+                  : enumAdditions.length > 0 && !runRefused && !runNotStarted
                     ? "Every migration runs inside one transaction. A failure rolls " +
                       "the whole run back — all of them or none, apart from the enum " +
                       "values that were committed first."
@@ -3801,14 +3822,19 @@ export default function DeployPage() {
                 rehearsed: `rehearsed · rolled back with the run${ran}`,
                 // The row says what happened; the err-pre below says what
                 // Postgres said — one each, not both twice.
-                // A refused run never got going, so there is nothing to have
-                // rolled back; the row names the refusal instead.
+                // A refused run, or one that never started, never got going,
+                // so there is nothing to have rolled back; the row names what
+                // happened instead.
                 failed: runRefused
                   ? "refused · the server's reason is below"
-                  : "failed · the whole run was rolled back",
+                  : runNotStarted
+                    ? "not run · the server's reason is below"
+                    : "failed · the whole run was rolled back",
                 skipped: runRefused
                   ? "skipped · the server refused the run, and nothing in it was applied"
-                  : "skipped · the run rolled back before this one could commit",
+                  : runNotStarted
+                    ? "skipped · the run never started, so nothing in it ran"
+                    : "skipped · the run rolled back before this one could commit",
                 unknown: "not known · the commit never reported back — read script_patch",
               };
               return (
@@ -3858,10 +3884,19 @@ export default function DeployPage() {
                 </div>
                 <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
                   Then it was rolled back: no ledger rows, no lineage advance, no schema
-                  change. The ledger has been re-read and still reads{" "}
-                  <span className="mono">
-                    {preflightResult?.currentVersion ? vLabel(preflightResult.currentVersion) : "no versions yet"}
-                  </span>.
+                  change.{" "}
+                  {ledgerReread === "read" ? (
+                    <>
+                      The ledger has been re-read and still reads{" "}
+                      <span className="mono">
+                        {preflightResult?.currentVersion ? vLabel(preflightResult.currentVersion) : "no versions yet"}
+                      </span>.
+                    </>
+                  ) : ledgerReread === "reading" ? (
+                    "Reading the ledger again…"
+                  ) : (
+                    ledgerRereadFailed
+                  )}
                 </div>
                 {targetIsProduction && !approvedRun && (
                   <div className="text-[12px] mt-1" style={{ color: "var(--drift)" }}>
@@ -3920,7 +3955,9 @@ export default function DeployPage() {
                     ? "Run outcome not known."
                     : runRefused
                       ? "Run refused."
-                      : "Run did not complete."}
+                      : runNotStarted
+                        ? "Run did not start."
+                        : "Run did not complete."}
                 </div>
                 <div className="text-[12px]" style={{ color: "var(--text-2)" }}>
                   {/* Only a response we actually read licenses the claim that
@@ -3934,10 +3971,20 @@ export default function DeployPage() {
                     : runRefused
                     ? "The server refused this run, so none of the migrations above " +
                       "are applied. Its reason is in the card above."
-                    : "The run rolled back, so none of the migrations above are " +
-                      "applied. Anything that had to commit before the transaction " +
-                      "opened is still there — the ledger table on a first deploy, and " +
-                      "any enum value listed on Pre-flight. The ledger has been re-read."}
+                    : runNotStarted
+                    ? "The server stopped before the run started, so nothing was " +
+                      "written to the target. Its reason is in the card above."
+                    : (runIsDryRun
+                        ? "The dry run rolled back, so nothing was written to the target."
+                        : "The run rolled back, so none of the migrations above are " +
+                          "applied. Anything that had to commit before the transaction " +
+                          "opened is still there — the ledger table on a first deploy, and " +
+                          "any enum value listed on Pre-flight.") +
+                      (ledgerReread === "read"
+                        ? " The ledger has been re-read."
+                        : ledgerReread === "reading"
+                          ? " Reading the ledger again…"
+                          : ` ${ledgerRereadFailed}`)}
                 </div>
                 {/* Run again starts the selection, not the batch above, so it
                     waits while the two differ. That also keeps a run whose

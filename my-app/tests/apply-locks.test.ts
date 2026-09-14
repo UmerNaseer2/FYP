@@ -148,6 +148,9 @@ it("answers 503 naming a running deploy or rollback when a family lock times out
   expect(String(res.body.error)).toContain("waited 15 seconds");
   expect(String(res.body.error)).toContain("a deploy or rollback of the same script that is still running");
   expect(queryTexts(mockClient)).toContain("ROLLBACK");
+  // The same status as a run that never started, so the flag is what tells
+  // them apart: this one opened its transaction and rolled it back.
+  expect(res.body.nothingRan).toBeUndefined();
 });
 
 it("stores a comment-only rollback as NULL and a real one as written", async () => {

@@ -16,6 +16,7 @@
 
 import { compareVersions, highestVersion } from "./script-status";
 import { timelineKey } from "./version-timeline";
+import { readApplyFailure, type ApplyFailure } from "./apply-failure";
 
 /** One applied-script entry from a schema's script_patch ledger. */
 export type LedgerEntry = {
@@ -39,9 +40,9 @@ export type LedgerEntry = {
 
 export type LedgerDiff = {
   /**
-   * Source entries the Target lacks and could still take, in replay order
-   * (Source applied_at, then version). Each version appears once, however many
-   * spellings of it the Source recorded.
+   * Source entries the Target lacks and could still take, in replay order: the
+   * order the Source ran them (applied_at, then the ledger's own order). Each
+   * version appears once, however many spellings of it the Source recorded.
    */
   missing: LedgerEntry[];
   /**
@@ -101,9 +102,10 @@ export function headsByFamily(entries: ReadonlyArray<LedgerEntry>): Map<string, 
 
 /**
  * Diff two ledgers.
- *   missing     = Source entries the Target lacks and can still take, ordered by
- *                 the Source's original applied_at (the order that actually
- *                 worked), tie-broken by version.
+ *   missing     = Source entries the Target lacks and can still take, in the
+ *                 order the Source ran them (the order that actually worked):
+ *                 by applied_at, and entries with the same applied_at keep the
+ *                 order they arrived in.
  *   belowTarget = Source entries the Target lacks but is already past (see
  *                 LedgerDiff). A replay cannot run them.
  *   diverged    = Target entries the Source lacks (decision 2 — surface, never auto-merge).
@@ -114,13 +116,16 @@ export function diffLedgers(source: LedgerEntry[], target: LedgerEntry[]): Ledge
   const sourceKeys = new Set(source.map(entryKey));
   const targetHeads = headsByFamily(target);
 
+  // Sorted by time only. Every ledger row one deploy writes shares that
+  // deploy's applied_at (the transaction's timestamp), so a tie means "ran in
+  // the same run", and version order says nothing about the order inside it:
+  // users 2.0.0 may have run before orders 1.1.0. The ledger route sends the
+  // rows in the order they were written (applied_at, then id), and sort keeps
+  // the order of equal items, so a tie keeps that order.
   const lacking = source
     .filter((e) => !targetKeys.has(entryKey(e)))
     .slice()
-    .sort((a, b) => {
-      const byTime = a.appliedAt.localeCompare(b.appliedAt);
-      return byTime !== 0 ? byTime : compareVersions(a.version, b.version);
-    });
+    .sort((a, b) => a.appliedAt.localeCompare(b.appliedAt));
 
   const missing: LedgerEntry[] = [];
   const belowTarget: LedgerEntry[] = [];
@@ -201,4 +206,51 @@ export function cutForwardOnly(entries: LedgerEntry[], targetEntries: LedgerEntr
     marks.set(e.scriptName, e.version.trim());
   }
   return { runnable: entries.slice(), stoppedBefore: null, reason: null, blockedBy: null };
+}
+
+/**
+ * How a replay's call to the apply route ended. A failure is read by
+ * readApplyFailure (lib/apply-failure), the reading Deploy uses too.
+ */
+export type ReplayOutcome = { ok: true } | { ok: false; failure: ApplyFailure; error: string };
+
+/** An apply-route answer as JSON. Only the fields named here are read. */
+export type ReplayAnswer = {
+  success?: unknown;
+  error?: unknown;
+  outcomeUnknown?: unknown;
+  nothingRan?: unknown;
+  [field: string]: unknown;
+};
+
+/**
+ * Read the apply route's answer to a replay. Pass `status: null` when the
+ * request never came back and `answer: null` when its body was not JSON.
+ *
+ * A success needs a 2xx AND `success: true`, so a future soft-failure shape is
+ * never read as applied. Anything else is a failure, read by readApplyFailure.
+ * The Version Sync page used to read failures by hand, and took a results list
+ * to mean "the run reached the Target and rolled back". But the route's
+ * forward-only and ledger refusals (409) list the run's scripts too, so a
+ * refusal read "Replay failed", and a 503 from before the first write read
+ * "refused". The route marks those with nothingRan, and readApplyFailure
+ * reads it.
+ */
+export function readReplayAnswer(status: number | null, answer: ReplayAnswer | null): ReplayOutcome {
+  if (status === null) {
+    return { ok: false, failure: readApplyFailure(null, null), error: "Could not reach the server." };
+  }
+  if (answer === null) {
+    return {
+      ok: false,
+      failure: readApplyFailure(status, null),
+      error: `The server answered ${status} with a reply this page could not read.`,
+    };
+  }
+  if (status >= 200 && status < 300 && answer.success === true) return { ok: true };
+  const error =
+    typeof answer.error === "string" && answer.error.trim() !== ""
+      ? answer.error
+      : `The server answered ${status} with no message.`;
+  return { ok: false, failure: readApplyFailure(status, answer), error };
 }

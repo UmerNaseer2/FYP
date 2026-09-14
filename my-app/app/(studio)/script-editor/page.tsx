@@ -46,6 +46,7 @@ import {
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { displayVersion } from "@/lib/version-timeline";
+import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
 type Connection = {
@@ -1278,8 +1279,9 @@ export default function ScriptEditorPage() {
                         </span>
                       )}
                       {sql.trim() && (
+                        // The grade wears the colour every screen gives its level.
                         <span
-                          className={`pill ${suggestedLevel === "major" ? "pill-break" : suggestedLevel === "minor" ? "pill-sync" : "pill-pending"}`}
+                          className={`pill pill-${CHANGE_LEVEL_PILL[sqlGrade.level].tone}`}
                           title="Read from the statements that will run; comments and quoted text are ignored. Deploy grades scripts with this same rule."
                         >
                           {gradeSentence(sqlGrade)}

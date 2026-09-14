@@ -69,3 +69,35 @@ export function normalizeChangeLevel(value: unknown): ChangeLevel {
 
   return "unknown";
 }
+
+/** The Pill tones a change level may take (components/ui/Pill). */
+export type ChangeLevelTone = "break" | "pending" | "neutral";
+
+/**
+ * How every screen shows a change level as a pill: its word and its tone.
+ *
+ * One table, so the screens agree. Version Sync, Deploy, the schema page and
+ * the Script Editor each picked their own colours, and the same level came out
+ * green on one screen and blue or grey on another. The tones follow the
+ * version timeline's dots (.vtl__dot.lvl-* in globals.css): breaking uses
+ * --break, additive --pending, patch the grey --text-3. Green (--sync) is left
+ * for "applied" and "in sync", so a level never reads as a status. A level
+ * nobody recorded says so, as the timeline's legend does, rather than showing
+ * "unknown" as if it were a level.
+ */
+export const CHANGE_LEVEL_PILL: Record<ChangeLevel, { word: string; tone: ChangeLevelTone }> = {
+  breaking: { word: "breaking", tone: "break" },
+  additive: { word: "additive", tone: "pending" },
+  patch: { word: "patch", tone: "neutral" },
+  unknown: { word: "level not recorded", tone: "neutral" },
+};
+
+/**
+ * A stored change type (a ledger row's change_type) as the word its pill
+ * shows. For text where a pill does not fit, such as a list entry: it reads
+ * the value the same way the pill and the timeline dot do, so "major" in an
+ * old ledger row is "breaking" here too, never the raw text.
+ */
+export function changeLevelWord(value: unknown): string {
+  return CHANGE_LEVEL_PILL[normalizeChangeLevel(value)].word;
+}

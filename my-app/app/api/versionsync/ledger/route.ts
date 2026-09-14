@@ -72,8 +72,12 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Connect to the target ────────────────────────────────────────────────
-  const targetPool = getPoolForConfig(
-    buildPgConfig({
+  // buildPgConfig decrypts the saved password, and throws when this server's
+  // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
+  // uncaught, that was a bare 500 Version Sync could only call unreachable.
+  let targetConfig: ReturnType<typeof buildPgConfig>;
+  try {
+    targetConfig = buildPgConfig({
       host: connRow.host,
       port: connRow.port,
       database: connRow.database_name,
@@ -82,8 +86,21 @@ export async function GET(request: NextRequest) {
       connectionString: connRow.connection_string,
       ssl: Boolean(connRow.ssl),
       sslMode: connRow.ssl_mode,
-    })
-  );
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Version sync ledger — could not read the saved connection's credentials:", message);
+    return NextResponse.json(
+      {
+        error:
+          "This connection's stored credentials can't be read on this server. Set " +
+          "APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
+          "the Connections screen and enter its password again.",
+      },
+      { status: 500 }
+    );
+  }
+  const targetPool = getPoolForConfig(targetConfig);
 
   let client;
   try {
@@ -116,16 +133,25 @@ export async function GET(request: NextRequest) {
 
     // sql_content and down_sql may be absent on a script_patch created by an
     // older version of this app and not yet re-applied. Select NULL for either
-    // rather than erroring on a missing column.
+    // rather than erroring on a missing column. id is checked too, for the
+    // order below.
     const colCheck = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = 'script_patch'
-          AND column_name IN ('sql_content', 'down_sql')`,
+          AND column_name IN ('sql_content', 'down_sql', 'id')`,
       [schema]
     );
     const present = new Set(colCheck.rows.map((r) => r.column_name));
     const sqlExpr = present.has("sql_content") ? "sql_content" : "NULL::text AS sql_content";
     const downExpr = present.has("down_sql") ? "down_sql" : "NULL::text AS down_sql";
+
+    // The order the rows were written, which is the order they ran. One deploy
+    // writes all its rows in one transaction, so they share one applied_at;
+    // the id (a serial) then says which came first. Version order would not:
+    // users 2.0.0 may have run before orders 1.1.0. Version Sync replays in
+    // this order, so it must be the real one. A script_patch made by another
+    // tool may have no id column; version is the best tie-break left there.
+    const order = present.has("id") ? "applied_at ASC, id ASC" : "applied_at ASC, version ASC";
 
     const q = quoteIdent(schema);
     const res = await client.query<{
@@ -138,7 +164,7 @@ export async function GET(request: NextRequest) {
     }>(
       `SELECT script_name, version, change_type, applied_at, ${sqlExpr}, ${downExpr}
        FROM ${q}.script_patch
-       ORDER BY applied_at ASC, version ASC`
+       ORDER BY ${order}`
     );
 
     const entries: LedgerEntry[] = res.rows.map((r) => {
