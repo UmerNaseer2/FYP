@@ -9,6 +9,7 @@ import { NextRequest } from "next/server";
 import { toEnvironment } from "@/lib/environments";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -215,11 +216,9 @@ describe("saved credentials this server can't read", () => {
     const res = await apply({ ...SAFE, acknowledgeProduction: true });
     expect(res.status).toBe(500);
     expect(res.body.nothingRan).toBe(true);
-    expect(res.body.error).toBe(
-      "This connection's stored credentials can't be read on this server, so nothing ran. " +
-        "Set APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
-        "the Connections screen and enter its password again."
-    );
+    expect(res.body.error).toBe(`Nothing ran. ${UNREADABLE_CREDENTIALS_MESSAGE}`);
+    // The decrypt error is for the server log, not the page.
+    expect(JSON.stringify(res.body)).not.toContain("Unsupported state");
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
   });

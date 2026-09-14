@@ -41,6 +41,7 @@ import { changeLevelWord, normalizeChangeLevel } from "@/lib/change-level";
 import { ROW_DESTROYING_NOT_BREAKING } from "@/lib/sql-guard";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import { countOf } from "@/lib/plural";
+import { utcStamp } from "@/lib/format-date";
 import {
   isProduction,
   louderEnvironment,
@@ -75,10 +76,9 @@ type Connection = {
 };
 type Phase = "idle" | "loading" | "error" | "ready";
 
-const fmtDate = (iso: string) => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
-};
+// The UTC stamp every screen prints (utcStamp). A ledger value that isn't a
+// timestamp is shown as it is rather than hidden.
+const fmtDate = (iso: string) => utcStamp(iso) || iso;
 
 /** Everything one side (Source or Target) needs: connection + schema + its ledger. */
 function useLedgerSource() {

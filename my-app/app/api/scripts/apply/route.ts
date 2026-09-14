@@ -5,6 +5,7 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
+import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { containsTransactionControl, extractEnumAddValues, hasExecutableSql } from "@/lib/sql-guard";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
@@ -783,12 +784,8 @@ export async function POST(request: NextRequest) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — could not read the saved connection's credentials:", message);
     return answerBeforeRun(
-      {
-        error:
-          "This connection's stored credentials can't be read on this server, so nothing ran. " +
-          "Set APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
-          "the Connections screen and enter its password again.",
-      },
+      // The instruction every route gives for this (UNREADABLE_CREDENTIALS_MESSAGE).
+      { error: `Nothing ran. ${UNREADABLE_CREDENTIALS_MESSAGE}` },
       { status: 500 }
     );
   }

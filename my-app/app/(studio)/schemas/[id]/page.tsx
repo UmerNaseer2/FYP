@@ -26,6 +26,7 @@ import {
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
+import { utcStamp } from "@/lib/format-date";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
@@ -57,12 +58,9 @@ function fmtSeq(seq: number): string {
   return String(seq).padStart(4, "0");
 }
 
-/** Stable absolute timestamp, e.g. "2026-06-08 14:21 UTC". */
+/** Stable absolute timestamp, e.g. "2026-06-08 14:21 UTC" (utcStamp); "—" when there is none. */
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  return utcStamp(iso) || "—";
 }
 
 /** How each drift status reads: pill tone + label. */

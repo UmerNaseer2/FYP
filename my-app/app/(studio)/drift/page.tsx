@@ -29,6 +29,7 @@ import { DriftSchemaPicker } from "@/components/studio/DriftSchemaPicker";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
 import { describeCadence } from "@/lib/drift-schedule";
+import { utcStamp } from "@/lib/format-date";
 // Types only. `import type` is erased at compile time, so importing the shape
 // of a row does not pull the database module into the client bundle.
 import type {
@@ -57,12 +58,9 @@ import type {
 
 // ── Small pure formatters (server-safe, no Date.now → no hydration risk) ─────
 
-/** Stable absolute timestamp, e.g. "2026-06-09 14:21 UTC". */
+/** Stable absolute timestamp, e.g. "2026-06-09 14:21 UTC" (utcStamp); "—" when there is none. */
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  return utcStamp(iso) || "—";
 }
 
 /** The three questions this screen answers, in the order they get asked. */
