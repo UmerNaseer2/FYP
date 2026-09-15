@@ -216,6 +216,28 @@ describe("checkAnalysable — what is refused", () => {
     expect(checkAnalysable("SELECT 1; SELECT 2", false)).toContain("there are 2 here");
   });
 
+  /**
+   * A second statement dressed up to slip past the count. Each of these once
+   * masked as a single statement, so a viewer could COMMIT and then DELETE
+   * through plain estimate mode. The mask now draws the same boundaries the
+   * server would, so the count sees the extra statements and refuses. (The
+   * route also sends the EXPLAIN over the extended protocol, which refuses a
+   * second command outright — this is the defence-in-depth in front of it.)
+   */
+  describe("refuses a second statement hidden at a lexer edge", () => {
+    it.each([
+      ["a $ inside an identifier", "SELECT 1 AS a$b$; COMMIT; DELETE FROM orders"],
+      ["a $$ after an identifier", "SELECT x1F$$; COMMIT; DELETE FROM orders"],
+      ["a nested block comment", "SELECT 1 /* /* */ ' */ ; COMMIT; DELETE FROM orders"],
+      ["a carriage-return line comment", "-- x\r; COMMIT; DELETE FROM orders"],
+      ["a name ending in E before a literal", "SELECT 1 AS a$E'\\'; COMMIT; DELETE FROM orders"],
+      ["an E'' newline continuation", "SELECT E'a'\n'\\' '; COMMIT; DELETE FROM orders"],
+    ])("refuses %s in both modes", (_label, sql) => {
+      expect(checkAnalysable(sql, false)).toContain("analyses one query at a time");
+      expect(checkAnalysable(sql, true)).toContain("analyses one query at a time");
+    });
+  });
+
   it("refuses transaction control", () => {
     expect(checkAnalysable("COMMIT", false)).toContain("COMMIT / ROLLBACK");
   });

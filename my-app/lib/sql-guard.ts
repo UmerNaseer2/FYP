@@ -25,63 +25,179 @@
  * The change-type reader needs it to tell DROP TRIGGER "Audit" from a CREATE
  * TRIGGER of some other trigger. Every guard uses the default, which blanks
  * them, so a keyword hidden in a quoted name never counts as code.
+ *
+ * The scanner mirrors PostgreSQL's own lexer (src/backend/parser/scan.l),
+ * because anything it reads differently from the lexer is a hole a second
+ * statement can hide in. The subtle parts, and why each is here:
+ *
+ *   - Identifiers are consumed WHOLE, through letters, digits, `_`, `$` and any
+ *     byte ≥ 0x80 — exactly the lexer's ident_cont. So `a$b$` is one name, not
+ *     a name and a dollar quote, and `x1F$$` is one name, not a name and a
+ *     dollar quote wrapping whatever comes next. Reading that `$$` as a tag
+ *     would blank a real COMMIT sitting after it.
+ *   - Numbers are consumed too (PG14-style: digits, one dot, one exponent).
+ *     Only so a number butted against a dollar quote — `1e5$$…$$` — leaves the
+ *     dollar quote to be recognised, instead of the digits being skipped and
+ *     the `e5$$` swallowed as an identifier.
+ *   - An E'' string — backslash escapes and all — is entered ONLY when the
+ *     token just read is the bare word E or e. `aE'…'` and `1E'…'` after a
+ *     number are handled by that naturally: the E is part of the name / the
+ *     number is read first.
+ *   - A '' string CONTINUES across a newline: after its closing quote,
+ *     whitespace containing a newline (and -- line comments) then another quote
+ *     resumes the SAME string in the SAME mode, so an E'' string's escapes
+ *     carry on. A block comment sitting between the two quotes breaks the
+ *     continuation, which is why it only skips whitespace and -- comments.
+ *   - Block comments NEST (an inner opener raises the depth), matching the
+ *     lexer, so a COMMIT after nested block comments is not left half-masked.
+ *   - A -- line comment ends at \n OR \r, the lexer's newline class.
  */
 export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } = {}): string {
   const out = sql.split("");
-  // A dollar-quote tag is empty or starts with a letter/underscore, which is
-  // what keeps a `$1` placeholder from being read as an opening tag. Sticky so
-  // it can be tested at one position without slicing the string.
-  const dollarTag = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
+  const len = sql.length;
+
+  // A dollar-quote tag is empty or a name (letter/underscore/high byte, then
+  // more of those or digits). Tried only at a `$` that did not continue a name,
+  // so `$1` placeholders and the `$` inside an identifier never open one.
+  const dollarTag = /\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/y;
+  const number = /[0-9]+(?:\.[0-9]*)?(?:[Ee][+-]?[0-9]+)?/y;
+  // quotecontinue, from scan.l: horizontal space and -- comments, then a
+  // newline, then any run of space or --comment-lines, then the next quote.
+  const quoteContinue = /(?:[ \t\f]|--[^\n\r]*)*[\n\r](?:[ \t\n\r\f\v]+|--[^\n\r]*[\n\r])*'/y;
 
   function blank(from: number, to: number): void {
-    for (let k = from; k < to; k += 1) {
+    for (let k = from; k < to && k < len; k += 1) {
       if (out[k] !== "\n") out[k] = " ";
     }
   }
 
+  const code = (p: number): number => (p >= 0 && p < len ? sql.charCodeAt(p) : -1);
+  function isIdentStart(p: number): boolean {
+    const c = code(p);
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c >= 128;
+  }
+  function isIdentCont(p: number): boolean {
+    const c = code(p);
+    return (
+      (c >= 48 && c <= 57) ||
+      (c >= 65 && c <= 90) ||
+      (c >= 97 && c <= 122) ||
+      c === 95 ||
+      c === 36 || // $
+      c >= 128
+    );
+  }
+
+  // Walk a '' string that has opened at `open` and blank it, following the end
+  // through '' doubling, backslash escapes (E'' only) and newline continuation.
+  // Returns the index just past the whole thing.
+  function scanQuote(open: number, escapes: boolean): number {
+    let j = open + 1;
+    for (;;) {
+      while (j < len) {
+        if (escapes && sql[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (sql[j] === "'") {
+          if (sql[j + 1] === "'") {
+            j += 2; // doubled quote, part of the string
+            continue;
+          }
+          break;
+        }
+        j += 1;
+      }
+      if (j >= len) {
+        blank(open, len); // unterminated
+        return len;
+      }
+      const closeAt = j + 1;
+      quoteContinue.lastIndex = closeAt;
+      const cont = quoteContinue.exec(sql);
+      if (!cont) {
+        blank(open, closeAt);
+        return closeAt;
+      }
+      // Blank through the gap and resume the same string at the next quote.
+      blank(open, quoteContinue.lastIndex);
+      j = quoteContinue.lastIndex; // one past the continuing quote
+    }
+  }
+
   let i = 0;
-  while (i < sql.length) {
+  while (i < len) {
     const ch = sql[i];
 
     if (ch === "-" && sql[i + 1] === "-") {
-      const newline = sql.indexOf("\n", i);
-      const end = newline === -1 ? sql.length : newline;
-      blank(i, end);
-      i = end;
+      let j = i + 2;
+      while (j < len && sql[j] !== "\n" && sql[j] !== "\r") j += 1;
+      blank(i, j);
+      i = j;
       continue;
     }
 
     if (ch === "/" && sql[i + 1] === "*") {
-      const close = sql.indexOf("*/", i + 2);
-      const end = close === -1 ? sql.length : close + 2;
-      blank(i, end);
-      i = end;
+      let j = i + 2;
+      let depth = 1;
+      while (j < len && depth > 0) {
+        if (sql[j] === "/" && sql[j + 1] === "*") {
+          depth += 1;
+          j += 2;
+        } else if (sql[j] === "*" && sql[j + 1] === "/") {
+          depth -= 1;
+          j += 2;
+        } else {
+          j += 1;
+        }
+      }
+      blank(i, j);
+      i = j;
       continue;
     }
 
-    if (ch === "'" || ch === '"') {
-      // Backslash escapes only exist in an E'' string. In an ordinary literal
-      // PostgreSQL treats a backslash as a plain character (the default
-      // standard_conforming_strings), so reading it as an escape there would
-      // mis-find the closing quote.
-      const escapes = ch === "'" && /[Ee]$/.test(sql[i - 1] ?? "") && !/[A-Za-z0-9_]/.test(sql[i - 2] ?? "");
+    // An identifier, consumed whole. If it is the bare word E/e and a quote
+    // follows, it introduces an E'' string (escapes on); the E itself stays.
+    if (isIdentStart(i)) {
       let j = i + 1;
-      while (j < sql.length) {
-        if (escapes && sql[j] === "\\") {
-          j += 2;
-        } else if (sql[j] !== ch) {
-          j += 1;
-        } else if (sql[j + 1] === ch) {
-          j += 2; // '' inside a literal is an escaped quote, not the end
-        } else {
+      while (j < len && isIdentCont(j)) j += 1;
+      const word = sql.slice(i, j);
+      if ((word === "E" || word === "e") && sql[j] === "'") {
+        i = scanQuote(j, true);
+        continue;
+      }
+      i = j; // an ordinary name is code, left as it is
+      continue;
+    }
+
+    if (ch >= "0" && ch <= "9") {
+      number.lastIndex = i;
+      const m = number.exec(sql);
+      i = m ? number.lastIndex : i + 1; // a number is code, left as it is
+      continue;
+    }
+
+    if (ch === "'") {
+      i = scanQuote(i, false);
+      continue;
+    }
+
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < len) {
+        if (sql[j] === '"') {
+          if (sql[j + 1] === '"') {
+            j += 2; // "" is an escaped quote inside the name
+            continue;
+          }
           j += 1;
           break;
         }
+        j += 1;
       }
-      // The scan still steps over a kept name whole, so a -- or a quote
-      // inside it is never read as the start of something else.
-      if (!(ch === '"' && options.keepQuotedNames)) blank(i, Math.min(j, sql.length));
-      i = j;
+      const end = Math.min(j, len);
+      if (!options.keepQuotedNames) blank(i, end);
+      i = end;
       continue;
     }
 
@@ -90,7 +206,7 @@ export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } 
       const tag = dollarTag.exec(sql);
       if (tag) {
         const close = sql.indexOf(tag[0], i + tag[0].length);
-        const end = close === -1 ? sql.length : close + tag[0].length;
+        const end = close === -1 ? len : close + tag[0].length;
         blank(i, end);
         i = end;
         continue;

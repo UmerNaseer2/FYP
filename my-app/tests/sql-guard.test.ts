@@ -124,6 +124,63 @@ describe("containsTransactionControl", () => {
     expect(() => containsTransactionControl("/* unclosed")).not.toThrow();
     expect(() => containsTransactionControl("SELECT $$unclosed")).not.toThrow();
   });
+
+  /**
+   * The lexer edges a hand-rolled masker used to read differently from
+   * PostgreSQL, each of which let a real COMMIT (with a DELETE behind it) hide.
+   * The mask now mirrors scan.l, so each of these is seen for what it is.
+   */
+  describe("cannot be fooled at a lexer edge", () => {
+    it("does not read the $ inside an identifier as a dollar quote", () => {
+      // `a$b$` is one identifier, so the `;` after it is a real boundary and the
+      // COMMIT is real — not text inside a $b$…$b$ body that never opens.
+      expect(
+        containsTransactionControl("SELECT 1 AS a$b$; COMMIT; SELECT 1 AS c$b$")
+      ).toBe(true);
+      // `x1F$$` is likewise one identifier ($ is an identifier character), not a
+      // name and a dollar quote swallowing everything to the next `$$`.
+      expect(containsTransactionControl("SELECT x1F$$; COMMIT; SELECT 2")).toBe(true);
+    });
+
+    it("closes a nested block comment at the matching depth", () => {
+      // The inner /* raises the depth, so the first */ does not end the comment
+      // and the COMMIT after the real end is not swallowed by a stray literal.
+      expect(
+        containsTransactionControl("SELECT 1 /* /* */ ' */ ; COMMIT; -- '")
+      ).toBe(true);
+    });
+
+    it("ends a -- line comment at a carriage return, not only a newline", () => {
+      expect(containsTransactionControl("-- x\r; COMMIT;")).toBe(true);
+    });
+
+    it("does not turn a name ending in E into an E'' string", () => {
+      // `a$E` and `éE` are identifiers, so the `'\'` after each is an ordinary
+      // literal that ends at its second quote — the backslash is not an escape,
+      // so the COMMIT after the `;` is real.
+      expect(containsTransactionControl("SELECT 1 AS a$E'\\'; COMMIT;")).toBe(true);
+      expect(containsTransactionControl("SELECT 1 AS éE'\\'; COMMIT;")).toBe(true);
+    });
+
+    it("carries an E'' string's escapes across a newline continuation", () => {
+      // `E'a'` and the next quoted chunk are ONE E'' string (a newline then a
+      // quote continues it), so its \' is an escaped quote and the string ends
+      // only at the last quote — leaving the COMMIT after it real.
+      expect(containsTransactionControl("SELECT E'a'\n'\\' '; COMMIT; SELECT ''")).toBe(true);
+    });
+
+    it("reads a high-byte dollar tag, so its body is masked not mis-split", () => {
+      // `$é$ … $é$` is a dollar-quoted body; the COMMIT inside it is inert, and
+      // the tag must be recognised or the body's `;`s read as real boundaries.
+      expect(containsTransactionControl("SELECT $é$ ; COMMIT ; $é$")).toBe(false);
+    });
+
+    it("reads a number butted against a dollar quote", () => {
+      // `1e5` is a number and `$$…$$` the dollar body after it; the COMMIT is
+      // inside that body, so this is one harmless statement.
+      expect(containsTransactionControl("SELECT 1e5$$ ; COMMIT ; $$")).toBe(false);
+    });
+  });
 });
 
 /**
@@ -445,6 +502,23 @@ describe("maskNonCode", () => {
     expect(masked).toContain('DROP TRIGGER "Au--dit" ON t;');
     expect(masked).not.toContain("why");
     expect(masked).not.toContain("'x'");
+  });
+
+  it("keeps identifiers and numbers, since they are code", () => {
+    // A `$` and digits inside a name stay; a number stays; only the string goes.
+    const masked = maskNonCode("SELECT a$b, 1e5 FROM t WHERE c = 'x'");
+    expect(masked).toBe("SELECT a$b, 1e5 FROM t WHERE c =    ");
+  });
+
+  it("keeps a real dollar-quoted body's boundaries, blanking only the body", () => {
+    // The tag on both ends is high-byte; the body between is blanked, the rest
+    // stays, and the length is unchanged.
+    const sql = "DO $é$ BEGIN END $é$;";
+    const masked = maskNonCode(sql);
+    expect(masked).toHaveLength(sql.length);
+    expect(masked.startsWith("DO ")).toBe(true);
+    expect(masked.endsWith(";")).toBe(true);
+    expect(masked).not.toContain("BEGIN");
   });
 });
 

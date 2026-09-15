@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { PoolClient } from "pg";
+import type { PoolClient, QueryConfig } from "pg";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -43,7 +43,11 @@ import {
  *   1. Only one query that reads data gets in (checkAnalysable). One
  *      statement, no COMMIT, no EXPLAIN of its own, nothing that starts with
  *      UPDATE / INSERT / DELETE and friends, no SELECT … INTO. All decided from
- *      the text alone, before any server hears about it.
+ *      the text alone, before any server hears about it. This is the first
+ *      wall, not the only one: the EXPLAINs below go over the extended query
+ *      protocol, where PostgreSQL itself refuses more than one command — so a
+ *      second statement the text check drew a boundary around differently from
+ *      the lexer still never runs (see oneStatement).
  *   2. A READ ONLY transaction, always, with a statement_timeout and a
  *      lock_timeout. The lock timeout matters because a query stuck behind
  *      somebody else's ALTER TABLE is waiting, not slow, and should be told so.
@@ -107,6 +111,30 @@ const UNREADABLE_PLAN =
 /** Every refusal from this route has the same shape: { ok: false, error }. */
 function fail(error: string, status: number) {
   return NextResponse.json({ ok: false, error }, { status });
+}
+
+/**
+ * Send one EXPLAIN over the extended query protocol, so PostgreSQL itself
+ * refuses a second statement hiding in the text.
+ *
+ * checkAnalysable already counts the statements from the text, but that count
+ * rests on maskNonCode drawing the same statement boundaries the server would.
+ * A literal, comment or dollar-quote the mask reads even slightly differently
+ * from the lexer is a gap: a query that masks as one statement but really holds
+ * `; COMMIT; DELETE …` would be sent whole, and over the SIMPLE protocol the
+ * server runs every statement in the string — so a plain EXPLAIN in estimate
+ * mode, open to any viewer, could commit and then delete.
+ *
+ * The extended protocol closes that off at the source. A prepared statement may
+ * carry exactly one command; a second one is met with "cannot insert multiple
+ * commands into a prepared statement" and NOTHING runs. This holds whatever the
+ * mask got wrong, which is why the guard above it is defence-in-depth and this
+ * is the wall. @types/pg 8.20 has no `queryMode` field yet (pg's lib/query.js
+ * reads it), so the config is typed locally.
+ */
+type ExtendedQuery = QueryConfig & { queryMode: "extended" };
+function oneStatement(text: string): ExtendedQuery {
+  return { text, queryMode: "extended" };
 }
 
 // ── The catalog reads ────────────────────────────────────────────────────────
@@ -362,7 +390,7 @@ export async function POST(request: NextRequest) {
     ]);
 
     // ── 1. Plan it without running it ──
-    const estimate = await client.query(buildExplainSql(sql, false));
+    const estimate = await client.query(oneStatement(buildExplainSql(sql, false)));
     raw = estimate.rows[0]?.["QUERY PLAN"];
     const steps = planSteps(raw);
     if (!steps) return fail(UNREADABLE_PLAN, 502);
@@ -376,7 +404,7 @@ export async function POST(request: NextRequest) {
       const denied = planMentionsDenied(steps);
       if (denied) return fail(denied, 400);
       measuring = true;
-      const measured = await client.query(buildExplainSql(sql, true));
+      const measured = await client.query(oneStatement(buildExplainSql(sql, true)));
       raw = measured.rows[0]?.["QUERY PLAN"];
     }
 

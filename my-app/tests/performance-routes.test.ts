@@ -131,6 +131,17 @@ describe("POST /api/performance/analyze", () => {
     // Nothing ran, so the session is as clean as it was: reuse it.
     expect(client.releaseCount).toBe(1);
     expect(client.releasedWith).toBe(false);
+    // The EXPLAIN went over the extended protocol. That is what makes the
+    // server refuse a second statement hiding in the text, so even estimate
+    // mode (open to any viewer) cannot be tricked into a COMMIT then a DELETE.
+    const explains = queriesMatching(client, /^EXPLAIN/);
+    expect(explains).toHaveLength(1);
+    expect(explains.every((q) => q.queryMode === "extended")).toBe(true);
+    // The setup statements stay on the simple protocol; only the user's query
+    // needs the wall.
+    expect(queriesMatching(client, /^BEGIN|^SET LOCAL|^SELECT set_config/).every(
+      (q) => q.queryMode === undefined
+    )).toBe(true);
   });
 
   it("closes a measured query's connection instead of handing it to the next request", async () => {
@@ -139,7 +150,11 @@ describe("POST /api/performance/analyze", () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).mode).toBe("measured");
-    expect(queriesMatching(client, /^EXPLAIN \(ANALYZE/)).toHaveLength(1);
+    const analyzeExplains = queriesMatching(client, /^EXPLAIN \(ANALYZE/);
+    expect(analyzeExplains).toHaveLength(1);
+    // The measured run is a real EXPLAIN ANALYZE, so the extended-protocol wall
+    // matters most here: it too carries exactly one command.
+    expect(analyzeExplains.every((q) => q.queryMode === "extended")).toBe(true);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     // The query really ran. A function it called can leave something on the
     // session (a session advisory lock, a setting) that ROLLBACK does not undo.

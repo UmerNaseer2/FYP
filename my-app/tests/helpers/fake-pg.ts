@@ -29,14 +29,29 @@ export type FakeStep = {
   notice?: string;
 };
 
-export type RecordedQuery = { text: string; values: unknown[] | undefined };
+export type RecordedQuery = {
+  text: string;
+  values: unknown[] | undefined;
+  /** The protocol the route asked for: "extended" when it passed queryMode. */
+  queryMode: string | undefined;
+};
 
 type NoticeListener = (notice: { message: string }) => void;
 
 export type FakeResult = { rows: Record<string, unknown>[]; rowCount: number };
 
+/**
+ * A query the way node-postgres accepts it: either the text on its own, or a
+ * config object. The real client takes the same two shapes, and the analyze
+ * route passes a config to ask for the extended protocol, so the stand-in has
+ * to read a config too or that call would record as "[object Object]".
+ */
+export type QueryArg =
+  | string
+  | { text: string; values?: unknown[]; queryMode?: string };
+
 export type FakeClient = {
-  query: (text: string, values?: unknown[]) => Promise<FakeResult>;
+  query: (arg: QueryArg, values?: unknown[]) => Promise<FakeResult>;
   on: (event: string, listener: NoticeListener) => FakeClient;
   off: (event: string, listener: NoticeListener) => FakeClient;
   listenerCount: (event: string) => number;
@@ -64,10 +79,17 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
     releasedWith: undefined,
     listenersAtRelease: null,
 
-    async query(text: string, values?: unknown[]): Promise<FakeResult> {
-      client.queries.push({ text, values });
+    async query(arg: QueryArg, values?: unknown[]): Promise<FakeResult> {
+      // Normalise the two call shapes to one: a config object carries its own
+      // text and values (and maybe a queryMode), while the plain-text form
+      // takes its values from the second argument.
+      const text = typeof arg === "string" ? arg : arg.text;
+      const boundValues = typeof arg === "string" ? values : arg.values ?? values;
+      const queryMode = typeof arg === "string" ? undefined : arg.queryMode;
+      client.queries.push({ text, values: boundValues, queryMode });
       const step = steps.find(
-        (candidate) => candidate.match.test(text) && (!candidate.when || candidate.when(values ?? []))
+        (candidate) =>
+          candidate.match.test(text) && (!candidate.when || candidate.when(boundValues ?? []))
       );
       if (!step) return { rows: [], rowCount: 0 };
 
