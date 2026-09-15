@@ -483,8 +483,14 @@ export async function GET(request: NextRequest) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Performance advice — statistics unavailable:", message);
     statsUnavailable = describeStatsError(error);
-    // Without the list, the structural rules below count an invalid index as
-    // one queries use: as a copy of another, or as a foreign key's index.
+    // Without the list, every rule that filters on it treats an invalid index
+    // as usable. That is the duplicate and redundant rules (a live index can be
+    // reported as a copy of one that is actually broken) AND the no-primary-key
+    // rule, which shares the same filtered index groups and can offer PRIMARY
+    // KEY USING INDEX on an index PostgreSQL would refuse to build a key from.
+    // (The foreign-key rule never reads the list: it counts an invalid index as
+    // covering a key whether or not the list loaded, so that gap is a standing
+    // one, not opened by the missing list.)
     if (invalidIndexes === null) {
       statsUnavailable +=
         " Which indexes are invalid could not be read either, so a suggestion from the" +

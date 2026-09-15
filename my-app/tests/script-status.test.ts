@@ -273,6 +273,31 @@ describe("buildVersionLedger", () => {
     expect(byVersion["1.1.0"]).toBe(true);
     expect(byVersion["2.0.0"]).toBe(false);
   });
+
+  // A name that is not a version ("release-2") must not set the applied floor.
+  // versionParts reads it as 2.0.0, and left unfiltered that one applied name
+  // would push every genuinely-pending registry version below it to "skipped".
+  // The floor is taken through highestVersion, which ignores non-version names,
+  // so 1.1.0 stays pending — while "release-2" is still listed as its own
+  // applied entry, just not counted as a version.
+  it("does not let a non-version applied name raise the floor", () => {
+    const ledger = buildVersionLedger(
+      ["1.0.0", "1.1.0"],
+      [applied("1.0.0"), applied("release-2")]
+    );
+    const byVersion = Object.fromEntries(ledger.map((e) => [e.version, e.status]));
+
+    expect(byVersion["1.0.0"]).toBe("applied");
+    // The fix: 1.1.0 is above the real applied floor (1.0.0), so it is pending.
+    // Under the old all-names floor it would have been skipped below 2.0.0.
+    expect(byVersion["1.1.0"]).toBe("pending");
+    // The non-version name is still there, listed as applied in its own spelling.
+    expect(ledger.find((e) => e.version === "release-2")).toMatchObject({
+      status: "applied",
+      appliedVersion: "release-2",
+      inRegistry: false,
+    });
+  });
 });
 
 describe("looksLikeVersion", () => {

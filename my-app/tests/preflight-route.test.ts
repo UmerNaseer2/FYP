@@ -158,6 +158,32 @@ it("counts only a rollback with a statement that runs", async () => {
   expect(timeline[1].down_sql).toBe("DROP TABLE t2;");
 });
 
+it("does not let a non-version applied name become the current version", async () => {
+  // "release-9" is not a version, but versionParts would read it as 9.0.0 —
+  // above every real version here. The floor must ignore it (highestVersion),
+  // so the current version is the highest real one, 2.0.0, not "release-9".
+  mockClient = createFakeClient(
+    target({
+      timeline: [
+        timelineRow("release-9", null),
+        timelineRow("2.0.0", null),
+        timelineRow("1.0.0", null),
+      ],
+    })
+  );
+  const res = await preflight(FAMILY);
+  expect(res.status).toBe(200);
+  expect(res.body.currentVersion).toBe("2.0.0");
+  expect(res.body.message).toContain("is at version 2.0.0");
+  expect(res.body.message).not.toContain("release-9");
+  // The count reports real versions only (2.0.0 + 1.0.0), not the 3 timeline
+  // rows — the non-version "release-9" is excluded from the version count too.
+  expect(res.body.message).toContain("2 version(s) in history");
+  // The non-version row is still in the returned history, just not the floor.
+  const timeline = res.body.timeline as { version: string }[];
+  expect(timeline.map((entry) => entry.version)).toContain("release-9");
+});
+
 it("returns an empty history when the schema never had a rollback", async () => {
   mockClient = createFakeClient(target({ timeline: [timelineRow("1.0.0", "DROP TABLE t1;")] }));
   const res = await preflight(FAMILY);

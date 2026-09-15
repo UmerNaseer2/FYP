@@ -308,13 +308,13 @@ export function buildVersionLedger(
   }
 
   // Current = the highest applied version by semver (not by apply order, since
-  // a hotfix for an older line can be applied after a newer version).
-  let current: string | null = null;
-  for (const row of appliedHistory) {
-    if (current === null || compareVersions(row.version, current) > 0) {
-      current = row.version;
-    }
-  }
+  // a hotfix for an older line can be applied after a newer version). Read
+  // through highestVersion so an applied name that is not a version does not set
+  // the floor: versionParts reads "release-2" as 2.0.0, and left unfiltered that
+  // one name would mark every genuinely-pending version below it as Skipped. The
+  // name is still listed as its own applied entry below — it just does not count
+  // as a version here.
+  const current = highestVersion(appliedHistory.map((row) => row.version));
 
   // Each registry version by its key, in the registry's own spelling (the
   // first one seen wins if two files spell the same version differently).

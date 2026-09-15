@@ -4,7 +4,7 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
-import { compareVersions } from "@/lib/script-status";
+import { highestVersion, looksLikeVersion } from "@/lib/script-status";
 import { hasExecutableSql } from "@/lib/sql-guard";
 import type { PoolClient } from "pg";
 
@@ -397,15 +397,25 @@ export async function POST(request: NextRequest) {
     const otherScripts = scriptName ? await readOtherScripts(client, schemaName, scriptName) : [];
 
     // ─── 7. Determine the current version ────────────────────────────────
-    // "Current" = the highest semver in the (possibly filtered) timeline,
-    // ranked with the same compareVersions used by the rest of the app (so the
-    // applied floor the editor consumes can't disagree with the client). We do
-    // NOT use applied_at order because scripts can be applied out of order
-    // (e.g. a hotfix for v1.1.x applied after v1.2.0 was already deployed).
-    const currentVersion = timeline.reduce<string | null>((highest, entry) => {
-      if (!highest) return entry.version;
-      return compareVersions(entry.version, highest) > 0 ? entry.version : highest;
-    }, null);
+    // "Current" = the highest version in the timeline, ranked with the same
+    // compareVersions the rest of the app uses (so the applied floor the editor
+    // consumes can't disagree with the client). Read through highestVersion so a
+    // name that is not a version does not set the floor: versionParts reads
+    // "release-2" as 2.0.0, which left unfiltered would sit above real versions
+    // and wedge the next-version picker. NOT applied_at order, because scripts
+    // can be applied out of order (a hotfix for v1.1.x after v1.2.0 shipped).
+    const currentVersion = highestVersion(timeline.map((entry) => entry.version));
+
+    // The timeline is non-empty here, but every row could still be a non-version
+    // name, in which case there is no version floor to report. Count only the
+    // rows that are actually versions: timeline.length also includes non-version
+    // applied names (e.g. "release-2"), so using it would claim more versions
+    // than exist — the same non-version names highestVersion above filters out.
+    const versionCount = timeline.filter((entry) => looksLikeVersion(entry.version)).length;
+    const versionSummary =
+      currentVersion === null
+        ? `has ${timeline.length} applied entr${timeline.length === 1 ? "y" : "ies"}, none of them a version`
+        : `is at version ${currentVersion}. ${versionCount} version(s) in history`;
 
     const result: PreflightResult = {
       hasVersionTable: true,
@@ -415,8 +425,8 @@ export async function POST(request: NextRequest) {
       schema: schemaName,
       scriptName,
       message: scriptName
-        ? `"${scriptName}" in schema "${schemaName}" on "${connRow.name}" is at version ${currentVersion}. ${timeline.length} version(s) in history.`
-        : `Schema "${schemaName}" on "${connRow.name}" is at version ${currentVersion}. ${timeline.length} version(s) in history.`,
+        ? `"${scriptName}" in schema "${schemaName}" on "${connRow.name}" ${versionSummary}.`
+        : `Schema "${schemaName}" on "${connRow.name}" ${versionSummary}.`,
       reverted,
       otherScripts,
     };
