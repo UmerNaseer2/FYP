@@ -1875,6 +1875,731 @@ describe("readPlan — findings", () => {
     );
   });
 
+  describe("an estimate the run only seems to prove wrong", () => {
+    /** A measured plan node, run once unless `extra` says otherwise. */
+    function offStep(
+      nodeType: string,
+      planned: number,
+      actual: number,
+      extra: Record<string, unknown> = {}
+    ): Record<string, unknown> {
+      return {
+        "Node Type": nodeType,
+        "Plan Rows": planned,
+        "Total Cost": 100,
+        "Actual Total Time": 1,
+        "Actual Rows": actual,
+        "Actual Loops": 1,
+        ...extra,
+      };
+    }
+
+    /** A measured read of the whole of public.<name>. */
+    function offScan(
+      name: string,
+      planned: number,
+      actual: number,
+      extra: Record<string, unknown> = {}
+    ): Record<string, unknown> {
+      return offStep("Seq Scan", planned, actual, {
+        "Relation Name": name,
+        Schema: "public",
+        Alias: name,
+        ...extra,
+      });
+    }
+
+    /** A measured read of public.<name> through an index. */
+    function offIndexScan(
+      name: string,
+      planned: number,
+      actual: number,
+      extra: Record<string, unknown> = {}
+    ): Record<string, unknown> {
+      return offStep("Index Scan", planned, actual, {
+        "Relation Name": name,
+        Schema: "public",
+        Alias: name,
+        "Index Name": `${name}_idx`,
+        ...extra,
+      });
+    }
+
+    /** A measured merge join of two inputs, an inner join unless `join` says otherwise. */
+    function offMerge(
+      planned: number,
+      actual: number,
+      join: Record<string, unknown>,
+      outer: Record<string, unknown>,
+      inner: Record<string, unknown>
+    ): Record<string, unknown> {
+      return offStep("Merge Join", planned, actual, {
+        "Join Type": "Inner",
+        "Merge Cond": "(orders.customer_id = customers.id)",
+        ...join,
+        Plans: [
+          { ...outer, "Parent Relationship": "Outer" },
+          { ...inner, "Parent Relationship": "Inner" },
+        ],
+      });
+    }
+
+    /** The estimate-off findings a plan gets, in plan order. */
+    function offFindings(plan: Record<string, unknown>): QueryFinding[] {
+      return (readPlan(envelope(plan))?.findings ?? []).filter((f) =>
+        f.id.startsWith("estimate-off:")
+      );
+    }
+
+    function offIds(plan: Record<string, unknown>): string[] {
+      return ids(offFindings(plan));
+    }
+
+    it("does not judge a scan a LIMIT stopped", () => {
+      // 300,000 is what a full read would find; the LIMIT took 500 and stopped.
+      const plan = offStep("Limit", 500, 500, {
+        Plans: [offScan("orders", 300000, 500, { "Parent Relationship": "Outer" })],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("follows a LIMIT down through steps that hand rows on as they go", () => {
+      // A sorted aggregate hands each group on as the next begins, and a
+      // window step each row as it comes, so the LIMIT stops what is below.
+      const grouped = offStep("Limit", 150, 150, {
+        Plans: [
+          offStep("Aggregate", 5000, 150, {
+            "Parent Relationship": "Outer",
+            Strategy: "Sorted",
+            Plans: [
+              offIndexScan("orders", 300000, 9000, {
+                "Node Type": "Index Only Scan",
+                "Parent Relationship": "Outer",
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(offIds(grouped)).toEqual([]);
+      const windowed = offStep("Limit", 100, 100, {
+        Plans: [
+          offStep("WindowAgg", 300000, 100, {
+            "Parent Relationship": "Outer",
+            Plans: [
+              offIndexScan("orders", 300000, 101, {
+                "Node Type": "Index Only Scan",
+                "Parent Relationship": "Outer",
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(offIds(windowed)).toEqual([]);
+    });
+
+    it("judges a scan a sort read in full, even under a LIMIT", () => {
+      // The sort needs every row before it can hand on the first ten, so the
+      // 5,000 the scan found is the whole table: it has shrunk since its
+      // statistics were taken.
+      const plan = offStep("Limit", 10, 10, {
+        Plans: [
+          offStep("Sort", 300000, 10, {
+            "Parent Relationship": "Outer",
+            Plans: [offScan("orders", 300000, 5000, { "Parent Relationship": "Outer" })],
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:2"]);
+    });
+
+    it("does not judge the side of a merge join the join stopped reading", () => {
+      // The join stops reading customers once the orders run out; the
+      // planner's 300,000 is all of customers.
+      const plan = offMerge(
+        20000,
+        20000,
+        { "Inner Unique": true },
+        offIndexScan("orders", 20000, 20000),
+        offIndexScan("customers", 300000, 20000)
+      );
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("judges the side of a merge join a left join reads to the end", () => {
+      // A left join hands on every row of its first side, so it reads that
+      // side to the end: 20,000 is all there was.
+      const plan = offMerge(
+        300000,
+        20000,
+        { "Join Type": "Left", "Merge Cond": "(customers.id = orders.customer_id)" },
+        offIndexScan("customers", 300000, 20000),
+        offIndexScan("orders", 20000, 20000)
+      );
+      expect(offIds(plan)).toContain("estimate-off:1");
+    });
+
+    it("does not judge the rows a merge join read twice from its second side", () => {
+      // Twelve rows to each key on both sides: for each first-side row the
+      // join goes back over the twelve second-side rows with its key, and
+      // PostgreSQL counts every row read again, about 120,000 against the
+      // 10,000 planned (on PostgreSQL 17, ten to each key counted 99,991).
+      const sorted = (): Record<string, unknown> =>
+        offStep("Sort", 10000, 120000, {
+          Plans: [offScan("b", 10000, 10000, { "Parent Relationship": "Outer" })],
+        });
+      const plan = offMerge(
+        120000,
+        120000,
+        { "Merge Cond": "(a.k = b.k)" },
+        offIndexScan("a", 10000, 10000),
+        sorted()
+      );
+      expect(offIds(plan)).toEqual([]);
+      // The same count anywhere else is a wrong estimate.
+      expect(offIds(sorted())).toEqual(["estimate-off:0"]);
+    });
+
+    it("judges a merge join's second side when the join never goes back over it", () => {
+      const joined = (join: Record<string, unknown>): Record<string, unknown> =>
+        offMerge(
+          1000,
+          1000,
+          join,
+          offIndexScan("orders", 1000, 1000),
+          offIndexScan("customers", 100, 1000)
+        );
+      // Inner Unique, with every condition in the merge: one match for each
+      // row, found once, so 1,000 against 100 is a wrong estimate.
+      expect(offIds(joined({ "Inner Unique": true }))).toEqual(["estimate-off:2"]);
+      // Otherwise the join may go back, and the count may hold rows read twice.
+      expect(offIds(joined({}))).toEqual([]);
+      expect(
+        offIds(joined({ "Inner Unique": true, "Join Filter": "(orders.placed > customers.joined)" }))
+      ).toEqual([]);
+    });
+
+    it("does not judge the repeated side of a semi join, which stops at the first match", () => {
+      // EXISTS: each customer's search of the orders ends at its first order.
+      const plan = offStep("Nested Loop", 20000, 20000, {
+        "Join Type": "Semi",
+        "Join Filter": "(o.customer_id = c.id)",
+        Plans: [
+          offScan("customers", 20000, 20000, { "Parent Relationship": "Outer", Alias: "c" }),
+          offStep("Materialize", 300000, 150, {
+            "Parent Relationship": "Inner",
+            "Actual Loops": 20000,
+            Plans: [
+              offScan("orders", 300000, 5000, { "Parent Relationship": "Outer", Alias: "o" }),
+            ],
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("does not judge the repeated side of an Inner Unique nested loop", () => {
+      // Each order has one customer, so each search of customers ends at the
+      // first match: 520 rows a time on average, never the 20,000 planned.
+      const plan = offStep("Nested Loop", 41, 41, {
+        "Join Type": "Inner",
+        "Inner Unique": true,
+        "Join Filter": "(c.id = o.customer_id)",
+        Plans: [
+          offScan("orders", 41, 41, { "Parent Relationship": "Outer", Alias: "o" }),
+          offScan("customers", 20000, 520, {
+            "Parent Relationship": "Inner",
+            Alias: "c",
+            "Actual Loops": 41,
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("does not judge a subquery the query around it may have stopped", () => {
+      // Not kept as a lookup table, the subquery runs for each customer and
+      // stops at the first order that settles the IN.
+      const plan = offScan("customers", 10000, 10000, {
+        Alias: "c",
+        Filter: "((c.id = ANY (SubPlan 1)) OR (c.id < 0))",
+        Plans: [
+          offScan("orders", 300000, 150, {
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+            Alias: "o",
+            "Actual Loops": 10000,
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("judges a subquery kept as a lookup table, which is read in full", () => {
+      const plan = offScan("customers", 10000, 10000, {
+        Alias: "c",
+        Filter: "(NOT (hashed SubPlan 1))",
+        Plans: [
+          offScan("items", 19900, 240, {
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:1"]);
+    });
+
+    it("does not judge a WITH query read only as far as a LIMIT asked", () => {
+      const plan = offStep("Limit", 100, 100, {
+        Plans: [
+          offScan("orders", 300000, 101, {
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "CTE w",
+          }),
+          offStep("CTE Scan", 300000, 100, {
+            "Parent Relationship": "Outer",
+            "CTE Name": "w",
+            Alias: "w",
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("reports a wrong estimate once, not again on the LIMIT that hands its rows on", () => {
+      // The table has grown since its statistics were taken: the scan was
+      // planned for 10 rows, and so was the LIMIT 5000 above it.
+      const plan = offStep("Limit", 10, 5000, {
+        Plans: [offScan("orders", 10, 5000, { "Parent Relationship": "Outer" })],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:1"]);
+    });
+
+    it("reports a parallel scan's wrong estimate once, not again on the Gather", () => {
+      const plan = offStep("Gather", 12, 999, {
+        "Workers Planned": 2,
+        "Workers Launched": 2,
+        Plans: [
+          offScan("orders", 5, 333, {
+            "Parent Relationship": "Outer",
+            "Parallel Aware": true,
+            "Actual Loops": 3,
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:1"]);
+    });
+
+    it("reports a wrong estimate under a hash once, not again on the hash", () => {
+      const plan = offStep("Hash Join", 5000, 5000, {
+        "Join Type": "Inner",
+        "Hash Cond": "(o.customer_id = c.id)",
+        Plans: [
+          offScan("orders", 5000, 5000, { "Parent Relationship": "Outer", Alias: "o" }),
+          offStep("Hash", 100, 5000, {
+            "Parent Relationship": "Inner",
+            Plans: [
+              offScan("customers", 100, 5000, { "Parent Relationship": "Outer", Alias: "c" }),
+            ],
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:3"]);
+    });
+
+    it("does not judge a bitmap index scan, whose count is not always rows", () => {
+      // PostgreSQL 17: a BRIN index reports ten rows for every page it
+      // matches, 1,280 here, against the 101 rows the table really gave.
+      const plan = offStep("Bitmap Heap Scan", 105, 101, {
+        "Relation Name": "readings",
+        Schema: "public",
+        Alias: "readings",
+        "Recheck Cond": "(readings.taken_at > '2026-01-01'::date)",
+        Plans: [
+          offStep("Bitmap Index Scan", 28571, 1280, {
+            "Parent Relationship": "Outer",
+            "Index Name": "readings_taken_brin",
+            "Index Cond": "(readings.taken_at > '2026-01-01'::date)",
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("reports a wrong estimate in one part of an Append once, not again on the Append", () => {
+      const plan = offStep("Append", 1100, 20000, {
+        Plans: [
+          offScan("orders_2025", 1000, 1000, { "Parent Relationship": "Member" }),
+          offScan("orders_2026", 100, 19000, { "Parent Relationship": "Member" }),
+        ],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:2"]);
+    });
+
+    it("judges an Append whose parts are each too small to judge", () => {
+      // 5 rows planned for each part and 90 found: too few to judge a part
+      // by, but 180 against 10 for the two together.
+      const found = offFindings(
+        offStep("Append", 10, 180, {
+          Plans: [
+            offScan("orders_2025", 5, 90, { "Parent Relationship": "Member" }),
+            offScan("orders_2026", 5, 90, { "Parent Relationship": "Member" }),
+          ],
+        })
+      );
+      expect(ids(found)).toEqual(["estimate-off:0"]);
+      expect(found[0].fix).toContain('-- ANALYZE "public"."orders_2025";');
+      expect(found[0].fix).toContain('-- ANALYZE "public"."orders_2026";');
+    });
+
+    it("reports a window step's condition the planner does not count, with its own cause", () => {
+      // WHERE rn <= 1000 around row_number() OVER (ORDER BY created_at) AS rn,
+      // as PostgreSQL 17 ran it: the window step stopped once the count
+      // passed 1,000, and so did the scan below it, but both were planned
+      // for every row.
+      const plan = offStep("WindowAgg", 300000, 1000, {
+        "Run Condition": "(row_number() OVER (?) <= 1000)",
+        Plans: [
+          offIndexScan("orders", 300000, 1001, {
+            "Node Type": "Index Only Scan",
+            "Parent Relationship": "Outer",
+          }),
+        ],
+      });
+      const found = offFindings(plan);
+      expect(ids(found)).toEqual(["estimate-off:0"]);
+      expect(found[0].detail).toContain("window function's condition");
+      expect(found[0].detail).toContain("Run Condition");
+      expect(found[0].detail).not.toContain("stale");
+      expect(found[0].fixKind).toBe("decision");
+      expect(found[0].fix).toContain("LIMIT n");
+      expect(readPlan(envelope(plan))?.steps[0].details).toContain(
+        "Run Condition: (row_number() OVER (?) <= 1000)"
+      );
+    });
+
+    it("reports a partitioned window step's condition even though its input was read whole", () => {
+      // With PARTITION BY, the step reads every row but hands on only the
+      // first of each customer's: 5,000 of the 300,000 it was planned for.
+      const plan = offStep("WindowAgg", 300000, 5000, {
+        "Run Condition": "(row_number() OVER (?) <= 1)",
+        Plans: [
+          offStep("Sort", 300000, 300000, {
+            "Parent Relationship": "Outer",
+            Plans: [offScan("orders", 300000, 300000, { "Parent Relationship": "Outer" })],
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:0"]);
+    });
+
+    it("reports a wrong estimate below a window step without a condition once", () => {
+      const plan = offStep("WindowAgg", 100, 5000, {
+        Plans: [offScan("orders", 100, 5000, { "Parent Relationship": "Outer" })],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:1"]);
+    });
+
+    /**
+     * orders_by_city, 20 partitions of 2,000 rows, read for WHERE city =
+     * (SELECT 3), as PostgreSQL 17 ran it: which partition that is became
+     * known only while the query ran, so the 19 others never ran (Actual
+     * Loops 0), after all 40,000 rows were planned for.
+     */
+    function prunedWhileRunning(): Record<string, unknown> {
+      return offStep("Append", 40000, 2000, {
+        "Subplans Removed": 0,
+        Plans: [
+          offStep("Result", 1, 1, {
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "InitPlan 1",
+          }),
+          ...Array.from({ length: 20 }, (_, i) =>
+            offScan(`orders_by_city_${i + 1}`, 2000, i === 2 ? 2000 : 0, {
+              "Parent Relationship": "Member",
+              Filter: "(city = (InitPlan 1).col1)",
+              "Actual Loops": i === 2 ? 1 : 0,
+            })
+          ),
+        ],
+      });
+    }
+
+    it("does not judge an Append by the partitions it skipped while running", () => {
+      expect(offIds(prunedWhileRunning())).toEqual([]);
+      // Nor a step that only hands the Append's rows on.
+      const sorted = offStep("Sort", 40000, 2000, {
+        Plans: [{ ...prunedWhileRunning(), "Parent Relationship": "Outer" }],
+      });
+      expect(offIds(sorted)).toEqual([]);
+    });
+
+    it("does not judge an Append by the partitions it left out as the run started", () => {
+      // A prepared statement's parameter: the 19 other partitions are gone
+      // from the plan, but its Plan Rows still count them.
+      const plan = offStep("Append", 40000, 2000, {
+        "Subplans Removed": 19,
+        Plans: [
+          offScan("orders_by_city_3", 2000, 2000, {
+            "Parent Relationship": "Member",
+            Filter: "(city = $1)",
+          }),
+        ],
+      });
+      expect(offIds(plan)).toEqual([]);
+      // Every Append in a JSON plan says how many it left out, so the count
+      // is shown only when it is above zero.
+      expect(readPlan(envelope(plan))?.steps[0].details).toContain("Subplans Removed: 19");
+      expect(readPlan(envelope(prunedWhileRunning()))?.steps[0].details.join(" ")).not.toContain(
+        "Subplans Removed"
+      );
+    });
+
+    it("does not judge a UNION ALL by a part whose one-time condition failed", () => {
+      // Each part runs only when current_setting('app.kind') names it. The
+      // planner counts such a condition as always true: 320,000 rows were
+      // planned, and only the 20,000 of the part whose condition held came.
+      const gated = (name: string, rows: number, runs: boolean): Record<string, unknown> =>
+        offStep("Result", rows, runs ? rows : 0, {
+          "Parent Relationship": "Member",
+          "One-Time Filter": `(current_setting('app.kind'::text) = '${name}'::text)`,
+          Plans: [
+            offScan(name, rows, runs ? rows : 0, {
+              "Parent Relationship": "Outer",
+              "Actual Loops": runs ? 1 : 0,
+            }),
+          ],
+        });
+      const plan = offStep("Append", 320000, 20000, {
+        Plans: [gated("orders", 300000, false), gated("customers", 20000, true)],
+      });
+      expect(offIds(plan)).toEqual([]);
+    });
+
+    it("reports a filtered step once when its input is off the same way", () => {
+      // OFFSET 0 keeps the subquery apart. The filter on top only scales the
+      // input's estimate, which was already too low.
+      const plan = offStep("Subquery Scan", 10, 5000, {
+        Alias: "s",
+        Filter: "(s.total > 100)",
+        Plans: [offScan("orders", 30, 15000, { "Parent Relationship": "Subquery" })],
+      });
+      expect(offIds(plan)).toEqual(["estimate-off:1"]);
+    });
+
+    it("reports a filtered step whose estimate is off the other way from its input's", () => {
+      // The input was planned for too few rows and the filter kept far fewer
+      // than guessed: the filter's own guess is wrong too, so both are reported.
+      const found = offFindings(
+        offStep("Subquery Scan", 6667, 200, {
+          Alias: "s",
+          Filter: "(s.n > 100)",
+          Plans: [offScan("orders", 20000, 300000, { "Parent Relationship": "Subquery" })],
+        })
+      );
+      expect(ids(found)).toEqual(["estimate-off:0", "estimate-off:1"]);
+      expect(found[0].detail).toContain("fixed guess");
+      expect(found[0].fix.split("\n").every((line) => line.startsWith("--"))).toBe(true);
+    });
+
+    it("blames a recursive WITH query's rounds, not statistics, when its count is off", () => {
+      // PostgreSQL 17, a chain of 500: planned for 31 rows, about ten rounds.
+      const found = offFindings(
+        offStep("Limit", 31, 500, {
+          Plans: [
+            offStep("Recursive Union", 31, 500, {
+              "Parent Relationship": "InitPlan",
+              "Subplan Name": "CTE t",
+              Plans: [
+                offStep("Result", 1, 1, { "Parent Relationship": "Outer" }),
+                offStep("WorkTable Scan", 3, 1, {
+                  "Parent Relationship": "Inner",
+                  "CTE Name": "t",
+                  Alias: "t_1",
+                  Filter: "(t_1.n < 500)",
+                  "Actual Loops": 499,
+                }),
+              ],
+            }),
+            offStep("CTE Scan", 31, 500, {
+              "Parent Relationship": "Outer",
+              "CTE Name": "t",
+              Alias: "t",
+            }),
+          ],
+        })
+      );
+      // The CTE Scan and the Limit only hand the WITH query's rows on.
+      expect(ids(found)).toEqual(["estimate-off:1"]);
+      expect(found[0].detail).toContain("always plans for about ten");
+      expect(found[0].fixKind).toBe("decision");
+      expect(found[0].fix).toContain("temporary table");
+    });
+
+    /**
+     * A recursive WITH query walking a tree down from its roots: the first
+     * part finds `roots` rows, and each of five rounds reads 500 rows from
+     * the work table, where 10 were planned, and finds 5,000 children.
+     */
+    function treeWalk(roots: number): Record<string, unknown> {
+      return offStep("CTE Scan", 1001, 25000 + roots, {
+        "CTE Name": "t",
+        Alias: "t",
+        Plans: [
+          offStep("Recursive Union", 1001, 25000 + roots, {
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "CTE t",
+            Plans: [
+              offIndexScan("nodes", 1, roots, {
+                "Parent Relationship": "Outer",
+                "Index Cond": "(nodes.parent_id IS NULL)",
+              }),
+              offStep("Nested Loop", 100, 5000, {
+                "Parent Relationship": "Inner",
+                "Actual Loops": 5,
+                Plans: [
+                  offStep("WorkTable Scan", 10, 500, {
+                    "Parent Relationship": "Outer",
+                    "CTE Name": "t",
+                    Alias: "t_1",
+                    "Actual Loops": 5,
+                  }),
+                  offIndexScan("nodes", 10, 10, {
+                    "Parent Relationship": "Inner",
+                    Alias: "c",
+                    "Index Cond": "(c.parent_id = t_1.id)",
+                    "Actual Loops": 2500,
+                  }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+    }
+
+    it("blames each round of a recursive WITH query on the fixed multiple it is planned for", () => {
+      const found = offFindings(treeWalk(1));
+      // The Recursive Union and the CTE Scan only add up and hand on what
+      // the rounds found; the join in each round is its own estimate.
+      expect(ids(found)).toEqual(["estimate-off:3", "estimate-off:4"]);
+      const round = found[1];
+      expect(round.detail).toContain("each round of a recursive WITH query");
+      expect(round.detail).toContain("recursive_worktable_factor");
+      expect(round.detail).not.toContain("stale");
+      expect(round.fixKind).toBe("decision");
+      expect(round.fix).toContain("SET LOCAL recursive_worktable_factor = <figure>;");
+    });
+
+    it("blames the first part of a recursive WITH query when that is what is off", () => {
+      // Each round is planned from the first part's estimate, so the rounds
+      // are off because it is: one finding, on the first part.
+      const reported = offIds(treeWalk(500));
+      expect(reported).toContain("estimate-off:2");
+      expect(reported).not.toContain("estimate-off:4");
+    });
+
+    it("reports a filter on a WITH query's rows with the tables behind it", () => {
+      const found = offFindings(
+        offStep("CTE Scan", 1500, 50000, {
+          "CTE Name": "w",
+          Alias: "w",
+          Filter: "(w.total > 100)",
+          Plans: [
+            offScan("orders", 300000, 300000, {
+              "Parent Relationship": "InitPlan",
+              "Subplan Name": "CTE w",
+            }),
+          ],
+        })
+      );
+      expect(ids(found)).toEqual(["estimate-off:0"]);
+      expect(found[0].detail).toContain("PostgreSQL 17");
+      expect(found[0].fix).toContain("the WITH query w");
+      expect(found[0].fix).toContain('-- ANALYZE "public"."orders";');
+      expect(found[0].fix.split("\n").every((line) => line.startsWith("--"))).toBe(true);
+    });
+
+    it("names the tables a join's rows come from, through a WITH query but not a subquery", () => {
+      // The InitPlan only works out the figure the join compares against: no
+      // row of settings reaches the join.
+      const found = offFindings(
+        offStep("Hash Join", 10, 5000, {
+          "Join Type": "Inner",
+          "Hash Cond": "(w.customer_id = c.id)",
+          "Join Filter": "(w.total > (InitPlan 2).col1)",
+          Plans: [
+            offScan("orders", 5000, 5000, {
+              "Parent Relationship": "InitPlan",
+              "Subplan Name": "CTE w",
+            }),
+            offScan("settings", 1, 1, {
+              "Parent Relationship": "InitPlan",
+              "Subplan Name": "InitPlan 2",
+            }),
+            offStep("CTE Scan", 5000, 5000, {
+              "Parent Relationship": "Outer",
+              "CTE Name": "w",
+              Alias: "w",
+            }),
+            offStep("Hash", 100, 100, {
+              "Parent Relationship": "Inner",
+              Plans: [
+                offScan("customers", 100, 100, { "Parent Relationship": "Outer", Alias: "c" }),
+              ],
+            }),
+          ],
+        })
+      );
+      expect(ids(found)).toEqual(["estimate-off:0"]);
+      expect(found[0].fix).toContain('-- ANALYZE "public"."orders";');
+      expect(found[0].fix).toContain('-- ANALYZE "public"."customers";');
+      expect(found[0].fix).not.toContain("settings");
+    });
+
+    it("asks for the schemas when the plan does not say which they are", () => {
+      // Taken without VERBOSE, a plan names its tables but not their schemas.
+      const found = offFindings(
+        offStep("Hash Join", 10, 5000, {
+          "Join Type": "Inner",
+          "Hash Cond": "(o.customer_id = c.id)",
+          Plans: [
+            offStep("Seq Scan", 5000, 5000, {
+              "Parent Relationship": "Outer",
+              "Relation Name": "orders",
+              Alias: "o",
+            }),
+            offStep("Hash", 100, 100, {
+              "Parent Relationship": "Inner",
+              Plans: [
+                offStep("Seq Scan", 100, 100, {
+                  "Parent Relationship": "Outer",
+                  "Relation Name": "customers",
+                  Alias: "c",
+                }),
+              ],
+            }),
+          ],
+        })
+      );
+      expect(ids(found)).toEqual(["estimate-off:0"]);
+      expect(found[0].fixKind).toBe("decision");
+      expect(found[0].fix).toContain("did not say which schemas");
+    });
+
+    it("points a function's wrong estimate at the function, not at statistics", () => {
+      const found = offFindings(
+        offStep("Function Scan", 1000, 50000, {
+          "Function Name": "unnest_orders",
+          Alias: "u",
+        })
+      );
+      expect(ids(found)).toEqual(["estimate-off:0"]);
+      expect(found[0].detail).toContain("No table statistics are behind this estimate");
+      expect(found[0].detail).not.toContain("stale");
+      expect(found[0].fix).toContain("ROWS n");
+    });
+  });
+
   it("flags a sort that spilled to disk", () => {
     const summary = readPlan(
       envelope({
@@ -4820,6 +5545,66 @@ describe("explainInWords", () => {
         "(each time; expected to run about 5,000 times)."
     );
     expect(lines.join(" ")).not.toContain("giving about 60 rows");
+  });
+
+  /** customers joined to one order each, the order's side matched at most once. */
+  function lastOrders(inner: Record<string, unknown>): Record<string, unknown> {
+    return {
+      "Node Type": "Nested Loop",
+      "Join Type": "Inner",
+      "Inner Unique": true,
+      "Plan Rows": 500,
+      "Total Cost": 90000,
+      Plans: [
+        {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Relation Name": "customers",
+          Schema: "public",
+          Alias: "c",
+          "Plan Rows": 500,
+          "Total Cost": 20,
+        },
+        {
+          "Parent Relationship": "Inner",
+          "Relation Name": "orders",
+          Schema: "public",
+          Alias: "o",
+          ...inner,
+        },
+      ],
+    };
+  }
+
+  it("reads the repeated side of an Inner Unique nested loop only until it finds a match", () => {
+    // o.id is unique, so each customer's search of orders ends at its one
+    // match: 300,000 is what a full read would find, not what is read.
+    const lines = words(
+      lastOrders({
+        "Node Type": "Seq Scan",
+        Filter: "(o.id = c.last_order_id)",
+        "Plan Rows": 300000,
+        "Total Cost": 5000,
+      })
+    );
+    expect(lines.join(" ")).toContain(
+      "Reads public.orders (o) from the start until it finds a match"
+    );
+    expect(lines.join(" ")).not.toContain("300,000");
+  });
+
+  it("gives an Inner Unique lookup of one row its count, since it stops there anyway", () => {
+    const lines = words(
+      lastOrders({
+        "Node Type": "Index Scan",
+        "Index Name": "orders_pkey",
+        "Index Cond": "(o.id = c.last_order_id)",
+        "Plan Rows": 1,
+        "Total Cost": 5,
+      })
+    );
+    expect(lines.join(" ")).toContain("through the index orders_pkey, giving about 1 row");
+    expect(lines.join(" ")).not.toContain("stopping at the first match");
   });
 
   describe("why reading the whole table is the right plan", () => {
