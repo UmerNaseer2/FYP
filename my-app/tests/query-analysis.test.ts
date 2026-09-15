@@ -5607,6 +5607,489 @@ describe("explainInWords", () => {
     expect(lines.join(" ")).not.toContain("stopping at the first match");
   });
 
+  describe("where a scan may stop early", () => {
+    // Plan Rows are always what a full read would find. A scan that something
+    // above may stop says why, and an estimate gives it no count; a measured
+    // one gives what it really read, and says "all" only for the whole table.
+
+    /** A measured plan node, run once unless `extra` says otherwise. */
+    function ranStep(
+      nodeType: string,
+      planned: number,
+      actual: number,
+      extra: Record<string, unknown> = {}
+    ): Record<string, unknown> {
+      return {
+        "Node Type": nodeType,
+        "Plan Rows": planned,
+        "Total Cost": 100,
+        "Actual Total Time": 1,
+        "Actual Rows": actual,
+        "Actual Loops": 1,
+        ...extra,
+      };
+    }
+
+    /** The keys naming public.<name>, read as <alias>. */
+    function tableOf(name: string, alias: string): Record<string, unknown> {
+      return { "Relation Name": name, Schema: "public", Alias: alias };
+    }
+
+    /** An estimated LIMIT 10 over one step. */
+    function limitOn(child: Record<string, unknown>): Record<string, unknown> {
+      return { "Node Type": "Limit", "Plan Rows": 10, "Total Cost": 50, Plans: [child] };
+    }
+
+    /** An estimated read of all of public.orders (o) for the paid orders. */
+    function paidRead(): Record<string, unknown> {
+      return {
+        "Node Type": "Seq Scan",
+        ...tableOf("orders", "o"),
+        "Parent Relationship": "Outer",
+        Filter: "(o.status = 'paid'::text)",
+        "Plan Rows": 590,
+        "Total Cost": 5000,
+      };
+    }
+
+    const ITEMS: Partial<PlanCatalog> = { tableRows: { "public.items": 19900 } };
+    const ORDERS: Partial<PlanCatalog> = { tableRows: { "public.orders": 300000 } };
+
+    /**
+     * WHERE EXISTS (SELECT … FROM items i WHERE i.customer_id = c.id) for 20
+     * customers, as a nested loop that keeps a copy of items and searches the
+     * copy for each customer: items is read only as far as the furthest search
+     * went. `read` is how many of its 19,900 rows that was.
+     */
+    function customersWithItems(read: number): Record<string, unknown> {
+      return ranStep("Nested Loop", 20, 20, {
+        "Join Type": "Semi",
+        "Join Filter": "(i.customer_id = c.id)",
+        Plans: [
+          ranStep("Index Only Scan", 20, 20, {
+            ...tableOf("customers", "c"),
+            "Parent Relationship": "Outer",
+            "Index Name": "customers_pkey",
+            "Index Cond": "(c.id <= 20)",
+          }),
+          ranStep("Materialize", 19900, 17, {
+            "Parent Relationship": "Inner",
+            "Actual Loops": 20,
+            Plans: [
+              ranStep("Seq Scan", 19900, read, {
+                ...tableOf("items", "i"),
+                "Parent Relationship": "Outer",
+              }),
+            ],
+          }),
+        ],
+      });
+    }
+
+    /**
+     * WHERE EXISTS (SELECT … FROM items i WHERE i.customer_id >= c.id * 100)
+     * OR c.id < 0, for 40 customers. Inside an OR, PostgreSQL keeps the EXISTS
+     * as a subquery run once for each customer, and each run reads items until
+     * its first match: `removed` rows that fail, then the one that matches.
+     */
+    function customersWithBigItems(removed: number): Record<string, unknown> {
+      return ranStep("Index Only Scan", 20, 40, {
+        ...tableOf("customers", "c"),
+        "Index Name": "customers_pkey",
+        "Index Cond": "(c.id <= 40)",
+        Filter: "(EXISTS(SubPlan 1) OR (c.id < 0))",
+        Plans: [
+          ranStep("Seq Scan", 6633, 1, {
+            ...tableOf("items", "i"),
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+            Filter: "(i.customer_id >= (c.id * 100))",
+            "Rows Removed by Filter": removed,
+            "Actual Loops": 40,
+          }),
+        ],
+      });
+    }
+
+    /**
+     * An estimated LIMIT 10 over a plain nested loop: for each customer, a
+     * read of orders for that customer's orders.
+     */
+    function firstPairs(): Record<string, unknown> {
+      return limitOn({
+        "Node Type": "Nested Loop",
+        "Join Type": "Inner",
+        "Parent Relationship": "Outer",
+        "Plan Rows": 1500,
+        "Total Cost": 90000,
+        Plans: [
+          {
+            "Node Type": "Seq Scan",
+            ...tableOf("customers", "c"),
+            "Parent Relationship": "Outer",
+            "Plan Rows": 500,
+            "Total Cost": 20,
+          },
+          {
+            "Node Type": "Seq Scan",
+            ...tableOf("orders", "o"),
+            "Parent Relationship": "Inner",
+            Filter: "(o.customer_id = c.id)",
+            "Plan Rows": 3,
+            "Total Cost": 5000,
+          },
+        ],
+      });
+    }
+
+    /** The whole-table-read finding a plan gets. */
+    function seqScanFinding(
+      plan: Record<string, unknown>,
+      catalog: Partial<PlanCatalog>
+    ): QueryFinding | undefined {
+      return summaryOf(plan, catalog).findings.find((f) => f.id.startsWith("seq-scan:"));
+    }
+
+    it("reads a table kept in a copy for an EXISTS only as far as the searches went", () => {
+      // 341 of 19,900 rows: "reads all 341 rows" would be false, with the
+      // table's size known or not.
+      for (const catalog of [{}, ITEMS]) {
+        expect(words(customersWithItems(341), catalog)[1]).toBe(
+          "Reads public.items (i) from the start, only as far as needed, 341 rows in all."
+        );
+      }
+    });
+
+    it("counts a subquery's stopped read one run at a time", () => {
+      expect(words(customersWithBigItems(2049), ITEMS)[0]).toBe(
+        "SubPlan 1, which runs once for each row of public.customers (c): reads public.items " +
+          "(i) from the start, only as far as needed, 2,050 rows, and keeps the one row where " +
+          "i.customer_id >= (c.id * 100) (each time; it ran 40 times)."
+      );
+    });
+
+    it("does not call the one row a run-once subquery read the whole table", () => {
+      // c.id < ALL (SELECT i.id FROM items i): the subquery does not use the
+      // outer row, so it ran once into a copy, and every customer failed the
+      // test on the first item. 1 row of the table's 19,900 was read.
+      const plan = ranStep("Index Only Scan", 13, 0, {
+        ...tableOf("customers", "c"),
+        "Index Name": "customers_pkey",
+        "Index Cond": "(c.id <= 40)",
+        Filter: "(ALL (c.id < (SubPlan 1).col1))",
+        "Rows Removed by Filter": 40,
+        Plans: [
+          ranStep("Materialize", 19900, 1, {
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+            "Actual Loops": 40,
+            Plans: [
+              ranStep("Seq Scan", 19900, 1, {
+                ...tableOf("items", "i"),
+                "Parent Relationship": "Outer",
+              }),
+            ],
+          }),
+        ],
+      });
+      const lines = words(plan, ITEMS);
+      expect(lines[0]).toBe(
+        "SubPlan 1, which runs only once: reads public.items (i) from the start, only as far " +
+          "as needed, 1 row in all."
+      );
+      expect(lines.join(" ")).not.toContain("the one row of");
+    });
+
+    it("reads a WITH query only as far as a LIMIT on its reader asks", () => {
+      // WITH x AS MATERIALIZED (SELECT * FROM orders) SELECT * FROM x LIMIT 500.
+      const plan = ranStep("Limit", 500, 500, {
+        Plans: [
+          ranStep("Seq Scan", 300000, 500, {
+            ...tableOf("orders", "orders"),
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "CTE x",
+          }),
+          ranStep("CTE Scan", 300000, 500, {
+            "Parent Relationship": "Outer",
+            "CTE Name": "x",
+            Alias: "x",
+          }),
+        ],
+      });
+      expect(words(plan)[0]).toBe(
+        "The WITH query x, worked out once and kept for the steps that read it: reads " +
+          "public.orders from the start, only as far as needed, 500 rows in all."
+      );
+    });
+
+    it("says a stoppable read went to the end once the run shows it read the whole table", () => {
+      // 19,899 thrown away and 1 kept, each run: the whole of items, as the
+      // catalog's size shows.
+      expect(words(customersWithBigItems(19899), ITEMS)[0]).toContain(
+        "reads all 19,900 rows of public.items (i), and keeps the one row where"
+      );
+      // Without the size, nothing says 19,900 is the whole table: a filtered
+      // read's Plan Rows are only what it keeps.
+      expect(words(customersWithBigItems(19899))[0]).toContain(
+        "reads public.items (i) from the start, only as far as needed, 19,900 rows,"
+      );
+      // With no filter, Plan Rows are the planner's count of the whole table.
+      expect(words(customersWithItems(19900))[1]).toBe(
+        "Reads all 19,900 rows of public.items (i)."
+      );
+    });
+
+    it("reads a plain nested loop's repeated side in full each time, even under a LIMIT", () => {
+      // The LIMIT sets how many customers are read, not how far each search
+      // of orders goes: every search is a full read, and keeps its count.
+      const lines = words(firstPairs(), ORDERS);
+      expect(lines[0]).toBe("Reads public.customers (c) from the start until it has enough rows.");
+      expect(lines[1]).toContain(
+        "Reads the whole of public.orders (o), about 300,000 rows, and keeps about 3 rows " +
+          "where o.customer_id = c.id"
+      );
+    });
+
+    it("says why a scan under a LIMIT may stop, and how sure that is", () => {
+      // A sorted aggregate hands each group on as it goes, so the LIMIT still
+      // stops the read below it.
+      const grouped = limitOn({
+        "Node Type": "Aggregate",
+        Strategy: "Sorted",
+        "Parent Relationship": "Outer",
+        "Group Key": ["o.customer_id"],
+        "Plan Rows": 5000,
+        "Total Cost": 6000,
+        Plans: [
+          {
+            "Node Type": "Index Scan",
+            ...tableOf("orders", "o"),
+            "Parent Relationship": "Outer",
+            "Index Name": "orders_customer_idx",
+            Filter: "(o.status = 'paid'::text)",
+            "Plan Rows": 590,
+            "Total Cost": 5000,
+          },
+        ],
+      });
+      expect(words(grouped)[0]).toBe(
+        "Reads public.orders (o) in the order of the index orders_customer_idx, stopping once " +
+          "it has enough rows, keeping those where o.status = 'paid'."
+      );
+
+      // A window step may need a whole window before it hands a row on, and
+      // the plan does not show whether it does, so how far the read goes is
+      // not simply the LIMIT's.
+      const windowed = limitOn({
+        "Node Type": "WindowAgg",
+        "Parent Relationship": "Outer",
+        "Plan Rows": 590,
+        "Total Cost": 5100,
+        Plans: [paidRead()],
+      });
+      expect(words(windowed, ORDERS)[0]).toBe(
+        "Reads public.orders (o) from the start, only as far as needed, keeping those where " +
+          "o.status = 'paid'."
+      );
+
+      // A bitmap read stops for a LIMIT like any other.
+      const bitmap = limitOn({
+        "Node Type": "Bitmap Heap Scan",
+        ...tableOf("orders", "o"),
+        "Parent Relationship": "Outer",
+        "Recheck Cond": "(o.customer_id = 5)",
+        "Plan Rows": 60,
+        "Total Cost": 200,
+        Plans: [
+          {
+            "Node Type": "Bitmap Index Scan",
+            "Index Name": "orders_customer_idx",
+            "Parent Relationship": "Outer",
+            "Index Cond": "(o.customer_id = 5)",
+            "Plan Rows": 60,
+            "Total Cost": 5,
+          },
+        ],
+      });
+      expect(words(bitmap)[0]).toBe(
+        "Uses the index orders_customer_idx to find the rows of public.orders (o) where " +
+          "o.customer_id = 5, then reads just those rows from the table, stopping once it has " +
+          "enough rows."
+      );
+    });
+
+    it("makes a whole-table read less serious only for a LIMIT that stops it", () => {
+      // Straight under the LIMIT: the read stops at 10 rows, as the detail says.
+      const direct = seqScanFinding(limitOn(paidRead()), ORDERS);
+      expect(direct?.severity).toBe("medium");
+      expect(direct?.detail).toContain("A LIMIT above this step may stop the read early");
+
+      // Through a window step, which may need every row first.
+      const windowed = seqScanFinding(
+        limitOn({
+          "Node Type": "WindowAgg",
+          "Parent Relationship": "Outer",
+          "Plan Rows": 590,
+          "Total Cost": 5100,
+          Plans: [paidRead()],
+        }),
+        ORDERS
+      );
+      expect(windowed?.severity).toBe("high");
+      expect(windowed?.detail).not.toContain("LIMIT");
+
+      // The repeated side of a plain nested loop: every search is a full read.
+      const repeated = seqScanFinding(firstPairs(), ORDERS);
+      expect(repeated?.stepId).toBe(3);
+      expect(repeated?.severity).toBe("high");
+      expect(repeated?.detail).not.toContain("LIMIT");
+    });
+
+    it("says a merge join's side that ran out early may stop, and not the side read whole", () => {
+      // Every customer was read, so the join stopped reading orders once the
+      // last customer's were done: 12,000 of 300,000.
+      const plan = ranStep("Merge Join", 12000, 12000, {
+        "Join Type": "Inner",
+        "Merge Cond": "(c.id = o.customer_id)",
+        Plans: [
+          ranStep("Index Scan", 20000, 20000, {
+            ...tableOf("customers", "c"),
+            "Index Name": "customers_pkey",
+            "Parent Relationship": "Outer",
+          }),
+          ranStep("Index Scan", 300000, 12000, {
+            ...tableOf("orders", "o"),
+            "Index Name": "orders_customer_idx",
+            "Parent Relationship": "Inner",
+          }),
+        ],
+      });
+      const lines = words(plan);
+      expect(lines[0]).toBe(
+        "Reads public.customers (c) in the order of the index customers_pkey, giving 20,000 rows."
+      );
+      expect(lines[1]).toBe(
+        "Reads public.orders (o) in the order of the index orders_customer_idx, only as far as " +
+          "needed, giving 12,000 rows."
+      );
+    });
+
+    it("leaves a one-row lookup behind a Memoize its count, unless it answers an EXISTS", () => {
+      /** Each customer's last order, looked up once for each new order id. */
+      function lastOrderLookup(join: Record<string, unknown>): Record<string, unknown> {
+        return {
+          "Node Type": "Nested Loop",
+          ...join,
+          "Plan Rows": 500,
+          "Total Cost": 3000,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              ...tableOf("customers", "c"),
+              "Parent Relationship": "Outer",
+              "Plan Rows": 500,
+              "Total Cost": 20,
+            },
+            {
+              "Node Type": "Memoize",
+              "Parent Relationship": "Inner",
+              "Cache Key": "c.last_order_id",
+              "Cache Mode": "logical",
+              "Plan Rows": 1,
+              "Total Cost": 5,
+              Plans: [
+                {
+                  "Node Type": "Index Scan",
+                  ...tableOf("orders", "o"),
+                  "Parent Relationship": "Outer",
+                  "Index Name": "orders_pkey",
+                  "Index Cond": "(o.id = c.last_order_id)",
+                  "Plan Rows": 1,
+                  "Total Cost": 5,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      // Inner Unique: one row or none each time, and the lookup ends there anyway.
+      expect(words(lastOrderLookup({ "Join Type": "Inner", "Inner Unique": true }))[1]).toBe(
+        "Looks up the rows of public.orders (o) where o.id = c.last_order_id, through the " +
+          "index orders_pkey, giving about 1 row (each time it runs)."
+      );
+      // EXISTS: whether there is a match is the point, as for any lookup.
+      expect(words(lastOrderLookup({ "Join Type": "Semi" }))[1]).toBe(
+        "Looks up the rows of public.orders (o) where o.id = c.last_order_id, through the " +
+          "index orders_pkey, stopping at the first match (each time it runs)."
+      );
+    });
+
+    it("leaves a subquery's one-row lookup its count", () => {
+      // (SELECT o.total FROM orders o WHERE o.id = c.last_order_id) in the
+      // SELECT list: one row or none, and the lookup ends there anyway.
+      const plan = {
+        "Node Type": "Seq Scan",
+        ...tableOf("customers", "c"),
+        "Plan Rows": 500,
+        "Total Cost": 3000,
+        Plans: [
+          {
+            "Node Type": "Index Scan",
+            ...tableOf("orders", "o"),
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+            "Index Name": "orders_pkey",
+            "Index Cond": "(o.id = c.last_order_id)",
+            "Plan Rows": 1,
+            "Total Cost": 8,
+          },
+        ],
+      };
+      expect(words(plan)[0]).toBe(
+        "SubPlan 1, which runs once for each row of public.customers (c): looks up the rows " +
+          "of public.orders (o) where o.id = c.last_order_id, through the index orders_pkey, " +
+          "giving about 1 row (each time it runs)."
+      );
+    });
+
+    it("runs a data-modifying WITH query to its end, however little its reader asks", () => {
+      // WITH x AS (UPDATE orders … WHERE status = 'paid' RETURNING *) SELECT *
+      // FROM x LIMIT 1: PostgreSQL finishes the UPDATE whatever the LIMIT
+      // reads, so the read below it was whole, and its estimate can be judged.
+      const plan = ranStep("Limit", 1, 1, {
+        Plans: [
+          ranStep("ModifyTable", 300000, 500, {
+            Operation: "Update",
+            ...tableOf("orders", "orders"),
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "CTE x",
+            Plans: [
+              ranStep("Seq Scan", 300000, 500, {
+                ...tableOf("orders", "orders"),
+                "Parent Relationship": "Outer",
+                Filter: "(status = 'paid'::text)",
+                "Rows Removed by Filter": 299500,
+              }),
+            ],
+          }),
+          ranStep("CTE Scan", 300000, 1, {
+            "Parent Relationship": "Outer",
+            "CTE Name": "x",
+            Alias: "x",
+          }),
+        ],
+      });
+      expect(words(plan)[0]).toBe(
+        "The WITH query x, worked out once and kept for the steps that read it: reads all " +
+          "300,000 rows of public.orders, and keeps the 500 where status = 'paid'."
+      );
+      const found = ids(summaryOf(plan).findings);
+      expect(found).toContain("estimate-off:2");
+      // The reader itself was stopped by the LIMIT, so its 1 row proves nothing.
+      expect(found).not.toContain("estimate-off:3");
+    });
+  });
+
   describe("why reading the whole table is the right plan", () => {
     /** A read of all of public.orders that keeps the paid ones. */
     function paidOrders(planRows: number): Record<string, unknown> {

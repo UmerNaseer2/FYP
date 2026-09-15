@@ -1741,45 +1741,6 @@ function subtreeOf(steps: PlanStep[], step: PlanStep): PlanStep[] {
 }
 
 /**
- * Steps that must see every input row before they hand anything up.
- *
- * A LIMIT above one of these cannot stop the scan below it early: the sort,
- * the hash table or the aggregate needs all the rows first. In JSON plans every
- * kind of aggregate is "Aggregate", with the strategy in a separate key.
- */
-const BLOCKING_NODES: ReadonlySet<string> = new Set([
-  "Sort",
-  "Hash",
-  "Aggregate",
-  "HashAggregate",
-  "SetOp",
-  "WindowAgg",
-]);
-
-/**
- * True when a LIMIT above this step may stop it before it reads everything.
- *
- * `SELECT * FROM big WHERE flag LIMIT 1` plans a sequential scan of the whole
- * table, but the scan stops at the first match. Walking up from the scan: a
- * Limit reached first means it may stop early; a blocking step reached first
- * means it cannot. A subquery (InitPlan, SubPlan) runs on its own terms, not
- * the Limit's.
- */
-function mayStopEarly(steps: PlanStep[], step: PlanStep): boolean {
-  let current = step;
-  while (current.parentId !== null) {
-    if (current.parentRelationship === "InitPlan" || current.parentRelationship === "SubPlan") {
-      return false;
-    }
-    const parent = steps[current.parentId];
-    if (parent.nodeType === "Limit") return true;
-    if (BLOCKING_NODES.has(parent.nodeType)) return false;
-    current = parent;
-  }
-  return false;
-}
-
-/**
  * True for a nested loop that moves on to its next row at the first match on
  * its repeated side: a Semi join (EXISTS, IN) or an Anti join (NOT EXISTS)
  * only asks whether there is one, and a side PostgreSQL proved can match each
@@ -1794,14 +1755,17 @@ function firstMatchOnly(join: PlanStep): boolean {
 
 /**
  * Steps whose own rows always come out complete, however few the step above
- * wants: a hash table holds every row of its input, and a bitmap every match
- * in its index. So they, and everything below them, are read in full.
+ * wants: a hash table holds every row of its input, a bitmap every match in
+ * its index, and an INSERT, UPDATE, DELETE or MERGE ("ModifyTable") runs to
+ * its end even in a WITH query read only in part, because PostgreSQL always
+ * finishes one. So they, and everything below them, are read in full.
  */
 const READ_WHOLE: ReadonlySet<string> = new Set([
   "Hash",
   "Bitmap Index Scan",
   "BitmapAnd",
   "BitmapOr",
+  "ModifyTable",
 ]);
 
 /**
@@ -1833,8 +1797,8 @@ function hasRunCondition(step: PlanStep): boolean {
  * True when the run may have stopped reading this step before it handed on
  * everything a full read would, so fewer rows than its Plan Rows (always a
  * full read's) say nothing about the estimate. The estimate-off rule needs
- * every way that happens, not only the LIMIT mayStopEarly looks for. Walking
- * up from the step, whatever reads it may stop:
+ * every way that happens. Walking up from the step, whatever reads it may
+ * stop:
  * - a Limit, once it has enough rows;
  * - a window step with a Run Condition (hasRunCondition), once the condition
  *   fails, when the window has no PARTITION BY; the plan does not say
@@ -1850,9 +1814,11 @@ function hasRunCondition(step: PlanStep): boolean {
  * - the CTE Scans reading a WITH query, which runs only as far as they ask:
  *   it may have stopped when every one of them may have.
  * A step that always comes out whole (READ_WHOLE), or one read by a step that
- * takes every row first (readsAllFirst), was read in full. Unlike for
- * mayStopEarly, a window function or a sorted aggregate on the way up does
- * not end the walk: both hand rows on as they go, so a LIMIT stops them too.
+ * takes every row first (readsAllFirst), was read in full. A window step or a
+ * sorted aggregate on the way up does not end the walk: a sorted aggregate
+ * hands each group on as it goes, and a window step may, so a LIMIT may stop
+ * either. The walk-through asks much the same question, and says more about
+ * the answer: see readStop.
  */
 function mayBeCutShort(steps: PlanStep[], step: PlanStep, seen = new Set<number>()): boolean {
   let current = step;
@@ -1922,6 +1888,87 @@ const INDEX_SCANS: ReadonlySet<string> = new Set([
   "Index Only Scan",
   "Bitmap Heap Scan",
 ]);
+
+/**
+ * An index lookup that finds at most one row, by the plan's guess and by the
+ * run's count: once it has found one, it has nothing left to read.
+ */
+function oneRowLookup(step: PlanStep): boolean {
+  return (
+    INDEX_SCANS.has(step.nodeType) && Math.max(step.estimatedRows, step.actualRows ?? 0) <= 1
+  );
+}
+
+/**
+ * Why the run may stop reading a step early, as the walk-through says it:
+ * - "limit": a LIMIT above it has enough rows and asks for no more;
+ * - "match": it is the repeated side of a nested loop that moves on at the
+ *   first match (firstMatchOnly), so each search ends at a match;
+ * - "asked": whatever reads it may stop for another reason, so it is read
+ *   only as far as that needs.
+ */
+type ReadStop = "limit" | "match" | "asked";
+
+/**
+ * Why the run may stop reading this step before a full read's end, or null
+ * when nothing can. Its Plan Rows are what a full read would find, so an
+ * estimate for a step that may stop must not quote them as what it hands on.
+ *
+ * The walk up is mayBeCutShort's, and "asked" is every reason it finds beyond
+ * a LIMIT and a first-match loop: a window step's Run Condition, a Merge Join
+ * whose other side ran out, a subquery that stops at the row that settles its
+ * answer, a WITH query whose readers all may stop. Two more are "asked" too,
+ * because the plan cannot say more:
+ * - a LIMIT reached through a window step, which, depending on its frame (the
+ *   plan does not show it), may need every row of a window before it hands
+ *   one on;
+ * - a first-match loop reading the step through anything but a Memoize: a
+ *   Materialize, say, keeps what it read for the next search, so the step is
+ *   read only as far as the furthest search went.
+ * It parts from mayBeCutShort twice. A nested loop's repeated side is read to
+ * the end on every run but perhaps the last, unless the loop moves on at the
+ * first match: what is above the loop sets how many runs there are, not how
+ * far each one goes, so the walk ends at the loop. And an index lookup of at
+ * most one row (oneRowLookup) is left as it is, except under a LIMIT or as
+ * the repeated side of an EXISTS or NOT EXISTS, where stopping is the point:
+ * it stops there anyway, and saying it may stop early would only hide its
+ * count.
+ */
+function readStop(steps: PlanStep[], step: PlanStep): ReadStop | null {
+  const asked: ReadStop | null = oneRowLookup(step) ? null : "asked";
+  let throughWindow = false;
+  let current = step;
+  while (current.parentId !== null) {
+    if (READ_WHOLE.has(current.nodeType)) return null;
+    if (current.parentRelationship === "InitPlan" || current.parentRelationship === "SubPlan") {
+      return mayBeCutShort(steps, current) ? asked : null;
+    }
+    const parent = steps[current.parentId];
+    if (parent.nodeType === "Limit") return throughWindow ? asked : "limit";
+    if (hasRunCondition(parent)) return asked;
+    if (readsAllFirst(parent)) return null;
+    if (parent.nodeType === "WindowAgg") throughWindow = true;
+    if (parent.nodeType === "Merge Join") {
+      const keptWhole = isInnerSide(current, childrenOfStep(steps, parent))
+        ? ["Right", "Full", "Right Anti"]
+        : ["Left", "Full", "Anti"];
+      if (!keptWhole.includes(parent.joinType ?? "")) return asked;
+    }
+    if (parent.nodeType === "Nested Loop" && isInnerSide(current, childrenOfStep(steps, parent))) {
+      if (!firstMatchOnly(parent)) return null;
+      // Straight from the loop, or through a Memoize: under a loop that moves
+      // on at the first match, a Memoize keeps one row for each value, so it
+      // stops its own read at the first match too.
+      const direct =
+        current.id === step.id || (current.nodeType === "Memoize" && current.id === step.parentId);
+      if (!direct) return asked;
+      if (parent.joinType === "Semi" || parent.joinType === "Anti") return "match";
+      return oneRowLookup(step) ? null : "match";
+    }
+    current = parent;
+  }
+  return null;
+}
 
 // ── Reading a plan condition ─────────────────────────────────────────────────
 
@@ -2510,8 +2557,9 @@ function planFindings(
       // whatever indexes exist, so the whole-table read is the right plan.
       if (readsManyKeepsFew(step, tableRows)) {
         // Only an estimate can be wrong about stopping early. A measured plan
-        // already counted exactly what was read.
-        const limited = !measured && mayStopEarly(steps, step);
+        // already counted exactly what was read. And only a LIMIT's stop, the
+        // one the detail below names, makes it less serious (see readStop).
+        const limited = !measured && readStop(steps, step) === "limit";
         // A decision, not a statement, when the columns cannot be read off
         // the filter: an unfinished CREATE INDEX would be a placeholder
         // dressed up as runnable SQL.
@@ -3839,9 +3887,9 @@ function stepTableRows(step: PlanStep): TableRows {
  * uses, so this sentence and that finding can never disagree.
  *
  * Says nothing for a scan that runs many times (the nested-loop rule has its
- * own view of that), one a LIMIT may stop early, an estimate without the
- * table's size, or an estimated parallel scan whose rows cannot be added up
- * across its processes (see rowsHandedOn).
+ * own view of that), one that may stop early (see readStop), an estimate
+ * without the table's size, or an estimated parallel scan whose rows cannot
+ * be added up across its processes (see rowsHandedOn).
  */
 function wholeReadReason(step: PlanStep, c: Counting, stopsEarly: boolean): string {
   if (step.nodeType !== "Seq Scan" || step.filter === null) return "";
@@ -3866,32 +3914,14 @@ function wholeReadReason(step: PlanStep, c: Counting, stopsEarly: boolean): stri
 
 /**
  * What a scan handed on: ", giving 750 rows", or ", and keeps the 312 where
- * …" when it has a filter. An estimate for a scan a LIMIT may stop early gets
- * no count: its Plan Rows are what a full read would find, not what the
- * stopped one will.
+ * …" when it has a filter. An estimate for a scan that may stop early
+ * (readStop) gets no count: its Plan Rows are what a full read would find,
+ * not what the stopped one will.
  */
 function scanResult(step: PlanStep, c: Counting, stopsEarly: boolean): string {
   const cond = step.filter === null ? null : plainCondition(step.filter);
   if (!c.measured && stopsEarly) return cond === null ? "" : `, keeping those where ${cond}`;
   return cond === null ? givingClause(c) : keepsClause(c, cond);
-}
-
-/**
- * True for the repeated side of a nested loop that moves on at the first
- * match (firstMatchOnly): PostgreSQL stops reading it there. Its Plan Rows
- * are what a full read would find, so an estimate must not quote them as
- * what it hands on. Under a side that matches at most once (Inner Unique),
- * an index lookup that finds at most one row is left as it is: it stops
- * there anyway, and saying it stops early would only hide its right count.
- */
-function stopsAtFirstMatch(n: Narration, step: PlanStep): boolean {
-  if (step.parentId === null) return false;
-  const parent = n.steps[step.parentId];
-  if (!firstMatchOnly(parent) || !isInnerSide(step, n.children[parent.id])) return false;
-  if (parent.joinType === "Semi" || parent.joinType === "Anti") return true;
-  const oneRowLookup =
-    INDEX_SCANS.has(step.nodeType) && Math.max(step.estimatedRows, step.actualRows ?? 0) <= 1;
-  return !oneRowLookup;
 }
 
 /**
@@ -3904,13 +3934,82 @@ function scanNote(c: Counting, stopsEarly: boolean): string {
 }
 
 /**
- * A sequential scan: the whole table, or its start when it may stop early (a
- * LIMIT above it, or the repeated side of an EXISTS that stops at a match).
+ * scanResult and scanNote together, for a scan whose sentence says nothing of
+ * where it may stop: a CTE, function, VALUES, sample, ctid or foreign scan.
+ */
+function scanTail(n: Narration, step: PlanStep, c: Counting): string {
+  const stopsEarly = readStop(n.steps, step) !== null;
+  return scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+}
+
+/**
+ * The rows a measured scan read: those it handed on and those its filter
+ * threw away, in the unit of its count (see countingOf). That is one run or
+ * one process when the count is, and otherwise all of them, which for a
+ * parallel scan is every process's share added up.
+ */
+function rowsRead(step: PlanStep, c: Counting): number {
+  const perLoop = (step.actualRows ?? 0) + (rowsRemovedByFilter(step) ?? 0);
+  return c.perRun || c.perProcess ? perLoop : perLoop * (step.loops ?? 1);
+}
+
+/**
+ * True when a measured scan read at least as many rows as a full read would
+ * find, so nothing stopped it early, whatever might have. `read` is rowsRead.
+ * Only a read of the whole table is weighed: a sequential scan, or an index
+ * scan with no Index Cond (the table in the index's order). A lookup reads
+ * just the rows its condition finds, and how many those are is a guess.
+ * A full read finds the table's rows (PlanStep.tableRows, from the catalog)
+ * or, with no filter either, its Plan Rows: the planner's own count of the
+ * table, which it scales to the table's current size. With both, the larger,
+ * so a table grown since its statistics is not called read to the end too
+ * soon. With neither, it is never proven.
+ */
+function readToTheEnd(step: PlanStep, read: number): boolean {
+  const wholeTable =
+    step.nodeType === "Seq Scan" ||
+    ((step.nodeType === "Index Scan" || step.nodeType === "Index Only Scan") &&
+      detailValue(step, "Index Cond") === null);
+  if (!wholeTable) return false;
+  let full = step.tableRows ?? 0;
+  // A parallel scan's Plan Rows are one process's share of the table.
+  if (step.filter === null && !step.parallelAware) full = Math.max(full, step.estimatedRows);
+  return full > 0 && read >= full;
+}
+
+/**
+ * Why a scan may stop early (readStop), or null when it reads to the end. A
+ * measured scan that read to the end (readToTheEnd) was not stopped, whatever
+ * might have stopped it, so it gets the plain sentence and its count.
+ */
+function scanStop(steps: PlanStep[], step: PlanStep, c: Counting): ReadStop | null {
+  const stop = readStop(steps, step);
+  if (stop !== null && c.measured && readToTheEnd(step, rowsRead(step, c))) return null;
+  return stop;
+}
+
+/** How a sequential scan says where it may stop: see readStop. */
+const SEQ_SCAN_STOP: Record<ReadStop, string> = {
+  limit: " until it has enough rows",
+  match: " until it finds a match",
+  asked: ", only as far as needed",
+};
+
+/** How an index or bitmap scan says where it may stop: see readStop. */
+const INDEX_SCAN_STOP: Record<ReadStop, string> = {
+  limit: ", stopping once it has enough rows",
+  match: ", stopping at the first match",
+  asked: ", only as far as needed",
+};
+
+/**
+ * A sequential scan: the whole table, or its start when something above may
+ * stop it early (see readStop).
  */
 function seqScanSentence(n: Narration, step: PlanStep, c: Counting): string {
   const where = tableWithAlias(step);
-  const firstMatch = stopsAtFirstMatch(n, step);
-  const stopsEarly = mayStopEarly(n.steps, step) || firstMatch;
+  const stop = scanStop(n.steps, step, c);
+  const stopsEarly = stop !== null;
 
   // Rows read, in the same unit as c.rows. Measured, what was really read.
   // Estimated, only a number that is known rather than guessed: Plan Rows
@@ -3919,8 +4018,7 @@ function seqScanSentence(n: Narration, step: PlanStep, c: Counting): string {
   // Rows are one process's share, or for a scan that may stop early.
   let read: number | null = null;
   if (c.measured) {
-    const perLoop = (step.actualRows ?? 0) + (rowsRemovedByFilter(step) ?? 0);
-    read = c.perRun || c.perProcess ? perLoop : perLoop * (step.loops ?? 1);
+    read = rowsRead(step, c);
   } else if (!stopsEarly && !step.parallelAware) {
     if (step.filter === null) read = step.estimatedRows;
     else if (step.tableRows !== null) read = rowsScanned(step, stepTableRows(step));
@@ -3930,9 +4028,8 @@ function seqScanSentence(n: Narration, step: PlanStep, c: Counting): string {
   let s: string;
   if (empty) {
     s = `Reads ${where} and finds it empty`;
-  } else if (stopsEarly) {
-    s = `Reads ${where} from the start until it ` +
-      (firstMatch ? "finds a match" : "has enough rows");
+  } else if (stop !== null) {
+    s = `Reads ${where} from the start${SEQ_SCAN_STOP[stop]}`;
     // "in all" only for a total: a count for one run or one process gets its
     // unit from the note at the end.
     if (c.measured && read !== null) {
@@ -3965,8 +4062,7 @@ function indexScanSentence(n: Narration, step: PlanStep, c: Counting): string {
   const index = step.indexName === null ? "an index" : `the index ${step.indexName}`;
   const cond = detailValue(step, "Index Cond");
   const indexOnly = step.nodeType === "Index Only Scan";
-  const firstMatch = stopsAtFirstMatch(n, step);
-  const stopsEarly = mayStopEarly(n.steps, step) || firstMatch;
+  const stop = scanStop(n.steps, step, c);
 
   let s: string;
   if (cond !== null) {
@@ -3979,10 +4075,9 @@ function indexScanSentence(n: Narration, step: PlanStep, c: Counting): string {
       ? `Reads ${index} of ${where} in order, without reading the table`
       : `Reads ${where} in the order of ${index}`;
   }
-  if (firstMatch) s += ", stopping at the first match";
-  else if (stopsEarly) s += ", stopping once it has enough rows";
+  if (stop !== null) s += INDEX_SCAN_STOP[stop];
   if (step.parallelAware) s += ", split between the processes";
-  s += scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+  s += scanResult(step, c, stop !== null) + scanNote(c, stop !== null);
 
   // An index-only scan still visits the table for rows on pages changed since
   // the last VACUUM, and every such visit is the cost it exists to avoid.
@@ -4009,16 +4104,15 @@ function bitmapScanSentence(n: Narration, step: PlanStep, c: Counting): string {
         ? `the index ${names[0]}`
         : `the indexes ${andList(names)}`;
   const cond = detailValue(step, "Recheck Cond") ?? lookups[0]?.joinCond ?? null;
-  const firstMatch = stopsAtFirstMatch(n, step);
-  const stopsEarly = mayStopEarly(n.steps, step) || firstMatch;
+  const stop = scanStop(n.steps, step, c);
 
   let s =
     `Uses ${index} to find the rows of ${where}` +
     (cond === null ? "" : ` where ${plainCondition(cond)}`) +
     ", then reads just those rows from the table";
-  if (firstMatch) s += ", stopping at the first match";
+  if (stop !== null) s += INDEX_SCAN_STOP[stop];
   if (step.parallelAware) s += ", split between the processes";
-  return s + scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+  return s + scanResult(step, c, stop !== null) + scanNote(c, stop !== null);
 }
 
 /** A join: which rows it pairs up, on what, and what came out. */
@@ -4277,7 +4371,6 @@ function modifySentence(step: PlanStep): string {
  */
 function ownSentence(n: Narration, step: PlanStep, c: Counting): string | null {
   const kids = n.children[step.id];
-  const stopsEarly = mayStopEarly(n.steps, step);
   switch (step.nodeType) {
     case "Seq Scan":
       return seqScanSentence(n, step, c);
@@ -4341,29 +4434,29 @@ function ownSentence(n: Narration, step: PlanStep, c: Counting): string | null {
       return resultSentence(n, step, c);
     case "CTE Scan":
       return `Reads the saved result of ${cteWithAlias(step)}` +
-        scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+        scanTail(n, step, c);
     case "Subquery Scan":
       if (step.filter === null) return null;
       return `Takes the rows of the subquery${step.alias === null ? "" : ` ${step.alias}`}` +
         keepsClause(c, plainCondition(step.filter)) + unitNote(c);
     case "Function Scan":
       return `Reads the rows the function ${functionName(step)} returns` +
-        scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+        scanTail(n, step, c);
     case "Values Scan":
       return "Reads the rows written in the query's VALUES list" +
-        scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+        scanTail(n, step, c);
     case "Sample Scan":
       return `Reads a random sample of ${tableWithAlias(step)} (TABLESAMPLE)` +
-        scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+        scanTail(n, step, c);
     case "Tid Scan":
     case "Tid Range Scan":
       return `Fetches rows of ${tableWithAlias(step)} straight from where they are stored ` +
-        `(by ctid)` + scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+        `(by ctid)` + scanTail(n, step, c);
     case "Foreign Scan":
       return (step.relation === null
         ? "Fetches rows from another server"
         : `Fetches the rows of the foreign table ${tableWithAlias(step)}`) +
-        scanResult(step, c, stopsEarly) + scanNote(c, stopsEarly);
+        scanTail(n, step, c);
     case "WindowAgg":
       return "Works out the window functions (the OVER clauses) for each of those rows" +
         unitNote(c);
