@@ -146,8 +146,12 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
           <div>
             <div className="title">Live counters could not be read</div>
             <div className="body">
-              {view.statsUnavailable} The suggestions shown come from the schema
-              itself, and those are complete.
+              {view.statsUnavailable}{" "}
+              {"Only the checks on the schema itself could run. The ones that need " +
+                "live counters look for unused and invalid indexes, unfinished indexes " +
+                "on partitioned tables, tables mostly read by sequential scans, dead " +
+                "rows waiting for cleanup, tables with no planner statistics, and " +
+                "reads that miss the buffer cache."}
             </div>
           </div>
         </div>
@@ -160,10 +164,19 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
               icon={<CheckIcon size={22} />}
               title="Nothing to flag"
               description={
-                `None of the checks found anything in ${view.schema}. That covers ` +
-                `missing keys and indexes, duplicated and unused indexes, column ` +
-                `types that cost more than they need to, and how the server says ` +
-                `these tables are actually being read.`
+                // Without the counters, only the schema's own checks ran, so
+                // "nothing to flag" must not speak for the ones that did not.
+                view.statsUnavailable
+                  ? `None of the checks on the schema itself found anything in ` +
+                    `${view.schema}. That covers missing keys and indexes, ` +
+                    `duplicated indexes, and column types that cost more than they ` +
+                    `need to. The checks that need live counters could not run ` +
+                    `(see above), so this says nothing about unused or invalid ` +
+                    `indexes or how these tables are being read.`
+                  : `None of the checks found anything in ${view.schema}. That covers ` +
+                    `missing keys and indexes, duplicated, unused and invalid indexes, ` +
+                    `column types that cost more than they need to, and how the ` +
+                    `server says these tables are actually being read.`
               }
             />
           </div>

@@ -104,9 +104,11 @@ export type AdviceView = {
   /** How many tables the structural pass looked at. */
   tablesAnalyzed: number;
   /**
-   * Why the statistics pass produced nothing, as a sentence for the screen
+   * Why the statistics pass produced nothing, as sentences for the screen
    * (see describeStatsError), or null when it ran. Not an error: the
-   * structural advice above is still complete.
+   * structural advice still comes back. When the pass failed before it read
+   * which indexes are invalid, a last sentence says so, because the
+   * structural rules then cannot tell an invalid index from a usable one.
    */
   statsUnavailable: string | null;
 };
@@ -2750,8 +2752,10 @@ export function describeStatsError(error: unknown): string {
       `${STATS_LOCK_TIMEOUT_MS / 1000} seconds; ${missing}. Try again once it has finished.`
     );
   }
+  // PostgreSQL's words go in brackets, so the sentence still ends with a full
+  // stop and whatever the screen adds after it reads as a sentence of its own.
   if (fromPostgres) {
-    return `The server's usage statistics could not be read, so ${missing}. PostgreSQL said: ${message}`;
+    return `The server's usage statistics could not be read (PostgreSQL said: ${message}), so ${missing}.`;
   }
   return `The server's usage statistics could not be read (${message}), so ${missing}.`;
 }

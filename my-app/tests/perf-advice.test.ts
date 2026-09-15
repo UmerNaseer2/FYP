@@ -2479,9 +2479,11 @@ describe("describeStatsError", () => {
   });
 
   it("quotes any other error from PostgreSQL as the server's own words", () => {
+    // In brackets, so the sentence ends with a full stop before whatever the
+    // screen adds after it.
     expect(describeStatsError(pgError("42501", "permission denied for schema shop"))).toBe(
-      "The server's usage statistics could not be read, so suggestions based on how the tables " +
-        "are used are missing. PostgreSQL said: permission denied for schema shop"
+      "The server's usage statistics could not be read (PostgreSQL said: permission denied for " +
+        "schema shop), so suggestions based on how the tables are used are missing."
     );
   });
 

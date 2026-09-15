@@ -334,11 +334,31 @@ describe("GET /api/performance/advice", () => {
     // The statistics are lost, and the page says so...
     expect(body.statsUnavailable).toEqual(expect.any(String));
     expect(idsIn(body)).not.toContain("unfinished-partitioned-index");
-    // ...but the invalid index was already known, so it is still no copy.
+    // ...but the invalid index was already known, so it is still no copy,
+    // and the page does not say the list is missing.
     expect(idsIn(body)).not.toContain("duplicate-index");
+    expect(body.statsUnavailable).not.toContain("Which indexes are invalid");
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     expect(client.releaseCount).toBe(1);
     expect(client.releasedWith).toBe(false);
+  });
+
+  it("says so when even the list of invalid indexes could not be read", async () => {
+    target([
+      {
+        match: /NOT ix\.indisvalid/,
+        error: { code: "57014", message: "canceling statement due to statement timeout" },
+      },
+      ...statsSteps([INVALID_COPY]),
+    ]);
+    const body = await (await advise()).json();
+    // With no list, orders_a counts as a copy of orders_b, so the page warns
+    // that a suggestion from the schema may lean on an invalid index.
+    expect(idsIn(body)).toContain("duplicate-index");
+    expect(body.statsUnavailable).toMatch(/^Reading the usage statistics took longer than/);
+    expect(body.statsUnavailable).toMatch(
+      / Which indexes are invalid could not be read either, so a suggestion from the schema may count an invalid index as one queries use\.$/
+    );
   });
 
   it("finds the duplicate when neither copy is invalid", async () => {

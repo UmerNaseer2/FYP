@@ -236,8 +236,8 @@ export async function GET(request: NextRequest) {
   let statsUnavailable: string | null = null;
   // The indexes PostgreSQL has marked invalid, for the structural rules below.
   // Filled by the first read of this pass, so a later read failing keeps it.
-  // Empty only when the pass could not even start.
-  let invalidIndexes: ReadonlySet<string> = new Set();
+  // Null only when the pass could not even start.
+  let invalidIndexes: ReadonlySet<string> | null = null;
   let client: PoolClient | null = null;
   // Set when even ROLLBACK failed. The connection is then in an unknown state,
   // and release(true) closes it instead of handing it to the next request.
@@ -483,6 +483,13 @@ export async function GET(request: NextRequest) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Performance advice — statistics unavailable:", message);
     statsUnavailable = describeStatsError(error);
+    // Without the list, the structural rules below count an invalid index as
+    // one queries use: as a copy of another, or as a foreign key's index.
+    if (invalidIndexes === null) {
+      statsUnavailable +=
+        " Which indexes are invalid could not be read either, so a suggestion from the" +
+        " schema may count an invalid index as one queries use.";
+    }
   } finally {
     client?.release(broken);
   }
@@ -490,9 +497,10 @@ export async function GET(request: NextRequest) {
   // ── The structural rules ──────────────────────────────────────────────────
   // After pass two, so the duplicate and redundant rules can leave out the
   // invalid indexes it found (queries never use one, so it copies nothing).
-  // When pass two could not even start, the set is empty, and a copy that
-  // REINDEX CONCURRENTLY left behind is still known by its name.
-  const structural: AdviceItem[] = analyzeSchemaPerformance(snapshot, invalidIndexes).map(
+  // When pass two could not even start, there is no list (the screen says
+  // so), and a copy that REINDEX CONCURRENTLY left behind is still known by
+  // its name.
+  const structural: AdviceItem[] = analyzeSchemaPerformance(snapshot, invalidIndexes ?? new Set()).map(
     (a) => ({ ...a, origin: "structure" })
   );
 
