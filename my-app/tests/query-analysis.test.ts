@@ -6088,6 +6088,458 @@ describe("explainInWords", () => {
       // The reader itself was stopped by the LIMIT, so its 1 row proves nothing.
       expect(found).not.toContain("estimate-off:3");
     });
+
+    describe("an estimate under a LIMIT", () => {
+      // Plan Rows are what a full run hands on. Where the run may stop a step
+      // early, an estimate quotes them only as the most the step may hand on,
+      // and a repeated step's runs as the most it may run: a loop that stops
+      // early reads fewer rows of its first side, so runs its other side fewer
+      // times. A step that makes its whole result first keeps its count.
+
+      /** Each step's box in the plan tree, for an estimated fixture. */
+      function figures(plan: Record<string, unknown>, catalog: Partial<PlanCatalog> = {}) {
+        return summaryOf(plan, catalog).steps.map((step) => stepFigures(step, false));
+      }
+
+      /** firstPairs without its LIMIT, so the loop runs to its end. */
+      function allPairs(): Record<string, unknown> {
+        return (firstPairs().Plans as Record<string, unknown>[])[0];
+      }
+
+      it("quotes a loop's rows as the most it may give, and its repeated side's runs as the most", () => {
+        expect(figures(firstPairs(), ORDERS)).toEqual([
+          { rows: "~10 rows (estimate)", runs: null },
+          // The loop, and customers, read until the LIMIT has enough.
+          { rows: "up to ~1,500 rows (estimate)", runs: null },
+          { rows: "up to ~500 rows (estimate)", runs: null },
+          // Each search of orders is a full read, so it keeps its count, but
+          // the loop may stop before its 500th customer.
+          { rows: "~3 rows each time (estimate)", runs: "runs up to ~500 times (estimate)" },
+        ]);
+        const lines = words(firstPairs(), ORDERS);
+        expect(lines[1]).toBe(
+          "Reads the whole of public.orders (o), about 300,000 rows, and keeps about 3 rows " +
+            "where o.customer_id = c.id (each time; expected to run up to about 500 times)."
+        );
+        expect(lines[2]).toBe(
+          "Pairs each row of public.customers (c) with the matching rows of public.orders (o), " +
+            "stopping once it has enough rows."
+        );
+      });
+
+      it("quotes the same loop's full counts when nothing above may stop it", () => {
+        expect(figures(allPairs(), ORDERS)).toEqual([
+          { rows: "~1,500 rows (estimate)", runs: null },
+          { rows: "~500 rows (estimate)", runs: null },
+          { rows: "~3 rows each time (estimate)", runs: "runs ~500 times (estimate)" },
+        ]);
+        const lines = words(allPairs(), ORDERS);
+        expect(lines[0]).toBe("Reads the whole of public.customers (c), about 500 rows.");
+        expect(lines[1]).toContain("(each time; expected to run about 500 times).");
+        expect(lines[2]).toBe(
+          "Pairs each row of public.customers (c) with the matching rows of public.orders (o), " +
+            "giving about 1,500 rows."
+        );
+      });
+
+      it("counts the groups a LIMIT may stop as the most, but not groups all made first", () => {
+        // Sorted, in the index's order: each group is handed on as the next
+        // begins, so the LIMIT stops the grouping, and the read below it.
+        const sorted = limitOn({
+          "Node Type": "Aggregate",
+          Strategy: "Sorted",
+          "Parent Relationship": "Outer",
+          "Group Key": ["o.customer_id"],
+          "Plan Rows": 400,
+          "Total Cost": 5100,
+          Plans: [
+            {
+              "Node Type": "Index Scan",
+              ...tableOf("orders", "o"),
+              "Parent Relationship": "Outer",
+              "Index Name": "orders_customer_idx",
+              Filter: "(o.status = 'paid'::text)",
+              "Plan Rows": 590,
+              "Total Cost": 5000,
+            },
+          ],
+        });
+        expect(words(sorted, ORDERS)[1]).toBe(
+          "Groups those rows by o.customer_id, stopping once it has enough groups."
+        );
+        expect(figures(sorted, ORDERS).map((f) => f.rows)).toEqual([
+          "~10 rows (estimate)",
+          "up to ~400 rows (estimate)",
+          "up to ~590 rows (estimate)",
+        ]);
+
+        // Hashed: every group is made before the first is handed on, so all
+        // 400 are, from every row of orders, whatever the LIMIT takes.
+        const hashed = limitOn({
+          "Node Type": "Aggregate",
+          Strategy: "Hashed",
+          "Parent Relationship": "Outer",
+          "Group Key": ["o.customer_id"],
+          "Plan Rows": 400,
+          "Total Cost": 5100,
+          Plans: [paidRead()],
+        });
+        expect(words(hashed, ORDERS).slice(0, 2)).toEqual([
+          "Reads the whole of public.orders (o), about 300,000 rows, and keeps about 590 rows " +
+            "where o.status = 'paid'.",
+          "Groups those rows by o.customer_id, giving about 400 groups.",
+        ]);
+        expect(figures(hashed, ORDERS).map((f) => f.rows)).toEqual([
+          "~10 rows (estimate)",
+          "~400 rows (estimate)",
+          "~590 rows (estimate)",
+        ]);
+      });
+
+      it("leaves a copy on a plain loop's repeated side, and the read that fills it, their counts", () => {
+        // A plain loop reads the whole copy for each customer, and the one
+        // read of items that fills the copy goes to the end on the first.
+        const plan = limitOn({
+          "Node Type": "Nested Loop",
+          "Join Type": "Inner",
+          "Parent Relationship": "Outer",
+          "Join Filter": "(i.customer_id = c.id)",
+          "Plan Rows": 60,
+          "Total Cost": 40000,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              ...tableOf("customers", "c"),
+              "Parent Relationship": "Outer",
+              "Plan Rows": 500,
+              "Total Cost": 20,
+            },
+            {
+              "Node Type": "Materialize",
+              "Parent Relationship": "Inner",
+              "Plan Rows": 60,
+              "Total Cost": 400,
+              Plans: [
+                {
+                  "Node Type": "Seq Scan",
+                  ...tableOf("items", "i"),
+                  "Parent Relationship": "Outer",
+                  Filter: "(i.price > 100)",
+                  "Plan Rows": 60,
+                  "Total Cost": 390,
+                },
+              ],
+            },
+          ],
+        });
+        const boxes = figures(plan, ITEMS);
+        expect(boxes[3]).toEqual({ rows: "~60 rows each time (estimate)", runs: null });
+        expect(boxes[4]).toEqual({ rows: "~60 rows (estimate)", runs: null });
+        expect(words(plan, ITEMS)[1]).toBe(
+          "Reads the whole of public.items (i), about 19,900 rows, and keeps about 60 rows " +
+            "where i.price > 100."
+        );
+      });
+
+      it("counts the runs inside a subquery worked out once from that one run", () => {
+        // For each customer, a LATERAL subquery with its own LIMIT 1 finds an
+        // order above the average rate, and that average is a subquery worked
+        // out once for the whole query, however often the one around it runs.
+        const plan = limitOn({
+          "Node Type": "Nested Loop",
+          "Join Type": "Inner",
+          "Parent Relationship": "Outer",
+          "Plan Rows": 500,
+          "Total Cost": 9000,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              ...tableOf("customers", "c"),
+              "Parent Relationship": "Outer",
+              "Plan Rows": 500,
+              "Total Cost": 20,
+            },
+            {
+              "Node Type": "Limit",
+              "Parent Relationship": "Inner",
+              "Plan Rows": 1,
+              "Total Cost": 17,
+              Plans: [
+                {
+                  "Node Type": "Aggregate",
+                  Strategy: "Plain",
+                  "Parent Relationship": "InitPlan",
+                  "Subplan Name": "InitPlan 1",
+                  "Plan Rows": 1,
+                  "Total Cost": 9,
+                  Plans: [
+                    {
+                      "Node Type": "Nested Loop",
+                      "Join Type": "Inner",
+                      "Parent Relationship": "Outer",
+                      "Plan Rows": 40,
+                      "Total Cost": 8,
+                      Plans: [
+                        {
+                          "Node Type": "Seq Scan",
+                          ...tableOf("regions", "r"),
+                          "Parent Relationship": "Outer",
+                          "Plan Rows": 20,
+                          "Total Cost": 1,
+                        },
+                        {
+                          "Node Type": "Index Scan",
+                          ...tableOf("rates", "t"),
+                          "Parent Relationship": "Inner",
+                          "Index Name": "rates_region_idx",
+                          "Index Cond": "(t.region_id = r.id)",
+                          "Plan Rows": 2,
+                          "Total Cost": 0.3,
+                        },
+                      ],
+                    },
+                  ],
+                },
+                {
+                  "Node Type": "Index Scan",
+                  ...tableOf("orders", "o"),
+                  "Parent Relationship": "Outer",
+                  "Index Name": "orders_customer_idx",
+                  "Index Cond": "(o.customer_id = c.id)",
+                  Filter: "(o.total > (InitPlan 1).col1)",
+                  "Plan Rows": 3,
+                  "Total Cost": 8,
+                },
+              ],
+            },
+          ],
+        });
+        const boxes = figures(plan);
+        // The subquery's own loop runs once for each of its 20 regions.
+        expect(boxes[4]).toEqual({ rows: "~1 row (estimate)", runs: null });
+        expect(boxes[7]).toEqual({
+          rows: "~2 rows each time (estimate)",
+          runs: "runs ~20 times (estimate)",
+        });
+        // The search the outer loop repeats may run fewer times than it has
+        // customers, and each stops at its LIMIT 1.
+        expect(boxes[8]).toEqual({
+          rows: "up to ~3 rows each time (estimate)",
+          runs: "runs up to ~500 times (estimate)",
+        });
+      });
+
+      it("does not say a join stops at a match when it is the loop above it that does", () => {
+        // WHERE EXISTS (SELECT … FROM orders o WHERE o.customer_id = c.id AND
+        // NOT EXISTS (SELECT … FROM refunds r WHERE r.order_id = o.id)): for
+        // each customer the inner loop keeps the orders with no refund, and
+        // the outer one moves on at the first it keeps.
+        const plan = {
+          "Node Type": "Nested Loop",
+          "Join Type": "Semi",
+          "Plan Rows": 400,
+          "Total Cost": 90000,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              ...tableOf("customers", "c"),
+              "Parent Relationship": "Outer",
+              "Plan Rows": 500,
+              "Total Cost": 20,
+            },
+            {
+              "Node Type": "Nested Loop",
+              "Join Type": "Anti",
+              "Parent Relationship": "Inner",
+              "Plan Rows": 2,
+              "Total Cost": 5100,
+              Plans: [
+                {
+                  "Node Type": "Seq Scan",
+                  ...tableOf("orders", "o"),
+                  "Parent Relationship": "Outer",
+                  Filter: "(o.customer_id = c.id)",
+                  "Plan Rows": 3,
+                  "Total Cost": 5000,
+                },
+                {
+                  "Node Type": "Index Only Scan",
+                  ...tableOf("refunds", "r"),
+                  "Parent Relationship": "Inner",
+                  "Index Name": "refunds_order_idx",
+                  "Index Cond": "(r.order_id = o.id)",
+                  "Plan Rows": 1,
+                  "Total Cost": 4,
+                },
+              ],
+            },
+          ],
+        };
+        const lines = words(plan);
+        expect(lines[1]).toBe(
+          "Reads public.orders (o) from the start, only as far as needed, keeping those where " +
+            "o.customer_id = c.id (each time; expected to run about 500 times)."
+        );
+        // The anti join's own search for a refund does stop at the first.
+        expect(lines[2]).toBe(
+          "Looks up the rows of public.refunds (r) where r.order_id = o.id in the index " +
+            "refunds_order_idx alone, without reading the table, stopping at the first match " +
+            "(each time; expected to run up to about 1,500 times)."
+        );
+        expect(lines[3]).toBe(
+          "Keeps each row of public.orders (o) that has no match in public.refunds (r), only as " +
+            "far as needed (each time; expected to run about 500 times)."
+        );
+      });
+
+      it("says a recursive WITH query a LIMIT may stop ends when no more rows are needed", () => {
+        /**
+         * WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t
+         * WHERE n < 1000) SELECT n FROM t, with LIMIT 5 or without.
+         */
+        function countTo(limited: boolean): Record<string, unknown> {
+          const union = {
+            "Node Type": "Recursive Union",
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "CTE t",
+            "Plan Rows": 31,
+            "Total Cost": 2.65,
+            Plans: [
+              { "Node Type": "Result", "Parent Relationship": "Outer", "Plan Rows": 1, "Total Cost": 0.01 },
+              {
+                "Node Type": "WorkTable Scan",
+                "Parent Relationship": "Inner",
+                "CTE Name": "t",
+                Alias: "t_1",
+                Filter: "(t_1.n < 1000)",
+                "Plan Rows": 3,
+                "Total Cost": 0.23,
+              },
+            ],
+          };
+          const reader = { "Node Type": "CTE Scan", "CTE Name": "t", Alias: "t", "Plan Rows": 31, "Total Cost": 0.62 };
+          return limited
+            ? {
+                "Node Type": "Limit",
+                "Plan Rows": 5,
+                "Total Cost": 0.1,
+                Plans: [union, { ...reader, "Parent Relationship": "Outer" }],
+              }
+            : { ...reader, Plans: [union] };
+        }
+        expect(words(countTo(true)).slice(1, 4)).toEqual([
+          "The WITH query t: reads the rows the previous round of the recursive query found, " +
+            "keeping those where t_1.n < 1000.",
+          "The WITH query t: repeats the recursive part of the WITH query until it finds no new " +
+            "rows or no more are needed.",
+          "Reads the saved result of the WITH query t.",
+        ]);
+        expect(words(countTo(false)).slice(1, 4)).toEqual([
+          "The WITH query t: reads the rows the previous round of the recursive query found, " +
+            "and keeps about 3 rows where t_1.n < 1000.",
+          "The WITH query t: repeats the recursive part of the WITH query until it finds no new " +
+            "rows, giving about 31 rows.",
+          "Reads the saved result of the WITH query t, giving about 31 rows.",
+        ]);
+      });
+
+      it("keeps a step's note that it runs in each process when a LIMIT takes its count", () => {
+        // SELECT DISTINCT customer_id FROM orders LIMIT 10, in processes that
+        // each sort their share and drop its duplicates before the merge.
+        const plan = limitOn({
+          "Node Type": "Unique",
+          "Parent Relationship": "Outer",
+          "Plan Rows": 4995,
+          "Total Cost": 23637,
+          Plans: [
+            {
+              "Node Type": "Gather Merge",
+              "Parent Relationship": "Outer",
+              "Workers Planned": 1,
+              "Plan Rows": 4995,
+              "Total Cost": 23624,
+              Plans: [
+                {
+                  "Node Type": "Unique",
+                  "Parent Relationship": "Outer",
+                  "Plan Rows": 4995,
+                  "Total Cost": 22062,
+                  Plans: [
+                    {
+                      "Node Type": "Sort",
+                      "Parent Relationship": "Outer",
+                      "Sort Key": ["orders.customer_id"],
+                      "Plan Rows": 176471,
+                      "Total Cost": 21621,
+                      Plans: [
+                        {
+                          "Node Type": "Seq Scan",
+                          ...tableOf("orders", "orders"),
+                          "Parent Relationship": "Outer",
+                          "Parallel Aware": true,
+                          "Plan Rows": 176471,
+                          "Total Cost": 3386,
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+        const lines = words(plan, ORDERS);
+        expect(lines[2]).toBe(
+          "Drops the duplicate rows, stopping once it has enough rows (in each process)."
+        );
+        expect(lines[4]).toBe("Drops the duplicate rows, stopping once it has enough rows.");
+        // The sort makes its whole result first, so it keeps its count, and
+        // so does the read below it.
+        expect(figures(plan, ORDERS).map((f) => f.rows)).toEqual([
+          "~10 rows (estimate)",
+          "up to ~4,995 rows (estimate)",
+          "up to ~4,995 rows (estimate)",
+          "up to ~4,995 rows per process (estimate)",
+          "~176,471 rows per process (estimate)",
+          "~176,471 rows per process (estimate)",
+        ]);
+      });
+
+      it("gives a measured step what it handed on and how often it ran, never only the most", () => {
+        // The same loop as firstPairs, run: the LIMIT stopped it at the 4th
+        // customer, and the run says so.
+        const plan = ranStep("Limit", 10, 10, {
+          Plans: [
+            ranStep("Nested Loop", 1500, 10, {
+              "Join Type": "Inner",
+              "Parent Relationship": "Outer",
+              Plans: [
+                ranStep("Seq Scan", 500, 4, {
+                  ...tableOf("customers", "c"),
+                  "Parent Relationship": "Outer",
+                }),
+                ranStep("Seq Scan", 3, 3, {
+                  ...tableOf("orders", "o"),
+                  "Parent Relationship": "Inner",
+                  Filter: "(o.customer_id = c.id)",
+                  "Rows Removed by Filter": 299997,
+                  "Actual Loops": 4,
+                }),
+              ],
+            }),
+          ],
+        });
+        const summary = summaryOf(plan, ORDERS);
+        const boxes = summary.steps.map((step) => stepFigures(step, true));
+        expect(boxes).toEqual([
+          { rows: "10 rows", runs: null },
+          { rows: "10 rows", runs: null },
+          { rows: "4 rows", runs: null },
+          { rows: "3 rows each time", runs: "ran 4 times" },
+        ]);
+        expect(explainInWords(summary).join(" ")).not.toContain("up to");
+      });
+    });
   });
 
   describe("why reading the whole table is the right plan", () => {

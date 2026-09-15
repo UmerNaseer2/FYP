@@ -734,6 +734,21 @@ export type PlanStep = {
    */
   runsKnown: boolean;
   /**
+   * True when estimatedRuns is only the most this step may run: it runs
+   * again for each row of a step above it, and that step may be stopped
+   * early (a nested loop under a LIMIT, say), so fewer rows may ask for it.
+   * See runsMayStop. Set by estimateRuns.
+   */
+  runsMayStop: boolean;
+  /**
+   * True when an estimate's estimatedRows is only the most this step may
+   * hand on: the run may stop it early (readStop), and it does not make its
+   * whole result first (readsAllFirst). A hash join under a LIMIT, say, is
+   * planned for every row it would give, but hands on only what the LIMIT
+   * asks for. Set by estimateRuns.
+   */
+  rowsMayStop: boolean;
+  /**
    * The planner's cost for this step alone, over all its runs, with its
    * children's cost taken off. An approximation: see estimateRuns.
    */
@@ -1087,12 +1102,15 @@ function flattenPlan(root: RawPlanNode, tableRows: TableRows = {}): PlanStep[] {
       actualRows: numOrNull(node, "Actual Rows"),
       selfMs: inclusiveMs,
       loops,
-      // The next five are worked out once the whole tree is known: runs,
-      // repeats, whether the runs are known and own cost by estimateRuns
-      // below, share by weighSteps in readPlan.
+      // The next seven are worked out once the whole tree is known: runs,
+      // repeats, whether the runs are known or may stop short, whether the
+      // rows may, and own cost by estimateRuns below, share by weighSteps in
+      // readPlan.
       estimatedRuns: 1,
       repeated: false,
       runsKnown: true,
+      runsMayStop: false,
+      rowsMayStop: false,
       selfCost: 0,
       share: 0,
       // Filled in after the walk, from the catalog's table sizes.
@@ -1266,7 +1284,9 @@ function rowsFilterReads(step: PlanStep, children: PlanStep[]): number | null {
  * at. A Memoize is costed once but asked again for every outer row. And
  * `runsKnown`: false where the count above is only what the planner charges,
  * or the rows handed on standing in for rows read, so it is not shown as how
- * often the step runs.
+ * often the step runs. And `runsMayStop` (see runsMayStop): true where the
+ * count is only the most the step may run. And `rowsMayStop`, the same for
+ * the rows it hands on (see PlanStep.rowsMayStop).
  */
 function estimateRuns(steps: PlanStep[]): void {
   // Built once, because the loop below needs a step's siblings to find the
@@ -1359,6 +1379,16 @@ function estimateRuns(steps: PlanStep[]): void {
     // Clamped at zero: the approximations above can take off a little more
     // than the step's total, and a negative cost reads as a bug.
     step.selfCost = Math.max(0, step.estimatedCost * step.estimatedRuns - childCost);
+  }
+
+  // Only once the first loop is done: readStop may look at any subquery's
+  // hashedSubplan (a WITH query's readers can be anywhere in the plan), and
+  // that loop sets each one only when it gets there.
+  for (const step of steps) {
+    step.runsMayStop = runsMayStop(steps, step);
+    // The same test the walk-through makes before it leaves a count out
+    // (scanResult, outputStop), so a box and its sentence agree.
+    step.rowsMayStop = !readsAllFirst(step) && readStop(steps, step) !== null;
   }
 }
 
@@ -1968,6 +1998,38 @@ function readStop(steps: PlanStep[], step: PlanStep): ReadStop | null {
     current = parent;
   }
   return null;
+}
+
+/**
+ * True when an estimate's count of how often this step runs (estimatedRuns)
+ * is only the most it may run. The count multiplies where a step runs again
+ * for each row of another (see estimateRuns): the repeated side of a nested
+ * loop, once for each row of the loop's first side, and a subquery run for
+ * each row, once for each row of the step it hangs off. When that loop, or
+ * that step, may itself be stopped early (readStop), fewer rows come through
+ * than the plan counts, and so fewer runs. The walk goes on up to the top, or
+ * to an InitPlan, where the count starts again at 1, because every repeat on
+ * the way multiplies it: a step inside two nested loops runs for each pair.
+ */
+function runsMayStop(steps: PlanStep[], step: PlanStep): boolean {
+  let current = step;
+  while (current.parentId !== null) {
+    if (current.parentRelationship === "InitPlan") return false;
+    const parent = steps[current.parentId];
+    // As estimateRuns counts: a Materialize or Memoize on a nested loop's
+    // repeated side, a hashed subquery and one with a Materialize on top run
+    // once for each run of the step above, so the count does not multiply.
+    const multiplies =
+      current.parentRelationship === "SubPlan"
+        ? !current.hashedSubplan && current.nodeType !== "Materialize"
+        : parent.nodeType === "Nested Loop" &&
+          current.nodeType !== "Materialize" &&
+          current.nodeType !== "Memoize" &&
+          isInnerSide(current, childrenOfStep(steps, parent));
+    if (multiplies && readStop(steps, parent) !== null) return true;
+    current = parent;
+  }
+  return false;
 }
 
 // ── Reading a plan condition ─────────────────────────────────────────────────
@@ -3711,6 +3773,17 @@ type Counting = {
    * PlanStep.runsKnown).
    */
   runs: number | null;
+  /**
+   * An estimate's `runs` is only the most the step may run: something above
+   * may stop early, so fewer rows may ask for it (PlanStep.runsMayStop).
+   * Always false when measured, where `runs` is what really happened.
+   */
+  runsMayStop: boolean;
+  /**
+   * An estimate's `rows` is only the most the step may hand on
+   * (PlanStep.rowsMayStop). Always false when measured.
+   */
+  rowsMayStop: boolean;
   /** The rows are for one helper process. */
   perProcess: boolean;
   /**
@@ -3736,6 +3809,8 @@ function countingOf(step: PlanStep, measured: boolean): Counting {
       perRun: runs > 1 || step.repeated,
       // Not shown when an estimate cannot say (see PlanStep.runsKnown).
       runs: runs > 1 && step.runsKnown ? runs : null,
+      runsMayStop: step.runsMayStop,
+      rowsMayStop: step.rowsMayStop,
       // Every estimate below a Gather is for one process: the planner divides
       // a parallel scan's rows between them, and each runs the rest in full.
       perProcess: step.inParallel,
@@ -3758,6 +3833,8 @@ function countingOf(step: PlanStep, measured: boolean): Counting {
     rows: perRun || perProcess ? step.actualRows : step.actualRows * loops,
     perRun,
     runs: loops,
+    runsMayStop: false,
+    rowsMayStop: false,
     perProcess,
     underOne: loops > 1 && Math.round(step.actualRows) === 0,
     neverRan: loops === 0,
@@ -3817,8 +3894,8 @@ function unitNote(c: Counting): string {
     if (c.measured) return ` (each time; it ran ${fmtRows(c.runs ?? 0)} times)`;
     return c.runs === null
       ? " (each time it runs)"
-      : ` (each time; expected to run about ${countInWords(c.runs)} times` +
-          `${c.perProcess ? " in each process" : ""})`;
+      : ` (each time; expected to run ${c.runsMayStop ? "up to " : ""}about ` +
+          `${countInWords(c.runs)} times${c.perProcess ? " in each process" : ""})`;
   }
   return c.perProcess ? " (in each process)" : "";
 }
@@ -4003,6 +4080,47 @@ const INDEX_SCAN_STOP: Record<ReadStop, string> = {
 };
 
 /**
+ * Why an estimate's count for a step that is not a scan would say more than
+ * the step will hand on, or null when it would not: its Plan Rows are what a
+ * full run hands on, and the run may stop it early (readStop). A step that
+ * makes its whole result before it hands any of it on (readsAllFirst: a hash
+ * aggregate, say) keeps its count. It does make all of it; a LIMIT above
+ * only takes fewer.
+ */
+function outputStop(n: Narration, step: PlanStep, c: Counting): ReadStop | null {
+  if (c.measured || readsAllFirst(step)) return null;
+  return readStop(n.steps, step);
+}
+
+/**
+ * What a step that is not a scan handed on, and its unit note: ", giving
+ * about 1,500 rows", or ", and keeps about 12 rows where …" for one with a
+ * filter (`cond`). `noun` is what it hands on: rows, or groups. An estimate
+ * the run may stop early (outputStop) has no count, as a scan has none
+ * (scanResult): ", stopping once it has enough rows" under a LIMIT, and
+ * otherwise ", only as far as needed". The unit note stays, so a step run
+ * in each process still says so.
+ */
+function outputTail(
+  n: Narration,
+  step: PlanStep,
+  c: Counting,
+  cond: string | null,
+  noun = "row"
+): string {
+  const stop = outputStop(n, step, c);
+  if (stop === null) {
+    return (cond === null ? `, giving ${countOf(c, noun)}` : keepsClause(c, cond)) + unitNote(c);
+  }
+  // Not ", stopping at the first match" for "match": it is the loop above
+  // that moves on at a match, and on a join or a grouping those words would
+  // read as the step's own matching ("has no match …, stopping at the first
+  // match").
+  const where = stop === "limit" ? `, stopping once it has enough ${noun}s` : INDEX_SCAN_STOP.asked;
+  return where + (cond === null ? "" : `, keeping those where ${cond}`) + unitNote(c);
+}
+
+/**
  * A sequential scan: the whole table, or its start when something above may
  * stop it early (see readStop).
  */
@@ -4166,8 +4284,7 @@ function joinSentence(n: Narration, step: PlanStep, c: Counting): string {
         s += ", keeping the rows of both sides that have no match too";
       }
   }
-  s += step.filter === null ? givingClause(c) : keepsClause(c, plainCondition(step.filter));
-  return s + unitNote(c);
+  return s + outputTail(n, step, c, step.filter === null ? null : plainCondition(step.filter));
 }
 
 /** "count(*), sum(o.total) and 2 more": a list cut to three for a sentence. */
@@ -4205,17 +4322,12 @@ function sortKeys(step: PlanStep): string {
     .join(", ");
 }
 
-/** ", giving 12 groups", counted in groups rather than rows. */
-function groupsClause(c: Counting): string {
-  return `, giving ${countOf(c, "group")}`;
-}
-
 /**
  * An aggregate: GROUP BY, a count, a sum. The aggregates come from the
  * step's Output (VERBOSE only); a plan without it still gets its grouping.
  * A HAVING clause shows up as the step's Filter.
  */
-function aggregateSentence(step: PlanStep, c: Counting): string {
+function aggregateSentence(n: Narration, step: PlanStep, c: Counting): string {
   const keys = detailList(step, "Group Key");
   const keySet = new Set(keys);
   // Output lists the grouping columns too; an aggregate is a call, with "(".
@@ -4240,9 +4352,10 @@ function aggregateSentence(step: PlanStep, c: Counting): string {
   if (step.partialMode === "Finalize") {
     let s = `Adds up the processes' partial results into the final ${what ?? "totals"}`;
     if (keys.length > 0) s += ` for each ${by}`;
-    if (having !== null) s += keepsClause(c, having);
-    else if (keys.length > 0) s += groupsClause(c);
-    return s + unitNote(c);
+    // No GROUP BY: one answer, so no count worth giving, and nothing for a
+    // LIMIT to stop short.
+    if (keys.length === 0) return s + (having === null ? "" : keepsClause(c, having)) + unitNote(c);
+    return s + outputTail(n, step, c, having, "group");
   }
   let s: string;
   if (keys.length > 0) {
@@ -4251,12 +4364,12 @@ function aggregateSentence(step: PlanStep, c: Counting): string {
     else if (!known) s = `Groups those rows by ${by}`;
     // Grouping with nothing to work out: a GROUP BY or DISTINCT.
     else s = `Keeps one row for each different ${by}`;
-    s += having !== null ? keepsClause(c, having) : what !== null || !known ? groupsClause(c) : givingClause(c);
-  } else {
-    // No GROUP BY: one answer over every row, so no count worth giving.
-    s = `Works out ${what ?? "the totals"} over all those rows`;
-    if (having !== null) s += keepsClause(c, having);
+    return s + outputTail(n, step, c, having, what !== null || !known ? "group" : "row");
   }
+  // No GROUP BY: one answer over every row, so no count worth giving, and
+  // nothing for a LIMIT to stop short.
+  s = `Works out ${what ?? "the totals"} over all those rows`;
+  if (having !== null) s += keepsClause(c, having);
   return s + unitNote(c);
 }
 
@@ -4336,7 +4449,7 @@ function resultSentence(n: Narration, step: PlanStep, c: Counting): string | nul
       : "Works out the answer without reading any table";
   }
   if (step.filter !== null) {
-    return "Takes those rows" + keepsClause(c, plainCondition(step.filter)) + unitNote(c);
+    return "Takes those rows" + outputTail(n, step, c, plainCondition(step.filter));
   }
   // Only computing the output columns of the step below: not worth a line.
   return null;
@@ -4400,24 +4513,24 @@ function ownSentence(n: Narration, step: PlanStep, c: Counting): string | null {
     case "Aggregate":
     case "HashAggregate":
     case "GroupAggregate":
-      return aggregateSentence(step, c);
+      return aggregateSentence(n, step, c);
     case "Group": {
       const keys = detailList(step, "Group Key");
       const each = keys.length > 0 ? `each different ${keysPhrase(keys)}` : "each group";
-      return `Keeps one row for ${each}` + givingClause(c) + unitNote(c);
+      return `Keeps one row for ${each}` + outputTail(n, step, c, null);
     }
     case "Limit":
       return c.measured && Math.round(c.rows) === 0 && !c.underOne
         ? "Hands back no rows" + unitNote(c)
         : `Stops after handing back ${countOf(c)}` + unitNote(c);
     case "Unique":
-      return "Drops the duplicate rows" + givingClause(c) + unitNote(c);
+      return "Drops the duplicate rows" + outputTail(n, step, c, null);
     case "Append":
       return `Puts the rows of those ${joinSides(kids).length} parts together, one after another` +
-        givingClause(c) + unitNote(c);
+        outputTail(n, step, c, null);
     case "Merge Append":
       return `Merges those ${joinSides(kids).length} sorted parts into one sorted list` +
-        givingClause(c) + unitNote(c);
+        outputTail(n, step, c, null);
     case "Materialize":
       return materializeSentence(n, step);
     case "Memoize":
@@ -4429,7 +4542,7 @@ function ownSentence(n: Narration, step: PlanStep, c: Counting): string | null {
         ? "Collects the rows from all the processes" + givingClause(c)
         : null;
     case "Gather Merge":
-      return "Merges the processes' sorted rows into one sorted list" + givingClause(c);
+      return "Merges the processes' sorted rows into one sorted list" + outputTail(n, step, c, null);
     case "Result":
       return resultSentence(n, step, c);
     case "CTE Scan":
@@ -4438,7 +4551,7 @@ function ownSentence(n: Narration, step: PlanStep, c: Counting): string | null {
     case "Subquery Scan":
       if (step.filter === null) return null;
       return `Takes the rows of the subquery${step.alias === null ? "" : ` ${step.alias}`}` +
-        keepsClause(c, plainCondition(step.filter)) + unitNote(c);
+        outputTail(n, step, c, plainCondition(step.filter));
     case "Function Scan":
       return `Reads the rows the function ${functionName(step)} returns` +
         scanTail(n, step, c);
@@ -4462,22 +4575,26 @@ function ownSentence(n: Narration, step: PlanStep, c: Counting): string | null {
         unitNote(c);
     case "SetOp":
       return "Compares the rows of the two queries and keeps the ones the INTERSECT or " +
-        "EXCEPT asks for" + givingClause(c) + unitNote(c);
+        "EXCEPT asks for" + outputTail(n, step, c, null);
     case "LockRows":
       return "Locks each of those rows as it hands them on (FOR UPDATE or FOR SHARE)";
     case "ProjectSet":
       return "Turns each of those rows into several, for a set-returning function in the " +
-        "SELECT list" + givingClause(c) + unitNote(c);
+        "SELECT list" + outputTail(n, step, c, null);
     case "Recursive Union":
+      // Stopped early, it ends when no more rows are wanted, whatever it finds.
       return "Repeats the recursive part of the WITH query until it finds no new rows" +
-        givingClause(c);
+        (outputStop(n, step, c) === null
+          ? outputTail(n, step, c, null)
+          : " or no more are needed" + unitNote(c));
     case "WorkTable Scan":
+      // Its Filter is what ends the recursion (WHERE n < 10), so it is said.
       return "Reads the rows the previous round of the recursive query found" +
-        givingClause(c) + unitNote(c);
+        scanTail(n, step, c);
     case "ModifyTable":
       return modifySentence(step);
     default:
-      return `Runs a ${step.nodeType} step` + givingClause(c) + unitNote(c);
+      return `Runs a ${step.nodeType} step` + outputTail(n, step, c, null);
   }
 }
 
@@ -4683,9 +4800,17 @@ export function explainInWords(summary: PlanSummary): string[] {
 
 /** What a plan box prints under its label. */
 export type StepFigures = {
-  /** "1,204 rows", "~1,204 rows (estimate)", "1 row each time", "never ran". */
+  /**
+   * "1,204 rows", "~1,204 rows (estimate)", "1 row each time", "never ran",
+   * or "up to ~1,204 rows (estimate)" when that is only the most (see
+   * PlanStep.rowsMayStop).
+   */
   rows: string;
-  /** "ran 5,000 times", "in 3 processes", "runs ~5,000 times (estimate)", or null. */
+  /**
+   * "ran 5,000 times", "in 3 processes", "runs ~5,000 times (estimate)", or
+   * "runs up to ~5,000 times (estimate)" when that is only the most (see
+   * runsMayStop). Null when the step runs once.
+   */
   runs: string | null;
 };
 
@@ -4713,9 +4838,12 @@ export function stepFigures(step: PlanStep, measured: boolean): StepFigures {
     };
   }
   return {
-    rows: `~${rowsWord(c.rows)}${unit} (estimate)`,
+    rows: `${c.rowsMayStop ? "up to " : ""}~${rowsWord(c.rows)}${unit} (estimate)`,
     // Null when the plan repeats the step but cannot say how often.
-    runs: c.perRun && c.runs !== null ? `runs ~${fmtRows(c.runs)} times (estimate)` : null,
+    runs:
+      c.perRun && c.runs !== null
+        ? `runs ${c.runsMayStop ? "up to " : ""}~${fmtRows(c.runs)} times (estimate)`
+        : null,
   };
 }
 
