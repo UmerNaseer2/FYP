@@ -58,6 +58,14 @@ export type QueryFinding = {
   /** For a `change`: the statement that takes it back out, e.g. DROP INDEX. */
   undo?: string;
   /**
+   * For a `change`: every schema its statements alter, e.g. ["sales"] for an
+   * index on sales.orders. A query can read tables in any schema, not only
+   * the one picked above it, and a migration is made for one schema, so the
+   * fix script saves only the changes to that one (FixScriptItem in
+   * lib/perf-sql.ts). Left out for every other kind.
+   */
+  schemas?: string[];
+  /**
    * The plan step this finding is about (a PlanStep id), or null when it came
    * from reading the query text. Required rather than optional so a new rule
    * cannot forget to say: the plan tree counts findings per step with it, and
@@ -2502,7 +2510,8 @@ function planFindings(
    * The fix for "this step reads a whole table", given the conditions it
    * searches by:
    *   • change       a named CREATE INDEX on the columns read off the
-   *                  conditions, with the DROP INDEX that undoes it;
+   *                  conditions, with the DROP INDEX that undoes it and the
+   *                  schema it goes in (the table's own);
    *   • maintenance  ANALYZE, when a usable index on the first of those
    *                  columns already exists and the planner passed it over,
    *                  which usually means its statistics are stale;
@@ -2513,7 +2522,7 @@ function planFindings(
     step: PlanStep,
     conditions: (string | null)[],
     fallback: string
-  ): { columns: string[]; fix: string; fixKind: FixKind; undo?: string } {
+  ): { columns: string[]; fix: string; fixKind: FixKind; undo?: string; schemas?: string[] } {
     const schema = step.relationSchema;
     const table = step.relation;
     if (schema === null || table === null) {
@@ -2584,6 +2593,7 @@ function planFindings(
         `-- ${oneLine(tableName(step))} without reading the whole table. Build it, then analyse again.\n` +
         index.sql,
       undo: index.undo,
+      schemas: [schema],
     };
   }
 
@@ -2664,6 +2674,7 @@ function planFindings(
           fix: advice.fix,
           fixKind: advice.fixKind,
           undo: advice.undo,
+          schemas: advice.schemas,
         });
       }
     }
@@ -2819,6 +2830,7 @@ function planFindings(
           fix: advice.fix,
           fixKind: advice.fixKind,
           undo: advice.undo,
+          schemas: advice.schemas,
         });
       }
     }
@@ -2873,6 +2885,7 @@ function planFindings(
           fix: advice.fix,
           fixKind: advice.fixKind,
           undo: advice.undo,
+          schemas: advice.schemas,
         });
         break;
       }
@@ -6161,6 +6174,8 @@ export function readSql(sql: string, context?: SqlContext): QueryFinding[] {
     // case, as the plan prints it.
     const indexes: IndexStatement[] = [];
     const indexedCalls: WrappedCall[] = [];
+    // The schemas those indexes go in, each once (QueryFinding.schemas).
+    const indexSchemas: string[] = [];
     const seen: string[] = [];
     for (const atom of filterAtoms(context, andedConditions)) {
       const { table } = atom;
@@ -6188,6 +6203,7 @@ export function readSql(sql: string, context?: SqlContext): QueryFinding[] {
       suggested.push(index.name);
       indexes.push(index);
       indexedCalls.push(written);
+      if (!indexSchemas.includes(table.schema)) indexSchemas.push(table.schema);
     }
 
     // The call the finding is about: one the plan let us index, else the
@@ -6213,6 +6229,7 @@ export function readSql(sql: string, context?: SqlContext): QueryFinding[] {
         indexes.map((index) => index.sql).join("\n\n");
       finding.fixKind = "change";
       finding.undo = indexes.map((index) => index.undo).join("\n");
+      finding.schemas = indexSchemas;
     }
     out.push(finding);
   }

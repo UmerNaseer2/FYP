@@ -12,9 +12,11 @@ import {
   type FilterKey,
 } from "./FindingCard";
 import type { PerfTarget } from "./PerfTargetPicker";
-// Dependency-free quoting shared with the suggestions, so the table named in
-// the editor is quoted exactly as the suggestion that linked here quotes it.
-import { qualifiedName, quoteIdent } from "@/lib/perf-sql";
+// Dependency-free helpers shared with the suggestions: the quoting, so the
+// table named in the editor is quoted exactly as the suggestion that linked
+// here quotes it, and the heading over a change to another schema, worded as
+// the fix script below words it.
+import { otherSchemaHeading, qualifiedName, quoteIdent } from "@/lib/perf-sql";
 import { PlanTree, ShareMeter } from "./PlanTree";
 import { FixScriptBuilder } from "./FixScriptBuilder";
 // Type-only: erased at build time. The response shape has one definition, in
@@ -322,10 +324,20 @@ function Result({
                 icon={<CheckIcon size={22} />}
                 title="Nothing to flag"
                 description={
-                  "Neither the plan nor the query text tripped any of the checks — " +
-                  "no whole-table reads on large tables, no sort spilling to disk, " +
-                  "no estimate wildly out, and nothing in the SQL that usually " +
-                  "costs more than it looks."
+                  // Only a run reports how a sort went, how far off an
+                  // estimate was, or how often a step was repeated, so an
+                  // estimate cannot vouch for any of those.
+                  view.mode === "measured"
+                    ? "Neither the plan nor the query text tripped any of the checks — " +
+                      "no whole-table reads on large tables, no sort spilling to disk, " +
+                      "no estimate wildly out, and nothing in the SQL that usually " +
+                      "costs more than it looks."
+                    : "Neither the plan nor the query text tripped any of the checks " +
+                      "that work without running the query — no whole-table reads on " +
+                      "large tables, no big table read in full to join a few rows, and " +
+                      "nothing in the SQL that usually costs more than it looks. A sort " +
+                      "spilling to disk, an estimate far off or a table read again for " +
+                      "every row shows only when the query is run and measured."
                 }
               />
             </div>
@@ -342,6 +354,9 @@ function Result({
                 detail={f.detail}
                 fix={f.fix}
                 fixKind={f.fixKind}
+                // A change to another schema's table is not saved as a
+                // migration made for view.schema, so its card must not say so.
+                fixHeading={otherSchemaHeading(f, view.schema)}
                 undo={f.undo}
                 step={f.stepId}
               />

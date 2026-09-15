@@ -320,7 +320,51 @@ export type FixScriptItem = {
   fix: string;
   fixKind: FixKind;
   undo?: string;
+  /**
+   * For a change: every schema its statements alter. Left out, it means the
+   * schema the script is made for: the Suggestions tab reads one schema, and
+   * its fixes never reach outside it. The Analyse tab sets it, because a query
+   * can read a table in any schema and the index goes on that table.
+   */
+  schemas?: string[];
 };
+
+/**
+ * The schemas other than `schema` that any of `items` alters, each once, in
+ * the order they are named. [] when they alter only `schema`, or do not say.
+ *
+ * A migration is made for one schema, so a change that alters any other stays
+ * out of it (buildFixScript), and the screen lists it apart (FixScriptBuilder).
+ */
+export function otherSchemas(items: FixScriptItem[], schema: string): string[] {
+  const others: string[] = [];
+  for (const item of items) {
+    for (const name of item.schemas ?? []) {
+      if (name !== schema && !others.includes(name)) others.push(name);
+    }
+  }
+  return others;
+}
+
+/** "schema sales", "schemas sales and audit", "schemas a, b and c". Names on one line. */
+export function schemasPhrase(names: string[]): string {
+  const shown = names.map(oneLine);
+  if (shown.length <= 1) return `schema ${shown[0] ?? ""}`;
+  return `schemas ${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+}
+
+/**
+ * The heading over the fix of a change that alters a schema other than
+ * `schema`, the one picked: "Change to schema sales: copy it and run it by
+ * hand". Such a change never goes in a migration made for `schema` (see
+ * buildFixScript), so the usual "save it as a migration" would be wrong on
+ * its card. Every schema it alters is named, the picked one too when it is
+ * among them. Undefined for any other fix, which keeps the usual heading.
+ */
+export function otherSchemaHeading(item: FixScriptItem, schema: string): string | undefined {
+  if (item.fixKind !== "change" || otherSchemas([item], schema).length === 0) return undefined;
+  return `Change to ${schemasPhrase(item.schemas ?? [])}: copy it and run it by hand`;
+}
 
 /** Where the fixes are for, printed at the top, and the fixes themselves. */
 export type FixScriptInput = {
@@ -336,26 +380,27 @@ export type FixScriptInput = {
 /** The ticked fixes as text to copy, download or save as a migration. */
 export type FixScript = {
   /**
-   * Everything, for Copy and Download: the header, the schema changes, then
-   * the maintenance in a section of its own. "" when none of the items is a
-   * change or maintenance.
+   * Everything, for Copy and Download: the header, then the changes to the
+   * input's schema, the changes to any other schema and the maintenance, each
+   * in a section of its own. "" when none of the items is a change or
+   * maintenance.
    */
   script: string;
   /**
-   * The header and the schema changes only, which is what a migration may
-   * hold. "" when there are no changes.
+   * The header and the changes to the input's schema only, which is what a
+   * migration made for that schema may hold. "" when there are none.
    */
   changes: string;
   /**
-   * The statements that take the schema changes back out, last change first.
-   * null when there are no changes, or when any change has no undo that runs:
-   * a rollback that quietly skipped one change would leave the database half
+   * The statements that take those changes back out, last change first. null
+   * when there are none, or when any of them has no undo that runs: a
+   * rollback that quietly skipped one change would leave the database half
    * put back while saying it was done.
    */
   rollback: string | null;
-  /** "title (object)" for each change with no undo, so the screen can name them. */
+  /** "title (object)" for each of those changes with no undo, so the screen can name them. */
   withoutUndo: string[];
-  /** One line for the migration's description. "" when there are no changes. */
+  /** One line for the migration's description. "" when there are no changes for it. */
   description: string;
 };
 
@@ -479,21 +524,29 @@ function place(item: FixScriptItem, seen: Set<string>): Placed {
 
 /**
  * Everything the script and the screen's notes are built from, worked out in
- * one place so the two can never disagree: the changes, then the maintenance,
- * each with repeats taken out, and each change's own undo.
+ * one place so the two can never disagree. In the order the script prints
+ * them: the changes a migration for `schema` may hold, the changes that alter
+ * another schema, then the maintenance, each with repeats taken out; and the
+ * undo of each change the migration may hold.
  */
-function arrange(items: FixScriptItem[]) {
-  // One set across both sections, filled in the order the script prints them,
-  // so "already above" is true of the script exactly as printed.
+function arrange(items: FixScriptItem[], schema: string) {
+  const forMigration = (item: FixScriptItem) =>
+    item.fixKind === "change" && otherSchemas([item], schema).length === 0;
+  const forOtherSchema = (item: FixScriptItem) => item.fixKind === "change" && !forMigration(item);
+  // One set across all three sections, filled in the order the script prints
+  // them, so "already above" is true of the script exactly as printed.
   const seen = new Set<string>();
-  const changes = items.filter((item) => item.fixKind === "change").map((item) => place(item, seen));
+  const changes = items.filter(forMigration).map((item) => place(item, seen));
+  const elsewhere = items.filter(forOtherSchema).map((item) => place(item, seen));
   const maintenance = items
     .filter((item) => item.fixKind === "maintenance")
     .map((item) => place(item, seen));
 
-  // The undo side, earliest change first, with repeats taken out the same way:
-  // the same CREATE INDEX under two findings comes with the same DROP INDEX,
-  // and dropping it twice would stop the rollback half way.
+  // The undo side, for the migration's changes only: nothing else goes in
+  // the migration, so its rollback has nothing else to take out. Earliest
+  // change first, with repeats taken out the same way: the same CREATE INDEX
+  // under two findings comes with the same DROP INDEX, and dropping it twice
+  // would stop the rollback half way.
   const seenUndo = new Set<string>();
   const undos: { item: FixScriptItem; sql: string }[] = [];
   const withoutUndo: string[] = [];
@@ -510,7 +563,7 @@ function arrange(items: FixScriptItem[]) {
     const own = withoutRepeats(undo, seenUndo).sql;
     if (hasExecutableSql(own)) undos.push({ item: placed.item, sql: own.trim() });
   }
-  return { changes, maintenance, undos, withoutUndo };
+  return { changes, elsewhere, maintenance, undos, withoutUndo };
 }
 
 /** The comment lines every script and rollback opens with. */
@@ -548,20 +601,46 @@ function capLength(text: string, max: number): string {
  *   • Changes first, then maintenance under its own heading. The two are run
  *     differently: a migration runs its changes in one transaction, and VACUUM
  *     refuses to run inside one.
+ *   • A migration is made for one schema, the input's. A change that alters
+ *     any other goes in a section of its own after the rest of the changes,
+ *     and stays out of `changes`, the rollback and the description. Only the
+ *     Analyse tab makes one: a query can read a table in any schema, and the
+ *     index it needs goes on that table.
  *   • Every fix keeps its comments and is headed by its title and object, so
  *     the file still says why each statement is there.
  *   • A statement that an earlier fix already runs is left out, with a note.
  */
 export function buildFixScript(input: FixScriptInput): FixScript {
-  const { changes, maintenance, undos, withoutUndo } = arrange(input.items);
+  const { changes, elsewhere, maintenance, undos, withoutUndo } = arrange(
+    input.items,
+    input.schema
+  );
   const top = header(input);
+  const schema = oneLine(input.schema);
 
   const changeSection = [
     RULE,
-    "-- Schema changes: save them as a migration",
+    // Named by its schema only when there are changes to another one too, as
+    // the screen does.
+    elsewhere.length > 0
+      ? `-- Changes to schema ${schema}: save them as a migration`
+      : "-- Schema changes: save them as a migration",
     RULE,
     "",
     changes.map((placed) => placed.text).join("\n\n"),
+  ].join("\n");
+  const elsewhereSchemas = otherSchemas(
+    elsewhere.map((placed) => placed.item),
+    input.schema
+  );
+  const elsewhereSection = [
+    RULE,
+    `-- Changes to other schemas: run by hand, not in a migration for ${schema}`,
+    RULE,
+    `-- These alter ${schemasPhrase(elsewhereSchemas)}. A migration is made for one schema,`,
+    "-- the one named at the top, so Save as a migration leaves these out.",
+    "",
+    elsewhere.map((placed) => placed.text).join("\n\n"),
   ].join("\n");
   const maintenanceSection = [
     RULE,
@@ -576,6 +655,7 @@ export function buildFixScript(input: FixScriptInput): FixScript {
 
   const sections: string[] = [];
   if (changes.length > 0) sections.push(changeSection);
+  if (elsewhere.length > 0) sections.push(elsewhereSection);
   if (maintenance.length > 0) sections.push(maintenanceSection);
   const script = sections.length === 0 ? "" : `${top}\n\n${sections.join("\n\n")}\n`;
 
@@ -609,12 +689,13 @@ export function buildFixScript(input: FixScriptInput): FixScript {
 }
 
 /**
- * The changes among `items` that have no undo, as "title (object)", worked
- * out exactly as buildFixScript does. For the screen's note while the ticks
- * change, where there is no date to hand yet (a render must not read the clock).
+ * The changes among `items` that a migration for `schema` would hold and that
+ * have no undo, as "title (object)", worked out exactly as buildFixScript
+ * does. For the screen's note while the ticks change, where there is no date
+ * to hand yet (a render must not read the clock).
  */
-export function changesWithoutUndo(items: FixScriptItem[]): string[] {
-  return arrange(items).withoutUndo;
+export function changesWithoutUndo(items: FixScriptItem[], schema: string): string[] {
+  return arrange(items, schema).withoutUndo;
 }
 
 /** A name for one part of a file name: letters, digits, _ and - only. */

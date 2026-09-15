@@ -17,8 +17,11 @@ import {
   createIndexSql,
   fixScriptFileName,
   indexName,
+  otherSchemaHeading,
+  otherSchemas,
   qualifiedName,
   quoteIdent,
+  schemasPhrase,
   type FixScriptItem,
 } from "@/lib/perf-sql";
 import { maskNonCode } from "@/lib/sql-guard";
@@ -350,8 +353,8 @@ describe("buildFixScript", () => {
     const result = build([fkIndex, noUndo]);
     expect(result.rollback).toBeNull();
     expect(result.withoutUndo).toEqual(["Index has never been used (orders_legacy_idx)"]);
-    expect(changesWithoutUndo([fkIndex, noUndo])).toEqual(result.withoutUndo);
-    expect(changesWithoutUndo([fkIndex, dropUnused])).toEqual([]);
+    expect(changesWithoutUndo([fkIndex, noUndo], "public")).toEqual(result.withoutUndo);
+    expect(changesWithoutUndo([fkIndex, dropUnused], "public")).toEqual([]);
   });
 
   it("counts an undo of nothing but comments as no undo: it puts nothing back", () => {
@@ -467,6 +470,169 @@ describe("buildFixScript", () => {
     expect(description.length).toBeLessThanOrEqual(MAX_MIGRATION_DESCRIPTION);
     expect(description.endsWith("…")).toBe(true);
     expect(description).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  // An index the Analyse tab suggests on a table in another schema: the query
+  // read sales.orders while public was the schema picked above it.
+  const salesIndex = createIndexSql("sales", "orders", ["region"], []);
+  const salesChange: FixScriptItem = {
+    title: "Whole table read to answer this",
+    object: "sales.orders",
+    fix: salesIndex.sql,
+    fixKind: "change",
+    undo: salesIndex.undo,
+    schemas: ["sales"],
+  };
+
+  it("puts a change to another schema in a section of its own, after the changes to this one", () => {
+    // Listed first on screen, it still comes after the changes a migration may hold.
+    const { script } = build([salesChange, vacuum, fkIndex]);
+    const at = (part: string) => script.indexOf(part);
+    expect(count(script, "-- Changes to schema public: save them as a migration\n")).toBe(1);
+    expect(
+      count(script, "-- Changes to other schemas: run by hand, not in a migration for public\n")
+    ).toBe(1);
+    expect(script).toContain(
+      "-- These alter schema sales. A migration is made for one schema,\n" +
+        "-- the one named at the top, so Save as a migration leaves these out.\n"
+    );
+    expect(at("-- Changes to schema public:")).toBeLessThan(at("-- Foreign key has no index"));
+    expect(at("-- Foreign key has no index")).toBeLessThan(at("-- Changes to other schemas:"));
+    expect(at("-- Changes to other schemas:")).toBeLessThan(at("-- Whole table read to answer this"));
+    expect(at("-- Whole table read to answer this")).toBeLessThan(at("-- Maintenance:"));
+    expect(script).toContain(`-- Whole table read to answer this (sales.orders)\n${salesIndex.sql}`);
+  });
+
+  it("keeps a change to another schema out of the migration, its rollback and its description", () => {
+    const { changes, rollback, description } = build([salesChange, fkIndex]);
+    expect(changes).toContain(customerIndex.sql);
+    expect(changes).not.toContain(salesIndex.sql);
+    expect(changes).not.toContain("Whole table read to answer this");
+    expect(rollback).toContain(customerIndex.undo);
+    expect(rollback).not.toContain(salesIndex.undo);
+    expect(description).toBe(
+      "Performance fixes for public: Foreign key has no index (orders.customer_id)"
+    );
+  });
+
+  it("keeps the rollback when a change to another schema has no undo", () => {
+    // That change is not in the migration, so the rollback has nothing of it to take out.
+    const salesNoUndo: FixScriptItem = {
+      title: salesChange.title,
+      object: salesChange.object,
+      fix: salesIndex.sql,
+      fixKind: "change",
+      schemas: ["sales"],
+    };
+    const result = build([fkIndex, salesNoUndo]);
+    expect(result.withoutUndo).toEqual([]);
+    expect(result.rollback).toContain(customerIndex.undo);
+    expect(changesWithoutUndo([fkIndex, salesNoUndo], "public")).toEqual([]);
+  });
+
+  it("has no migration when every change is to another schema, but still a script to copy", () => {
+    const result = build([salesChange]);
+    expect(result).toMatchObject({ changes: "", rollback: null, withoutUndo: [], description: "" });
+    expect(result.script).toContain(salesIndex.sql);
+    expect(result.script).not.toContain("save them as a migration");
+  });
+
+  it("keeps a change that alters this schema and another out of the migration, whole", () => {
+    // A query reading public.customers and sales.customers can get one finding
+    // with an index on each. Its statements are one fix and are not split.
+    const both: FixScriptItem = {
+      ...salesChange,
+      fix: `${customerIndex.sql}\n${salesIndex.sql}`,
+      undo: `${customerIndex.undo}\n${salesIndex.undo}`,
+      schemas: ["public", "sales"],
+    };
+    const { script, changes } = build([both]);
+    expect(changes).toBe("");
+    expect(script).toContain("-- These alter schema sales.");
+    expect(script).toContain(customerIndex.sql);
+  });
+
+  it("counts a change that names only this schema as one for the migration", () => {
+    const named: FixScriptItem = { ...fkIndex, schemas: ["public"] };
+    const { script, changes } = build([named]);
+    expect(changes).toContain(customerIndex.sql);
+    expect(script).toContain("-- Schema changes: save them as a migration\n");
+    expect(script).not.toContain("-- Changes to other schemas");
+  });
+
+  it("names every other schema the changes alter", () => {
+    const auditIndex = createIndexSql("audit", "log", ["at"], []);
+    const auditChange: FixScriptItem = {
+      title: "Whole table read to answer this",
+      object: "audit.log",
+      fix: auditIndex.sql,
+      fixKind: "change",
+      undo: auditIndex.undo,
+      schemas: ["audit"],
+    };
+    expect(build([salesChange, auditChange]).script).toContain(
+      "-- These alter schemas sales and audit."
+    );
+  });
+});
+
+describe("otherSchemas", () => {
+  const change = (schemas?: string[]): FixScriptItem => ({
+    title: "Whole table read to answer this",
+    object: "orders",
+    fix: 'CREATE INDEX "orders_x_idx" ON "public"."orders" ("x");',
+    fixKind: "change",
+    ...(schemas === undefined ? {} : { schemas }),
+  });
+
+  it("is empty when the items alter only the schema given, or do not say", () => {
+    expect(otherSchemas([], "public")).toEqual([]);
+    expect(otherSchemas([change()], "public")).toEqual([]);
+    expect(otherSchemas([change(["public"])], "public")).toEqual([]);
+  });
+
+  it("names each other schema once, in the order the items name them", () => {
+    expect(
+      otherSchemas([change(["sales", "public", "audit"]), change(["audit", "hr", "sales"])], "public")
+    ).toEqual(["sales", "audit", "hr"]);
+  });
+});
+
+describe("schemasPhrase", () => {
+  it("names one schema, two, or more, the way a sentence would", () => {
+    expect(schemasPhrase(["sales"])).toBe("schema sales");
+    expect(schemasPhrase(["sales", "audit"])).toBe("schemas sales and audit");
+    expect(schemasPhrase(["sales", "audit", "hr"])).toBe("schemas sales, audit and hr");
+  });
+
+  it("keeps a name holding a line break on one line", () => {
+    expect(schemasPhrase(["odd\r\nname"])).toBe("schema odd name");
+  });
+});
+
+describe("otherSchemaHeading", () => {
+  const item = (fixKind: FixScriptItem["fixKind"], schemas?: string[]): FixScriptItem => ({
+    title: "Whole table read to answer this",
+    object: "orders",
+    fix: 'CREATE INDEX "orders_x_idx" ON "sales"."orders" ("x");',
+    fixKind,
+    ...(schemas === undefined ? {} : { schemas }),
+  });
+
+  it("names every schema a change to another schema alters", () => {
+    expect(otherSchemaHeading(item("change", ["sales"]), "public")).toBe(
+      "Change to schema sales: copy it and run it by hand"
+    );
+    // The picked schema is named too when the change also alters it.
+    expect(otherSchemaHeading(item("change", ["public", "sales"]), "public")).toBe(
+      "Change to schemas public and sales: copy it and run it by hand"
+    );
+  });
+
+  it("leaves the usual heading on a change to the picked schema, and on every other kind", () => {
+    expect(otherSchemaHeading(item("change", ["public"]), "public")).toBeUndefined();
+    expect(otherSchemaHeading(item("change"), "public")).toBeUndefined();
+    expect(otherSchemaHeading(item("maintenance", ["sales"]), "public")).toBeUndefined();
   });
 });
 

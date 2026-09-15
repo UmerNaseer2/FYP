@@ -11,6 +11,8 @@ import {
   buildFixScript,
   changesWithoutUndo,
   fixScriptFileName,
+  otherSchemas,
+  schemasPhrase,
   type FixScriptItem,
 } from "@/lib/perf-sql";
 import { downloadText } from "./ExportBar";
@@ -31,9 +33,15 @@ import { downloadText } from "./ExportBar";
  * Query rewrites and decisions are not listed: a rewrite changes the query,
  * not the database, and a decision needs a person to choose first.
  *
- * Save hides for viewers. The Script Editor saves through /api/github/push,
- * which needs the editor role, so offering it to a viewer would only lead to
- * a refusal at the end.
+ * A migration is made for one schema: the one picked above the findings, which
+ * the Script Editor opens pointed at. The Analyse tab can suggest an index on a
+ * table in another schema (the query read the table there), so a change like
+ * that is listed apart, and copied or downloaded rather than saved.
+ *
+ * Save hides for viewers, and when there is no change to the picked schema to
+ * save. The Script Editor saves through /api/github/push, which needs the
+ * editor role, so offering it to a viewer would only lead to a refusal at the
+ * end.
  */
 
 /** Where the findings came from: printed at the top of the script, and kept with a saved migration. */
@@ -77,16 +85,33 @@ export function FixScriptBuilder({
   const listed = items.filter((item) => item.fixKind === "change" || item.fixKind === "maintenance");
   if (listed.length === 0) return null;
 
+  // A change that alters only the picked schema can go in a migration. One
+  // that alters any other schema cannot, so it gets a group of its own. The
+  // groups follow the order the script prints them in (buildFixScript).
+  const forMigration = (item: FixScriptItem) =>
+    item.fixKind === "change" && otherSchemas([item], target.schema).length === 0;
+  const forOtherSchema = (item: FixScriptItem) => item.fixKind === "change" && !forMigration(item);
+  const isMaintenance = (item: FixScriptItem) => item.fixKind === "maintenance";
+
   const rows = listed.map((item, position) => ({ item, position }));
-  const changeRows = rows.filter((row) => row.item.fixKind === "change");
-  const maintenanceRows = rows.filter((row) => row.item.fixKind === "maintenance");
+  const migrationRows = rows.filter((row) => forMigration(row.item));
+  const otherRows = rows.filter((row) => forOtherSchema(row.item));
+  const maintenanceRows = rows.filter((row) => isMaintenance(row.item));
   const ticked = listed.filter((_, position) => !off.has(position));
-  const tickedChanges = ticked.filter((item) => item.fixKind === "change");
-  const tickedMaintenance = ticked.length - tickedChanges.length;
+  const tickedForMigration = ticked.filter(forMigration).length;
+  const tickedOther = ticked.filter(forOtherSchema);
+  const tickedMaintenance = ticked.filter(isMaintenance).length;
   const notListed = items.length - listed.length;
   // Worked out exactly as the script's rollback is, so this note and what
   // Save puts in the Script Editor always agree.
-  const withoutUndo = changesWithoutUndo(tickedChanges);
+  const withoutUndo = changesWithoutUndo(ticked, target.schema);
+
+  // Save is offered only when the list holds something it could take.
+  const offerSave = canSave && migrationRows.length > 0;
+  const picked = schemasPhrase([target.schema]);
+  // Said by schema only when some changes are to another one.
+  const migrationWhat = otherRows.length > 0 ? `changes to ${picked}` : "schema changes";
+  const migrationHeading = otherRows.length > 0 ? `Changes to ${picked}` : "Schema changes";
 
   function toggle(position: number) {
     const next = new Set(off);
@@ -143,25 +168,41 @@ export function FixScriptBuilder({
     else setNotice({ items, kind: "save-failed" });
   }
 
-  const n = withoutUndo.length;
-  let saveNote: string | null = null;
-  if (canSave && tickedChanges.length === 0 && tickedMaintenance > 0) {
-    saveNote = "Only schema changes go in a migration. Run maintenance by hand: copy or download it.";
-  } else if (canSave && tickedChanges.length > 0) {
-    saveNote =
+  // What Save takes and leaves, for whatever is ticked right now.
+  const notes: string[] = [];
+  if (canSave && tickedForMigration > 0) {
+    const n = withoutUndo.length;
+    notes.push(
       n === 0
         ? "Saving fills in the rollback too: the statements that undo each change, last change first."
         : `Saving leaves the rollback empty, because ${
             n === 1 ? "this change has" : "these changes have"
           } no statement that undoes ${n === 1 ? "it" : "them"}: ${withoutUndo.join("; ")}. ` +
-          `Untick ${n === 1 ? "it" : "them"}, or in the Script Editor write the rollback ` +
-          "yourself or tick Save without a rollback.";
-    if (tickedMaintenance > 0) {
-      saveNote +=
-        " Maintenance stays out of the migration: it tidies this one server rather than " +
-        "changing the schema. Run it by hand from the copied or downloaded script.";
-    }
+            `Untick ${n === 1 ? "it" : "them"}, or in the Script Editor write the rollback ` +
+            "yourself or tick Save without a rollback."
+    );
   }
+  if (canSave && tickedOther.length > 0) {
+    const one = tickedOther.length === 1;
+    notes.push(
+      `A migration made here is for ${picked}, the one picked above, so ` +
+        `${one ? "the change" : "the changes"} to ` +
+        `${schemasPhrase(otherSchemas(tickedOther, target.schema))} cannot go in one. ` +
+        `Copy or download ${one ? "it" : "them"} instead.`
+    );
+  }
+  if (canSave && tickedMaintenance > 0) {
+    notes.push(
+      tickedForMigration > 0
+        ? "Maintenance stays out of the migration: it tidies this one server rather than " +
+            "changing the schema. Run it by hand from the copied or downloaded script."
+        : tickedOther.length > 0
+          ? "Maintenance never goes in a migration either: run it by hand from the copied " +
+            "or downloaded script."
+          : "Only schema changes go in a migration. Run maintenance by hand: copy or download it."
+    );
+  }
+  const saveNote = notes.join(" ");
 
   return (
     <Card className="p-4 space-y-3">
@@ -171,15 +212,24 @@ export function FixScriptBuilder({
           Every schema change and maintenance fix from this analysis starts ticked, including
           any the severity filter hides. Untick any you do not want, then copy them as one
           script or download them as a .sql file
-          {canSave
-            ? ". Or save the schema changes as a migration: the Script Editor opens and offers to load them, ready to version and save."
+          {offerSave
+            ? `. Or save the ${migrationWhat} as a migration: the Script Editor opens and offers to load them, ready to version and save.`
             : "."}
         </p>
       </div>
 
       <FixGroup
-        heading={`Schema changes (${changeRows.length}) · save them as a migration`}
-        rows={changeRows}
+        heading={`${migrationHeading} (${migrationRows.length}) · save them as a migration`}
+        rows={migrationRows}
+        off={off}
+        onToggle={toggle}
+      />
+      <FixGroup
+        heading={
+          `Changes to ${schemasPhrase(otherSchemas(otherRows.map((row) => row.item), target.schema))} ` +
+          `(${otherRows.length}) · copy or download them`
+        }
+        rows={otherRows}
         off={off}
         onToggle={toggle}
       />
@@ -217,15 +267,17 @@ export function FixScriptBuilder({
         >
           Download .sql
         </button>
-        {canSave && (
+        {offerSave && (
           <button
             type="button"
             className="btn btn-primary btn-sm"
             onClick={saveAsMigration}
-            disabled={tickedChanges.length === 0}
+            disabled={tickedForMigration === 0}
             title={
-              tickedChanges.length === 0
-                ? "Tick at least one schema change. Only schema changes go in a migration."
+              tickedForMigration === 0
+                ? otherRows.length > 0
+                  ? `Tick at least one change to ${picked}. Only those go in a migration made here.`
+                  : "Tick at least one schema change. Only schema changes go in a migration."
                 : undefined
             }
           >
@@ -242,16 +294,16 @@ export function FixScriptBuilder({
       {shownNotice === "save-failed" && (
         <p className="text-[12px]" style={{ color: "var(--break)" }}>
           Your browser is blocking site storage, so this page cannot hand the script to the
-          Script Editor. Copy or download it instead and paste the schema changes into the
+          Script Editor. Copy or download it instead and paste the {migrationWhat} into the
           Script Editor. Each change&apos;s undo is under its fix above, for the rollback box.
         </p>
       )}
-      {saveNote && (
+      {saveNote !== "" && (
         <p className="text-[11.5px] leading-[1.55]" style={{ color: "var(--text-3)" }}>
           {saveNote}
         </p>
       )}
-      {!loading && !canSave && (
+      {!loading && !canSave && migrationRows.length > 0 && (
         <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
           Saving as a migration needs the editor role.
         </p>

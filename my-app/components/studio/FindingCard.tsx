@@ -52,6 +52,7 @@ export function FindingCard({
   detail,
   fix,
   fixKind,
+  fixHeading,
   undo,
   action,
   badge,
@@ -64,6 +65,12 @@ export function FindingCard({
   fix: string;
   /** What kind of fix `fix` is; decides the heading above it. */
   fixKind: FixKind;
+  /**
+   * A heading to show instead of the usual one for `fixKind`, when those words
+   * do not fit this fix: a change to another schema's table on the Analyse
+   * tab, which is not saved as a migration (see otherSchemaHeading).
+   */
+  fixHeading?: string;
   /** The statement that takes the fix back out, shown under it when present. */
   undo?: string;
   /**
@@ -118,7 +125,7 @@ export function FindingCard({
             </div>
           )}
 
-          <FixBlock fix={fix} fixKind={fixKind} undo={undo} />
+          <FixBlock fix={fix} fixKind={fixKind} heading={fixHeading} undo={undo} />
         </div>
       </div>
     </Card>
@@ -179,16 +186,19 @@ export function undoHeading(fix: string): string {
 export function FixBlock({
   fix,
   fixKind,
+  heading,
   undo,
 }: {
   fix: string;
   fixKind: FixKind;
+  /** Shown instead of the usual heading for `fixKind` (see FindingCard). */
+  heading?: string;
   undo?: string;
 }) {
   if (!fix.trim()) return null;
   return (
     <div className="space-y-2">
-      <CodeBox heading={FIX_KIND_HEADING[fixKind]} text={fix} />
+      <CodeBox heading={heading ?? FIX_KIND_HEADING[fixKind]} text={fix} />
       {undo !== undefined && undo.trim() !== "" && (
         <CodeBox heading={undoHeading(fix)} text={undo} />
       )}

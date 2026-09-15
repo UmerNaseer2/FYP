@@ -33,7 +33,11 @@ export type MigrationDraft = {
   description: string;
   /** The saved connection the findings came from: its id, as text, like the editor's picker. */
   connectionId: string;
-  /** The schema the findings are about. Every statement names it. */
+  /**
+   * The schema the migration is for: the one picked on the Performance tab.
+   * Save leaves out every change to another schema, so each statement names
+   * this one.
+   */
   schema: string;
   /** When it was saved, as an ISO date. */
   createdAt: string;

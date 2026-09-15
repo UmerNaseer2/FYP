@@ -1079,11 +1079,37 @@ describe("readPlan — findings", () => {
       'CREATE INDEX "orders_status_idx" ON "public"."orders" ("status");'
     );
     expect(finding?.undo).toBe('DROP INDEX "public"."orders_status_idx";');
+    expect(finding?.schemas).toEqual(["public"]);
     // CREATE INDEX CONCURRENTLY cannot run inside a transaction, so it is
     // only ever mentioned as advice, never as a statement to run.
     const concurrently = (finding?.fix ?? "").split("\n").filter((l) => l.includes("CONCURRENTLY"));
     expect(concurrently.length).toBeGreaterThan(0);
     expect(concurrently.every((line) => line.startsWith("--"))).toBe(true);
+  });
+
+  it("puts the index in the schema of the table the plan read, and says which one", () => {
+    // A query can read a table in any schema, not only the one picked above
+    // it. The index goes on that table, and the fix script keeps it out of a
+    // migration made for the picked schema (QueryFinding.schemas).
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Seq Scan",
+        "Relation Name": "orders",
+        Schema: "sales",
+        Alias: "orders",
+        Filter: "(status = 'paid'::text)",
+        "Plan Rows": 50000,
+        "Total Cost": 900,
+      }),
+      { tableRows: { "sales.orders": 1000000 } }
+    );
+    const finding = summary?.findings.find((f) => f.id === "seq-scan:0");
+    expect(finding?.fixKind).toBe("change");
+    expect(finding?.fix).toContain(
+      'CREATE INDEX "orders_status_idx" ON "sales"."orders" ("status");'
+    );
+    expect(finding?.undo).toBe('DROP INDEX "sales"."orders_status_idx";');
+    expect(finding?.schemas).toEqual(["sales"]);
   });
 
   it("adds an estimated parallel scan's share back up before judging its filter", () => {
@@ -2676,6 +2702,7 @@ describe("readPlan — findings", () => {
       'CREATE INDEX "line_items_order_id_idx" ON "public"."line_items" ("order_id");'
     );
     expect(finding?.undo).toBe('DROP INDEX "public"."line_items_order_id_idx";');
+    expect(finding?.schemas).toEqual(["public"]);
   });
 
   it("leaves a nested loop alone when the repeated side is an index lookup", () => {
@@ -3025,6 +3052,7 @@ describe("readPlan — whole-table reads, judged against the table", () => {
       'CREATE INDEX "orders_status_idx1" ON "public"."orders" ("status");'
     );
     expect(finding?.undo).toBe('DROP INDEX "public"."orders_status_idx1";');
+    expect(finding?.schemas).toEqual(["public"]);
   });
 
   it("trusts a run that kept most of what it read over the table's size", () => {
@@ -3104,6 +3132,7 @@ describe("readPlan — a join that reads a whole table for a few rows", () => {
       'CREATE INDEX "orders_customer_id_idx" ON "public"."orders" ("customer_id");'
     );
     expect(finding?.undo).toBe('DROP INDEX "public"."orders_customer_id_idx";');
+    expect(finding?.schemas).toEqual(["public"]);
   });
 
   it("stays quiet when both sides are big", () => {
@@ -3138,6 +3167,8 @@ describe("readPlan — a join that reads a whole table for a few rows", () => {
     expect(finding?.detail).toContain("already exists, and the planner passed it over");
     expect(finding?.fix).toContain('ANALYZE "public"."orders";');
     expect(finding?.fix).not.toMatch(/^CREATE INDEX/m);
+    // Maintenance is run by hand and never saved, so it names no schema.
+    expect(finding?.schemas).toBeUndefined();
   });
 });
 
@@ -4492,6 +4523,24 @@ describe("readSql — a function wrapped around a filtered column", () => {
       'CREATE INDEX "customers_lower_email_idx" ON "public"."customers" (lower("email"));'
     );
     expect(finding?.undo).toBe('DROP INDEX "public"."customers_lower_email_idx";');
+    expect(finding?.schemas).toEqual(["public"]);
+  });
+
+  it("puts the index in the schema of the table the plan read", () => {
+    const sales: Partial<PlanCatalog> = {
+      tableRows: { "sales.customers": 50000 },
+      columns: {
+        "sales.customers": [{ name: "email", type: "character varying(200)", notNull: false }],
+      },
+    };
+    const context = contextOf({ ...lowerEmailScan(250), Schema: "sales" }, sales);
+    const finding = findingOf(readSql(sql, context), "function-on-column");
+    expect(finding?.fixKind).toBe("change");
+    expect(finding?.fix).toContain(
+      'CREATE INDEX "customers_lower_email_idx" ON "sales"."customers" (lower("email"));'
+    );
+    expect(finding?.undo).toBe('DROP INDEX "sales"."customers_lower_email_idx";');
+    expect(finding?.schemas).toEqual(["sales"]);
   });
 
   it("suggests changing the query instead when the read keeps most of the table", () => {
@@ -4500,6 +4549,7 @@ describe("readSql — a function wrapped around a filtered column", () => {
     expect(finding?.fixKind).toBe("query");
     expect(finding?.fix).toContain("When it picks out a few rows of a big table");
     expect(finding?.undo).toBeUndefined();
+    expect(finding?.schemas).toBeUndefined();
   });
 
   it("stays quiet once an index on the expression answers the call", () => {
@@ -7377,5 +7427,32 @@ describe("every finding's fix", () => {
       seen[rule] = [...kinds].sort();
     }
     expect(seen).toEqual(expected);
+  });
+
+  it("says every schema a change alters, and no schema for any other kind", () => {
+    // The fix script saves only the changes to the schema picked above the
+    // query (buildFixScript in lib/perf-sql.ts). A change that left a schema
+    // out would be saved into a migration made for another one.
+    const changes = collected.filter((finding) => finding.fixKind === "change");
+    expect(changes.length).toBeGreaterThan(20);
+    for (const finding of collected) {
+      if (finding.fixKind !== "change") {
+        expect({ id: finding.id, schemas: finding.schemas }).toEqual({ id: finding.id });
+        continue;
+      }
+      expect({ id: finding.id, count: finding.schemas?.length ?? 0 }).not.toEqual({
+        id: finding.id,
+        count: 0,
+      });
+      // Every "schema"."name" the statements use, comment lines left out.
+      const code = `${finding.fix}\n${finding.undo ?? ""}`
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("--"))
+        .join("\n");
+      const named = [...code.matchAll(/"((?:[^"]|"")+)"\."/g)].map((m) => m[1].replace(/""/g, '"'));
+      expect(named.length).toBeGreaterThan(0);
+      const missing = named.filter((schema) => !(finding.schemas ?? []).includes(schema));
+      expect({ id: finding.id, missing }).toEqual({ id: finding.id, missing: [] });
+    }
   });
 });
