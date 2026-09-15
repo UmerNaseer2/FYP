@@ -4199,9 +4199,11 @@ export type SqlContext = {
   /** Every table the plan reads, once per name it is read under. */
   tables: SqlContextTable[];
   /**
-   * How many of those tables the query joins together. Leaves out the
-   * partitions of one partitioned table and the branches of a UNION ALL:
-   * the server reads those one after another, it does not join them.
+   * The most tables one level of the query joins together (see
+   * mostTablesInOneLevel). The planner orders the joins of one level at a
+   * time, so a subquery it runs on its own and each branch of a UNION,
+   * INTERSECT or EXCEPT are counted apart, and a partitioned table counts
+   * once.
    */
   joinedTables: number;
   /** What the top step hands back, one entry per column, as the plan writes it. */
@@ -4377,6 +4379,86 @@ function starColumns(sql: string, context: SqlContext | undefined): string[] {
 }
 
 /**
+ * How a step can start a query level of its own, by its Parent Relationship:
+ * a subquery run on its own (InitPlan, SubPlan; a CTE is one too), one input
+ * of an Append (a branch of a UNION, or one partition of a table), and the
+ * subquery a Subquery Scan reads.
+ */
+const OWN_LEVEL_EDGES: ReadonlySet<string> = new Set(["InitPlan", "SubPlan", "Member", "Subquery"]);
+
+/**
+ * Steps whose every input is a query level of its own: a SetOp's (INTERSECT
+ * or EXCEPT), and the two parts of a WITH RECURSIVE.
+ */
+const OWN_LEVEL_INPUTS: ReadonlySet<string> = new Set(["SetOp", "Recursive Union"]);
+
+/**
+ * Steps PostgreSQL puts only at the top of a query level. Under a join, one
+ * is a subquery in FROM whose Subquery Scan the planner dropped as doing
+ * nothing, so what it reads is a level of its own too.
+ */
+const LEVEL_TOPS: ReadonlySet<string> = new Set(["Limit", "WindowAgg", "ProjectSet"]);
+
+/**
+ * Steps a join reads like one table, whatever is behind them: an Append (a
+ * partitioned table, or a UNION ALL), a subquery, a CTE, a function, a
+ * VALUES list, or the rows so far of a WITH RECURSIVE.
+ */
+const TABLE_LIKE_STEPS: ReadonlySet<string> = new Set([
+  "Append",
+  "Merge Append",
+  "Subquery Scan",
+  "CTE Scan",
+  "Function Scan",
+  "Table Function Scan",
+  "Values Scan",
+  "WorkTable Scan",
+]);
+
+/**
+ * The most tables one query level of the plan joins together.
+ *
+ * The planner orders the joins of one level at a time. A level starts at
+ * the top of the plan, at a step whose Parent Relationship is in
+ * OWN_LEVEL_EDGES, and under a step in OWN_LEVEL_INPUTS or LEVEL_TOPS. In a
+ * level each table read counts once, and so does each step in
+ * TABLE_LIKE_STEPS or LEVEL_TOPS, which the level reads like one table.
+ *
+ * A grouped or DISTINCT subquery in FROM whose Subquery Scan was dropped is
+ * counted with the level around it. PostgreSQL plans an IN (SELECT …) whose
+ * rows it first makes unique in the same shape, and there the subquery's
+ * tables do belong to the level around it.
+ */
+function mostTablesInOneLevel(steps: PlanStep[]): number {
+  // A level is known by the id of the step it starts at. Steps come parent
+  // first, so a step's parent always has its level already.
+  const levelOf: number[] = [];
+  const tablesIn = new Map<number, Set<string>>();
+  for (const step of steps) {
+    const parent = step.parentId === null ? undefined : steps[step.parentId];
+    const level =
+      parent === undefined ||
+      OWN_LEVEL_EDGES.has(step.parentRelationship ?? "") ||
+      OWN_LEVEL_INPUTS.has(parent.nodeType) ||
+      LEVEL_TOPS.has(parent.nodeType)
+        ? step.id
+        : levelOf[parent.id];
+    levelOf[step.id] = level;
+    const table =
+      step.relation !== null
+        ? JSON.stringify([step.relationSchema, step.relation, step.alias])
+        : TABLE_LIKE_STEPS.has(step.nodeType) || LEVEL_TOPS.has(step.nodeType)
+          ? `step ${step.id}`
+          : null;
+    if (table === null) continue;
+    const tables = tablesIn.get(level) ?? new Set<string>();
+    tables.add(table);
+    tablesIn.set(level, tables);
+  }
+  return Math.max(0, ...Array.from(tablesIn.values(), (tables) => tables.size));
+}
+
+/**
  * Gather what the text rules can use from a plan the route has already read.
  *
  * Pure: everything comes from `plan` and `catalog`, so it runs in a test the
@@ -4392,16 +4474,11 @@ export function sqlContextFromPlan(
 
   const tables: SqlContextTable[] = [];
   const seen = new Set<string>();
-  let joinedTables = 0;
   for (const step of steps) {
     if (step.relation === null) continue;
     const key = JSON.stringify([step.relationSchema, step.relation, step.alias]);
     if (seen.has(key)) continue;
     seen.add(key);
-    // "Member" marks one input of an Append: a partition, or one branch of
-    // a UNION ALL. Those are read in turn, not joined, so they are not
-    // counted as tables in a join.
-    if (step.parentRelationship !== "Member") joinedTables += 1;
     const known =
       step.relationSchema === null ? undefined : tableRows[`${step.relationSchema}.${step.relation}`];
     // A whole-table read with no filter hands on every row it reads, so
@@ -4464,7 +4541,7 @@ export function sqlContextFromPlan(
     expectedRows: plan.measured ? (head ? totalActualRows(head) ?? 0 : 0) : plan.estimatedRows,
     measured: plan.measured,
     tables,
-    joinedTables,
+    joinedTables: mostTablesInOneLevel(steps),
     outputColumns: head ? splitOutputList(head.output) : [],
     primaryKeys,
     settings: catalog.settings ?? null,
@@ -4676,6 +4753,54 @@ function tablesInText(mask: string): number {
     if (ownSelect) count += fromItems(mask, from.end);
   }
   return count;
+}
+
+/**
+ * The most tables one SELECT of the text joins: the items of its FROM list
+ * and each JOIN, a subquery there counting as one. Each branch of a UNION,
+ * INTERSECT or EXCEPT, and each subquery, is a SELECT of its own, as the
+ * planner orders the joins of one at a time.
+ *
+ * A heuristic, used beside the plan's count. It cannot tell when the planner
+ * merges a simple subquery into the query around it, and then counts low;
+ * the plan's count sees that.
+ */
+function mostTablesInOneSelect(mask: string): number {
+  const perSelect = new Map<number, number>();
+  const add = (select: number, count: number) =>
+    perSelect.set(select, (perSelect.get(select) ?? 0) + count);
+  for (const join of codeMatches(mask, /\bJOIN\b/i)) {
+    // Brackets with no SELECT of their own hold a join written in brackets,
+    // `a JOIN (b JOIN c ON …) ON …`, whose JOINs belong to the SELECT
+    // outside. A JOIN with no SELECT anywhere around it (in an UPDATE's
+    // FROM, say) still counts, under -1.
+    let at = join.index;
+    let select = selectAround(mask, at);
+    while (select === null && groupStart(mask, at) > 0) {
+      at = groupStart(mask, at) - 1;
+      select = selectAround(mask, at);
+    }
+    add(select ?? -1, 1);
+  }
+  for (const from of codeMatches(mask, /\bFROM\b/i)) {
+    if (/\bDISTINCT\s*$/i.test(mask.slice(Math.max(0, from.index - 40), from.index))) continue;
+    // Only a FROM with a SELECT of its own, inside the same brackets.
+    const select = selectAround(mask, from.index);
+    if (select !== null) add(select, fromItems(mask, from.end, true));
+  }
+  return Math.max(0, ...Array.from(perSelect.values()));
+}
+
+/**
+ * Where the SELECT that the text at `index` belongs to starts: the last one
+ * before it inside the same brackets, and outside any bracket of its own.
+ * Null when those brackets hold none, as around `EXTRACT(YEAR FROM d)`.
+ */
+function selectAround(mask: string, index: number): number | null {
+  const start = groupStart(mask, index);
+  const before = mask.slice(start, index);
+  const selects = codeMatches(before, /\bSELECT\b/i).filter((m) => parenDepthAt(before, m.index) === 0);
+  return selects.length === 0 ? null : start + selects[selects.length - 1].index;
 }
 
 /**
@@ -5600,10 +5725,13 @@ export function readSql(sql: string, context?: SqlContext): QueryFinding[] {
   }
 
   // Many tables in one query: the planner's search for a join order gets
-  // harder, and past two server settings it changes how it searches. The
-  // plan's count sees through views; the text's sees tables the planner
-  // removed as unused. The larger of the two is used.
-  const tableCount = Math.max(context?.joinedTables ?? 0, textTables);
+  // harder, and past two server settings it changes how it searches. It
+  // orders the joins of one SELECT at a time, so both counts are of the one
+  // that joins the most, never adding in a UNION's other branches or a
+  // subquery run on its own. The plan's count sees through views; the
+  // text's sees tables the planner removed as unused. The larger of the two
+  // is used.
+  const tableCount = Math.max(context?.joinedTables ?? 0, mostTablesInOneSelect(mask));
   if (tableCount >= MANY_JOINS) {
     const explicitJoins = inCode(mask, /\bJOIN\b/i);
     out.push(manyJoinsFinding(tableCount, context?.settings ?? null, explicitJoins));

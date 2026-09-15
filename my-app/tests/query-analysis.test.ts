@@ -2382,7 +2382,7 @@ describe("sqlContextFromPlan", () => {
     expect(contextOf(ranScan()).repeatsRows).toBe(false);
   });
 
-  it("does not count the partitions of one table as a join", () => {
+  it("counts a partitioned table once, not once per partition", () => {
     const partition = (name: string) => ({
       "Node Type": "Seq Scan",
       "Parent Relationship": "Member",
@@ -2399,7 +2399,122 @@ describe("sqlContextFromPlan", () => {
       Plans: [partition("events_2024"), partition("events_2025")],
     });
     expect(context.tables.map((t) => t.name)).toEqual(["events_2024", "events_2025"]);
-    expect(context.joinedTables).toBe(0);
+    expect(context.joinedTables).toBe(1);
+  });
+
+  // The planner orders the joins of one query level at a time, so
+  // joinedTables is the most tables one level joins. The shapes below are
+  // how PostgreSQL 17 plans each way a query can hold more than one level.
+
+  /** A planned read of one table. */
+  function table(name: string, alias = name): Record<string, unknown> {
+    return {
+      "Node Type": "Seq Scan",
+      "Relation Name": name,
+      Schema: "public",
+      Alias: alias,
+      "Plan Rows": 1000,
+      "Total Cost": 20,
+    };
+  }
+
+  /** A planned step over `inputs`. */
+  function step(
+    nodeType: string,
+    inputs: Record<string, unknown>[] = [],
+    extra: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return { "Node Type": nodeType, "Plan Rows": 1000, "Total Cost": 40, Plans: inputs, ...extra };
+  }
+
+  /** `plan`, reached from the step above it by `edge` ("Outer", "Member", …). */
+  function via(edge: string, plan: Record<string, unknown>): Record<string, unknown> {
+    return { ...plan, "Parent Relationship": edge };
+  }
+
+  /** Nested Loops joining `inputs`, in the order given. */
+  function joinOf(...inputs: Record<string, unknown>[]): Record<string, unknown> {
+    return inputs
+      .slice(1)
+      .reduce((plan, next) => step("Nested Loop", [via("Outer", plan), via("Inner", next)]), inputs[0]);
+  }
+
+  const SIX = ["orders", "items", "customers", "notes", "regions", "stores"];
+
+  it("counts the branches of a UNION ALL apart", () => {
+    const branches = SIX.map((name) => via("Member", table(name)));
+    expect(contextOf(step("Append", branches)).joinedTables).toBe(1);
+  });
+
+  it("counts the branches of an INTERSECT or EXCEPT apart", () => {
+    // PostgreSQL 17 puts each branch in a Subquery Scan under one Append.
+    const branch = (name: string, n: number) =>
+      via("Member", step("Subquery Scan", [via("Subquery", table(name))], { Alias: `*SELECT* ${n}` }));
+    const setOp = step("SetOp", [via("Outer", step("Append", [branch("orders", 1), branch("items", 2)]))]);
+    expect(contextOf(setOp).joinedTables).toBe(1);
+    // PostgreSQL 18 hands a SetOp its two branches directly.
+    const direct = step("SetOp", [via("Outer", table("orders")), via("Inner", table("items"))]);
+    expect(contextOf(direct).joinedTables).toBe(1);
+  });
+
+  it("counts each subquery that runs on its own apart", () => {
+    // SELECT (SELECT count(*) FROM orders), (SELECT count(*) FROM items), …
+    const counts = SIX.map((name, i) =>
+      via("InitPlan", step("Aggregate", [via("Outer", table(name))], { "Subplan Name": `InitPlan ${i + 1}` }))
+    );
+    expect(contextOf(step("Result", counts)).joinedTables).toBe(1);
+    // One run again for each row of a join of two tables.
+    const perRow = via(
+      "SubPlan",
+      step("Aggregate", [via("Outer", table("orders", "o"))], { "Subplan Name": "SubPlan 1" })
+    );
+    const join = step("Hash Join", [
+      via("Outer", table("items", "i")),
+      via("Inner", step("Hash", [via("Outer", table("customers", "c"))])),
+      perRow,
+    ]);
+    expect(contextOf(join).joinedTables).toBe(2);
+  });
+
+  it("counts a partitioned table in a join as one table", () => {
+    const partitions = step("Append", [via("Member", table("pt_1")), via("Member", table("pt_2"))]);
+    expect(contextOf(joinOf(partitions, table("customers", "c"))).joinedTables).toBe(2);
+  });
+
+  it("counts a CTE's joins apart from the query that reads it", () => {
+    // WITH x AS MATERIALIZED (SELECT … FROM orders o JOIN items i … JOIN notes n …)
+    // SELECT … FROM customers c JOIN x … JOIN regions r … JOIN stores s …
+    const cte = { ...joinOf(table("orders", "o"), table("items", "i"), table("notes", "n")), "Subplan Name": "CTE x" };
+    const main = step("Hash Join", [
+      via("InitPlan", cte),
+      via("Outer", joinOf(table("customers", "c"), step("CTE Scan", [], { "CTE Name": "x", Alias: "x" }), table("regions", "r"))),
+      via("Inner", step("Hash", [via("Outer", table("stores", "s"))])),
+    ]);
+    expect(contextOf(main).joinedTables).toBe(4);
+  });
+
+  it("counts a LIMIT subquery the planner reads directly as one table", () => {
+    // SELECT … FROM (SELECT … FROM orders o JOIN items i … JOIN notes n … LIMIT 10) s
+    // JOIN customers c … JOIN regions r … JOIN stores st …: the Subquery Scan
+    // does nothing, so the planner leaves it out and joins the Limit itself.
+    const limited = step("Limit", [
+      via("Outer", joinOf(table("orders", "o"), table("items", "i"), table("notes", "n"))),
+    ]);
+    const plan = joinOf(limited, table("customers", "c"), table("regions", "r"), table("stores", "st"));
+    expect(contextOf(plan).joinedTables).toBe(4);
+  });
+
+  it("counts the two parts of a WITH RECURSIVE apart", () => {
+    const recursive = step(
+      "Recursive Union",
+      [
+        via("Outer", table("categories", "k")),
+        via("Inner", joinOf(step("WorkTable Scan", [], { Alias: "r" }), table("categories", "c"))),
+      ],
+      { "Subplan Name": "CTE r" }
+    );
+    const plan = step("CTE Scan", [via("InitPlan", recursive)], { "CTE Name": "r", Alias: "r" });
+    expect(contextOf(plan).joinedTables).toBe(2);
   });
 });
 
@@ -2863,6 +2978,31 @@ describe("readSql — many tables joined", () => {
     const context = sqlContext({ joinedTables: 7 });
     const finding = findingOf(readSql("SELECT * FROM order_report WHERE id = 1", context), "many-joins");
     expect(finding?.title).toBe("7 tables joined in one query");
+  });
+
+  const SIX = ["orders", "items", "customers", "notes", "regions", "stores"];
+
+  it("leaves a UNION ALL of six one-table queries alone", () => {
+    // The planner orders each branch's joins on its own, and none has any.
+    const text = SIX.map((name) => `SELECT id FROM ${name}`).join(" UNION ALL ");
+    expect(findingOf(readSql(text), "many-joins")).toBeUndefined();
+  });
+
+  it("leaves six subqueries that each read one table alone", () => {
+    const text = `SELECT ${SIX.map((name) => `(SELECT count(*) FROM ${name})`).join(", ")}`;
+    expect(findingOf(readSql(text), "many-joins")).toBeUndefined();
+  });
+
+  it("counts the SELECT that joins the most, not every branch added up", () => {
+    const finding = findingOf(readSql(`${joined(6)} UNION ALL SELECT id FROM archive`), "many-joins");
+    expect(finding?.title).toBe("6 tables joined in one query");
+  });
+
+  it("counts a join written in brackets with the SELECT around it", () => {
+    const text =
+      "SELECT t0.id FROM t0 JOIN (t1 JOIN t2 ON t2.id = t1.id) ON t1.id = t0.id " +
+      "JOIN t3 ON t3.id = t0.id JOIN t4 ON t4.id = t0.id JOIN t5 ON t5.id = t0.id";
+    expect(findingOf(readSql(text), "many-joins")?.title).toBe("6 tables joined in one query");
   });
 });
 
