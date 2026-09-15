@@ -607,6 +607,21 @@ function tableColumnQuery(tableName: string, columnName: string): string {
   );
 }
 
+/**
+ * The onlyIfMissing lookup for an index of a given name on a table.
+ *
+ * indrelid pins it to this one table, so an index of the same name on any other
+ * table (index names are unique per schema, not per table) does not count as
+ * already present — see indexCreateSql for why that distinction matters.
+ */
+function tableIndexQuery(tableName: string, indexName: string): string {
+  return (
+    `SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid ` +
+    `WHERE i.indrelid = to_regclass(${literal(q(tableName))}) ` +
+    `AND c.relname = ${literal(indexName)}`
+  );
+}
+
 /** A `-- MANUAL:` line: inert when run, but still visible in the script. */
 function manualNote(text: string, description: string, tableName: string): SqlStatement {
   return objectStatement({
@@ -622,11 +637,22 @@ function manualNote(text: string, description: string, tableName: string): SqlSt
 
 // pg_get_indexdef returns a complete CREATE INDEX with the schema qualifier
 // already stripped at snapshot time, so it replays under search_path as-is.
-// IF NOT EXISTS is spliced in so a second run of the script skips an index that
-// is already there (see onlyIfMissing).
-function indexCreateSql(index: IndexSnapshot): string {
+//
+// It is wrapped in onlyIfMissing rather than given a plain IF NOT EXISTS. Both
+// let a re-run skip an index that is already there, but they ask different
+// questions. Index names are unique across the whole schema, not per table, so
+// "does this name exist anywhere" and "does this exact index already exist on
+// THIS table" are not the same check. IF NOT EXISTS asks the first: a name that
+// has moved to another table, or already belongs to an unrelated one, reads as
+// "already there" and the create is silently skipped — and with the matching
+// DROP still to come, the index can end up on neither table. The onlyIfMissing
+// lookup asks the second, so it skips only a genuine re-run and lets a real name
+// clash fail loudly instead of vanishing. Drops are also drained before creates
+// (see dropIndexesFirst, where objects.indexes is emitted) so the common
+// moved-name case clears the old name first and never has to fail at all.
+function indexCreateSql(index: IndexSnapshot, tableName: string): string {
   const definition = index.definition.trim();
-  return `${definition.replace(/^(CREATE\s+(?:UNIQUE\s+)?INDEX)\s+/i, "$1 IF NOT EXISTS ")};`;
+  return onlyIfMissing(tableIndexQuery(tableName, index.name), `${definition};`);
 }
 
 /**
@@ -642,7 +668,7 @@ function createIndexStatement(
   afterHeldBackDrop = false
 ): SqlStatement {
   return objectStatement({
-    sql: indexCreateSql(index),
+    sql: indexCreateSql(index, tableName),
     needsArmedDrop: afterHeldBackDrop,
     // A unique index is built against the rows already in the table and refused
     // if two of them collide, so it can abort the migration on real data — the
@@ -669,6 +695,24 @@ function dropIndexStatement(index: IndexSnapshot, tableName: string): SqlStateme
     severity: index.isUnique ? "breaking" : "safe",
     tableName,
   });
+}
+
+/**
+ * Reorder one phase so every index DROP comes before every other statement in
+ * it, keeping the order within each group.
+ *
+ * Index names are unique per schema, not per table, so an index that moves from
+ * one table to another appears as a DROP on the old table and a CREATE on the
+ * new one. Emitted in table order those two can land create-first, and the
+ * create then collides with the name still in place. Draining the drops first
+ * frees the name before any create needs it. Only DROP_INDEX moves: a
+ * DROP_TRIGGER can be half of a replace pair that must stay next to its CREATE
+ * (see createTriggerStatements), and an index drop is never paired that way.
+ */
+function dropIndexesFirst(statements: SqlStatement[]): SqlStatement[] {
+  const drops = statements.filter((s) => s.kind === "DROP_INDEX");
+  const rest = statements.filter((s) => s.kind !== "DROP_INDEX");
+  return [...drops, ...rest];
 }
 
 // ── Triggers ───────────────────────────────────────────────────────────────
@@ -3285,8 +3329,9 @@ export function generateMigration(
   // ── Indexes ───────────────────────────────────────────────────────────────
   // After every ADD COLUMN, so an index over a new column has something to
   // index. Plain CREATE INDEX, never CONCURRENTLY — see the note above
-  // indexCreateSql: the apply route runs this inside one transaction.
-  statements.push(...objects.indexes);
+  // indexCreateSql: the apply route runs this inside one transaction. Drops go
+  // ahead of creates so a name that moved between tables is freed first.
+  statements.push(...dropIndexesFirst(objects.indexes));
 
   // ── FK constraints (new tables + matched tables) ──────────────────────────
   // All tables exist and all columns have been added, so every FK is safe now.
@@ -3311,8 +3356,10 @@ export function generateMigration(
   // ── Indexes and triggers on those views ───────────────────────────────────
   // Immediately after, and not with the table-scoped ones far above: a
   // materialized view's indexes and a view's INSTEAD OF triggers need the view
-  // itself to exist, and it has only just been made.
-  statements.push(...objects.afterViews);
+  // itself to exist, and it has only just been made. Index drops (only ever on
+  // views this script does not rebuild) go first, for the moved-name reason
+  // above; the drops on rebuilt views were handled by dropping the view itself.
+  statements.push(...dropIndexesFirst(objects.afterViews));
 
   // ── Ownership and grants ──────────────────────────────────────────────────
   // Everything the script builds now exists, so there is something to grant on

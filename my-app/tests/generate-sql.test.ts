@@ -479,13 +479,27 @@ describe("generateMigration — safe to run twice", () => {
     );
   });
 
-  it("creates an index with IF NOT EXISTS, unique or not", () => {
-    expect(renderMigrationScript(addedIndex(false))).toContain(
-      "CREATE INDEX IF NOT EXISTS orders_note_idx"
+  it("creates an index only when it is not already on that table, unique or not", () => {
+    // Not IF NOT EXISTS: that skips on the name alone, which across tables (index
+    // names are unique per schema, not per table) can drop an index that just
+    // moved. The DO block checks this exact table instead — see indexCreateSql.
+    const plain = renderMigrationScript(addedIndex(false));
+    expect(plain).toContain("DO $guard$");
+    expect(plain).toContain(
+      "SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
     );
-    expect(renderMigrationScript(addedIndex(true))).toContain(
-      "CREATE UNIQUE INDEX IF NOT EXISTS orders_note_idx"
-    );
+    expect(plain).toContain(`i.indrelid = to_regclass('"orders"')`);
+    expect(plain).toContain("c.relname = 'orders_note_idx'");
+    expect(plain).toContain("CREATE INDEX orders_note_idx");
+    expect(plain).not.toContain("CREATE INDEX IF NOT EXISTS");
+    // Guarded inside the DO block, so indented — never bare at column 0, where a
+    // second run would stop on it.
+    expect(plain).not.toMatch(/^CREATE INDEX/m);
+
+    const unique = renderMigrationScript(addedIndex(true));
+    expect(unique).toContain("CREATE UNIQUE INDEX orders_note_idx");
+    expect(unique).not.toContain("CREATE UNIQUE INDEX IF NOT EXISTS");
+    expect(unique).not.toMatch(/^CREATE UNIQUE INDEX/m);
   });
 
   it("still creates a new table with IF NOT EXISTS", () => {
@@ -641,6 +655,62 @@ describe("generateMigration — safe to run twice", () => {
     expect(findMightFailStatements(renderMigrationScript(matchedFk()))).toContain(
       "FOREIGN KEY constraint"
     );
+  });
+});
+
+/**
+ * An index name that moved from one table to another. Index names are unique
+ * per schema, not per table, so this shows up as a DROP on the old table and a
+ * CREATE on the new one — and if the create runs first it collides with the
+ * name still in place. The script used to skip that collision with IF NOT
+ * EXISTS, which read "already there" and left the index on neither table once
+ * the DROP followed. Two things stop that now: the create is guarded against
+ * its own table (not the bare name), and every index drop is drained ahead of
+ * the creates.
+ */
+describe("generateMigration — an index name that moved between tables", () => {
+  function movedIndex(tableName: string): IndexSnapshot {
+    const definition = `CREATE INDEX shared_idx ON ${tableName} USING btree (val)`;
+    return {
+      name: "shared_idx",
+      definition,
+      normalizedDefinition: definition,
+      columns: ["val"],
+      isUnique: false,
+      method: "btree",
+      predicate: null,
+    };
+  }
+
+  // matchedTables is sorted by name, so "aaa" (which gains the index, a CREATE)
+  // is processed before "zzz" (which loses it, a DROP): without the reorder the
+  // create would be emitted first, which is the case this guards against.
+  const cols = [column("val", { typeDisplay: "text" })];
+  const sql = renderMigrationScript(
+    migration(
+      schema([
+        table("aaa", cols, { indexes: [movedIndex("aaa")] }),
+        table("zzz", cols, { indexes: [] }),
+      ]),
+      schema([
+        table("aaa", cols, { indexes: [] }),
+        table("zzz", cols, { indexes: [movedIndex("zzz")] }),
+      ])
+    )
+  );
+
+  it("drops the old copy before it creates the new one", () => {
+    const drop = sql.indexOf("DROP INDEX IF EXISTS");
+    const create = sql.indexOf("CREATE INDEX shared_idx");
+    expect(drop).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(-1);
+    expect(drop).toBeLessThan(create);
+  });
+
+  it("guards the create against this table, so the copy still on zzz is not read as already there", () => {
+    expect(sql).toContain(`i.indrelid = to_regclass('"aaa"')`);
+    expect(sql).toContain("c.relname = 'shared_idx'");
+    expect(sql).not.toContain("CREATE INDEX IF NOT EXISTS");
   });
 });
 
