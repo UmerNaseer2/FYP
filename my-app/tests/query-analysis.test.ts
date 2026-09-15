@@ -1647,6 +1647,234 @@ describe("readPlan — findings", () => {
     expect(hasRule(summary?.findings, "estimate-off")).toBe(false);
   });
 
+  /**
+   * orders joined to `inner` in a parallel section: the three processes share
+   * one read of orders, and each builds its own hash table of all of `inner`.
+   */
+  function eachProcessHashes(inner: Record<string, unknown>): ReturnType<typeof envelope> {
+    return envelope({
+      "Node Type": "Gather",
+      "Workers Planned": 2,
+      "Workers Launched": 2,
+      "Plan Rows": 1000,
+      "Total Cost": 9000,
+      "Actual Total Time": 60,
+      "Actual Rows": 1000,
+      "Actual Loops": 1,
+      Plans: [
+        {
+          "Node Type": "Hash Join",
+          "Parent Relationship": "Outer",
+          "Join Type": "Inner",
+          "Hash Cond": "(o.customer_id = c.id)",
+          "Plan Rows": 417,
+          "Total Cost": 8000,
+          "Actual Total Time": 50,
+          "Actual Rows": 333,
+          "Actual Loops": 3,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": true,
+              "Relation Name": "orders",
+              Schema: "public",
+              Alias: "o",
+              "Plan Rows": 417,
+              "Total Cost": 4000,
+              "Actual Total Time": 20,
+              "Actual Rows": 333,
+              "Actual Loops": 3,
+            },
+            {
+              "Node Type": "Hash",
+              "Parent Relationship": "Inner",
+              "Plan Rows": inner["Plan Rows"],
+              "Total Cost": 90,
+              "Actual Total Time": 10,
+              "Actual Rows": inner["Actual Rows"],
+              "Actual Loops": 3,
+              Plans: [{ ...inner, "Parent Relationship": "Outer", "Actual Loops": 3 }],
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it("adds a parallel scan's processes up into one read, not three runs", () => {
+    // Three processes shared one read of 999 rows, 333 each. The planner gave
+    // each of its 2.4 shares (two helpers and itself) 5 rows: 12 in all.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Gather",
+        "Workers Planned": 2,
+        "Workers Launched": 2,
+        "Plan Rows": 12,
+        "Total Cost": 5000,
+        "Actual Total Time": 30,
+        "Actual Rows": 999,
+        "Actual Loops": 1,
+        Plans: [
+          {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": true,
+            "Relation Name": "orders",
+            Schema: "public",
+            Alias: "orders",
+            "Plan Rows": 5,
+            "Total Cost": 4000,
+            "Actual Total Time": 25,
+            "Actual Rows": 333,
+            "Actual Loops": 3,
+          },
+        ],
+      })
+    );
+    const detail = summary?.findings.find((f) => f.id === "estimate-off:1")?.detail ?? "";
+    expect(detail).toContain(
+      "planned for 12 rows and produced 999, split between 3 processes — out by about 83×"
+    );
+    expect(detail).not.toContain("each time it ran");
+  });
+
+  it("counts an estimate each parallel process ran for itself in each process", () => {
+    const summary = readPlan(
+      eachProcessHashes({
+        "Node Type": "Seq Scan",
+        "Relation Name": "customers",
+        Schema: "public",
+        Alias: "c",
+        "Plan Rows": 100,
+        "Total Cost": 90,
+        "Actual Total Time": 8,
+        "Actual Rows": 5000,
+      })
+    );
+    // Steps: Gather, Hash Join, orders, Hash, customers.
+    const detail = summary?.findings.find((f) => f.id === "estimate-off:4")?.detail ?? "";
+    expect(detail).toContain(
+      "planned for 100 rows and produced 5,000 in each of the 3 processes — out by about 50×"
+    );
+    expect(detail).not.toContain("each time it ran");
+  });
+
+  it("adds up what a parallel index scan's processes fetched and kept", () => {
+    // Three processes shared one index scan. Each fetched 33,400 rows and
+    // kept 400: 100,200 fetched and 1,200 kept in all.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Gather",
+        "Workers Planned": 2,
+        "Workers Launched": 2,
+        "Plan Rows": 1200,
+        "Total Cost": 5000,
+        "Actual Total Time": 30,
+        "Actual Rows": 1200,
+        "Actual Loops": 1,
+        Plans: [
+          {
+            "Node Type": "Index Scan",
+            "Parent Relationship": "Outer",
+            "Parallel Aware": true,
+            "Relation Name": "events",
+            Schema: "public",
+            Alias: "events",
+            "Index Name": "events_created_idx",
+            "Index Cond": "(created_at > '2024-01-01'::date)",
+            Filter: "(kind = 'error'::text)",
+            "Rows Removed by Filter": 33000,
+            "Plan Rows": 500,
+            "Total Cost": 4000,
+            "Actual Total Time": 25,
+            "Actual Rows": 400,
+            "Actual Loops": 3,
+          },
+        ],
+      })
+    );
+    const detail = summary?.findings.find((f) => f.id === "wasteful-filter:1")?.detail ?? "";
+    expect(detail).toContain(
+      "fetched 100,200 rows from the table and kept 1,200, split between 3 processes."
+    );
+    expect(detail).not.toContain("each time it ran");
+    // 500 planned in each of 2.4 shares is the 1,200 read: no estimate-off.
+    expect(hasRule(summary?.findings, "estimate-off")).toBe(false);
+  });
+
+  it("counts an index scan each parallel process ran for itself in each process", () => {
+    const summary = readPlan(
+      eachProcessHashes({
+        "Node Type": "Index Scan",
+        "Relation Name": "customers",
+        Schema: "public",
+        Alias: "c",
+        "Index Name": "customers_region_idx",
+        "Index Cond": "(c.region = 'north'::text)",
+        Filter: "(c.active)",
+        "Rows Removed by Filter": 9900,
+        "Plan Rows": 100,
+        "Total Cost": 90,
+        "Actual Total Time": 8,
+        "Actual Rows": 100,
+      })
+    );
+    const detail = summary?.findings.find((f) => f.id === "wasteful-filter:4")?.detail ?? "";
+    expect(detail).toContain(
+      "fetched 10,000 rows from the table and kept 100 in each of the 3 processes " +
+        "(29,700 thrown away in all)."
+    );
+  });
+
+  it("counts an index scan run again for each row one run at a time", () => {
+    // The lookup side of a nested loop, run once for each of 100 customers.
+    const summary = readPlan(
+      envelope({
+        "Node Type": "Nested Loop",
+        "Plan Rows": 200,
+        "Total Cost": 900,
+        "Actual Total Time": 40,
+        "Actual Rows": 200,
+        "Actual Loops": 1,
+        Plans: [
+          {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Relation Name": "customers",
+            Schema: "public",
+            Alias: "c",
+            "Plan Rows": 100,
+            "Total Cost": 20,
+            "Actual Total Time": 1,
+            "Actual Rows": 100,
+            "Actual Loops": 1,
+          },
+          {
+            "Node Type": "Index Scan",
+            "Parent Relationship": "Inner",
+            "Relation Name": "events",
+            Schema: "public",
+            Alias: "e",
+            "Index Name": "events_customer_idx",
+            "Index Cond": "(e.customer_id = c.id)",
+            Filter: "(e.kind = 'error'::text)",
+            "Rows Removed by Filter": 50,
+            "Plan Rows": 2,
+            "Total Cost": 8,
+            "Actual Total Time": 0.3,
+            "Actual Rows": 2,
+            "Actual Loops": 100,
+          },
+        ],
+      })
+    );
+    const detail = summary?.findings.find((f) => f.id === "wasteful-filter:2")?.detail ?? "";
+    expect(detail).toContain(
+      "fetched 52 rows from the table and kept 2, each time it ran (100 times, 5,000 thrown away in all)."
+    );
+  });
+
   it("flags a sort that spilled to disk", () => {
     const summary = readPlan(
       envelope({

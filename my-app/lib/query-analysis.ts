@@ -2434,11 +2434,21 @@ function planFindings(
       removedPerLoop * loops >= 1000
     ) {
       const indexCond = step.joinCond ?? detailValue(step, "Recheck Cond");
-      const runs =
-        loops > 1
-          ? `, each time it ran (${fmtRows(loops)} times, ${fmtRows(removedPerLoop * loops)} ` +
-            `thrown away in all)`
-          : "";
+      // Both counts are per loop. A parallel scan's loops are the processes
+      // that shared one read, so its counts are added up into totals. A step
+      // run again and again, or by each process for itself, is counted one
+      // run at a time, with the total thrown away beside it (see countingOf).
+      const shared = loops > 1 && step.parallelAware;
+      const counted = (perLoop: number) => fmtRows(shared ? perLoop * loops : perLoop);
+      const thrownAway = `${fmtRows(removedPerLoop * loops)} thrown away in all`;
+      const counting = countingOf(step, true);
+      const runs = shared
+        ? `, split between ${fmtRows(loops)} processes`
+        : counting.perRun
+          ? `, each time it ran (${fmtRows(loops)} times, ${thrownAway})`
+          : counting.perProcess
+            ? ` in each of the ${fmtRows(loops)} processes (${thrownAway})`
+            : "";
       out.push({
         id: `wasteful-filter:${step.id}`,
         stepId: step.id,
@@ -2447,8 +2457,8 @@ function planFindings(
         object: step.label,
         detail:
           `Step ${step.id + 1} used an index, then fetched ` +
-          `${fmtRows(removedPerLoop + step.actualRows)} rows from the table and kept ` +
-          `${fmtRows(step.actualRows)}${runs}. The index matches only part of the ` +
+          `${counted(removedPerLoop + step.actualRows)} rows from the table and kept ` +
+          `${counted(step.actualRows)}${runs}. The index matches only part of the ` +
           `condition; the rest is checked one row at a time after each row has ` +
           `been read. An index that also covers the filtered columns would skip ` +
           `those rows without reading them.`,
@@ -2471,12 +2481,13 @@ function planFindings(
     // times or more, the plan was chosen for a query that does not exist, and
     // no amount of indexing fixes that — the statistics do.
     //
-    // Both numbers are per loop. A 1-row lookup repeated a thousand times is
-    // a correct estimate of 1, not an estimate out by a thousand.
-    if (measured && step.actualRows !== null && step.actualRows >= 100 && step.estimatedRows > 0) {
-      const actual = step.actualRows;
-      const ratio =
-        actual > step.estimatedRows ? actual / step.estimatedRows : step.estimatedRows / actual;
+    // Both numbers are counted the same way (see estimateAgainstRun): per
+    // loop, so a 1-row lookup repeated a thousand times is a correct estimate
+    // of 1, not an estimate out by a thousand; and in all for a parallel scan.
+    const estimate = measured ? estimateAgainstRun(step) : null;
+    if (estimate !== null && estimate.actual >= 100 && estimate.planned > 0) {
+      const { planned, actual } = estimate;
+      const ratio = actual > planned ? actual / planned : planned / actual;
       if (ratio >= 10) {
         out.push({
           id: `estimate-off:${step.id}`,
@@ -2485,9 +2496,8 @@ function planFindings(
           title: "The planner's row estimate is far off",
           object: step.label,
           detail:
-            `Step ${step.id + 1} was planned for ${rowsWord(step.estimatedRows)} and ` +
-            `produced ${fmtRows(actual)}` +
-            (loops > 1 ? ` each time it ran (${fmtRows(loops)} times)` : "") +
+            `Step ${step.id + 1} was planned for ${rowsWord(planned)} and ` +
+            `produced ${fmtRows(actual)}${estimate.unit}` +
             ` — out by about ${Math.round(ratio)}×. Everything above this step was ` +
             `planned around the wrong number, so the join order and join methods may ` +
             `be wrong too. Usually this means the table's statistics are stale.`,
@@ -2802,6 +2812,40 @@ function estimateFix(steps: PlanStep[], step: PlanStep): { fix: string; fixKind:
       `-- statistics of whichever changed most recently, then analyse again:\n` +
       lines.join("\n"),
   };
+}
+
+/**
+ * A measured step's planned and actual rows, counted the same way so the
+ * estimate-off rule can compare them, and the words that say how. PostgreSQL
+ * gives both per loop, which is right for a step that ran once, one that ran
+ * again and again (" each time it ran (40 times)"), and one each helper
+ * process ran for itself (" in each of the 3 processes"). A parallel scan's
+ * loops are the processes that shared one read, though, and the planner's
+ * share for one process (Plan Rows: its total over shareDivisor, 2.4 for two
+ * helpers) is not what each process really read (Actual Rows: the total over
+ * the loops, 3 for two helpers and the main process). So both are added back
+ * up to totals when shareDivisor is known. Null before the step was run.
+ */
+function estimateAgainstRun(
+  step: PlanStep
+): { planned: number; actual: number; unit: string } | null {
+  if (step.actualRows === null) return null;
+  const loops = step.loops ?? 1;
+  if (loops > 1 && step.parallelAware && step.shareDivisor !== null) {
+    return {
+      planned: step.estimatedRows * step.shareDivisor,
+      actual: step.actualRows * loops,
+      unit: `, split between ${fmtRows(loops)} processes`,
+    };
+  }
+  // Below a Gather, loops count processes as well as repeats; countingOf
+  // tells the two apart.
+  const unit = countingOf(step, true).perRun
+    ? ` each time it ran (${fmtRows(loops)} times)`
+    : loops > 1
+      ? ` in each of the ${fmtRows(loops)} processes`
+      : "";
+  return { planned: step.estimatedRows, actual: step.actualRows, unit };
 }
 
 /** Highest severity first, then in plan order, so the list reads top-down. */
