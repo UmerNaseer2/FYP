@@ -4742,6 +4742,422 @@ describe("a whole-table read whose filter tests a subquery", () => {
   });
 });
 
+describe("how often a subquery a filter tests is expected to run", () => {
+  /**
+   * "(SELECT count(*) FROM items i WHERE i.id = c.id)" as PostgreSQL 17 plans
+   * it: one index lookup, 4.32 a run.
+   */
+  function itemCount(indexCond: string, name = "SubPlan 1", alias = "i"): Record<string, unknown> {
+    return {
+      "Node Type": "Aggregate",
+      Strategy: "Plain",
+      "Parent Relationship": "SubPlan",
+      "Subplan Name": name,
+      Output: ["count(*)"],
+      "Plan Rows": 1,
+      "Total Cost": 4.32,
+      Plans: [
+        {
+          "Node Type": "Index Only Scan",
+          "Parent Relationship": "Outer",
+          "Relation Name": "items",
+          Schema: "public",
+          Alias: alias,
+          "Index Name": "items_id_idx",
+          "Index Cond": indexCond,
+          Output: [`${alias}.id`],
+          "Plan Rows": 1,
+          "Total Cost": 4.3,
+        },
+      ],
+    };
+  }
+
+  /**
+   * Customers with no items: a whole-table read whose filter runs the count
+   * for each of the 20,000 customers, of whom 100 pass. The Total Cost adds
+   * up the way PostgreSQL's does: 20,000 counts at 4.32, and 309 for reading
+   * the table. `extra` swaps parts of it, e.g. for another way in.
+   */
+  function customersWithoutItems(
+    filter = "((SubPlan 1) = 0)",
+    extra: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return {
+      "Node Type": "Seq Scan",
+      "Relation Name": "customers",
+      Schema: "public",
+      Alias: "c",
+      Output: ["c.id"],
+      Filter: filter,
+      "Plan Rows": 100,
+      "Total Cost": 86709,
+      Plans: [itemCount("(i.id = c.id)")],
+      ...extra,
+    };
+  }
+
+  /** The same, with a cheaper test first that can spare the count. */
+  const MAY_SKIP = "((c.name <> 'x'::text) AND ((SubPlan 1) = 0))";
+
+  /** The catalog's size of the customers table. */
+  const CUSTOMERS: Partial<PlanCatalog> = { tableRows: { "public.customers": 20000 } };
+
+  /** The top step of the subquery called `name`. */
+  function subplanStep(summary: PlanSummary, name = "SubPlan 1") {
+    const step = summary.steps.find((s) => s.subplanName === name);
+    if (step === undefined) throw new Error(`The fixture has no ${name}.`);
+    return step;
+  }
+
+  it("counts it for every row the filter reads, as the planner's cost does", () => {
+    const summary = summaryOf(customersWithoutItems(), CUSTOMERS);
+    const steps = summary.steps;
+    expect(steps.map((s) => s.estimatedRuns)).toEqual([1, 20000, 20000]);
+    // What is left of the read's 86,709 once the 20,000 counts are taken off.
+    expect(Math.round(steps[0].selfCost)).toBe(309);
+    // 20,000 lookups at 4.3 are 86,000, against 400 for counting and 309
+    // for the table.
+    expect(summary.heaviestStepId).toBe(2);
+    expect(stepFigures(steps[1], false)).toEqual({
+      rows: "~1 row each time (estimate)",
+      runs: "runs ~20,000 times (estimate)",
+    });
+    expect(explainInWords(summary).join(" ")).toContain(
+      "(each time; expected to run about 20,000 times)"
+    );
+  });
+
+  it("gives no count when it cannot tell how many rows the filter reads", () => {
+    // Without the table's size only the 100 rows that pass are known, though
+    // the count runs for all 20,000 read. 100 stands in for the cost, but is
+    // not shown as how often it runs.
+    const summary = summaryOf(customersWithoutItems());
+    const step = subplanStep(summary);
+    expect(step.estimatedRuns).toBe(100);
+    expect(step.runsKnown).toBe(false);
+    expect(stepFigures(step, false).runs).toBeNull();
+    const words = explainInWords(summary).join(" ");
+    expect(words).toContain("(each time it runs)");
+    expect(words).not.toContain("expected to run about");
+  });
+
+  it("still charges a filter that may skip the subquery for every row it reads", () => {
+    // PostgreSQL may never run the count for a customer named x, but its
+    // planner charges it for all 20,000 (86,759 is PostgreSQL 17's own
+    // figure), so the lookups are still the heavy part.
+    const summary = summaryOf(customersWithoutItems(MAY_SKIP, { "Total Cost": 86759 }), CUSTOMERS);
+    expect(subplanStep(summary).estimatedRuns).toBe(20000);
+    expect(summary.heaviestStepId).toBe(2);
+    expect(subplanStep(summary).runsKnown).toBe(false);
+  });
+
+  it.each([
+    {
+      label: "a filter that may skip it",
+      plan: customersWithoutItems(MAY_SKIP, { "Total Cost": 86759 }),
+      runs: 20000,
+    },
+    {
+      // An index scan reads only the rows its Index Cond finds (4,999 by
+      // PostgreSQL's reckoning here), and the plan does not give that count.
+      label: "a read through an index",
+      plan: customersWithoutItems(undefined, {
+        "Node Type": "Index Only Scan",
+        "Index Name": "customers_pkey",
+        "Index Cond": "(c.id < 5000)",
+        "Plan Rows": 25,
+        "Total Cost": 21743.45,
+      }),
+      runs: 25,
+    },
+    {
+      // A join tests its Join Filter only on the pairs its Hash Cond makes,
+      // which the plan does not count either.
+      label: "a join filter",
+      plan: {
+        "Node Type": "Hash Join",
+        "Join Type": "Inner",
+        Output: ["c.id"],
+        "Hash Cond": "(i.customer_id = c.id)",
+        "Join Filter": "((SubPlan 1) = 0)",
+        "Plan Rows": 100,
+        "Total Cost": 899.24,
+        Plans: [
+          {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Relation Name": "items",
+            Schema: "public",
+            Alias: "i",
+            Output: ["i.id", "i.customer_id"],
+            "Plan Rows": 19900,
+            "Total Cost": 288,
+          },
+          {
+            "Node Type": "Hash",
+            "Parent Relationship": "Inner",
+            Output: ["c.id"],
+            "Plan Rows": 20000,
+            "Total Cost": 309,
+            Plans: [
+              {
+                "Node Type": "Seq Scan",
+                "Parent Relationship": "Outer",
+                "Relation Name": "customers",
+                Schema: "public",
+                Alias: "c",
+                Output: ["c.id"],
+                "Plan Rows": 20000,
+                "Total Cost": 309,
+              },
+            ],
+          },
+          itemCount("(j.id = (c.id + i.id))", "SubPlan 1", "j"),
+        ],
+      },
+      runs: 100,
+    },
+    {
+      // Inside sum(…) the count runs for each of the 20,000 rows read; one
+      // outside it would run once for each of the 10 groups.
+      label: "a subquery in an aggregate's output",
+      plan: {
+        "Node Type": "Aggregate",
+        Strategy: "Hashed",
+        "Group Key": ["(c.id % 10)"],
+        Output: ["((c.id % 10))", "sum((SubPlan 1))"],
+        "Plan Rows": 10,
+        "Total Cost": 87109,
+        Plans: [
+          {
+            "Node Type": "Seq Scan",
+            "Parent Relationship": "Outer",
+            "Relation Name": "customers",
+            Schema: "public",
+            Alias: "c",
+            Output: ["(c.id % 10)", "c.id"],
+            "Plan Rows": 20000,
+            "Total Cost": 359,
+          },
+          itemCount("(i.id = c.id)"),
+        ],
+      },
+      runs: 10,
+    },
+  ])("gives no count for $label", ({ plan, runs }) => {
+    const step = subplanStep(summaryOf(plan, CUSTOMERS));
+    expect(step.estimatedRuns).toBe(runs);
+    expect(step.runsKnown).toBe(false);
+    expect(stepFigures(step, false).runs).toBeNull();
+  });
+
+  it("counts it for every row a Subquery Scan reads: all its subquery hands up", () => {
+    // "FROM (SELECT … ORDER BY … LIMIT 3000) s WHERE …": the filter runs on
+    // the 3,000 rows the subquery hands up, and PostgreSQL 17's cost charges
+    // the count 3,000 times.
+    const summary = summaryOf(
+      {
+        "Node Type": "Subquery Scan",
+        Alias: "s",
+        Output: ["s.id"],
+        Filter: "((SubPlan 1) = 0)",
+        "Plan Rows": 15,
+        "Total Cost": 14561.57,
+        Plans: [
+          {
+            "Node Type": "Limit",
+            "Parent Relationship": "Subquery",
+            Output: ["customers.id", "customers.name"],
+            "Plan Rows": 3000,
+            "Total Cost": 1571.57,
+            Plans: [
+              {
+                "Node Type": "Sort",
+                "Parent Relationship": "Outer",
+                Output: ["customers.id", "customers.name"],
+                "Plan Rows": 20000,
+                "Total Cost": 1614.07,
+                Plans: [
+                  {
+                    "Node Type": "Seq Scan",
+                    "Parent Relationship": "Outer",
+                    "Relation Name": "customers",
+                    Schema: "public",
+                    Alias: "customers",
+                    Output: ["customers.id", "customers.name"],
+                    "Plan Rows": 20000,
+                    "Total Cost": 309,
+                  },
+                ],
+              },
+            ],
+          },
+          itemCount("(i.id = s.id)"),
+        ],
+      },
+      CUSTOMERS
+    );
+    expect(subplanStep(summary).estimatedRuns).toBe(3000);
+    expect(subplanStep(summary).runsKnown).toBe(true);
+  });
+
+  it("counts it for every row a bitmap read finds, catalog or not", () => {
+    // PostgreSQL 17 charges the count 4,999 times here: once for each
+    // customer the bitmap found, before the filter keeps 25.
+    const plan = customersWithoutItems(undefined, {
+      "Node Type": "Bitmap Heap Scan",
+      "Recheck Cond": "(c.id < 5000)",
+      "Plan Rows": 25,
+      "Total Cost": 21878.7,
+      Plans: [
+        {
+          "Node Type": "Bitmap Index Scan",
+          "Parent Relationship": "Outer",
+          "Index Name": "customers_pkey",
+          "Index Cond": "(c.id < 5000)",
+          "Plan Rows": 4999,
+          "Total Cost": 97.78,
+        },
+        itemCount("(i.id = c.id)"),
+      ],
+    });
+    for (const catalog of [CUSTOMERS, {}]) {
+      const step = subplanStep(summaryOf(plan, catalog));
+      expect(step.estimatedRuns).toBe(4999);
+      expect(step.runsKnown).toBe(true);
+      expect(stepFigures(step, false).runs).toBe("runs ~4,999 times (estimate)");
+    }
+  });
+
+  it("runs a subquery with a Materialize on top once, and reads its rows again", () => {
+    // "c.id > ALL (SELECT id FROM items WHERE id < 100)" does not use the
+    // customer, so PostgreSQL 17 fills a Materialize once and reads it again
+    // for each customer. Its cost charges the index read once.
+    const summary = summaryOf(
+      {
+        "Node Type": "Seq Scan",
+        "Relation Name": "customers",
+        Schema: "public",
+        Alias: "c",
+        Output: ["c.id"],
+        Filter: "(ALL (c.id > (SubPlan 1).col1))",
+        "Plan Rows": 10000,
+        "Total Cost": 65109.29,
+        Plans: [
+          {
+            "Node Type": "Materialize",
+            "Parent Relationship": "SubPlan",
+            "Subplan Name": "SubPlan 1",
+            Output: ["i.id"],
+            "Plan Rows": 99,
+            "Total Cost": 6.51,
+            Plans: [
+              {
+                "Node Type": "Index Only Scan",
+                "Parent Relationship": "Outer",
+                "Relation Name": "items",
+                Schema: "public",
+                Alias: "i",
+                "Index Name": "items_id_idx",
+                "Index Cond": "(i.id < 100)",
+                Output: ["i.id"],
+                "Plan Rows": 99,
+                "Total Cost": 6.02,
+              },
+            ],
+          },
+        ],
+      },
+      CUSTOMERS
+    );
+    const steps = summary.steps;
+    expect(steps.map((s) => s.estimatedRuns)).toEqual([1, 1, 1]);
+    expect(steps.map((s) => s.repeated)).toEqual([false, true, false]);
+    // Reading the kept rows again, for each customer, is in the scan's own cost.
+    expect(steps[0].selfCost).toBeCloseTo(65102.78, 2);
+    expect(steps[1].selfCost).toBeCloseTo(0.49, 2);
+    expect(steps[2].selfCost).toBeCloseTo(6.02, 2);
+    expect(summary.heaviestStepId).toBe(0);
+    expect(subqueryCaption(steps[1])).toBe("SubPlan 1: runs once, then read again for each row");
+    const words = explainInWords(summary).join(" ");
+    expect(words).toContain("SubPlan 1, which runs only once");
+    expect(words).toContain("so they can be read again for each row of public.customers (c)");
+    expect(words).not.toContain("runs once for each row");
+  });
+
+  it("tells a subquery the filter tests from one only the output uses", () => {
+    // PostgreSQL numbers the output's subquery first. It runs for the 100
+    // customers that pass, the filter's for all 20,000 read: 309 for the
+    // table, and 20,100 counts at 4.32.
+    const summary = summaryOf(
+      customersWithoutItems("((SubPlan 2) = 0)", {
+        Output: ["c.id", "(SubPlan 1)"],
+        "Total Cost": 87141,
+        Plans: [itemCount("(i.id = c.id)", "SubPlan 1"), itemCount("(i_1.id = c.id)", "SubPlan 2", "i_1")],
+      }),
+      CUSTOMERS
+    );
+    expect(subplanStep(summary, "SubPlan 1").estimatedRuns).toBe(100);
+    expect(subplanStep(summary, "SubPlan 1").runsKnown).toBe(true);
+    expect(subplanStep(summary, "SubPlan 2").estimatedRuns).toBe(20000);
+    expect(subplanStep(summary, "SubPlan 2").runsKnown).toBe(true);
+    expect(Math.round(summary.steps[0].selfCost)).toBe(309);
+  });
+
+  it("counts it for each process's share of a parallel read", () => {
+    // PostgreSQL 17's plan for "c.id > ALL (SELECT g FROM generate_series(1,
+    // 100) g)" read in parallel: two helpers and the leader split the 20,000
+    // customers, so each is expected to read 20,000 / 2.4.
+    const scan = {
+      "Node Type": "Seq Scan",
+      "Parent Relationship": "Outer",
+      "Parallel Aware": true,
+      "Relation Name": "customers",
+      Schema: "public",
+      Alias: "c",
+      Output: ["c.id"],
+      Filter: "(ALL (c.id > (SubPlan 1).col1))",
+      "Plan Rows": 4167,
+      "Total Cost": 5421.5,
+      Plans: [
+        {
+          "Node Type": "Function Scan",
+          "Parent Relationship": "SubPlan",
+          "Subplan Name": "SubPlan 1",
+          "Function Name": "generate_series",
+          Schema: "pg_catalog",
+          Alias: "g",
+          Output: ["g.g"],
+          "Function Call": "generate_series(1, 100)",
+          "Plan Rows": 100,
+          "Total Cost": 1,
+        },
+      ],
+    };
+    const gather = {
+      "Node Type": "Gather",
+      "Workers Planned": 2,
+      Output: ["c.id"],
+      "Plan Rows": 10000,
+      "Total Cost": 5421.5,
+      Plans: [scan],
+    };
+    const summary = summaryOf(gather, CUSTOMERS);
+    const step = subplanStep(summary);
+    expect(step.estimatedRuns).toBeCloseTo(8333.33, 1);
+    expect(step.runsKnown).toBe(true);
+    expect(stepFigures(step, false).runs).toBe("runs ~8,333 times (estimate)");
+    expect(explainInWords(summary).join(" ")).toContain(
+      "(each time; expected to run about 8,333 times in each process)"
+    );
+    // Without the table's size, only the rows each process keeps are known.
+    const unknown = subplanStep(summaryOf(gather));
+    expect(unknown.estimatedRuns).toBe(4167);
+    expect(unknown.runsKnown).toBe(false);
+  });
+});
+
 describe("subqueryCaption", () => {
   it("says when each kind of subquery runs, over its top box only", () => {
     const init = summaryOf(aboveAverage()).steps;

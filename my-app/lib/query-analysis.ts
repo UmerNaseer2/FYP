@@ -720,6 +720,20 @@ export type PlanStep = {
    */
   repeated: boolean;
   /**
+   * False when an estimate cannot say how often this step really runs, so no
+   * count is shown for it. A subquery a filter tests runs once for each row
+   * the filter reads, which the plan gives only for some steps (see
+   * rowsFilterReads); a filter or output with AND, OR, CASE or COALESCE in
+   * it may skip the subquery; and an aggregate runs a subquery in its
+   * output for each row it reads when it sits inside sum(…), but once for
+   * each group otherwise. estimatedRuns then counts the rows read where they
+   * are known, as the planner's cost does, and the rows handed on where they
+   * are not. Also false for a subquery used somewhere other than a filter or
+   * the output, and for every step below one of these, down to any InitPlan,
+   * whose runs are counted afresh. Set by estimateRuns.
+   */
+  runsKnown: boolean;
+  /**
    * The planner's cost for this step alone, over all its runs, with its
    * children's cost taken off. An approximation: see estimateRuns.
    */
@@ -732,7 +746,8 @@ export type PlanStep = {
   share: number;
   /**
    * How many rows the table `relation` holds, from the catalog, or null when
-   * the step reads no table or the catalog was not given. Filled in by readPlan.
+   * the step reads no table or the catalog was not given. Filled in by
+   * flattenPlan, from the catalog handed to readPlan.
    */
   tableRows: number | null;
   /**
@@ -991,8 +1006,12 @@ function labelOf(node: RawPlanNode): string {
  * It is an approximation for plans containing InitPlan / SubPlan nodes, whose
  * time is counted in their parent as well. Better an approximate answer to the
  * right question than an exact answer to the wrong one.
+ *
+ * `tableRows` is the catalog's table sizes, "schema.table" → rows. They go
+ * on each step that reads a table before estimateRuns, which needs them to
+ * count how often a subquery a filter tests runs.
  */
-function flattenPlan(root: RawPlanNode): PlanStep[] {
+function flattenPlan(root: RawPlanNode, tableRows: TableRows = {}): PlanStep[] {
   const steps: PlanStep[] = [];
 
   // `inParallel` is passed down rather than looked up later: everything below
@@ -1046,14 +1065,15 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
       actualRows: numOrNull(node, "Actual Rows"),
       selfMs: inclusiveMs,
       loops,
-      // The next four are worked out once the whole tree is known: runs,
-      // repeats and own cost by estimateRuns below, share by weighSteps in
-      // readPlan.
+      // The next five are worked out once the whole tree is known: runs,
+      // repeats, whether the runs are known and own cost by estimateRuns
+      // below, share by weighSteps in readPlan.
       estimatedRuns: 1,
       repeated: false,
+      runsKnown: true,
       selfCost: 0,
       share: 0,
-      // Filled in by readPlan, which is the one holding the catalog.
+      // Filled in after the walk, from the catalog's table sizes.
       tableRows: null,
       inParallel,
       parallelAware: node["Parallel Aware"] === true,
@@ -1094,15 +1114,82 @@ function flattenPlan(root: RawPlanNode): PlanStep[] {
   }
 
   walk(root, 0, null, false, null);
+
+  // The table's real size rides on the step, so the plain-words walk-through
+  // can say "reads the whole of public.orders (1.2 million rows)" without
+  // being handed the catalog as well. Before estimateRuns, which needs it to
+  // count how often a subquery a filter tests runs.
+  for (const step of steps) {
+    if (step.relation === null || step.relationSchema === null) continue;
+    const known: number | undefined = tableRows[`${step.relationSchema}.${step.relation}`];
+    if (typeof known === "number") step.tableRows = known;
+  }
   estimateRuns(steps);
   return steps;
 }
 
+/**
+ * True when `text` mentions `name`, e.g. "SubPlan 1", as a whole name: the
+ * (?!\d) keeps "SubPlan 1" from matching inside "SubPlan 12".
+ */
+function mentionsName(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escaped}(?!\\d)`).test(text);
+}
+
 /** True when `text` mentions "hashed SubPlan 1" for this exact subplan name. */
 function mentionsHashed(text: string, name: string): boolean {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // (?!\d) so "SubPlan 1" does not match inside "hashed SubPlan 12".
-  return new RegExp(`hashed ${escaped}(?!\\d)`).test(text);
+  return mentionsName(text, `hashed ${name}`);
+}
+
+/**
+ * Words after which PostgreSQL may skip the rest of an expression: AND and OR
+ * stop once the answer is known (and PostgreSQL puts the cheaper tests of a
+ * WHERE first, so an expensive subquery usually comes last), and CASE and
+ * COALESCE work out only the branch they need.
+ */
+const SKIPPING_WORDS = ["AND", "OR", "CASE", "COALESCE"];
+
+/**
+ * True when `text`, a Filter or an Output, may skip part of itself for a row
+ * (see SKIPPING_WORDS), so a subquery in it may run for fewer rows than it
+ * reads. The planner's cost ignores that and charges the subquery for every
+ * row. A name that is one of these words comes quoted ("case"), which
+ * tokenize keeps apart from the word itself.
+ */
+function maySkipPart(text: string): boolean {
+  return tokenize(text).some((token) => SKIPPING_WORDS.some((word) => isWord(token, word)));
+}
+
+/**
+ * How many rows `step` reads and runs its Filter on, each time it runs, when
+ * the plan says: all of its table for a whole-table read (given the table's
+ * size from the catalog), every row its bitmap found for a Bitmap Heap Scan
+ * (the Bitmap Index Scan, or BitmapAnd / BitmapOr, below it), all of its
+ * input's rows for a Subquery Scan. Null otherwise: an index scan reads only
+ * what its Index Cond finds, and a join tests its Join Filter only on the
+ * pairs its join condition makes, and the plan gives neither count. For a
+ * parallel scan it is one process's share, the same unit as its Plan Rows.
+ */
+function rowsFilterReads(step: PlanStep, children: PlanStep[]): number | null {
+  if (step.filter === null) return null;
+  // Its one input, whatever subqueries hang off it: a Bitmap Heap Scan's
+  // bitmap, a Subquery Scan's subquery.
+  const input = joinSides(children)[0];
+  if (step.nodeType === "Seq Scan") {
+    if (step.tableRows === null) return null;
+    if (!step.parallelAware) return step.tableRows;
+    return step.shareDivisor === null ? null : step.tableRows / step.shareDivisor;
+  }
+  if (step.nodeType === "Bitmap Heap Scan") {
+    if (input === undefined) return null;
+    if (!step.parallelAware) return input.estimatedRows;
+    return step.shareDivisor === null ? null : input.estimatedRows / step.shareDivisor;
+  }
+  if (step.nodeType === "Subquery Scan") {
+    return input === undefined ? null : input.estimatedRows;
+  }
+  return null;
 }
 
 /**
@@ -1117,35 +1204,50 @@ function mentionsHashed(text: string, name: string): boolean {
  *   - an InitPlan (a subquery with no link to the outer row) runs once;
  *   - the repeated ("Inner") side of a Nested Loop runs once per row of the
  *     other ("Outer") side, times however often the loop itself runs;
- *   - a SubPlan (a subquery that refers to the outer row) runs once per row
- *     of the step it belongs to, unless PostgreSQL "hashed" it, in which case
- *     it ran once and its rows were kept in a lookup table;
+ *   - a SubPlan (a subquery that refers to the outer row) runs once for each
+ *     row its step reads when the step's filter tests it, and once for each
+ *     row the step hands on when only its output uses it; unless PostgreSQL
+ *     "hashed" it, in which case it ran once and its rows were kept in a
+ *     lookup table;
  *   - every other step runs as often as the step above it.
  *
- * Two exceptions, checked on real PostgreSQL 17 plans, both on the repeated
- * side of a nested loop. A Materialize fills itself once and then replays its
- * rows. A Memoize runs the step below it only for a value it has not seen
- * yet, and answers a repeat from memory. Either way the step's Total Cost is
- * its first run, and the planner charges every later one (the cheap replays,
- * and a Memoize's further lookups) to the Nested Loop. Multiplying them by
- * the outer rows would make a 40-row cache look like the most expensive
- * step, so they count as running once per run of the loop, and in an
- * estimate the Nested Loop's own cost includes those later runs.
+ * Three exceptions, checked on real PostgreSQL 17 plans. A Materialize on
+ * the repeated side of a nested loop fills itself once and then replays its
+ * rows. So does a Materialize at the top of a SubPlan, PostgreSQL's sign of
+ * a subquery that does not refer to the outer row (x > ALL (SELECT …)). A
+ * Memoize runs the step below it only for a value it has not seen yet, and
+ * answers a repeat from memory. Each time the step's Total Cost is its first
+ * run, and the planner charges every later one (the cheap replays, and a
+ * Memoize's further lookups) to the step above: the Nested Loop, or the step
+ * that tests the subquery. Multiplying them by the outer rows would make a
+ * 40-row cache look like the most expensive step, so they count as running
+ * once per run of that step, and in an estimate its own cost includes those
+ * later runs.
  *
  * Then a step's own cost = its Total Cost over all its runs, minus its
  * children's Total Cost over all of theirs. This is APPROXIMATE: startup and
- * rescan costs are ignored (a rescan is often cheaper than a first run), and
- * a SubPlan in a Filter runs once per row READ, which can be more than the
- * rows the step hands on. Good enough to point at the heavy part of a plan;
+ * rescan costs are ignored (a rescan is often cheaper than a first run). The
+ * rows a filter reads are known only for a whole-table read given the
+ * table's size, a bitmap read and a Subquery Scan (see rowsFilterReads);
+ * elsewhere a subquery the filter tests is counted for the rows that pass,
+ * usually far fewer than it runs for, so the step's own cost comes out too
+ * big. The same goes for a subquery inside an aggregate's sum(…): it runs
+ * for each row the aggregate reads, but is counted for each group, like one
+ * outside sum(…), which does run once for each group. A filter that may skip
+ * the subquery (see maySkipPart) is still counted for every row read, as
+ * the planner charges it. Good enough to point at the heavy part of a plan;
  * never shown as a number the reader should trust to the digit.
  *
  * Alongside, each step gets `repeated`: whether the shape of the plan runs
  * it again for each row of something above it, whatever its runs are costed
- * at. A Memoize is costed once but asked again for every outer row.
+ * at. A Memoize is costed once but asked again for every outer row. And
+ * `runsKnown`: false where the count above is only what the planner charges,
+ * or the rows handed on standing in for rows read, so it is not shown as how
+ * often the step runs.
  */
 function estimateRuns(steps: PlanStep[]): void {
   // Built once, because the loop below needs a step's siblings to find the
-  // other side of its join.
+  // other side of its join, and a subquery's step's input.
   const children = childrenById(steps);
 
   // Ids go parents-first, so each parent's runs are known before its children.
@@ -1153,25 +1255,58 @@ function estimateRuns(steps: PlanStep[]): void {
     if (step.parentId === null) {
       step.estimatedRuns = 1;
       step.repeated = false;
+      step.runsKnown = true;
       continue;
     }
     const parent = steps[step.parentId];
     // The planner never guesses fewer than one row; a hand-written plan might.
     const parentRows = Math.max(1, parent.estimatedRows);
+    // A step below one whose runs are not known cannot know its own. Only a
+    // SubPlan learns less than its parent (below); an InitPlan starts afresh.
+    step.runsKnown = parent.runsKnown;
 
     if (step.parentRelationship === "InitPlan") {
       step.estimatedRuns = 1;
       step.repeated = false;
+      step.runsKnown = true;
     } else if (step.parentRelationship === "SubPlan") {
       // The "hashed" marker is not on the subquery's own node: PostgreSQL only
       // writes it where the parent uses the result, e.g. "(hashed SubPlan 1)".
       const where = [parent.filter ?? "", parent.output, ...parent.details].join(" ");
       step.hashedSubplan =
         step.subplanName !== null && mentionsHashed(where, step.subplanName);
-      step.estimatedRuns = step.hashedSubplan
-        ? parent.estimatedRuns
-        : parent.estimatedRuns * parentRows;
-      step.repeated = step.hashedSubplan ? parent.repeated : true;
+      if (step.hashedSubplan || step.nodeType === "Materialize") {
+        // Runs once per run of its step. Hashed, its rows went into a lookup
+        // table. A Materialize on top is PostgreSQL's sign of a subquery that
+        // does not use the outer row: filled once and read again for each
+        // row, like the one on the repeated side of a nested loop.
+        step.estimatedRuns = parent.estimatedRuns;
+        step.repeated = step.hashedSubplan ? parent.repeated : true;
+      } else {
+        const name = step.subplanName;
+        const uses = (text: string | null): text is string =>
+          text !== null && name !== null && mentionsName(text, name);
+        // Where the subquery's answer is used: a filter that tests it (the
+        // step's own Filter, or a join's Join Filter), else the output.
+        const tests = [parent.filter, detailValue(parent, "Join Filter")].filter(uses);
+        const tested = tests.length > 0;
+        const read = tested ? rowsFilterReads(parent, children[parent.id]) : null;
+        const usedIn: string[] = tested ? tests : uses(parent.output) ? [parent.output] : [];
+        // Once for each row read when a filter tests it: what the planner's
+        // cost charges, even for a filter that may skip it. Once for each
+        // row handed on when only the output uses it, and when the rows read
+        // are not known.
+        step.estimatedRuns = parent.estimatedRuns * Math.max(parentRows, read ?? 0);
+        step.runsKnown =
+          parent.runsKnown &&
+          usedIn.length > 0 &&
+          (!tested || read !== null) &&
+          // An aggregate works out a subquery inside sum(…) for each row it
+          // reads, and one outside for each group (see estimateRuns).
+          parent.nodeType !== "Aggregate" &&
+          !usedIn.some(maySkipPart);
+        step.repeated = true;
+      }
     } else if (parent.nodeType === "Nested Loop" && isInnerSide(step, children[parent.id])) {
       const outer = outerSide(children[parent.id]);
       const outerRows = Math.max(1, outer?.estimatedRows ?? 1);
@@ -2721,17 +2856,8 @@ export function readPlan(raw: unknown, catalog: Partial<PlanCatalog> = {}): Plan
   const parsed = parseEnvelope(raw);
   if (!parsed) return null;
 
-  const steps = flattenPlan(parsed.root);
+  const steps = flattenPlan(parsed.root, catalog.tableRows);
   const measured = steps.some((s) => s.actualRows !== null);
-
-  // The table's real size rides on the step, so the plain-words walk-through
-  // can say "reads the whole of public.orders (1.2 million rows)" without
-  // being handed the catalog as well.
-  for (const step of steps) {
-    if (step.relation === null || step.relationSchema === null) continue;
-    const known = catalog.tableRows?.[`${step.relationSchema}.${step.relation}`];
-    if (typeof known === "number") step.tableRows = known;
-  }
 
   const { heaviestStepId, basis } = weighSteps(steps, measured);
 
@@ -3023,7 +3149,9 @@ type Counting = {
    * How often the step ran (measured) or is expected to run (estimate). Null
    * when an estimate cannot say: the planner costs the steps below a Memoize
    * as running once (see estimateRuns), though they run again for every
-   * value the cache has not seen yet.
+   * value the cache has not seen yet; and a subquery a filter tests runs for
+   * each row the filter reads, which the plan may not count (see
+   * PlanStep.runsKnown).
    */
   runs: number | null;
   /** The rows are for one helper process. */
@@ -3049,7 +3177,8 @@ function countingOf(step: PlanStep, measured: boolean): Counting {
       // repeats that estimatedRuns counts once (a Memoize, say): its count is
       // for one run all the same, but how many runs is not known.
       perRun: runs > 1 || step.repeated,
-      runs: runs > 1 ? runs : null,
+      // Not shown when an estimate cannot say (see PlanStep.runsKnown).
+      runs: runs > 1 && step.runsKnown ? runs : null,
       // Every estimate below a Gather is for one process: the planner divides
       // a parallel scan's rows between them, and each runs the rest in full.
       perProcess: step.inParallel,
@@ -3147,6 +3276,17 @@ function tableWithAlias(step: PlanStep): string {
 function cteWithAlias(step: PlanStep): string {
   const name = `the WITH query ${step.cteName ?? ""}`.trim();
   return step.alias !== null && step.alias !== step.cteName ? `${name} (${step.alias})` : name;
+}
+
+/**
+ * " of public.customers (c)": whose rows a subquery hanging off `step` is run
+ * or read again for. Empty when the step reads no table or WITH query, rather
+ * than a guess at which rows those are.
+ */
+function ofStepRows(step: PlanStep): string {
+  if (step.relation !== null) return ` of ${tableWithAlias(step)}`;
+  if (step.cteName !== null) return ` of ${cteWithAlias(step)}`;
+  return "";
 }
 
 /** Steps that hand on their one input's rows as they are, for naming a join side. */
@@ -3545,11 +3685,17 @@ function memoizeSentence(n: Narration, step: PlanStep): string {
   );
 }
 
-/** A copy kept to be read again, usually for each row of a nested loop's other side. */
+/**
+ * A copy kept to be read again, usually for each row of a nested loop's
+ * other side, or of the step a subquery hangs off.
+ */
 function materializeSentence(n: Narration, step: PlanStep): string {
   const s = "Keeps a copy of those rows, so they can be read again";
   if (step.parentId === null) return s;
   const parent = n.steps[step.parentId];
+  // At the top of a subquery (x > ALL (SELECT …)): read again for each row
+  // of the step that tests it.
+  if (step.parentRelationship === "SubPlan") return `${s} for each row${ofStepRows(parent)}`;
   const siblings = n.children[parent.id];
   if (parent.nodeType !== "Nested Loop" || !isInnerSide(step, siblings)) return s;
   const outerName = inputName(n, outerSide(siblings));
@@ -3773,8 +3919,10 @@ type SubqueryPart = {
  * top of one. PostgreSQL marks the top step of each: "InitPlan" for one with
  * no link to the outer row (it runs once), "SubPlan" for one that uses the
  * outer row (it runs for each row, unless PostgreSQL "hashed" it: then it ran
- * once and its rows were kept in a lookup table). A WITH query that is kept
- * and read back comes as an InitPlan named "CTE <name>".
+ * once and its rows were kept in a lookup table). A SubPlan with a
+ * Materialize on top does not use the outer row, as in x > ALL (SELECT …):
+ * it ran once, and its rows are read again for each row. A WITH query that
+ * is kept and read back comes as an InitPlan named "CTE <name>".
  */
 function partStartedBy(n: Narration, step: PlanStep): SubqueryPart | null {
   if (step.parentId === null) return null;
@@ -3808,17 +3956,18 @@ function partStartedBy(n: Narration, step: PlanStep): SubqueryPart | null {
       introduced: false,
     };
   }
-  // The rows it runs for are the rows of the step it hangs off. Named when
-  // that step reads a table; "for each row" alone otherwise, rather than a
-  // guess at which rows those are.
-  const parent = n.steps[step.parentId];
-  const of =
-    parent.relation !== null
-      ? ` of ${tableWithAlias(parent)}`
-      : parent.cteName !== null
-        ? ` of ${cteWithAlias(parent)}`
-        : "";
-  return { name, when: `, which runs once for each row${of}`, introduced: false };
+  // A Materialize on top: the subquery does not use the outer row, so it
+  // runs once, and the Materialize's own sentence says what its rows are
+  // read again for.
+  if (step.nodeType === "Materialize") {
+    return { name, when: ", which runs only once", introduced: false };
+  }
+  // The rows it runs for are the rows of the step it hangs off (ofStepRows).
+  return {
+    name,
+    when: `, which runs once for each row${ofStepRows(n.steps[step.parentId])}`,
+    introduced: false,
+  };
 }
 
 /** "Reads …" → "reads …", for a sentence that follows "InitPlan 1: ". */
@@ -3982,9 +4131,11 @@ export function subqueryCaption(step: PlanStep): string | null {
     const loops = step.loops ?? 1;
     return loops > 1 ? `${name}: ran ${fmtRows(loops)} times` : `${name}: runs only once`;
   }
-  return step.hashedSubplan
-    ? `${name}: runs once, kept as a lookup table`
-    : `${name}: runs once for each row`;
+  if (step.hashedSubplan) return `${name}: runs once, kept as a lookup table`;
+  // A Materialize on top: filled once and read again for each row (see
+  // estimateRuns). The walk-through says the same (partStartedBy).
+  if (step.nodeType === "Materialize") return `${name}: runs once, then read again for each row`;
+  return `${name}: runs once for each row`;
 }
 
 // ── What the plan tells the text rules ───────────────────────────────────────
