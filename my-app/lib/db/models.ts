@@ -357,6 +357,20 @@ export class DriftEvent extends Model<
    * claims to be watching a schema for them.
    */
   declare source: CreationOptional<string>;
+  /**
+   * A short hash of WHICH differences this check found — see
+   * lib/drift-fingerprint.ts.
+   *
+   * The scheduler only writes an event when a check says something the last one
+   * did not, and that used to be decided on `status` alone. A schema that was
+   * already "drifted" and then drifted further was still "drifted", so nothing
+   * was written and the feed stopped at the first change.
+   *
+   * Nullable on purpose: rows written before this existed, and the deploy and
+   * re-baseline rows that have no comparison behind them, have no fingerprint.
+   * NULL reads as "not the same as anything", which errs towards recording.
+   */
+  declare fingerprint: CreationOptional<string | null>;
 }
 
 DriftEvent.init(
@@ -375,6 +389,7 @@ DriftEvent.init(
       defaultValue: DEFAULT_DRIFT_SOURCE,
       validate: { isIn: [DRIFT_SOURCE_VALUES] },
     },
+    fingerprint: { type: DataTypes.TEXT, allowNull: true },
   },
   {
     sequelize,
@@ -596,6 +611,8 @@ export class DeployApproval extends Model<
   declare used_at: CreationOptional<Date | null>;
   /** "deploy" or "revert": which route may spend this approval (ApprovalAction in lib/approvals-db). */
   declare action: CreationOptional<string>;
+  /** When the approval stops authorising the run. Null on a row decided before expiry existed. */
+  declare expires_at: CreationOptional<Date | null>;
 }
 
 DeployApproval.init(
@@ -630,6 +647,12 @@ DeployApproval.init(
       defaultValue: "deploy",
       validate: { isIn: [["deploy", "revert"]] },
     },
+    // Set when the approval is given, by the UPDATE in lib/approvals-db, not by
+    // a column default: the window runs from the decision, and a row that was
+    // never approved has nothing to expire. Nullable on purpose — rows decided
+    // before this column existed stay good, because inventing an expiry for a
+    // decision somebody already made would be the tool answering for them.
+    expires_at: { type: DataTypes.DATE, allowNull: true },
   },
   {
     sequelize,

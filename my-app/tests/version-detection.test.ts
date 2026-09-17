@@ -86,6 +86,33 @@ describe("acceptVersionTable", () => {
   it("rejects a known table name with no version column at all", () => {
     expect(acceptVersionTable("schema_version", ["id", "created_at"])).toBe(false);
   });
+
+  it("accepts Liquibase's table", () => {
+    // Its name has neither "version" nor "migration" in it, so unless it is
+    // known by name nothing finds it — and a Liquibase-managed schema was
+    // reported as having no version table while the docs said otherwise.
+    const liquibaseColumns = [
+      "id",
+      "author",
+      "filename",
+      "dateexecuted",
+      "orderexecuted",
+      "exectype",
+      "md5sum",
+      "description",
+      "comments",
+      "tag",
+      "liquibase",
+      "contexts",
+      "labels",
+      "deployment_id",
+    ];
+    expect(acceptVersionTable("databasechangelog", liquibaseColumns)).toBe(true);
+    // Read through `tag`, which is the only column in it that names a release.
+    // The changesets in between carry none, and a row with no version is
+    // already handled — it is listed without one.
+    expect(acceptVersionTable("databasechangelog", ["id", "author", "filename"])).toBe(false);
+  });
 });
 
 describe("pickCurrentVersion", () => {
@@ -452,6 +479,33 @@ describe("fetchSchemaVersionInfo", () => {
     expect(info.familyHeads).toBeNull();
     expect(info.timeline[0].scriptName).toBeNull();
     expect(queriesMatching(mockClient, /SELECT DISTINCT/)).toHaveLength(0);
+  });
+
+  it("reads a Liquibase changelog newest-first, by its own date and order columns", async () => {
+    // Only a tagged changeset carries a version. The ones between it and the
+    // next tag still belong in the timeline, listed without one — so the order
+    // has to come from the columns Liquibase does fill in on every row.
+    mockClient = createFakeClient([
+      ...catalogSteps("databasechangelog", [
+        "id", "author", "filename", "dateexecuted", "orderexecuted", "description", "tag",
+      ]),
+      {
+        match: /ORDER BY/,
+        rows: [
+          { id: "3", author: "mei", dateexecuted: "2026-02-01", orderexecuted: 3, description: "add index", tag: null },
+          { id: "2", author: "mei", dateexecuted: "2026-01-02", orderexecuted: 2, description: "release", tag: "2.0.0" },
+        ],
+      },
+    ]);
+
+    const info = await fetchSchemaVersionInfo(cfg, "public");
+    expect(info.tableName).toBe("databasechangelog");
+    expect(info.hasVersionTable).toBe(true);
+    // Matched on the table, not on ORDER BY: the catalog read has one too.
+    const query = queriesMatching(mockClient, /FROM "public"\."databasechangelog"/)[0].text;
+    expect(query).toContain('ORDER BY "dateexecuted" DESC NULLS LAST, "orderexecuted" DESC NULLS LAST');
+    // The untagged changeset is kept, with no version of its own.
+    expect(info.timeline.map((entry) => entry.version)).toEqual([null, "2.0.0"]);
   });
 
   it("has no groups when there is no version table, or it cannot be read", async () => {

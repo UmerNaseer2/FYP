@@ -373,6 +373,46 @@ describe("forward only", () => {
     expect(mockClient.releaseCount).toBe(1);
   });
 
+  // "constructor" passes the script-name rule (letters only), so it is a name
+  // an author can really type. The ledger was gathered into a plain object
+  // keyed by script name: reading that key found Object.prototype's built-in
+  // function instead of the list being built, and .push on a function threw —
+  // a 500 from the deploy route before any check had run.
+  it("deploys a script named after a built-in", async () => {
+    mockClient = createFakeClient(
+      target([
+        { match: /to_regclass/, rows: [{ present: true }] },
+        { match: /SELECT script_name, version/, rows: [{ script_name: "constructor", version: "1.0.0" }] },
+      ])
+    );
+    const res = await apply({
+      ...BASE,
+      scripts: [{ script_name: "constructor", version: "2.0.0", sql_content: "CREATE TABLE t (id int);" }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toMatchObject([{ script_name: "constructor", status: "applied" }]);
+  });
+
+  it("still holds such a script to the forward-only rule", async () => {
+    // The ledger for that name has to be read, not just not-crash: 1.0.0 is
+    // already applied, so 0.9.0 must be refused like any other rewind.
+    mockClient = createFakeClient(
+      target([
+        { match: /to_regclass/, rows: [{ present: true }] },
+        { match: /SELECT script_name, version/, rows: [{ script_name: "constructor", version: "1.0.0" }] },
+      ])
+    );
+    const res = await apply({
+      ...BASE,
+      scripts: [{ script_name: "constructor", version: "0.9.0", sql_content: "CREATE TABLE t (id int);" }],
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.nothingRan).toBe(true);
+    expect(String(res.body.error)).toContain("deploys only move forward");
+  });
+
   it("checks again under the family locks, rolls back, and says a hoisted enum value stays", async () => {
     // The first read (step 6c) finds nothing; by the second (step 8a, under
     // the locks) another deploy has committed the same version.
@@ -380,6 +420,10 @@ describe("forward only", () => {
     mockClient = createFakeClient(
       target([
         { match: /to_regclass/, rows: [{ present: true }] },
+        // The type already exists, which is what makes its ADD VALUE eligible for
+        // the hoist. A type this run was about to create would be left in the
+        // script instead, and nothing of it would stay behind to mention.
+        { match: /to_regtype/, rows: [{ present: true }] },
         {
           match: /SELECT script_name, version/,
           when: () => {

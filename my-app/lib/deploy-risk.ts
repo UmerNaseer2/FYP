@@ -199,7 +199,13 @@ export function checkForwardOnly(
   for (let index = 0; index < queue.length; index++) {
     const { scriptName, version } = queue[index];
     const label = scriptLabel(scriptName, version);
-    const applied = (appliedByFamily[scriptName] ?? []).filter(looksLikeVersion);
+    // Object.hasOwn, not `?? []`: a script may legitimately be called
+    // "constructor" or "toString" (the name rule allows any letters), and a
+    // plain object answers those from its prototype — with a built-in FUNCTION,
+    // which is not null, so `?? []` keeps it and .filter throws. The whole
+    // deploy request then failed with a type error instead of running.
+    const applied = (Object.hasOwn(appliedByFamily, scriptName) ? appliedByFamily[scriptName] : [])
+      .filter(looksLikeVersion);
 
     // The same version, however it is spelled, is already in the ledger.
     const recorded = applied.find((row) => versionKey(row) === versionKey(version));

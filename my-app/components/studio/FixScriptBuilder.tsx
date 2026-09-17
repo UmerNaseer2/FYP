@@ -13,6 +13,8 @@ import {
   fixScriptFileName,
   otherSchemas,
   schemasPhrase,
+  listedFixes,
+  startingUnticked,
   type FixScriptItem,
 } from "@/lib/perf-sql";
 import { downloadText } from "./ExportBar";
@@ -59,7 +61,6 @@ type Unticked = { items: FixScriptItem[]; positions: Set<number> };
 /** The last thing a button did that the screen should mention, with the list it was for. */
 type Notice = { items: FixScriptItem[]; kind: "copied" | "copy-failed" | "save-failed" };
 
-const NONE = new Set<number>();
 
 export function FixScriptBuilder({
   items,
@@ -72,17 +73,21 @@ export function FixScriptBuilder({
   const { role, loading } = useUser();
   const canSave = !loading && roleAtLeast(role, "editor");
 
-  const [unticked, setUnticked] = useState<Unticked>({ items, positions: NONE });
+  // Above the state, because the state starts from it. Both are pure and live
+  // in lib/perf-sql.ts, where they can be tested without a browser.
+  const listed = listedFixes(items);
+  const startOff = startingUnticked(listed);
+
+  const [unticked, setUnticked] = useState<Unticked>({ items, positions: startOff });
   const [notice, setNotice] = useState<Notice | null>(null);
 
   // A new list of findings (the query analysed again, another schema, Run
-  // again) starts with everything ticked. Derived rather than reset in an
+  // again) goes back to the starting ticks. Derived rather than reset in an
   // effect: the unticks were kept with the list they were made on, and stop
   // counting the moment the screen shows a different one.
-  const off = unticked.items === items ? unticked.positions : NONE;
+  const off = unticked.items === items ? unticked.positions : startOff;
   const shownNotice = notice !== null && notice.items === items ? notice.kind : null;
 
-  const listed = items.filter((item) => item.fixKind === "change" || item.fixKind === "maintenance");
   if (listed.length === 0) return null;
 
   // A change that alters only the picked schema can go in a migration. One
@@ -347,6 +352,13 @@ function FixGroup({
             <span className="mono text-[11.5px] break-all" style={{ color: "var(--text-3)" }}>
               {item.object}
             </span>
+            {/* Why the tick next to it is off. Without this the row looks like
+                one somebody already dealt with. */}
+            {item.startUnticked && (
+              <span className="block text-[11.5px]" style={{ color: "var(--text-3)" }}>
+                {item.startUnticked}
+              </span>
+            )}
           </span>
         </label>
       ))}

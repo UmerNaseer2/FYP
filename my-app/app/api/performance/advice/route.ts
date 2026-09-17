@@ -21,6 +21,7 @@ import {
   type AdviceItem,
   type AdviceView,
   type IndexStats,
+  type PerfAdvice,
   type TableStats,
   type WaitingPartition,
 } from "@/lib/perf-advice";
@@ -119,6 +120,35 @@ function topIndex(value: unknown): { schema: string; table: string; name: string
     return null;
   }
   return { schema: v.schema, table: v.table, name: v.name };
+}
+
+/**
+ * The structural rules that decide what to do with one index by looking at
+ * another, and so are only as good as the list of invalid indexes.
+ *
+ * "duplicate-index" and "redundant-index" drop an index because a second one
+ * does the same job; "no-primary-key" can build the key out of an index it
+ * found. All three read the same filtered groups, and an invalid index that
+ * was not filtered out looks to them like a perfectly good one — so the index
+ * they keep, or adopt, can be the broken one, and the DROP goes to its healthy
+ * twin. An invalid index is not exotic: it is what a CREATE INDEX
+ * CONCURRENTLY that failed halfway leaves behind.
+ */
+const INDEX_AWARE_RULES = new Set(["duplicate-index", "redundant-index", "no-primary-key"]);
+
+/**
+ * Whether this suggestion would act on a particular index.
+ *
+ * Both halves are needed. The id alone would untick a "no primary key" whose
+ * fix names its own columns and touches no index at all, which is sound advice
+ * however the index list went. The statement alone would reach findings from
+ * other rules — "invalid-index" itself drops an index, and that one is right
+ * precisely BECAUSE the list was read.
+ */
+function actsOnAnIndex(advice: PerfAdvice): boolean {
+  return (
+    INDEX_AWARE_RULES.has(advice.id) && /\bDROP INDEX\b|\bUSING INDEX\b/.test(advice.fix)
+  );
 }
 
 export async function GET(request: NextRequest) {
@@ -469,7 +499,11 @@ export async function GET(request: NextRequest) {
       indexes,
       countersSince,
       new Date(),
-      foreignKeyIndexes(snapshot)
+      // The invalid ones are left out on purpose: an index the planner will
+      // not use protects nothing, and the foreign-key rule has already counted
+      // the key as unindexed. Reached only when the list loaded — the catch
+      // below is where a failure lands.
+      foreignKeyIndexes(snapshot, invalidIndexes ?? new Set())
     ).map((a) => ({ ...a, origin: "statistics" }));
   } catch (error) {
     // Deliberately not fatal — see the note at the top of this file.
@@ -488,9 +522,10 @@ export async function GET(request: NextRequest) {
     // reported as a copy of one that is actually broken) AND the no-primary-key
     // rule, which shares the same filtered index groups and can offer PRIMARY
     // KEY USING INDEX on an index PostgreSQL would refuse to build a key from.
-    // (The foreign-key rule never reads the list: it counts an invalid index as
-    // covering a key whether or not the list loaded, so that gap is a standing
-    // one, not opened by the missing list.)
+    // It is also the foreign-key rule, which skips a key whose only index is
+    // invalid: without the list that key looks covered and no "add an index"
+    // advice is given for it. Unlike the others this one goes quiet rather
+    // than wrong — it says less than it should, and never something untrue.
     if (invalidIndexes === null) {
       statsUnavailable +=
         " Which indexes are invalid could not be read either, so a suggestion from the" +
@@ -507,7 +542,21 @@ export async function GET(request: NextRequest) {
   // so), and a copy that REINDEX CONCURRENTLY left behind is still known by
   // its name.
   const structural: AdviceItem[] = analyzeSchemaPerformance(snapshot, invalidIndexes ?? new Set()).map(
-    (a) => ({ ...a, origin: "structure" })
+    (a) => ({
+      ...a,
+      origin: "structure" as const,
+      // Without the list, a suggestion that acts on one index because of
+      // another cannot promise the one it keeps is the working one — see
+      // actsOnAnIndex. It is still shown, and still probably right; it just
+      // does not go into a script by default.
+      ...(invalidIndexes === null && actsOnAnIndex(a)
+        ? {
+            startUnticked:
+              "Starts unticked: which indexes are invalid could not be read, so this" +
+              " cannot tell a working index from one a failed build left behind.",
+          }
+        : {}),
+    })
   );
 
   // A whole-table-read finding on a table with an unindexed foreign key gets

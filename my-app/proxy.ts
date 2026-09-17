@@ -34,7 +34,12 @@ let enforce: EdgeHandler | null = null;
 function getEnforcer(): EdgeHandler {
   if (!enforce) {
     enforce = NextAuth(authConfig).auth((request) => {
-      if (request.auth) return NextResponse.next();
+      // A signed-in user, not merely a session object. Auth.js can hand back a
+      // session-shaped object with no user in it (the advisory fixed in
+      // next-auth 5.0.0-beta.32 was about exactly that), and a check for "is
+      // there anything here" would let it through. Same rule as the
+      // `authorized` callback in auth.config.ts and requireViewer on the server.
+      if (request.auth?.user) return NextResponse.next();
 
       // An unauthenticated API call must get a 401 it can act on, not an HTML
       // redirect to the login page that fetch() would happily treat as success.

@@ -459,7 +459,19 @@ type TargetOutcome = {
    * "duplicate" is a target that repeats an earlier one, and "no-connection"
    * one whose saved connection is gone or was never picked. Neither is dialled.
    */
-  failure: "unreachable" | "schema-missing" | "duplicate" | "no-connection" | null;
+  failure:
+    | "unreachable"
+    | "schema-missing"
+    | "duplicate"
+    | "no-connection"
+    /**
+     * This target's comparison threw. Kept apart from "unreachable" because
+     * the server may well have answered perfectly: the fault is on this side,
+     * and counting it as an unreachable database sends the reader to check a
+     * network that is fine. See the catch around compareOneTarget.
+     */
+    | "failed"
+    | null;
   /**
    * The index of the earlier target this one repeats — same database, same
    * schema — or null. Its report would be a copy of that one's.
@@ -513,6 +525,96 @@ function tallySeverities(statements: SqlStatement[]): {
 }
 
 /**
+ * A target's identity with every result field emptied — what each of the
+ * outcomes below starts from, and what the safety net around this function
+ * falls back to.
+ *
+ * Lifted out of compareOneTarget so the catch in the fan-out can build one
+ * without calling back into the function that just threw. `environment` and
+ * `error` are deliberately absent: every caller sets them, and a default for
+ * either would be a claim rather than a blank.
+ */
+function blankOutcome(slot: {
+  index: number;
+  connection: SavedConnection | null;
+  displayName: string;
+  schema: string;
+  schemaOptions: string[];
+  duplicateOf: number | null;
+}): Omit<TargetOutcome, "environment" | "error"> {
+  return {
+    index: slot.index,
+    connection: slot.connection,
+    displayName: slot.displayName,
+    duplicateOf: slot.duplicateOf,
+    schema: slot.schema,
+    schemaOptions: slot.schemaOptions,
+    sameAsSource: false,
+    report: null,
+    data: null,
+    failure: null,
+    delta: null,
+    sqlText: "",
+    rollbackText: "",
+    rollbackStatementCount: 0,
+    rollbackCounts: { breaking: 0, safe: 0, info: 0 },
+    rollbackWarnings: [],
+    statementCount: 0,
+    heldBackCount: 0,
+    manualCount: 0,
+    rollbackManualCount: 0,
+    counts: { breaking: 0, safe: 0, info: 0 },
+    overallKind: "patch",
+    warnings: [],
+    detectedVersion: null,
+    versionVerdict: null,
+  };
+}
+
+/**
+ * compareOneTarget with a net under it.
+ *
+ * Every failure that function KNOWS about it returns as an outcome — an
+ * unreachable server, a missing schema, a connection that was deleted. The
+ * hazard is the one it does not know about: anything thrown from the
+ * introspection, the diff or the SQL generation that follows leaves the
+ * function without returning, and mapWithLimit hands that rejection straight to
+ * the caller. A run comparing six targets then shows nothing at all — not five
+ * good reports and one failure, but a blank page — because one of them tripped
+ * over a catalog shape nobody anticipated. The five that worked were real
+ * results and there is no reason to lose them.
+ *
+ * So the throw becomes that target's own error, in its own slot, and every
+ * other target keeps its report. It is a net, not a cure: reaching it means
+ * something unforeseen happened, which is why the message says so plainly
+ * rather than dressing it up as a database problem.
+ */
+async function compareOneTargetSafely(
+  source: Parameters<typeof compareOneTarget>[0],
+  slot: Parameters<typeof compareOneTarget>[1],
+  head: TrackedSchemaHead | null,
+  allowDataLoss: boolean,
+  compareData: boolean,
+): Promise<TargetOutcome> {
+  try {
+    return await compareOneTarget(source, slot, head, allowDataLoss, compareData);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ...blankOutcome(slot),
+      environment: toEnvironment(slot.connection?.environment),
+      // Not "unreachable": the server may have answered every query it was
+      // asked. Saying it could not be reached would send the reader to check a
+      // network that is working.
+      failure: "failed",
+      error:
+        `Comparing ${slot.displayName} failed unexpectedly, so this target has ` +
+        `no report. The other targets in this run are unaffected. ${detail}`,
+    };
+  }
+}
+
+/**
  * Diff one target against the already-loaded source snapshot and derive
  * everything the report and the workbench need.
  *
@@ -551,33 +653,7 @@ async function compareOneTarget(
 ): Promise<TargetOutcome> {
   const connectionEnvironment = toEnvironment(slot.connection?.environment);
 
-  const empty = {
-    index: slot.index,
-    connection: slot.connection,
-    displayName: slot.displayName,
-    duplicateOf: slot.duplicateOf,
-    schema: slot.schema,
-    schemaOptions: slot.schemaOptions,
-    sameAsSource: false,
-    report: null,
-    data: null,
-    failure: null as TargetOutcome["failure"],
-    delta: null,
-    sqlText: "",
-    rollbackText: "",
-    rollbackStatementCount: 0,
-    rollbackCounts: { breaking: 0, safe: 0, info: 0 },
-    rollbackWarnings: [] as string[],
-    statementCount: 0,
-    heldBackCount: 0,
-    manualCount: 0,
-    rollbackManualCount: 0,
-    counts: { breaking: 0, safe: 0, info: 0 },
-    overallKind: "patch" as ChangeKind,
-    warnings: [] as string[],
-    detectedVersion: null,
-    versionVerdict: null,
-  };
+  const empty = blankOutcome(slot);
 
   // Nothing to dial. The message says whether the connection was deleted or
   // never picked, and the target keeps its place so the reader can fix it —
@@ -1097,7 +1173,7 @@ export async function runComparison(
         resolvedTargets,
         COMPARE_TARGET_CONCURRENCY,
         (slot) =>
-          compareOneTarget(
+          compareOneTargetSafely(
             {
               snapshot: snapshot.data,
               config: sourceTarget.config,

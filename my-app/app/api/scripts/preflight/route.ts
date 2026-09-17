@@ -281,17 +281,21 @@ export async function POST(request: NextRequest) {
 
   try {
     // ─── 4. Check whether script_patch exists in the target schema ────────
-    const tableCheck = await client.query<{ exists: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1
-         FROM information_schema.tables
-         WHERE table_schema = $1
-           AND table_name   = 'script_patch'
-       ) AS exists`,
-      [schemaName]
+    //
+    // to_regclass, the same question the apply and revert routes ask, and not
+    // information_schema.tables — that view only lists tables the current user
+    // has some privilege on. A ledger owned by somebody else is invisible to
+    // it, so pre-flight would report "no version table, this schema needs
+    // initialising" about a table apply can see perfectly well and refuses to
+    // create twice. Two screens, two answers, one table. to_regclass answers
+    // from the catalog: it says whether the name resolves, not whether this
+    // user may read it.
+    const tableCheck = await client.query<{ reg: string | null }>(
+      `SELECT to_regclass($1) AS reg`,
+      [`${quoteIdent(schemaName)}.script_patch`]
     );
 
-    const hasVersionTable = tableCheck.rows[0]?.exists === true;
+    const hasVersionTable = tableCheck.rows[0]?.reg !== null && tableCheck.rows[0]?.reg !== undefined;
 
     // Read in every branch below: the history does not depend on the ledger
     // still having rows (or, for a hand-cleaned schema, on it existing).

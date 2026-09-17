@@ -1,4 +1,5 @@
 import {
+  columnMatchPercent,
   compareSchemas,
   extractBaseType,
   isNarrowingType,
@@ -8,6 +9,7 @@ import {
   droppedColumnSeverity,
   addedColumnSeverity,
 } from "@/lib/compare";
+import type { ConstraintSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 
 /**
@@ -144,6 +146,78 @@ describe("compareSchemas — table matching", () => {
   });
 });
 
+/**
+ * Which column pairs may be renamed without a human looking.
+ *
+ * Two columns of the same type in the same position inside one table score 45
+ * of 60 on structure alone, and the accept threshold is 50 — so a name counted
+ * for almost nothing and any leftover pair became an automatic RENAME COLUMN.
+ * That is the one migration mistake nothing downstream can catch: no row is
+ * lost, no statement fails, and the data is simply under the wrong heading.
+ */
+describe("compareSchemas — column renames", () => {
+  /** One table, matched by name, with a differing column at the end. */
+  function withLastColumn(leftName: string, rightName: string) {
+    const shared = [
+      column("id", { nullable: false, typeDisplay: "integer" }),
+      column("created_at", { typeDisplay: "timestamptz" }),
+    ];
+    const report = compareSchemas(
+      schema([table("customers", [...shared, column(leftName, { typeDisplay: "text" })])]),
+      schema([table("customers", [...shared, column(rightName, { typeDisplay: "text" })])])
+    );
+    const match = report.matchedTables[0];
+    return {
+      renamed: match.columnMatches
+        .filter((columnMatch) => !columnMatch.exact)
+        .map((columnMatch) => `${columnMatch.right.name} → ${columnMatch.left.name}`),
+      candidates: match.possibleColumnMatches.map((c) => `${c.rightName} → ${c.leftName}`),
+      added: match.columnsOnlyInA.map((c) => c.name),
+      dropped: match.columnsOnlyInB.map((c) => c.name),
+    };
+  }
+
+  it("does not rename billing_address into shipping_address on its own", () => {
+    const result = withLastColumn("shipping_address", "billing_address");
+    expect(result.renamed).toEqual([]);
+    // Offered for review instead, and left as an add and a drop — both of which
+    // are marked destructive, so safe mode stops the script before either runs.
+    expect(result.candidates).toEqual(["billing_address → shipping_address"]);
+    expect(result.added).toEqual(["shipping_address"]);
+    expect(result.dropped).toEqual(["billing_address"]);
+  });
+
+  it("does not rename between two columns that merely rhyme", () => {
+    // Real pairs that sit in one table and would otherwise swap their contents.
+    for (const [left, right] of [
+      ["updated_at", "verified_at"],
+      ["last_name", "first_name"],
+      ["is_archived", "is_active"],
+    ]) {
+      expect(withLastColumn(left, right).renamed).toEqual([]);
+    }
+  });
+
+  it("still renames a column whose name is a correction of the old one", () => {
+    expect(withLastColumn("user_id", "usr_id").renamed).toEqual(["usr_id → user_id"]);
+    expect(withLastColumn("address", "adress").renamed).toEqual(["adress → address"]);
+  });
+
+  it("still renames a column the new name spells out", () => {
+    // The old name inside the new one is the commonest real rename there is.
+    expect(withLastColumn("email_address", "email").renamed).toEqual(["email → email_address"]);
+    expect(withLastColumn("description", "descr").renamed).toEqual(["descr → description"]);
+  });
+
+  it("reports the match as a share of what a column can score", () => {
+    // 56.25 of 60 is a 94% match. It used to be shown as "56.3% match", which
+    // reads as a coin toss and tells the reader to distrust a good match.
+    expect(columnMatchPercent(56.25)).toBe(94);
+    expect(columnMatchPercent(60)).toBe(100);
+    expect(columnMatchPercent(45)).toBe(75);
+  });
+});
+
 describe("type analysis", () => {
   it("reads the base type out of a display type", () => {
     expect(extractBaseType("character varying(255)")).toBe("character varying");
@@ -226,6 +300,64 @@ describe("change severity", () => {
  * baseline → live. The engine records the pair without choosing; these tests
  * pin the pair down so a renderer can rely on which side is which.
  */
+/**
+ * A unique constraint matched by its column list alone.
+ *
+ * Two constraints over the same columns under different names are taken to be
+ * the same constraint — a reasonable rule, since the name is often generated.
+ * But the column list is all the signature holds, so everything the rest of the
+ * definition says (DEFERRABLE, NULLS NOT DISTINCT, INCLUDE) was thrown away
+ * with it, and a real difference produced an empty migration.
+ */
+describe("compareSchemas — unique constraints matched by column list", () => {
+  function uniqueOn(name: string, definition: string): ConstraintSnapshot {
+    return { name, kind: "UNIQUE", columns: ["email"], definition, normalizedDefinition: definition };
+  }
+
+  function diffsFor(left: ConstraintSnapshot, right: ConstraintSnapshot) {
+    const report = compareSchemas(
+      schema([table("customers", [column("email")], { uniqueConstraints: [left] })]),
+      schema([table("customers", [column("email")], { uniqueConstraints: [right] })])
+    );
+    return report.matchedTables[0].constraintDiffs;
+  }
+
+  it("reports a definition difference under another name", () => {
+    const diffs = diffsFor(
+      uniqueOn("customers_email_unique", "UNIQUE NULLS NOT DISTINCT (email)"),
+      uniqueOn("customers_email_key", "UNIQUE (email)")
+    );
+    expect(diffs).toEqual([
+      {
+        kind: "UNIQUE",
+        status: "changedDefinition",
+        summary: "Unique constraint customers_email_unique changed definition.",
+        leftName: "customers_email_unique",
+        rightName: "customers_email_key",
+      },
+    ]);
+  });
+
+  it("reports INCLUDE columns the signature cannot see", () => {
+    const diffs = diffsFor(
+      uniqueOn("customers_email_unique", "UNIQUE (email) INCLUDE (full_name)"),
+      uniqueOn("customers_email_key", "UNIQUE (email)")
+    );
+    expect(diffs.map((d) => d.status)).toEqual(["changedDefinition"]);
+  });
+
+  it("still says nothing when only the name differs", () => {
+    // The whole point of matching on the column list: a generated name is not
+    // a difference anybody wants a migration for.
+    expect(
+      diffsFor(
+        uniqueOn("customers_email_unique", "UNIQUE (email)"),
+        uniqueOn("customers_email_key", "UNIQUE (email)")
+      )
+    ).toEqual([]);
+  });
+});
+
 describe("compareSchemas — the pair behind a changed column", () => {
   it("records the source value as left and the target value as right", () => {
     const report = compareSchemas(

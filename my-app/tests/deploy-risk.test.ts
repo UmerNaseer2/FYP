@@ -205,6 +205,26 @@ describe("checkForwardOnly", () => {
     expect(checkForwardOnly(run("1.0.0"), { orders_fix: ["unknown"] })).toBeNull();
   });
 
+  // The script-name rule allows any letters, so these are names an author can
+  // really type. On a plain object each of them is answered by a built-in from
+  // the prototype rather than by the ledger — a function for "constructor",
+  // Object.prototype itself for "__proto__" — and neither has .filter, so the
+  // whole deploy request died with a type error before any check had run.
+  it("treats a script named after a built-in as having no ledger", () => {
+    for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+      const queue = [{ scriptName: name, version: "1.0.0" }];
+      expect(checkForwardOnly(queue, {})).toBeNull();
+    }
+  });
+
+  it("still reads a real ledger for such a name", () => {
+    // Own properties are found as they always were — the guard only stops the
+    // prototype from answering for a name the ledger says nothing about.
+    const queue = [{ scriptName: "constructor", version: "1.0.0" }];
+    const problem = checkForwardOnly(queue, { constructor: ["1.0.0"] });
+    expect(problem).toMatchObject({ index: 0, reason: "Already applied to this schema." });
+  });
+
   it("ends every refusal by saying nothing ran", () => {
     const problems = [
       checkForwardOnly(run("1.0.0"), { orders_fix: ["1.0.0"] }),

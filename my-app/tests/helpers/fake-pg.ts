@@ -23,8 +23,12 @@ export type FakeStep = {
   rows?: Record<string, unknown>[];
   /** Defaults to the number of rows. */
   rowCount?: number;
-  /** Throw this instead of answering, the way pg reports a failed statement. */
-  error?: { code?: string; message: string };
+  /**
+   * Throw this instead of answering, the way pg reports a failed statement.
+   * constraint and table are the extra fields a real pg error carries for a
+   * constraint violation, and a route may read them to name what went wrong.
+   */
+  error?: { code?: string; message: string; constraint?: string; table?: string };
   /** Emit this NOTICE before answering, the way RAISE NOTICE arrives. */
   notice?: string;
 };
@@ -97,8 +101,14 @@ export function createFakeClient(steps: FakeStep[]): FakeClient {
         for (const listener of [...listeners]) listener({ message: step.notice });
       }
       if (step.error) {
-        const error = new Error(step.error.message) as Error & { code?: string };
+        const error = new Error(step.error.message) as Error & {
+          code?: string;
+          constraint?: string;
+          table?: string;
+        };
         if (step.error.code) error.code = step.error.code;
+        if (step.error.constraint) error.constraint = step.error.constraint;
+        if (step.error.table) error.table = step.error.table;
         throw error;
       }
       const rows = step.rows ?? [];

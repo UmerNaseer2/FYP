@@ -80,6 +80,17 @@ export type PerfAdvice = {
   keeps?: string;
   /** A link to the place in the app where the next step is taken. */
   action?: { label: string; href: string };
+  /**
+   * Why this fix starts unticked, as one sentence for the reader, or absent
+   * when it starts ticked like everything else.
+   *
+   * There is one reason so far: the app could not read which indexes
+   * PostgreSQL has marked invalid, so a suggestion to drop an index cannot
+   * promise it is dropping the spare one rather than the working one.
+   * Unticking rather than hiding is deliberate — the finding is probably still
+   * right, and the person reading it can see the index for themselves.
+   */
+  startUnticked?: string;
 };
 
 /**
@@ -452,16 +463,32 @@ function baseType(typeDisplay: string): string {
  * list separately (see the note on IndexSnapshot in lib/postgres.ts), so they
  * have to be added by hand or every primary key column would look unindexed.
  *
+ * An index PostgreSQL has marked invalid is left out. The planner will not use
+ * one, so it covers nothing: a foreign key whose only index is a leftover from
+ * a CREATE INDEX CONCURRENTLY that failed still makes every delete from the
+ * parent table read this whole table, and the rule that would have said so was
+ * counting the broken index as the answer. The list comes from the statistics
+ * pass and is empty when that pass could not run, which puts the rule back
+ * where it was rather than making it guess.
+ *
+ * The primary key and unique constraints are added without that check, because
+ * the snapshot records their columns and not the name of the index behind them.
+ * A constraint whose index is invalid is close to impossible to produce — the
+ * constraint cannot be created from one — so the gap is theoretical.
+ *
  * Returns null when this table's snapshot predates index capture, which is the
  * caller's signal to skip rather than guess.
  */
-function indexPrefixes(table: TableSnapshot): string[][] | null {
+function indexPrefixes(
+  table: TableSnapshot,
+  invalidIndexes: ReadonlySet<string>
+): string[][] | null {
   if (!table.indexes) return null;
   const prefixes: string[][] = [];
   if (table.primaryKey) prefixes.push(table.primaryKey.columns);
   for (const unique of table.uniqueConstraints) prefixes.push(unique.columns);
   for (const index of table.indexes) {
-    if (servesLookups(index)) prefixes.push(index.columns);
+    if (servesLookups(index) && !invalidIndexes.has(index.name)) prefixes.push(index.columns);
   }
   return prefixes;
 }
@@ -474,6 +501,28 @@ function indexPrefixes(table: TableSnapshot): string[][] | null {
  */
 function servesLookups(index: IndexSnapshot): boolean {
   return index.columns.length > 0 && !index.predicate;
+}
+
+/**
+ * The invalid index that would have covered these columns, or null.
+ *
+ * Only ever asked about a key the rules have already decided is uncovered, so
+ * finding one means the index is there and broken rather than missing. The
+ * first is enough: they are all the same answer, "rebuild what is already
+ * here", and naming one of them is what points the reader at its finding.
+ */
+function broughtBackByReindex(
+  table: TableSnapshot,
+  columns: string[],
+  invalidIndexes: ReadonlySet<string>
+): string | null {
+  const found = table.indexes?.find(
+    (index) =>
+      invalidIndexes.has(index.name) &&
+      servesLookups(index) &&
+      isCoveredBy(columns, [index.columns])
+  );
+  return found?.name ?? null;
 }
 
 /** True when `columns` are the leading columns of one of the given prefixes. */
@@ -512,9 +561,14 @@ export type ForeignKeyIndexes = {
  * indexes. A key that the primary key or a unique constraint also serves is
  * left out: a constraint's index is never offered for DROP, so the key keeps
  * it. Indexes count exactly as they do for the foreign-key rule (servesLookups,
- * isCoveredBy), so "no index left" here means that rule would fire.
+ * isCoveredBy, and not invalid), so "no index left" here means that rule would
+ * fire — the two have to agree or this list would protect an index from DROP
+ * on the strength of a key the other rule says is unindexed anyway.
  */
-export function foreignKeyIndexes(snapshot: SchemaSnapshot): ForeignKeyIndexes[] {
+export function foreignKeyIndexes(
+  snapshot: SchemaSnapshot,
+  invalidIndexes: ReadonlySet<string> = new Set()
+): ForeignKeyIndexes[] {
   const found: ForeignKeyIndexes[] = [];
   for (const table of snapshot.tables) {
     // No record of indexes: nothing to protect, and nothing to guess.
@@ -526,7 +580,12 @@ export function foreignKeyIndexes(snapshot: SchemaSnapshot): ForeignKeyIndexes[]
     for (const fk of table.foreignKeys) {
       if (isCoveredBy(fk.columns, byConstraint)) continue;
       const indexes = table.indexes
-        .filter((index) => servesLookups(index) && isCoveredBy(fk.columns, [index.columns]))
+        .filter(
+          (index) =>
+            servesLookups(index) &&
+            !invalidIndexes.has(index.name) &&
+            isCoveredBy(fk.columns, [index.columns])
+        )
         .map((index) => index.name);
       if (indexes.length === 0) continue;
       found.push({
@@ -996,7 +1055,7 @@ export function analyzeSchemaPerformance(
     const object = table.name;
     const target = qualifiedName(schema, table.name);
     const isPartition = Boolean(table.partitioning?.partitionOf);
-    const prefixes = indexPrefixes(table);
+    const prefixes = indexPrefixes(table, invalidIndexes);
     const columnTypes = new Map(
       table.columns.map((c) => [c.name.toLowerCase(), baseType(c.typeDisplay)])
     );
@@ -1037,6 +1096,45 @@ export function analyzeSchemaPerformance(
       for (const fk of table.foreignKeys) {
         if (isCoveredBy(fk.columns, prefixes)) continue;
         const cascades = fk.onDelete.toUpperCase().includes("CASCADE");
+        const cost =
+          `PostgreSQL indexes the side a foreign key POINTS AT, never the side ` +
+          `that holds it. So a join through ${fk.name} scans ${table.name} in ` +
+          `full, and so does every delete or key update on ` +
+          `${fk.referencedTable ?? "the parent table"} — the server has to prove no ` +
+          `child row still references the row being removed.` +
+          (cascades
+            ? " This key is ON DELETE CASCADE, so that full scan happens on every parent delete."
+            : "");
+        // The index that WOULD have served this key, if it were not invalid.
+        // The list is only ever non-empty when the statistics pass ran, and
+        // that pass is what raises the invalid-index finding, so naming it
+        // here is a pointer at a finding the same screen is already showing.
+        const broken = broughtBackByReindex(table, fk.columns, invalidIndexes);
+        if (broken) {
+          // Deliberately a decision and not a change: rebuilding the index
+          // that is already there is cheaper than a second one on the same
+          // columns, and the invalid-index finding carries that REINDEX. A
+          // change here would put both statements in the fix script, and a
+          // user who ticked the lot would end up with two identical indexes.
+          advice.push({
+            id: "foreign-key-not-indexed",
+            severity: cascades ? "high" : "medium",
+            title: "Foreign key's only index is invalid",
+            object: `${table.name}.${fk.columns.join(", ")}`,
+            detail:
+              `${cost} The index that would cover it, ${quoteIdent(broken)}, is one PostgreSQL has ` +
+              `marked invalid, and the planner never uses one of those — so this key is ` +
+              `unindexed in practice. Its own suggestion on this screen rebuilds it.`,
+            fix:
+              comment`-- Nothing to run here. Rebuilding ${quoteIdent(broken)} is what fixes\n` +
+              `-- this, and the suggestion about that index has the statement for it.\n` +
+              `-- Adding a second index on the same columns would work too, and would\n` +
+              `-- leave you with two once the rebuild finishes.`,
+            fixKind: "decision",
+            table: table.name,
+          });
+          continue;
+        }
         const index = createIndexSql(schema, table.name, fk.columns, relations, {
           partitioned: Boolean(table.partitioning?.strategy),
         });
@@ -1046,15 +1144,7 @@ export function analyzeSchemaPerformance(
           severity: cascades ? "high" : "medium",
           title: "Foreign key has no index on this side",
           object: `${table.name}.${fk.columns.join(", ")}`,
-          detail:
-            `PostgreSQL indexes the side a foreign key POINTS AT, never the side ` +
-            `that holds it. So a join through ${fk.name} scans ${table.name} in ` +
-            `full, and so does every delete or key update on ` +
-            `${fk.referencedTable ?? "the parent table"} — the server has to prove no ` +
-            `child row still references the row being removed.` +
-            (cascades
-              ? " This key is ON DELETE CASCADE, so that full scan happens on every parent delete."
-              : ""),
+          detail: cost,
           fix: index.sql,
           fixKind: "change",
           undo: index.undo,

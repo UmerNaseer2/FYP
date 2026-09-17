@@ -362,3 +362,91 @@ describe("familyVersions", () => {
     expect(result.orphanRollbacks).toEqual({ "1.1.0": "sha-orphan" });
   });
 });
+
+// A pre-release version — "2.0.0-rc1" — and the release it leads up to.
+//
+// versionParts used to delete every non-digit rather than stop at one, so
+// "0-rc1" became "01" → 1 and the whole version read as 2.0.1. Three things
+// went wrong from that one reading: the candidate outranked its own release,
+// it shared a key with a genuine 2.0.1, and a patch bump from it skipped a
+// number. Versions like this arrive from another tool's ledger, which is why
+// they are parsed rather than refused.
+describe("a pre-release version", () => {
+  const applied = (version: string) => ({ version, applied_at: "2026-01-01T00:00:00Z" });
+
+  it("reads as the release it leads up to, not the one after it", () => {
+    expect(versionParts("2.0.0-rc1")).toEqual([2, 0, 0]);
+    // A dotted tag is the case the old rule could not have got right either
+    // way: "rc.1" would have split into a fourth number.
+    expect(versionParts("2.0.0-rc.1")).toEqual([2, 0, 0]);
+    // Build metadata is not part of the version at all.
+    expect(versionParts("2.0.0+build.5")).toEqual([2, 0, 0]);
+  });
+
+  it("comes before its release and after the version below it", () => {
+    expect(compareVersions("2.0.0-rc1", "2.0.0")).toBeLessThan(0);
+    expect(compareVersions("2.0.0", "2.0.0-rc1")).toBeGreaterThan(0);
+    expect(compareVersions("2.0.0-rc1", "1.9.9")).toBeGreaterThan(0);
+    // And nowhere near the 2.0.1 it used to be read as.
+    expect(compareVersions("2.0.0-rc1", "2.0.1")).toBeLessThan(0);
+  });
+
+  it("orders candidates among themselves the way semver does", () => {
+    expect(compareVersions("2.0.0-rc.1", "2.0.0-rc.2")).toBeLessThan(0);
+    // 9 < 10 as numbers; as text it would have been the other way round.
+    expect(compareVersions("2.0.0-rc.9", "2.0.0-rc.10")).toBeLessThan(0);
+    // A number ranks below text, and a shorter tag below a longer one.
+    expect(compareVersions("2.0.0-1", "2.0.0-alpha")).toBeLessThan(0);
+    expect(compareVersions("2.0.0-rc", "2.0.0-rc.1")).toBeLessThan(0);
+    expect(compareVersions("2.0.0-rc.1", "2.0.0-rc.1")).toBe(0);
+  });
+
+  it("keeps a key of its own, so applying it does not mark the release applied", () => {
+    expect(versionKey("2.0.0-rc1")).not.toBe(versionKey("2.0.0"));
+    expect(versionKey("2.0.0-rc1")).not.toBe(versionKey("2.0.1"));
+    // versionKey's contract: same key exactly when compareVersions says equal.
+    expect(versionKey("v2.0-rc.01")).toBe(versionKey("2.0.0-rc.1"));
+    expect(compareVersions("v2.0-rc.01", "2.0.0-rc.1")).toBe(0);
+  });
+
+  it("leaves the release pending in the ledger once only the candidate ran", () => {
+    const ledger = buildVersionLedger(["2.0.0"], [applied("1.9.0"), applied("2.0.0-rc1")]);
+    const byVersion = Object.fromEntries(ledger.map((e) => [e.version, e.status]));
+
+    // The whole point: 2.0.0 has not run, and it is above the applied floor.
+    expect(byVersion["2.0.0"]).toBe("pending");
+    expect(byVersion["2.0.0-rc1"]).toBe("applied");
+  });
+
+  it("bumps from the numbers it really has", () => {
+    // Was "2.0.2", which quietly skipped 2.0.1.
+    expect(bumpVersion("2.0.0-rc1", "patch")).toBe("2.0.1");
+    expect(bumpVersion("2.0.0-rc1", "minor")).toBe("2.1.0");
+  });
+});
+
+// An applied name that is not a version at all, when the registry holds the
+// version that name used to be read as.
+describe("buildVersionLedger — a non-version applied name", () => {
+  const applied = (version: string) => ({ version, applied_at: "2026-01-01T00:00:00Z" });
+
+  it("does not mark a registry version applied because a label read as it", () => {
+    // versionKey answers "2.0.0" for "release-2". Keyed on that, the registry's
+    // real 2.0.0 found an applied row waiting under its key and was reported as
+    // Applied — a version nobody had run, shown as run, with a timestamp.
+    const ledger = buildVersionLedger(["1.0.0", "2.0.0"], [applied("1.0.0"), applied("release-2")]);
+    const byVersion = Object.fromEntries(ledger.map((e) => [e.version, e]));
+
+    expect(byVersion["2.0.0"]).toMatchObject({ status: "pending", appliedVersion: null });
+    // The label is still listed in its own right, which is why it is kept.
+    expect(byVersion["release-2"]).toMatchObject({ status: "applied", inRegistry: false });
+    expect(byVersion["1.0.0"]).toMatchObject({ status: "applied" });
+  });
+
+  it("lists two different labels separately", () => {
+    // Both used to key as "0.0.0" once versionParts stopped inventing digits,
+    // so the second one would have been swallowed by the first.
+    const ledger = buildVersionLedger([], [applied("init"), applied("baseline")]);
+    expect(ledger.map((e) => e.version).sort()).toEqual(["baseline", "init"]);
+  });
+});

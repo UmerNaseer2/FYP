@@ -15,6 +15,9 @@
 
 # env files — never commit; see README for the required keys
 .env*
+# ...except the template, which holds only blanks and is meant to be shared.
+# This line must come AFTER the pattern above: git takes the LAST match.
+!.env.local.example
 
 # vercel
 .vercel

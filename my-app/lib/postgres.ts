@@ -1,6 +1,8 @@
 import type { ClientConfig, PoolClient } from "pg";
 import { Pool } from "pg";
 import { SNAPSHOT_FORMAT_VERSION } from "./snapshot-format";
+import { BlockedHostError, checkConnectableHost } from "./host-guard";
+import { maskNonCode } from "./sql-guard";
 
 declare global {
   var __comparePgPoolMap: Map<string, Pool> | undefined;
@@ -73,7 +75,49 @@ const IDLE_TIMEOUT_MS = 30_000;
  */
 const INTROSPECTION_TIMEOUT_MS = 30_000;
 
+/**
+ * The pool for a host this server refuses to dial.
+ *
+ * Every caller borrows a connection first — or calls query(), which borrows one
+ * internally — so refusing both is enough to keep the socket from ever being
+ * opened, and the caller's own "could not connect" path puts the reason in
+ * front of the user. Handing back a real pool and trusting nobody to use it is
+ * the bug this exists to prevent.
+ *
+ * Nothing is cached: there is no connection to reuse, and the answer can change
+ * between one request and the next (ALLOW_PRIVATE_DB_HOSTS).
+ */
+function refusingPool(message: string): Pool {
+  const refuse = () => Promise.reject(new BlockedHostError(message));
+  // Written as a plain record and cast at the end: this is the small part of a
+  // pg Pool this app uses — connect, query, end, and the "error" listener
+  // getPoolForConfig attaches below — with the part that opens a socket left
+  // out. TypeScript is right that it is not a Pool; the cast is the honest way
+  // to say so in one place.
+  const stub: Record<string, unknown> = {
+    connect: refuse,
+    query: refuse,
+    end: () => Promise.resolve(),
+  };
+  // A pg pool hands itself back from .on() so listeners can be chained.
+  stub.on = () => stub;
+  return stub as unknown as Pool;
+}
+
 export function getPoolForConfig(cfg: ClientConfig): Pool {
+  // Last line of defence against dialling a host this server refuses — cloud
+  // metadata, the private network, its own unix socket. Saving a connection
+  // checks the same rule (checkConnectionTarget), but rows saved before that
+  // check existed, and a deployment that has since become production, both
+  // arrive here. Every target-database connection in the app is opened through
+  // this function, which is what makes "never dial a blocked host" true rather
+  // than "checked wherever somebody remembered to".
+  //
+  // cfg.host is the host the driver uses: these configs come from buildPgConfig,
+  // which has already resolved any connection string into plain fields.
+  const hostCheck = checkConnectableHost(cfg.host);
+  if (!hostCheck.ok) return refusingPool(hostCheck.message);
+
   const key = poolKey(cfg);
   const map = poolMap();
   let p = map.get(key);
@@ -100,6 +144,13 @@ function normalizeDefinition(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The types whose values are names of objects. PostgreSQL prints a constant of
+ * one as a quoted name with a cast: `'app.orders_id_seq'::regclass`.
+ */
+const OBJECT_NAME_TYPES =
+  "regclass|regcollation|regconfig|regdictionary|regnamespace|regoper|regoperator|regproc|regprocedure|regrole|regtype";
+
 // pg_get_expr renders a column DEFAULT with every referenced object schema-
 // qualified when the object's schema isn't on the introspection session's
 // search_path — which it never is here. So `'active'::order_status`,
@@ -111,14 +162,52 @@ function normalizeDefinition(value: string): string {
 // stored schema-relative; genuine cross-schema references (a different schema)
 // keep their qualifier. Only strips a qualifier that directly precedes an
 // identifier, in both quoted and unquoted form (pg doubles embedded quotes).
+//
+// Text inside a string literal is left alone, because it is data and not a
+// name: `current_setting('app.tenant_id')` reads a setting called
+// app.tenant_id, and `'%@app.example.com'` is part of an email check. Stripping
+// those changed what a migration wrote and showed differences that were not
+// there. The exception is a literal cast straight to an object-name type, like
+// `nextval('app.s'::regclass)`: that is how PostgreSQL prints a reference to an
+// object, so the schema's name inside it goes like any other. A name written as
+// plain text, `nextval('app.s')` in a function body, stays as written.
+//
+// maskNonCode (lib/sql-guard.ts) finds the literals the way PostgreSQL's lexer
+// does. Comments keep their text, and a function's dollar-quoted body is read as
+// code, so the references inside a function are still made schema-relative.
 export function stripSchemaFromExpr(expr: string | null, schema: string): string | null {
   if (expr === null || !schema) return expr;
   const unquoted = schema.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const quoted = schema.replace(/"/g, '""').replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return expr
-    .replace(new RegExp(`(^|[^\\w"])"${quoted}"\\.`, "g"), "$1")
-    .replace(new RegExp(`(^|[^\\w"])${unquoted}\\.`, "g"), "$1");
+  const qualifier = `(^|[^\\w"])(?:"${quoted}"|${unquoted})\\.`;
+  const stripNames = (text: string) => text.replace(new RegExp(qualifier, "g"), "$1");
+
+  // The same text with its string literals and quoted names blanked, so a
+  // character that is unchanged there is code.
+  const code = maskNonCode(expr, { keepComments: true, readDollarBodies: true });
+  const isCode = (at: number) => code[at] === expr[at];
+
+  // Either a literal cast to an object-name type, or a qualifier.
+  const literalOrQualifier = new RegExp(
+    `'((?:[^']|'')*)'(?=::(?:${OBJECT_NAME_TYPES})\\b)|${qualifier}`,
+    "g"
+  );
+  return expr.replace(
+    literalOrQualifier,
+    (match: string, name: string | undefined, before: string | undefined, offset: number) => {
+      if (name !== undefined) {
+        // Only a real literal (its opening quote is blanked) with a real cast
+        // after it. The name is read unescaped and written back escaped.
+        if (isCode(offset) || !isCode(offset + match.length)) return match;
+        return `'${stripNames(name.replace(/''/g, "'")).replace(/'/g, "''")}'`;
+      }
+      // A qualifier only counts when its dot is code: not inside a literal, and
+      // not inside a quoted name such as "v1.app.total".
+      return isCode(offset + match.length - 1) ? (before ?? "") : match;
+    }
+  );
 }
+
 
 /**
  * Read a `json_agg(...)` column back as an array.
@@ -165,6 +254,24 @@ function collationProvider(code: string): CollationProvider {
   if (code === "c") return "libc";
   if (code === "b") return "builtin";
   return "default";
+}
+
+/**
+ * An index's leading key columns, as the snapshot records them.
+ *
+ * The query that feeds this already stops at the first thing that is not a
+ * plain column, so a null should never reach here. Handled anyway, and by
+ * TRUNCATING rather than dropping: an entry that is not a column name breaks
+ * the run of leading columns, and removing it from the middle would leave
+ * (a, lower(b), c) reading as an index on (a, c) — a list the rules would
+ * happily match a lookup on (a, c) against, which this index cannot serve.
+ * Dropping also used to happen by accident the other way: String(null) is the
+ * four letters "null", which went into the list as if it were a column.
+ */
+function leadingColumns(value: unknown): string[] {
+  if (!Array.isArray(value)) return coerceTextArray(value);
+  const stop = value.findIndex((entry) => entry === null || entry === undefined);
+  return coerceTextArray(stop === -1 ? value : value.slice(0, stop));
 }
 
 function coerceTextArray(value: unknown): string[] {
@@ -383,9 +490,13 @@ export type ForeignKeySnapshot = {
  * constraints, and recording them twice makes every primary key read as two
  * separate differences.
  *
- * `columns` is a hint, not the authority: an expression index (`lower(email)`)
- * has no column entry at all, so `normalizedDefinition` is what the comparator
- * diffs on.
+ * `columns` is a hint, not the authority: it holds the leading KEY columns a
+ * lookup can use, which is not the whole index. INCLUDE columns are left out
+ * (they ride along in the rows and cannot be searched), and the list stops at
+ * the first expression, so `lower(email)` records nothing and `(a, lower(b), c)`
+ * records only `a` — `c` sits behind an expression and no lookup reaches it.
+ * `normalizedDefinition` is the whole index, and is what the comparator diffs
+ * on.
  */
 export type IndexSnapshot = {
   name: string;
@@ -1215,11 +1326,10 @@ export async function fetchSchemaSnapshot(
     /** pg_attribute.attgenerated: 's' STORED, 'v' VIRTUAL, '' not generated. */
     generated: string | null;
     /**
-     * information_schema reports these only when the column carries a collation
-     * of its OWN — both are null for a non-collatable type and for a column
-     * left on its type's default, which are the two cases that need no COLLATE
-     * clause. That is exactly the question being asked, so they are read from
-     * there rather than diffed out of pg_attribute by hand.
+     * Both are null for a type that has no collation (an integer, say) and for
+     * a column on the database default, the two cases that need no COLLATE
+     * clause. The query joins pg_collation the same way
+     * information_schema.columns does, which is where this rule came from.
      */
     collation_schema: string | null;
     collation_name: string | null;
@@ -1393,46 +1503,65 @@ export async function fetchSchemaSnapshot(
       await client.query(`SET LOCAL lock_timeout = ${lockTimeout}`);
     }
 
+    // Tables and columns come straight from the system catalogs, like every
+    // other query here. information_schema only lists a table or a column the
+    // login has some privilege on, so a login without rights on a table saw
+    // it vanish: drift reported it as removed, or said "in sync" while it had
+    // changed, and compare and generate never saw it. The catalogs list
+    // everything and can be read by any login.
+    //
+    // relkind 'r' is an ordinary table and 'p' a partitioned one: the two
+    // kinds information_schema called BASE TABLE.
     const tableResult = await client.query<TableRow>(
-        `SELECT table_name
-         FROM information_schema.tables
-         WHERE table_schema = $1
-           AND table_type = 'BASE TABLE'
-           AND table_name <> ALL($2)
-         ORDER BY table_name`,
+        `SELECT c.relname AS table_name
+         FROM pg_class c
+         JOIN pg_namespace n
+           ON n.oid = c.relnamespace
+         WHERE n.nspname = $1
+           AND c.relkind IN ('r', 'p')
+           AND c.relname <> ALL($2)
+         ORDER BY c.relname`,
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
+    // is_nullable and the collation join are written the way
+    // information_schema.columns writes them, so every column reads exactly as
+    // it did before, only without the privilege filter:
+    // - a column is NOT NULL when it says so itself, or when its type is a
+    //   domain declared NOT NULL;
+    // - a collation is reported unless it is the database default (see
+    //   ColumnRow above).
     const columnResult = await client.query<ColumnRow>(
         `SELECT
-           c.table_name,
-           c.column_name,
-           c.ordinal_position,
+           cls.relname AS table_name,
+           a.attname AS column_name,
+           a.attnum AS ordinal_position,
            pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_display,
-           (c.is_nullable = 'YES') AS is_nullable,
+           NOT (a.attnotnull OR (t.typtype = 'd' AND t.typnotnull)) AS is_nullable,
            pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
            a.attidentity AS identity,
            a.attgenerated AS generated,
-           c.collation_schema,
-           c.collation_name
-         FROM information_schema.columns c
+           nco.nspname AS collation_schema,
+           co.collname AS collation_name
+         FROM pg_class cls
          JOIN pg_namespace n
-           ON n.nspname = c.table_schema
-         JOIN pg_class cls
-           ON cls.relnamespace = n.oid
-          AND cls.relname = c.table_name
-          AND cls.relkind IN ('r', 'p')
+           ON n.oid = cls.relnamespace
          JOIN pg_attribute a
            ON a.attrelid = cls.oid
-          AND a.attname = c.column_name
           AND a.attnum > 0
           AND NOT a.attisdropped
+         JOIN pg_type t
+           ON t.oid = a.atttypid
          LEFT JOIN pg_attrdef ad
            ON ad.adrelid = cls.oid
           AND ad.adnum = a.attnum
-         WHERE c.table_schema = $1
-           AND c.table_name <> ALL($2)
-         ORDER BY c.table_name, c.ordinal_position`,
+         LEFT JOIN (pg_collation co JOIN pg_namespace nco ON nco.oid = co.collnamespace)
+           ON co.oid = a.attcollation
+          AND (nco.nspname, co.collname) <> ('pg_catalog', 'default')
+         WHERE n.nspname = $1
+           AND cls.relkind IN ('r', 'p')
+           AND cls.relname <> ALL($2)
+         ORDER BY cls.relname, a.attnum`,
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
@@ -1511,6 +1640,17 @@ export async function fetchSchemaSnapshot(
     // would make every primary key show up as two separate differences — and
     // the generated migration would try to drop an index Postgres owns.
     //
+    // Only p/u/x own an index, and the contype filter matters: a FOREIGN KEY's
+    // conindid is not an index it owns, it is the index on the OTHER table that
+    // the key reads to check itself. PostgreSQL is happy for that to be a plain
+    // CREATE UNIQUE INDEX rather than a constraint — and asking only "is any
+    // constraint pointing at this index" then threw that index away. It
+    // vanished from the snapshot, so a comparison saw nothing to report and a
+    // generated script never created it; the foreign key that needed it then
+    // failed with "there is no unique constraint matching given keys".
+    // (Confirmed on PostgreSQL 18: the referencing key's conindid really does
+    // name the parent's standalone index.)
+    //
     // 'm' is in the relkind list beside the tables: a materialized view stores
     // its rows and is indexed like a table, and REFRESH ... CONCURRENTLY does
     // not work without a unique index on it. Reading only 'r' and 'p' meant a
@@ -1529,10 +1669,29 @@ export async function fetchSchemaSnapshot(
          pg_get_indexdef(x.indexrelid) AS definition,
          x.indisunique AS is_unique,
          am.amname AS method,
-         (SELECT array_agg(a.attname ORDER BY k.ord)
+         -- The leading KEY columns only, and only as far as the first thing
+         -- that is not a plain column. indkey holds more than the columns a
+         -- lookup can use:
+         --   • everything after indnkeyatts is an INCLUDE column, carried in
+         --     the index's rows but not searchable. Recorded as a key column,
+         --     an index on (customer_id) INCLUDE (total) looked like it could
+         --     serve a foreign key on (customer_id, total), which it cannot.
+         --   • an expression (lower(email)) is written as attnum 0, which
+         --     matches no row in pg_attribute. It used to be kept as a NULL,
+         --     which then became the literal text "null" further up. Stopping
+         --     at it is also what the rules want: in (a, lower(b), c) only a
+         --     is a usable leading column, because c sits behind lower(b).
+         -- indnkeyatts is PostgreSQL 11 and later, which INCLUDE itself is too;
+         -- the app already needs 12 for the views the Suggestions tab reads.
+         (SELECT COALESCE(array_agg(a.attname ORDER BY k.ord), '{}'::text[])
             FROM unnest(x.indkey) WITH ORDINALITY AS k(attnum, ord)
-            LEFT JOIN pg_attribute a
-              ON a.attrelid = c.oid AND a.attnum = k.attnum) AS columns,
+            JOIN pg_attribute a
+              ON a.attrelid = c.oid AND a.attnum = k.attnum
+           WHERE k.ord <= x.indnkeyatts
+             AND NOT EXISTS (
+               SELECT 1 FROM unnest(x.indkey) WITH ORDINALITY AS e(attnum, ord)
+                WHERE e.attnum = 0 AND e.ord <= k.ord
+             )) AS columns,
          pg_get_expr(x.indpred, x.indrelid) AS predicate
        FROM pg_index x
        JOIN pg_class c ON c.oid = x.indrelid
@@ -1543,7 +1702,9 @@ export async function fetchSchemaSnapshot(
          AND c.relkind IN ('r', 'p', 'm')
          AND c.relname <> ALL($2)
          AND NOT EXISTS (
-           SELECT 1 FROM pg_constraint con WHERE con.conindid = x.indexrelid
+           SELECT 1 FROM pg_constraint con
+            WHERE con.conindid = x.indexrelid
+              AND con.contype IN ('p', 'u', 'x')
          )
          AND NOT EXISTS (
            SELECT 1 FROM pg_inherits ii WHERE ii.inhrelid = x.indexrelid
@@ -1654,9 +1815,8 @@ export async function fetchSchemaSnapshot(
       [schemaName, COMPARE_IGNORED_TABLES]
     );
 
-    // relkind 'v' = view, 'm' = materialized view. The table query above asks
-    // information_schema for BASE TABLE only, which is exactly what has always
-    // excluded both from the snapshot.
+    // relkind 'v' = view, 'm' = materialized view. The table query above reads
+    // relkind 'r' and 'p' only, which is what keeps both out of the tables.
     const viewResult = await client.query<ViewRow>(
       `SELECT
          c.relname AS name,
@@ -2256,7 +2416,7 @@ export async function fetchSchemaSnapshot(
         name: row.index_name,
         definition,
         normalizedDefinition: normalizeDefinition(definition),
-        columns: coerceTextArray(row.columns),
+        columns: leadingColumns(row.columns),
         isUnique: row.is_unique,
         method: row.method,
         predicate: stripSchemaFromExpr(row.predicate ?? null, schemaName),

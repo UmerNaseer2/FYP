@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import {
   addedColumnSeverity,
+  columnMatchPercent,
   columnMatchSeverity,
   constraintDiffSeverity,
   describeConstraint,
@@ -977,7 +978,7 @@ function ChangedTableCard({
                   <s>{cm.right.name}</s> → <b>{cm.left.name}</b>
                 </>
               )}{" "}
-              <span className="muted">· {cm.score}% match — verify</span>
+              <span className="muted">· {columnMatchPercent(cm.score)}% match — verify</span>
               {cm.changes.length > 0 && (
                 <span className="muted">
                   {" "}
@@ -1130,6 +1131,9 @@ function RenameChip({
     sides === "expected-live"
       ? [candidate.leftName, candidate.rightName]
       : [candidate.rightName, candidate.leftName];
+  // A table score is already out of 100; a column one is out of 60.
+  const percent =
+    candidate.kind === "column" ? columnMatchPercent(candidate.score) : candidate.score;
   return (
     <div className="rename">
       <svg
@@ -1152,7 +1156,7 @@ function RenameChip({
         </div>
         <div className="what mt-0.5">
           <s>{before}</s> → <b style={{ color: "var(--text)" }}>{after}</b>{" "}
-          · {candidate.score}% similarity — verify before treating as a rename
+          · {percent}% similarity — verify before treating as a rename
         </div>
       </div>
     </div>

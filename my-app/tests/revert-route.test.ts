@@ -48,8 +48,11 @@ jest.mock("../lib/connection-config", () => ({
 }));
 
 const mockRecordLineage = jest.fn<Promise<unknown>, unknown[]>(async () => ({ advanced: false }));
+// Untracked by default — the connection row's own label then decides. One test
+// makes this throw to play a metadata database that has gone away.
+const mockFindTracked = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 jest.mock("../lib/lineage-db", () => ({
-  findTrackedSchema: async () => null,
+  findTrackedSchema: (...args: unknown[]) => mockFindTracked(...args),
   recordAppliedMigrationToLineage: (...args: unknown[]) => mockRecordLineage(...args),
 }));
 
@@ -153,6 +156,8 @@ beforeEach(() => {
   mockRelease.mockResolvedValue(undefined);
   mockRecordLineage.mockReset();
   mockRecordLineage.mockResolvedValue({ advanced: false });
+  mockFindTracked.mockReset();
+  mockFindTracked.mockResolvedValue(null);
   mockClient = createFakeClient(ledger());
   // The route logs its failures; the assertions below read the responses.
   consoleSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
@@ -240,6 +245,19 @@ describe("production", () => {
       const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun });
       expect(res.status).toBe(409);
     }
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  it("stops at 503 when the schema's tracking record cannot be read", async () => {
+    // The environment label is the only thing standing between "Roll back" and
+    // a production database losing rows, and a schema can carry a louder label
+    // than its connection does. This lookup failing used to be logged and
+    // ignored, which left the schema looking unlabelled — the one state that
+    // needs no acknowledgement at all. Apply answers 503 here; so does revert.
+    mockFindTracked.mockRejectedValue(new Error("metadata database is unreachable"));
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(503);
+    expect(String(res.body.error)).toContain("Nothing was run");
     expect(mockClient.queries).toEqual([]);
   });
 
@@ -634,5 +652,45 @@ describe("failures", () => {
     expect(mockRelease).not.toHaveBeenCalled();
     expect(mockRecordLineage).not.toHaveBeenCalled();
     expect(mockClient.releaseCount).toBe(1);
+    // The connection is the thing in doubt, so it is destroyed rather than
+    // handed to the next request.
+    expect(mockClient.releasedWith).toBe(true);
+  });
+
+  it("says the server undid the rollback when it refuses the COMMIT", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
+    // A DEFERRABLE constraint is checked at the COMMIT: the server refuses,
+    // rolls the transaction back itself, and names what went wrong. Nothing
+    // about that is unknown.
+    mockClient = createFakeClient(
+      ledger({
+        first: [
+          {
+            match: /^COMMIT$/,
+            error: {
+              code: "23503",
+              message: 'update or delete on table "customers" violates foreign key constraint',
+              constraint: "orders_customer_fkey",
+              table: "orders",
+            },
+          },
+        ],
+      })
+    );
+    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    expect(res.status).toBe(500);
+    expect(res.body.outcomeUnknown).toBeUndefined();
+    expect(String(res.body.error)).toContain("nothing was changed");
+    expect(String(res.body.error)).toContain("still applied");
+    expect(String(res.body.error)).toContain('constraint "orders_customer_fkey" on "orders"');
+    // Not "reload Deploy and see for yourself": the answer is already here.
+    expect(String(res.body.error)).not.toContain("shows as pending");
+    // Nothing landed, so the approval goes back and the baseline does not move.
+    expect(mockRelease).toHaveBeenCalledWith(42);
+    expect(mockRecordLineage).not.toHaveBeenCalled();
+    // A refusal leaves a perfectly good connection: it goes back to the pool.
+    expect(mockClient.releasedWith).toBeUndefined();
+    expect(mockClient.listenersAtRelease).toBe(0);
   });
 });

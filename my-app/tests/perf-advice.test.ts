@@ -729,17 +729,110 @@ describe("the duplicate and redundant rules, next to an invalid index", () => {
     expect(ids(analyzeSchemaPerformance(tables, new Set(["wide"])))).not.toContain("redundant-index");
   });
 
-  it("still counts an invalid index as serving a foreign key, since its own finding rebuilds it", () => {
-    // Suggesting a second index here would sit next to the invalid-index
-    // finding's REINDEX, which already gives the key a working one.
+  // A foreign key whose only index is invalid. PostgreSQL's planner never uses
+  // an invalid index, so every delete from the parent table reads this whole
+  // table — the exact thing the foreign-key rule exists to warn about — and the
+  // rule used to count the broken index as the answer and stay quiet.
+  const keyOnABrokenIndex = () =>
+    snapshot([
+      table("orders", {
+        foreignKeys: [fk("orders_customer_fk", ["customer_id"], { referencedTable: "customers" })],
+        indexes: [index("orders_customer_idx", ["customer_id"])],
+      }),
+    ]);
+
+  it("says a foreign key is unindexed when the only index covering it is invalid", () => {
+    const found = one(
+      analyzeSchemaPerformance(keyOnABrokenIndex(), new Set(["orders_customer_idx"])),
+      "foreign-key-not-indexed"
+    );
+    expect(found.title).toBe("Foreign key's only index is invalid");
+    expect(found.detail).toContain('"orders_customer_idx"');
+    expect(found.detail).toContain("every delete or key update on customers");
+  });
+
+  it("asks for nothing to be run, because rebuilding the index it names is the fix", () => {
+    // The invalid-index finding on the same screen carries the REINDEX. A
+    // CREATE INDEX here would go into the fix script beside it, and a user who
+    // ticked both would end up with two indexes on the same column.
+    const found = one(
+      analyzeSchemaPerformance(keyOnABrokenIndex(), new Set(["orders_customer_idx"])),
+      "foreign-key-not-indexed"
+    );
+    expect(found.fixKind).toBe("decision");
+    expect(runnable(found.fix)).toEqual([]);
+    expect(found.fix).toContain('"orders_customer_idx"');
+    expect(found.undo).toBeUndefined();
+  });
+
+  it("keeps the severity the key itself earns, not the broken index's", () => {
+    // ON DELETE CASCADE means the full scan happens on every parent delete, so
+    // it is high whether the index is missing or broken.
+    const cascading = snapshot([
+      table("orders", {
+        foreignKeys: [fk("orders_customer_fk", ["customer_id"], { onDelete: "CASCADE" })],
+        indexes: [index("orders_customer_idx", ["customer_id"])],
+      }),
+    ]);
+    expect(
+      one(analyzeSchemaPerformance(cascading, new Set(["orders_customer_idx"])), "foreign-key-not-indexed")
+        .severity
+    ).toBe("high");
+    expect(
+      one(analyzeSchemaPerformance(keyOnABrokenIndex(), new Set(["orders_customer_idx"])), "foreign-key-not-indexed")
+        .severity
+    ).toBe("medium");
+  });
+
+  it("stays quiet about that same key when the list of invalid indexes could not be read", () => {
+    // Without the list the index looks like any other. Saying less than it
+    // could is the honest failure here: it never says something untrue.
+    expect(ids(analyzeSchemaPerformance(keyOnABrokenIndex()))).not.toContain("foreign-key-not-indexed");
+  });
+
+  it("still asks for a new index when the key has no index at all", () => {
+    // The invalid one is on another column, so there is nothing to rebuild.
+    const found = one(
+      analyzeSchemaPerformance(
+        snapshot([
+          table("orders", {
+            foreignKeys: [fk("orders_customer_fk", ["customer_id"])],
+            indexes: [index("orders_placed_idx", ["placed_at"])],
+          }),
+        ]),
+        new Set(["orders_placed_idx"])
+      ),
+      "foreign-key-not-indexed"
+    );
+    expect(found.fixKind).toBe("change");
+    expect(runnable(found.fix)).toEqual([
+      'CREATE INDEX "orders_customer_id_idx" ON "public"."orders" ("customer_id");',
+    ]);
+  });
+
+  it("counts a second, working index as covering the key", () => {
     const advice = analyzeSchemaPerformance(
       snapshot([
         table("orders", {
           foreignKeys: [fk("orders_customer_fk", ["customer_id"])],
-          indexes: [index("orders_customer_idx", ["customer_id"])],
+          indexes: [index("orders_customer_idx", ["customer_id"]), index("orders_cust2_idx", ["customer_id"])],
         }),
       ]),
       new Set(["orders_customer_idx"])
+    );
+    expect(ids(advice)).not.toContain("foreign-key-not-indexed");
+  });
+
+  it("counts the primary key's index as covering it, invalid list or not", () => {
+    const advice = analyzeSchemaPerformance(
+      snapshot([
+        table("order_lines", {
+          primaryKey: pk(["order_id", "line_no"]),
+          foreignKeys: [fk("order_lines_order_fk", ["order_id"])],
+          indexes: [index("order_lines_order_idx", ["order_id"])],
+        }),
+      ]),
+      new Set(["order_lines_order_idx"])
     );
     expect(ids(advice)).not.toContain("foreign-key-not-indexed");
   });
@@ -2591,6 +2684,37 @@ describe("foreignKeyIndexes", () => {
     );
     expect(keys).toEqual([]);
   });
+
+  it("does not protect an invalid index on the strength of a key it cannot serve", () => {
+    // This list is what stops an unused index being offered for DROP. An
+    // invalid index is not what a key is checked through, and the foreign-key
+    // rule now says so too — the two have to agree, or this would keep an index
+    // safe because of a key the other rule is already calling unindexed.
+    const tables = snapshot([
+      table("orders", {
+        foreignKeys: [fk("orders_customer_fk", ["customer_id"], { referencedTable: "customers" })],
+        indexes: [index("orders_broken_idx", ["customer_id"]), index("orders_customer_idx", ["customer_id"])],
+      }),
+    ]);
+    expect(foreignKeyIndexes(tables, new Set(["orders_broken_idx"]))).toEqual([
+      {
+        table: "orders",
+        name: "orders_customer_fk",
+        columns: ["customer_id"],
+        referencedTable: "customers",
+        indexes: ["orders_customer_idx"],
+      },
+    ]);
+    // Every index it had is invalid: nothing left to protect.
+    expect(
+      foreignKeyIndexes(tables, new Set(["orders_broken_idx", "orders_customer_idx"]))
+    ).toEqual([]);
+    // And with no list, which is what a failed statistics pass leaves, it
+    // behaves exactly as it did before.
+    expect(foreignKeyIndexes(tables).map((k) => k.indexes)).toEqual([
+      ["orders_broken_idx", "orders_customer_idx"],
+    ]);
+  });
 });
 
 describe("sortAdvice", () => {
@@ -2827,7 +2951,7 @@ describe("every finding's fix", () => {
       "boolean-index": ["decision"],
       "dead-tuples": ["maintenance"],
       "duplicate-index": ["change", "decision"],
-      "foreign-key-not-indexed": ["change"],
+      "foreign-key-not-indexed": ["change", "decision"],
       "invalid-index": ["maintenance"],
       "low-cache-hit": ["decision"],
       "many-indexes": ["decision"],

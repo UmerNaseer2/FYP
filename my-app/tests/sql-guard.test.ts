@@ -278,6 +278,33 @@ describe("findRowDestroyingStatements", () => {
     ).toEqual(["DROP COLUMN"]);
   });
 
+  it("counts one written without the COLUMN keyword, which PostgreSQL accepts", () => {
+    // The version grade has always read this spelling — it shares the rule now,
+    // so a statement cannot be breaking here and harmless over there.
+    for (const sql of [
+      "ALTER TABLE orders DROP legacy_ref;",
+      "ALTER TABLE orders DROP IF EXISTS legacy_ref;",
+      'ALTER TABLE orders DROP "legacy ref";',
+      "DO $$ BEGIN ALTER TABLE orders DROP legacy_ref; END $$;",
+    ]) {
+      expect(findRowDestroyingStatements(sql)).toEqual(["DROP COLUMN"]);
+    }
+  });
+
+  it("does not count the other things ALTER TABLE can drop", () => {
+    // None of these takes a value away: the rows keep every column they had.
+    for (const sql of [
+      "ALTER TABLE orders DROP CONSTRAINT orders_pkey;",
+      "ALTER TABLE orders ALTER COLUMN note DROP DEFAULT;",
+      "ALTER TABLE orders ALTER COLUMN note DROP NOT NULL;",
+      "ALTER TABLE orders ALTER COLUMN id DROP IDENTITY;",
+      "ALTER TABLE orders ALTER COLUMN total DROP EXPRESSION;",
+      "DROP INDEX orders_note_idx;",
+    ]) {
+      expect(findRowDestroyingStatements(sql)).toEqual([]);
+    }
+  });
+
   it("reads the inside of a DO block, where a cleanup safe to run twice keeps its DELETE", () => {
     const guarded = [
       "DO $$ BEGIN",
@@ -502,6 +529,16 @@ describe("maskNonCode", () => {
     expect(masked).toContain('DROP TRIGGER "Au--dit" ON t;');
     expect(masked).not.toContain("why");
     expect(masked).not.toContain("'x'");
+  });
+
+  // Only stripSchemaFromExpr asks for these, to find the string literals in a
+  // function definition and nothing else.
+  it("keeps comments and reads a dollar-quoted body as code when asked", () => {
+    const sql = "AS $fn$ -- it's\nSELECT 'x', $s$y$s$ FROM t; $fn$";
+    const masked = maskNonCode(sql, { keepComments: true, readDollarBodies: true });
+    // The quote in the comment opened nothing, the body's literal and the
+    // string nested in it are blanked, and both $fn$ tags stay.
+    expect(masked).toBe(`AS $fn$ -- it's\nSELECT${" ".repeat(4)},${" ".repeat(9)}FROM t; $fn$`);
   });
 
   it("keeps identifiers and numbers, since they are code", () => {

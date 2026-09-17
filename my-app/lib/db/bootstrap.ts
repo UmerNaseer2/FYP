@@ -218,6 +218,17 @@ async function backfillOlderTables(): Promise<void> {
        source TEXT NOT NULL DEFAULT '${DEFAULT_DRIFT_SOURCE}'`
   );
 
+  // WHICH differences this check found, as one short hash. The scheduler skips
+  // writing an event when nothing has changed since the last one, and it used
+  // to decide that on the status alone — so a schema that was already "drifted"
+  // and then drifted further recorded nothing at all. Nullable on purpose:
+  // rows written before this existed, and the deploy and re-baseline rows that
+  // have no comparison behind them, leave it NULL, which reads as "not the same
+  // as anything" and errs towards recording.
+  await metadataPool.query(
+    `ALTER TABLE drift_events ADD COLUMN IF NOT EXISTS fingerprint TEXT`
+  );
+
   // The last "Test" outcome, kept on the row instead of in the page's memory.
   // Every column is nullable and stays null until the connection is tested, so
   // an existing row is honestly "never tested" rather than falsely healthy.
@@ -250,6 +261,16 @@ async function backfillOlderTables(): Promise<void> {
   await metadataPool.query(
     `ALTER TABLE deploy_approvals
        ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'deploy'`
+  );
+
+  // When an approval stops authorising its run. No default and no NOT NULL:
+  // every row decided before the column existed keeps a NULL here and never
+  // expires, which is the only honest reading of a decision made when nobody
+  // had been told there was a deadline. New approvals get theirs from the
+  // decision itself — see APPROVAL_VALID_HOURS in lib/approvals-db.
+  await metadataPool.query(
+    `ALTER TABLE deploy_approvals
+       ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`
   );
 
   await alterTimestampColumns();

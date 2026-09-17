@@ -6,10 +6,16 @@ import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
-import { containsTransactionControl, extractEnumAddValues, hasExecutableSql } from "@/lib/sql-guard";
+import {
+  containsTransactionControl,
+  enumAddValueTypeName,
+  extractEnumAddValues,
+  hasExecutableSql,
+} from "@/lib/sql-guard";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
 import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
+import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import {
   analyseRunRisk,
   checkForwardOnly,
@@ -271,8 +277,9 @@ async function addEnumValuesOutsideTransaction(
   client: PoolClient,
   quotedSchema: string,
   sqlContent: string
-): Promise<void> {
+): Promise<string[]> {
   const enumAdditions = extractEnumAddValues(sqlContent);
+  const hoisted: string[] = [];
   if (enumAdditions.length > 0) {
     // These statements name their type unqualified, so search_path has to
     // point at the target schema — and this is outside any transaction, so
@@ -281,11 +288,49 @@ async function addEnumValuesOutsideTransaction(
     await client.query(`SET search_path TO ${quotedSchema}`);
     try {
       for (const statement of enumAdditions) {
+        if (!(await enumTypeAlreadyExists(client, statement))) continue;
         await client.query(statement);
+        hoisted.push(statement);
       }
     } finally {
       await client.query("RESET search_path");
     }
+  }
+  return hoisted;
+}
+
+/**
+ * Whether the type an ADD VALUE names is already on the server.
+ *
+ * A run that CREATEs an enum and then adds values to it names a type that does
+ * not exist yet. Hoisting that statement ahead of the transaction failed with
+ * "type … does not exist" and took the whole run down before a single line of
+ * the migration had run — the ordinary "add an enum, then extend it later in
+ * the same file" script, refused outright.
+ *
+ * Such a statement does not need hoisting either. PostgreSQL only refuses a new
+ * label to the transaction that added it when the TYPE is older than that
+ * transaction; a type created inside the same transaction can have labels added
+ * and used straight away. So leaving it in the script is both necessary and
+ * correct, and the hoist is now for pre-existing types only.
+ *
+ * to_regtype answers NULL rather than raising for a name that is not there, and
+ * resolves an unqualified name through search_path, which the caller has just
+ * pointed at the target schema. A name it cannot parse at all does raise, and
+ * that is answered with "not there" so the statement stays in the script and
+ * fails — if it fails — inside the migration where the reader can see it.
+ */
+async function enumTypeAlreadyExists(client: PoolClient, statement: string): Promise<boolean> {
+  const typeName = enumAddValueTypeName(statement);
+  if (!typeName) return false;
+  try {
+    const result = await client.query<{ present: boolean }>(
+      "SELECT to_regtype($1) IS NOT NULL AS present",
+      [typeName]
+    );
+    return result.rows[0]?.present === true;
+  } catch {
+    return false;
   }
 }
 
@@ -337,14 +382,19 @@ async function checkAgainstLedger(
      WHERE script_name = ANY($1::text[])`,
     [[...new Set(queue.map((job) => job.scriptName))]]
   );
-  const appliedByFamily: Record<string, string[]> = {};
+  // A Map while it is being filled, because a script name is whatever the
+  // author typed: "constructor" reads a built-in function off a plain object
+  // rather than the list being gathered, and "__proto__" assigns the object's
+  // prototype instead of storing anything at all. fromEntries then makes each
+  // name an own property, the same way version-timeline builds its heads.
+  const byFamily = new Map<string, string[]>();
   for (const row of applied.rows) {
     if (typeof row.version !== "string") continue;
-    const versions = appliedByFamily[row.script_name] ?? [];
+    const versions = byFamily.get(row.script_name) ?? [];
     versions.push(row.version);
-    appliedByFamily[row.script_name] = versions;
+    byFamily.set(row.script_name, versions);
   }
-  return checkForwardOnly(queue, appliedByFamily);
+  return checkForwardOnly(queue, Object.fromEntries(byFamily));
 }
 
 /**
@@ -1017,6 +1067,13 @@ export async function POST(request: NextRequest) {
   // true there is a window where the run's outcome is genuinely unknown to
   // this process, and the catch block has to say so rather than guess.
   let commitAttempted = false;
+  // Set in the catch below: the COMMIT threw and the server never said
+  // whether it landed. The finally block reads it to decide the approval.
+  let commitOutcomeUnknown = false;
+  // The enum additions step 7 actually ran and committed. Only the ones whose
+  // type already existed are hoisted, so this is shorter than what the scripts
+  // ask for whenever a run creates a type and extends it in the same breath.
+  let hoistedEnumAdditions: string[] = [];
 
   try {
     // ─── 7. Prepare the ledger and hoist enum additions ─────────────────────
@@ -1029,7 +1086,7 @@ export async function POST(request: NextRequest) {
     // problem as one added and used by a single script.
     if (!dryRun) {
       await ensureScriptPatchTable(client, quotedSchema, schemaName);
-      await addEnumValuesOutsideTransaction(
+      hoistedEnumAdditions = await addEnumValuesOutsideTransaction(
         client,
         quotedSchema,
         queue.map((job) => job.sqlContent).join("\n")
@@ -1119,11 +1176,11 @@ export async function POST(request: NextRequest) {
         // an enum value. Say so rather than claim nothing changed at all:
         // problem.message ends "Nothing ran.", which is not true then, so the
         // refusal gets an ending that says what did happen. No migration ran:
-        // this check comes before the first one. extractEnumAddValues gives
-        // the whole statements, so they are quoted last, after the sentence.
-        const leftBehind = dryRun
-          ? []
-          : extractEnumAddValues(queue.map((job) => job.sqlContent).join("\n"));
+        // this check comes before the first one. This is what step 7 actually
+        // ran rather than what the scripts ask for — an addition to a type the
+        // run has yet to create was never hoisted, so nothing of it stays. The
+        // statements are whole, so they are quoted last, after the sentence.
+        const leftBehind = hoistedEnumAdditions;
         const added =
           leftBehind.length === 1
             ? "the enum value it adds was added before this check and stays"
@@ -1359,16 +1416,27 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    // A COMMIT that threw is the one failure this route cannot report on.
+    // A COMMIT that threw is the one failure this route may not be able to
+    // report on.
     //
     // Every other error happened while the transaction was open, so a ROLLBACK
-    // settles it and "nothing was applied" is a fact. Not this one: the server
-    // may have committed and then lost the connection on the way back, in which
-    // case the run IS applied and the ledger has the rows to prove it. From
-    // here the two look the same. Rolling back is still worth attempting below
-    // — it is a no-op if the commit landed — but the answer sent to the screen
-    // has to be "go and look", not a guess in either direction.
-    const commitOutcomeUnknown = commitAttempted && !runCommitted;
+    // settles it and "nothing was applied" is a fact. A COMMIT that never came
+    // back is different: the server may have committed and then lost the
+    // connection on the way, in which case the run IS applied and the ledger
+    // has the rows to prove it. From here the two look the same. Rolling back
+    // is still worth attempting below — it is a no-op if the commit landed —
+    // but the answer sent to the screen has to be "go and look".
+    //
+    // Only when the server did not answer, though. A DEFERRABLE constraint is
+    // checked at COMMIT, and a COMMIT the server refuses is rolled back by the
+    // server, which then says why. That is not unknown, and reporting it as
+    // unknown sent the reader to inspect script_patch over a constraint the
+    // error had already named. See commitOutcomeIsUnknown.
+    commitOutcomeUnknown =
+      commitAttempted && !runCommitted && commitOutcomeIsUnknown(error);
+    // The other half of the same question: the COMMIT threw and the server DID
+    // answer, so it refused the commit and rolled the run back itself.
+    const commitRefused = commitAttempted && !runCommitted && !commitOutcomeUnknown;
     // Only ROLLBACK if we actually issued a BEGIN — otherwise the database
     // is not in a transaction and ROLLBACK would just log a warning.
     if (transactionStarted) {
@@ -1470,6 +1538,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // A COMMIT the server refused. It answered, so it did the rollback itself
+    // and nothing in the run survived — that is a fact, not a guess, and it is
+    // worth saying plainly because the reason arrives at the END of the run
+    // rather than at the statement that caused it. A DEFERRABLE constraint is
+    // the usual reason: PostgreSQL holds the check until COMMIT, so a script
+    // that looked like it ran cleanly fails here instead.
+    if (commitRefused) {
+      const said = describeCommitError(error) || message;
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          // Every job, not just one: the check runs over the whole
+          // transaction's work at once, so there is no single statement to
+          // blame, and "skipped" would suggest some of them never ran.
+          results: queue.map((job) => ({
+            script_name: job.scriptName,
+            version: job.version,
+            status: "failed" as const,
+            error: "The COMMIT was refused, so the whole run was rolled back.",
+          })),
+          error:
+            `PostgreSQL refused the COMMIT for ${describeRun(queue)} and rolled ` +
+            `the whole run back, so nothing was applied to schema "${schemaName}". ` +
+            `A constraint marked DEFERRABLE is checked at this point rather than ` +
+            `at the statement that tripped it, which is why this surfaced only at ` +
+            `the end. PostgreSQL said: ${said}`,
+        },
+        { status: 500 }
+      );
+    }
+
     // A lock timeout is not a broken script, and "canceling statement due to
     // lock timeout" does not tell the operator that. Say what actually
     // happened, and that trying again is the right response.
@@ -1519,6 +1620,10 @@ export async function POST(request: NextRequest) {
     // one-click re-run of migrations that might already be applied sitting
     // under a screen that has just said it does not know. Keeping it spent
     // costs the second person one more look and buys a deliberate decision.
-    if (!runCommitted && !commitAttempted) await releaseClaimedApproval();
+    //
+    // A COMMIT the server REFUSED is not that case: it rolled the run back and
+    // said so, so the approval was not spent and goes back like any other
+    // failure. Hence commitOutcomeUnknown here rather than commitAttempted.
+    if (!runCommitted && !commitOutcomeUnknown) await releaseClaimedApproval();
   }
 }

@@ -440,6 +440,9 @@ export async function compareRowData(
           leftChecksum: null,
           rightChecksum: null,
           columns: [],
+          // Nothing was hashed, so nothing was left out of a hash: an empty
+          // list here is the truth, not a claim that the columns all pair up.
+          ignoredColumns: [],
           note:
             (overCount
               ? `Not read: only the first ${maxTables} tables are compared in one run.`
@@ -479,6 +482,10 @@ async function compareOnePlan(
   const base = {
     table: plan.label,
     columns: plan.leftColumns,
+    // Carried onto every outcome, not just the ones that got as far as a
+    // checksum. A reader looking at a skipped table still wants to know the
+    // compare would have been a partial one.
+    ignoredColumns: plan.ignoredColumns,
     leftRows: null as number | null,
     rightRows: null as number | null,
     leftChecksum: null as string | null,
@@ -549,18 +556,33 @@ async function compareOnePlan(
     };
   }
 
+  const same = countsOnly
+    ? left.rows === right.rows
+    : left.rows === right.rows && left.checksum === right.checksum;
+
   const notes: string[] = [];
   if (countsOnly) {
     notes.push("No columns in common, so only the row counts were compared.");
   } else if (plan.ignoredColumns.length > 0) {
+    // The same fact, worded for the verdict it sits under.
+    //
+    // On a table that came back DIFFERENT the list is a caveat: the difference
+    // is real and these columns were not part of finding it. On one that came
+    // back IDENTICAL it is the opposite — it is the reason the verdict is
+    // narrower than it looks. The checksum covers only the columns both sides
+    // have, so a row whose every difference lives in an unpaired column hashes
+    // the same on both sides and the table reads as a clean match. Saying
+    // "identical" there and leaving the list as a footnote invites exactly the
+    // wrong conclusion, so the sentence itself is bounded first and the
+    // columns that were left out follow it.
     notes.push(
-      `Not included in the checksum (present on one side only): ${plan.ignoredColumns.join(", ")}.`,
+      same
+        ? `Identical on the ${plan.leftColumns.length} ` +
+            `${plan.leftColumns.length === 1 ? "column" : "columns"} both sides share. ` +
+            `Not compared (present on one side only): ${plan.ignoredColumns.join(", ")}.`
+        : `Not included in the checksum (present on one side only): ${plan.ignoredColumns.join(", ")}.`,
     );
   }
-
-  const same = countsOnly
-    ? left.rows === right.rows
-    : left.rows === right.rows && left.checksum === right.checksum;
 
   return {
     ...base,

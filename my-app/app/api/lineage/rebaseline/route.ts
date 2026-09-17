@@ -87,7 +87,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── 2. Capture the live structure (the new expected snapshot) ──────────────
+  // ── 2. Note where the lineage stands BEFORE reading the schema ────────────
+  // The read below talks to another server and takes as long as that server
+  // takes. A deploy that finishes inside that window writes its own snapshot as
+  // the new head — and this request, still holding a reading of the schema from
+  // BEFORE that deploy, would then save the older picture on top of it as a
+  // newer version. The next drift check compares against that older picture and
+  // reports the deploy's own new table as an unexplained change, on a lineage
+  // that now records a breaking major version for a re-baseline that was only
+  // ever meant to agree with the database.
+  //
+  // The advisory lock below cannot stop this on its own. It serialises the two
+  // writers, which is a different thing from noticing that one of them is
+  // holding stale data: this request waits its turn, gets the lock, and writes
+  // its out-of-date reading perfectly safely. So the head is noted here and
+  // checked again once the lock is held, and the request gives up if it moved.
+  let seqBeforeRead: number;
+  try {
+    const before = await pool.query<{ seq: number }>(
+      `SELECT seq FROM lineage_migrations
+       WHERE tracked_schema_id = $1
+       ORDER BY seq DESC
+       LIMIT 1`,
+      [trackedSchemaId]
+    );
+    // 0 for a schema with no lineage yet, which is a real starting point and
+    // not a missing answer — the check below is an equality either way.
+    seqBeforeRead = before.rows[0]?.seq ?? 0;
+  } catch (error) {
+    console.error("Rebaseline — failed to read the current head:", error);
+    return NextResponse.json({ error: "Could not read tracking metadata." }, { status: 500 });
+  }
+
+  // ── 3. Capture the live structure (the new expected snapshot) ──────────────
   // buildPgConfig decrypts the saved password, and throws when this server's
   // APP_ENCRYPTION_KEY is missing or is not the key it was saved with. Left
   // uncaught, that was a bare 500 instead of an error the screen can show.
@@ -142,6 +174,24 @@ export async function POST(request: NextRequest) {
     const headVersion = head.rows[0]?.version ?? null;
     const headSeq = head.rows[0]?.seq ?? 0;
     const headSnapshot = head.rows[0]?.snapshot ?? null;
+
+    // Somebody wrote to this lineage while the schema was being read, so the
+    // reading in hand is older than the head it would be saved on top of. There
+    // is nothing to merge — the only correct answer is a fresh read — so the
+    // request stops here rather than recording a version that is a step
+    // backwards. Its own transaction has written nothing yet.
+    if (headSeq !== seqBeforeRead) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        {
+          error:
+            "This schema changed while it was being read — a deploy or another " +
+            "re-baseline finished first, so this reading is already out of date. " +
+            "Nothing was saved. Try again.",
+        },
+        { status: 409 }
+      );
+    }
 
     // Infer the bump from how the live structure differs from the previous HEAD.
     const changeLevel = headSnapshot

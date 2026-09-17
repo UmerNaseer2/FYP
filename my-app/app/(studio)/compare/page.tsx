@@ -253,6 +253,9 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
   const schemaMissing = outcomes.filter((o) => o.failure === "schema-missing").length;
   const noConnection = outcomes.filter((o) => o.failure === "no-connection").length;
   const duplicates = outcomes.filter((o) => o.failure === "duplicate").length;
+  // A target whose comparison threw. Counted on its own rather than added to
+  // "unreachable", which would point the reader at a network that is fine.
+  const failed = outcomes.filter((o) => o.failure === "failed").length;
   const sameAsSource = outcomes.filter((o) => o.sameAsSource).length;
   const production = outcomes.filter((o) => isProduction(o.environment)).length;
 
@@ -277,6 +280,9 @@ function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
       )}
       {noConnection > 0 && (
         <span className="delta delta-rem">{noConnection} without a connection</span>
+      )}
+      {failed > 0 && (
+        <span className="delta delta-rem">{failed} failed to compare</span>
       )}
       {/* Not failures — nothing was dialled because the answer was known. */}
       {sameAsSource > 0 && (

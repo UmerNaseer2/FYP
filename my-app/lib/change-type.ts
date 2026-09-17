@@ -24,7 +24,12 @@
 // Client-safe on purpose: it imports only the pure helpers in sql-guard and
 // change-level, because the deploy screen and the Script Editor run it in the
 // browser.
-import { doBlockBodies, maskNonCode, splitStatements } from "./sql-guard";
+import {
+  doBlockBodies,
+  dropsColumnWithoutKeyword,
+  maskNonCode,
+  splitStatements,
+} from "./sql-guard";
 import { normalizeChangeLevel, type ChangeLevel } from "./change-level";
 
 /**
@@ -151,31 +156,6 @@ function isAlterTable(statement: string): boolean {
 function inAlterTable(pattern: RegExp): (statement: string) => boolean {
   return (statement) =>
     isAlterTable(statement) && pattern.test(statement.replace(/^alter table /, ""));
-}
-
-// The words that can follow DROP inside ALTER TABLE without it being a column.
-const NOT_A_COLUMN_AFTER_DROP = new Set([
-  "column",
-  "constraint",
-  "default",
-  "not",
-  "identity",
-  "expression",
-]);
-
-/**
- * ALTER TABLE t DROP legacy — a column drop written without the COLUMN keyword,
- * which PostgreSQL accepts. An empty word means the name was a quoted
- * identifier, which the mask blanked; that is a column too.
- */
-function dropsColumnWithoutKeyword(statement: string): boolean {
-  if (!isAlterTable(statement)) return false;
-  // The word after DROP is optional in the pattern, because a blanked quoted
-  // name can leave DROP as the last word of the statement.
-  for (const match of statement.matchAll(/\bdrop\b(?: if exists\b)?(?: (\w+))?/g)) {
-    if (!NOT_A_COLUMN_AFTER_DROP.has(match[1] ?? "")) return true;
-  }
-  return false;
 }
 
 /**

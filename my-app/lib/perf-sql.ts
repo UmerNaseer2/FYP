@@ -327,7 +327,47 @@ export type FixScriptItem = {
    * can read a table in any schema and the index goes on that table.
    */
   schemas?: string[];
+  /**
+   * Why this fix starts unticked, as one sentence for the reader, or absent
+   * when it starts ticked like everything else.
+   *
+   * There is one reason so far: the app could not read which indexes
+   * PostgreSQL has marked invalid, so a suggestion to drop an index cannot
+   * promise it is dropping the spare one rather than the working one.
+   * Unticking rather than hiding is deliberate — the finding is probably still
+   * right, and the person reading it can see the index for themselves.
+   */
+  startUnticked?: string;
 };
+
+/**
+ * The findings that get a row with a tick: the ones that carry statements.
+ *
+ * A finding whose "fix" is a paragraph of advice has nothing to put in a
+ * script, so it is not a row — which is why the positions below, and the ticks
+ * in FixScriptBuilder, are positions in THIS list and not in the findings.
+ */
+export function listedFixes(items: FixScriptItem[]): FixScriptItem[] {
+  return items.filter((item) => item.fixKind === "change" || item.fixKind === "maintenance");
+}
+
+/**
+ * Which rows start with their tick off, as positions in `listedFixes`.
+ *
+ * Almost always empty. A finding starts unticked only when the app could not
+ * check something its fix leans on and says so in `startUnticked` — today,
+ * only when the list of invalid indexes could not be read, which leaves a
+ * DROP INDEX unable to promise it is dropping the spare rather than the
+ * working one.
+ *
+ * A starting position, not a rule: every tick stays the reader's to move, and
+ * the row says why it is off.
+ */
+export function startingUnticked(listed: FixScriptItem[]): Set<number> {
+  return new Set(
+    listed.flatMap((item, position) => (item.startUnticked ? [position] : []))
+  );
+}
 
 /**
  * The schemas other than `schema` that any of `items` alters, each once, in

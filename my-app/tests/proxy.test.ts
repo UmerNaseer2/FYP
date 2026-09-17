@@ -10,14 +10,20 @@
 import { NextRequest } from "next/server";
 
 // next-auth and its provider ship as ESM, which Jest's CommonJS runtime cannot
-// require. Neither is reached by any case here — every one of them either
-// bypasses auth or stops at the "sign-in is not configured" branch, both of
-// which return before NextAuth is ever constructed — so a stand-in is enough to
-// let the module load. If a future case needs the real session check, it needs
-// a real integration test, not a richer mock.
+// require, so both are stand-ins. The stand-in `auth()` does what the real one
+// does for this file: it runs the proxy's own callback with `request.auth` set
+// to whatever session the case puts in `mockSession`. That tests the proxy's
+// decision about a session, not whether NextAuth decodes a cookie correctly;
+// the second needs a real integration test, not a richer mock.
+let mockSession: unknown = null;
 jest.mock("next-auth", () => ({
   __esModule: true,
-  default: () => ({ auth: () => () => new Response(null, { status: 200 }) }),
+  default: () => ({
+    auth:
+      (handler: (request: unknown) => Response) =>
+      (request: object) =>
+        handler(Object.assign(request, { auth: mockSession })),
+  }),
 }));
 jest.mock("next-auth/providers/microsoft-entra-id", () => ({
   __esModule: true,
@@ -79,6 +85,46 @@ describe("edge proxy", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({
       error: "Sign-in is not set up on this server.",
+    });
+  });
+
+  describe("with sign-in configured", () => {
+    const signInOn = {
+      NEXT_PUBLIC_AUTH_BYPASS: "false",
+      AZURE_AD_CLIENT_ID: "client",
+      AZURE_AD_CLIENT_SECRET: "secret",
+      AZURE_AD_TENANT_ID: "tenant",
+      NEXTAUTH_SECRET: "a-test-secret-that-is-long-enough",
+    };
+
+    afterEach(() => {
+      mockSession = null;
+    });
+
+    it("lets a signed-in user through", async () => {
+      mockSession = { user: { email: "someone@example.com" }, expires: "2099-01-01" };
+      const { proxy } = await loadProxy(signInOn);
+      expect((await proxy(page())).status).toBe(200);
+      expect((await proxy(api())).status).toBe(200);
+    });
+
+    it("refuses a session object that has no user in it", async () => {
+      // The shape the next-auth beta.31 advisory was about: something is there,
+      // but nobody is signed in. Checking only that `auth` exists let it in.
+      mockSession = { expires: "2099-01-01" };
+      const { proxy } = await loadProxy(signInOn);
+      expect((await proxy(api())).status).toBe(401);
+      const response = await proxy(page());
+      expect(response.status).toBe(307);
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.pathname).toBe("/login");
+      expect(location.searchParams.get("callbackUrl")).toBe("/studio");
+    });
+
+    it("refuses a request with no session at all", async () => {
+      mockSession = null;
+      const { proxy } = await loadProxy(signInOn);
+      expect((await proxy(api())).status).toBe(401);
     });
   });
 

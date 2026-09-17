@@ -90,6 +90,22 @@ function rowCounts(table: TableDataCompare): string {
 }
 
 /**
+ * What "identical" actually covers for this table.
+ *
+ * The checksum can only hash the columns both sides have. When one side has
+ * columns the other does not, the verdict is bounded by the columns that were
+ * read — a row differing only in an unpaired column hashes the same on both
+ * sides and lands here. The bound belongs beside the row count, where the
+ * reader is already looking; the note underneath names the columns left out.
+ */
+function sameDetail(table: TableDataCompare): string {
+  const counts = rowCounts(table);
+  if (table.ignoredColumns.length === 0) return counts;
+  const shared = table.columns.length;
+  return `${counts}, identical on ${shared} shared ${plural(shared, "column", "columns")}`;
+}
+
+/**
  * What "different" actually means for this table, in one phrase.
  *
  * Same count with a different checksum is the interesting case — the same
@@ -245,18 +261,30 @@ export function DataCompare({
               <span className="dot" />
               nothing to compare — every table is new
             </span>
-          ) : sourceOnly.length > 0 ? (
-            /* The rows that WERE compared do match. Naming how many stops the
-               pill from being read as a verdict on the new tables too. */
-            <span className="pill pill-sync">
-              <span className="dot" />
-              rows match in {identical.length}{" "}
-              {plural(identical.length, "shared table", "shared tables")}
-            </span>
           ) : (
+            /* The rows that WERE compared do match — and this pill has to say
+               how far "compared" went, because it is the one line most readers
+               take away from the panel.
+
+               Two things narrow it. Tables only the source has were never
+               compared against anything, so naming how many tables DID match
+               stops the pill being read as a verdict on those as well. And the
+               checksum covers only the columns both sides have, so a table
+               whose every difference sits in an unpaired column hashes the same
+               on both sides and arrives here as a clean match — a bare "rows
+               match" over that is the false all-clear the qualifier prevents. */
             <span className="pill pill-sync">
               <span className="dot" />
               rows match
+              {sourceOnly.length > 0 && (
+                <>
+                  {" "}
+                  in {identical.length}{" "}
+                  {plural(identical.length, "shared table", "shared tables")}
+                </>
+              )}
+              {totals.identicalOnSharedColumns > 0 &&
+                ", on the columns both sides have"}
             </span>
           )}
           <span className="ml-auto text-[11px]" style={{ color: "var(--text-3)" }}>
@@ -342,6 +370,16 @@ export function DataCompare({
               <span className="section-title">
                 {identical.length} {plural(identical.length, "table", "tables")}{" "}
                 {plural(identical.length, "holds", "hold")} identical rows
+                {/* Named on the header rather than left to the rows, because
+                    this group is collapsed by default: a reader who never
+                    opens it would otherwise see only the unqualified claim. */}
+                {totals.identicalOnSharedColumns > 0 && (
+                  <span style={{ color: "var(--text-3)", fontWeight: 400 }}>
+                    {" "}
+                    ({totals.identicalOnSharedColumns} of them on the shared
+                    columns only)
+                  </span>
+                )}
               </span>
               <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
                 click to list
@@ -352,7 +390,7 @@ export function DataCompare({
                 key={table.table}
                 kind="same"
                 table={table.table}
-                detail={rowCounts(table)}
+                detail={sameDetail(table)}
                 note={table.note}
               />
             ))}

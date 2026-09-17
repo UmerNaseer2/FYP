@@ -9,8 +9,10 @@
 // metadata database (or pulls in Sequelize).
 import { NextRequest } from "next/server";
 import {
+  APPROVAL_VALID_HOURS,
   claimApproval,
   createApprovalRequest,
+  decideApproval,
   decisionBlockReason,
   runFingerprint,
   type DeployApproval,
@@ -246,5 +248,65 @@ describe("POST /api/deploy/approvals", () => {
     const res = await request({ ...BODY, scripts: [], action: "revert" });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("There are no rollbacks in this request to approve.");
+  });
+});
+
+// ─── How long an approval lasts ────────────────────────────────────────────
+// The fingerprint pins WHAT was approved but says nothing about WHEN, so an
+// approval given a month ago used to still unlock the same production run.
+// These read the SQL the module sends, because the predicate is enforced by
+// PostgreSQL inside the one race-free UPDATE — there is no branch in
+// TypeScript to call instead.
+
+describe("expiry", () => {
+  it("lasts a week", () => {
+    expect(APPROVAL_VALID_HOURS).toBe(168);
+  });
+
+  it("starts the clock when the approval is given, not when it was asked for", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [{ id: 5 }] });
+    await decideApproval({ id: 5, approve: true, decidedBy: "b@test", selfApproved: false, note: null });
+    const { sql, values } = call(0);
+    expect(sql).toContain("expires_at = CASE WHEN $6 THEN now() + make_interval(hours => $7) END");
+    expect(values[5]).toBe(true);
+    expect(values[6]).toBe(APPROVAL_VALID_HOURS);
+  });
+
+  it("gives a rejection no expiry, because there is nothing to expire", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [{ id: 5 }] });
+    await decideApproval({ id: 5, approve: false, decidedBy: "b@test", selfApproved: false, note: null });
+    // The CASE has no ELSE, so a false here writes NULL.
+    expect(call(0).values[5]).toBe(false);
+  });
+
+  it("will not spend an approval that is past its expiry", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [] });
+    await claimApproval({ connectionId: 7, schemaName: "sales", scripts: RUN, action: "deploy" });
+    const { sql } = call(0);
+    expect(sql).toContain("(expires_at IS NULL OR expires_at > now())");
+    // Inside the same UPDATE as the status check, so an approval cannot expire
+    // between being found and being marked used.
+    expect(sql.indexOf("expires_at IS NULL")).toBeGreaterThan(sql.indexOf("status = 'approved'"));
+  });
+
+  it("leaves an approval decided before expiry existed alone", async () => {
+    // A row whose expires_at is NULL was decided when nobody had been told
+    // there was a deadline, so the predicate keeps it claimable.
+    mockPoolQuery.mockResolvedValue({ rows: [] });
+    await claimApproval({ connectionId: 7, schemaName: "sales", scripts: RUN, action: "deploy" });
+    expect(call(0).sql).toContain("expires_at IS NULL OR");
+  });
+
+  it("does not offer an expired approval as an open request", async () => {
+    // Otherwise the screen would say "approved" about a run whose Deploy
+    // button then asks for approval.
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 1 }] });
+    await createApprovalRequest({
+      connectionId: 7, schemaName: "sales", scriptName: "orders_fix", targetVersion: "3.0.0",
+      scripts: RUN, breakingCount: 0, requestedBy: "a@test", note: null, action: "deploy",
+    });
+    expect(call(0).sql).toContain("(expires_at IS NULL OR expires_at > now())");
   });
 });

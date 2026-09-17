@@ -1,6 +1,7 @@
 import { Pool, type PoolConfig } from "pg";
 import { parse as parseConnectionString } from "pg-connection-string";
 import { decryptSecret, UNREADABLE_CREDENTIALS_MESSAGE } from "./secret-store";
+import { BlockedHostError, checkConnectableHost } from "./host-guard";
 import {
   sslModeFromLegacyBoolean,
   sslModeUsesTls,
@@ -9,6 +10,10 @@ import {
 } from "./connection-validate";
 
 export { parsePostgresUri, type ParsedUri } from "./parse-uri";
+// The host rule itself lives in lib/host-guard so that lib/postgres can check a
+// host before opening a pool without importing this module. Re-exported because
+// this is where callers have always found it.
+export { BlockedHostError, checkConnectableHost } from "./host-guard";
 export type { SslMode };
 
 /**
@@ -121,6 +126,14 @@ export function describeDbError(error: unknown): {
   sslRequired: boolean;
   detail: string;
 } {
+  // A host this server refuses to dial never reached the network, so none of
+  // the driver patterns below can apply. Its message is already written for the
+  // person reading it, and saying "check the connection details" instead would
+  // send them looking for a fault in a connection that is fine.
+  if (error instanceof BlockedHostError) {
+    return { message: error.message, sslRequired: false, detail: error.message };
+  }
+
   const err = error as { message?: string; code?: string } | undefined;
   const detail = (err?.message ?? String(error)).trim();
   const lower = detail.toLowerCase();
@@ -190,117 +203,33 @@ export function describeDbError(error: unknown): {
   return { message: "Could not connect. Check the connection details and try again.", sslRequired: false, detail };
 }
 
-/** A 32-bit address written back as a dotted quad. */
-function dottedQuad(value: number): string {
-  return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join(
-    "."
-  );
-}
-
 /**
- * The IPv4 address a host literal really names, or null when it names none.
+ * Check the host `pg` will really dial for this input.
  *
- * A blocklist that compares strings only blocks the spellings it was shown.
- * `::ffff:127.0.0.1` and `2130706433` are both loopback to every resolver there
- * is, and neither of them starts with "127.", so both walked straight past the
- * check below. Normalising first is what makes that check about the address
- * rather than about how somebody chose to type it.
+ * `checkConnectableHost(host)` on the fields of a saved row judges the hostname
+ * written in the URL, and that is not always where the driver goes. In
+ * `postgres://user:pw@db.example.com/app?host=169.254.169.254` the query
+ * parameter wins over the hostname (so do `?port=` and `?user=`), and
+ * `postgres://user:pw@/app` names no host at all. Saving used to read the URL
+ * and see a database on the internet, while Compare, Deploy and Drift dialled
+ * the cloud metadata service. buildPgConfig resolves an input exactly the way
+ * the driver does, so the check runs on what it produces.
  *
- * Deliberately narrow — IPv4-mapped IPv6 and the bare 32-bit integer. Per-octet
- * octal ("0177.0.0.1") is left alone on purpose: platforms disagree about what
- * it means, macOS resolves it to the public 177.0.0.1, and guessing wrong would
- * block a host that is genuinely reachable.
+ * `{ ok: true }` when the input cannot be resolved at all — a stored secret
+ * this server cannot decrypt, a string the parser rejects. There is nothing to
+ * judge, refusing the save would strand a row nobody can even rename, and
+ * getPoolForConfig checks again before any socket opens.
  */
-function toIPv4Literal(host: string): string | null {
-  // ::ffff:127.0.0.1 and ::127.0.0.1 — the dotted tail is the address.
-  const mapped = /^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
-  if (mapped) return mapped[1];
-
-  // ::ffff:7f00:1 — the same address written as two hex groups.
-  const hex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
-  if (hex) {
-    return dottedQuad(((parseInt(hex[1], 16) << 16) + parseInt(hex[2], 16)) >>> 0);
-  }
-
-  // A bare 32-bit number: 2130706433 is 127.0.0.1, 2852039166 is the metadata
-  // service. Every C resolver accepts this form.
-  if (/^\d+$/.test(host)) {
-    const value = Number(host);
-    if (Number.isInteger(value) && value >= 0 && value <= 0xffffffff) {
-      return dottedQuad(value);
-    }
-  }
-
-  return null;
-}
-
-/**
- * Guard the connection-TEST endpoints against being used as a server-side
- * request forgery (SSRF) / internal port scanner. These endpoints dial whatever
- * host:port the caller names, so without this an outside caller could probe the
- * server's private network or cloud metadata service.
- *
- *   - Cloud metadata + link-local addresses are blocked ALWAYS — they are never
- *     a real database and are the classic SSRF target.
- *   - Loopback + RFC1918 private ranges are blocked in PRODUCTION only (so local
- *     development against a localhost Postgres still works). Set
- *     ALLOW_PRIVATE_DB_HOSTS=true to opt back in on a trusted/VPC deployment.
- *
- * Note: this checks the literal host only; a public hostname that resolves to an
- * internal IP (DNS rebinding) is not caught here. The real long-term fix is
- * server-side authentication on these routes.
- */
-export function checkConnectableHost(
-  host: string | undefined
+export function checkConnectionTarget(
+  input: ConnectionInput
 ): { ok: true } | { ok: false; message: string } {
-  const raw = (host ?? "").trim().toLowerCase();
-  // A connection string carries an IPv6 literal in brackets. The address is
-  // what is being judged, not the punctuation a URL needed around it.
-  const h = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
-
-  // Every spelling of the same address has to get the same answer, so both the
-  // literal and its normalised form are tested.
-  const forms = [h];
-  const normalised = toIPv4Literal(h);
-  if (normalised !== null) forms.push(normalised);
-
-  const alwaysBlocked = forms.some(
-    (f) =>
-      f === "metadata.google.internal" ||
-      f.startsWith("169.254.") || // IPv4 link-local, incl. 169.254.169.254 metadata
-      f.startsWith("fe80:") || // IPv6 link-local
-      f === "::" ||
-      f === "0.0.0.0"
-  );
-  if (alwaysBlocked) {
-    return { ok: false, message: "That host isn't allowed." };
+  let host: string | undefined;
+  try {
+    host = buildPgConfig(input).host;
+  } catch {
+    return { ok: true };
   }
-
-  const blockPrivate =
-    process.env.NODE_ENV === "production" &&
-    process.env.ALLOW_PRIVATE_DB_HOSTS !== "true";
-  if (blockPrivate) {
-    const isPrivate = forms.some(
-      (f) =>
-        f === "localhost" ||
-        f.endsWith(".localhost") ||
-        f.startsWith("127.") ||
-        f === "::1" ||
-        f.startsWith("10.") ||
-        f.startsWith("192.168.") ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(f) ||
-        f.endsWith(".internal") ||
-        f.endsWith(".local")
-    );
-    if (isPrivate) {
-      return {
-        ok: false,
-        message: "Connections to internal/private hosts are disabled on this server.",
-      };
-    }
-  }
-
-  return { ok: true };
+  return checkConnectableHost(host);
 }
 
 /** Successful test: light, honest facts gathered while the pool was open. */

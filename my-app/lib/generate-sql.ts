@@ -17,6 +17,7 @@ import type {
   PrivilegeSnapshot,
   RoutineSnapshot,
   RowSecuritySnapshot,
+  SchemaSnapshot,
   SequenceOptions,
   SequenceSnapshot,
   TableSnapshot,
@@ -38,6 +39,7 @@ import {
   domainNotNullTightens,
   extractBaseType,
   collationChangeSeverity,
+  columnMatchPercent,
   generatedChangeSeverity,
   isNarrowingType,
   nullabilityChangeSeverity,
@@ -223,7 +225,112 @@ function collateSuffix(col: ColumnSnapshot): string {
   return col.collation ? ` COLLATE ${col.collation}` : "";
 }
 
-function buildColumnDef(col: ColumnSnapshot, omitNotNull = false): string {
+/**
+ * What the generator has worked out about the source's sequences, once, so that
+ * every place a column with a `nextval(...)` default is written asks the same
+ * question and gets the same answer.
+ */
+type SequencePlan = {
+  /** For each table, the columns the `serial` shorthand describes truthfully. */
+  shorthand: Map<string, Set<string>>;
+  /**
+   * Sequences that belong to no column at all. The object phase creates those
+   * ahead of every table, so a column reading one has nothing to build.
+   */
+  standalone: Set<string>;
+};
+
+/** An empty plan: nothing is a serial, nothing is standalone. */
+function emptySequencePlan(): SequencePlan {
+  return { shorthand: new Map(), standalone: new Set() };
+}
+
+function usesSerialShorthand(
+  plan: SequencePlan,
+  tableName: string,
+  columnName: string
+): boolean {
+  return plan.shorthand.get(tableName)?.has(columnName) ?? false;
+}
+
+/**
+ * Work out which columns may be written as `serial`.
+ *
+ * `serial` is not a type. It is an instruction to CREATE a sequence called
+ * <table>_<column>_seq and hand it to this one column — so writing it is only
+ * honest when the source's sequence really is that sequence. Three shapes look
+ * identical from the column alone and are not, and each of them fails quietly:
+ *
+ *   • SHARED — two columns drawing from one sequence. `serial` gives each of
+ *     them a private sequence, so the single pool of numbers they were sharing
+ *     silently becomes two pools handing out the same numbers.
+ *   • STANDALONE — a sequence belonging to no column, created by the object
+ *     phase before the tables. `serial` then finds the name taken and takes
+ *     "<name>1" instead, without an error, and the column ends up reading a
+ *     sequence the source has never heard of. (Verified on PostgreSQL 18.)
+ *   • RENAMED — a table or column renamed after creation keeps the sequence it
+ *     had. `serial` cannot produce that name, so it builds a second sequence and
+ *     every later comparison reports a default that no migration can settle.
+ *
+ * Everything the shorthand does not cover is written out in full instead: the
+ * plain type with its own DEFAULT nextval(...), and the sequence built beside it
+ * — see columnSequenceStatements.
+ */
+function sequencePlanFor(source: SchemaSnapshot): SequencePlan {
+  const plan = emptySequencePlan();
+
+  // How many columns in the whole schema read each sequence. Counted across all
+  // tables because sharing is not a within-one-table affair.
+  const readers = new Map<string, number>();
+  for (const table of source.tables) {
+    for (const col of table.columns) {
+      const name = nextvalSequenceName(col.columnDefault);
+      if (name !== null) readers.set(name, (readers.get(name) ?? 0) + 1);
+    }
+  }
+
+  const sequences = source.sequences;
+  for (const sequence of sequences ?? []) {
+    if (sequence.ownedByTable === null) plan.standalone.add(sequence.name);
+  }
+
+  for (const table of source.tables) {
+    for (const col of table.columns) {
+      // An identity column carries its own sequence in its own syntax.
+      if (col.identity) continue;
+      if (serialTypeFor(col.typeDisplay) === null) continue;
+      const name = nextvalSequenceName(col.columnDefault);
+      if (name === null) continue;
+      // The shorthand has no room for START WITH or INCREMENT BY.
+      if (col.sequenceOptions && !sequenceOptionsAreDefault(col.sequenceOptions)) continue;
+      // The RENAMED case: this is the only name `serial` knows how to make.
+      if (name !== `${table.name}_${col.name}_seq`) continue;
+      // The SHARED case.
+      if ((readers.get(name) ?? 0) > 1) continue;
+      if (sequences) {
+        // The catalog's own answer, which also settles the STANDALONE case: the
+        // sequence has to exist in this schema and belong to this very column.
+        const record = sequences.find((entry) => entry.name === name);
+        if (!record) continue;
+        if (record.ownedByTable !== table.name) continue;
+        if (record.ownedByColumn !== col.name) continue;
+      }
+      const columns = plan.shorthand.get(table.name);
+      if (columns) columns.add(col.name);
+      else plan.shorthand.set(table.name, new Set([col.name]));
+    }
+  }
+  return plan;
+}
+
+function buildColumnDef(
+  col: ColumnSnapshot,
+  omitNotNull = false,
+  // Whether the `serial` shorthand is the truth for this column — see
+  // sequencePlanFor. The default is the honest answer for a caller that has not
+  // worked it out: write the column in full and let its sequence be built.
+  serialOk = false
+): string {
   // An IDENTITY column in the source stays an IDENTITY column. Identity is
   // restricted to integer types, which have no collation, so none is written.
   if (col.identity) {
@@ -239,14 +346,13 @@ function buildColumnDef(col: ColumnSnapshot, omitNotNull = false): string {
   // exactly the shape the source has — so this round-trips where a hand-written
   // DEFAULT nextval(...) would fail on a sequence the target does not have.
   //
-  // Unless the sequence was tuned: the shorthand has no room for START WITH or
-  // INCREMENT BY, so such a column falls through to the plain type below and
-  // keeps its nextval default, with the sequence built around it by the caller
-  // (see tunedSerialSequence).
+  // Unless the sequence is not this column's own to create — it was tuned, or
+  // shared, or standalone, or carries a name serial cannot produce. Such a
+  // column falls through to the plain type below and keeps its nextval default,
+  // with the sequence built around it by the caller (see sequencePlanFor and
+  // columnSequenceStatements).
   const serialType =
-    isNextvalDefault(col.columnDefault) && tunedSerialSequence(col) === null
-      ? serialTypeFor(col.typeDisplay)
-      : null;
+    serialOk && isNextvalDefault(col.columnDefault) ? serialTypeFor(col.typeDisplay) : null;
   if (serialType) {
     return `${q(col.name)} ${serialType}${col.nullable || omitNotNull ? "" : " NOT NULL"}`;
   }
@@ -295,19 +401,30 @@ function restoreNotNullStatement(col: ColumnSnapshot, tableName: string): SqlSta
     `SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(${literal(q(tableName))}) ` +
     `AND attname = ${literal(col.name)} AND attnotnull`;
 
+  // RAISE NOTICE's first argument is a FORMAT string, not a message: every `%`
+  // in it wants a parameter after the comma, and a table or column named
+  // "done_%" therefore aborted the whole block with "too few parameters
+  // specified for RAISE". Passing '%' as the format and the text as the one
+  // parameter means the text is printed exactly as written, whatever is in it.
+  const raise = `RAISE NOTICE '%', ${literal(notice)};`;
+  // And the block's own tag has to be one nothing inside it contains. The
+  // notice quotes both names back, so a column named `a$$b` closed the block on
+  // its own name and left `b" on ...` sitting outside it as broken SQL.
+  const tag = dollarTagFor(alreadyNotNull, raise, setNotNull, q(tableName));
+
   return {
     sql: [
-      `DO $$`,
+      `DO ${tag}`,
       `BEGIN`,
       `  IF EXISTS (${alreadyNotNull}) THEN`,
       `    NULL;`,
       `  ELSIF EXISTS (SELECT 1 FROM ${q(tableName)} LIMIT 1) THEN`,
-      `    RAISE NOTICE ${literal(notice)};`,
+      `    ${raise}`,
       `  ELSE`,
       `    ${setNotNull}`,
       `  END IF;`,
       `END`,
-      `$$;`,
+      `${tag};`,
     ].join("\n"),
     description:
       `Apply NOT NULL on "${col.name}" in "${tableName}" — skipped when it is already ` +
@@ -353,6 +470,58 @@ function nonFkConstraints(
 }
 
 /**
+ * The columns a match rebuilds because their GENERATED ALWAYS AS (…) clause
+ * appears, goes, or changes. Named by the SOURCE's name for the column, which
+ * is what the table carries once the rename step has run.
+ *
+ * Three places need this same answer and must not drift apart: the walk that
+ * queues cascaded views for rebuild, the index phase that puts back the indexes
+ * the CASCADE took with it, and the branch that writes the DROP/ADD pair.
+ */
+function rebuiltComputedColumns(match: TableMatch): Set<string> {
+  const names = new Set<string>();
+  for (const col of match.columnMatches) {
+    const before = describeComputed(col.right);
+    const after = describeComputed(col.left);
+    if (before !== null && after !== null && before !== after) names.add(col.left.name);
+  }
+  return names;
+}
+
+/**
+ * Whether a piece of SQL names this column. Quoted and bare both count, and the
+ * match is on whole words so "user_id" is not found inside "user_identity".
+ *
+ * Case is ignored on purpose, even though a quoted identifier is case-sensitive.
+ * That can say yes about a column the statement never touched, and the cost of
+ * that is one CREATE INDEX or ADD CONSTRAINT whose guard finds the object still
+ * there and skips it. A wrong no is the expensive direction: the index stays
+ * dropped and nobody finds out until something is slow.
+ */
+function mentionsColumn(sql: string, columnName: string): boolean {
+  const escaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\w"])"?${escaped}"?($|[^\\w"])`, "i").test(sql);
+}
+
+/**
+ * Whether an index reads the column — as one of its keys, or inside an
+ * expression. An expression index (`lower(email)`) records no column at all,
+ * so the definition text is the only place its name appears.
+ */
+function indexTouchesColumn(index: IndexSnapshot, columnName: string): boolean {
+  return index.columns.includes(columnName) || mentionsColumn(index.definition, columnName);
+}
+
+/** Same question for a constraint, whose columns are a hint the same way. */
+function constraintTouchesColumn(
+  columns: string[],
+  definition: string,
+  columnName: string
+): boolean {
+  return columns.includes(columnName) || mentionsColumn(definition, columnName);
+}
+
+/**
  * The CREATE TABLE for a table the target does not have.
  *
  * Partitioning changes the SHAPE of the statement rather than adding a clause
@@ -363,7 +532,7 @@ function nonFkConstraints(
  * partitions. That runs without error, which is the problem: you get three
  * unrelated tables, and rows inserted into the parent stay in the parent.
  */
-function buildCreateTable(table: TableSnapshot): string {
+function buildCreateTable(table: TableSnapshot, plan: SequencePlan): string {
   const constraints = nonFkConstraints(table).map(
     ({ constraint }) => `  CONSTRAINT ${q(constraint.name)} ${constraint.definition}`
   );
@@ -383,7 +552,7 @@ function buildCreateTable(table: TableSnapshot): string {
   }
 
   const lines = table.columns
-    .map((col) => `  ${buildColumnDef(col)}`)
+    .map((col) => `  ${buildColumnDef(col, false, usesSerialShorthand(plan, table.name, col.name))}`)
     .concat(constraints);
 
   // INHERITS goes before PARTITION BY; that is the order the grammar wants.
@@ -553,6 +722,23 @@ function literal(value: string): string {
 }
 
 /**
+ * A dollar-quote tag that none of `parts` already contains.
+ *
+ * `$$` is the obvious tag and the wrong one: the text going inside a DO block
+ * is schema text — a CHECK expression, an enum label, a column name — and any
+ * of it may hold a `$$` of its own, which ends the block early and leaves the
+ * rest of it as SQL that will not parse. `$guard$` is far less likely and still
+ * not impossible, so the number climbs until the tag is genuinely absent.
+ */
+function dollarTagFor(...parts: string[]): string {
+  let tag = "$guard$";
+  for (let n = 1; parts.some((part) => part.includes(tag)); n += 1) {
+    tag = `$guard${n}$`;
+  }
+  return tag;
+}
+
+/**
  * Run `statement` only when `existsQuery` finds nothing.
  *
  * Every CREATE and ADD a generated script contains is written so the script can
@@ -576,10 +762,7 @@ function literal(value: string): string {
  * the block early and leave the rest of it as broken SQL.
  */
 function onlyIfMissing(existsQuery: string, statement: string): string {
-  let tag = "$guard$";
-  for (let n = 1; statement.includes(tag) || existsQuery.includes(tag); n += 1) {
-    tag = `$guard${n}$`;
-  }
+  const tag = dollarTagFor(existsQuery, statement);
   return [
     `DO ${tag}`,
     "BEGIN",
@@ -1044,28 +1227,36 @@ function identityOptionsSuffix(col: ColumnSnapshot): string {
 }
 
 /**
- * The sequence behind a `serial` column whose settings the `serial` shorthand
- * cannot carry, or null when the shorthand is fine.
+ * The sequence a column has to have built for it, or null when it does not need
+ * one — either because the `serial` shorthand builds it, or because the sequence
+ * is somebody else's to build.
  *
- * `serial` expands to a sequence on every default, so a column whose sequence
- * starts at 10 and steps by 4 comes out starting at 1 and stepping by 1 — two
- * shards that were handing out interleaved ids quietly start handing out the
- * same ones. Such a column gives up the shorthand and is written the long way
- * instead: CREATE SEQUENCE, the plain type with its nextval default, then
+ * The commonest reason the shorthand is not available is tuning: `serial`
+ * expands to a sequence on every default, so a column whose sequence starts at
+ * 10 and steps by 4 comes out starting at 1 and stepping by 1 — two shards that
+ * were handing out interleaved ids quietly start handing out the same ones. The
+ * others are in sequencePlanFor. Either way such a column is written the long
+ * way instead: CREATE SEQUENCE, the plain type with its nextval default, then
  * ALTER SEQUENCE … OWNED BY, which is byte-for-byte the catalog state `serial`
  * would have produced.
+ *
+ * Only the column that OWNS the sequence builds it. `sequenceOptions` is put on
+ * a column by the snapshot exactly when the catalog says that column owns the
+ * sequence, so a column merely reading somebody else's sequence answers null
+ * here and just carries its nextval default.
  *
  * The name comes out of the column's own default rather than the schema's
  * sequence list, because an owned sequence is never in the object diffs — it
  * belongs to its column, not to the schema.
  */
-function tunedSerialSequence(
-  col: ColumnSnapshot
+function ownedSequenceToBuild(
+  col: ColumnSnapshot,
+  serialOk: boolean
 ): { name: string; options: SequenceOptions } | null {
   if (col.identity) return null;
+  if (serialOk) return null;
   const options = col.sequenceOptions;
-  if (!options || sequenceOptionsAreDefault(options)) return null;
-  if (serialTypeFor(col.typeDisplay) === null) return null;
+  if (!options) return null;
   const name = nextvalSequenceName(col.columnDefault);
   return name === null ? null : { name, options };
 }
@@ -1202,21 +1393,24 @@ function sequenceOptionSteps(
 }
 
 /**
- * The CREATE SEQUENCE that has to run before a tuned serial column exists, and
- * the ALTER SEQUENCE … OWNED BY that has to run after it.
+ * The CREATE SEQUENCE that has to run before a column written the long way
+ * exists, and the ALTER SEQUENCE … OWNED BY that has to run after it.
  *
  * Ownership is not decoration: it is what ties the sequence's lifetime to the
  * column's, so dropping the table takes the sequence with it exactly as a plain
  * `serial` would. Without it the schema is left with a loose sequence that no
  * later comparison expects to find.
  *
- * Both lists are empty for every column the `serial` shorthand still covers.
+ * Both lists are empty for every column the `serial` shorthand still covers,
+ * and for a column that only reads a sequence somebody else owns — that one
+ * carries its nextval default and nothing more.
  */
-function tunedSerialStatements(
+function columnSequenceStatements(
   col: ColumnSnapshot,
-  tableName: string
+  tableName: string,
+  serialOk: boolean
 ): { before: SqlStatement[]; after: SqlStatement[] } {
-  const tuned = tunedSerialSequence(col);
+  const tuned = ownedSequenceToBuild(col, serialOk);
   if (tuned === null) return { before: [], after: [] };
   const head = `CREATE SEQUENCE IF NOT EXISTS ${q(tuned.name)}`;
   return {
@@ -1483,10 +1677,26 @@ function alterTypeStatements(left: TypeSnapshot, right: TypeSnapshot): SqlStatem
     const removed = right.labels.filter((label) => !leftLabels.has(label));
 
     for (const label of added) {
+      // Where the label goes, not just that it arrives. ADD VALUE with no
+      // neighbour appends, and PostgreSQL sorts an enum by the order its labels
+      // were added — so adding 'medium' to ('low','high') used to leave the
+      // target sorting low, high, medium while the source sorted low, medium,
+      // high. Nothing was missing, so the next comparison could only report it
+      // as "same values, different order", which needs the type recreated: a
+      // manual note that never went away.
+      //
+      // The anchor is the next label after this one in the SOURCE that the
+      // target already has, so it is guaranteed to exist by the time the
+      // statement runs. Labels are added in source order, so two new labels
+      // sharing an anchor land in front of it in that same order.
+      const anchor = labelAfter(left.labels, label, rightLabels);
+      const position = anchor === null ? "" : ` BEFORE ${literal(anchor)}`;
       stmts.push(
         objectStatement({
-          sql: `ALTER TYPE ${q(left.name)} ADD VALUE IF NOT EXISTS ${literal(label)};`,
-          description: `Add value ${literal(label)} to enum "${left.name}"`,
+          sql: `ALTER TYPE ${q(left.name)} ADD VALUE IF NOT EXISTS ${literal(label)}${position};`,
+          description:
+            `Add value ${literal(label)} to enum "${left.name}"` +
+            (anchor === null ? "" : ` before ${literal(anchor)}`),
           kind: "ALTER_TYPE",
           tableName: left.name,
         })
@@ -1884,6 +2094,21 @@ type ObjectPhases = {
    * reader meets them before the statements that assume the work was done.
    */
   beforeTables: SqlStatement[];
+  /**
+   * The few functions that have to exist BEFORE the tables, not after.
+   *
+   * `routines` below runs after CREATE TABLE on purpose, so a function whose
+   * body reads a new table finds it. That order breaks down for the opposite
+   * dependency: a new table with `id text DEFAULT gen_ulid()` or a CHECK that
+   * calls a new function is refused outright with "function does not exist",
+   * because PostgreSQL resolves both at CREATE TABLE time. Triggers never hit
+   * this — they are created later still.
+   *
+   * Only the functions a new table actually names are moved here; everything
+   * else stays in `routines` where the body-reads-a-table order protects it.
+   * See routinesNeededByNewTables.
+   */
+  hoistedRoutines: SqlStatement[];
   /** Functions and procedures — after tables exist, before triggers need them. */
   routines: SqlStatement[];
   /** Indexes — after every ADD COLUMN has run. */
@@ -1988,6 +2213,84 @@ function findPrivilege(
 }
 
 /**
+ * Every expression a CREATE TABLE evaluates for the tables being created
+ * outright — column defaults, generated-column expressions and CHECK bodies.
+ *
+ * These are the three places where building a table can call a function, and
+ * so the three places that decide whether a function has to exist before the
+ * table or can wait until after it. A foreign key is not here: those are queued
+ * separately and added once every table exists.
+ */
+function newTableExpressions(tables: TableSnapshot[]): string[] {
+  const expressions: string[] = [];
+  for (const table of tables) {
+    for (const column of table.columns) {
+      if (column.columnDefault !== null) expressions.push(column.columnDefault);
+      // A generated column's expression lives in its own field, never in
+      // columnDefault — the two are mutually exclusive in SQL.
+      if (column.generated) expressions.push(column.generated.expression);
+    }
+    for (const check of table.checkConstraints) expressions.push(check.definition);
+  }
+  return expressions;
+}
+
+/**
+ * Does `expression` call a routine named `name`?
+ *
+ * Deliberately a text search rather than anything cleverer: the snapshot keeps
+ * the expression as PostgreSQL printed it, and parsing SQL to answer one
+ * ordering question would be far more machinery than the question is worth.
+ *
+ * Two things keep it from matching too much. The name has to be a whole
+ * identifier — `gen_ulid` must not match inside `my_gen_ulid_v2` — and it has
+ * to be followed by an open bracket, because a bare `gen_ulid` is a column
+ * reference and not a call. The optional quote either side covers a name that
+ * needs quoting, and the optional `something.` covers a call written with its
+ * schema in front.
+ *
+ * It can still over-match: a string literal containing the word would count.
+ * That is the safe direction. Over-matching creates a function slightly
+ * earlier than it strictly had to; under-matching brings back the failure this
+ * whole thing exists to stop.
+ */
+function expressionCallsRoutine(expression: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Case-insensitive because a quoted "Gen_ULID" keeps its capitals in the
+  // catalog while the call site may have been written either way.
+  const call = new RegExp(`(^|[^A-Za-z0-9_."])"?${escaped}"?\\s*\\(`, "i");
+  return call.test(expression);
+}
+
+/**
+ * The signatures of the source routines that a brand-new table names in a
+ * default, a generated column or a CHECK — the ones that have to be created
+ * before the tables rather than after them.
+ *
+ * Matched on the routine's NAME, not its signature, so every overload of a
+ * called function is hoisted together. Working out which overload an
+ * expression resolves to needs the type rules PostgreSQL itself applies, and
+ * guessing wrong means creating the wrong one; hoisting all of them costs
+ * nothing but a slightly earlier CREATE FUNCTION.
+ */
+function routinesNeededByNewTables(report: CompareReport): Set<string> {
+  const needed = new Set<string>();
+  const routines = report.left.routines ?? [];
+  if (routines.length === 0 || report.tablesOnlyInA.length === 0) return needed;
+
+  const expressions = newTableExpressions(report.tablesOnlyInA);
+  for (const routine of routines) {
+    // A PROCEDURE cannot be called from an expression at all — only by CALL —
+    // so one can never be the reason a CREATE TABLE fails.
+    if (routine.kind !== "FUNCTION") continue;
+    if (expressions.some((expression) => expressionCallsRoutine(expression, routine.name))) {
+      needed.add(routine.signature);
+    }
+  }
+  return needed;
+}
+
+/**
  * Build every object statement the migration needs, in dependency order.
  *
  * Reads the object differences the comparator produced, plus the objects that
@@ -2000,6 +2303,7 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
     extensions: [],
     collations: [],
     beforeTables: [],
+    hoistedRoutines: [],
     routines: [],
     indexes: [],
     triggers: [],
@@ -2018,6 +2322,10 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
 
   const leftViews = report.left.views ?? [];
   const rightViews = report.right.views ?? [];
+
+  // Worked out once, up here: the question is about the whole set of new
+  // tables, and the routine branch below sees one routine at a time.
+  const hoistedSignatures = routinesNeededByNewTables(report);
 
   // ── Table-scoped objects on MATCHED tables ────────────────────────────────
   for (const match of report.matchedTables) {
@@ -2082,6 +2390,26 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
           const source = findByName(match.left.rowSecurity?.policies, diff.name);
           if (source) phases.policies.push(createPolicyStatement(source, tableName));
         }
+      }
+    }
+
+    // ── Indexes a column rebuild takes with it ──────────────────────────────
+    // Rebuilding a generated column is a DROP COLUMN ... CASCADE, and CASCADE
+    // removes every index over that column without naming one of them. An index
+    // that is identical in both schemas is in no diff, so the loop above never
+    // saw it and nothing put it back: the migration finished "clean" and left
+    // the table an index short. Same reasoning as the view walk further down —
+    // and it belongs here rather than beside the rebuild, because this phase is
+    // emitted after every ADD COLUMN, so the column is back by then.
+    const rebuiltColumns = rebuiltComputedColumns(match);
+    if (rebuiltColumns.size > 0) {
+      const alreadyHandled = new Set(
+        match.objectDiffs.filter((diff) => diff.kind === "INDEX").map((diff) => diff.name)
+      );
+      for (const index of match.left.indexes ?? []) {
+        if (alreadyHandled.has(index.name)) continue;
+        const taken = [...rebuiltColumns].some((column) => indexTouchesColumn(index, column));
+        if (taken) phases.indexes.push(createIndexStatement(index, tableName));
       }
     }
   }
@@ -2295,12 +2623,19 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
         // outright and the migration stops on a line the report had called a
         // harmless swap. compareSchemas works that out — see
         // routineReplaceNeedsDrop — and says so on the diff.
+        // A function a new table's DEFAULT or CHECK calls has to be created
+        // before that table, not after it. The drop-and-recreate pair travels
+        // with it, or the drop would land after the table that needs the
+        // function and take it away again.
+        const bucket = hoistedSignatures.has(source.signature)
+          ? phases.hoistedRoutines
+          : phases.routines;
         if (target && diff.replaceNeedsDrop === true) {
-          phases.routines.push(
+          bucket.push(
             dropRoutineStatement(target, " so it can be recreated with its new signature")
           );
         }
-        phases.routines.push(createRoutineStatement(source));
+        bucket.push(createRoutineStatement(source));
       }
       continue;
     }
@@ -2359,12 +2694,7 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
     // in none of the sets above — it is matched, it lost no column, and it is
     // not a view — so the walk below never saw the victims and nothing put them
     // back. Same test as the branch that emits the statement.
-    const rebuildsComputed = match.columnMatches.some((col) => {
-      const before = describeComputed(col.right);
-      const after = describeComputed(col.left);
-      return before !== null && after !== null && before !== after;
-    });
-    if (rebuildsComputed) cascadingRelations.add(match.right.name);
+    if (rebuiltComputedColumns(match).size > 0) cascadingRelations.add(match.right.name);
   }
   // A view the script drops by name cascades as well. A second view built on
   // that one is usually byte-identical in both schemas, so the comparator says
@@ -2592,6 +2922,281 @@ function nextvalSequenceName(columnDefault: string | null): string | null {
   return match[1].replace(/^"(.*)"$/, "$1");
 }
 
+/**
+ * The statement that moves a column's new sequence past the values its rows
+ * already hold.
+ *
+ * A column that becomes serial or identity on a table that already has rows
+ * gets a sequence that starts at 1, so the next insert takes a number a row
+ * already has and fails on the primary key. This sets the counter to one past
+ * the highest value in the column (one below the lowest, for a sequence that
+ * counts down).
+ *
+ * It only ever moves the counter on. The sequence's own nextval() is one of the
+ * candidates, so a sequence that is already further along (it existed before,
+ * or the script is running a second time) keeps its place, and a new sequence
+ * on an empty table stays on its START: max() of no rows is NULL, which
+ * GREATEST skips. `false` makes the next nextval() return that number itself
+ * rather than the one after it.
+ *
+ * `previousSequence` is the sequence the column's default used to read. It can
+ * be ahead of max() when the newest rows were deleted, and carrying on from it
+ * means those numbers are not handed out a second time. to_regclass turns a
+ * sequence that no longer exists into NULL, which nextval passes straight
+ * through. nextval is not undone by a rollback, so a dry run leaves that old
+ * sequence one number further on: a gap, never a repeat.
+ *
+ * `serialSequence` is null for an identity column, whose sequence has a name
+ * the snapshot never recorded. It is looked up as the one sequence tied to the
+ * column as its identity (deptype 'i'). pg_get_serial_sequence would be the
+ * obvious call, but a serial turned identity still owns its old sequence, and
+ * pg_get_serial_sequence returns whichever of the two it finds first, usually
+ * the old one (see the serial fix in lib/perf-advice.ts).
+ */
+function counterPastRowsStatement(
+  tableName: string,
+  columnName: string,
+  serialSequence: string | null,
+  previousSequence: string | null,
+  downwards: boolean
+): SqlStatement {
+  const sequence =
+    serialSequence === null ? "identity_sequence.seq" : literal(q(serialSequence));
+  const edge = downwards
+    ? `(SELECT min(${q(columnName)}) - 1 FROM ${q(tableName)})`
+    : `(SELECT max(${q(columnName)}) + 1 FROM ${q(tableName)})`;
+  const candidates = [
+    `nextval(${sequence})`,
+    ...(previousSequence === null
+      ? []
+      : [`nextval(to_regclass(${literal(q(previousSequence))}))`]),
+    edge,
+  ];
+  const setval = `SELECT setval(${sequence}, ${downwards ? "LEAST" : "GREATEST"}(${candidates.join(", ")}), false)`;
+  return {
+    sql:
+      serialSequence === null
+        ? `${setval}\n  FROM (SELECT d.objid::regclass AS seq FROM pg_depend d ` +
+          `JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid ` +
+          `WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass ` +
+          `AND d.deptype = 'i' AND d.refobjid = to_regclass(${literal(q(tableName))}) ` +
+          `AND a.attname = ${literal(columnName)}) AS identity_sequence;`
+        : `${setval};`,
+    description: `Move the counter behind "${columnName}" in "${tableName}" past the values its rows already hold`,
+    kind: "ALTER_SEQUENCE",
+    severity: "safe",
+    tableName,
+    destructive: false,
+  };
+}
+
+/** Whether a sequence's INCREMENT is negative. Unknown counts as upwards, the default. */
+function countsDown(increment: string | undefined): boolean {
+  return increment !== undefined && increment.trim().startsWith("-");
+}
+
+/**
+ * The first label after `label` in the source that the target already has, or
+ * null when there is none — which means the label belongs at the end and a
+ * plain ADD VALUE puts it there.
+ */
+function labelAfter(
+  sourceLabels: string[],
+  label: string,
+  targetLabels: Set<string>
+): string | null {
+  const from = sourceLabels.indexOf(label);
+  if (from === -1) return null;
+  for (const candidate of sourceLabels.slice(from + 1)) {
+    if (targetLabels.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * A foreign key on ANOTHER table that points at this one.
+ *
+ * PostgreSQL refuses to drop a PRIMARY KEY or UNIQUE constraint while a foreign
+ * key depends on it, and that key is nearly always on a different table — so
+ * the drop-FKs-first rule inside one table's own diff never sees it. The
+ * migration stopped on "cannot drop constraint … because other objects depend
+ * on it", halfway through the one transaction, with nothing applied.
+ *
+ * Read off the TARGET, because those are the keys actually sitting in the
+ * database the script runs against. `tableName` is the name that table carries
+ * by the time the ALTERs run — every rename happens in an earlier phase.
+ */
+type InboundForeignKey = {
+  tableName: string;
+  fk: ForeignKeySnapshot;
+  /**
+   * False for a key on a table the script drops later. It still has to come off
+   * before the constraint drop — the doomed table is very much still there at
+   * that point — but there is nothing left to put it back on.
+   */
+  survives: boolean;
+  /** The ADD that puts it back, with the referenced table under its new name. */
+  definition: string;
+};
+
+/**
+ * Every inbound foreign key, keyed by the referenced table's name IN THE TARGET
+ * — which is how the alter step finds its own entry before its rename lands.
+ *
+ * A key the owning table's own diff already drops is left out: that section
+ * drops and re-adds it on its own schedule, and a second copy here would be an
+ * ADD racing a DROP of the same constraint.
+ */
+function inboundForeignKeysByTable(
+  report: CompareReport,
+  targetSchema: string
+): Map<string, InboundForeignKey[]> {
+  const byTable = new Map<string, InboundForeignKey[]>();
+  // What each matched table is called before and after the rename phase.
+  const renamedTo = new Map<string, string>();
+  for (const match of report.matchedTables) renamedTo.set(match.right.name, match.left.name);
+
+  const owners: { table: TableSnapshot; survives: boolean; handled: Set<string> }[] = [
+    ...report.matchedTables.map((match) => ({
+      table: match.right,
+      survives: true,
+      handled: new Set(
+        match.constraintDiffs
+          .filter((diff) => diff.kind === "FOREIGN KEY")
+          .map((diff) => diff.rightName ?? "")
+      ),
+    })),
+    ...report.tablesOnlyInB.map((table) => ({
+      table,
+      survives: false,
+      handled: new Set<string>(),
+    })),
+  ];
+
+  for (const owner of owners) {
+    for (const fk of owner.table.foreignKeys) {
+      const referenced = fk.referencedTable;
+      if (!referenced || !renamedTo.has(referenced)) continue;
+      if (owner.handled.has(fk.name)) continue;
+      const entry: InboundForeignKey = {
+        tableName: renamedTo.get(owner.table.name) ?? owner.table.name,
+        fk,
+        survives: owner.survives,
+        // The referenced table may be mid-rename, so the key cannot go back
+        // verbatim — it would name a table that no longer exists.
+        definition: buildFkDef(
+          { ...fk, referencedTable: renamedTo.get(referenced) ?? referenced },
+          targetSchema
+        ),
+      };
+      const list = byTable.get(referenced);
+      if (list) list.push(entry);
+      else byTable.set(referenced, [entry]);
+    }
+  }
+  return byTable;
+}
+
+/**
+ * The inbound keys that depend on one PRIMARY KEY or UNIQUE constraint.
+ *
+ * A foreign key names the columns it references, and PostgreSQL only accepts a
+ * reference whose column list matches a key exactly — so the column list is
+ * what ties the two together, not any name the key has.
+ */
+function dependentsOnKey(
+  match: TableMatch,
+  constraintName: string,
+  inboundFks: InboundForeignKey[]
+): InboundForeignKey[] {
+  const key = nonFkConstraints(match.right).find(
+    (entry) => entry.constraint.name === constraintName
+  );
+  if (!key) return [];
+  return inboundFks.filter((entry) =>
+    sameColumnList(entry.fk.referencedColumns, key.constraint.columns)
+  );
+}
+
+/** Whether the source still has a PRIMARY KEY or UNIQUE over exactly these columns. */
+function sourceKeepsKeyFor(match: TableMatch, columns: string[]): boolean {
+  return nonFkConstraints(match.left).some(
+    (entry) =>
+      (entry.kind === "PRIMARY KEY" || entry.kind === "UNIQUE") &&
+      sameColumnList(entry.constraint.columns, columns)
+  );
+}
+
+/** Two column lists naming the same columns, order and all. */
+function sameColumnList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+/**
+ * The constraints a column rebuild has to put back.
+ *
+ * DROP COLUMN ... CASCADE takes every constraint that names the column with it.
+ * One that DIFFERS between the schemas is re-added by the constraint section
+ * below, but one that is identical in both is in no diff at all — so without
+ * this it is simply gone: the CHECK that kept the column sane, or the UNIQUE
+ * that kept it unique, and the next comparison still calls the target in sync.
+ *
+ * Foreign keys come back in their own list because they run last, once every
+ * table has all of its columns (see fkStmts in alterStatementsForMatch).
+ */
+function constraintsAfterColumnRebuild(
+  match: TableMatch,
+  columnName: string,
+  tName: string,
+  sourceSchema: string
+): { stmts: SqlStatement[]; fkStmts: SqlStatement[] } {
+  const stmts: SqlStatement[] = [];
+  const fkStmts: SqlStatement[] = [];
+  // Anything the constraint section is already going to write. Adding it here
+  // as well would be a second copy of the same ADD, and ahead of the DROP that
+  // has to come first.
+  const alreadyHandled = new Set(
+    match.constraintDiffs
+      .map((diff) => diff.leftName)
+      .filter((name): name is string => Boolean(name))
+  );
+  for (const { kind, constraint } of nonFkConstraints(match.left)) {
+    if (alreadyHandled.has(constraint.name)) continue;
+    if (!constraintTouchesColumn(constraint.columns, constraint.definition, columnName)) continue;
+    stmts.push({
+      sql: onlyIfMissing(
+        tableConstraintQuery(tName, constraint.name),
+        `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(constraint.name)} ${constraint.definition};`
+      ),
+      description:
+        `Put ${kind} "${constraint.name}" on "${tName}" back — CASCADE took it ` +
+        `with the rebuilt column "${columnName}"`,
+      kind: "ADD_CONSTRAINT",
+      severity: constraintChangeSeverity(kind, "add"),
+      tableName: tName,
+      destructive: false,
+    });
+  }
+  for (const fk of match.left.foreignKeys) {
+    if (alreadyHandled.has(fk.name)) continue;
+    if (!constraintTouchesColumn(fk.columns, fk.definition, columnName)) continue;
+    fkStmts.push({
+      sql: onlyIfMissing(
+        tableConstraintQuery(tName, fk.name),
+        `ALTER TABLE ${q(tName)} ADD CONSTRAINT ${q(fk.name)} ${buildFkDef(fk, sourceSchema)};`
+      ),
+      description:
+        `Put FK "${fk.name}" on "${tName}" back — CASCADE took it with the ` +
+        `rebuilt column "${columnName}"`,
+      kind: "ADD_CONSTRAINT",
+      severity: constraintChangeSeverity("FOREIGN KEY", "add"),
+      tableName: tName,
+      destructive: false,
+    });
+  }
+  return { stmts, fkStmts };
+}
+
 function alterStatementsForMatch(
   match: TableMatch,
   sourceSchema: string,
@@ -2599,7 +3204,14 @@ function alterStatementsForMatch(
   // The target's views, only so a DROP ... CASCADE below can name what it takes
   // with it. `undefined` means the snapshot never recorded views, in which case
   // the statement says nothing rather than claiming there are none.
-  targetViews: ViewSnapshot[] | undefined
+  targetViews: ViewSnapshot[] | undefined,
+  // Foreign keys elsewhere in the target that point at this table — see
+  // inboundForeignKeysByTable. They stand in the way of a key drop below.
+  inboundFks: InboundForeignKey[] = [],
+  // Which of the source's columns the `serial` shorthand describes truthfully.
+  // An empty plan means "none of them", which is the safe answer: the column is
+  // written out in full and its sequence built beside it.
+  plan: SequencePlan = emptySequencePlan()
 ): { stmts: SqlStatement[]; fkStmts: SqlStatement[] } {
   const stmts: SqlStatement[] = [];
   // New FK ADD CONSTRAINTs are collected here and returned separately so the
@@ -2623,7 +3235,7 @@ function alterStatementsForMatch(
           tableColumnQuery(tName, colMatch.left.name),
           `ALTER TABLE ${q(tName)} RENAME COLUMN ${q(colMatch.right.name)} TO ${q(colMatch.left.name)};`
         ),
-        description: `Rename column "${colMatch.right.name}" → "${colMatch.left.name}" in "${tName}" (${colMatch.score}% match — verify this is a rename before running)`,
+        description: `Rename column "${colMatch.right.name}" → "${colMatch.left.name}" in "${tName}" (${columnMatchPercent(colMatch.score)}% match — verify this is a rename before running)`,
         kind: "RENAME_COLUMN",
         severity: "breaking",
         tableName: tName,
@@ -2644,12 +3256,13 @@ function alterStatementsForMatch(
     // column fills them from its sequence, so neither is risky.
     const risky =
       !col.nullable && col.columnDefault === null && !col.generated && !col.identity;
-    // Same sequence-first, ownership-after shape a new table uses for a tuned
-    // serial column — see tunedSerialStatements.
-    const tunedSerial = tunedSerialStatements(col, tName);
+    // Same sequence-first, ownership-after shape a new table uses for a column
+    // the `serial` shorthand cannot describe — see columnSequenceStatements.
+    const serialOk = usesSerialShorthand(plan, tName, col.name);
+    const tunedSerial = columnSequenceStatements(col, tName, serialOk);
     stmts.push(...tunedSerial.before);
     stmts.push({
-      sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(col, risky)};`,
+      sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(col, risky, serialOk)};`,
       description:
         `Add column "${col.name}" (${col.typeDisplay}) to "${tName}"` +
         (risky ? " — added nullable; the next statement puts NOT NULL back" : ""),
@@ -2687,33 +3300,83 @@ function alterStatementsForMatch(
         : [];
       const cascadeNote =
         alsoDropped.length > 0 ? `; CASCADE also drops ${alsoDropped.join(", ")}` : "";
+      // The values only come back on their own when the column going away is
+      // ITSELF computed: PostgreSQL fills every row from the expression the
+      // moment the column returns, so nothing a person typed is lost. A stored
+      // column turning INTO a computed one is the other direction, and it is a
+      // plain data loss — the new expression is not going to reproduce what was
+      // in those rows. That one has to be armed like any other destructive drop.
+      const dropsStoredValues = !colMatch.right.generated;
       stmts.push({
         sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(colName)} CASCADE;`,
         description:
           `Drop column "${colName}" from "${tName}" so it can be rebuilt — ` +
           "WARNING: PostgreSQL cannot change a generated column in place, and " +
-          `CASCADE takes any index or view built on it${cascadeNote}`,
+          `CASCADE takes any index or view built on it${cascadeNote}` +
+          (dropsStoredValues
+            ? `; the values in "${colName}" are stored data and the new expression does not bring them back`
+            : ""),
         kind: "DROP_COLUMN",
         severity: computedChangeSeverity(),
         tableName: tName,
-        // Not armed behind "allow data loss": every value in a generated column
-        // is recomputed from the other columns the moment it comes back, so
-        // nothing a user typed is lost. What CASCADE removes alongside it is
-        // real, which is why the description says so and the grade is breaking.
-        destructive: false,
+        destructive: dropsStoredValues,
       });
+      // Same shape as the add-column section above: NOT NULL with no default is
+      // the one thing PostgreSQL cannot add to a table that already has rows,
+      // and one ALTER TABLE that cannot run aborts the whole script. A computed
+      // or identity column fills its own rows, so this only ever bites the
+      // rebuild that ends up ORDINARY.
+      const risky =
+        !colMatch.left.nullable &&
+        colMatch.left.columnDefault === null &&
+        !colMatch.left.generated &&
+        !colMatch.left.identity;
+      // A rebuild that lands on an ordinary column can land on a serial one, so
+      // it asks the same question the add-column section does.
+      const rebuiltSerialOk = usesSerialShorthand(plan, tName, colMatch.left.name);
+      const rebuiltSequence = columnSequenceStatements(colMatch.left, tName, rebuiltSerialOk);
+      stmts.push(...rebuiltSequence.before);
       stmts.push({
-        sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(colMatch.left)};`,
-        description: colMatch.left.generated
-          ? `Rebuild "${colName}" in "${tName}" as ${leftComputed}`
-          : `Rebuild "${colName}" in "${tName}" as an ordinary column`,
+        sql: `ALTER TABLE ${q(tName)} ADD COLUMN IF NOT EXISTS ${buildColumnDef(colMatch.left, risky, rebuiltSerialOk)};`,
+        description:
+          (colMatch.left.generated
+            ? `Rebuild "${colName}" in "${tName}" as ${leftComputed}`
+            : `Rebuild "${colName}" in "${tName}" as an ordinary column`) +
+          (risky ? " — added nullable; the next statement puts NOT NULL back" : ""),
         kind: "ADD_COLUMN",
         severity: computedChangeSeverity(),
         tableName: tName,
         destructive: false,
       });
+      if (risky) stmts.push(restoreNotNullStatement(colMatch.left, tName));
+      stmts.push(...rebuiltSequence.after);
+      // CASCADE took the column's constraints as well as its indexes. The
+      // indexes are put back in objectPhases, where the create lands after every
+      // ADD COLUMN; the constraints are put back here.
+      const backAfterRebuild = constraintsAfterColumnRebuild(match, colName, tName, sourceSchema);
+      stmts.push(...backAfterRebuild.stmts);
+      fkStmts.push(...backAfterRebuild.fkStmts);
       continue;
     }
+
+    // How each side generates its values and what default it carries. Read
+    // before the type change, which needs them as well as the identity and
+    // default sections further down.
+    //
+    // `identity: undefined` means the snapshot predates the field. That cannot
+    // be read as "not an identity column", so such a column emits no identity
+    // statement at all and falls through to the plain default handling.
+    const identityRecorded =
+      colMatch.left.identity !== undefined && colMatch.right.identity !== undefined;
+    const leftIdentity = identityRecorded ? (colMatch.left.identity ?? null) : null;
+    const rightIdentity = identityRecorded ? (colMatch.right.identity ?? null) : null;
+    const leftSerial = isNextvalDefault(colMatch.left.columnDefault);
+    const rightSerial = isNextvalDefault(colMatch.right.columnDefault);
+    const leftDefault = colMatch.left.columnDefault?.trim() || null;
+    const rightDefault = colMatch.right.columnDefault?.trim() || null;
+    // Set when the type change takes the target's default off first. The
+    // default section then owes the column the source's default.
+    let defaultDroppedForType = false;
 
     if (leftNorm !== rightNorm) {
       const baseChanged =
@@ -2743,6 +3406,42 @@ function alterStatementsForMatch(
         colMatch.left.typeDisplay,
         colMatch.right.typeDisplay
       );
+
+      // ALTER COLUMN ... TYPE converts the column's default as well as its rows,
+      // but USING is applied to the rows only. A default with no automatic cast
+      // to the new type stops the whole statement: a text column with DEFAULT
+      // 'active' cannot become an enum. So the default comes off first and the
+      // default section below puts the source's back, which is the order the
+      // PostgreSQL manual gives for this case.
+      //
+      // Two defaults stay on. A serial on both sides keeps its own sequence, and
+      // nextval() returns a bigint that casts to every integer type. An identity
+      // column has no default to drop, and DROP DEFAULT errors on one.
+      if (
+        baseChanged &&
+        rightDefault !== null &&
+        rightIdentity === null &&
+        !(leftSerial && rightSerial)
+      ) {
+        const dropDefault = `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP DEFAULT;`;
+        stmts.push({
+          // When the column is becoming an identity column, a second run finds
+          // it already is one, and must skip the DROP DEFAULT it would refuse.
+          sql:
+            leftIdentity !== null
+              ? onlyIfMissing(
+                  `${tableColumnQuery(tName, colName)} AND attidentity <> ''`,
+                  dropDefault
+                )
+              : dropDefault,
+          description: `Drop the default on "${colName}" in "${tName}" so its type can change`,
+          kind: "ALTER_COLUMN_DEFAULT",
+          severity: "safe",
+          tableName: tName,
+          destructive: false,
+        });
+        defaultDroppedForType = true;
+      }
 
       // ALTER COLUMN ... TYPE resets the column to the new type's DEFAULT
       // collation whenever COLLATE is omitted, so an ordinary widening used to
@@ -2819,19 +3518,6 @@ function alterStatementsForMatch(
     // completely different catalog entries, so they are handled together:
     // moving from one to the other means removing what is there before adding
     // what is wanted, and neither statement is right on its own.
-    //
-    // `identity: undefined` means the snapshot predates the field. That cannot
-    // be read as "not an identity column", so such a column emits no identity
-    // statement at all and falls through to the plain default handling.
-    const identityRecorded =
-      colMatch.left.identity !== undefined && colMatch.right.identity !== undefined;
-    const leftIdentity = identityRecorded ? (colMatch.left.identity ?? null) : null;
-    const rightIdentity = identityRecorded ? (colMatch.right.identity ?? null) : null;
-    const leftSerial = isNextvalDefault(colMatch.left.columnDefault);
-    const rightSerial = isNextvalDefault(colMatch.right.columnDefault);
-    const leftDefault = colMatch.left.columnDefault?.trim() || null;
-    const rightDefault = colMatch.right.columnDefault?.trim() || null;
-
     if (identityRecorded && leftIdentity !== rightIdentity) {
       if (leftIdentity !== null && rightIdentity !== null) {
         // Both are identity columns, only the flavour differs.
@@ -2844,20 +3530,23 @@ function alterStatementsForMatch(
           destructive: false,
         });
       } else if (leftIdentity !== null) {
-        // ADD GENERATED is refused while the column still has a default, so a
-        // serial target has to give that up first.
+        // ADD GENERATED is refused while the column has any default at all, a
+        // serial's nextval or a plain value, so the target gives it up first.
+        // The type change above may already have done that.
         //
         // Both steps are skipped once the column is an identity column. On a
         // second run ADD GENERATED would find one already there, and DROP
         // DEFAULT is refused outright on an identity column.
         const alreadyIdentity = `${tableColumnQuery(tName, colName)} AND attidentity <> ''`;
-        if (rightSerial) {
+        if (rightDefault !== null && !defaultDroppedForType) {
           stmts.push({
             sql: onlyIfMissing(
               alreadyIdentity,
               `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP DEFAULT;`
             ),
-            description: `Drop the sequence default on "${colName}" in "${tName}" before it becomes an identity column`,
+            description: rightSerial
+              ? `Drop the sequence default on "${colName}" in "${tName}" before it becomes an identity column`
+              : `Drop the default on "${colName}" in "${tName}" before it becomes an identity column`,
             kind: "ALTER_COLUMN_DEFAULT",
             severity: "safe",
             tableName: tName,
@@ -2877,6 +3566,16 @@ function alterStatementsForMatch(
           tableName: tName,
           destructive: false,
         });
+        // The identity's sequence starts at 1 whatever the rows already hold.
+        stmts.push(
+          counterPastRowsStatement(
+            tName,
+            colName,
+            null,
+            nextvalSequenceName(rightDefault),
+            countsDown(colMatch.left.sequenceOptions?.increment)
+          )
+        );
       } else {
         stmts.push({
           sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP IDENTITY IF EXISTS;`,
@@ -3006,7 +3705,12 @@ function alterStatementsForMatch(
               })
         );
         stmts.push({
-          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET DEFAULT nextval('${sequenceName.replace(/'/g, "''")}'::regclass);`,
+          // The name goes in QUOTED inside the literal. nextval reads what is
+          // in the string as SQL would read it, so a bare User_id_seq is folded
+          // to user_id_seq and the deploy stops on "relation does not exist" —
+          // and a Prisma-style "User" table is exactly where that name comes
+          // from. counterPastRowsStatement below writes it the same way.
+          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET DEFAULT nextval(${literal(q(sequenceName))}::regclass);`,
           description: `Make "${colName}" in "${tName}" take its values from sequence "${sequenceName}"`,
           kind: "ALTER_COLUMN_DEFAULT",
           severity: "safe",
@@ -3019,6 +3723,37 @@ function alterStatementsForMatch(
           sql: `ALTER SEQUENCE ${q(sequenceName)} OWNED BY ${q(tName)}.${q(colName)};`,
           description: `Tie sequence "${sequenceName}" to "${colName}" in "${tName}"`,
           kind: "ALTER_SEQUENCE",
+          severity: "safe",
+          tableName: tName,
+          destructive: false,
+        });
+        // A new sequence starts at its START whatever the rows already hold.
+        // Only on an integer column: max() + 1 has no meaning on anything else,
+        // and a nextval default on, say, a text column is not worth guessing at.
+        if (serialTypeFor(colMatch.left.typeDisplay) !== null) {
+          stmts.push(
+            counterPastRowsStatement(
+              tName,
+              colName,
+              sequenceName,
+              null,
+              countsDown(sourceSequence?.increment ?? colMatch.left.sequenceOptions?.increment)
+            )
+          );
+        }
+      }
+    } else if (defaultDroppedForType) {
+      // The type change took the target's default off, so it is gone even when
+      // the two sides' defaults read the same. The source's goes back on,
+      // written for the new type.
+      if (leftDefault !== null) {
+        stmts.push({
+          sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} SET DEFAULT ${leftDefault};`,
+          description:
+            leftDefault === rightDefault
+              ? `Put the default back on "${colName}" in "${tName}" (${leftDefault}) after its type change`
+              : `Set default on "${colName}" in "${tName}" to ${leftDefault}`,
+          kind: "ALTER_COLUMN_DEFAULT",
           severity: "safe",
           tableName: tName,
           destructive: false,
@@ -3055,9 +3790,44 @@ function alterStatementsForMatch(
   const dropFksFirst = toDrop.filter((d) => d.kind === "FOREIGN KEY");
   const dropRest = toDrop.filter((d) => d.kind !== "FOREIGN KEY");
 
+  // A key elsewhere may be holding one of these in place, and the same key can
+  // be holding two of them. Dropped once, put back once.
+  const clearedInbound = new Set<string>();
   for (const diff of [...dropFksFirst, ...dropRest]) {
     const constraintName = diff.rightName ?? "";
     if (!constraintName) continue;
+    if (diff.kind === "PRIMARY KEY" || diff.kind === "UNIQUE") {
+      for (const entry of dependentsOnKey(match, constraintName, inboundFks)) {
+        if (clearedInbound.has(entry.fk.name)) continue;
+        clearedInbound.add(entry.fk.name);
+        stmts.push({
+          sql: `ALTER TABLE ${q(entry.tableName)} DROP CONSTRAINT IF EXISTS ${q(entry.fk.name)};`,
+          description:
+            `Drop FK "${entry.fk.name}" from "${entry.tableName}" — it depends on ` +
+            `${diff.kind} "${constraintName}" on "${tName}", which is about to go`,
+          kind: "DROP_CONSTRAINT",
+          severity: constraintChangeSeverity("FOREIGN KEY", "drop"),
+          tableName: entry.tableName,
+          destructive: false,
+        });
+        // Only worth putting back if there will be something to point at: the
+        // source has to keep a key over the same columns. When it does not, the
+        // reference is gone for good and the description above is the warning.
+        if (entry.survives && sourceKeepsKeyFor(match, entry.fk.referencedColumns)) {
+          fkStmts.push({
+            sql: onlyIfMissing(
+              tableConstraintQuery(entry.tableName, entry.fk.name),
+              `ALTER TABLE ${q(entry.tableName)} ADD CONSTRAINT ${q(entry.fk.name)} ${entry.definition};`
+            ),
+            description: `Put FK "${entry.fk.name}" on "${entry.tableName}" back`,
+            kind: "ADD_CONSTRAINT",
+            severity: constraintChangeSeverity("FOREIGN KEY", "add"),
+            tableName: entry.tableName,
+            destructive: false,
+          });
+        }
+      }
+    }
     stmts.push({
       sql: `ALTER TABLE ${q(tName)} DROP CONSTRAINT IF EXISTS ${q(constraintName)};`,
       description: `Drop ${diff.kind} "${constraintName}" from "${tName}"`,
@@ -3203,12 +3973,29 @@ export function generateMigration(
   // before any table is built.
   statements.push(...objects.beforeTables);
 
+  // ── Functions a new table cannot be built without ─────────────────────────
+  // After the types above, because a function's arguments or return type can
+  // name one. Before the tables below, because a new table's DEFAULT or CHECK
+  // may call one and PostgreSQL resolves both at CREATE TABLE time. Only the
+  // functions actually named end up here — see ObjectPhases.hoistedRoutines.
+  statements.push(...objects.hoistedRoutines);
+
   // ── Drop views ────────────────────────────────────────────────────────────
   // First, not last. A view holds its source columns in place: ALTER TABLE
   // refuses to change the type of a column a view selects, and a view that has
   // to be rebuilt has to be gone before the rebuild. Anything the source still
   // has is recreated further down, once the tables are final.
   statements.push(...objects.viewDrops);
+
+  // Which foreign keys elsewhere in the target hold each table's keys in place.
+  // Built once, up here, because a table's own diff cannot see them.
+  const inboundFks = inboundForeignKeysByTable(report, report.right.schema);
+
+  // Which columns may be written as `serial`. Also built once, and for the same
+  // reason: the question is about the whole source schema — who else reads this
+  // sequence, and does it belong to anybody — and a single column cannot answer
+  // any of it. See sequencePlanFor.
+  const plan = sequencePlanFor(report.left);
 
   // ── Rename tables ─────────────────────────────────────────────────────────
   // Similarity-matched tables have different names in A and B.
@@ -3235,12 +4022,14 @@ export function generateMigration(
   for (const table of orderTablesForCreate(report.tablesOnlyInA)) {
     // A serial column whose sequence was tuned needs that sequence built before
     // the table's DEFAULT nextval(...) can name it, and tied to the column
-    // afterwards — see tunedSerialStatements.
-    const tunedSerials = table.columns.map((col) => tunedSerialStatements(col, table.name));
+    // afterwards — see columnSequenceStatements.
+    const tunedSerials = table.columns.map((col) =>
+      columnSequenceStatements(col, table.name, usesSerialShorthand(plan, table.name, col.name))
+    );
     for (const pair of tunedSerials) statements.push(...pair.before);
 
     statements.push({
-      sql: buildCreateTable(table),
+      sql: buildCreateTable(table, plan),
       description: `Create ${describeNewTable(table)}`,
       kind: "CREATE_TABLE",
       severity: "info",
@@ -3280,6 +4069,8 @@ export function generateMigration(
       sourceSchema,
       report.left.sequences,
       report.right.views,
+      inboundFks.get(match.right.name) ?? [],
+      plan,
     );
     // Safe mode comments a materialized view's drop out, and the retype it was
     // dropped for has to be held back with it — see ObjectPhases.retypeBlockedBy.
@@ -3857,10 +4648,27 @@ export function generateRollback(
       }
     }
   }
+  // Work the down script cannot do at all. A `-- MANUAL:` note is a sentence
+  // describing something PostgreSQL has no DDL for — removing an enum value is
+  // the usual one — so the statement next to it is inert and the target is left
+  // holding whatever the migration added. Reading the count off the generated
+  // statements rather than re-deriving it means nothing new can slip past: any
+  // future case that emits a note is covered the day it is written.
+  const manualSteps = manualNoteCount(inverse.statements);
+  // A sequence the rollback recreates comes back at its configured START WITH,
+  // not at the number it had reached — `last_value` is not in the snapshot and
+  // could not be restored from one anyway, since the live sequence kept moving
+  // after the capture. The structure is identical and the next id is not, which
+  // for a sequence is the whole point of it.
+  const recreatedSequences = inverse.statements.filter(
+    (stmt) => stmt.kind === "CREATE_SEQUENCE",
+  ).length;
   const lossless =
     restoredCount === 0 &&
     destroyedCount === 0 &&
-    truncatingTypeChanges.length === 0;
+    truncatingTypeChanges.length === 0 &&
+    manualSteps === 0 &&
+    recreatedSequences === 0;
 
   const warnings: string[] = [];
   if (restoredCount > 0 && forwardAllowedDataLoss) {
@@ -3905,6 +4713,25 @@ export function generateRollback(
         `On a table that already holds rows there is no value to give them, so ` +
         `${n === 1 ? "it comes" : "they come"} back nullable and the script prints ` +
         `the ALTER to run once you have backfilled ${n === 1 ? "it" : "them"}.`,
+    );
+  }
+
+  if (manualSteps > 0) {
+    warnings.push(
+      `${manualSteps} step${manualSteps === 1 ? "" : "s"} in this rollback ` +
+        `${manualSteps === 1 ? "is" : "are"} a \`-- MANUAL:\` note, not a statement: ` +
+        `PostgreSQL has no DDL for ${manualSteps === 1 ? "it" : "them"}. Running the ` +
+        `script leaves that work undone — read ${manualSteps === 1 ? "the note" : "each note"} ` +
+        `and do it by hand.`,
+    );
+  }
+  if (recreatedSequences > 0) {
+    const n = recreatedSequences;
+    warnings.push(
+      `The rollback recreates ${n} sequence${n === 1 ? "" : "s"} at ${n === 1 ? "its" : "their"} ` +
+        `START WITH value, not at the number ${n === 1 ? "it had" : "they had"} reached. ` +
+        `Set ${n === 1 ? "it" : "them"} past the highest id already in use with setval() ` +
+        `before anything inserts, or the next insert collides with an existing row.`,
     );
   }
 

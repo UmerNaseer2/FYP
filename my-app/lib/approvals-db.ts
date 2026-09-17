@@ -33,6 +33,13 @@ export type { ApprovalScript };
  * approval that could be re-used against different SQL would be worse than no
  * approval, because it would carry a second person's name.
  *
+ * An approval also stops being good after a while. The fingerprint pins WHAT
+ * was approved, but not WHEN: an approval given a month ago was a judgement
+ * about a database as it stood a month ago, and the second person is not there
+ * to be asked whether it still holds. So a decision carries an expiry, and a
+ * claim ignores a row past it — the run is simply unapproved again, and asking
+ * costs one more click. See APPROVAL_VALID_HOURS.
+ *
  * Rollbacks on production follow the same rule through the same table. The
  * `action` column says which route may spend a row ("deploy" for the apply
  * route, "revert" for the revert route), and a rollback's fingerprint is built
@@ -69,11 +76,31 @@ export type DeployApproval = {
   note: string | null;
   used_at: string | null;
   action: ApprovalAction;
+  /**
+   * When this approval stops authorising the run. Set when it is approved, and
+   * null on a row decided before this column existed — those never expire,
+   * because retro-fitting an expiry onto a decision somebody already made would
+   * be this tool inventing an answer on their behalf.
+   */
+  expires_at: string | null;
 };
+
+/**
+ * How long an approval lasts once it is given: one week.
+ *
+ * Long enough that a deploy planned for "after the weekend" still goes ahead
+ * without asking twice, short enough that a month-old yes does not quietly
+ * unlock a production run. An expired approval is not an error state — the run
+ * just reads as unapproved, exactly as it did before anybody looked at it.
+ */
+export const APPROVAL_VALID_HOURS = 24 * 7;
+
+/** An approval that is still good: approved, and not past its expiry. */
+const UNEXPIRED = `(expires_at IS NULL OR expires_at > now())`;
 
 const COLUMNS = `id, connection_id, schema_name, script_name, target_version,
   run_fingerprint, migration_count, breaking_count, requested_by, requested_at,
-  status, decided_by, decided_at, self_approved, note, used_at, action`;
+  status, decided_by, decided_at, self_approved, note, used_at, action, expires_at`;
 
 /**
  * Hash the exact SQL of a run.
@@ -112,6 +139,10 @@ export async function createApprovalRequest(input: {
       WHERE connection_id = $1 AND schema_name = $2 AND run_fingerprint = $3
         AND action = $4
         AND status IN ('pending', 'approved')
+        -- An approved row that has expired cannot be claimed, so handing it
+        -- back here would show "approved" on a screen whose Deploy button then
+        -- says the run needs approval. Let it fall through to a fresh request.
+        AND ${UNEXPIRED}
       ORDER BY id DESC LIMIT 1`,
     [input.connectionId, input.schemaName, fingerprint, input.action]
   );
@@ -192,9 +223,14 @@ export async function decideApproval(input: {
 }): Promise<DeployApproval | null> {
   await syncMetadataTables();
   const result = await pool.query<DeployApproval>(
+    // The clock starts at the decision, not at the request: the window is how
+    // long this person's judgement stands, and a request that waited three days
+    // for an answer should not arrive already half spent. A rejection gets no
+    // expiry — there is nothing to expire.
     `UPDATE deploy_approvals
         SET status = $2, decided_by = $3, decided_at = now(),
-            self_approved = $4, note = COALESCE($5, note)
+            self_approved = $4, note = COALESCE($5, note),
+            expires_at = CASE WHEN $6 THEN now() + make_interval(hours => $7) END
       WHERE id = $1 AND status = 'pending'
       RETURNING ${COLUMNS}`,
     [
@@ -203,6 +239,8 @@ export async function decideApproval(input: {
       input.decidedBy,
       input.selfApproved,
       input.note,
+      input.approve,
+      APPROVAL_VALID_HOURS,
     ]
   );
   return result.rows[0] ?? null;
@@ -227,6 +265,10 @@ export async function getApproval(id: number): Promise<DeployApproval | null> {
  * the WHERE clause is what makes that a race-free single UPDATE rather than a
  * read followed by a write.
  *
+ * A row past its expiry is left where it is rather than claimed: nothing is
+ * marked used, the caller reads null, and the route answers "this run needs
+ * approval" — the same answer it gives for a run nobody has looked at.
+ *
  * `action` is required, not defaulted: the apply route passes "deploy" and the
  * revert route passes "revert", and a caller that forgot to say which would
  * otherwise quietly spend the wrong kind of approval.
@@ -247,6 +289,7 @@ export async function claimApproval(input: {
          WHERE connection_id = $1 AND schema_name = $2
            AND run_fingerprint = $3 AND action = $4
            AND status = 'approved'
+           AND ${UNEXPIRED}
          ORDER BY id ASC LIMIT 1
          FOR UPDATE SKIP LOCKED
       )

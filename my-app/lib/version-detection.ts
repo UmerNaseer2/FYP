@@ -77,6 +77,10 @@ const KNOWN_VERSION_TABLES = [
   "version_control",
   "migrations",
   "flyway_schema_history",
+  // Liquibase. Its name has neither "version" nor "migration" in it, so the
+  // name-pattern route never found it: a Liquibase-managed schema was read as
+  // having no version table at all, while the docs said it was supported.
+  "databasechangelog",
   "sequelize_meta",
   // Rails and several Node migration tools keep their history here.
   "schema_migrations",
@@ -135,6 +139,8 @@ const DATE_COLUMNS = [
   "applied_at",
   "executed_at",
   "installed_on",
+  // Liquibase's, which is also what orders its rows when no tag is set.
+  "dateexecuted",
   "created_at",
   "updated_at",
 ];
@@ -437,7 +443,8 @@ async function readTimeline(
   // Flyway records success = false for a run that failed, and numbers its
   // runs in installed_rank. script_patch names each row's script family.
   const successColumn = findColumn(columns, ["success"]);
-  const rankColumn = findColumn(columns, ["installed_rank"]);
+  // orderexecuted is Liquibase's counterpart: the order its changesets ran in.
+  const rankColumn = findColumn(columns, ["installed_rank", "orderexecuted"]);
   const scriptNameColumn = findColumn(columns, ["script_name"]);
 
   // Only the columns this screen reads, each once. SELECT * dragged checksums

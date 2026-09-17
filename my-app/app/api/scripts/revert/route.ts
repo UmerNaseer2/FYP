@@ -18,6 +18,7 @@ import {
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { analyseRunRisk } from "@/lib/deploy-risk";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
+import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
 import {
   isProduction,
@@ -318,7 +319,19 @@ export async function POST(request: NextRequest) {
     const tracked = await findTrackedSchema(connectionId, schemaName);
     if (tracked) schemaEnvironment = tracked.environment;
   } catch (error) {
+    // This used to log and carry on with the default label, "unset" — the
+    // quietest one there is. A metadata database that was merely unreachable
+    // therefore turned a production schema into an unlabelled one, and the
+    // confirmation below is skipped for unlabelled schemas: a rollback would
+    // have dropped what a migration added on production without ever asking.
+    // Apply answers the same failure with 503, and so does this.
     console.error("Revert — could not read the tracked schema's environment:", error);
+    return fail(503, {
+      error:
+        "Could not read this schema's tracking record, so its environment label is " +
+        "unknown. Nothing was run. Try again in a moment; if it keeps failing, check " +
+        "that the app's metadata database is running.",
+    });
   }
   const targetEnvironment = louderEnvironment(
     toEnvironment(connRow.environment),
@@ -391,7 +404,11 @@ export async function POST(request: NextRequest) {
   // COMMIT was attempted. Once COMMIT was sent, the rollback may have taken
   // effect, and the approval must not be spent a second time.
   let claimedApprovalId: number | null = null;
-  let commitAttempted = false;
+  // Set once the COMMIT came back cleanly, and set when it threw without the
+  // server saying what became of it. Between them they decide whether the
+  // approval goes back — see the finally block.
+  let runCommitted = false;
+  let commitOutcomeUnknown = false;
 
   // Refuse from inside the transaction: undo it (nothing ran yet), then answer.
   const refuse = async (status: number, payload: Record<string, unknown> & { error: string }) => {
@@ -769,25 +786,52 @@ export async function POST(request: NextRequest) {
     }
 
     // ─── 13. Real run: COMMIT ──────────────────────────────────────────────
-    // If COMMIT itself throws (the connection dropped), the server may or may
-    // not have committed. Saying "nothing was changed" could be false, so say
-    // what is known, and keep the approval spent.
-    commitAttempted = true;
+    // A COMMIT that throws splits in two, and the split matters to the reader.
+    //
+    // If the connection dropped, the server may or may not have committed and
+    // nothing on this side can tell. Saying "nothing was changed" could be
+    // false, so say what is known and keep the approval spent.
+    //
+    // If the server ANSWERED, it refused the commit and rolled the rollback
+    // back itself — definitely, and it said why. Telling that reader to go and
+    // check the Deploy screen for themselves hides an error that already names
+    // the problem. See lib/commit-outcome.
     try {
       await client.query("COMMIT");
     } catch (commitError) {
       transactionStarted = false;
-      brokenConnection = true;
-      console.error("Revert — COMMIT failed, outcome unknown:", commitError);
+      if (commitOutcomeIsUnknown(commitError)) {
+        commitOutcomeUnknown = true;
+        // The connection is the thing in doubt, so it must not go back to the
+        // pool for the next request to pick up.
+        brokenConnection = true;
+        console.error("Revert — COMMIT failed, outcome unknown:", commitError);
+        return fail(500, {
+          outcomeUnknown: true,
+          error:
+            `The connection dropped while committing the rollback, so it is not known whether ` +
+            `it took effect. Reload Deploy - if ${vLabel(undone[undone.length - 1])} shows as ` +
+            `pending, the rollback went through.`,
+        });
+      }
+      // A refusal leaves the connection perfectly usable, so it is NOT marked
+      // broken here: destroying a healthy pooled connection over a constraint
+      // error costs the next request a fresh connect for nothing.
+      const said =
+        describeCommitError(commitError) ||
+        (commitError instanceof Error ? commitError.message : String(commitError));
+      console.error("Revert — the server refused the COMMIT:", commitError);
       return fail(500, {
-        outcomeUnknown: true,
+        results,
         error:
-          `The connection dropped while committing the rollback, so it is not known whether ` +
-          `it took effect. Reload Deploy - if ${vLabel(undone[undone.length - 1])} shows as ` +
-          `pending, the rollback went through.`,
+          `PostgreSQL refused to commit the rollback of ${listVersions(undone)} and undid it, ` +
+          `so nothing was changed and every version in this rollback is still applied. A ` +
+          `constraint marked DEFERRABLE is checked at the commit rather than at the statement ` +
+          `that tripped it, which is why this surfaced only at the end. PostgreSQL said: ${said}`,
       });
     }
     transactionStarted = false;
+    runCommitted = true;
 
     // ─── 14. Release the client, then advance lineage ──────────────────────
     // Released BEFORE the lineage advance, which re-introspects the target on
@@ -879,10 +923,15 @@ export async function POST(request: NextRequest) {
         `changed - every version in this rollback is still applied. PostgreSQL said: ${message}`,
     });
   } finally {
-    // An approval spent on a run that never reached COMMIT goes back to
-    // "approved", so the operator can fix the problem and press Roll back
-    // again without asking a second time. Best-effort.
-    if (claimedApprovalId !== null && !commitAttempted) {
+    // An approval spent on a run that did not commit goes back to "approved",
+    // so the operator can fix the problem and press Roll back again without
+    // asking a second time. Best-effort.
+    //
+    // The one exception is a COMMIT that never reported back: the rollback may
+    // have landed, and handing the approval back would leave a one-click re-run
+    // of work that might already be done under a screen that has just said it
+    // does not know.
+    if (claimedApprovalId !== null && !runCommitted && !commitOutcomeUnknown) {
       try {
         await releaseApproval(claimedApprovalId);
       } catch (releaseError) {

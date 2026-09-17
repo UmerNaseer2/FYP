@@ -10,12 +10,70 @@
 // editor's suggestion has to come from the same rule Deploy grades with.
 import { inferChangeTypeFromSql, type ScriptChangeType } from "./change-type";
 
-/** Split a version like "v1.2.0" into [1, 2, 0], ignoring stray non-digits. */
+/**
+ * A version split the way every comparison here reads it: the numbers, and the
+ * pre-release tag that follows them.
+ *
+ * semver writes a pre-release after a hyphen and build metadata after a plus,
+ * so "2.0.0-rc.1+build.5" is release 2.0.0, candidate "rc.1". Both have to come
+ * off before the numbers are split on ".", or the "1" in "rc.1" reads as a
+ * fourth number and the candidate outranks the release it leads up to.
+ */
+function splitVersion(version: string): { numbers: number[]; prerelease: string | null } {
+  const bare = (version ?? "").trim().replace(/^v/i, "").split("+")[0];
+  const hyphen = bare.indexOf("-");
+  const numeric = hyphen === -1 ? bare : bare.slice(0, hyphen);
+  const tag = hyphen === -1 ? "" : bare.slice(hyphen + 1);
+  return {
+    // parseInt reads up to the first non-digit, so a stray suffix reads as the
+    // number it follows rather than changing it.
+    numbers: numeric.split(".").map((part) => Number.parseInt(part, 10) || 0),
+    prerelease: tag === "" ? null : tag,
+  };
+}
+
+/**
+ * Order two pre-release tags the way semver does, once their numbers match.
+ *
+ * A tag is compared one dot-separated piece at a time: two numbers compare as
+ * numbers, anything else compares as text, a number always ranks below text,
+ * and a tag that runs out of pieces first ranks below the longer one, so
+ * "rc" < "rc.1" < "rc.2" < "rc.beta".
+ */
+function comparePrerelease(left: string, right: string): number {
+  const a = left.split(".");
+  const b = right.split(".");
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const x = a[index];
+    const y = b[index];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xIsNumber = /^\d+$/.test(x);
+    const yIsNumber = /^\d+$/.test(y);
+    if (xIsNumber && yIsNumber) {
+      const diff = Number(x) - Number(y);
+      if (diff !== 0) return diff;
+    } else if (xIsNumber !== yIsNumber) {
+      return xIsNumber ? -1 : 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Split a version like "v1.2.0" into [1, 2, 0]. The pre-release tag is not a
+ * number and is left out: "2.0.0-rc1" is [2, 0, 0].
+ *
+ * The old rule deleted every non-digit instead of stopping at one, which glued
+ * the digits either side of a suffix together — "0-rc1" became "01" → 1. So
+ * 2.0.0-rc1 read as 2.0.1: it outranked the 2.0.0 it is a candidate for, and
+ * shared a key with a genuine 2.0.1. Which of two versions with the same
+ * numbers comes first is compareVersions' job, not this one's.
+ */
 export function versionParts(version: string): number[] {
-  return version
-    .replace(/^v/i, "")
-    .split(".")
-    .map((part) => Number.parseInt(part.replace(/\D/g, ""), 10) || 0);
+  return splitVersion(version).numbers;
 }
 
 /**
@@ -33,12 +91,22 @@ export function versionParts(version: string): number[] {
  * A key is for matching only. Show and send a version as it was written.
  */
 export function versionKey(version: string): string {
-  const parts = versionParts(version);
+  const { numbers, prerelease } = splitVersion(version);
+  const parts = [...numbers];
   // compareVersions pads the shorter side with zeros, so "1.2" is "1.2.0"...
   while (parts.length < 3) parts.push(0);
   // ...and for the same reason a 0 after the third part changes nothing.
   while (parts.length > 3 && parts[parts.length - 1] === 0) parts.pop();
-  return parts.join(".");
+  if (prerelease === null) return parts.join(".");
+  // A pre-release belongs in the key: 2.0.0-rc1 and 2.0.0 are different
+  // versions, so applying the candidate must not mark the release as applied.
+  // Numeric pieces are written back without leading zeros because that is how
+  // comparePrerelease reads them, and the key has to agree with it.
+  const tag = prerelease
+    .split(".")
+    .map((piece) => (/^\d+$/.test(piece) ? String(Number(piece)) : piece))
+    .join(".");
+  return `${parts.join(".")}-${tag}`;
 }
 
 /**
@@ -46,12 +114,21 @@ export function versionKey(version: string): string {
  * if left > right, 0 if equal. Pads to 3 segments so "1.2" and "1.2.0" match.
  */
 export function compareVersions(left: string, right: string): number {
-  const a = versionParts(left);
-  const b = versionParts(right);
-  const length = Math.max(a.length, b.length, 3);
+  const a = splitVersion(left);
+  const b = splitVersion(right);
+  const length = Math.max(a.numbers.length, b.numbers.length, 3);
   for (let index = 0; index < length; index += 1) {
-    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    const diff = (a.numbers[index] ?? 0) - (b.numbers[index] ?? 0);
     if (diff !== 0) return diff;
+  }
+  // Same numbers, so the pre-release decides. A candidate comes BEFORE the
+  // release it leads up to — 2.0.0-rc1 is on the way to 2.0.0, not past it.
+  // Read the other way round, the ledger marked a real 2.0.0 as Skipped once
+  // its own release candidate had been applied.
+  if (a.prerelease !== null || b.prerelease !== null) {
+    if (a.prerelease === null) return 1;
+    if (b.prerelease === null) return -1;
+    return comparePrerelease(a.prerelease, b.prerelease);
   }
   // All numeric segments match → treat as equal. There is deliberately no
   // fallback to a string compare: "v1.2.0", "1.2.0", and "1.2" are the same
@@ -301,9 +378,16 @@ export function buildVersionLedger(
   appliedHistory: AppliedVersion[]
 ): LedgerEntry[] {
   // Each applied version by its key (the first row wins if one is duplicated).
+  //
+  // A name that is not a version is keyed by the name itself instead. versionKey
+  // has to answer something for every ledger row, and for "release-2" it answers
+  // "2.0.0" — so a registry that really did hold 2.0.0 found an applied row
+  // waiting under its key and showed a version nobody had ever run as Applied.
+  // A key that starts with a letter cannot collide with one, and the name is
+  // still listed as its own applied entry, which is the point of keeping it.
   const appliedByKey = new Map<string, AppliedVersion>();
   for (const row of appliedHistory) {
-    const key = versionKey(row.version);
+    const key = looksLikeVersion(row.version) ? versionKey(row.version) : `name:${row.version}`;
     if (!appliedByKey.has(key)) appliedByKey.set(key, row);
   }
 

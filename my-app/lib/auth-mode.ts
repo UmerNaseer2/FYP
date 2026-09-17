@@ -13,11 +13,43 @@
  *
  *     NEXT_PUBLIC_AUTH_BYPASS=false
  *
+ * ...AND A REBUILD. A NEXT_PUBLIC_ variable is not read at run time: Next
+ * substitutes the literal text `process.env.NEXT_PUBLIC_AUTH_BYPASS` below for
+ * its value while compiling, so what ships is a hard-coded true or false. In
+ * development the dev server recompiles and the edit takes effect on the next
+ * request; a built app does not, and editing .env.local next to it changes
+ * nothing at all. `npm run build` again, or for Docker pass it at build time
+ * (`--build-arg NEXT_PUBLIC_AUTH_BYPASS=false`, which is what Dockerfile:33-35
+ * is for) — setting it in `docker run -e` is the version that quietly does
+ * nothing. That substitution is also why the variable is written out in full
+ * here rather than looked up through a helper or a computed key: Next matches
+ * the text, so `process.env[name]` is never replaced and always reads
+ * undefined in the browser.
+ *
  * Everything needed for that flip is built: the edge proxy, per-route role gates,
  * the `profiles` table and its bootstrap. The only outstanding prerequisites are
  * the four secrets (AZURE_AD_CLIENT_ID / _SECRET / _TENANT_ID, NEXTAUTH_SECRET).
  */
-export const BYPASS_AUTH: boolean = process.env.NEXT_PUBLIC_AUTH_BYPASS !== "false";
+
+/**
+ * The spellings that turn the bypass OFF, i.e. that turn real auth ON.
+ *
+ * More than just "false" on purpose, and the asymmetry is the point. Getting
+ * this wrong in one direction leaves an app open that its owner believes is
+ * shut — and it looks fine, because there is no sign-in screen either way, so
+ * nothing on screen says which one you got. `False`, `FALSE`, `0` and `false `
+ * with a stray space from the end of a line in .env.local are all things a
+ * person writes meaning off; every one of them used to leave the bypass on.
+ * Wrong in the other direction merely locks you out of your own dev server,
+ * which you notice within seconds.
+ */
+const BYPASS_OFF = new Set(["false", "0", "no", "off"]);
+
+// Trimmed and lowercased first — see BYPASS_OFF. Unset still means ON, which is
+// the documented default above and what every existing checkout relies on.
+const bypassSetting = (process.env.NEXT_PUBLIC_AUTH_BYPASS ?? "").trim().toLowerCase();
+
+export const BYPASS_AUTH: boolean = !BYPASS_OFF.has(bypassSetting);
 
 /** Roles, lowest privilege first. Order is meaningful — see roleAtLeast(). */
 export const ROLES = ["viewer", "editor", "admin"] as const;

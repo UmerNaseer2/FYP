@@ -62,6 +62,9 @@ Create `my-app/.env.local` (git-ignored, never commit it):
 | `AZURE_AD_TENANT_ID` | Microsoft Entra tenant | not yet set — see §5 |
 | `NEXTAUTH_SECRET` | Session encryption key | not yet set — see §5 |
 | `DRIFT_SCHEDULER` | `off` stops the background drift loop; anything else leaves it on | no, defaults to on |
+| `APP_ENCRYPTION_KEY` | Encrypts saved database passwords at rest. With neither this nor `NEXTAUTH_SECRET` set, passwords are stored as plain text and the server only logs a warning | no, but set it |
+| `ALLOW_PRIVATE_DB_HOSTS` | `true` lets a production deployment dial loopback, unix sockets and RFC1918 addresses. Off, those are refused in production only, so local development still works | no, defaults to off |
+| `NEXT_PUBLIC_AUTH_BYPASS` | `false` (or `0`/`no`/`off`, any case) turns real sign-in on. Read at BUILD time, not run time — see §5 | no, defaults to bypass on |
 
 Metadata tables are created on first use by `ensureMetadataSchema()`; there is no
 separate migration step for the tool's own storage.
@@ -118,8 +121,9 @@ my-app/
       schemas/[id]/           lineage detail for one tracked schema
       versionsync/            registry vs ledger vs lineage reconciliation
       visualizer/             React Flow ERD
-      admin/                  role management — roles, approver list
-    api/                      26 route handlers, listed below
+      admin/                  role management — list users, change roles, remove
+      performance/            suggestions, query analysis, trends
+    api/                      31 route handlers, listed below
     globals.css               all styling (see §6)
   components/
     ui/                       design-system primitives
@@ -129,7 +133,11 @@ my-app/
     db/                       Sequelize instance, models, one-time schema sync
   hooks/                      useUser and friends
   scripts/                    seed-test-schemas.cjs
+  components/AuthGuard.tsx    client-side gate; reads the same switch the server does
   auth.ts                     NextAuth v5 config (Microsoft Entra provider)
+  auth.config.ts              the edge-safe half of that config, imported by proxy.ts
+  proxy.ts                    middleware: the page-level session check
+  instrumentation.ts          server start-up; this is what launches the drift scheduler
 ```
 
 ### Library modules
@@ -166,24 +174,32 @@ my-app/
 admin/users             auth/[...nextauth]      compare
 comparison-sets         connections             connections/test
 connections/test-saved  deploy/approvals        deploy/approvals/[id]
-github/pull             github/push             lineage
-lineage/[id]            lineage/acknowledge     lineage/audit
-lineage/drift           lineage/lookup          lineage/rebaseline
-lineage/schedule        lineage/schemas         lineage/track
-performance/advice      performance/analyze     performance/metrics
-schema/snapshot         scripts/apply           scripts/preflight
-scripts/revert          scripts/schemas         versionsync/ledger
+github/family           github/pull             github/push
+lineage                 lineage/[id]            lineage/acknowledge
+lineage/audit           lineage/drift           lineage/lookup
+lineage/rebaseline      lineage/schedule        lineage/schemas
+lineage/track           performance/advice      performance/analyze
+performance/metrics     schema/snapshot         scripts/apply
+scripts/preflight       scripts/revert          scripts/schemas
+versionsync/ledger
 ```
 
-Every one of them opens with a role gate — `requireViewer`, `requireEditor`,
-`requireApprover` or `requireAdmin` from `lib/auth-guard.ts`. The single
+Every one of them opens with a role gate — `requireViewer`, `requireEditor` or
+`requireAdmin` from `lib/auth-guard.ts`, each a thin call on `requireRole()`.
+There are three roles and three gates; approval is not a fourth role, but a
+second *person*, which `lib/approvals-db.ts` enforces per run. The single
 exception is `auth/[...nextauth]`, which *is* the sign-in endpoint and cannot
 require a session to reach.
 
 ### How the comparison engine works
 
-`fetchSchemaSnapshot()` runs three catalog queries — tables, columns, and
-`pg_constraint` — and returns a normalised snapshot. `compareSchemas()` then:
+`fetchSchemaSnapshot()` runs 15 catalog queries — tables, columns, constraints,
+indexes, triggers, partitioning, row security, policies, views, sequences, types,
+extensions, collations, routines and privileges — and returns one normalised
+snapshot. They all run on a single connection inside `BEGIN ISOLATION LEVEL
+REPEATABLE READ READ ONLY`, so the fifteen answers describe the same instant
+rather than fifteen slightly different ones, and a schema being altered while it
+is read cannot produce a snapshot that never existed. `compareSchemas()` then:
 
 1. matches tables by exact name;
 2. scores every unmatched source table against every unmatched target table on
@@ -253,9 +269,14 @@ lineage snapshots · drift detection and re-baseline · version-sync
 reconciliation · detecting an existing version table in a target · saved
 comparison sets · comparing one source against up to six
 targets · dev/staging/production labels and their warnings · exporting a diff as
-Markdown, JSON, CSV or PDF · the ERD visualizer · scheduled drift checking
+Markdown, JSON or CSV · the ERD visualizer · scheduled drift checking
 without a button press · query plan analysis · index and schema suggestions ·
 schema metrics over time.
+
+The **Print / PDF** button is the browser's own print dialog (`window.print()`
+in `components/studio/ExportBar.tsx`), with print styles applied. Save-as-PDF is
+whatever the browser offers there; the app generates no PDF file itself, which is
+why PDF is not in the export list above.
 
 The compare engine introspects tables, columns, constraints, indexes, triggers,
 views, sequences, types and routines.
@@ -293,13 +314,38 @@ Four of those are new enough to say where they live:
 ### Switched off or incomplete
 
 - **Authentication is bypassed on purpose, for testing.**
-  `NEXT_PUBLIC_AUTH_BYPASS` is not `"false"`, so `lib/auth-mode.ts` reports the
-  bypass as on and both the UI guard and `lib/auth-guard.ts` let every request
-  through as an admin. The wiring underneath is complete: all 30 API routes
-  except the NextAuth handler itself call `requireViewer` / `requireEditor` /
-  `requireAdmin`, and the `profiles` table is created with the rest of the
-  metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS=false` turns the whole thing
+  `NEXT_PUBLIC_AUTH_BYPASS` is not set to any of the off spellings below, so
+  `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
+  `lib/auth-guard.ts` let every request through as an admin. The wiring
+  underneath is complete: all 30 API routes except the NextAuth handler itself
+  call `requireViewer` / `requireEditor` / `requireAdmin`, and the `profiles`
+  table is created with the rest of the metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS` to `false` — or `0`, `no`
+  or `off`, in any case, with surrounding spaces ignored — turns the whole thing
   on, and then the Entra keys in §1 have to be set for anyone to get in.
+
+  **It is read when the app is BUILT, not when it runs.** Next substitutes every
+  `NEXT_PUBLIC_` variable for its value during compilation, so what ships is a
+  hard-coded true or false. `npm run dev` recompiles and picks up an edit to
+  `.env.local` on the next request; a built app does not, and setting the
+  variable next to a running container does nothing at all. Rebuild, or for
+  Docker pass `--build-arg NEXT_PUBLIC_AUTH_BYPASS=false`. There is no sign-in
+  screen either way, so nothing on screen tells you which one you got.
+
+### Two rules that only bite in production
+
+- **Private hosts are refused when `NODE_ENV=production`.** Loopback, the
+  RFC1918 ranges, and a host that is a unix socket — one starting with `/` or
+  `@`, or left out of a connection string entirely, since `pg` then falls back
+  to the local socket — all count as private and are blocked, because each of
+  them reaches the app server's own machine. Cloud metadata and link-local
+  addresses are blocked everywhere, production or not. `ALLOW_PRIVATE_DB_HOSTS=true`
+  opts back in for a trusted or VPC deployment. Development is unaffected, which
+  is why a localhost target works locally and then fails once deployed.
+- **A production approval expires after a week** (`APPROVAL_VALID_HOURS`, 24 × 7).
+  The run fingerprint pins *what* was approved but not *when*, and a month-old
+  yes was a judgement about a database as it stood a month ago. Past the expiry
+  the run simply reads as unapproved again — it is not an error, and asking
+  again costs one click.
 
 ### Not built at all
 
@@ -311,19 +357,19 @@ three, and they are the Performance section described above.
 
 | Required | State |
 | --- | --- |
-| Next.js | met — 16.2.2, App Router, React 19.2.4, TypeScript 5 |
+| Next.js | met — 16.3.5, App Router, React 19.2.4, TypeScript 5 |
 | PostgreSQL with Sequelize | met — Sequelize owns the metadata database (§4); the `pg` driver stays for target introspection |
 | Microsoft OAuth via NextAuth | wired in `auth.ts`, disabled by `BYPASS_AUTH` |
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | met — 365 tests in 16 suites over the domain modules; the pages themselves are covered by route tests, not render tests |
+| Jest unit tests | met — 1,821 tests in 61 suites over the domain modules; the pages themselves are covered by route tests, not render tests |
 
 ---
 
 ## 6. Styling
 
-All styling lives in `app/globals.css` (about 1,250 lines) as CSS custom
+All styling lives in `app/globals.css` (about 1,420 lines) as CSS custom
 properties plus hand-written component classes. Tailwind v4 is imported at the
 top of that file and its utilities carry layout and spacing — `flex`, `grid`,
 `mt-2`, `text-[12px]` — while anything with a look of its own (`.btn`, `.card`,
@@ -352,8 +398,10 @@ Fonts are Geist Sans and Geist Mono via `next/font`, exposed as
 - `main` is the trunk. `Umer-dev`, `Cindy-dev`, `mei-dev`, `G-DEV` and `test`
   are the per-person branches. Work lands on `Umer-dev` first; the others are
   fast-forwarded to match, so every branch holds the same tree.
-- This README is the only tracked document. Working notes, reviews and generated
-  reports go in `my-app/docs/`, which is git-ignored.
+- This README is the main tracked document, and the only one describing the app
+  itself. The repository also tracks a root `README.md` and three files under
+  `docs/` (`PROJECT_CONTEXT.md`, `README.md`, `REVIEW_PROMPT.md`). Working notes,
+  reviews and generated reports go in `my-app/docs/`, which is git-ignored.
 - The full FYP-B review — subsystem maps, the spec trace, 54 findings, the market
   comparison against fourteen commercial tools, and the roadmap — is at
   `my-app/docs/schema-studio-fyp-b-review.html`. Open it in a browser.

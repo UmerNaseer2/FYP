@@ -149,10 +149,33 @@ async function measureSizes(
     });
     const target = getPoolForConfig(cfg);
     const client = await target.connect();
+    // Set when the connection can no longer be trusted, so release() closes it
+    // instead of handing it to whoever borrows from this pool next.
+    let broken = false;
+    let first:
+      | { total_bytes: string | null; index_bytes: string | null; estimated_rows: string | null }
+      | undefined;
     try {
       // A background job must not be the reason somebody's database is holding
-      // a long-running catalogue scan.
-      await client.query(`SET statement_timeout = ${SIZE_TIMEOUT_MS}`);
+      // a long-running catalogue scan, so the read gets a timeout.
+      //
+      // SET LOCAL inside a transaction, never a plain SET. This client goes back
+      // to a pool that Deploy borrows from too, and a plain SET stays on the
+      // connection after release: the next migration to be handed it would be
+      // cut off after five seconds. SET LOCAL ends with the transaction.
+      await client.query("BEGIN READ ONLY");
+      await client.query(`SET LOCAL statement_timeout = ${SIZE_TIMEOUT_MS}`);
+      // Which relations count:
+      //   • 'r' tables and 'm' materialized views hold rows and storage.
+      //   • 'p' partitioned parents are left out. A parent has no storage of its
+      //     own, and ANALYZE on a parent stores the total of its partitions, so
+      //     counting it as well would count every row twice.
+      //
+      // reltuples is -1 on a table that has never been analysed. When that table
+      // has no pages on disk it is empty, so it adds nothing. When it does have
+      // pages, nobody knows how many rows it holds, and a total that quietly
+      // counted it as 0 would be a wrong number drawn as a real one. The whole
+      // estimate is then NULL, which the chart draws as a gap.
       const result = await client.query<{
         total_bytes: string | null;
         index_bytes: string | null;
@@ -160,25 +183,38 @@ async function measureSizes(
       }>(
         `SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint AS total_bytes,
                 COALESCE(SUM(pg_indexes_size(c.oid)), 0)::bigint       AS index_bytes,
-                COALESCE(SUM(GREATEST(c.reltuples, 0)), 0)::bigint     AS estimated_rows
+                CASE WHEN COALESCE(bool_or(c.reltuples < 0 AND pg_relation_size(c.oid) > 0), false)
+                     THEN NULL
+                     ELSE COALESCE(SUM(GREATEST(c.reltuples, 0)), 0)::bigint
+                END                                                     AS estimated_rows
            FROM pg_class c
            JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE n.nspname = $1
-            AND c.relkind IN ('r', 'p', 'm')`,
+            AND c.relkind IN ('r', 'm')`,
         [schema]
       );
-      const first = result.rows[0];
-      if (!first) return NO_SIZES;
-      // node-postgres hands every bigint back as text rather than lose
-      // precision above 2^53, so all three arrive as strings.
-      return {
-        totalBytes: toNumber(first.total_bytes),
-        indexBytes: toNumber(first.index_bytes),
-        estimatedRows: toNumber(first.estimated_rows),
-      };
+      await client.query("COMMIT");
+      first = result.rows[0];
+    } catch (error) {
+      // ROLLBACK ends the transaction, and the SET LOCAL with it. When even that
+      // fails the connection is unusable, and it must not go back to the pool.
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        broken = true;
+      }
+      throw error;
     } finally {
-      client.release();
+      client.release(broken);
     }
+    if (!first) return NO_SIZES;
+    // node-postgres hands every bigint back as text rather than lose
+    // precision above 2^53, so all three arrive as strings.
+    return {
+      totalBytes: toNumber(first.total_bytes),
+      indexBytes: toNumber(first.index_bytes),
+      estimatedRows: toNumber(first.estimated_rows),
+    };
   } catch (error) {
     console.error(`Monitoring — could not measure "${schema}":`, error);
     return NO_SIZES;

@@ -65,8 +65,18 @@ function target(options: {
 }): FakeStep[] {
   const columns = options.columns ?? ["down_sql", "sql_content"];
   return [
-    { match: /information_schema\.tables/, rows: [{ exists: options.ledger !== false }] },
-    { match: /to_regclass/, rows: [{ reg: options.revertedTable ? '"sales".script_patch_reverted' : null }] },
+    // Both existence probes are to_regclass now, so they are told apart by the
+    // name they ask about rather than by the query text.
+    {
+      match: /to_regclass/,
+      when: (values) => String(values[0]).endsWith(".script_patch"),
+      rows: [{ reg: options.ledger !== false ? '"sales".script_patch' : null }],
+    },
+    {
+      match: /to_regclass/,
+      when: (values) => String(values[0]).endsWith(".script_patch_reverted"),
+      rows: [{ reg: options.revertedTable ? '"sales".script_patch_reverted' : null }],
+    },
     { match: /FROM "sales"\.script_patch_reverted/, rows: options.revertedTable ? REVERTED : [] },
     {
       match: /column_name IN \('down_sql', 'sql_content'\)/,
@@ -289,4 +299,44 @@ it("reads the whole schema's history and no other-family list without a scriptNa
   // The unscoped read carries the applied SQL too.
   expect(timelineQuery(mockClient)).toContain("applied_at, down_sql, sql_content FROM \"sales\".script_patch ORDER BY");
   expect((res.body.timeline as Record<string, unknown>[])[0]).toHaveProperty("sql_content", "SELECT 5;");
+});
+
+// ─── Finding the ledger ────────────────────────────────────────────────────
+
+it("asks the catalog for script_patch, not the privilege-filtered view", async () => {
+  mockClient = createFakeClient(target({ ledger: true, revertedTable: false }));
+  const res = await preflight(FAMILY);
+
+  expect(res.status).toBe(200);
+  expect(res.body).toMatchObject({ hasVersionTable: true, needsInit: false });
+  // information_schema.tables lists only tables the current user has some
+  // privilege on. A ledger owned by somebody else is missing from it, so
+  // pre-flight used to offer to initialise a schema that apply already had a
+  // ledger in — two screens disagreeing about one table.
+  expect(queriesMatching(mockClient, /information_schema\.tables/)).toHaveLength(0);
+  const probe = queriesMatching(mockClient, /to_regclass/).find(
+    (query) => String(query.values?.[0]).endsWith(".script_patch")
+  );
+  expect(probe?.values).toEqual(['"sales".script_patch']);
+});
+
+it("still says the schema needs initialising when the name does not resolve", async () => {
+  // The negative control: to_regclass answers null for a table that really is
+  // not there, and that has to keep reading as "needs init".
+  mockClient = createFakeClient(target({ ledger: false, revertedTable: false }));
+  const res = await preflight(FAMILY);
+
+  expect(res.status).toBe(200);
+  expect(res.body).toMatchObject({ hasVersionTable: false, needsInit: true });
+});
+
+it("quotes a schema name with a double quote in it", async () => {
+  // The probe binds the quoted name as text, so the quoting has to be right
+  // here as much as in a query that interpolates it.
+  mockClient = createFakeClient(target({ ledger: true, revertedTable: false }));
+  await preflight({ ...FAMILY, schemaName: 'we"ird' });
+  const probe = queriesMatching(mockClient, /to_regclass/).find(
+    (query) => String(query.values?.[0]).endsWith(".script_patch")
+  );
+  expect(probe?.values).toEqual(['"we""ird".script_patch']);
 });

@@ -18,6 +18,7 @@ import type {
   IndexSnapshot,
   PolicySnapshot,
   SchemaSnapshot,
+  SequenceSnapshot,
   TypeSnapshot,
 } from "@/lib/postgres";
 
@@ -168,6 +169,337 @@ describe("generateMigration — column changes", () => {
  * follow from that, and breaking either one is the kind of bug that only shows
  * up against a real database.
  */
+describe("generateMigration — where a new enum label goes", () => {
+  // PostgreSQL sorts an enum by the order its labels were added, and ADD VALUE
+  // with no neighbour appends. A label the source has in the middle therefore
+  // arrived at the end, and the next comparison could only report it as "same
+  // values, different order" — which needs the type recreated by hand.
+  function enums(sourceLabels: string[], targetLabels: string[]) {
+    const build = (labels: string[]): TypeSnapshot => {
+      const definition = `ENUM (${labels.map((label) => `'${label}'`).join(", ")})`;
+      return {
+        name: "severity",
+        kind: "ENUM",
+        labels,
+        baseType: null,
+        notNull: false,
+        checks: [],
+        attributes: [],
+        definition,
+        normalizedDefinition: definition,
+      };
+    };
+    return {
+      source: schema([table("alerts", [column("id")])], { types: [build(sourceLabels)] }),
+      target: schema([table("alerts", [column("id")])], { types: [build(targetLabels)] }),
+    };
+  }
+
+  /** Just the ALTER TYPE lines, in the order the script runs them. */
+  function addValues(sourceLabels: string[], targetLabels: string[]): string[] {
+    const { source, target } = enums(sourceLabels, targetLabels);
+    return statementsThatRun(migration(source, target))
+      .map((s) => s.sql)
+      .filter((sql) => sql.includes("ADD VALUE"));
+  }
+
+  it("puts a label the source has in the middle in front of the one that follows it", () => {
+    expect(addValues(["low", "medium", "high"], ["low", "high"])).toEqual([
+      `ALTER TYPE "severity" ADD VALUE IF NOT EXISTS 'medium' BEFORE 'high';`,
+    ]);
+  });
+
+  it("appends a label the source has at the end", () => {
+    // No BEFORE at all: there is nothing after it to anchor to, and appending
+    // is already the right answer.
+    expect(addValues(["low", "high", "critical"], ["low", "high"])).toEqual([
+      `ALTER TYPE "severity" ADD VALUE IF NOT EXISTS 'critical';`,
+    ]);
+  });
+
+  it("anchors two new labels to the same following label, in source order", () => {
+    // Each lands directly in front of "high", so the second ends up after the
+    // first — which is the order the source has them in.
+    expect(addValues(["low", "medium", "urgent", "high"], ["low", "high"])).toEqual([
+      `ALTER TYPE "severity" ADD VALUE IF NOT EXISTS 'medium' BEFORE 'high';`,
+      `ALTER TYPE "severity" ADD VALUE IF NOT EXISTS 'urgent' BEFORE 'high';`,
+    ]);
+  });
+
+  it("skips over a label the target does not have yet when choosing the anchor", () => {
+    // "urgent" is being added in this same run, so it is no use as a neighbour
+    // for "medium" — the first label the target ALREADY has is what works.
+    expect(addValues(["medium", "urgent", "high"], ["high"])).toEqual([
+      `ALTER TYPE "severity" ADD VALUE IF NOT EXISTS 'medium' BEFORE 'high';`,
+      `ALTER TYPE "severity" ADD VALUE IF NOT EXISTS 'urgent' BEFORE 'high';`,
+    ]);
+  });
+
+  it("says in words where the label is going", () => {
+    const { source, target } = enums(["low", "medium", "high"], ["low", "high"]);
+    const added = migration(source, target).statements.find((s) => s.sql.includes("ADD VALUE"));
+    expect(added?.description).toBe(`Add value 'medium' to enum "severity" before 'high'`);
+  });
+});
+
+describe("generateMigration — a key another table points at", () => {
+  // PostgreSQL will not drop a PRIMARY KEY or UNIQUE constraint while a foreign
+  // key depends on it, and that key lives on a different table — outside
+  // everything one table's own diff can see.
+  const pk = (name: string, columns: string[]): ConstraintSnapshot => ({
+    name,
+    kind: "PRIMARY KEY",
+    columns,
+    definition: `PRIMARY KEY (${columns.map((c) => `"${c}"`).join(", ")})`,
+    normalizedDefinition: `primary key (${columns.join(", ")})`,
+  });
+  const fk = (name: string, refTable: string, refColumns: string[]): ForeignKeySnapshot => ({
+    name,
+    kind: "FOREIGN KEY",
+    columns: ["order_id"],
+    definition: `FOREIGN KEY (order_id) REFERENCES ${refTable}(${refColumns.join(", ")})`,
+    normalizedDefinition: `foreign key (order_id) references ${refTable}(${refColumns.join(", ")})`,
+    referencedSchema: "public",
+    referencedTable: refTable,
+    referencedColumns: refColumns,
+    onUpdate: "NO ACTION",
+    onDelete: "NO ACTION",
+  });
+
+  /** orders keyed as `keyColumns` say, and order_items pointing at orders(id). */
+  function shop(keyColumns: string[] | null, over: { items?: Partial<import("@/lib/postgres").TableSnapshot> } = {}) {
+    return schema([
+      table(
+        "orders",
+        [column("id", { nullable: false }), column("code", { nullable: false })],
+        { primaryKey: keyColumns ? pk("orders_pkey", keyColumns) : null }
+      ),
+      table("order_items", [column("order_id", { nullable: false })], {
+        foreignKeys: [fk("order_items_order_id_fkey", "orders", ["id"])],
+        ...over.items,
+      }),
+    ]);
+  }
+
+  it("takes the dependent key off before dropping the one it points at", () => {
+    // The source keys orders on (code); the target keys it on (id). The pkey
+    // has to be rebuilt, and order_items is holding it.
+    const sql = statementsThatRun(migration(shop(["code"]), shop(["id"]))).map((s) => s.sql);
+    const dropFk = sql.findIndex((t) => /"order_items" DROP CONSTRAINT IF EXISTS "order_items_order_id_fkey"/.test(t));
+    const dropPk = sql.findIndex((t) => /"orders" DROP CONSTRAINT IF EXISTS "orders_pkey"/.test(t));
+    expect(dropFk).toBeGreaterThan(-1);
+    expect(dropPk).toBeGreaterThan(-1);
+    expect(dropFk).toBeLessThan(dropPk);
+  });
+
+  it("says which key is making it drop the other one", () => {
+    const script = migration(shop(["code"]), shop(["id"]));
+    const dropped = script.statements.find(
+      (s) => s.kind === "DROP_CONSTRAINT" && s.sql.includes("order_items_order_id_fkey")
+    );
+    expect(dropped?.description).toContain('PRIMARY KEY "orders_pkey" on "orders"');
+  });
+
+  it("leaves the reference dropped when the source has no key to point at", () => {
+    // The source drops orders' primary key altogether. Putting the FK back
+    // would fail: there is no unique constraint matching its columns any more.
+    const sql = statementsThatRun(migration(shop(null), shop(["id"]))).map((s) => s.sql);
+    expect(sql.some((t) => /DROP CONSTRAINT IF EXISTS "order_items_order_id_fkey"/.test(t))).toBe(true);
+    expect(sql.some((t) => /ADD CONSTRAINT "order_items_order_id_fkey"/.test(t))).toBe(false);
+  });
+
+  it("puts the reference back after the key it points at is rebuilt", () => {
+    // Both sides key orders on (id); only the definition differs, so the key is
+    // dropped and re-added over the same columns and the reference is still
+    // valid at the end. Putting it back is the only way the table ends up the
+    // way the source says it should be.
+    const deferrable = shop(["id"]);
+    deferrable.tables[0].primaryKey = {
+      ...pk("orders_pkey", ["id"]),
+      definition: 'PRIMARY KEY ("id") DEFERRABLE',
+      normalizedDefinition: "primary key (id) deferrable",
+    };
+    const sql = statementsThatRun(migration(deferrable, shop(["id"]))).map((s) => s.sql);
+    const dropFk = sql.findIndex((t) => /"order_items" DROP CONSTRAINT IF EXISTS "order_items_order_id_fkey"/.test(t));
+    const addPk = sql.findIndex((t) => /"orders" ADD CONSTRAINT "orders_pkey"/.test(t));
+    const addFk = sql.findIndex((t) => /"order_items" ADD CONSTRAINT "order_items_order_id_fkey"/.test(t));
+    expect(dropFk).toBeGreaterThan(-1);
+    expect(addPk).toBeGreaterThan(dropFk);
+    expect(addFk).toBeGreaterThan(addPk);
+  });
+
+  it("leaves the reference dropped when the source keys the table differently", () => {
+    // The source keys orders on (id, code). Nothing matches the (id) the FK
+    // references any more, so an ADD would fail on "no unique constraint".
+    const sql = statementsThatRun(migration(shop(["id", "code"]), shop(["id"]))).map((s) => s.sql);
+    expect(sql.some((t) => /"orders" ADD CONSTRAINT "orders_pkey"/.test(t))).toBe(true);
+    expect(sql.some((t) => /ADD CONSTRAINT "order_items_order_id_fkey"/.test(t))).toBe(false);
+  });
+
+  it("leaves a key alone when nothing points at it", () => {
+    const plain = (keyColumns: string[]) =>
+      schema([
+        table(
+          "orders",
+          [column("id", { nullable: false }), column("code", { nullable: false })],
+          { primaryKey: pk("orders_pkey", keyColumns) }
+        ),
+      ]);
+    const sql = statementsThatRun(migration(plain(["code"]), plain(["id"]))).map((s) => s.sql);
+    expect(sql.some((t) => /order_items/.test(t))).toBe(false);
+  });
+
+  it("does not touch a reference the owning table is already rewriting", () => {
+    // order_items' own diff drops and re-adds this key on its own schedule.
+    // A second drop here would race the ADD that section queues.
+    const source = shop(["code"]);
+    const target = schema([
+      table(
+        "orders",
+        [column("id", { nullable: false }), column("code", { nullable: false })],
+        { primaryKey: pk("orders_pkey", ["id"]) }
+      ),
+      table("order_items", [column("order_id", { nullable: false })], {
+        foreignKeys: [
+          { ...fk("order_items_order_id_fkey", "orders", ["id"]), onDelete: "CASCADE",
+            normalizedDefinition: "foreign key (order_id) references orders(id) on delete cascade" },
+        ],
+      }),
+    ]);
+    const drops = statementsThatRun(migration(source, target))
+      .filter((s) => s.sql.includes(`DROP CONSTRAINT IF EXISTS "order_items_order_id_fkey"`));
+    expect(drops).toHaveLength(1);
+    expect(drops[0].description).not.toContain("about to go");
+  });
+});
+
+describe("generateMigration — rebuilding a generated column", () => {
+  // PostgreSQL has no ALTER for a GENERATED ALWAYS AS (…) clause, so the only
+  // portable answer is DROP COLUMN … CASCADE and add it back. CASCADE is silent
+  // about what else it takes, and the drop is only harmless in one direction.
+  const gen = (expression: string) => ({
+    generated: { storage: "STORED" as const, expression },
+  });
+
+  /** A table whose "total" is computed in the source and computed differently, or not at all, in the target. */
+  function totals(
+    left: Partial<import("@/lib/postgres").ColumnSnapshot>,
+    right: Partial<import("@/lib/postgres").ColumnSnapshot>,
+    over: Partial<import("@/lib/postgres").TableSnapshot> = {}
+  ) {
+    const cols = (side: Partial<import("@/lib/postgres").ColumnSnapshot>) => [
+      column("id", { nullable: false }),
+      column("qty", { nullable: false }),
+      column("total", { typeDisplay: "numeric", ...side }),
+    ];
+    return {
+      source: schema([table("invoices", cols(left), over)]),
+      target: schema([table("invoices", cols(right))]),
+    };
+  }
+
+  it("arms the drop when the column being replaced holds stored values", () => {
+    // The target stores what somebody typed; the source computes it. Nothing
+    // recomputes those values, so this is data loss like any other.
+    const { source, target } = totals(gen("qty * 2"), { generated: null });
+    const script = migration(source, target);
+    const drop = script.statements.find((s) => s.kind === "DROP_COLUMN");
+    expect(drop?.destructive).toBe(true);
+    expect(drop?.description).toContain("stored data");
+    // Safe mode holds a destructive statement back, which is the whole point.
+    expect(statementsThatRun(script)).not.toContain(drop);
+  });
+
+  it("leaves the drop unarmed when the column it replaces is computed", () => {
+    // Both sides compute it, so every value comes back from the new expression
+    // the moment the column does. Arming this would block a harmless rebuild.
+    const { source, target } = totals(gen("qty * 3"), gen("qty * 2"));
+    const script = migration(source, target);
+    const drop = script.statements.find((s) => s.kind === "DROP_COLUMN");
+    expect(drop?.destructive).toBe(false);
+    expect(statementsThatRun(script)).toContain(drop);
+  });
+
+  it("adds a NOT NULL rebuild as nullable and puts NOT NULL back after", () => {
+    // ADD COLUMN … NOT NULL with no default is refused outright on a table that
+    // already has rows, and one refused statement aborts the whole script.
+    const { source, target } = totals(
+      { nullable: false, generated: null },
+      { nullable: false, ...gen("qty * 2") }
+    );
+    const sql = statementsThatRun(migration(source, target, { allowDataLoss: true })).map(
+      (s) => s.sql
+    );
+    const added = sql.findIndex((text) => /ADD COLUMN IF NOT EXISTS "total"/.test(text));
+    expect(added).toBeGreaterThan(-1);
+    expect(sql[added]).not.toContain("NOT NULL");
+    expect(sql[added + 1]).toContain('ALTER COLUMN "total" SET NOT NULL');
+  });
+
+  it("puts back the index CASCADE took with the column", () => {
+    // The index is identical in both schemas, so it is in no diff and the index
+    // phase never mentioned it — this is the only thing that can restore it.
+    const index: IndexSnapshot = {
+      name: "invoices_total_idx",
+      definition: 'CREATE INDEX invoices_total_idx ON public.invoices USING btree (total)',
+      normalizedDefinition: "create index invoices_total_idx on invoices using btree (total)",
+      columns: ["total"],
+      isUnique: false,
+      method: "btree",
+      predicate: null,
+    };
+    const onBoth = (expression: string) =>
+      schema([
+        table(
+          "invoices",
+          [
+            column("id", { nullable: false }),
+            column("qty", { nullable: false }),
+            column("total", { typeDisplay: "numeric", ...gen(expression) }),
+          ],
+          { indexes: [index] }
+        ),
+      ]);
+    const sql = renderMigrationScript(migration(onBoth("qty * 3"), onBoth("qty * 2")));
+    expect(sql).toContain("CREATE INDEX invoices_total_idx");
+    // And it comes back AFTER the column does, not before.
+    expect(sql.indexOf("CREATE INDEX invoices_total_idx")).toBeGreaterThan(
+      sql.indexOf('ADD COLUMN IF NOT EXISTS "total"')
+    );
+  });
+
+  it("puts back a CHECK constraint CASCADE took with the column", () => {
+    const check: ConstraintSnapshot = {
+      name: "invoices_total_positive",
+      kind: "CHECK",
+      columns: ["total"],
+      definition: "CHECK ((total > (0)::numeric))",
+      normalizedDefinition: "check ((total > (0)::numeric))",
+    };
+    const cols = (expression: string) => [
+      column("id", { nullable: false }),
+      column("qty", { nullable: false }),
+      column("total", { typeDisplay: "numeric", ...gen(expression) }),
+    ];
+    const source = schema([
+      table("invoices", cols("qty * 3"), { checkConstraints: [check] }),
+    ]);
+    const target = schema([
+      table("invoices", cols("qty * 2"), { checkConstraints: [check] }),
+    ]);
+    const sql = renderMigrationScript(migration(source, target));
+    expect(sql).toContain('ADD CONSTRAINT "invoices_total_positive"');
+    expect(sql).toContain("CASCADE took it");
+  });
+
+  it("says nothing extra when the rebuilt column has no index or constraint on it", () => {
+    const { source, target } = totals(gen("qty * 3"), gen("qty * 2"));
+    const sql = renderMigrationScript(migration(source, target));
+    expect(sql).not.toContain("CASCADE took it");
+    expect(sql).not.toContain("CREATE INDEX");
+  });
+});
+
 describe("generated SQL fits the apply route", () => {
   const wide = () =>
     migration(
@@ -978,6 +1310,30 @@ describe("generateMigration — safe to run twice, the harder cases", () => {
     expect(sql).not.toMatch(/^ALTER TABLE "orders" ALTER COLUMN "id" (DROP DEFAULT|ADD GENERATED)/m);
   });
 
+  it("keeps a mixed-case sequence name quoted inside its nextval default", () => {
+    // A Prisma-style table "User" owns the sequence "User_id_seq". Written bare
+    // inside the literal, PostgreSQL reads it as user_id_seq and the deploy
+    // stops on "relation does not exist" with the sequence sitting right there.
+    const sql = renderMigrationScript(
+      migration(
+        schema([
+          table("User", [
+            column("id", {
+              nullable: false,
+              identity: null,
+              columnDefault: `nextval('"User_id_seq"'::regclass)`,
+            }),
+          ]),
+        ]),
+        schema([table("User", [column("id", { nullable: false, identity: null })])])
+      )
+    );
+    expect(sql).toContain(
+      `ALTER TABLE "User" ALTER COLUMN "id" SET DEFAULT nextval('"User_id_seq"'::regclass);`
+    );
+    expect(sql).not.toContain(`nextval('User_id_seq'::regclass)`);
+  });
+
   /** counters.id, generated the way `how` says, with a sequence that stops at maxValue. */
   function counters(how: "identity" | "serial", maxValue: string) {
     const sequenceOptions = {
@@ -1034,5 +1390,439 @@ describe("generateMigration — safe to run twice, the harder cases", () => {
         '    ALTER SEQUENCE "counters_id_seq" RESTART WITH 1;'
     );
     expect(sql).toMatch(/^ALTER SEQUENCE "counters_id_seq" MAXVALUE 5000;$/m);
+  });
+});
+
+/**
+ * ALTER COLUMN ... TYPE converts the column's default as well as its rows, but
+ * USING is applied to the rows only. A default with no automatic cast to the
+ * new type used to stop the statement ("default for column cannot be cast
+ * automatically"), so a text status column with DEFAULT 'active' could never
+ * become an enum. The default now comes off first and goes back on after.
+ */
+describe("generateMigration — a type change and the column's default", () => {
+  /** The SQL of every statement that runs, in order. */
+  function runSql(source: SchemaSnapshot, target: SchemaSnapshot): string[] {
+    return statementsThatRun(migration(source, target)).map((statement) => statement.sql);
+  }
+
+  function orders(...columns: Parameters<typeof column>[]) {
+    return schema([table("orders", columns.map(([name, over]) => column(name, over)))]);
+  }
+
+  it("drops the target's default, changes the type, then sets the source's default", () => {
+    const sql = runSql(
+      orders(["status", { typeDisplay: "order_status", columnDefault: "'active'::order_status" }]),
+      orders(["status", { typeDisplay: "text", columnDefault: "'active'::text" }])
+    );
+    expect(sql).toEqual([
+      'ALTER TABLE "orders" ALTER COLUMN "status" DROP DEFAULT;',
+      'ALTER TABLE "orders" ALTER COLUMN "status" TYPE order_status USING "status"::order_status;',
+      `ALTER TABLE "orders" ALTER COLUMN "status" SET DEFAULT 'active'::order_status;`,
+    ]);
+  });
+
+  it("puts the default back even when both sides' defaults read the same", () => {
+    // Nothing differs about the default, but the type change took it off.
+    const script = migration(
+      orders(["qty", { typeDisplay: "bigint", columnDefault: "0" }]),
+      orders(["qty", { typeDisplay: "integer", columnDefault: "0" }])
+    );
+    expect(statementsThatRun(script).map((statement) => statement.sql)).toEqual([
+      'ALTER TABLE "orders" ALTER COLUMN "qty" DROP DEFAULT;',
+      'ALTER TABLE "orders" ALTER COLUMN "qty" TYPE bigint USING "qty"::bigint;',
+      'ALTER TABLE "orders" ALTER COLUMN "qty" SET DEFAULT 0;',
+    ]);
+    expect(script.statements[2].description).toBe(
+      'Put the default back on "qty" in "orders" (0) after its type change'
+    );
+  });
+
+  it("drops the default once and sets nothing when the source has no default", () => {
+    const sql = runSql(
+      orders(["code", { typeDisplay: "integer" }]),
+      orders(["code", { typeDisplay: "text", columnDefault: "'n/a'::text" }])
+    );
+    expect(sql.filter((text) => /DROP DEFAULT/.test(text))).toHaveLength(1);
+    expect(sql.findIndex((text) => /DROP DEFAULT/.test(text))).toBeLessThan(
+      sql.findIndex((text) => /TYPE integer/.test(text))
+    );
+    expect(sql.some((text) => /SET DEFAULT/.test(text))).toBe(false);
+  });
+
+  it("leaves the default alone when the type does not really change or both sides are serial", () => {
+    // A widening converts its default without help.
+    const widened = runSql(
+      orders(["note", { typeDisplay: "character varying(200)", columnDefault: "''::character varying" }]),
+      orders(["note", { typeDisplay: "character varying(100)", columnDefault: "''::character varying" }])
+    );
+    expect(widened.some((text) => /DEFAULT/.test(text))).toBe(false);
+
+    // Each side's serial keeps its own sequence, and nextval() returns a bigint
+    // that casts to every integer type.
+    const serial = runSql(
+      orders(["id", { typeDisplay: "bigint", nullable: false, columnDefault: "nextval('orders_id_seq'::regclass)" }]),
+      orders(["id", { typeDisplay: "integer", nullable: false, columnDefault: "nextval('orders_id_seq'::regclass)" }])
+    );
+    expect(serial).toEqual(['ALTER TABLE "orders" ALTER COLUMN "id" TYPE bigint USING "id"::bigint;']);
+  });
+
+  it("drops a plain default before the column becomes an identity column", () => {
+    // ADD GENERATED is refused while the column has any default, not only a
+    // serial's. It used to drop only a nextval default.
+    const sql = runSql(
+      orders(["id", { nullable: false, identity: "ALWAYS" }]),
+      orders(["id", { nullable: false, identity: null, columnDefault: "0" }])
+    );
+    expect(sql).toHaveLength(3);
+    expect(sql[0]).toContain('    ALTER TABLE "orders" ALTER COLUMN "id" DROP DEFAULT;');
+    expect(sql[0]).toContain("attidentity <> ''");
+    expect(sql[1]).toContain('ALTER TABLE "orders" ALTER COLUMN "id" ADD GENERATED ALWAYS AS IDENTITY;');
+    // The new sequence's counter, moved past the rows (see the block below).
+    expect(sql[2]).toMatch(/^SELECT setval\(identity_sequence\.seq, /);
+    expect(sql.some((text) => /SET DEFAULT/.test(text))).toBe(false);
+  });
+
+  it("drops a serial's default once, guarded, when it becomes a wider identity column", () => {
+    const sql = runSql(
+      orders(["id", { typeDisplay: "bigint", nullable: false, identity: "BY DEFAULT" }]),
+      orders([
+        "id",
+        {
+          typeDisplay: "integer",
+          nullable: false,
+          identity: null,
+          columnDefault: "nextval('orders_id_seq'::regclass)",
+        },
+      ])
+    );
+    const drops = sql.filter((text) => /DROP DEFAULT/.test(text));
+    expect(drops).toHaveLength(1);
+    // Skipped on a second run, where the column is already an identity column.
+    expect(drops[0]).toMatch(/^DO \$guard\$\nBEGIN\n  IF NOT EXISTS \(.*attidentity <> ''\) THEN/);
+    const order = ["DROP DEFAULT", "TYPE bigint", "ADD GENERATED BY DEFAULT"].map((needle) =>
+      sql.findIndex((text) => text.includes(needle))
+    );
+    expect(order[0]).toBeGreaterThanOrEqual(0);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+});
+
+describe("generateMigration — a column that starts generating its own values", () => {
+  // A column that becomes serial or identity on a table that already holds ids
+  // 1 to 100 gets a sequence that starts at 1, so the first insert after the
+  // migration used to fail on the primary key. Each case below moves the new
+  // counter past the rows in the same script.
+  function runSql(source: SchemaSnapshot, target: SchemaSnapshot): string[] {
+    return statementsThatRun(migration(source, target)).map((statement) => statement.sql);
+  }
+
+  function orders(over: Parameters<typeof column>[1]) {
+    return schema([table("orders", [column("id", { nullable: false, ...over })])]);
+  }
+
+  const serialDefault = "nextval('orders_id_seq'::regclass)";
+
+  it("moves a new identity column's sequence past the highest id", () => {
+    const sql = runSql(orders({ identity: "BY DEFAULT" }), orders({ identity: null }));
+    expect(sql).toHaveLength(2);
+    expect(sql[0]).toContain('ALTER TABLE "orders" ALTER COLUMN "id" ADD GENERATED BY DEFAULT AS IDENTITY;');
+    expect(sql[1]).toBe(
+      `SELECT setval(identity_sequence.seq, GREATEST(nextval(identity_sequence.seq), (SELECT max("id") + 1 FROM "orders")), false)\n` +
+        `  FROM (SELECT d.objid::regclass AS seq FROM pg_depend d ` +
+        `JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid ` +
+        `WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass ` +
+        `AND d.deptype = 'i' AND d.refobjid = to_regclass('"orders"') ` +
+        `AND a.attname = 'id') AS identity_sequence;`
+    );
+  });
+
+  it("carries on from a serial's old sequence when the column becomes an identity column", () => {
+    const sql = runSql(
+      orders({ identity: "ALWAYS" }),
+      orders({ identity: null, columnDefault: serialDefault })
+    );
+    const addGenerated = sql.findIndex((text) => text.includes("ADD GENERATED ALWAYS AS IDENTITY"));
+    expect(addGenerated).toBeGreaterThanOrEqual(0);
+    const counter = sql[addGenerated + 1];
+    // The old sequence can be ahead of max(id) when the newest rows were deleted.
+    expect(counter).toContain(
+      `GREATEST(nextval(identity_sequence.seq), nextval(to_regclass('"orders_id_seq"')), ` +
+        `(SELECT max("id") + 1 FROM "orders"))`
+    );
+    // The old sequence stays owned by the column, as it did before this step
+    // existed, so the next comparison still hides it instead of reporting an
+    // extra sequence in the target. That is also why the lookup is not
+    // pg_get_serial_sequence, which would usually find the old sequence.
+    expect(sql.some((text) => /OWNED BY NONE/.test(text))).toBe(false);
+    expect(counter).not.toContain("pg_get_serial_sequence");
+  });
+
+  it("moves a new serial's sequence past the highest id once it is tied to the column", () => {
+    // From a plain column, and from an identity column, whose sequence goes with DROP IDENTITY.
+    for (const target of [orders({ identity: null }), orders({ identity: "BY DEFAULT" })]) {
+      const sql = runSql(orders({ identity: null, columnDefault: serialDefault }), target);
+      const owned = sql.indexOf('ALTER SEQUENCE "orders_id_seq" OWNED BY "orders"."id";');
+      expect(owned).toBeGreaterThanOrEqual(0);
+      expect(sql[owned + 1]).toBe(
+        `SELECT setval('"orders_id_seq"', GREATEST(nextval('"orders_id_seq"'), ` +
+          `(SELECT max("id") + 1 FROM "orders")), false);`
+      );
+    }
+  });
+
+  it("moves a sequence that counts down below the lowest id instead", () => {
+    const sql = runSql(
+      orders({
+        identity: "ALWAYS",
+        sequenceOptions: {
+          dataType: "integer",
+          startValue: "-1",
+          increment: "-1",
+          minValue: "-2147483648",
+          maxValue: "-1",
+          cycles: false,
+          cacheSize: "1",
+        },
+      }),
+      orders({ identity: null })
+    );
+    const counter = sql.find((text) => text.startsWith("SELECT setval("));
+    expect(counter).toContain(
+      `LEAST(nextval(identity_sequence.seq), (SELECT min("id") - 1 FROM "orders"))`
+    );
+  });
+
+  it("leaves the counter alone when the column already generated its values, or is not an integer", () => {
+    const pairs: [SchemaSnapshot, SchemaSnapshot][] = [
+      // Identity on both sides, only ALWAYS / BY DEFAULT differs.
+      [orders({ identity: "ALWAYS" }), orders({ identity: "BY DEFAULT" })],
+      // Serial on both sides, only the width differs.
+      [
+        orders({ identity: null, columnDefault: serialDefault }),
+        orders({ identity: null, columnDefault: serialDefault, typeDisplay: "smallint" }),
+      ],
+      // A nextval default on a numeric column: max() + 1 is not attempted.
+      [
+        orders({ identity: null, columnDefault: serialDefault, typeDisplay: "numeric" }),
+        orders({ identity: null, typeDisplay: "numeric" }),
+      ],
+    ];
+    for (const [source, target] of pairs) {
+      expect(runSql(source, target).some((text) => text.includes("setval"))).toBe(false);
+    }
+  });
+});
+
+describe("generateMigration — when a column may be written as serial", () => {
+  // `serial` is not a type: it tells PostgreSQL to CREATE a sequence called
+  // <table>_<column>_seq and hand it to that one column. Writing it for a column
+  // whose sequence is somebody else's, or is named something else, builds a
+  // DIFFERENT sequence and never says so.
+  function runSql(source: SchemaSnapshot, target: SchemaSnapshot): string[] {
+    return statementsThatRun(migration(source, target)).map((statement) => statement.sql);
+  }
+
+  /** A sequence left on every default, as CREATE SEQUENCE with no clauses makes it. */
+  function untuned(over: Partial<SequenceSnapshot> & { name: string }): SequenceSnapshot {
+    return {
+      dataType: "integer",
+      startValue: "1",
+      increment: "1",
+      minValue: "1",
+      maxValue: "2147483647",
+      cycles: false,
+      cacheSize: "1",
+      ownedByTable: null,
+      ownedByColumn: null,
+      ...over,
+    };
+  }
+
+  const DEFAULT_OPTIONS = {
+    dataType: "integer",
+    startValue: "1",
+    increment: "1",
+    minValue: "1",
+    maxValue: "2147483647",
+    cycles: false,
+    cacheSize: "1",
+  };
+
+  /**
+   * The column definition line the CREATE TABLE gives this column, without the
+   * comma that separates it from the next one.
+   */
+  function columnLine(sql: string[], columnName: string): string {
+    const create = sql.find((text) => text.startsWith("CREATE TABLE")) ?? "";
+    const line =
+      create
+        .split("\n")
+        .map((text) => text.trim())
+        .find((text) => text.startsWith(`"${columnName}"`)) ?? "";
+    return line.replace(/,$/, "");
+  }
+
+  const EMPTY = schema([], { sequences: [] });
+
+  it("writes serial for a column that owns the sequence serial would have made", () => {
+    const source = schema(
+      [
+        table("orders", [
+          column("id", {
+            nullable: false,
+            columnDefault: "nextval('orders_id_seq'::regclass)",
+            sequenceOptions: DEFAULT_OPTIONS,
+          }),
+        ]),
+      ],
+      { sequences: [untuned({ name: "orders_id_seq", ownedByTable: "orders", ownedByColumn: "id" })] }
+    );
+    const sql = runSql(source, EMPTY);
+
+    expect(columnLine(sql, "id")).toBe('"id" serial NOT NULL');
+    // The shorthand builds the sequence itself; a CREATE SEQUENCE beside it
+    // would be the name taken twice.
+    expect(sql.some((text) => text.includes("CREATE SEQUENCE"))).toBe(false);
+  });
+
+  it("writes out both columns in full when two of them share one sequence", () => {
+    // A shared pool of numbers is a deliberate design. Two `serial`s would give
+    // each column a private sequence, and both would start handing out 1.
+    const source = schema(
+      [
+        table("tickets", [
+          column("id", {
+            nullable: false,
+            columnDefault: "nextval('tickets_id_seq'::regclass)",
+            sequenceOptions: DEFAULT_OPTIONS,
+          }),
+          column("backup_id", { columnDefault: "nextval('tickets_id_seq'::regclass)" }),
+        ]),
+      ],
+      {
+        sequences: [
+          untuned({ name: "tickets_id_seq", ownedByTable: "tickets", ownedByColumn: "id" }),
+        ],
+      }
+    );
+    const sql = runSql(source, EMPTY);
+
+    expect(columnLine(sql, "id")).toBe(
+      `"id" integer NOT NULL DEFAULT nextval('tickets_id_seq'::regclass)`
+    );
+    expect(columnLine(sql, "backup_id")).toBe(
+      `"backup_id" integer DEFAULT nextval('tickets_id_seq'::regclass)`
+    );
+    // Built once, by the column that owns it, before the table that reads it.
+    const created = sql.filter((text) => text.includes(`CREATE SEQUENCE IF NOT EXISTS "tickets_id_seq"`));
+    expect(created).toHaveLength(1);
+    expect(sql.indexOf(created[0])).toBeLessThan(
+      sql.findIndex((text) => text.startsWith("CREATE TABLE"))
+    );
+    expect(sql).toContain('ALTER SEQUENCE "tickets_id_seq" OWNED BY "tickets"."id";');
+  });
+
+  it("leaves a standalone sequence to the object phase instead of writing serial", () => {
+    // The name is exactly what serial would pick, which is the trap: the object
+    // phase creates it first, serial finds the name taken and silently takes
+    // "orders_id_seq1" — a sequence the source has never heard of.
+    const source = schema(
+      [
+        table("orders", [
+          column("id", { nullable: false, columnDefault: "nextval('orders_id_seq'::regclass)" }),
+        ]),
+      ],
+      { sequences: [untuned({ name: "orders_id_seq" })] }
+    );
+    const sql = runSql(source, EMPTY);
+
+    expect(columnLine(sql, "id")).toBe(
+      `"id" integer NOT NULL DEFAULT nextval('orders_id_seq'::regclass)`
+    );
+    // Created once, by the object phase, and not tied to the column — it belongs
+    // to nobody in the source and has to stay that way.
+    expect(sql.filter((text) => text.includes("CREATE SEQUENCE"))).toHaveLength(1);
+    expect(sql.some((text) => text.includes("OWNED BY"))).toBe(false);
+  });
+
+  it("keeps a sequence whose name serial cannot reproduce", () => {
+    // The column was renamed after the table was created, so its sequence still
+    // carries the old name. serial would build "orders_order_id_seq" and leave
+    // every later comparison reporting a default no migration can settle.
+    const source = schema(
+      [
+        table("orders", [
+          column("order_id", {
+            nullable: false,
+            columnDefault: "nextval('orders_id_seq'::regclass)",
+            sequenceOptions: DEFAULT_OPTIONS,
+          }),
+        ]),
+      ],
+      {
+        sequences: [
+          untuned({ name: "orders_id_seq", ownedByTable: "orders", ownedByColumn: "order_id" }),
+        ],
+      }
+    );
+    const sql = runSql(source, EMPTY);
+
+    expect(columnLine(sql, "order_id")).toBe(
+      `"order_id" integer NOT NULL DEFAULT nextval('orders_id_seq'::regclass)`
+    );
+    expect(sql).toContain('ALTER SEQUENCE "orders_id_seq" OWNED BY "orders"."order_id";');
+    expect(sql.some((text) => text.includes("orders_order_id_seq"))).toBe(false);
+  });
+
+  it("still writes serial when the snapshot never recorded any sequences", () => {
+    // An older snapshot has no ownership to read. Refusing the shorthand there
+    // would write a nextval default for a sequence nothing in the script creates.
+    const source = schema([
+      table("orders", [
+        column("id", { nullable: false, columnDefault: "nextval('orders_id_seq'::regclass)" }),
+      ]),
+    ]);
+    const sql = runSql(source, schema([]));
+
+    expect(columnLine(sql, "id")).toBe('"id" serial NOT NULL');
+  });
+
+  it("asks the same question when the column is added to a table that already exists", () => {
+    const orders = (columns: Parameters<typeof column>[]) =>
+      schema(
+        [table("orders", columns.map(([name, over]) => column(name, over)))],
+        {
+          sequences: [
+            untuned({ name: "orders_ref_seq", ownedByTable: "orders", ownedByColumn: "ref" }),
+          ],
+        }
+      );
+    const target = schema([table("orders", [column("id", { nullable: false })])], {
+      sequences: [],
+    });
+
+    const shorthand = runSql(
+      orders([
+        ["id", { nullable: false }],
+        ["ref", { columnDefault: "nextval('orders_ref_seq'::regclass)", sequenceOptions: DEFAULT_OPTIONS }],
+      ]),
+      target
+    );
+    expect(shorthand).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ref" serial;');
+
+    // The same column, but something else already reads its sequence.
+    const shared = runSql(
+      orders([
+        ["id", { nullable: false }],
+        ["ref", { columnDefault: "nextval('orders_ref_seq'::regclass)", sequenceOptions: DEFAULT_OPTIONS }],
+        ["spare", { columnDefault: "nextval('orders_ref_seq'::regclass)" }],
+      ]),
+      target
+    );
+    expect(shared).toContain(
+      `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ref" integer DEFAULT nextval('orders_ref_seq'::regclass);`
+    );
+    expect(shared).toContain('ALTER SEQUENCE "orders_ref_seq" OWNED BY "orders"."ref";');
   });
 });

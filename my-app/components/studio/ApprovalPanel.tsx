@@ -37,6 +37,11 @@ export type ApprovalRow = {
    * from before rollbacks needed approval was a deploy.
    */
   action?: "deploy" | "revert";
+  /**
+   * When the approval stops authorising the run. Optional, and null on a row
+   * decided before approvals expired at all — those stay good.
+   */
+  expires_at?: string | null;
 };
 
 /**
@@ -310,6 +315,15 @@ export function ApprovalPanel({
             {approved.decided_by ?? "—"}
             {utcStamp(approved.decided_at) ? ` · ${utcStamp(approved.decided_at)}` : ""}
           </p>
+          {utcStamp(approved.expires_at ?? null) && (
+            // Said on the screen because it changes what the reader can rely
+            // on: after this, the same run needs asking again. Nothing breaks
+            // at that moment — the run simply reads as unapproved.
+            <p className="appr__meta">
+              Good until {utcStamp(approved.expires_at ?? null)}; after that this run
+              needs approving again.
+            </p>
+          )}
           {approved.self_approved && (
             <p className="appr__meta">
               Recorded on the row as a self-approval, because with the bypass on

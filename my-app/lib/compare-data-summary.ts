@@ -31,6 +31,18 @@ export type TableDataCompare = {
   rightChecksum: string | null;
   /** The columns that were hashed, named as the source calls them. */
   columns: string[];
+  /**
+   * The columns that were NOT hashed because only one side has them.
+   *
+   * This is what stops "identical" from being a lie. The checksum can only
+   * cover the columns both tables share, so a table whose every difference
+   * lives in an unpaired column hashes the same on both sides and comes back
+   * identical — which is true of the columns that were read and says nothing
+   * about the ones that were not. Recording them here lets the screen say
+   * "identical on N shared columns" and name what it left out, instead of a
+   * flat "rows match" that the reader has no way to qualify.
+   */
+  ignoredColumns: string[];
   /** Why it was skipped, or what was left out of an otherwise-good compare. */
   note: string | null;
   /**
@@ -61,6 +73,16 @@ export function summarizeDataCompare(result: DataCompareReport): {
   targetOnly: number;
   skipped: number;
   /**
+   * How many of the identical tables were only compared on part of their
+   * columns, because one side has columns the other does not.
+   *
+   * Kept apart from `identical` rather than folded into `different`: those
+   * tables really do match on everything that was read, and calling them
+   * different would be the opposite lie. The number exists so the headline can
+   * qualify itself instead of claiming a clean match for all of them.
+   */
+  identicalOnSharedColumns: number;
+  /**
    * Rows a full sync would destroy.
    *
    * A table only the TARGET has is the one the migration drops — the source is
@@ -81,6 +103,7 @@ export function summarizeDataCompare(result: DataCompareReport): {
   unreadDrops: number;
 } {
   let identical = 0;
+  let identicalOnSharedColumns = 0;
   let different = 0;
   let sourceOnly = 0;
   let targetOnly = 0;
@@ -89,8 +112,10 @@ export function summarizeDataCompare(result: DataCompareReport): {
   let unreadDrops = 0;
 
   for (const table of result.tables) {
-    if (table.status === "identical") identical += 1;
-    else if (table.status === "different") different += 1;
+    if (table.status === "identical") {
+      identical += 1;
+      if (table.ignoredColumns.length > 0) identicalOnSharedColumns += 1;
+    } else if (table.status === "different") different += 1;
     else if (table.status === "sourceOnly") sourceOnly += 1;
     else if (table.status === "targetOnly") {
       targetOnly += 1;
@@ -103,6 +128,7 @@ export function summarizeDataCompare(result: DataCompareReport): {
 
   return {
     identical,
+    identicalOnSharedColumns,
     different,
     sourceOnly,
     targetOnly,

@@ -17,11 +17,13 @@ import {
   createIndexSql,
   fixScriptFileName,
   indexName,
+  listedFixes,
   otherSchemaHeading,
   otherSchemas,
   qualifiedName,
   quoteIdent,
   schemasPhrase,
+  startingUnticked,
   type FixScriptItem,
 } from "@/lib/perf-sql";
 import { maskNonCode } from "@/lib/sql-guard";
@@ -649,5 +651,60 @@ describe("fixScriptFileName", () => {
     expect(fixScriptFileName("my db/../x", "日本", date)).toBe(
       "performance-fixes-my_db_x-schema-2026-09-14.sql"
     );
+  });
+});
+
+describe("which fixes start with their tick off", () => {
+  // The fix-script list ticks everything by default, which is right: a reader
+  // who asked for suggestions wants them. The exception is a suggestion the app
+  // could not fully check — with the list of invalid indexes unread, a DROP
+  // INDEX cannot promise it is dropping the spare copy rather than the working
+  // one (see the advice route). Unticking it keeps it on screen, where the
+  // reader can judge it, and out of a script somebody runs without reading.
+  const fix = (title: string, over: Partial<FixScriptItem> = {}): FixScriptItem => ({
+    title,
+    object: "orders",
+    fix: "DROP INDEX \"public\".\"orders_a\";",
+    fixKind: "change",
+    ...over,
+  });
+
+  it("is nothing at all in the ordinary case", () => {
+    const listed = [fix("one"), fix("two")];
+    expect(startingUnticked(listed)).toEqual(new Set());
+  });
+
+  it("is the ones carrying a reason", () => {
+    const listed = [
+      fix("ticked"),
+      fix("unticked", { startUnticked: "Starts unticked: could not check." }),
+      fix("also ticked"),
+    ];
+    expect(startingUnticked(listed)).toEqual(new Set([1]));
+  });
+
+  it("counts positions in the rows, not in the findings", () => {
+    // The trap this pair exists to avoid: a finding whose fix is a decision to
+    // make or a query to run is shown but gets no row, so a position taken from
+    // the findings list would untick the wrong row — or one that is not on
+    // screen at all.
+    const items = [
+      fix("a decision", { fixKind: "decision" }),
+      fix("a query to run", { fixKind: "query" }),
+      fix("a drop", { startUnticked: "Starts unticked: could not check." }),
+    ];
+    const listed = listedFixes(items);
+
+    expect(listed).toHaveLength(1);
+    expect(startingUnticked(listed)).toEqual(new Set([0]));
+  });
+
+  it("lists only the findings that carry statements", () => {
+    const items = [
+      fix("a change"),
+      fix("a query to run", { fixKind: "query" }),
+      fix("a VACUUM", { fixKind: "maintenance" }),
+    ];
+    expect(listedFixes(items).map((i) => i.title)).toEqual(["a change", "a VACUUM"]);
   });
 });

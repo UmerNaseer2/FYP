@@ -191,7 +191,19 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<string> 
   const s = state();
   if (s.busy) return "Skipped — the previous tick was still running.";
   s.busy = true;
+  let lock: TickLock | null = null;
   try {
+    // `s.busy` above is a variable in this process, so it says nothing about
+    // the copy of the app running next to this one. Two replicas — or a
+    // `next dev` left open beside a `next start`, which is the version of this
+    // that happens on a laptop — each run the whole schedule against the one
+    // metadata database, so every schema is introspected twice a cadence and
+    // every "always" drift event is written twice. The database is the only
+    // thing both copies can see, so the agreement about whose turn it is has to
+    // be made there.
+    lock = await takeTickLock();
+    if (!lock) return "Skipped — another copy of the app is running this tick.";
+
     await syncMetadataTables();
     const entries = await loadEntries();
     const due = selectDue(entries, now, MAX_PER_TICK);
@@ -230,7 +242,89 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<string> 
     console.error("Drift scheduler — tick failed:", message);
     return `Tick failed: ${message}`;
   } finally {
+    if (lock) await releaseTickLock(lock);
     s.busy = false;
+  }
+}
+
+/** A held tick lock: the one connection it lives on, which has to unlock it. */
+type TickLock = { client: Awaited<ReturnType<typeof pool.connect>> };
+
+/**
+ * The tick lock's key.
+ *
+ * Two hashtext() values, the same spelling lib/family-lock uses, so every
+ * advisory lock this app takes reads the same way in pg_locks. That two-integer
+ * form is also a different lock space from the single-bigint
+ * `pg_advisory_xact_lock($trackedSchemaId)` the deploy and re-baseline paths
+ * take, so this can never accidentally block one of those — or be blocked by
+ * one, which would be worse.
+ */
+const TICK_LOCK_KEY = ["drift-scheduler", "tick"];
+
+/**
+ * Claim this tick for this process, or find that another copy has it.
+ *
+ * `pg_try_advisory_lock` rather than the waiting kind: a tick that queued behind
+ * another copy's tick would run the moment it finished and check everything all
+ * over again, which is the doubling this is here to prevent. Not getting the
+ * lock is a complete answer — the other copy is doing the work.
+ *
+ * Session-scoped rather than transaction-scoped, so the tick does not have to
+ * hold a transaction open on the metadata database for a minute. The safety
+ * that buys a transaction is kept a different way: PostgreSQL drops every
+ * advisory lock a session held the moment that session ends, so a process that
+ * is killed mid-tick releases this on the way out and does not wedge the
+ * schedule for everybody else.
+ *
+ * Returns null on any failure, including a database that is simply not there.
+ * A scheduler that stops checking because it could not take a lock would turn
+ * a brief outage into a silent permanent one.
+ */
+async function takeTickLock(): Promise<TickLock | null> {
+  let client: Awaited<ReturnType<typeof pool.connect>>;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    console.error("Drift scheduler — could not reach the metadata database:", error);
+    return null;
+  }
+  try {
+    const held = await client.query<{ taken: boolean }>(
+      `SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS taken`,
+      TICK_LOCK_KEY
+    );
+    if (held.rows[0]?.taken === true) return { client };
+  } catch (error) {
+    console.error("Drift scheduler — could not take the tick lock:", error);
+  }
+  // Not ours: hand the connection straight back rather than holding one of the
+  // five for a tick that is not going to do anything.
+  client.release();
+  return null;
+}
+
+/**
+ * Give the tick back, on the same connection that took it.
+ *
+ * The unlock has to run on that connection — a session lock belongs to a
+ * session, and `pool.query` would pick whichever one is free. Releasing without
+ * unlocking would hand a connection that still holds the lock back to the pool,
+ * where it would sit holding it for as long as the pool keeps it alive, and no
+ * copy of the app would ever tick again.
+ */
+async function releaseTickLock(lock: TickLock): Promise<void> {
+  try {
+    await lock.client.query(
+      `SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`,
+      TICK_LOCK_KEY
+    );
+  } catch (error) {
+    // The only realistic cause is a connection that has already broken, and a
+    // broken session has had its locks released by the server anyway.
+    console.error("Drift scheduler — could not release the tick lock:", error);
+  } finally {
+    lock.client.release();
   }
 }
 

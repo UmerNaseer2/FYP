@@ -6,6 +6,7 @@ import {
   type ExpectedRef,
 } from "./lineage-db";
 import { recordSchemaMetrics } from "./schema-metrics";
+import { driftFingerprint } from "./drift-fingerprint";
 import type { CompareReport } from "./compare-types";
 import type { DriftSource } from "./drift-source";
 
@@ -81,16 +82,37 @@ export async function runDriftCheck(
   source: DriftSource,
   mode: DriftRecordMode = "always"
 ): Promise<DriftRunResult> {
+  // Every path out of here stamps the check time, including the ones that found
+  // nothing to check. The schedule is driven by when a schema was last LOOKED
+  // at, not by whether the look succeeded, and the scheduler takes the six most
+  // overdue schemas a minute: a schema that never gets stamped stays the most
+  // overdue there is and is picked again on the very next tick, forever. Six of
+  // them fill every tick and no other schema is ever checked. Stamping costs a
+  // broken schema one delayed retry; not stamping costs every other schema its
+  // check. (An unreachable database already came through the success path below
+  // and got its stamp, which is why the symptom only ever showed up here.)
   let comp;
   try {
     comp = await computeDriftDetail(trackedSchemaId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await stampLastChecked(trackedSchemaId);
     return { ok: false, problem: { kind: "failed", message } };
   }
 
-  if (comp.kind === "not_found") return { ok: false, problem: { kind: "not_found" } };
-  if (comp.kind === "no_baseline") return { ok: false, problem: { kind: "no_baseline" } };
+  if (comp.kind === "not_found") {
+    // The row is gone, so the UPDATE matches nothing and does nothing — kept
+    // for the next case, which looks identical from here and is not harmless.
+    await stampLastChecked(trackedSchemaId);
+    return { ok: false, problem: { kind: "not_found" } };
+  }
+  if (comp.kind === "no_baseline") {
+    // A tracked schema with no baseline is the one to worry about: it is not a
+    // transient failure, so without the stamp it sits at the front of the queue
+    // until somebody notices the rest of the schedule has stopped.
+    await stampLastChecked(trackedSchemaId);
+    return { ok: false, problem: { kind: "no_baseline" } };
+  }
 
   const status: DriftStatus = comp.kind === "unreachable" ? "unreachable" : comp.status;
   const counts = comp.kind === "ok" ? comp.counts : null;
@@ -114,8 +136,12 @@ export async function runDriftCheck(
     });
   }
 
+  // Which differences were found, as one short string — null when there was no
+  // comparison to fingerprint, which is every unreachable database.
+  const fingerprint = report ? driftFingerprint(report) : null;
+
   const worthRecording =
-    mode === "always" || (await statusChanged(trackedSchemaId, status));
+    mode === "always" || (await outcomeChanged(trackedSchemaId, status, fingerprint));
   const recorded = worthRecording
     ? await recordDriftEvent({
         trackedSchemaId,
@@ -124,6 +150,7 @@ export async function runDriftCheck(
         counts,
         baselineSnapshotId: comp.expected.snapshotId,
         source,
+        fingerprint,
       })
     : false;
 
@@ -162,25 +189,51 @@ async function stampLastChecked(trackedSchemaId: number): Promise<void> {
 /**
  * Whether this outcome says something the newest recorded event does not.
  *
- * Errs towards recording: if the previous status cannot be read, the row is
- * written. A duplicated "in sync" is noise; a missed "drifted" is a bug.
+ * Two things are compared, not one. The status on its own answers "is this
+ * schema drifted?", which stops being news the moment it first drifts: a schema
+ * that is already "drifted" and then loses a whole table is still "drifted", so
+ * on the scheduler's "on_change" setting nothing was written and the audit feed
+ * ended at the first change — the one thing the feed exists to show.
+ *
+ * The fingerprint answers the other half, "drifted HOW?", so a second change
+ * inside an already-drifted schema is a different answer and gets its own row.
+ *
+ * The two null cases pull in opposite directions and are deliberately not
+ * folded together. A check with no fingerprint had no comparison behind it —
+ * an unreachable database — and there is nothing to compare beyond the status,
+ * so it falls back to the old behaviour and stays quiet; treating that as
+ * "cannot tell, record it" would refill the feed every fifteen minutes for as
+ * long as the database stayed down. A previous row with no fingerprint is a row
+ * written before this existed, or by a deploy, and recording once against it
+ * costs one row and leaves a fingerprint behind for next time to match.
+ *
+ * Errs towards recording otherwise: if the previous row cannot be read, the row
+ * is written. A duplicated "in sync" is noise; a missed change is a bug.
  */
-async function statusChanged(
+async function outcomeChanged(
   trackedSchemaId: number,
-  status: DriftStatus
+  status: DriftStatus,
+  fingerprint: string | null
 ): Promise<boolean> {
   try {
-    const previous = await pool.query<{ status: string }>(
-      `SELECT status FROM drift_events
+    const previous = await pool.query<{ status: string; fingerprint: string | null }>(
+      `SELECT status, fingerprint FROM drift_events
         WHERE tracked_schema_id = $1
         ORDER BY detected_at DESC, id DESC
         LIMIT 1`,
       [trackedSchemaId]
     );
     if (previous.rows.length === 0) return true;
-    return previous.rows[0].status !== status;
+    if (previous.rows[0].status !== status) return true;
+    // Same status, and nothing was compared this time — the status is all there
+    // is to go on and it has not moved.
+    if (fingerprint === null) return false;
+    // Same status, and the row to compare against has no fingerprint: record
+    // once, which also leaves one for the next check to match against.
+    if (previous.rows[0].fingerprint === null) return true;
+    return previous.rows[0].fingerprint !== fingerprint;
   } catch (error) {
-    console.error("Drift — could not read the previous status:", error);
+    console.error("Drift — could not read the previous outcome:", error);
     return true;
   }
 }
@@ -193,6 +246,15 @@ export type DriftEventRecord = {
   counts: DriftCounts | null;
   baselineSnapshotId: number | null;
   source: DriftSource;
+  /**
+   * Which differences this row is about — see lib/drift-fingerprint.ts.
+   *
+   * Optional because the callers outside this file (a deploy, a re-baseline)
+   * are recording that something happened, not the result of a comparison.
+   * Leaving it null is correct there: the next scheduled check will not match
+   * it, so the first real drift after a deploy is always recorded.
+   */
+  fingerprint?: string | null;
 };
 
 /**
@@ -206,8 +268,9 @@ export async function recordDriftEvent(record: DriftEventRecord): Promise<boolea
   try {
     await pool.query(
       `INSERT INTO drift_events
-         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source,
+          fingerprint)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
       [
         record.trackedSchemaId,
         record.status,
@@ -215,6 +278,7 @@ export async function recordDriftEvent(record: DriftEventRecord): Promise<boolea
         record.counts ? JSON.stringify(record.counts) : null,
         record.baselineSnapshotId,
         record.source,
+        record.fingerprint ?? null,
       ]
     );
     return true;

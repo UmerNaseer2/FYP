@@ -26,6 +26,16 @@
  * TRIGGER of some other trigger. Every guard uses the default, which blanks
  * them, so a keyword hidden in a quoted name never counts as code.
  *
+ * keepComments and readDollarBodies are for stripSchemaFromExpr in
+ * lib/postgres.ts, which only needs to know where the string literals are.
+ * keepComments still reads a comment as a comment, so a quote inside one opens
+ * nothing, but leaves its text in place. readDollarBodies reads a dollar-quoted
+ * body the way a function body is read: the tags on both ends are stepped over
+ * and the text between is scanned as code, so its own literals are blanked. A
+ * dollar-quoted string nested inside that body is still a string, and is
+ * blanked. No guard may use either option: a word in a function body would then
+ * count as a statement.
+ *
  * The scanner mirrors PostgreSQL's own lexer (src/backend/parser/scan.l),
  * because anything it reads differently from the lexer is a hole a second
  * statement can hide in. The subtle parts, and why each is here:
@@ -52,9 +62,14 @@
  *     lexer, so a COMMIT after nested block comments is not left half-masked.
  *   - A -- line comment ends at \n OR \r, the lexer's newline class.
  */
-export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } = {}): string {
+export function maskNonCode(
+  sql: string,
+  options: { keepQuotedNames?: boolean; keepComments?: boolean; readDollarBodies?: boolean } = {}
+): string {
   const out = sql.split("");
   const len = sql.length;
+  // With readDollarBodies, the tag of the body being read as code, if one is open.
+  let openBody: string | null = null;
 
   // A dollar-quote tag is empty or a name (letter/underscore/high byte, then
   // more of those or digits). Tried only at a `$` that did not continue a name,
@@ -132,7 +147,7 @@ export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } 
     if (ch === "-" && sql[i + 1] === "-") {
       let j = i + 2;
       while (j < len && sql[j] !== "\n" && sql[j] !== "\r") j += 1;
-      blank(i, j);
+      if (!options.keepComments) blank(i, j);
       i = j;
       continue;
     }
@@ -151,7 +166,7 @@ export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } 
           j += 1;
         }
       }
-      blank(i, j);
+      if (!options.keepComments) blank(i, j);
       i = j;
       continue;
     }
@@ -205,6 +220,14 @@ export function maskNonCode(sql: string, options: { keepQuotedNames?: boolean } 
       dollarTag.lastIndex = i;
       const tag = dollarTag.exec(sql);
       if (tag) {
+        // Reading bodies as code: step over the tag that opens the body and the
+        // same tag that closes it. Any other tag in between opens a string,
+        // which is blanked below like everywhere else.
+        if (options.readDollarBodies && (openBody === null || tag[0] === openBody)) {
+          openBody = openBody === null ? tag[0] : null;
+          i += tag[0].length;
+          continue;
+        }
         const close = sql.indexOf(tag[0], i + tag[0].length);
         const end = close === -1 ? len : close + tag[0].length;
         blank(i, end);
@@ -250,6 +273,55 @@ export function containsTransactionControl(sql: string): boolean {
   return false;
 }
 
+// The words that can follow DROP inside ALTER TABLE without it being a column.
+const NOT_A_COLUMN_AFTER_DROP = new Set([
+  "column",
+  "constraint",
+  "default",
+  "not",
+  "identity",
+  "expression",
+]);
+
+/**
+ * ALTER TABLE t DROP legacy — a column drop written without the COLUMN keyword,
+ * which PostgreSQL accepts. An empty word means the name was a quoted
+ * identifier, which the mask blanked; that is a column too.
+ *
+ * Takes one statement already masked, lower-cased and single-spaced. It lives
+ * here rather than in lib/change-type because both readers need it: the version
+ * grade asks whether a column goes away, and so does the deletes-rows check
+ * below. It was written once, in change-type, and the other question was left
+ * with a plain /DROP COLUMN/ search that this spelling walks straight past —
+ * so the same statement was graded breaking and "deletes nothing".
+ */
+export function dropsColumnWithoutKeyword(statement: string): boolean {
+  if (!/^alter table\b/.test(statement)) return false;
+  // The word after DROP is optional in the pattern, because a blanked quoted
+  // name can leave DROP as the last word of the statement.
+  for (const match of statement.matchAll(/\bdrop\b(?: if exists\b)?(?: (\w+))?/g)) {
+    if (!NOT_A_COLUMN_AFTER_DROP.has(match[1] ?? "")) return true;
+  }
+  return false;
+}
+
+/**
+ * Every statement that will run, in the shape the rule above expects: masked,
+ * lower-cased, single-spaced. The inside of a DO block is read as well, because
+ * maskNonCode blanks it whole and a generated script puts real statements
+ * there. BEGIN / THEN / ELSE / LOOP end a piece, so "IF … THEN ALTER TABLE …"
+ * is read as a statement starting with ALTER TABLE. (lib/change-type does the
+ * same thing for its own rules, and keeps the quoted names alongside.)
+ */
+function tidyStatements(code: string, doBodies: string): string[] {
+  return [
+    ...splitStatements(code),
+    ...doBodies.replace(/\b(begin|then|else|loop)\b/gi, ";").split(";"),
+  ]
+    .map((piece) => piece.toLowerCase().replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
 /**
  * Statements that take rows out of a live table, named by keyword.
  *
@@ -277,20 +349,27 @@ export function containsTransactionControl(sql: string): boolean {
 export function findRowDestroyingStatements(sql: string): string[] {
   const code = maskNonCode(sql);
   const doBodies = doBlockBodies(sql);
-  const checks: [RegExp, string][] = [
-    [/\bTRUNCATE\b/i, "TRUNCATE"],
-    [/\bDELETE\s+FROM\b/i, "DELETE"],
-    [/\bDROP\s+TABLE\b/i, "DROP TABLE"],
-    // A dropped column takes its values with it. It was missing here because it
-    // is already graded breaking, but breaking answers a different question:
-    // "what stops working" is not "what do I need a backup of".
-    [/\bDROP\s+COLUMN\b/i, "DROP COLUMN"],
-    [/\bDROP\s+SCHEMA\b/i, "DROP SCHEMA"],
-    [/\bDROP\s+DATABASE\b/i, "DROP DATABASE"],
+  const found = (pattern: RegExp) => pattern.test(code) || pattern.test(doBodies);
+
+  // A dropped column takes its values with it. It was missing here because it
+  // is already graded breaking, but breaking answers a different question:
+  // "what stops working" is not "what do I need a backup of".
+  //
+  // The keyword is optional in PostgreSQL, and "ALTER TABLE t DROP legacy"
+  // matches no pattern here, so the statements are asked one by one with the
+  // same rule the version grade uses.
+  const dropsColumn =
+    found(/\bDROP\s+COLUMN\b/i) || tidyStatements(code, doBodies).some(dropsColumnWithoutKeyword);
+
+  const checks: [boolean, string][] = [
+    [found(/\bTRUNCATE\b/i), "TRUNCATE"],
+    [found(/\bDELETE\s+FROM\b/i), "DELETE"],
+    [found(/\bDROP\s+TABLE\b/i), "DROP TABLE"],
+    [dropsColumn, "DROP COLUMN"],
+    [found(/\bDROP\s+SCHEMA\b/i), "DROP SCHEMA"],
+    [found(/\bDROP\s+DATABASE\b/i), "DROP DATABASE"],
   ];
-  return checks
-    .filter(([pattern]) => pattern.test(code) || pattern.test(doBodies))
-    .map(([, label]) => label);
+  return checks.filter(([hit]) => hit).map(([, label]) => label);
 }
 
 /**
@@ -477,6 +556,22 @@ export function extractEnumAddValues(sql: string): string[] {
     statements.push(`${statement};`);
   }
   return statements;
+}
+
+/**
+ * The type an `ALTER TYPE … ADD VALUE` statement names, exactly as written.
+ *
+ * The caller hands this straight to `to_regtype` to ask whether the type is
+ * already on the server, so the name is returned unchanged — quoting, schema
+ * qualification, capitalisation and all — because to_regtype reads a type name
+ * the same way the rest of the statement does. Null means the text is not an
+ * ADD VALUE statement at all.
+ */
+export function enumAddValueTypeName(statement: string): string | null {
+  const match = /^ALTER\s+TYPE\s+([\s\S]+?)\s+ADD\s+VALUE\b/i.exec(
+    stripLeadingComments(statement)
+  );
+  return match ? match[1].trim() : null;
 }
 
 /**

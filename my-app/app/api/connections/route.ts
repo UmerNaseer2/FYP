@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getConnectionDependents } from "@/lib/lineage-db";
-import { checkConnectableHost } from "@/lib/connection-config";
+import { checkConnectionTarget } from "@/lib/connection-config";
 import { encryptSecret } from "@/lib/secret-store";
 import {
+  REENTER_PASSWORD_MESSAGE,
+  savedPasswordWouldMove,
   sslModeFromLegacyBoolean,
   sslModeUsesTls,
   summariseErrors,
@@ -97,7 +99,20 @@ export async function POST(request: NextRequest) {
 
   // The SSRF guard used to run only on "Test connection", which meant a blocked
   // host could still be saved and then dialled by Deploy, Drift or Compare.
-  const hostCheck = checkConnectableHost(value.host);
+  //
+  // It judges the host the driver would really use, not the one the URL reads
+  // as naming: in "postgres://user:pw@db.example.com/app?host=169.254.169.254"
+  // the query parameter wins, and this row would have been saved as a database
+  // on the internet that dials the cloud metadata service.
+  const hostCheck = checkConnectionTarget({
+    host: value.host,
+    port: value.port,
+    database: value.database_name,
+    user: value.username,
+    password: value.password,
+    connectionString: value.connection_string,
+    sslMode: value.ssl_mode,
+  });
   if (!hostCheck.ok) {
     return NextResponse.json({ error: hostCheck.message }, { status: 400 });
   }
@@ -166,10 +181,9 @@ export async function PUT(request: NextRequest) {
   }
   const value = checked.value;
 
-  const hostCheck = checkConnectableHost(value.host);
-  if (!hostCheck.ok) {
-    return NextResponse.json({ error: hostCheck.message }, { status: 400 });
-  }
+  // The host check runs further down, once the stored row has been read: on an
+  // edit a blank connection string means "keep the saved one", so the host this
+  // connection would dial after the save is not always in this request.
 
   // …EXCEPT when the editor switched to Fields mode: there the user is
   // redefining the target by loose host/port/user fields, so any stored URI
@@ -192,9 +206,10 @@ export async function PUT(request: NextRequest) {
       port: number;
       database_name: string;
       username: string;
+      ssl: boolean | null;
       ssl_mode: string | null;
     }>(
-      `SELECT password, connection_string, host, port, database_name, username, ssl_mode
+      `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode
          FROM connections WHERE id = $1`,
       [id]
     );
@@ -223,6 +238,52 @@ export async function PUT(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // Where this row would dial after the save — the effective values, because
+    // a kept connection string decides that and is not in this request. Same
+    // guard as POST: the host the driver resolves, not the one the URL reads as
+    // naming. The stored string is still encrypted here; checkConnectionTarget
+    // decrypts it the way every consumer of a saved credential does.
+    const hostCheck = checkConnectionTarget({
+      host: value.host,
+      port: value.port,
+      database: value.database_name,
+      user: value.username,
+      password: effectivePassword,
+      connectionString: effectiveConnString,
+      sslMode: value.ssl_mode,
+    });
+    if (!hostCheck.ok) {
+      return NextResponse.json({ error: hostCheck.message }, { status: 400 });
+    }
+
+    // A blank password keeps the saved one, so the saved one must keep going to
+    // the same place. Without this, an editor could point the connection at a
+    // server they run, leave the password blank, press Test, and receive a
+    // password nobody ever showed them. See savedPasswordWouldMove.
+    //
+    // Only when the loose fields are what the app will dial: a connection
+    // string, kept or new, decides the destination itself and carries its own
+    // password.
+    const keepsSavedPassword = value.password === "" && storedPassword !== "";
+    if (keepsSavedPassword && !effectiveConnString) {
+      const saved = existing.rows[0];
+      const moved = savedPasswordWouldMove(
+        {
+          host: saved.host,
+          port: Number(saved.port),
+          username: saved.username,
+          sslMode: saved.ssl_mode ? toSslMode(saved.ssl_mode) : sslModeFromLegacyBoolean(saved.ssl),
+        },
+        { host: value.host, port: value.port, username: value.username, sslMode: value.ssl_mode }
+      );
+      if (moved) {
+        return NextResponse.json(
+          { error: REENTER_PASSWORD_MESSAGE, errors: { password: REENTER_PASSWORD_MESSAGE } },
+          { status: 400 }
+        );
+      }
     }
 
     // A stored test result describes the target that was reached, so it only

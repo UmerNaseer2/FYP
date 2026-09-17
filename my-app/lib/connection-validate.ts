@@ -137,6 +137,57 @@ export function sslModeUsesTls(mode: SslMode): boolean {
   return mode !== "disable";
 }
 
+/** How well each mode protects a password on its way to the server, weakest first. */
+const SSL_STRENGTH: Record<SslMode, number> = { disable: 0, require: 1, "verify-full": 2 };
+
+/** The parts of a saved connection that decide who receives its password. */
+export type PasswordDestination = {
+  host: string;
+  port: number;
+  username: string;
+  sslMode: SslMode;
+};
+
+/**
+ * Would this edit send the SAVED password somewhere it was not going before?
+ *
+ * On edit, a blank password means "keep the saved one". That is convenient, and
+ * it is also a way to steal the password: change the host to a server you run,
+ * leave the password blank, press Test, and the app dials your server and hands
+ * over a password you were never shown. (A server can ask the client for the
+ * password in plain text, and the driver sends it.) So an edit that keeps the
+ * saved password must keep sending it to the same place:
+ *
+ *   - host or port changed: a different server would receive it.
+ *   - username changed: it would be offered as someone else's password.
+ *   - TLS made weaker: it would cross the network less protected than before.
+ *
+ * The database name is left out on purpose. Moving to another database on the
+ * same server, as the same user, sends the password to the same server that
+ * already has it. TLS made stronger is also fine.
+ *
+ * Only the loose fields are compared here. When the row keeps a connection
+ * string, the string decides where the app connects and it carries its own
+ * password, so the caller skips this check.
+ */
+export function savedPasswordWouldMove(
+  before: PasswordDestination,
+  after: PasswordDestination
+): boolean {
+  const sameHost = before.host.trim().toLowerCase() === after.host.trim().toLowerCase();
+  return (
+    !sameHost ||
+    Number(before.port) !== Number(after.port) ||
+    before.username.trim() !== after.username.trim() ||
+    SSL_STRENGTH[after.sslMode] < SSL_STRENGTH[before.sslMode]
+  );
+}
+
+/** The message for an edit that savedPasswordWouldMove refuses. */
+export const REENTER_PASSWORD_MESSAGE =
+  "You changed where this connection goes (host, port, user or TLS). " +
+  "Enter the password again to save it, so the saved password is never sent to a new place.";
+
 /**
  * Parse a port from anything the wire might carry. Returns null when the value
  * is not a whole number inside the valid range — the caller decides whether that

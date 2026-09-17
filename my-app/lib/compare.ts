@@ -137,12 +137,37 @@ const TABLE_NAME_SIMILARITY_FLOOR = 0.3;
 // review candidates instead of being auto-renamed OR silently dropped to
 // create+drop — the latter would be destructive data loss on apply.
 function tableNameRenameGuard(a: string, b: string): boolean {
+  return nameRenameGuard(a, b, TABLE_NAME_SIMILARITY_FLOOR);
+}
+
+// The same floor for columns, set much higher. Two columns of the same type in
+// the same position inside one table score 45 of 60 on structure alone, which
+// clears the 50-point accept threshold with almost no name agreement — so
+// billing_address and shipping_address were auto-renamed into each other. No
+// row is lost, but every billing address is now filed as a shipping address,
+// which is worse than losing it: nothing says anything went wrong.
+//
+// It has to sit above the edit-distance similarity of the near-miss pairs a
+// schema really does contain — billing_address/shipping_address is 0.69,
+// created_at/updated_at 0.6, first_name/last_name 0.56 — while still passing
+// the typo and abbreviation renames (usr_id → user_id is 0.83). Anything below
+// it is offered as a rename candidate to confirm by hand instead, and if it
+// really is not a rename the column is added and dropped, both of which are
+// marked destructive and so stopped by safe mode.
+const COLUMN_NAME_SIMILARITY_FLOOR = 0.8;
+
+function columnNameRenameGuard(a: string, b: string): boolean {
+  return nameRenameGuard(a, b, COLUMN_NAME_SIMILARITY_FLOOR);
+}
+
+/** Shared by both: one name contains the other, or they are alike enough. */
+function nameRenameGuard(a: string, b: string, floor: number): boolean {
   const na = normalizeSimilarityText(a);
   const nb = normalizeSimilarityText(b);
   const shorter = na.length <= nb.length ? na : nb;
   const longer = na.length <= nb.length ? nb : na;
   if (shorter.length >= 4 && longer.includes(shorter)) return true;
-  return stringSimilarity(a, b) >= TABLE_NAME_SIMILARITY_FLOOR;
+  return stringSimilarity(a, b) >= floor;
 }
 
 // --- Derived totals (computed once, reused everywhere) ----------------------
@@ -152,6 +177,18 @@ const COLUMN_TOTAL_WEIGHT =
   WEIGHTS.column.type +
   WEIGHTS.column.constraints +
   WEIGHTS.column.order;
+
+/**
+ * A column match score as a percentage, for the screens and the script notes.
+ *
+ * A column is scored out of 60 while a table is normalised to 0–100, so the raw
+ * number reads as a percentage for a table and understates a column. A rename
+ * that agreed on everything but the name scores 56.3, which showed as
+ * "56.3% match" — a coin toss — when it is really a 94% match.
+ */
+export function columnMatchPercent(score: number): number {
+  return Math.round((score / COLUMN_TOTAL_WEIGHT) * 100);
+}
 
 const COLUMN_CONSTRAINT_TOTAL_POINTS =
   WEIGHTS.columnConstraint.nullable +
@@ -1469,7 +1506,10 @@ function compareColumns(
     COLUMN_MATCH_POSSIBLE_THRESHOLD,
     "column",
     (col) => col.name,
-    (col) => col.name
+    (col) => col.name,
+    // Auto-accept a rename only when the names agree; otherwise it is a
+    // candidate to confirm by hand (see COLUMN_NAME_SIMILARITY_FLOOR).
+    (leftColumn, rightColumn) => columnNameRenameGuard(leftColumn.name, rightColumn.name)
   );
 
   for (const match of similarityResults.accepted) {
@@ -1537,7 +1577,19 @@ function compareUniqueConstraints(left: TableSnapshot, right: TableSnapshot): Co
       continue;
     }
     const bySignature = rightBySignature.get(uniqueConstraintSignature(constraint));
-    if (bySignature) { matchedRight.add(bySignature.name); continue; }
+    if (bySignature) {
+      matchedRight.add(bySignature.name);
+      // The signature is the column list and nothing else, so a pair matched
+      // this way can still differ in everything the words around it say —
+      // DEFERRABLE, NULLS NOT DISTINCT, INCLUDE columns. Confirm with the whole
+      // definition, exactly as the foreign-key path below does; without this,
+      // UNIQUE (email) and UNIQUE (email) NULLS NOT DISTINCT under two names
+      // were called identical and the migration was generated empty.
+      if (constraint.normalizedDefinition !== bySignature.normalizedDefinition) {
+        diffs.push({ kind: "UNIQUE", status: "changedDefinition", summary: `Unique constraint ${constraint.name} changed definition.`, leftName: constraint.name, rightName: bySignature.name });
+      }
+      continue;
+    }
     diffs.push({ kind: "UNIQUE", status: "onlyA", summary: `Unique constraint ${constraint.name} exists only in ${left.name}.`, leftName: constraint.name });
   }
 

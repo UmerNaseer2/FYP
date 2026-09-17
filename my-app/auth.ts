@@ -49,12 +49,29 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
      * The role is re-read from the database on each session read rather than
      * trusted from the token, so that an admin demoting someone takes effect
      * immediately instead of waiting for their token to expire.
+     *
+     * The token's own role is deliberately NOT used as a fallback. It used to
+     * be, and that handed a deleted user their old role back: demote an admin
+     * to viewer, delete them, and the lookup below returns null — no profile —
+     * so the app fell back to what the 30-day sign-in token still said, which
+     * is whatever they were when they signed in. Admin. The token is a copy of
+     * the answer from up to a month ago; re-reading it on the one path where
+     * the database says "this person is gone" undoes the whole point of
+     * re-reading.
+     *
+     * null here means exactly one thing: getProfileRole found no row. A
+     * database that cannot be read throws instead, and lands in the catch
+     * below, so the two cases never arrive looking alike. No row means viewer
+     * — the least this app gives anyone. They keep a session and can still see
+     * the read-only screens; they simply cannot act. Signing them out would
+     * also be defensible, but it turns a deleted profile into a confusing
+     * logout loop for someone whose next sign-in would just re-provision them.
      */
     async session({ session, token }) {
       if (session.user?.email) {
         try {
           const role = await getProfileRole(session.user.email);
-          session.user.role = toRole(role ?? token.role);
+          session.user.role = toRole(role);
         } catch (error) {
           console.error("Failed to read profile role:", error);
           session.user.role = DEFAULT_ROLE;

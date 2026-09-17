@@ -382,6 +382,77 @@ describe("GET /api/performance/advice", () => {
     expect(idsIn(body)).toContain("duplicate-index");
   });
 
+  /** The finding with this id, or undefined. */
+  const find = (body: { advice: { id: string }[] }, id: string) =>
+    body.advice.find((a) => a.id === id) as
+      | { id: string; fix: string; startUnticked?: string }
+      | undefined;
+
+  /** Pass two, with the very first read — the invalid indexes — timing out. */
+  const NO_INVALID_LIST: FakeStep[] = [
+    {
+      match: /NOT ix\.indisvalid/,
+      error: { code: "57014", message: "canceling statement due to statement timeout" },
+    },
+    ...statsSteps([]),
+  ];
+
+  it("leaves the index drop unticked when it cannot tell which index is broken", async () => {
+    // orders_a and orders_b look identical, so one is offered for DROP. With no
+    // list, the app cannot know orders_a is the half-built one a failed CREATE
+    // INDEX CONCURRENTLY left behind — so the DROP it wrote may be aimed at the
+    // only working index of the two, and it must not go into a script that
+    // somebody runs without reading.
+    target(NO_INVALID_LIST);
+    const body = await (await advise()).json();
+
+    const duplicate = find(body, "duplicate-index");
+    expect(duplicate?.startUnticked).toContain("Starts unticked");
+    expect(duplicate?.startUnticked).toContain("which indexes are invalid could not be read");
+  });
+
+  it("leaves it ticked like everything else once the list has been read", async () => {
+    // The ordinary case, and the one that would make this fix a nuisance if it
+    // leaked: a duplicate found with the list in hand is as good as any other
+    // suggestion.
+    target(statsSteps([]));
+    const body = await (await advise()).json();
+
+    expect(find(body, "duplicate-index")?.startUnticked).toBeUndefined();
+  });
+
+  it("does not untick advice that acts on no index at all", async () => {
+    // A table with no primary key and nothing to build one out of. Its fix
+    // names its own column, so the missing list says nothing about it and
+    // unticking it would just be noise.
+    mockFetchSchemaSnapshot.mockResolvedValue({
+      ok: true,
+      data: {
+        ...SNAPSHOT,
+        tables: [
+          ...SNAPSHOT.tables,
+          {
+            name: "audit_log",
+            columns: [],
+            primaryKey: null,
+            uniqueConstraints: [],
+            foreignKeys: [],
+            checkConstraints: [],
+            excludeConstraints: [],
+            indexes: [],
+          },
+        ],
+      },
+    });
+    target(NO_INVALID_LIST);
+    const body = await (await advise()).json();
+
+    const noKey = find(body, "no-primary-key");
+    expect(noKey).toBeDefined();
+    expect(noKey?.fix).not.toContain("USING INDEX");
+    expect(noKey?.startUnticked).toBeUndefined();
+  });
+
   it("falls back to general steps when the partitions come back in a shape it does not know", async () => {
     target(statsSteps([{ ...UNFINISHED, waiting_on: "not a list" }]));
     const body = await (await advise()).json();
