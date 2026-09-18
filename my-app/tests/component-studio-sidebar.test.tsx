@@ -22,9 +22,11 @@
  * only way to leave the app.
  *
  * What is NOT here:
- *  - Who decides `collapsed`, `theme`, `activeHref`, or what sign out actually
- *    does. All four are the shell's:
- *    tests/component-studio-shell.test.tsx.
+ *  - Who decides `collapsed`, `theme`, `activeHref`, `role`, `bypass`, or what
+ *    sign out actually does. All six are the shell's:
+ *    tests/component-studio-shell.test.tsx. In particular, that the role comes
+ *    from the session and is withheld when there isn't one is asserted there;
+ *    below it is only that whatever arrives is what gets drawn.
  *  - The real list of screens and which route counts as active:
  *    tests/studio-nav.test.ts. The rows below are written out by hand so these
  *    tests keep their meaning the next time a screen is added to that file.
@@ -279,6 +281,61 @@ describe("who is signed in", () => {
     expect(onSignOut).toHaveBeenCalledTimes(1);
     expect(onToggleCollapse).not.toHaveBeenCalled();
     expect(onToggleTheme).not.toHaveBeenCalled();
+  });
+});
+
+describe("what the rail says you are allowed to do", () => {
+  // Both pills live in the same block as the name and address, so a collapsed
+  // rail keeps them in the page as sr-only rather than dropping them — the same
+  // rule the rows above follow, and the reason these tests read by text.
+  test("says nothing about rights when it was handed none", () => {
+    // The shell withholds both while nobody is signed in. A "viewer" pill under
+    // "Not signed in" would read as a role somebody holds rather than as the
+    // absence of one, so the rail has to be able to draw neither.
+    renderRail();
+    expect(screen.queryByText("viewer")).not.toBeInTheDocument();
+    expect(screen.queryByText("admin")).not.toBeInTheDocument();
+    expect(screen.queryByText("auth off")).not.toBeInTheDocument();
+  });
+
+  test("names the role, and explains it on hover", () => {
+    renderRail({ role: "editor" });
+    const pill = screen.getByText("editor");
+    expect(pill).toBeInTheDocument();
+    // The word on its own does not say what it buys you. Every screen gates on
+    // the role, so the tooltip is where the rail explains the gate.
+    expect(pill).toHaveAttribute("title", expect.stringContaining("can write and run scripts"));
+  });
+
+  test("uses the role it was given, not a fixed one", () => {
+    renderRail({ role: "viewer" });
+    expect(screen.getByText("viewer")).toHaveAttribute(
+      "title",
+      expect.stringContaining("cannot run a migration")
+    );
+  });
+
+  test("says out loud when authentication is switched off", () => {
+    // The bypass hands the admin role to whoever opens the page. An app with
+    // authentication off used to look exactly like one somebody signed in to.
+    renderRail({ bypass: true });
+    const pill = screen.getByText("auth off");
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveAttribute("title", expect.stringContaining("NEXT_PUBLIC_AUTH_BYPASS"));
+  });
+
+  test("shows both, because the role on its own is the reassuring half", () => {
+    // "admin" alone reads as somebody who signed in and was granted it.
+    renderRail({ role: "admin", bypass: true });
+    expect(screen.getByText("admin")).toBeInTheDocument();
+    expect(screen.getByText("auth off")).toBeInTheDocument();
+  });
+
+  test("keeps both readable in the narrow rail", () => {
+    renderRail({ role: "admin", bypass: true, collapsed: true });
+    // Still answerable to a screen reader, the same way the nav rows are.
+    expect(screen.getByText("admin")).toBeInTheDocument();
+    expect(screen.getByText("auth off")).toBeInTheDocument();
   });
 });
 

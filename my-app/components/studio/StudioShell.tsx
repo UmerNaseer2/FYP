@@ -38,7 +38,7 @@ type StudioShellProps = {
  */
 export function StudioShell({ children, user }: StudioShellProps) {
   const pathname = usePathname();
-  const { user: authUser, isAdmin } = useUser();
+  const { user: authUser, isAdmin, role, bypass } = useUser();
   const { theme, toggleTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -90,6 +90,16 @@ export function StudioShell({ children, user }: StudioShellProps) {
       theme={theme}
       onToggleTheme={toggleTheme}
       user={studioUser}
+      // Straight from useUser, never from the `user` override above: what the
+      // server will actually allow is not something a display identity gets to
+      // change. See StudioSidebarProps.
+      //
+      // Withheld while nobody is signed in. useUser reports DEFAULT_ROLE for a
+      // missing session — a sensible floor for code asking "may I", and a lie
+      // on screen, where a "viewer" badge under "Not signed in" would read as a
+      // role somebody holds rather than the absence of one.
+      role={authUser ? role : undefined}
+      bypass={bypass}
       onSignOut={handleSignOut}
       className={isMobile ? "h-full" : ""}
     />

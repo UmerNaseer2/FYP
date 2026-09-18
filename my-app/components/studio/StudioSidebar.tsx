@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { LogoIcon, ChevronLeftIcon, SunIcon, MoonIcon, SignOutIcon } from "@/components/ui/icons";
+import { Pill } from "@/components/ui/Pill";
+import type { Role } from "@/lib/auth-mode";
 import type { NavItem } from "./nav";
 
 export type StudioUser = {
@@ -16,9 +18,25 @@ type StudioSidebarProps = {
   theme: "dark" | "light";
   onToggleTheme: () => void;
   user: StudioUser;
+  /**
+   * What the app currently lets this person do. Deliberately NOT part of
+   * StudioUser: `user` can be overridden from above for a fixture, and the two
+   * things below are facts about the running server that an identity passed in
+   * by hand must not be able to paint over.
+   */
+  role?: Role;
+  /** True when NEXT_PUBLIC_AUTH_BYPASS is on — see lib/auth-mode. */
+  bypass?: boolean;
   onSignOut: () => void;
   /** Extra classes (e.g. h-full when hosted in the mobile nav drawer). */
   className?: string;
+};
+
+/** What each role is allowed to do, in the words the screens use. */
+const ROLE_TITLE: Record<Role, string> = {
+  viewer: "Viewer — can read every screen, cannot run a migration",
+  editor: "Editor — can write and run scripts on connections that allow it",
+  admin: "Admin — everything, including user management",
 };
 
 export function StudioSidebar({
@@ -29,6 +47,8 @@ export function StudioSidebar({
   theme,
   onToggleTheme,
   user,
+  role,
+  bypass = false,
   onSignOut,
   className = "",
 }: StudioSidebarProps) {
@@ -152,6 +172,37 @@ export function StudioSidebar({
             <div className="text-[11px] mono truncate" style={{ color: "var(--text-3)" }}>
               {user.email}
             </div>
+            {/*
+              The role, and whether it was earned by signing in.
+
+              Every screen in the app gates on these — Deploy refuses to run a
+              migration, Admin does not appear in the rail above — and until now
+              the one place a person could have read which of the three they
+              were was the source. Worse for the bypass: it hands out the admin
+              role to whoever opens the page, and an app with authentication
+              switched off looked exactly like one somebody had signed in to.
+
+              Both pills, not one. "admin" alone is the thing that would be
+              reassuring and wrong.
+            */}
+            {(role || bypass) && (
+              <div className="flex items-center gap-1 mt-1 flex-wrap">
+                {role && (
+                  <Pill tone="neutral" dot={false} title={ROLE_TITLE[role]}>
+                    {role}
+                  </Pill>
+                )}
+                {bypass && (
+                  <Pill
+                    tone="drift"
+                    dot={false}
+                    title="NEXT_PUBLIC_AUTH_BYPASS is on: nobody signed in and every request is let through as an admin. Turn it off before this is used for real."
+                  >
+                    auth off
+                  </Pill>
+                )}
+              </div>
+            )}
           </div>
           <button
             className={`btn btn-ghost btn-sm ${collapsed ? "" : "ml-auto"}`}

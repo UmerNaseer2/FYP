@@ -17,10 +17,15 @@
  * fresh checkout be used straight away. That is the wrong way for a switch that
  * decides whether an app is open to be wrong. Both mistakes are easy to make
  * and only one of them is visible: a checkout that comes up locked tells you so
- * on the first click, while one that comes up open looks exactly like one that
- * is properly signed in — there is no sign-in screen either way, and no line
- * anywhere on screen saying which you got. The same asymmetry already decided
- * the spellings below; it now decides the default too.
+ * on the first click, while one that comes up open used to look exactly like
+ * one that is properly signed in — there is no sign-in screen either way. The
+ * studio rail now says so out loud, under the name in its bottom-left corner:
+ * an "auth off" pill beside the role whenever BYPASS_AUTH is true (see
+ * components/studio/StudioSidebar.tsx). That makes the state readable; it does
+ * not make it safe, because the pill is only on screens somebody opens, and a
+ * deployment nobody has looked at is exactly the case this default is for. The
+ * same asymmetry already decided the spellings below; it still decides the
+ * default too.
  *
  * So the deployment that forgets this variable is refused rather than served.
  * What that costs is that a fresh checkout needs the line above before it can

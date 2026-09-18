@@ -36,6 +36,10 @@
  *    tests/use-user.test.tsx. What is asserted here is only that the shell is
  *    wired to them — the theme reaching the document, and the session reaching
  *    the rail.
+ *  - The auth-bypass pill. It is driven by BYPASS_AUTH, which lib/auth-mode
+ *    reads once at module load, so it cannot be switched per test in this file
+ *    without switching it for all of them. Both pills are drawn in
+ *    tests/component-studio-sidebar.test.tsx, where they arrive as props.
  *  - That the rail is actually 240px wide or the drawer actually slides. Those
  *    are the grid and the stylesheet; what is asserted is the track the shell
  *    asks for, since choosing it is this component's decision.
@@ -233,6 +237,44 @@ describe("who the rail says you are", () => {
     renderShell({ user: { name: "Release bot", email: "bot@example.com", initials: "RB" } });
     expect(screen.getByText("Release bot")).toBeInTheDocument();
     expect(screen.queryByText("Ada Lovelace")).toBeNull();
+  });
+});
+
+describe("what the rail says you are allowed to do", () => {
+  // Only the role half is checked here. The other pill is driven by
+  // BYPASS_AUTH, which lib/auth-mode reads once at module load — a jest.mock of
+  // it would switch the bypass on for every test in this file, including the
+  // ones above that are about a real session. That the rail draws the pill when
+  // it is told to is tests/component-studio-sidebar.test.tsx's.
+  test("shows the role the session carries", () => {
+    renderShell();
+    expect(screen.getByText("admin")).toBeInTheDocument();
+  });
+
+  test("and a different one when the session says so", () => {
+    mockSession = { user: { name: "Ada Lovelace", email: "ada@example.com", role: "viewer" } };
+    renderShell();
+    expect(screen.getByText("viewer")).toBeInTheDocument();
+    expect(screen.queryByText("admin")).toBeNull();
+  });
+
+  test("says nothing about a role when nobody is signed in", () => {
+    // useUser answers DEFAULT_ROLE — "viewer" — for a missing session, which is
+    // the right floor for code asking "may I" and a lie on screen: a viewer
+    // badge sitting under "Not signed in" reads as a role somebody holds.
+    mockSession = null;
+    renderShell();
+    expect(screen.getByText("Not signed in")).toBeInTheDocument();
+    expect(screen.queryByText("viewer")).toBeNull();
+  });
+
+  test("keeps the session's role even when a caller names the user itself", () => {
+    // The `user` override is a display identity. What the server will actually
+    // allow is not something it gets to relabel, so the role comes straight
+    // from useUser and ignores it.
+    renderShell({ user: { name: "Release bot", email: "bot@example.com", initials: "RB" } });
+    expect(screen.getByText("Release bot")).toBeInTheDocument();
+    expect(screen.getByText("admin")).toBeInTheDocument();
   });
 });
 
