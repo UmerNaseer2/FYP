@@ -47,7 +47,8 @@
  *    NEXT_PUBLIC_AUTH_BYPASS, which next/jest does not load under
  *    NODE_ENV=test, so it is false here — which is what makes the role gate
  *    below testable at all. lib/auth-mode's own switch is covered by
- *    tests/auth-role-and-bypass.test.ts.
+ *    tests/auth-role-and-bypass.test.ts, and the hook's behaviour on both
+ *    sides of it by tests/use-user.test.tsx.
  */
 
 import "@testing-library/jest-dom";

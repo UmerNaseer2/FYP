@@ -32,9 +32,10 @@
  *    tests/studio-nav.test.ts.
  *  - The drawer's own machinery — the portal, the scrim, the focus trap:
  *    tests/component-drawer.test.tsx.
- *  - hooks/useTheme.ts and hooks/useUser.ts, neither of which has a suite of
- *    its own. What is asserted here is that the shell is wired to them: the
- *    theme reaching the document, and the session reaching the rail.
+ *  - The two hooks themselves: tests/use-theme.test.tsx and
+ *    tests/use-user.test.tsx. What is asserted here is only that the shell is
+ *    wired to them — the theme reaching the document, and the session reaching
+ *    the rail.
  *  - That the rail is actually 240px wide or the drawer actually slides. Those
  *    are the grid and the stylesheet; what is asserted is the track the shell
  *    asks for, since choosing it is this component's decision.
