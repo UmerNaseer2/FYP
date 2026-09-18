@@ -18,8 +18,9 @@
  *    this page contributes is the onDone it passes, so a change reloads the
  *    header above rather than leaving it disagreeing with the buttons.
  *  - The re-check button beside the drift line, which fetches and reloads the
- *    page's own data: components/studio/RecheckDriftButton has no suite of its
- *    own.
+ *    page's own data: tests/component-recheck-drift-button.test.tsx. What this
+ *    page contributes is again the onDone, which is why a finished check
+ *    redraws the drift line above without a round trip to the server.
  *  - The route behind every read on this page. GET /api/lineage/[id] has no
  *    suite of its own; the answers below are written out by hand.
  */

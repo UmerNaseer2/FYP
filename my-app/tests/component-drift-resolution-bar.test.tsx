@@ -4,10 +4,22 @@
  * The three resolution actions for one drifted schema, plus the re-check that
  * sits inside the same bar.
  *
- * Tested at the component rather than through the screens that use it: the bar
- * appears on the drift list, on a schema's own page and on a server-rendered
- * hero, and the thing worth pinning down — that these four buttons block one
- * another — belongs to the bar itself wherever it is rendered.
+ * Tested at the component rather than through the screen that uses it. The bar
+ * is rendered once today, inside the drift page's hero, and in three different
+ * shapes of that hero — but the thing worth pinning down, that these four
+ * buttons block one another, belongs to the bar itself and would have to be
+ * re-pinned from scratch at every screen that adopted it next.
+ *
+ * What is NOT here:
+ *  - The re-check button's own behaviour — what it sends, what it does with the
+ *    answer, and that it reports starting and stopping at all:
+ *    tests/component-recheck-drift-button.test.tsx. What is checked below is
+ *    only the handshake, from the bar's side, in both directions.
+ *  - The routes behind the bar's own buttons. POST /api/lineage/rebaseline and
+ *    POST /api/lineage/acknowledge have no suites of their own; the answers
+ *    below are written out by hand.
+ *  - The screen that renders it, and the onDone it passes down:
+ *    tests/page-drift.test.tsx.
  */
 
 import "@testing-library/jest-dom";
