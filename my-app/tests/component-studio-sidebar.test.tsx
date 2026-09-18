@@ -23,8 +23,8 @@
  *
  * What is NOT here:
  *  - Who decides `collapsed`, `theme`, `activeHref`, or what sign out actually
- *    does. All four are the shell's, and components/studio/StudioShell.tsx has
- *    no suite of its own.
+ *    does. All four are the shell's:
+ *    tests/component-studio-shell.test.tsx.
  *  - The real list of screens and which route counts as active:
  *    tests/studio-nav.test.ts. The rows below are written out by hand so these
  *    tests keep their meaning the next time a screen is added to that file.

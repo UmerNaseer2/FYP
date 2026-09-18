@@ -21,8 +21,8 @@
  *  - The rail that renders this list:
  *    tests/component-studio-sidebar.test.tsx.
  *  - Filtering adminOnly against the live session role, and the wiring of
- *    activeNavItem into the breadcrumb. Both belong to
- *    components/studio/StudioShell.tsx, which has no suite of its own.
+ *    activeNavItem into the breadcrumb. Both belong to the shell:
+ *    tests/component-studio-shell.test.tsx.
  *  - What each screen does once you are on it. Those are the
  *    tests/page-*.test.tsx suites, one per route.
  */
