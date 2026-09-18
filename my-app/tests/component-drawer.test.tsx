@@ -26,9 +26,9 @@
  * What is NOT here:
  *  - hooks/useDialogFocus.ts, which both overlays share:
  *    tests/component-modal.test.tsx.
- *  - The sidebar that bare mode exists for. components/studio/StudioSidebar.tsx
- *    has no suite of its own; what is held here is the drawer's half of that
- *    arrangement.
+ *  - The sidebar that bare mode exists for:
+ *    tests/component-studio-sidebar.test.tsx. What is held here is the
+ *    drawer's half of that arrangement.
  *  - The screens that open drawers — connections, admin, the studio — are
  *    tests/page-connections.test.tsx, tests/page-admin.test.tsx and
  *    tests/page-studio.test.tsx.
