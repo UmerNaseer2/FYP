@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
+import { actorFor } from "@/lib/auth-mode";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { PoolClient } from "pg";
@@ -16,6 +18,9 @@ import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
 import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
+import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
+import { readApplications } from "@/lib/application-read";
+import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
 import {
   analyseRunRisk,
   checkForwardOnly,
@@ -161,6 +166,7 @@ async function ensureScriptPatchTable(
         source_ref  TEXT,
         sql_content TEXT,
         down_sql    TEXT,
+        applied_by  VARCHAR(320),
         applied_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -205,7 +211,19 @@ async function ensureScriptPatchTable(
     ADD COLUMN IF NOT EXISTS down_sql TEXT
   `);
 
-  // 7b-5. applied_at used to be TIMESTAMP — a wall clock with the offset
+  // 7b-5. Back-fill applied_by (spec 07 — track SQL execution history for
+  //       auditing): who ran this version. Nullable, because rows written
+  //       before this column existed have no honest answer and a default would
+  //       invent one — a ledger that names somebody for every historical row is
+  //       worse than one that admits it does not know.
+  //
+  //       320 characters is the longest address RFC 5321 allows (64 + @ + 255).
+  await client.query(`
+    ALTER TABLE ${quotedSchema}.script_patch
+    ADD COLUMN IF NOT EXISTS applied_by VARCHAR(320)
+  `);
+
+  // 7b-6. applied_at used to be TIMESTAMP — a wall clock with the offset
   //       thrown away. Postgres wrote it by down-casting CURRENT_TIMESTAMP
   //       through the session's zone, and node-postgres reads a no-zone value
   //       back as local time in the Node process, so the ledger reported an
@@ -654,6 +672,7 @@ export async function POST(request: NextRequest) {
   // created in the UI always resolves here. connection_string + ssl are read so
   // URI and SSL-required hosts (Neon, Supabase, RDS) can be deployed to.
   let connRow: {
+    name: string;
     host: string;
     port: number;
     database_name: string;
@@ -663,13 +682,16 @@ export async function POST(request: NextRequest) {
     ssl: boolean | null;
     ssl_mode: string | null;
     environment: string | null;
+    application_table: string | null;
+    execute_role: string | null;
   };
 
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment
+      `SELECT name, host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment,
+              application_table, execute_role
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -694,6 +716,28 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 }
     );
+  }
+
+  // ─── 4a. Refuse a target this caller may not execute against ──────────────
+  //
+  // The gate at the top of this route asked whether the caller may run
+  // migrations at all. This asks whether they may run one against THIS
+  // database, which is the question spec feature 02 is about: the same editor
+  // is trusted on dev and not on production, and a role alone cannot say so.
+  //
+  // Before opening a connection to the target, and before the production
+  // confirmation below, because a read-only connection is refused whether or
+  // not the run was confirmed — including a dry run. A rehearsal really
+  // executes the script and only then rolls back, so exempting it would make
+  // the quiet way to write to a read-only database the one nobody checks.
+  {
+    const required = toExecuteRole(connRow.execute_role);
+    if (!canExecute(gate.principal.role, required)) {
+      return answerBeforeRun(
+        { error: executeRefusal(connRow.name, gate.principal.role, required) },
+        { status: 403 }
+      );
+    }
   }
 
   // ─── 4b. Refuse an unconfirmed run against production ─────────────────────
@@ -1016,6 +1060,45 @@ export async function POST(request: NextRequest) {
   // outside the transaction (the ledger table, hoisted enum values), so a
   // refused run leaves the target exactly as it was. Step 8a checks again
   // under the family locks, where the answer can no longer change.
+  // ─── 6c. Per-application restrictions (spec feature 11) ──────────────────
+  //
+  // A script whose header names the applications it is for only runs against
+  // a database that hosts one of them. Checked here, before anything is
+  // written and before BEGIN, so a refusal leaves the target untouched — and
+  // on the server rather than only on the deploy screen, because the screen is
+  // a courtesy and this is the rule.
+  //
+  // The whole run is refused when any one migration in it is not allowed,
+  // rather than that one being dropped and the rest going ahead. A run is one
+  // transaction and the operator asked for these versions together; quietly
+  // applying a subset would leave the target at a version whose predecessor
+  // never ran.
+  {
+    const applications = await readApplications(
+      client,
+      schemaName,
+      connRow.application_table
+    );
+    for (const job of queue) {
+      const verdict = checkApplications(readAppliesToHeader(job.sqlContent), applications);
+      if (verdict.allowed) continue;
+      client.release();
+      await releaseClaimedApproval();
+      return answerBeforeRun(
+        {
+          success: false,
+          dryRun,
+          schema: schemaName,
+          results: rolledBackOutcomes(queue, job, verdict.reason ?? "Restricted to other applications."),
+          error:
+            `${scriptLabel(job.scriptName, job.version)} cannot run against this database. ` +
+            `${verdict.reason ?? ""} No migration in this run ran.`,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
   try {
     const problem = (await ledgerExists(client, quotedSchema))
       ? await checkAgainstLedger(client, quotedSchema, queue)
@@ -1289,8 +1372,8 @@ export async function POST(request: NextRequest) {
       const insertResult = await client.query<{ applied_at: string }>(
         `INSERT INTO ${quotedSchema}.script_patch
            (script_name, version, title, description, change_type, source_ref,
-            sql_content, down_sql)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            sql_content, down_sql, applied_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING applied_at`,
         [
           job.scriptName,
@@ -1301,6 +1384,9 @@ export async function POST(request: NextRequest) {
           job.sourceRef,
           job.sqlContent, // the exact SQL just executed — what version replay re-runs
           job.downSql, // and the script that undoes it, carried to wherever it is replayed
+          // Who ran it. actorFor rather than the email, because with the auth
+          // bypass on there is no signed-in person to name.
+          actorFor(gate.principal),
         ]
       );
       lastAppliedAt = insertResult.rows[0].applied_at;
@@ -1404,6 +1490,51 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // ─── 10. Record the run in the GitHub registry (spec 07) ─────────────────
+    // "Automatically push approved scripts to GitHub." Every version that just
+    // committed is written to the registry if the registry has no file for it.
+    //
+    // For a Deploy run this does nothing at all: those scripts were PULLED from
+    // the registry, so their files are already there and each one comes back
+    // "already-saved". The case it exists for is a version that reached this
+    // database some other way — a Version Sync replay, whose SQL comes from
+    // another database's ledger — which used to land in script_patch with
+    // nothing in GitHub to say so. Deploy showed exactly that as "Applied — no
+    // registry file".
+    //
+    // Best-effort, like the lineage advance above and for the same reason: the
+    // transaction has committed, so a registry that could not be written is
+    // something to TELL the user about, never a reason to report a successful
+    // deploy as a failure. archiveAppliedVersions never throws and never
+    // refuses; it answers null when GitHub is not configured at all.
+    let archived: ArchivedVersion[] | null = null;
+    try {
+      archived = await archiveAppliedVersions({
+        database: connRow.database_name,
+        schema: schemaName,
+        versions: queue.map((job) => ({
+          scriptName: job.scriptName,
+          version: job.version,
+          sql: job.sqlContent,
+          downSql: job.downSql,
+          changeType: job.changeType,
+          description: job.description,
+        })),
+      });
+      const saved = archived?.filter((entry) => entry.status === "saved") ?? [];
+      if (saved.length > 0) {
+        console.log(
+          `Apply — recorded ${saved.map((entry) => `v${entry.version} of "${entry.script_name}"`).join(", ")} ` +
+          `in the GitHub registry.`
+        );
+      }
+    } catch (archiveError) {
+      console.error(
+        "Apply — registry archive failed (run already applied, response unaffected):",
+        archiveError
+      );
+    }
+
     return NextResponse.json({
       success: true,
       dryRun: false,
@@ -1411,6 +1542,13 @@ export async function POST(request: NextRequest) {
       appliedAt: lastAppliedAt,
       schema: schemaName,
       results: outcomes,
+      // Only the versions this run ADDED to the registry, and the ones it could
+      // not. The ordinary "already-saved" answer is left out on purpose: every
+      // Deploy run would otherwise carry a list saying nothing happened, which
+      // is noise the screen would have to filter back out.
+      ...(archived && archived.some((entry) => entry.status !== "already-saved")
+        ? { registry: archived.filter((entry) => entry.status !== "already-saved") }
+        : {}),
       message:
         `${describeRun(queue)} applied successfully to schema "${schemaName}".`,
     });

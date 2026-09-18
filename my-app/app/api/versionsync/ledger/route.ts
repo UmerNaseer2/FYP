@@ -141,6 +141,11 @@ export async function GET(request: NextRequest) {
     // The title and description travel with a replay, so the Target's row
     // reads "Drop legacy code" as the Source's does, not the version again.
     // A script_patch made by another tool may have neither column.
+    // applied_by is deliberately NOT read here. This route feeds a replay onto
+    // another database, and the person who applied a version on the Source did
+    // not apply it on the Target — carrying the name across would put somebody
+    // in the Target's ledger who never touched it. The Target records whoever
+    // runs the replay, which is the true answer there.
     const titleExpr = present.has("title") ? "title" : "NULL::text AS title";
     const descriptionExpr = present.has("description") ? "description" : "NULL::text AS description";
 

@@ -277,7 +277,7 @@ describe("Compare", () => {
         targetSchema: "sales",
         run: "1",
       }),
-      false
+      null
     );
     // Whatever happens, no secret reaches the browser.
     expect(JSON.stringify(screen)).not.toContain("not-a-real-password");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Card, EmptyState, Pill } from "@/components/ui";
 import { useUser } from "@/hooks/useUser";
 import { roleAtLeast } from "@/lib/auth-mode";
@@ -19,6 +20,8 @@ import type { PerfTarget } from "./PerfTargetPicker";
 import { otherSchemaHeading, qualifiedName, quoteIdent } from "@/lib/perf-sql";
 import { PlanTree, ShareMeter } from "./PlanTree";
 import { FixScriptBuilder } from "./FixScriptBuilder";
+import { ScorePanel } from "./ScoreBadge";
+import { ThresholdBanner } from "./ThresholdBanner";
 // Type-only: erased at build time. The response shape has one definition, in
 // lib/query-analysis.ts, shared with the route that produces it, so the screen
 // and the route can never silently disagree about it.
@@ -309,6 +312,33 @@ function Result({
           {view.plan.planningMs !== null &&
             ` Planning took ${round(view.plan.planningMs)} ms.`}
         </div>
+      </Card>
+
+      <ThresholdBanner
+        breaches={view.breaches}
+        connectionId={connectionId}
+        schema={view.schema}
+      />
+
+      <Card className="p-4 space-y-2.5">
+        <div className="section-title">How this query scored</div>
+        <ScorePanel score={view.score} />
+        {/* Only offered when the analysis was really filed. A link built from a
+            null id would 404, and filing is best-effort by design. */}
+        {view.historyId !== null && (
+          <div className="text-[11.5px] pt-0.5" style={{ color: "var(--text-3)" }}>
+            <Link
+              href={`/performance?tab=history&connectionId=${encodeURIComponent(
+                connectionId
+              )}&schema=${encodeURIComponent(view.schema)}&fingerprint=${view.fingerprint}`}
+              className="underline"
+            >
+              See every run of this query
+            </Link>{" "}
+            — this one was recorded, so the next time you analyse it the two can
+            be compared.
+          </div>
+        )}
       </Card>
 
       <PlanWords plan={view.plan} />

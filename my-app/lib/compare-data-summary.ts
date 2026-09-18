@@ -12,6 +12,11 @@
 // unaffected by where it lives.
 // ---------------------------------------------------------------------------
 
+import type { RowSample } from "./compare-sample";
+
+// Re-exported so a screen rendering these rows imports one module, not two.
+export type { RowSample, SampleRow, RowDifference } from "./compare-sample";
+
 /** One table's data comparison. */
 export type TableDataCompare = {
   /** How the table is labelled in the report — "old → new" when renamed. */
@@ -45,6 +50,14 @@ export type TableDataCompare = {
   ignoredColumns: string[];
   /** Why it was skipped, or what was left out of an otherwise-good compare. */
   note: string | null;
+  /**
+   * Which rows differ, and how — null when this run did not look.
+   *
+   * Only a table that came back "different" has one: on every other verdict
+   * there is either nothing to sample or nothing that was read. See
+   * compare-sample.ts for what the scan does and does not cover.
+   */
+  sample: RowSample | null;
   /**
    * True when a full sync drops this table — whether or not its rows were read.
    *

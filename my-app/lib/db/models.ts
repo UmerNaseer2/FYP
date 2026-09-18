@@ -10,6 +10,7 @@ import { sequelize } from "./sequelize";
 import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
+import { EXECUTE_ROLES, DEFAULT_EXECUTE_ROLE } from "../connection-access";
 
 /**
  * The app's own tables, as Sequelize models.
@@ -90,6 +91,29 @@ export class Connection extends Model<
   declare ssl: CreationOptional<boolean>;
   declare ssl_mode: CreationOptional<string>;
   declare environment: CreationOptional<string>;
+  /**
+   * The table on THIS database that names which applications it hosts, as
+   * "schema.table" or a bare table name in the schema being deployed to. Null
+   * when the database does not have one, which is the default and the case
+   * for every connection made before this existed.
+   *
+   * Spec feature 11 asks that scripts restricted to an application only run
+   * against that application's databases; this is where the name of the
+   * client's own ApplicationTable is kept, because it is a property of the
+   * database rather than of this app. See lib/application-targeting.ts.
+   */
+  declare application_table: CreationOptional<string | null>;
+  /**
+   * Which role may run a migration against this database — "none", "editor" or
+   * "admin". See lib/connection-access.ts for the rule and for why "none" is
+   * not simply the weakest of the three.
+   *
+   * Spec feature 02's "execution permission control": the environment label
+   * next to it only makes the screen shout, and a role on its own says nothing
+   * about which database is on the other end. This is the pair of them —
+   * a person's rank, checked against this particular target.
+   */
+  declare execute_role: CreationOptional<string>;
   declare created_at: CreationOptional<Date>;
   /**
    * The outcome of the last "Test" run against this connection.
@@ -132,6 +156,13 @@ Connection.init(
       allowNull: false,
       defaultValue: DEFAULT_ENVIRONMENT,
       validate: { isIn: [ENVIRONMENT_VALUES] },
+    },
+    application_table: { type: DataTypes.TEXT, allowNull: true },
+    execute_role: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      defaultValue: DEFAULT_EXECUTE_ROLE,
+      validate: { isIn: [[...EXECUTE_ROLES]] },
     },
     created_at: { type: DataTypes.DATE, defaultValue: NOW },
     last_tested_at: { type: DataTypes.DATE, allowNull: true },
@@ -491,6 +522,177 @@ SchemaMetric.init(
 );
 
 // ---------------------------------------------------------------------------
+// Query analysis: what was asked, and what came back.
+// ---------------------------------------------------------------------------
+
+/**
+ * One analysed query, kept so it can be read again and compared with itself.
+ *
+ * Spec features 8 ("Store query history for review and comparison") and 10
+ * ("Historical Query Monitoring (query, exec_time, rows_returned,
+ * capture_time)"). The four names the spec lists are the four columns below —
+ * `query_text`, `exec_time_ms`, `rows_returned`, `captured_at` — so nobody has
+ * to be told which is which.
+ *
+ * Why it is not attached to a tracked schema, unlike schema_metrics: a query is
+ * analysed against a CONNECTION and a schema name, and that schema does not
+ * have to be tracked for drift. Requiring a tracked schema would mean the
+ * analyse screen could only keep history for schemas somebody had also decided
+ * to watch, which are different decisions.
+ *
+ * Every measured column is nullable, and that is the whole design: an estimate
+ * ran nothing, so it has no time and no row count. A 0 there would say the query
+ * was instant and returned nothing — a claim, not a gap — and it would drag
+ * every average that touches it down.
+ */
+export class QueryHistory extends Model<
+  InferAttributes<QueryHistory>,
+  InferCreationAttributes<QueryHistory>
+> {
+  declare id: CreationOptional<number>;
+  declare connection_id: number;
+  declare schema_name: string;
+  /** The SQL as submitted, cut at STORED_SQL_LIMIT (lib/query-history.ts). */
+  declare query_text: string;
+  /** Groups re-runs of the same query — see fingerprintQuery. */
+  declare fingerprint: string;
+  /** Milliseconds the query really took. NULL for an estimate. */
+  declare exec_time_ms: CreationOptional<number | null>;
+  declare planning_ms: CreationOptional<number | null>;
+  /** Rows the query really returned. NULL for an estimate. */
+  declare rows_returned: CreationOptional<number | null>;
+  declare total_cost: number;
+  declare estimated_rows: number;
+  declare score: number;
+  declare band: string;
+  declare measured: CreationOptional<boolean>;
+  declare high_count: CreationOptional<number>;
+  declare medium_count: CreationOptional<number>;
+  declare low_count: CreationOptional<number>;
+  declare captured_by: string;
+  declare captured_at: CreationOptional<Date>;
+  /**
+   * Which columns of which tables this query searched on, read off its plan —
+   * see ColumnSearch in lib/composite-index.ts. NULL for a row stored before
+   * this was recorded, which is not the same as "it searched on nothing", so
+   * the aggregate skips those rows rather than counting them as empty.
+   */
+  declare searched_columns: CreationOptional<unknown | null>;
+}
+
+QueryHistory.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    connection_id: { type: DataTypes.INTEGER, allowNull: false },
+    schema_name: { type: DataTypes.TEXT, allowNull: false },
+    query_text: { type: DataTypes.TEXT, allowNull: false },
+    fingerprint: { type: DataTypes.TEXT, allowNull: false },
+    // DOUBLE, not INTEGER: a fast query is timed in fractions of a millisecond
+    // and rounding those to 0 would make every quick query look identical.
+    exec_time_ms: { type: DataTypes.DOUBLE, allowNull: true },
+    planning_ms: { type: DataTypes.DOUBLE, allowNull: true },
+    // BIGINT for the same reason the metric sizes are: a query can return more
+    // rows than an INTEGER holds, and node-postgres hands it back as a string.
+    rows_returned: { type: DataTypes.BIGINT, allowNull: true },
+    total_cost: { type: DataTypes.DOUBLE, allowNull: false, defaultValue: 0 },
+    estimated_rows: { type: DataTypes.DOUBLE, allowNull: false, defaultValue: 0 },
+    score: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    band: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      defaultValue: "good",
+      validate: { isIn: [["good", "fair", "poor"]] },
+    },
+    measured: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    high_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    medium_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    low_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    captured_by: { type: DataTypes.TEXT, allowNull: false },
+    captured_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    // JSONB rather than a table of its own: this is read in one aggregate over
+    // a date range and never joined, searched or updated on its own, and a
+    // child table would mean a second write on the hot path of every analysis.
+    searched_columns: { type: DataTypes.JSONB, allowNull: true },
+  },
+  {
+    sequelize,
+    tableName: "query_history",
+    indexes: [
+      // "This connection and schema, newest first" — the history list, and the
+      // prune that keeps it bounded.
+      {
+        name: "query_history_target_captured_at_idx",
+        fields: ["connection_id", "schema_name", "captured_at"],
+      },
+      // "Every run of THIS query, newest first" — the comparison of one query
+      // against its own past, which is what the fingerprint exists for.
+      {
+        name: "query_history_fingerprint_idx",
+        fields: ["fingerprint", "captured_at"],
+      },
+    ],
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Performance alert thresholds.
+// ---------------------------------------------------------------------------
+
+/**
+ * One alert rule somebody set for one schema.
+ *
+ * Spec feature 10 — "Allow custom alert thresholds for performance issues."
+ * What may be set, the ranges, and how a breach is decided all live in
+ * lib/perf-thresholds.ts; this table only stores the answers.
+ *
+ * One row per (connection, schema, key), enforced by a unique index rather than
+ * by the writer remembering to check: the settings screen saves the whole set
+ * at once, and an upsert needs something to conflict on.
+ */
+export class PerfThreshold extends Model<
+  InferAttributes<PerfThreshold>,
+  InferCreationAttributes<PerfThreshold>
+> {
+  declare id: CreationOptional<number>;
+  declare connection_id: number;
+  declare schema_name: string;
+  /** A ThresholdKey — see lib/perf-thresholds.ts. */
+  declare threshold_key: string;
+  /** DOUBLE because two of the keys are ratios stored 0–1. */
+  declare threshold_value: number;
+  declare enabled: CreationOptional<boolean>;
+  declare updated_by: string;
+  declare updated_at: CreationOptional<Date>;
+}
+
+PerfThreshold.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    connection_id: { type: DataTypes.INTEGER, allowNull: false },
+    schema_name: { type: DataTypes.TEXT, allowNull: false },
+    threshold_key: { type: DataTypes.TEXT, allowNull: false },
+    threshold_value: { type: DataTypes.DOUBLE, allowNull: false },
+    // Off until somebody turns it on. A tool that invents alert levels and
+    // enables them starts by telling its user their database is broken, using
+    // numbers it made up.
+    enabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    updated_by: { type: DataTypes.TEXT, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "perf_thresholds",
+    indexes: [
+      {
+        name: "perf_thresholds_target_key_idx",
+        unique: true,
+        fields: ["connection_id", "schema_name", "threshold_key"],
+      },
+    ],
+  }
+);
+
+// ---------------------------------------------------------------------------
 // Compare & Author: the selections worth keeping.
 // ---------------------------------------------------------------------------
 
@@ -583,6 +785,93 @@ ComparisonSetTarget.init(
   }
 );
 
+/**
+ * What one comparison of one pair found, kept so the next one can say what moved.
+ *
+ * A saved set already records WHEN it last ran. That cannot answer the question
+ * anybody actually has — "has anything changed since last week?" — because
+ * nothing recorded WHAT was found: two runs a week apart, both reporting
+ * fourteen differences, may be the same fourteen or a completely different
+ * fourteen.
+ *
+ * Rows are written for every pair that was compared, whether or not a saved set
+ * was open, so the history follows the two schemas rather than the template that
+ * happened to open them.
+ */
+export class ComparisonRun extends Model<
+  InferAttributes<ComparisonRun>,
+  InferCreationAttributes<ComparisonRun>
+> {
+  declare id: CreationOptional<number>;
+  /** The saved set this run came from, when one was open. Null otherwise. */
+  declare set_id: CreationOptional<number | null>;
+  declare source_connection_id: number;
+  declare source_schema: string;
+  declare target_connection_id: number;
+  declare target_schema: string;
+  declare ran_at: CreationOptional<Date>;
+  declare ran_by: string;
+  /** Every difference found, including those past the stored list below. */
+  declare total_changes: number;
+  declare breaking_changes: number;
+  declare safe_changes: number;
+  declare info_changes: number;
+  /**
+   * A hash over every difference found, not only the stored ones — see
+   * lib/comparison-history. Two runs with the same fingerprint found the same
+   * set of differences, which is what makes "nothing has drifted" exact even on
+   * a pair whose findings run past the stored list.
+   */
+  declare fingerprint: string;
+  /** A RunSnapshot — see lib/comparison-history's readRunSnapshot. */
+  declare findings: object;
+}
+
+ComparisonRun.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    set_id: { type: DataTypes.INTEGER, allowNull: true },
+    source_connection_id: { type: DataTypes.INTEGER, allowNull: false },
+    source_schema: { type: DataTypes.TEXT, allowNull: false },
+    target_connection_id: { type: DataTypes.INTEGER, allowNull: false },
+    target_schema: { type: DataTypes.TEXT, allowNull: false },
+    ran_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    ran_by: { type: DataTypes.TEXT, allowNull: false },
+    total_changes: { type: DataTypes.INTEGER, allowNull: false },
+    breaking_changes: { type: DataTypes.INTEGER, allowNull: false },
+    safe_changes: { type: DataTypes.INTEGER, allowNull: false },
+    info_changes: { type: DataTypes.INTEGER, allowNull: false },
+    fingerprint: { type: DataTypes.TEXT, allowNull: false },
+    // JSONB rather than a table of rows: the list is written and read whole,
+    // never queried into, and one row per difference would put thousands of
+    // rows in the metadata database for every comparison anybody runs.
+    findings: { type: DataTypes.JSONB, allowNull: false },
+  },
+  {
+    sequelize,
+    tableName: "comparison_runs",
+    indexes: [
+      // The one lookup this table exists for: the previous run of THIS pair,
+      // most recent first. The pair is the four columns because the same two
+      // connections routinely hold several schemas, and drift in `public` is
+      // not drift in `reporting`.
+      {
+        name: "comparison_runs_pair_idx",
+        fields: [
+          "source_connection_id",
+          "source_schema",
+          "target_connection_id",
+          "target_schema",
+          { name: "ran_at", order: "DESC" },
+        ],
+      },
+      // The other half of a saved set being deleted — see the association
+      // below, which nulls this column rather than taking the history with it.
+      { name: "comparison_runs_set_id_idx", fields: ["set_id"] },
+    ],
+  }
+);
+
 // ---------------------------------------------------------------------------
 // The production gate.
 // ---------------------------------------------------------------------------
@@ -671,11 +960,14 @@ DeployApproval.init(
 // ---------------------------------------------------------------------------
 // Relationships.
 //
-// These mirror the foreign keys the tables already have — no more. Two columns
+// These mirror the foreign keys the tables already have — no more. Four columns
 // that look like foreign keys deliberately are not: `tracked_schemas.
-// connection_id` and `deploy_approvals.connection_id`. Both record which
+// connection_id`, `deploy_approvals.connection_id`, `query_history.
+// connection_id` and `perf_thresholds.connection_id`. Each records which
 // connection something was done through, and deleting that connection must not
-// take the schema's whole lineage or its approval history with it.
+// take the schema's whole lineage, its approval history, or the record of what
+// was analysed against it. `connection_name` is resolved by a LEFT JOIN at read
+// time, so a history row whose connection is gone still reads.
 // ---------------------------------------------------------------------------
 
 TrackedSchema.hasMany(Snapshot, { foreignKey: "tracked_schema_id", onDelete: "CASCADE" });
@@ -724,3 +1016,22 @@ ComparisonSetTarget.belongsTo(Connection, {
   foreignKey: "connection_id",
   onDelete: "SET NULL",
 });
+
+// Run history is CASCADE where the saved sets above are SET NULL, and the
+// difference is deliberate. A set is a selection worth keeping under a name
+// even when one side is gone. A run is a finding ABOUT two databases, and its
+// only use is being compared with the next run of the same pair — which can
+// never happen once the connection it was measured through is deleted. Keeping
+// it would also make two different deleted connections read as the same pair,
+// both being NULL, and report one database's drift as another's.
+ComparisonRun.belongsTo(Connection, {
+  foreignKey: "source_connection_id",
+  onDelete: "CASCADE",
+});
+ComparisonRun.belongsTo(Connection, {
+  foreignKey: "target_connection_id",
+  onDelete: "CASCADE",
+});
+// Deleting the template does not delete what it found: the history belongs to
+// the pair of schemas, and the next run of that pair still wants it.
+ComparisonRun.belongsTo(ComparisonSet, { foreignKey: "set_id", onDelete: "SET NULL" });

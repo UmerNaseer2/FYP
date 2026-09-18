@@ -6,6 +6,8 @@ import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { highestVersion, looksLikeVersion } from "@/lib/script-status";
 import { hasExecutableSql } from "@/lib/sql-guard";
+import type { TargetApplications } from "@/lib/application-targeting";
+import { readApplications } from "@/lib/application-read";
 import type { PoolClient } from "pg";
 
 // One row from script_patch — what we return to the frontend
@@ -37,6 +39,14 @@ export type PatchEntry = {
    * build without the column. History only: nothing runs it again from here.
    */
   sql_content: string | null;
+  /**
+   * Who ran this version (spec 07 — track SQL execution history for auditing).
+   *
+   * Null is an ordinary answer, not a gap to paper over: rows applied before
+   * this column existed have no honest answer, and rows applied by another
+   * tool never had one. The screen says so rather than guessing a name.
+   */
+  applied_by: string | null;
 };
 
 /** One row of script_patch_reverted: a version that was rolled back here. */
@@ -46,7 +56,11 @@ export type RevertedEntry = {
   title: string | null;
   change_type: string | null;
   applied_at: string | null;
+  /** Who applied it, copied over by the revert route. Null on older rows. */
+  applied_by: string | null;
   reverted_at: string;
+  /** Who rolled it back. Null on rows archived before the column existed. */
+  reverted_by: string | null;
 };
 
 /** A version of ANOTHER script family, applied after this family's first version. */
@@ -60,6 +74,28 @@ export type OtherScriptEntry = {
 export type PreflightResult = {
   hasVersionTable: boolean;
   needsInit: boolean;
+  /**
+   * Which applications this database says it hosts, read from the table the
+   * connection names. Spec feature 11: a script restricted to an application
+   * only runs against that application's databases. `known: false` when the
+   * connection names no table or the table is not there — see
+   * lib/application-targeting.ts for why that blocks a restricted script
+   * rather than waving it through.
+   */
+  applications: TargetApplications;
+  /**
+   * Does the schema itself exist on the target? Spec feature 11 asks the
+   * screen to prompt for an initialisation run when "no schema or tables
+   * exist", and that is a different question from whether script_patch is
+   * there: a schema can be missing entirely, or be there and be empty.
+   */
+  schemaExists: boolean;
+  /**
+   * Ordinary tables in the schema, NOT counting this app's own script_patch
+   * and script_patch_reverted. A target holding nothing but a ledger has not
+   * been built yet, and counting the ledger would report it as populated.
+   */
+  tableCount: number;
   currentVersion: string | null;
   timeline: PatchEntry[];
   schema: string;
@@ -106,10 +142,24 @@ async function readReverted(
   );
   if (!present.rows[0]?.reg) return [];
 
+  // applied_by and reverted_by are added by the revert route, so a schema
+  // whose last rollback predates them has the table but not the columns. Read
+  // the catalog rather than failing the whole history over two names.
+  const cols = await client.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = 'script_patch_reverted'
+        AND column_name IN ('applied_by', 'reverted_by')`,
+    [schemaName]
+  );
+  const has = new Set(cols.rows.map((row) => row.column_name));
+  const appliedByExpr = has.has("applied_by") ? "applied_by" : "NULL::text AS applied_by";
+  const revertedByExpr = has.has("reverted_by") ? "reverted_by" : "NULL::text AS reverted_by";
+
   // id breaks ties: every version of one batch rollback shares reverted_at
   // (the transaction start), and a higher id came off later in that batch.
   const result = await client.query<RevertedEntry>(
-    `SELECT script_name, version, title, change_type, applied_at, reverted_at
+    `SELECT script_name, version, title, change_type, applied_at, ${appliedByExpr},
+            reverted_at, ${revertedByExpr}
        FROM ${quotedSchema}.script_patch_reverted
       WHERE ($1::text IS NULL OR script_name = $1)
       ORDER BY reverted_at DESC, id DESC
@@ -209,13 +259,15 @@ export async function POST(request: NextRequest) {
     ssl: boolean | null;
     ssl_mode: string | null;
     name: string;
+    application_table: string | null;
   };
 
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name,
+              application_table
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -297,6 +349,32 @@ export async function POST(request: NextRequest) {
 
     const hasVersionTable = tableCheck.rows[0]?.reg !== null && tableCheck.rows[0]?.reg !== undefined;
 
+    // ─── 4b. Is there anything here at all? ───────────────────────────────
+    //
+    // Read from pg_class rather than information_schema.tables for the same
+    // reason as above: information_schema only lists what this login has a
+    // privilege on, so a schema full of somebody else's tables would read as
+    // empty and the screen would offer to initialise it.
+    //
+    // relkind 'r' and 'p' are ordinary and partitioned tables. Views, indexes
+    // and sequences are left out on purpose — a schema holding only a view
+    // over another schema has no tables of its own to migrate.
+    const schemaState = await client.query<{ exists: boolean; tables: string }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1) AS exists,
+              (SELECT count(*)
+                 FROM pg_class c
+                 JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1
+                  AND c.relkind IN ('r', 'p')
+                  AND c.relname NOT IN ('script_patch', 'script_patch_reverted')
+              ) AS tables`,
+      [schemaName]
+    );
+    const applications = await readApplications(client, schemaName, connRow.application_table);
+    const schemaExists = schemaState.rows[0]?.exists === true;
+    // count() comes back from node-postgres as a string, being a BIGINT.
+    const tableCount = Number(schemaState.rows[0]?.tables ?? 0);
+
     // Read in every branch below: the history does not depend on the ledger
     // still having rows (or, for a hand-cleaned schema, on it existing).
     const reverted = await readReverted(client, schemaName, scriptName);
@@ -306,6 +384,9 @@ export async function POST(request: NextRequest) {
       const result: PreflightResult = {
         hasVersionTable: false,
         needsInit: true,
+        applications,
+        schemaExists,
+        tableCount,
         currentVersion: null,
         timeline: [],
         schema: schemaName,
@@ -329,14 +410,15 @@ export async function POST(request: NextRequest) {
     // believe "users_migration v1.0.0" is already applied (1.0.0 < 2.0.0).
     const quotedSchema = quoteIdent(schemaName);
 
-    // down_sql and sql_content are added lazily by the apply route (ADD COLUMN
-    // IF NOT EXISTS), so a script_patch written by an older build of this tool,
-    // or by another tool, may lack either. Ask the catalog rather than letting
-    // the SELECT fail on the whole timeline; a missing column reads as NULL.
+    // down_sql, sql_content and applied_by are added lazily by the apply route
+    // (ADD COLUMN IF NOT EXISTS), so a script_patch written by an older build
+    // of this tool, or by another tool, may lack any of them. Ask the catalog
+    // rather than letting the SELECT fail on the whole timeline; a missing
+    // column reads as NULL.
     const colCheck = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = 'script_patch'
-          AND column_name IN ('down_sql', 'sql_content')`,
+          AND column_name IN ('down_sql', 'sql_content', 'applied_by')`,
       [schemaName]
     );
     const columns = new Set(colCheck.rows.map((row) => row.column_name));
@@ -344,6 +426,7 @@ export async function POST(request: NextRequest) {
     // "<> ''" test counted a comment-only copy as a rollback.
     const downExpr = columns.has("down_sql") ? "down_sql" : "NULL::text AS down_sql";
     const sqlExpr = columns.has("sql_content") ? "sql_content" : "NULL::text AS sql_content";
+    const byExpr = columns.has("applied_by") ? "applied_by" : "NULL::text AS applied_by";
 
     type LedgerRow = Omit<PatchEntry, "has_down_sql">;
     const timelineResult = scriptName
@@ -355,7 +438,8 @@ export async function POST(request: NextRequest) {
              change_type,
              applied_at,
              ${downExpr},
-             ${sqlExpr}
+             ${sqlExpr},
+             ${byExpr}
            FROM ${quotedSchema}.script_patch
            WHERE script_name = $1
            ORDER BY applied_at DESC`,
@@ -369,7 +453,8 @@ export async function POST(request: NextRequest) {
              change_type,
              applied_at,
              ${downExpr},
-             ${sqlExpr}
+             ${sqlExpr},
+             ${byExpr}
            FROM ${quotedSchema}.script_patch
            ORDER BY applied_at DESC`
         );
@@ -377,6 +462,12 @@ export async function POST(request: NextRequest) {
     const timeline: PatchEntry[] = timelineResult.rows.map((row) => ({
       ...row,
       has_down_sql: hasExecutableSql(row.down_sql ?? ""),
+      // Named rather than left to the spread. A driver hands back only the
+      // columns the SELECT asked for, so on a ledger without applied_by the
+      // key would be absent from the JSON entirely — and "absent" and "null"
+      // are different answers to a reader. The type here says null, so send
+      // null.
+      applied_by: row.applied_by ?? null,
     }));
 
     // ─── 6. Handle empty timeline ─────────────────────────────────────────
@@ -384,6 +475,9 @@ export async function POST(request: NextRequest) {
       const result: PreflightResult = {
         hasVersionTable: true,
         needsInit: false,
+        applications,
+        schemaExists,
+        tableCount,
         currentVersion: null,
         timeline: [],
         schema: schemaName,
@@ -424,6 +518,9 @@ export async function POST(request: NextRequest) {
     const result: PreflightResult = {
       hasVersionTable: true,
       needsInit: false,
+      applications,
+      schemaExists,
+      tableCount,
       currentVersion,
       timeline,
       schema: schemaName,

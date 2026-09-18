@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 import { requireEditor } from "@/lib/auth-guard";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -247,6 +249,8 @@ type LedgerRow = {
   change_type: string | null;
   applied_at: Date | string | null;
   down_sql: string | null;
+  /** Who applied it. Null on rows written before the column existed. */
+  applied_by: string | null;
 };
 
 type OtherScript = { script_name: string; version: string; applied_at: Date | string | null };
@@ -287,13 +291,15 @@ export async function POST(request: NextRequest) {
     ssl_mode: string | null;
     environment: string | null;
     name: string | null;
+    execute_role: string | null;
   };
 
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
     const result = await pool.query(
-      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment, name
+      `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment, name,
+              execute_role
        FROM connections
        WHERE id = $1`,
       [connectionId]
@@ -308,6 +314,19 @@ export async function POST(request: NextRequest) {
     return fail(500, {
       error: "Could not read the saved connection, so nothing was run. Is the app database reachable?",
     });
+  }
+
+  // Same rule as the apply route (step 4a): may this caller run anything at all
+  // against this particular database? A rollback is an execution like any
+  // other — it is the one that drops what a migration added — so a connection
+  // marked read-only refuses it for the same reason and with the same sentence.
+  {
+    const required = toExecuteRole(connRow.execute_role);
+    if (!canExecute(gate.principal.role, required)) {
+      return fail(403, {
+        error: executeRefusal(connRow.name ?? `connection ${connectionId}`, gate.principal.role, required),
+      });
+    }
   }
 
   // Same rule as the apply route (productionBlockReason), and it applies to a
@@ -470,21 +489,27 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 7b. down_sql is added lazily by the apply route, so ask the catalog
-    //     before selecting it.
+    // 7b. down_sql and applied_by are added lazily by the apply route, so ask
+    //     the catalog before selecting them. applied_by is read only to carry
+    //     it into the archive below: the ledger row is deleted by a rollback,
+    //     so if it is not copied across, who applied the version is lost the
+    //     moment it is undone — which is the one time an audit trail is asked
+    //     to account for it.
     const colCheck = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = 'script_patch'
-          AND column_name = 'down_sql'`,
+          AND column_name IN ('down_sql', 'applied_by')`,
       [schemaName]
     );
-    const downExpr = colCheck.rows.length > 0 ? "down_sql" : "NULL::text AS down_sql";
+    const present = new Set(colCheck.rows.map((row) => row.column_name));
+    const downExpr = present.has("down_sql") ? "down_sql" : "NULL::text AS down_sql";
+    const byExpr = present.has("applied_by") ? "applied_by" : "NULL::text AS applied_by";
 
     // 7c. Read the whole family once: the newest-first check needs every
     //     applied version, not only the requested ones. Read inside the
     //     transaction, under the family lock, so nothing changes it until COMMIT.
     const family = await client.query<LedgerRow>(
-      `SELECT id, version, title, change_type, applied_at, ${downExpr}
+      `SELECT id, version, title, change_type, applied_at, ${downExpr}, ${byExpr}
          FROM ${quotedSchema}.script_patch
         WHERE script_name = $1`,
       [name]
@@ -699,7 +724,9 @@ export async function POST(request: NextRequest) {
           title       VARCHAR(150),
           change_type VARCHAR(20),
           applied_at  TIMESTAMPTZ,
+          applied_by  VARCHAR(320),
           reverted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+          reverted_by VARCHAR(320),
           down_sql    TEXT
         )
       `);
@@ -709,6 +736,19 @@ export async function POST(request: NextRequest) {
       if (!m.includes("already exists") && !m.includes("duplicate key")) throw setupError;
       await client.query("ROLLBACK TO SAVEPOINT script_patch_reverted_setup");
     }
+
+    // applied_by and reverted_by came later than the table, so a schema that
+    // has rolled something back before now has neither. Added rather than
+    // required: the rows already in there were archived when nothing recorded
+    // a name, and NULL says that honestly where a default would invent one.
+    await client.query(`
+      ALTER TABLE ${quotedSchema}.script_patch_reverted
+      ADD COLUMN IF NOT EXISTS applied_by VARCHAR(320)
+    `);
+    await client.query(`
+      ALTER TABLE ${quotedSchema}.script_patch_reverted
+      ADD COLUMN IF NOT EXISTS reverted_by VARCHAR(320)
+    `);
 
     // Both columns were TIMESTAMP in earlier builds — a wall clock with the
     // offset discarded — so an audit table meant to say WHEN something was
@@ -737,9 +777,24 @@ export async function POST(request: NextRequest) {
 
       await client.query(
         `INSERT INTO ${quotedSchema}.script_patch_reverted
-           (script_name, version, title, change_type, applied_at, down_sql)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [name, step.row.version, step.row.title, step.row.change_type, step.row.applied_at, step.sql]
+           (script_name, version, title, change_type, applied_at, applied_by,
+            reverted_at, reverted_by, down_sql)
+         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8)`,
+        [
+          name,
+          step.row.version,
+          step.row.title,
+          step.row.change_type,
+          step.row.applied_at,
+          // Copied from the ledger row, not from whoever is reverting: the
+          // archive has to say who put the version there as well as who took
+          // it out, and those are usually two different people. ?? null because
+          // a ledger without the column hands back no key at all, and an
+          // undefined bound value is left to the driver to interpret.
+          step.row.applied_by ?? null,
+          actorFor(gate.principal),
+          step.sql,
+        ]
       );
 
       const deleted = await client.query(`DELETE FROM ${quotedSchema}.script_patch WHERE id = $1`, [

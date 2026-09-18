@@ -22,6 +22,16 @@ import { getPoolForConfig } from "./postgres";
 import type { TableSnapshot } from "./postgres";
 import type { CompareReport } from "./compare";
 import type { DataCompareReport, TableDataCompare } from "./compare-data-summary";
+import {
+  differingColumns,
+  findMismatchedRows,
+  pickSampleKey,
+  SAMPLE_ROW_LIMIT,
+  SAMPLE_SCAN_ROWS,
+  type KeyedDigest,
+  type RowSample,
+  type SampleRow,
+} from "./compare-sample";
 
 // The result shape and its counts live in a module with no database imports so
 // the UI can read them. Re-exported here so every existing caller of this
@@ -79,6 +89,206 @@ function checksumSql(schema: string, table: string, columns: string[]): string {
   `;
 }
 
+/**
+ * One side's rows, as (key, digest of the compared columns), in a stable order.
+ *
+ * ORDER BY the key's TEXT rendering under the C collation, rather than by the
+ * key itself. Both sides read only the first SAMPLE_SCAN_ROWS rows, so the two
+ * reads are only comparable if they agree on which rows those are — and sort
+ * order for text is a per-database collation setting that two servers routinely
+ * disagree about. C is byte order, which is the same everywhere. The cost is
+ * that the cut-off falls in a place a person would not pick (id 100 before id
+ * 20); the benefit is that it falls in the SAME place on both sides, which is
+ * the only property that matters here.
+ *
+ * The digest is over the same paired columns the checksum uses, in the same
+ * order, so a row flagged here is a row the checksum also disagreed about.
+ */
+function digestSql(
+  schema: string,
+  table: string,
+  keyColumns: string[],
+  columns: string[],
+  limit: number,
+): string {
+  const keys = keyColumns.map((col, i) => `${q(col)}::text AS k${i}`).join(", ");
+  const digest =
+    columns.length === 0
+      ? `'' AS digest`
+      : `md5(ROW(${columns.map((col) => `${q(col)}::text`).join(", ")})::text) AS digest`;
+  const order = keyColumns.map((col) => `${q(col)}::text COLLATE "C"`).join(", ");
+  return `SELECT ${keys}, ${digest}
+            FROM ${q(schema)}.${q(table)}
+           ORDER BY ${order}
+           LIMIT ${Math.round(limit)}`;
+}
+
+/**
+ * The full values of a named handful of rows, found by key.
+ *
+ * The keys arrive as text — that is how the digest read returned them — so the
+ * match is made on the text rendering of the key rather than on its real type.
+ * That rules out an index, which would matter if this ran over a whole table;
+ * it runs over at most SAMPLE_ROW_LIMIT rows of a table the checksum has
+ * already read twice, under the same statement timeout as everything else.
+ */
+function sampleRowsSql(
+  schema: string,
+  table: string,
+  keyColumns: string[],
+  columns: string[],
+  keyCount: number,
+): string {
+  const keys = keyColumns.map((col, i) => `${q(col)}::text AS k${i}`).join(", ");
+  const values = columns.map((col, i) => `${q(col)}::text AS c${i}`).join(", ");
+  const expr = `ROW(${keyColumns.map((col) => `${q(col)}::text`).join(", ")})`;
+  let placeholder = 0;
+  const wanted = Array.from(
+    { length: keyCount },
+    () => `ROW(${keyColumns.map(() => `$${++placeholder}::text`).join(", ")})`,
+  ).join(", ");
+  return `SELECT ${keys}, ${values}
+            FROM ${q(schema)}.${q(table)}
+           WHERE ${expr} IN (${wanted})`;
+}
+
+/**
+ * A k0/k1/... row from either query, read back as the key it stands for.
+ *
+ * The NULL stand-in is unreachable by construction — pickSampleKey only ever
+ * returns columns that cannot hold one — and is a control character rather than
+ * a word so that, if a key column ever did come back null, it could not collide
+ * with a real value that happened to read "NULL".
+ */
+function keyOf(row: Record<string, string | null>, width: number): string[] {
+  return Array.from({ length: width }, (_, i) => row[`k${i}`] ?? "\u0000");
+}
+
+/**
+ * Which rows differ between two copies of one table.
+ *
+ * Runs only for a table the checksum already called different, so its cost is
+ * paid on the tables a reader is actually going to look at. Never throws and
+ * never fails the comparison: every outcome is a RowSample the screen can
+ * render, including the ones that say why there is nothing to show.
+ */
+async function sampleDifferences(
+  plan: TablePlan,
+  leftClient: PoolClient,
+  rightClient: PoolClient,
+  source: { schema: string },
+  target: { schema: string },
+  timeoutMs: number,
+): Promise<RowSample> {
+  const blank = { keyColumns: plan.keyColumns, rows: [], more: false, scanned: 0, partial: false };
+  if (plan.keyColumns.length === 0) {
+    return { ...blank, status: "no-key", note: null };
+  }
+
+  const leftTable = plan.leftTable as string;
+  const rightTable = plan.rightTable as string;
+  const width = plan.keyColumns.length;
+
+  const [left, right] = await Promise.all([
+    readQuery<Record<string, string | null>>(
+      leftClient,
+      digestSql(source.schema, leftTable, plan.keyColumns, plan.leftColumns, SAMPLE_SCAN_ROWS),
+      [],
+      timeoutMs,
+    ),
+    readQuery<Record<string, string | null>>(
+      rightClient,
+      digestSql(target.schema, rightTable, plan.rightKeyColumns, plan.rightColumns, SAMPLE_SCAN_ROWS),
+      [],
+      timeoutMs,
+    ),
+  ]);
+
+  if (!left.ok || !right.ok) {
+    const reasons = [
+      left.ok ? null : `source: ${left.error}`,
+      right.ok ? null : `target: ${right.error}`,
+    ].filter((reason): reason is string => reason !== null);
+    return {
+      ...blank,
+      status: "unavailable",
+      note: `The rows that differ could not be read — ${reasons.join(", ")}.`,
+    };
+  }
+
+  const toDigests = (rows: Record<string, string | null>[]): KeyedDigest[] =>
+    rows.map((row) => ({ key: keyOf(row, width), digest: row.digest ?? "" }));
+
+  const found = findMismatchedRows(
+    toDigests(left.rows),
+    toDigests(right.rows),
+    SAMPLE_ROW_LIMIT,
+  );
+  const scanned = SAMPLE_SCAN_ROWS;
+  // Exactly the limit means the read stopped at the cut-off, so there is very
+  // likely more past it. Fewer means the whole table was covered.
+  const partial =
+    left.rows.length >= SAMPLE_SCAN_ROWS || right.rows.length >= SAMPLE_SCAN_ROWS;
+
+  // Only a row present on BOTH sides has two versions to put side by side. A
+  // one-sided row is fully described by its key plus which side it is on.
+  const changed = found.rows.filter((row) => row.kind === "changed");
+  const values = changed.length > 0
+    ? await Promise.all([
+        readQuery<Record<string, string | null>>(
+          leftClient,
+          sampleRowsSql(source.schema, leftTable, plan.keyColumns, plan.leftColumns, changed.length),
+          changed.flatMap((row) => row.key),
+          timeoutMs,
+        ),
+        readQuery<Record<string, string | null>>(
+          rightClient,
+          sampleRowsSql(target.schema, rightTable, plan.rightKeyColumns, plan.rightColumns, changed.length),
+          changed.flatMap((row) => row.key),
+          timeoutMs,
+        ),
+      ])
+    : null;
+
+  // Both sides projected their paired columns as c0..cN in the SAME order, so
+  // reading them back under the source's column names is all the translation a
+  // renamed column needs — and everything below works in one set of names.
+  const named = (row: Record<string, string | null>): Record<string, string | null> => {
+    const out: Record<string, string | null> = {};
+    plan.leftColumns.forEach((name, i) => {
+      out[name] = row[`c${i}`] ?? null;
+    });
+    return out;
+  };
+  // A failure here loses the per-column detail, not the finding: the keys are
+  // already known, so the rows are still listed as differing and only the
+  // "which column" half is missing.
+  const byKey = (
+    result: { ok: true; rows: Record<string, string | null>[] } | { ok: false; error: string },
+  ): Map<string, Record<string, string | null>> =>
+    result.ok
+      ? new Map(result.rows.map((row) => [JSON.stringify(keyOf(row, width)), named(row)]))
+      : new Map();
+  const leftRows = values ? byKey(values[0]) : new Map();
+  const rightRows = values ? byKey(values[1]) : new Map();
+  const pairs = plan.leftColumns.map((name) => ({ left: name, right: name }));
+
+  const rows: SampleRow[] = found.rows.map((row) => {
+    if (row.kind !== "changed") return { key: row.key, kind: row.kind, differences: [] };
+    const id = JSON.stringify(row.key);
+    const leftRow = leftRows.get(id);
+    const rightRow = rightRows.get(id);
+    if (!leftRow || !rightRow) return { key: row.key, kind: row.kind, differences: [] };
+    return {
+      key: row.key,
+      kind: row.kind,
+      differences: differingColumns(leftRow, rightRow, pairs),
+    };
+  });
+
+  return { keyColumns: plan.keyColumns, rows, more: found.more, scanned, partial, status: "sampled", note: null };
+}
+
 /** The row count alone, for a table only one side has. */
 function countSql(schema: string, table: string): string {
   return `SELECT count(*)::text AS row_count, NULL::text AS checksum
@@ -130,25 +340,19 @@ const SETTINGS_THE_CHECKSUM_DEPENDS_ON = [
  * no business writing anything, and saying so means a mistake here is refused
  * by the server rather than caught by review.
  */
-async function readSide(
+async function readQuery<T extends Record<string, unknown>>(
   client: PoolClient,
   sql: string,
+  values: unknown[],
   timeoutMs: number,
-): Promise<SideResult> {
+): Promise<{ ok: true; rows: T[] } | { ok: false; error: string }> {
   try {
     await client.query("BEGIN READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${Math.round(timeoutMs)}`);
     await client.query(SETTINGS_THE_CHECKSUM_DEPENDS_ON);
-    const result = await client.query<{ row_count: string; checksum: string | null }>(
-      sql,
-    );
+    const result = await client.query<T>(sql, values);
     await client.query("COMMIT");
-    const row = result.rows[0];
-    return {
-      ok: true,
-      rows: Number(row.row_count),
-      checksum: row.checksum,
-    };
+    return { ok: true, rows: result.rows };
   } catch (error) {
     try {
       await client.query("ROLLBACK");
@@ -158,6 +362,23 @@ async function readSide(
     }
     return { ok: false, error: describeReadError(error) };
   }
+}
+
+/** The checksum read, in the shape the verdict wants it. */
+async function readSide(
+  client: PoolClient,
+  sql: string,
+  timeoutMs: number,
+): Promise<SideResult> {
+  const result = await readQuery<{ row_count: string; checksum: string | null }>(
+    client,
+    sql,
+    [],
+    timeoutMs,
+  );
+  if (!result.ok) return result;
+  const row = result.rows[0];
+  return { ok: true, rows: Number(row.row_count), checksum: row.checksum };
 }
 
 /** Turn a driver error into something a person reading the report can act on. */
@@ -184,6 +405,15 @@ type TablePlan = {
    * that has no children, which is nearly all of them.
    */
   foldedChildren: string[];
+  /**
+   * The columns rows are paired by when sampling which ones differ, source-side
+   * names. Empty when the table has no key both sides share — see
+   * pickSampleKey — and on a table only one side has, where there is nothing to
+   * pair against.
+   */
+  keyColumns: string[];
+  /** The same key, named as the TARGET calls those columns. Same order. */
+  rightKeyColumns: string[];
 };
 
 /**
@@ -322,6 +552,9 @@ function planTables(report: CompareReport): TablePlan[] {
       rightColumns: [],
       ignoredColumns: [],
       foldedChildren: folded,
+      // Nothing to pair against: the other side does not have this table.
+      keyColumns: [],
+      rightKeyColumns: [],
     });
   }
 
@@ -336,6 +569,13 @@ function planTables(report: CompareReport): TablePlan[] {
       ...match.columnsOnlyInA.map((col) => col.name),
       ...match.columnsOnlyInB.map((col) => col.name),
     ].sort();
+    // The key is chosen from the SOURCE's constraints and then translated into
+    // the target's column names through the same pairing the checksum uses, so
+    // a column renamed between the two sides still finds its counterpart.
+    const leftColumns = pairs.map((pair) => pair.left.name);
+    const rightByLeft = new Map(pairs.map((pair) => [pair.left.name, pair.right.name]));
+    const keyColumns = pickSampleKey(match.left, new Set(leftColumns)) ?? [];
+
     plans.push({
       label:
         match.left.name === match.right.name
@@ -343,10 +583,14 @@ function planTables(report: CompareReport): TablePlan[] {
           : `${match.left.name} → ${match.right.name}`,
       leftTable: match.left.name,
       rightTable: match.right.name,
-      leftColumns: pairs.map((pair) => pair.left.name),
+      leftColumns,
       rightColumns: pairs.map((pair) => pair.right.name),
       ignoredColumns: ignored,
       foldedChildren: [],
+      keyColumns,
+      // Every key column is in `pairs` — pickSampleKey only returns columns the
+      // comparison matched — so the lookup cannot miss.
+      rightKeyColumns: keyColumns.map((name) => rightByLeft.get(name) as string),
     });
   }
 
@@ -362,6 +606,9 @@ function planTables(report: CompareReport): TablePlan[] {
       rightColumns: [],
       ignoredColumns: [],
       foldedChildren: folded,
+      // Nothing to pair against: the other side does not have this table.
+      keyColumns: [],
+      rightKeyColumns: [],
     });
   }
 
@@ -383,13 +630,48 @@ export async function compareRowData(
   report: CompareReport,
   source: { config: ClientConfig; schema: string },
   target: { config: ClientConfig; schema: string },
-  options: { timeoutMs?: number; maxTables?: number; budgetMs?: number } = {},
+  options: {
+    timeoutMs?: number;
+    maxTables?: number;
+    budgetMs?: number;
+    /**
+     * Read only these tables, named by the label the report gives them — which
+     * is what the screen showed the user and sent back. Undefined, the default,
+     * reads all of them.
+     *
+     * Spec feature 04 asks for "all OR SELECTED table data", and the selection
+     * is worth more than convenience on a large schema: a run is capped at
+     * DEFAULT_MAX_TABLES and DEFAULT_BUDGET_MS, so on a schema past either
+     * bound the only way to get a verdict on a particular table is to ask for
+     * that table.
+     *
+     * The tables left out are still reported, as "skipped" with a note saying
+     * why. A selection narrows what is READ, not what the report covers.
+     */
+    only?: ReadonlyArray<string>;
+    /** Find out WHICH rows differ, not just that some do. On by default. */
+    sample?: boolean;
+  } = {},
 ): Promise<DataCompareReport> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxTables = options.maxTables ?? DEFAULT_MAX_TABLES;
   const budgetMs = options.budgetMs ?? DEFAULT_BUDGET_MS;
+  const sample = options.sample ?? true;
 
+  // A selection that matches nothing is treated as no selection. It means the
+  // screen sent table names this comparison does not have — the schema changed
+  // under a saved set, most likely — and reporting "no tables to compare" for
+  // a schema that plainly has some reads as a broken page rather than a stale
+  // selection.
+  const wanted = options.only && options.only.length > 0 ? new Set(options.only) : null;
   const plans = planTables(report);
+  const matched = wanted ? plans.filter((plan) => wanted.has(plan.label)) : plans;
+  // The tables to read, or null for all of them. Every plan is still walked
+  // below and the ones left out are reported as not read, rather than being
+  // dropped from the report: a narrowed run whose report listed only the two
+  // tables it read would shrink the picker to those two, and the reader would
+  // have no way back to the rest.
+  const chosen = matched.length > 0 ? new Set(matched.map((plan) => plan.label)) : null;
   const deadline = Date.now() + budgetMs;
 
   // One connection per side held for the whole run: sixty tables means sixty
@@ -428,38 +710,40 @@ export async function compareRowData(
 
   const tables: TableDataCompare[] = [];
   try {
-    for (const [index, plan] of plans.entries()) {
+    // Counts the tables this run took on, not the plans it walked past: the
+    // point of selecting tables is to get a verdict on one that sits past the
+    // cap, which counting the skipped ones against it would defeat.
+    let attempted = 0;
+    for (const plan of plans) {
+      if (chosen !== null && !chosen.has(plan.label)) {
+        tables.push(notRead(plan, "Not read: it is not one of the selected tables."));
+        continue;
+      }
       const overBudget = Date.now() >= deadline;
-      const overCount = index >= maxTables;
+      const overCount = attempted >= maxTables;
+      attempted += 1;
       if (overBudget || overCount) {
-        tables.push({
-          table: plan.label,
-          status: "skipped",
-          leftRows: null,
-          rightRows: null,
-          leftChecksum: null,
-          rightChecksum: null,
-          columns: [],
-          // Nothing was hashed, so nothing was left out of a hash: an empty
-          // list here is the truth, not a claim that the columns all pair up.
-          ignoredColumns: [],
-          note:
-            (overCount
+        tables.push(
+          notRead(
+            plan,
+            overCount
               ? `Not read: only the first ${maxTables} tables are compared in one run.`
-              : "Not read: the data compare ran out of its time budget.") +
-            // Said even here: the children were folded into a table that then
-            // went unread, so nothing in this report counts their rows and the
-            // reader needs to know which tables those were.
-            foldedChildrenNote(plan),
-          // Recorded even though nothing was read: a drop the run never reached
-          // is still a drop, and this is the flag the banner counts.
-          droppedBySync: plan.leftTable === null && plan.rightTable !== null,
-        });
+              : "Not read: the data compare ran out of its time budget.",
+          ),
+        );
         continue;
       }
 
       tables.push(
-        await compareOnePlan(plan, leftClient, rightClient, source, target, timeoutMs),
+        await compareOnePlan(
+          plan,
+          leftClient,
+          rightClient,
+          source,
+          target,
+          timeoutMs,
+          sample ? deadline : null,
+        ),
       );
     }
   } finally {
@@ -470,6 +754,36 @@ export async function compareRowData(
   return { tables, error: null, timeoutMs };
 }
 
+/**
+ * A table this run did not read, with the reason in its own words.
+ *
+ * Three things skip a table — a selection that left it out, the per-run cap,
+ * and the time budget — and all three produce the same row. Only the sentence
+ * differs, so only the sentence is passed in.
+ */
+function notRead(plan: TablePlan, note: string): TableDataCompare {
+  return {
+    table: plan.label,
+    status: "skipped",
+    leftRows: null,
+    rightRows: null,
+    leftChecksum: null,
+    rightChecksum: null,
+    columns: [],
+    // Nothing was hashed, so nothing was left out of a hash: an empty list here
+    // is the truth, not a claim that the columns all pair up.
+    ignoredColumns: [],
+    // Said even here: the children were folded into a table that then went
+    // unread, so nothing in this report counts their rows and the reader needs
+    // to know which tables those were.
+    note: note + foldedChildrenNote(plan),
+    // Recorded even though nothing was read: a drop the run never reached is
+    // still a drop, and this is the flag the banner counts.
+    droppedBySync: plan.leftTable === null && plan.rightTable !== null,
+    sample: null,
+  };
+}
+
 /** Read one table on whichever sides have it and decide the verdict. */
 async function compareOnePlan(
   plan: TablePlan,
@@ -478,6 +792,14 @@ async function compareOnePlan(
   source: { config: ClientConfig; schema: string },
   target: { config: ClientConfig; schema: string },
   timeoutMs: number,
+  /**
+   * When the run's time budget expires, or null when sampling is off entirely.
+   *
+   * Checked here rather than by the caller because it is checked LATE: the
+   * verdict's two reads happen first, and whether there is time left to also
+   * find out which rows differ is not knowable until they are done.
+   */
+  sampleDeadline: number | null,
 ): Promise<TableDataCompare> {
   const base = {
     table: plan.label,
@@ -493,6 +815,9 @@ async function compareOnePlan(
     // Decided from the plan rather than the outcome, so a read that fails does
     // not quietly stop the table counting as one a sync drops.
     droppedBySync: plan.leftTable === null && plan.rightTable !== null,
+    // Only a table that comes back "different" ends up with one; every return
+    // below this point that is not that verdict keeps the null.
+    sample: null as RowSample | null,
   };
 
   // A table only one side has: the row count is the whole answer, and it is the
@@ -584,6 +909,29 @@ async function compareOnePlan(
     );
   }
 
+  // Which rows differ (spec 04 — sample mismatched rows). Only on a table that
+  // came back different, because on an identical one there is nothing to find
+  // and the scan would be two more full reads for an empty list.
+  // A null deadline means sampling is switched off for the whole run, which is
+  // not the same as running out of time: the first has nothing to report, the
+  // second has something it could not get to. Folding the two together put "ran
+  // out of its time budget" under every differing table of a run that was never
+  // going to sample one.
+  const sample =
+    same || countsOnly || sampleDeadline === null
+      ? null
+      : Date.now() < sampleDeadline
+        ? await sampleDifferences(plan, leftClient, rightClient, source, target, timeoutMs)
+        : {
+            status: "unavailable" as const,
+            keyColumns: plan.keyColumns,
+            rows: [],
+            more: false,
+            scanned: 0,
+            partial: false,
+            note: "The data compare ran out of its time budget before it could read which rows differ.",
+          };
+
   return {
     ...base,
     status: same ? "identical" : "different",
@@ -592,5 +940,6 @@ async function compareOnePlan(
     leftChecksum: left.checksum,
     rightChecksum: right.checksum,
     note: notes.length > 0 ? notes.join(" ") : null,
+    sample,
   };
 }

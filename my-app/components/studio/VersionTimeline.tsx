@@ -183,7 +183,22 @@ function SideCell({ row, side, label }: { row: TimelineRow; side: Side; label: s
             {status.text}
           </span>
         )}
-        {entry?.appliedAt && <span className="vtl__when">{fmtDate(entry.appliedAt)}</span>}
+        {entry?.appliedAt && (
+          // Who ran it goes in the tooltip rather than beside the date: the
+          // cell is one column of a two-column row and an address would push
+          // the version out of it. The date is the visible anchor; hovering it
+          // is how the audit question gets asked.
+          <span
+            className="vtl__when"
+            title={
+              entry.appliedBy
+                ? `Applied ${fmtDate(entry.appliedAt)} by ${entry.appliedBy}`
+                : `Applied ${fmtDate(entry.appliedAt)}. This row does not record who ran it.`
+            }
+          >
+            {fmtDate(entry.appliedAt)}
+          </span>
+        )}
       </span>
     </td>
   );

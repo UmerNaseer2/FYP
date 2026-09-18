@@ -46,6 +46,13 @@ const ORIGIN_META: Record<AdviceItem["origin"], { label: string; help: string }>
       "Read from this server's own usage counters. They reach back only to their " +
       "last reset or crash, and they do not include read replicas.",
   },
+  queries: {
+    label: "From queries analysed here",
+    help:
+      "Worked out from the queries people have analysed against this schema in " +
+      "this app. It sees nothing your application runs without asking, so it is " +
+      "a reading of what has been looked at, not of all your traffic.",
+  },
 };
 
 /** One completed request, tagged with the request it answers. */
@@ -152,6 +159,22 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
                 "on partitioned tables, tables mostly read by sequential scans, dead " +
                 "rows waiting for cleanup, tables with no planner statistics, and " +
                 "reads that miss the buffer cache."}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view.patternsUnavailable && (
+        <div className="warn-inline">
+          <AlertCircleIcon size={15} className="ico" />
+          <div>
+            <div className="title">The record of analysed queries could not be read</div>
+            <div className="body">
+              {view.patternsUnavailable}{" "}
+              {"Everything else on this page still ran. The one check that needs " +
+                "that record looks for tables several different queries search on " +
+                "the same columns together, which is the case one index across all " +
+                "of them would answer."}
             </div>
           </div>
         </div>

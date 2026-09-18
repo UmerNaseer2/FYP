@@ -673,6 +673,77 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .diff-row s { color:var(--text-3); }
 .diff-row b { color:var(--text); font-weight:500; }
 
+/* ——— Critical differences & run history ———
+   The two panels above the diff (spec 04). Both are .table-group, so they sit
+   in the same frame as the groups below them rather than introducing a third
+   kind of box; what is added here is the accent that says which one is a
+   warning and which one is information, and the layout of their headers.
+   A tinted header rather than a tinted body: the panels open onto lists of
+   .diff-row, and a coloured ground under those fights the per-row colours the
+   rows already carry. */
+.critical > .tg-header { background:var(--break-soft);
+                         border-bottom-color:color-mix(in oklab, var(--break) 28%, transparent); }
+.critical__ico { color:var(--break); display:flex; flex:none; }
+.critical__title { color:var(--break); font-weight:600; font-size:13px; }
+/* Pushes the chevron to the far edge without a justify-content that would also
+   move the pill beside the title away from it. */
+.critical__spacer, .history__spacer { flex:1; }
+.critical__row { border-left-color:var(--break); background:var(--break-soft); }
+.critical__row .sign { color:var(--break); }
+.critical__manual, .history__break { margin-left:6px; margin-right:0; }
+.critical__more, .critical__note { padding:6px 0 0; max-width:82ch; }
+
+.history > .tg-header { background:var(--surface-2); }
+.history__ico { color:var(--text-3); display:flex; flex:none; }
+.history__sentence { color:var(--text); font-size:12.5px; line-height:1.45; }
+.history__group + .history__group { margin-top:6px; padding-top:6px;
+                                    border-top:1px solid var(--border); }
+.history__title { color:var(--text-2); font-size:12px; font-weight:600; }
+.history__row { border-left-color:var(--border); }
+.history__row .mono { font-size:11.5px; color:var(--text-2); }
+.history__who { padding:8px 0 0; max-width:82ch; }
+
+/* ——— Sampled rows ———
+   The rows that differ, under the table whose contents differ (spec 04). It
+   sits inside the same group as the .diff-row above it, indented to the depth
+   of that row's text so it reads as an answer to that line rather than as a
+   sibling entry. The left rule carries it downward: without one, a long list
+   of rows loses its connection to the table name several lines up. */
+.sample-rows { margin:0 0 8px 17px; padding:6px 0 0 12px; border-left:2px solid var(--border);
+               font-family:var(--font-geist-mono), ui-monospace; font-size:11.5px; line-height:1.6; }
+.sample-rows__head { color:var(--text-3); padding-bottom:3px; }
+/* The key stays on its own line above the values on a narrow screen — a row
+   whose key wrapped INTO its values is unreadable, which is what a plain
+   flex-wrap row does here. */
+.sample-rows__row { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; padding:2px 0; }
+.sample-rows__key { color:var(--text); font-weight:600; background:var(--surface-3);
+                    border-radius:4px; padding:0 5px; }
+.sample-rows__cols { display:flex; flex-direction:column; gap:1px; min-width:0; }
+/* overflow-wrap, not a nowrap+ellipsis: the value is already cut to a fixed
+   length by the renderer, and hiding the rest of a short string behind an
+   ellipsis the reader cannot widen would hide the difference itself. */
+.sample-rows__col { color:var(--text-2); overflow-wrap:anywhere; }
+.sample-rows__col b { color:var(--text); font-weight:600; }
+.sample-rows__note { color:var(--text-3); padding:4px 0 0; font-family:var(--font-geist-sans), ui-sans-serif, system-ui;
+                     font-size:11.5px; }
+
+/* ——— Table picker ———
+   The list of tables the next row-data run should read. auto-fill rather than a
+   fixed column count: a schema of six tables gets six sensible columns and one
+   of sixty gets as many as fit, without a breakpoint for each size. minmax's
+   floor is what keeps a long table name from squeezing its neighbours to
+   nothing — past that the name truncates, and its title attribute carries the
+   whole of it. */
+.table-picker { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr));
+                gap:2px 14px; padding:4px 14px 10px; max-height:260px; overflow-y:auto; }
+.table-picker__item { display:flex; align-items:center; gap:7px; padding:3px 0; min-width:0;
+                      font-size:12.5px; cursor:pointer; color:var(--text-2); }
+.table-picker__item:hover { color:var(--text); }
+.table-picker__item span { font-family:var(--font-geist-mono), ui-monospace; font-size:11.5px; }
+.table-picker__foot { display:flex; align-items:center; justify-content:space-between; gap:14px;
+                      padding:9px 14px; border-top:1px solid var(--border); flex-wrap:wrap; }
+.table-picker__foot .help { max-width:60ch; }
+
 /* summary matrix — the object-status board above the diff canvas.
    Every category on one line, including the ones with nothing in them: a board
    that hides its empty rows cannot answer "did anything happen to my views?",

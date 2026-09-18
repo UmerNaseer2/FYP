@@ -21,8 +21,12 @@ export {
  *
  * A set is an input, saved on purpose, so that "the nightly check: dev, staging
  * and prod against the model schema" is one click instead of six dropdowns
- * every morning. `last_run_at` on the set is the only history kept — the answer
- * to "when did I last run this", which is what the picker shows.
+ * every morning. `last_run_at` on the set answers "when did I last run this",
+ * which is what the picker shows. What each of those runs FOUND is kept
+ * separately, per source/target pair rather than per set, in `comparison_runs`
+ * — see lib/comparison-history-db.ts. It is stored per pair because a pair
+ * keeps its history when it is dropped from a set, added to another, or
+ * compared once by hand outside any set at all.
  *
  * Lives in the same metadata database as `connections` and the lineage tables,
  * and is declared with them as a Sequelize model in `lib/db/models.ts`.

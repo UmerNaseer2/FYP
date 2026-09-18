@@ -1,5 +1,12 @@
 import { parsePostgresUri } from "./parse-uri";
 import { ENVIRONMENTS, toEnvironment, type Environment } from "./environments";
+import { toExecuteRole, type ExecuteRole } from "./connection-access";
+import {
+  IMPLEMENTED_DIALECTS,
+  dialect,
+  unsupportedReason,
+  type DialectId,
+} from "./dialects";
 
 /**
  * Validation for a saved connection, shared by the drawer form and the
@@ -12,9 +19,20 @@ import { ENVIRONMENTS, toEnvironment, type Environment } from "./environments";
  * and a port of `-1` or `99999` went into an INTEGER column unchallenged.
  */
 
-/** The only engine the compare/test paths accept. Enforced on save as well now. */
-export const SUPPORTED_TYPES = ["PostgreSQL"] as const;
-export type ConnectionType = (typeof SUPPORTED_TYPES)[number];
+/**
+ * The engines a connection may be saved as: the ones lib/dialects.ts says are
+ * actually implemented, not every name it knows. Derived rather than written
+ * out again, so adding a driver is one flag in one file and this list, the
+ * error message below and the README's claim all move together.
+ */
+export const SUPPORTED_TYPES = IMPLEMENTED_DIALECTS;
+/**
+ * What the `type` column may hold. Wider than SUPPORTED_TYPES on purpose: a row
+ * saved before an engine was dropped, or by an older build, still has to be
+ * readable. Whether this app can USE the row is a runtime question, answered by
+ * unsupportedReason, not a question the type system can settle.
+ */
+export type ConnectionType = DialectId;
 
 /**
  * How TLS is negotiated with a target.
@@ -39,6 +57,8 @@ export const LIMITS = {
   database: 63, // Postgres NAMEDATALEN - 1
   username: 63,
   connectionString: 2048,
+  // "schema.table" — two identifiers and the dot between them.
+  applicationTable: 63 * 2 + 1,
 } as const;
 
 /** A field-keyed map of problems: { port: "Port must be between 1 and 65535." } */
@@ -55,6 +75,8 @@ export type ConnectionDraft = {
   connection_string?: unknown;
   ssl_mode?: unknown;
   environment?: unknown;
+  application_table?: unknown;
+  execute_role?: unknown;
 };
 
 /** What a draft looks like once it has been checked and normalised. */
@@ -69,6 +91,10 @@ export type NormalisedConnection = {
   connection_string: string;
   ssl_mode: SslMode;
   environment: Environment;
+  /** The client's ApplicationTable, or null when this connection names none. */
+  application_table: string | null;
+  /** Which role may run migrations here. See lib/connection-access.ts. */
+  execute_role: ExecuteRole;
 };
 
 /**
@@ -233,6 +259,22 @@ export function validateConnection(
   const rawEnvironment = String(draft.environment ?? "").trim();
   const environment = toEnvironment(rawEnvironment);
 
+  // Blank is the ordinary answer and means "this connection names no
+  // application table", stored as NULL rather than "". The shape is checked
+  // here rather than at deploy time because a typo found now is a message in
+  // the drawer, and the same typo found later is a restricted script refused
+  // against a database that would have been fine.
+  const applicationTable = String(draft.application_table ?? "").trim();
+  const application_table = applicationTable === "" ? null : applicationTable;
+
+  // Unrecognised text falls back to the default rather than becoming an error,
+  // the same way `environment` does, because this arrives from a fixed <select>
+  // — a value outside the list means the form was bypassed, not that the user
+  // typed something. Falling back to the DEFAULT and not to "none" keeps a
+  // bypassed form from being a way to quietly freeze a connection.
+  const rawExecuteRole = String(draft.execute_role ?? "").trim();
+  const execute_role = toExecuteRole(rawExecuteRole);
+
   const usingUri = connection_string !== "";
 
   if (rawEnvironment !== "" && rawEnvironment.toLowerCase() !== environment) {
@@ -240,12 +282,24 @@ export function validateConnection(
       `"${rawEnvironment}" is not an environment. Use one of: ${ENVIRONMENTS.join(", ")}.`;
   }
 
+  if (application_table !== null) {
+    const parts = application_table.split(".");
+    if (application_table.length > LIMITS.applicationTable) {
+      errors.application_table = "That application table name is too long.";
+    } else if (parts.length > 2 || parts.some((part) => part.trim() === "")) {
+      errors.application_table =
+        'Write the application table as "table" or "schema.table".';
+    }
+  }
+
   if (!name) errors.name = "Give this connection a name.";
   else if (name.length > LIMITS.name) errors.name = `Name must be ${LIMITS.name} characters or fewer.`;
 
-  if (!(SUPPORTED_TYPES as readonly string[]).includes(rawType)) {
-    errors.type = `Only ${SUPPORTED_TYPES.join(", ")} is supported right now.`;
-  }
+  // Not "only PostgreSQL is supported": a reader who typed "MySQL" is told what
+  // would have to change for it to work, and a reader who typed "Postgrez" is
+  // told it is not a name this app knows. Those are different problems.
+  const typeProblem = unsupportedReason(rawType);
+  if (typeProblem) errors.type = typeProblem;
 
   if (usingUri) {
     if (connection_string.length > LIMITS.connectionString) {
@@ -305,9 +359,11 @@ export function validateConnection(
     value: {
       name,
       host: usingUri ? (uriPart(fromUri?.host) || host) : host,
+      // The engine's own default, so a MySQL row saved once there is a driver
+      // does not silently land on Postgres's port.
       port: usingUri
-        ? (parsePort(fromUri?.port) ?? 5432)
-        : (parsePort(draft.port) ?? 5432),
+        ? (parsePort(fromUri?.port) ?? dialect(rawType).defaultPort)
+        : (parsePort(draft.port) ?? dialect(rawType).defaultPort),
       database_name: usingUri
         ? (uriPart(fromUri?.database) || database_name)
         : database_name,
@@ -317,6 +373,8 @@ export function validateConnection(
       connection_string,
       ssl_mode,
       environment,
+      application_table,
+      execute_role,
     },
   };
 }

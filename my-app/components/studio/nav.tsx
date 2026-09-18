@@ -19,22 +19,28 @@ export type NavItem = {
   label: string;
   href: string;
   icon: ReactNode;
-  /** Optional count badge (drift / pending). */
-  badge?: string;
   /** Only shown to admins — the shell filters these on the live session role. */
   adminOnly?: boolean;
 };
 
-// Phase 1 routes: Dashboard/Deploy/Drift live inside the new shell; Compare &
-// Connections still point at the legacy pages until their migration phase lands.
+// The order is the order the work happens in, not alphabetical and not by how
+// often a screen is opened. Somebody who has never used this app should be able
+// to read the rail top to bottom and get a working answer to "what do I do
+// next": look at the dashboard, compare two databases, edit what that
+// generated, deploy it, record the version, then watch for drift and for
+// performance. Visualizer sits after those because it explains a schema rather
+// than changing one.
+//
+// Connections and Admin are last together, away from that sequence. They are
+// both setup — things you do once and come back to rarely — and Connections
+// used to sit in the middle of the pipeline, which made the rail stop reading
+// as a sequence exactly where somebody new needed it to.
 export const NAV_ITEMS: NavItem[] = [
   {
     screen: "Dashboard",
     label: "Dashboard",
     href: "/studio",
     icon: <DashboardIcon className="ico" />,
-    // No badge: real "pending" counts arrive with the Phase 6/7 tracked-schema
-    // backend. A hardcoded number here would be fake data that looks real.
   },
   {
     screen: "Compare & Author",
@@ -61,17 +67,10 @@ export const NAV_ITEMS: NavItem[] = [
     icon: <VersionSyncIcon className="ico" />,
   },
   {
-    screen: "Connections",
-    label: "Connections",
-    href: "/connections",
-    icon: <ConnectionsIcon className="ico" />,
-  },
-  {
     screen: "Drift",
     label: "Drift",
     href: "/drift",
     icon: <DriftIcon className="ico" />,
-    // No badge: real drift-event counts arrive with the Phase 6/9 drift backend.
   },
   {
     screen: "Performance",
@@ -84,6 +83,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Visualizer",
     href: "/visualizer",
     icon: <SchemaMapIcon className="ico" />,
+  },
+  {
+    screen: "Connections",
+    label: "Connections",
+    href: "/connections",
+    icon: <ConnectionsIcon className="ico" />,
   },
   {
     screen: "Admin",

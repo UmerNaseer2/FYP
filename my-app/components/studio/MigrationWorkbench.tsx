@@ -1171,6 +1171,24 @@ export function MigrationWorkbench({
                         )}
                       </div>
                       {push.rollbackLine && <div className="mt-1">{push.rollbackLine}</div>}
+                      {/* Pushing puts the version in the registry. It does not
+                          run it against anything — see the note at the top of
+                          this file — and a green tick right after a comparison
+                          reads as "done" unless the page says otherwise.
+
+                          Not offered when the rollback failed: the amber box
+                          means the version went out without one, and the offer
+                          directly below fixes that. Deploying is still allowed
+                          from the Deploy page; it is just not what to suggest
+                          while something better is one button away. */}
+                      {!push.rollbackFailed && (
+                        <div className="mt-1">
+                          <Link href="/deploy" style={{ color: "var(--brand)", textDecoration: "underline" }}>
+                            Nothing has run yet — deploy it
+                          </Link>
+                          {" "}on the Deploy page.
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

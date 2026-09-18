@@ -33,9 +33,11 @@ jest.mock("../lib/postgres", () => ({
 // `pools` directly — a `mock`-prefixed alias is the escape hatch jest allows.
 const mockPools = pools;
 
-/** A column as the comparison report describes it. Only the name is read here. */
+/** A column as the comparison report describes it. */
 function col(name: string) {
-  return { name };
+  // nullable is read when the sampler looks for a key it can pair rows by; the
+  // name is all the checksum itself needs.
+  return { name, nullable: false };
 }
 
 /**
@@ -50,7 +52,16 @@ function reportWithOneMatch(options: {
   shared: string[];
   onlyA?: string[];
   onlyB?: string[];
+  /** The source's primary key, or null for a table the sampler cannot pair. */
+  primaryKey?: string[] | null;
 }): CompareReport {
+  const columns = [...options.shared, ...(options.onlyA ?? [])].map(col);
+  const primaryKey =
+    options.primaryKey === undefined
+      ? { columns: [options.shared[0] ?? "id"] }
+      : options.primaryKey === null
+        ? null
+        : { columns: options.primaryKey };
   return {
     left: { tables: [] },
     right: { tables: [] },
@@ -58,7 +69,10 @@ function reportWithOneMatch(options: {
     tablesOnlyInB: [],
     matchedTables: [
       {
-        left: { name: "orders" },
+        // The key fields belong to the SOURCE side: that is the snapshot the
+        // sampler picks a key from, and the target's names are derived from
+        // the column matches below.
+        left: { name: "orders", primaryKey, uniqueConstraints: [], columns },
         right: { name: "orders" },
         columnMatches: options.shared.map((name) => ({
           left: col(name),
@@ -76,6 +90,7 @@ async function run(
   report: CompareReport,
   leftSteps: FakeStep[],
   rightSteps: FakeStep[],
+  options: Parameters<typeof compareRowData>[3] = {},
 ): Promise<DataCompareReport> {
   pools.left = createFakeClient(leftSteps);
   pools.right = createFakeClient(rightSteps);
@@ -83,6 +98,7 @@ async function run(
     report,
     { config: { database: "source" }, schema: "public" },
     { config: { database: "target" }, schema: "public" },
+    options,
   );
 }
 
@@ -198,6 +214,7 @@ describe("summarizeDataCompare", () => {
       columns: ["id"],
       ignoredColumns: [],
       note: null,
+      sample: null,
       droppedBySync: false,
       ...over,
     };
@@ -250,3 +267,249 @@ describe("summarizeDataCompare", () => {
     expect(totals.identicalOnSharedColumns).toBe(0);
   });
 });
+
+/**
+ * Which rows differ (spec 04 — sample mismatched rows).
+ *
+ * The verdict above is one bit: the checksums disagree. These tests are about
+ * the part that names the rows behind it, and about the two things it must
+ * never do — claim more than it read, or go quiet when it read nothing.
+ *
+ * The digest read is the one projecting `AS digest`; the follow-up that fetches
+ * a changed row's values projects `AS c0`. Matching on those keeps the fakes
+ * independent of the rest of the generated SQL.
+ */
+describe("which rows differ", () => {
+  const digest = (rows: Record<string, string>[]): FakeStep => ({
+    match: /AS digest/,
+    rows,
+  });
+  const values = (rows: Record<string, string>[]): FakeStep => ({
+    match: /AS c0/,
+    rows,
+  });
+
+  it("names a row only one side has, and which side", async () => {
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [...checksum(2, "abc"), digest([{ k0: "1", digest: "a" }, { k0: "2", digest: "b" }])],
+      [...checksum(2, "zzz"), digest([{ k0: "1", digest: "a" }, { k0: "3", digest: "c" }])],
+    );
+
+    const sample = result.tables[0].sample;
+    expect(sample?.status).toBe("sampled");
+    expect(sample?.keyColumns).toEqual(["id"]);
+    // Row 1 is on both sides with the same digest, so it is not listed at all.
+    expect(sample?.rows).toEqual([
+      { key: ["2"], kind: "sourceOnly", differences: [] },
+      { key: ["3"], kind: "targetOnly", differences: [] },
+    ]);
+  });
+
+  it("names the columns that differ on a row both sides have", async () => {
+    // Only a row present on both sides has two versions to put side by side,
+    // so this is the only case that costs a second read.
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [
+        ...checksum(1, "abc"),
+        digest([{ k0: "1", digest: "a" }]),
+        values([{ k0: "1", c0: "1", c1: "10" }]),
+      ],
+      [
+        ...checksum(1, "zzz"),
+        digest([{ k0: "1", digest: "z" }]),
+        values([{ k0: "1", c0: "1", c1: "99" }]),
+      ],
+    );
+
+    expect(result.tables[0].sample?.rows).toEqual([
+      {
+        key: ["1"],
+        kind: "changed",
+        // `id` is in the projection too and agrees, so it is not listed. Only
+        // what actually differs belongs in a list headed "what differs".
+        differences: [{ column: "total", left: "10", right: "99" }],
+      },
+    ]);
+  });
+
+  it("reports a renamed column under the source's name", async () => {
+    // Both sides project their paired columns as c0..cN in the same order, so
+    // the target's `client_id` comes back as the source's `customer_id`.
+    // Reading the target's row by the source's name would find nothing and
+    // report every renamed column as a difference.
+    const report = reportWithOneMatch({ shared: ["id"] }) as unknown as {
+      matchedTables: {
+        left: { columns: { name: string; nullable: boolean }[] };
+        columnMatches: { left: { name: string }; right: { name: string } }[];
+      }[];
+    };
+    report.matchedTables[0].left.columns.push({ name: "customer_id", nullable: false });
+    report.matchedTables[0].columnMatches.push({
+      left: { name: "customer_id" },
+      right: { name: "client_id" },
+    });
+
+    // Both sides project their paired columns sorted by the SOURCE's name — the
+    // checksum hashes a positional ROW(), so any other order would hash the
+    // same data differently on the two sides. customer_id therefore comes back
+    // as c0 and id as c1, on both.
+    const result = await run(
+      report as unknown as CompareReport,
+      [
+        ...checksum(1, "abc"),
+        digest([{ k0: "1", digest: "a" }]),
+        values([{ k0: "1", c0: "7", c1: "1" }]),
+      ],
+      [
+        ...checksum(1, "zzz"),
+        digest([{ k0: "1", digest: "z" }]),
+        values([{ k0: "1", c0: "8", c1: "1" }]),
+      ],
+    );
+
+    expect(result.tables[0].sample?.rows[0].differences).toEqual([
+      { column: "customer_id", left: "7", right: "8" },
+    ]);
+  });
+
+  it("says a table's rows cannot be paired instead of going quiet", async () => {
+    // No primary key and no non-null unique constraint means there is nothing
+    // to match a row against on the other side. The table still differs, so
+    // showing nothing at all would read as "no rows differ".
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"], primaryKey: null }),
+      checksum(1, "abc"),
+      checksum(1, "zzz"),
+    );
+
+    expect(result.tables[0].status).toBe("different");
+    expect(result.tables[0].sample?.status).toBe("no-key");
+  });
+
+  it("says so when the rows could not be read", async () => {
+    // The verdict's own reads succeeded — the table IS different — and only
+    // the follow-up timed out. Losing that distinction would turn a table with
+    // a known difference into one that was never compared.
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [
+        ...checksum(1, "abc"),
+        { match: /AS digest/, error: { code: "57014", message: "canceling statement" } },
+      ],
+      [...checksum(1, "zzz"), digest([{ k0: "1", digest: "z" }])],
+    );
+
+    expect(result.tables[0].status).toBe("different");
+    expect(result.tables[0].sample?.status).toBe("unavailable");
+    expect(result.tables[0].sample?.note).toContain("source:");
+  });
+
+  it("does not look at a table whose rows already match", async () => {
+    // Two more full reads to produce an empty list is the one case where the
+    // cost buys nothing at all.
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      checksum(1, "abc"),
+      checksum(1, "abc"),
+    );
+
+    expect(result.tables[0].status).toBe("identical");
+    expect(result.tables[0].sample).toBeNull();
+  });
+
+  it("can be turned off without turning off the verdict", async () => {
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      checksum(1, "abc"),
+      checksum(1, "zzz"),
+      { sample: false },
+    );
+
+    expect(result.tables[0].status).toBe("different");
+    expect(result.tables[0].sample).toBeNull();
+  });
+});
+
+/**
+ * "Compare all OR SELECTED table data" (spec 04).
+ *
+ * The selection narrows what is READ. What the report COVERS does not change,
+ * because a report that listed only the tables it read would shrink the screen's
+ * picker to those tables and leave no way back to the rest.
+ */
+describe("a compare limited to some tables", () => {
+  /** Two matched tables, both with an `id` primary key. */
+  function twoTables(): CompareReport {
+    return {
+      left: { tables: [] },
+      right: { tables: [] },
+      tablesOnlyInA: [],
+      tablesOnlyInB: [],
+      matchedTables: ["orders", "customers"].map((name) => ({
+        left: {
+          name,
+          primaryKey: { columns: ["id"] },
+          uniqueConstraints: [],
+          columns: [col("id")],
+        },
+        right: { name },
+        columnMatches: [{ left: col("id"), right: col("id") }],
+        columnsOnlyInA: [],
+        columnsOnlyInB: [],
+      })),
+    } as unknown as CompareReport;
+  }
+
+  it("reads the selected table and reports the other as not read", async () => {
+    const result = await run(
+      twoTables(),
+      [...checksum(1, "abc"), digestless()],
+      [...checksum(1, "zzz"), digestless()],
+      { only: ["customers"] },
+    );
+
+    expect(result.tables.map((table) => [table.table, table.status])).toEqual([
+      ["orders", "skipped"],
+      ["customers", "different"],
+    ]);
+    expect(result.tables[0].note).toContain("not one of the selected tables");
+  });
+
+  it("falls back to every table when the selection matches nothing", async () => {
+    // The screen sent names this comparison does not have — a schema that
+    // changed under a saved set, most likely. Reporting "no tables to compare"
+    // for a schema that plainly has some reads as a broken page rather than as
+    // a stale selection.
+    const result = await run(
+      twoTables(),
+      [...checksum(1, "abc"), digestless()],
+      [...checksum(1, "abc"), digestless()],
+      { only: ["invoices"] },
+    );
+
+    expect(result.tables.map((table) => table.status)).toEqual([
+      "identical",
+      "identical",
+    ]);
+  });
+
+  it("does not count the tables it skipped against the per-run cap", async () => {
+    // The reason to select a table is usually that it sits past the cap. A cap
+    // that counted the skipped ones would put it right back out of reach.
+    const result = await run(
+      twoTables(),
+      [...checksum(1, "abc"), digestless()],
+      [...checksum(1, "zzz"), digestless()],
+      { only: ["customers"], maxTables: 1 },
+    );
+
+    expect(result.tables[1].status).toBe("different");
+  });
+});
+
+/** A digest read that comes back empty — enough to satisfy a sampled table. */
+function digestless(): FakeStep {
+  return { match: /AS digest/, rows: [] };
+}

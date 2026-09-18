@@ -27,16 +27,20 @@ import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 // ---------------------------------------------------------------------------
 // DiffReport — the reusable diff canvas.
 //
-// It renders a CompareReport (live-vs-live today, snapshot-vs-live once Phase 6
-// lands) in the Pass-5 visual language: collapsible per-table groups whose rows
-// are colour-coded add / change / remove. It deliberately keeps ALL the richness
-// the compare engine produces — rename candidates with similarity scores, the
-// columns-only-in-A/B split, per-column change descriptions with severity, and
-// the full PK / UNIQUE / FK / CHECK / EXCLUDE constraint catalog.
+// It renders a CompareReport — whether the two sides came from two live
+// databases or from a stored snapshot against a live one — as collapsible
+// per-table groups whose rows are colour-coded add / change / remove. It
+// deliberately keeps ALL the richness the compare engine produces: rename
+// candidates with similarity scores, the columns-only-in-A/B split, per-column
+// change descriptions with severity, and the full PK / UNIQUE / FK / CHECK /
+// EXCLUDE constraint catalog.
 //
-// Server component on purpose: groups collapse via native <details>, so there is
-// no client JS and nothing to hydrate. Drift detail (Phase 9) reuses this whole
-// component with a snapshot-derived report.
+// No "use client" of its own, but it is NOT a server component: the compare
+// page is a client component, so this is compiled into the browser bundle along
+// with it. That is fine and is the reason it may only import pure modules —
+// lib/compare grades changes and opens no connection. It also means every group
+// here collapses through a native <details>, with no state and no effects, so
+// nothing about being in the bundle costs anything to hydrate.
 // ---------------------------------------------------------------------------
 
 type DiffKind = "add" | "rem" | "chg";

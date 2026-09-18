@@ -24,6 +24,12 @@ import {
   versionKey,
   type LedgerEntry,
 } from "@/lib/script-status";
+import { deployStage, patchPrompt, stagePrompt } from "@/lib/deploy-init";
+import {
+  checkApplications,
+  readAppliesToHeader,
+  type TargetApplications,
+} from "@/lib/application-targeting";
 import {
   containsTransactionControl,
   findRowDestroyingStatements,
@@ -31,6 +37,7 @@ import {
 } from "@/lib/sql-guard";
 import { analyseRunRisk } from "@/lib/deploy-risk";
 import { readApplyFailure, type ApplyFailure } from "@/lib/apply-failure";
+import { describeRegistry, readArchivedVersions, type RegistryNote } from "@/lib/registry-report";
 import {
   describeChangeType,
   louderChangeType,
@@ -40,6 +47,8 @@ import {
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
+import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
+import { canExecute, toExecuteRole } from "@/lib/connection-access";
 import {
   isProduction,
   louderEnvironment,
@@ -152,6 +161,8 @@ type Connection = {
   type: string;
   /** dev / staging / prod, or "unset" when nobody has labelled it. */
   environment: Environment;
+  /** Which role may run migrations here. See lib/connection-access.ts. */
+  execute_role?: string | null;
 };
 
 // One row of the target's applied history.
@@ -160,6 +171,11 @@ type PatchEntry = {
   title: string | null;
   change_type: string;
   applied_at: string;
+  /**
+   * Who ran it. Optional: an older preflight route did not send it, and a
+   * ledger row written before the column existed has no answer to give.
+   */
+  applied_by?: string | null;
   /** Whether the ledger row kept its own rollback. Optional: an older API. */
   has_down_sql?: boolean;
   /** The rollback stored on the row. Optional for the same reason. */
@@ -175,6 +191,17 @@ type PatchEntry = {
 type PreflightResult = {
   hasVersionTable: boolean;
   needsInit: boolean;
+  /** Does the schema exist on the target? See lib/deploy-init.ts. */
+  /**
+   * What the target says it hosts, read from the connection's application
+   * table. Used here only to say so on screen — the apply route runs the same
+   * check again and is the one that refuses, because a screen is a courtesy
+   * and the rule has to hold whatever reaches the endpoint.
+   */
+  applications: TargetApplications;
+  schemaExists: boolean;
+  /** Its ordinary tables, not counting this app's own ledger tables. */
+  tableCount: number;
   currentVersion: string | null;
   timeline: PatchEntry[];
   schema: string;
@@ -201,7 +228,11 @@ type RevertedEntry = {
   title: string | null;
   change_type: string | null;
   applied_at: string | null;
+  /** Who applied it, carried into the archive by the revert route. Optional. */
+  applied_by?: string | null;
   reverted_at: string;
+  /** Who rolled it back. Optional for the same reason as applied_by. */
+  reverted_by?: string | null;
 };
 
 // A version of ANOTHER script family applied after this family's versions.
@@ -263,6 +294,17 @@ type ApplyResponse = {
    * (answerBeforeRun there). lib/apply-failure is the one reading of it.
    */
   nothingRan?: boolean;
+  /**
+   * What the run recorded in the GitHub registry (spec 07). Unknown rather
+   * than typed, because readArchivedVersions is the one place that decides
+   * what a well-formed entry is — and an older server sends no such field.
+   *
+   * Nearly always absent HERE: Deploy's scripts were pulled from the registry,
+   * so their files are already in it and the route leaves those out. It shows
+   * up when a version could not be recorded, which on this screen means GitHub
+   * went unreachable partway through a deploy.
+   */
+  registry?: unknown;
 };
 
 // The change_type this page sends with a migration, to the apply route and to
@@ -564,6 +606,7 @@ function RightStatus({ cell }: { cell: RunCell }) {
 // One migration row, shared by the pending list (stage 1) and run list (stage 2/3).
 function MigRow({
   seq,
+  toggle,
   name,
   kind,
   sub,
@@ -576,6 +619,12 @@ function MigRow({
   action,
 }: {
   seq: string;
+  /**
+   * Makes the sequence circle a tick box (spec 11.5 — select or deselect which
+   * pending scripts to run). Absent on the run and rollback lists, where the
+   * batch is already fixed and a box that changed nothing would be a lie.
+   */
+  toggle?: { checked: boolean; onChange: (checked: boolean) => void; label: string; disabled?: boolean };
   name: string;
   kind: ChangeKind;
   sub: string;
@@ -609,7 +658,23 @@ function MigRow({
   return (
     <div className="mig-item">
       <div className={cls}>
-        <div className="seq-circle">{seq}</div>
+        {toggle ? (
+          // The number stays visible beside the box: it is the run order, and
+          // the order is the reason a middle version cannot be dropped.
+          <label className="seq-circle" title={toggle.label} style={{ cursor: toggle.disabled ? "default" : "pointer" }}>
+            <input
+              type="checkbox"
+              checked={toggle.checked}
+              disabled={toggle.disabled}
+              aria-label={toggle.label}
+              onChange={(e) => toggle.onChange(e.target.checked)}
+              style={{ position: "absolute", opacity: 0, width: 0, height: 0 }}
+            />
+            {toggle.checked ? <CheckIcon size={13} /> : seq}
+          </label>
+        ) : (
+          <div className="seq-circle">{seq}</div>
+        )}
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="name">{name}</span>
@@ -672,10 +737,17 @@ function pulledRollbackState(script: GitHubScript): PulledRollbackState {
 function pendingRowNotes(
   script: GitHubScript,
   reading: ChangeTypeReading,
-  previous: string | null
+  previous: string | null,
+  applications: TargetApplications
 ): RowNote[] {
   const notes: RowNote[] = [];
   const v = vLabel(script.version);
+
+  // First, because it is the note that decides whether the rest matters: a
+  // script this target is not allowed to run is refused by the apply route,
+  // and the reader should see that here rather than after pressing Deploy.
+  const verdict = checkApplications(readAppliesToHeader(script.sql_content), applications);
+  if (verdict.reason) notes.push({ text: verdict.reason, warn: !verdict.allowed });
 
   if (reading.louderNote) notes.push({ text: reading.louderNote, warn: true });
 
@@ -819,7 +891,7 @@ export default function DeployPage() {
   // Who is looking. The approval panel needs two things from this: whether to
   // offer Approve at all (admins decide), and whether this is the same person
   // who asked for the run (nobody clears their own).
-  const { user, isAdmin, bypass } = useUser();
+  const { user, role, isAdmin, bypass } = useUser();
 
   // ── Selection state ──────────────────────────────────────────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -964,6 +1036,12 @@ export default function DeployPage() {
   // that started it so the whole stage-2 view can say so, including after it
   // finishes and the button is no longer in the picture.
   const [runIsDryRun, setRunIsDryRun] = useState(false);
+  // Was the target empty when this run started? Spec feature 11 asks the
+  // screen to offer the patches "after initialization", and by the time the
+  // run finishes the ledger has been re-read and the target is no longer
+  // empty — so the answer has to be taken before the run, not worked out
+  // afterwards from a target that has already changed under it.
+  const [runInitialised, setRunInitialised] = useState(false);
   // What the last clean dry run rehearsed (its batchBody), or null. "Deploy
   // for real" deploys the current selection, so it is offered only while the
   // selection's body is this one: a rehearsal of v5.0.1 → v5.0.2 must not
@@ -979,6 +1057,9 @@ export default function DeployPage() {
   // "rolled back", which would describe a run that did. An unknown outcome
   // shows in the rows themselves (runOutcomeUnknown below).
   const [runFailure, setRunFailure] = useState<ApplyFailure | null>(null);
+  // What the last run added to the GitHub registry, and what it could not.
+  // Null when there is nothing to say, which is the usual answer here.
+  const [runRegistry, setRunRegistry] = useState<RegistryNote | null>(null);
   const runRefused = runFailure === "refused";
   const runNotStarted = runFailure === "not-started";
   // What the ledger re-read after a run found (runBatch starts it right after
@@ -1065,6 +1146,22 @@ export default function DeployPage() {
     schemaEnvironment
   );
   const targetIsProduction = isProduction(targetEnvironment);
+
+  // The selected target's execution setting, and whether this caller clears it.
+  //
+  // useUser reads the role out of the same session the API routes read it out
+  // of, so the page can answer this rather than hedge. It is still only a
+  // prediction of what the route will say — the route re-checks on its own, and
+  // it is the one that counts — but a button that greys itself out for the
+  // right stated reason beats one that lets you press it and come back with a
+  // 403 you have to interpret.
+  //
+  // Read-only is the case worth separating: it refuses everybody, admins
+  // included, so it is not "your role is too low" and must not be worded that
+  // way. See lib/connection-access.
+  const targetExecuteRole = toExecuteRole(activeConn?.execute_role);
+  const targetIsReadOnly = targetExecuteRole === "none";
+  const mayExecuteOnTarget = canExecute(role, targetExecuteRole);
 
   // Scope the pulled scripts to the selected connection's database. GitHub now
   // stores scripts under <database_name>/<schema>/..., so a script only belongs
@@ -1154,6 +1251,33 @@ export default function DeployPage() {
     : preflightResult.currentVersion
       ? vLabel(preflightResult.currentVersion)
       : "fresh";
+
+  // Spec feature 11 — "If no schema or tables exist, prompt to run
+  // /scripts_init." Which of the three states this target is in, and the one
+  // thing worth saying about it. Both come from lib/deploy-init.ts rather than
+  // being decided here, because the after-the-run prompt has to agree with
+  // this one about what "initialised" meant.
+  const targetStage = preflightResult
+    ? deployStage({
+        schemaExists: preflightResult.schemaExists,
+        tableCount: preflightResult.tableCount,
+        hasVersionTable: preflightResult.hasVersionTable,
+        currentVersion: preflightResult.currentVersion,
+      })
+    : null;
+  const targetPrompt =
+    preflightResult && targetStage
+      ? stagePrompt(
+          {
+            schemaExists: preflightResult.schemaExists,
+            tableCount: preflightResult.tableCount,
+            hasVersionTable: preflightResult.hasVersionTable,
+            currentVersion: preflightResult.currentVersion,
+          },
+          targetStage,
+          pendingScripts.length > 0 ? vLabel(pendingScripts[0].version) : null
+        )
+      : null;
 
   // ── Roll back to ─────────────────────────────────────────────────────────
   // The registry's versions of this family in this schema. A version with no
@@ -1301,6 +1425,10 @@ export default function DeployPage() {
   // real target before undoing them.
   const rollbackBlocked =
     !rollbackReady ||
+    // A target this caller may not execute against refuses a rollback for the
+    // same reason it refuses a deploy: a rollback executes SQL. It is if
+    // anything the one to be surer about — it drops what a migration added.
+    !mayExecuteOnTarget ||
     rollbackBusy !== null ||
     isDeploying ||
     (targetIsProduction && !rollbackProdAck) ||
@@ -1315,6 +1443,10 @@ export default function DeployPage() {
   // pressing will do. Same order as the checks above.
   const rollbackHint = !rollbackReady
     ? "Every version above needs a rollback that can run before anything runs"
+    : targetIsReadOnly
+      ? "This connection is marked read-only, so nothing here will run against it"
+    : !mayExecuteOnTarget
+      ? `Rolling back on this connection needs the "${targetExecuteRole}" role`
     : isDeploying
       ? "A deploy is running on this target — wait for it to finish"
       : (targetIsProduction && !rollbackProdAck) ||
@@ -1360,6 +1492,7 @@ export default function DeployPage() {
       scriptName: scriptGroup,
       version: row.version,
       appliedAt: row.applied_at,
+      appliedBy: row.applied_by ?? null,
       changeType: normalizeChangeLevel(row.change_type),
       sqlContent: row.sql_content ?? null,
       // A title that is only the script group's name or the version itself
@@ -1695,6 +1828,18 @@ export default function DeployPage() {
     ? pendingScripts.find((s) => versionKey(s.version) === versionKey(otherApproval.target_version))
         ?.version ?? null
     : null;
+  // Versions in the selection this target is not allowed to run, by their
+  // "Applies-to" header. The apply route refuses the whole run over any one of
+  // them, so a dry run is blocked too: a rehearsal that stops at the same 409
+  // teaches the reader nothing the row note has not already said.
+  const blockedByApplication = scriptsUpToTarget.filter(
+    (script) =>
+      !checkApplications(
+        readAppliesToHeader(script.sql_content),
+        preflightResult?.applications ?? { known: false, names: [], source: null }
+      ).allowed
+  );
+
   // What stops a run starting at all. Deploy and Dry run share it: a rehearsal
   // writes nothing but still executes every statement against the real target,
   // so the same preconditions apply to both.
@@ -1738,7 +1883,12 @@ export default function DeployPage() {
     (driftBlocks && !driftAcknowledged);
   const runBlocked =
     scriptsUpToTarget.length === 0 ||
+    // Dry runs included, because the route refuses those too: a rehearsal
+    // really executes the script against the target and only then rolls back.
+    // A button that started one here would be a promise this app cannot keep.
+    !mayExecuteOnTarget ||
     hasTxnViolation ||
+    blockedByApplication.length > 0 ||
     isDeploying ||
     // A rollback in flight is changing the same ledger.
     rollbackBusy !== null ||
@@ -2298,6 +2448,8 @@ export default function DeployPage() {
   // becomes every pending version up to that row (pendingPrefixThrough), the
   // rows outside it read "not in this run", and focus moves on to what is
   // left to do. Nothing runs until Deploy or Dry run is pressed.
+  // The last version in the run. "" selects nothing, which is what unticking
+  // the first pending row means — there is no earlier row to end at.
   function selectRun(version: string) {
     if (version !== targetVersion) {
       // The acknowledgement effect's rule: a tick is for one batch. Cleared
@@ -2385,8 +2537,10 @@ export default function DeployPage() {
     // already the new one — the arrow has to remember where the run started.
     setRunFromVersion(currentLabel);
     setRunIsDryRun(dryRun);
+    setRunInitialised(targetStage === "needs-init");
     setRunError(null);
     setRunFailure(null);
+    setRunRegistry(null);
     // Every migration goes to "running" at once because they really do run
     // together. Ticking them off one at a time would be a story about a loop
     // that no longer exists.
@@ -2457,6 +2611,13 @@ export default function DeployPage() {
       }
 
       if (data?.results) outcomes = data.results;
+      // Spec 07's automatic push, as it landed. The route sends this only when
+      // a version was added to the registry or could not be — and on a dry run
+      // it never writes at all, so there is nothing to read.
+      if (!dryRun && data?.success) {
+        const note = describeRegistry(readArchivedVersions(data.registry));
+        setRunRegistry(note.saved || note.problem ? note : null);
+      }
       if (!res.ok || !data?.success) {
         failure =
           data?.error ??
@@ -2573,6 +2734,19 @@ export default function DeployPage() {
   const allRehearsed =
     runScripts.length > 0 &&
     runScripts.every((s) => runStatus[scriptKey(s)]?.status === "rehearsed");
+
+  // Spec feature 11 — "After initialization, prompt whether to run
+  // /scripts_patch." pendingScripts is read AFTER the run, from the re-read
+  // ledger, so it is what is genuinely left rather than what was left before.
+  // patchPrompt answers null for an ordinary patch run, a rehearsal, or a run
+  // that did not finish clean; see lib/deploy-init.ts for why each of those is
+  // a case where offering the next run would be the wrong thing to say.
+  const afterInitPrompt = patchPrompt({
+    initialised: runInitialised,
+    runSucceeded: allApplied,
+    dryRun: runIsDryRun,
+    remainingVersions: pendingScripts.map((script) => vLabel(script.version)),
+  });
   const runProgress = runScripts.filter((s) => {
     const status = runStatus[scriptKey(s)]?.status;
     return status === "applied" || status === "rehearsed";
@@ -2721,9 +2895,28 @@ export default function DeployPage() {
                 {activeConn && (
                   <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                     <EnvironmentPill environment={targetEnvironment} />
+                    <ExecuteRolePill role={targetExecuteRole} />
                     {targetEnvironment === "unset" && (
                       <span className="help">
                         Unlabelled — label it on Connections so this page can warn you.
+                      </span>
+                    )}
+                    {targetIsReadOnly && (
+                      <span className="help" style={{ color: "var(--break)" }}>
+                        Marked read-only on Connections — this app will not run migrations
+                        against it. Everything else on this page still works.
+                      </span>
+                    )}
+                    {!targetIsReadOnly && !mayExecuteOnTarget && (
+                      <span className="help" style={{ color: "var(--break)" }}>
+                        {`Running migrations here needs the "${targetExecuteRole}" role and ` +
+                          `yours is "${role}". Ask an admin to change your role, or to lower ` +
+                          `the requirement on this connection.`}
+                      </span>
+                    )}
+                    {targetExecuteRole === "admin" && mayExecuteOnTarget && (
+                      <span className="help">
+                        Restricted to admins — which includes you.
                       </span>
                     )}
                     {environmentUnknown && (
@@ -3203,7 +3396,15 @@ export default function DeployPage() {
                         >
                           <span className="mono text-[13px]">{vLabel(row.version)}</span>
                           <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                            {`${row.applied_at ? `applied ${fmtDate(row.applied_at)} · ` : ""}rolled back ${fmtDate(row.reverted_at)}`}
+                            {`${
+                              row.applied_at
+                                ? `applied ${fmtDate(row.applied_at)}${
+                                    row.applied_by ? ` by ${row.applied_by}` : ""
+                                  } · `
+                                : ""
+                            }rolled back ${fmtDate(row.reverted_at)}${
+                              row.reverted_by ? ` by ${row.reverted_by}` : ""
+                            }`}
                           </span>
                         </div>
                       ))}
@@ -3212,6 +3413,21 @@ export default function DeployPage() {
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Spec feature 11 — the prompt for a target that has nothing on
+                  it yet, or has tables this app has never deployed to. Above
+                  the pending list rather than inside it, because it is true
+                  whether or not a version is waiting: an empty schema with no
+                  scripts in the registry still needs saying out loud. */}
+              {targetPrompt && (
+                <div className="warn-inline">
+                  <AlertTriangleIcon size={15} className="ico" />
+                  <div>
+                    <div className="title">{targetPrompt.title}</div>
+                    <div className="body">{targetPrompt.body}</div>
+                  </div>
                 </div>
               )}
 
@@ -3246,6 +3462,19 @@ export default function DeployPage() {
                         <h2 className="text-[18px] font-semibold tracking-[-0.005em] mt-1">
                           {pendingScripts.length} pending · {scriptsUpToTarget.length} in this run
                         </h2>
+                        {/* Said once, here, rather than on every row: the boxes
+                            do not behave like a shopping list and a reader who
+                            unticks the middle one should know why the ones
+                            below it went with it. */}
+                        {pendingScripts.length > 1 && (
+                          <p className="help mt-1">
+                            Tick a version to run everything up to it, or untick one to stop
+                            before it. A run is always an unbroken sequence from the first
+                            pending version — a later migration alters what an earlier one
+                            creates, so there is no way to leave one out and still run the
+                            rest.
+                          </p>
+                        )}
                         {/* Skipped versions are not in the list below, so say
                             why rather than leave them missing without a word. */}
                         {skippedVersions.length > 0 && (
@@ -3296,6 +3525,26 @@ export default function DeployPage() {
                           <MigRow
                             key={scriptKey(script)}
                             seq={String(i + 1).padStart(2, "0")}
+                            toggle={{
+                              checked: inRun,
+                              disabled: isDeploying,
+                              label: inRun
+                                ? `Take ${vLabel(script.version)} out of the run. Every version after it comes out too.`
+                                : `Run every pending version up to and including ${vLabel(script.version)}.`,
+                              // Ticking a row runs everything up to it; unticking
+                              // one runs everything up to the row BEFORE it. Both
+                              // are the same rule: a run is a prefix. v5.0.3 alters
+                              // what v5.0.2 created, so a list with a hole in it is
+                              // not a shorter run, it is a broken one.
+                              onChange: (checked) =>
+                                selectRun(
+                                  checked
+                                    ? script.version
+                                    : i === 0
+                                      ? ""
+                                      : pendingScripts[i - 1].version
+                                ),
+                            }}
                             name={script.script_name}
                             kind={kind}
                             sub={`${from} → ${vLabel(script.version)} · ${countOf(getSqlLineCount(script.sql_content), "line")}`}
@@ -3309,7 +3558,7 @@ export default function DeployPage() {
                             selected={inRun}
                             sql={script.sql_content}
                             sqlOpen={inRun && reading.countsAsBreaking}
-                            notes={pendingRowNotes(script, reading, previous)}
+                            notes={pendingRowNotes(script, reading, previous, preflightResult.applications)}
                             action={
                               <button
                                 type="button"
@@ -3576,7 +3825,18 @@ export default function DeployPage() {
                         {dryRunLabel}
                       </button>
                       <div className="text-[11px] mt-2 text-center" style={{ color: "var(--text-3)" }}>
-                        {hasTxnViolation
+                        {targetIsReadOnly
+                          ? "This connection is marked read-only on Connections, so nothing " +
+                            "here will run against it — not a deploy and not a dry run"
+                          : !mayExecuteOnTarget
+                          ? `Running migrations on this connection needs the ` +
+                            `"${targetExecuteRole}" role and yours is "${role}"`
+                          : blockedByApplication.length > 0
+                          ? `${versionRange(
+                              blockedByApplication.map((script) => script.version)
+                            )} is restricted to other applications — pick a range without it, ` +
+                            "or name this database's application table on its connection"
+                          : hasTxnViolation
                           ? "Remove the COMMIT or ROLLBACK from the versions named in " +
                             "the checklist, then pull again"
                           : driftChecking
@@ -3596,6 +3856,21 @@ export default function DeployPage() {
                       <div className="section-title mb-3">Pre-flight checklist</div>
                       <ul className="space-y-2 text-[12.5px]" style={{ color: "var(--text-2)" }}>
                         <ChecklistItem ok>Target reachable · {activeConn.host}</ChecklistItem>
+                        {/* Only the settings that stop or narrow a run get a
+                            row. The default one is what a checklist reader
+                            assumes, and a line confirming the assumption is a
+                            line they learn to skip. */}
+                        {targetIsReadOnly ? (
+                          <ChecklistItem ok={false}>
+                            Execution · read-only — this app will not write to this database
+                          </ChecklistItem>
+                        ) : !mayExecuteOnTarget ? (
+                          <ChecklistItem ok={false}>
+                            Execution · needs the {targetExecuteRole} role · yours is {role}
+                          </ChecklistItem>
+                        ) : targetExecuteRole === "admin" ? (
+                          <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
+                        ) : null}
                         {targetIsProduction ? (
                           <ChecklistItem ok={deployAcknowledged}>
                             Environment · production —{" "}
@@ -3612,6 +3887,23 @@ export default function DeployPage() {
                         )}
                         <ChecklistItem ok>
                           Applied state read · {preflightResult.currentVersion ? <>at <span className="mono">{vLabel(preflightResult.currentVersion)}</span></> : "fresh — no versions yet"}
+                        </ChecklistItem>
+                        <ChecklistItem ok={blockedByApplication.length === 0}>
+                          {/* Silent when nothing is restricted, which is every
+                              run until somebody writes the header — but a tick
+                              rather than nothing, so a reader who has used the
+                              feature can see it was checked. */}
+                          {blockedByApplication.length > 0
+                            ? `Restricted to other applications · ${blockedByApplication
+                                .map((script) => vLabel(script.version))
+                                .join(", ")} — see the note on the row`
+                            : preflightResult.applications.known
+                              ? `Applications · this database hosts ${
+                                  preflightResult.applications.names.length > 0
+                                    ? preflightResult.applications.names.join(", ")
+                                    : "none by name"
+                                }`
+                              : "No script in this run is restricted to an application"}
                         </ChecklistItem>
                         <ChecklistItem ok={!hasTxnViolation}>
                           {/* A count leaves the reader to open every script and
@@ -3896,6 +4188,31 @@ export default function DeployPage() {
             </span>
           </div>
 
+          {/* The GitHub registry, when the run changed it or failed to (spec 07).
+              Normally silent: Deploy's scripts came out of the registry, so it
+              already lists them and there is nothing to record. */}
+          {runComplete && runRegistry?.saved && (
+            <div className="warn-inline mt-4" style={{ borderColor: "var(--sync)" }}>
+              <CheckIcon size={16} className="ico" style={{ color: "var(--sync)" }} />
+              <div className="body">
+                <div className="title">Recorded in GitHub</div>
+                <div>{runRegistry.saved}</div>
+              </div>
+            </div>
+          )}
+          {runComplete && runRegistry?.problem && (
+            <div className="warn-inline mt-4">
+              <AlertTriangleIcon size={16} className="ico" />
+              <div className="body">
+                {/* Not an error: the migrations applied. What is wrong is that
+                    GitHub does not list them, so the next reader of the
+                    registry would not know this database has them. */}
+                <div className="title">Applied, but not recorded in GitHub</div>
+                <div>{runRegistry.problem}</div>
+              </div>
+            </div>
+          )}
+
           {/* Clean rehearsal — say what it proved, and offer the real thing. */}
           {runComplete && allRehearsed && (
             <div
@@ -4136,10 +4453,50 @@ export default function DeployPage() {
                   <button type="button" className="btn btn-secondary" onClick={() => setStage(1)}>
                     Back to Pre-flight
                   </button>
+                  {/* Both buttons above lead back into this same screen, which
+                      left a finished deploy with no way onward except the
+                      sidebar. These are the two things that actually happen
+                      next: record the version against the schema, and start
+                      watching the database that just changed — the moment it is
+                      most likely to drift is right after somebody changed it.
+
+                      Links and not primary buttons: the deploy is finished, so
+                      neither of these is owed. */}
+                  <Link href="/versionsync" className="btn btn-ghost">
+                    Record it on Version Sync
+                  </Link>
+                  <Link href="/drift" className="btn btn-ghost">
+                    Watch it on Drift
+                  </Link>
                 </div>
               </div>
             </div>
           </div>
+
+          {/* Spec feature 11 — the patches, offered rather than started. The
+              button only takes the reader back to Pre-flight with the rest
+              selected: running them is a deploy like any other, with the same
+              preview and the same approval, and chaining straight on would
+              turn one confirmed run into two. */}
+          {afterInitPrompt && (
+            <div className="card p-5 mt-5" style={{ borderColor: "var(--brand)" }}>
+              <div className="section-title mb-1">Next</div>
+              <div className="text-[15px] font-semibold">{afterInitPrompt.title}</div>
+              <p className="help mt-1">{afterInitPrompt.body}</p>
+              <div className="flex gap-2 mt-3 flex-wrap">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    selectRun(pendingScripts[pendingScripts.length - 1].version);
+                    setStage(1);
+                  }}
+                >
+                  {`Review ${afterInitPrompt.remaining === 1 ? "it" : `all ${afterInitPrompt.remaining}`} on Pre-flight`}
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
             <div className="card p-5">

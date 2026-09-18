@@ -96,11 +96,31 @@ node scripts/seed-test-schemas.cjs
 5. **Deploy** — pick a target, pre-flight it, select the pending scripts, and apply
    them inside a transaction. Each applied script is written to a `script_patch`
    ledger table in the target database.
-6. **Drift** — snapshot a tracked schema, then compare the live schema against that
-   snapshot later; acknowledge or re-baseline the difference.
-7. **Version sync** — reconcile three sources of truth: the registry, the target's
+6. **Version sync** — reconcile three sources of truth: the registry, the target's
    ledger, and the lineage history.
-8. **Visualizer** — side-by-side entity-relationship diagrams of both schemas.
+7. **Drift** — snapshot a tracked schema, then compare the live schema against that
+   snapshot later; acknowledge or re-baseline the difference. Worth doing right
+   after step 5: the moment a database is most likely to drift is just after
+   somebody changed it.
+8. **Performance** — suggestions from the catalog and the statistics views, an
+   `EXPLAIN` of one query, and the trends monitoring has collected.
+9. **Visualizer** — side-by-side entity-relationship diagrams of both schemas.
+
+The sidebar is in this order for the same reason, and the screens hand over to
+each other: each one offers a link onward at the point where it has actually
+produced something — Connections to Compare, Compare to Deploy once a version
+is pushed, Deploy to both Version sync and Drift. So the path is followable
+without knowing it in advance.
+
+It is a path rather than a strict 1-to-9 chain, and the places it departs from
+the list are deliberate. Compare hands straight to Deploy because its workbench
+does the editing inline; step 4 is where you land instead when you start from an
+already-saved script, or from a Performance fix. Performance therefore feeds
+backwards as well as forwards — a fix it suggests is saved as a migration and
+opens in the Script Editor. The Visualizer offers Compare as its only
+next step, because reading a diagram is a thing people come to do on its own. Connections and Admin sit
+apart at the bottom: both are setup rather than steps, and Admin is the one
+screen that leads nowhere, which is correct for it.
 
 ---
 
@@ -123,7 +143,7 @@ my-app/
       visualizer/             React Flow ERD
       admin/                  role management — list users, change roles, remove
       performance/            suggestions, query analysis, trends
-    api/                      31 route handlers, listed below
+    api/                      the route handlers, listed in full below
     globals.css               all styling (see §6)
   components/
     ui/                       design-system primitives
@@ -159,7 +179,7 @@ my-app/
 | `lib/metrics-series.ts` | Readings to plot geometry, ticks and a sentence. Pure |
 | `lib/snapshot-format.ts` | The snapshot format version, and what to do with an older one |
 | `lib/db/sequelize.ts` | The one Sequelize instance, plus a `pg.Pool`-shaped adapter over its pool |
-| `lib/db/models.ts` | All ten metadata tables as Sequelize models |
+| `lib/db/models.ts` | Every metadata table as a Sequelize model — the list in §4 is described from this file |
 | `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
 | `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
@@ -167,20 +187,29 @@ my-app/
 | `lib/version-detection.ts` | Change-level severity, plus detecting an existing version table in a target |
 | `lib/connection-config.ts` | Builds a `pg` config from a saved row; host allow-list check |
 | `lib/parse-uri.ts` | `postgres://` URI parsing |
+| `lib/connection-access.ts` | Which role may execute against a connection, and why "none" is not the weakest rank. Pure |
+| `lib/dialects.ts` | What the app knows about each engine, and which ones are actually implemented. Pure |
+| `lib/comparison-history.ts` | Diffs this comparison against the last one of the same pair. Pure |
+| `lib/comparison-history-db.ts` | `comparison_runs`: stores a run, reads the previous one |
+| `lib/compare-export.ts` | Flattens a report into the document the exporters format. Pure |
+| `lib/application-targeting.ts` | Which application a migration is allowed to touch |
+| `lib/perf-thresholds.ts` | Per-schema alert levels and the banner they drive |
+| `lib/query-score.ts` | Turns an analysed plan into one comparable number. Pure |
 
 ### API routes
 
 ```
-admin/users             auth/[...nextauth]      compare
-comparison-sets         connections             connections/test
-connections/test-saved  deploy/approvals        deploy/approvals/[id]
-github/family           github/pull             github/push
-lineage                 lineage/[id]            lineage/acknowledge
-lineage/audit           lineage/drift           lineage/lookup
-lineage/rebaseline      lineage/schedule        lineage/schemas
-lineage/track           performance/advice      performance/analyze
-performance/metrics     schema/snapshot         scripts/apply
-scripts/preflight       scripts/revert          scripts/schemas
+admin/users            auth/[...nextauth]     compare
+comparison-sets        connections            connections/test
+connections/test-saved deploy/approvals       deploy/approvals/[id]
+github/family          github/pull            github/push
+lineage                lineage/[id]           lineage/acknowledge
+lineage/audit          lineage/drift          lineage/lookup
+lineage/rebaseline     lineage/schedule       lineage/schemas
+lineage/track          performance/activity   performance/advice
+performance/analyze    performance/history    performance/metrics
+performance/thresholds schema/snapshot        scripts/apply
+scripts/preflight      scripts/revert         scripts/schemas
 versionsync/ledger
 ```
 
@@ -215,8 +244,10 @@ creates, alters, deferred foreign keys, then destructive drops last.
 
 ## 4. Data model
 
-In the **metadata database** (`DATABASE_URL_A`) — ten tables, all declared as
-Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
+In the **metadata database** (`DATABASE_URL_A`) — every table below is declared
+as a Sequelize model in `lib/db/models.ts` and created by `syncMetadataTables()`.
+That file is the list; this one is a description of it, so check there before
+trusting this table to be complete:
 
 | Table | Holds |
 | --- | --- |
@@ -230,13 +261,16 @@ Sequelize models in `lib/db/models.ts` and created by `syncMetadataTables()`:
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
 | `deploy_approvals` | Approval requests, decisions, and the two-person record |
 | `schema_metrics` | One reading of a schema's size and shape per drift check, pruned past 90 days |
+| `comparison_runs` | What one comparison of a source/target pair found, so the next one can say what changed since |
+| `query_history` | Saved EXPLAIN runs, so a query's plan can be compared against its own past |
+| `perf_thresholds` | Per-schema alert levels for the performance checks |
 
 ### Which database layer talks to what
 
 Two very different kinds of database work happen here, and only one of them
 belongs to an ORM:
 
-- **This app's own database** — the ten tables above. A fixed schema the app
+- **This app's own database** — the tables above. A fixed schema the app
   owns, so Sequelize defines it, creates it, and does the reading and writing.
   Queries that are genuinely SQL rather than CRUD still run through
   `metadataPool`, which borrows a connection from Sequelize's pool: one pool,
@@ -268,7 +302,9 @@ transactional apply · `script_patch` ledger · rollback from a `.down.sql` ·
 lineage snapshots · drift detection and re-baseline · version-sync
 reconciliation · detecting an existing version table in a target · saved
 comparison sets · comparing one source against up to six
-targets · dev/staging/production labels and their warnings · exporting a diff as
+targets · what changed since the last comparison of the same pair ·
+dev/staging/production labels and their warnings ·
+per-connection execution permissions · exporting a diff as
 Markdown, JSON or CSV · the ERD visualizer · scheduled drift checking
 without a button press · query plan analysis · index and schema suggestions ·
 schema metrics over time.
@@ -281,7 +317,7 @@ why PDF is not in the export list above.
 The compare engine introspects tables, columns, constraints, indexes, triggers,
 views, sequences, types and routines.
 
-Four of those are new enough to say where they live:
+Some of those are new enough to say where they live:
 
 - **Drift is checked on a cadence**, not only when somebody presses the button.
   `lib/drift-scheduler.ts` runs one interval timer in the Next.js server,
@@ -301,6 +337,23 @@ Four of those are new enough to say where they live:
   structure counts from the snapshot the check already had, plus a size probe
   against `pg_class`. Readings are pruned past 90 days. Charts are hand-drawn
   SVG; there is no charting dependency.
+- **Each connection carries the role required to execute against it**, which is
+  what spec feature 1.2 asks for. A role says what a person is; it cannot say
+  that the same editor is trusted on dev and not on the reference schema, and
+  the environment label is only a warning. `lib/connection-access.ts` holds the
+  rule, the setting is a `<select>` on Connections, and both executing routes
+  (`scripts/apply`, `scripts/revert`) check it before opening a connection —
+  dry runs included, because a rehearsal really executes the script and only
+  then rolls back. `none` is read-only and refuses everybody including admins,
+  which is the point for a reference schema others are compared against: it is
+  a fact about the database, not a rank to be outranked.
+- **A comparison says what changed since the last one of the same pair.**
+  `comparison_runs` stores what each run found; `lib/comparison-history.ts`
+  diffs the current run against the previous one and the panel on Compare
+  reports what appeared and what was resolved. Absent on a first comparison,
+  because there is nothing to have drifted from. Only structural differences
+  are tracked — row counts move whenever a database is used, and counting that
+  as drift would bury the schema change that matters.
 - **Snapshots carry a format version.** `lib/snapshot-format.ts` stamps one on
   every capture. The comparator already refused to report a category as "added"
   just because an old baseline predated it — a category is compared only when
@@ -317,8 +370,8 @@ Four of those are new enough to say where they live:
   `NEXT_PUBLIC_AUTH_BYPASS` is not set to any of the off spellings below, so
   `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
   `lib/auth-guard.ts` let every request through as an admin. The wiring
-  underneath is complete: all 30 API routes except the NextAuth handler itself
-  call `requireViewer` / `requireEditor` / `requireAdmin`, and the `profiles`
+  underneath is complete: every API route except the NextAuth handler itself
+  calls `requireViewer` / `requireEditor` / `requireAdmin`, and the `profiles`
   table is created with the rest of the metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS` to `false` — or `0`, `no`
   or `off`, in any case, with surrounding spaces ignored — turns the whole thing
   on, and then the Entra keys in §1 have to be set for anyone to get in.
@@ -349,9 +402,42 @@ Four of those are new enough to say where they live:
 
 ### Not built at all
 
-Nothing in the spec is unbuilt. Spec features 8, 9 and 10 — query execution
-analysis, performance suggestions and performance monitoring — were the last
-three, and they are the Performance section described above.
+All eleven spec features have a screen, and that sentence used to stand here on
+its own as "nothing in the spec is unbuilt". It was true one level up and false
+one level down: the spec's features are headings, each with its own bullets, and
+counted as bullets rather than headings some are not built. They are listed here
+rather than left for a marker to find.
+
+- **Multiple database types** (feature 2.4). PostgreSQL only.
+  `lib/dialects.ts` names the three engines the app has an opinion about and
+  carries an `implemented` flag; only PostgreSQL has it, and
+  `SUPPORTED_TYPES` in `lib/connection-validate.ts` is derived from that flag
+  rather than written out separately. What that file buys is honesty, not
+  coverage: a MySQL connection is now refused with a reason instead of being
+  saved and then silently filtered out of Compare. Introspection is still
+  `pg_catalog` and `information_schema` throughout and the generator still
+  emits PostgreSQL DDL, so a second engine remains a second implementation of
+  the whole read path, not a setting. The spec says "(primary PostgreSQL)" and
+  that is what this is.
+- **Microsoft sign-in** (feature 1) is written and unreachable — see *Switched
+  off or incomplete* above. The four Entra secrets have never been issued, so
+  the path has never run against a real tenant.
+
+The rest of the list is worked through in the sections above and in the code.
+Where a bullet is met in a narrower way than the wording suggests, the narrowing
+is written down next to the code that does it rather than here.
+
+### No AI anywhere
+
+Six features carry the line "Use of AI for this feature is highly desirable" —
+difference reporting, SQL generation, query analysis, performance suggestion,
+performance monitoring and migration validation. There is no model call in this
+repository, and no API key for one. Every explanation, severity, score and
+suggestion is produced by rules that are written out in `lib/`, and each of them
+can be read and argued with. That is a deliberate trade — a rule that is wrong is
+wrong the same way every time, which is what makes the tests above possible —
+but "desirable" was asked for and is not delivered, so it belongs on this list
+and not in a footnote.
 
 ### Compliance sheet
 
@@ -363,13 +449,13 @@ three, and they are the Performance section described above.
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | met — 1,821 tests in 61 suites over the domain modules; the pages themselves are covered by route tests, not render tests |
+| Jest unit tests | **partial** — 1,926 tests in 65 suites, but they cover `lib/` and the route handlers, not the pages. The compliance sheet asks for "unit testing for all the webpages"; `jest.config.mjs` runs `testEnvironment: "node"` with no jsdom and no testing-library, and there is not one `.tsx` test file, so none of the 13 pages is rendered by a test |
 
 ---
 
 ## 6. Styling
 
-All styling lives in `app/globals.css` (about 1,420 lines) as CSS custom
+All styling lives in `app/globals.css` (about 1,500 lines) as CSS custom
 properties plus hand-written component classes. Tailwind v4 is imported at the
 top of that file and its utilities carry layout and spacing — `flex`, `grid`,
 `mt-2`, `text-[12px]` — while anything with a look of its own (`.btn`, `.card`,

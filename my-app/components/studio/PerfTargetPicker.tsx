@@ -42,6 +42,8 @@ type Phase = "loading" | "ready" | "error";
 
 export function PerfTargetPicker({
   onChange,
+  initialConnectionId,
+  initialSchema,
 }: {
   /**
    * Called with the chosen pair, and with null while there isn't a whole one.
@@ -49,10 +51,22 @@ export function PerfTargetPicker({
    * `useCallback` — because it is what the report effect below watches.
    */
   onChange: (next: PerfTarget | null) => void;
+  /**
+   * A target carried in from another screen — a Suggestions finding, or the
+   * analyser's link to one query's history. Without these a deep link lands on
+   * the right tab looking at the wrong database, which is worse than landing
+   * nowhere: the reader has no reason to doubt what they are shown.
+   *
+   * They are a starting point, not a lock. Both are only used while the
+   * corresponding list is still empty, so choosing something else immediately
+   * afterwards works normally and is not snapped back.
+   */
+  initialConnectionId?: string | null;
+  initialSchema?: string | null;
 }) {
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [connPhase, setConnPhase] = useState<Phase>("loading");
-  const [connectionId, setConnectionId] = useState("");
+  const [connectionId, setConnectionId] = useState(initialConnectionId ?? "");
   const [schemas, setSchemas] = useState<string[]>([]);
   const [schemaPhase, setSchemaPhase] = useState<Phase>("loading");
   const [schemaError, setSchemaError] = useState<string | null>(null);
@@ -127,8 +141,13 @@ export function PerfTargetPicker({
         }
         const list: string[] = Array.isArray(data.schemas) ? data.schemas : [];
         setSchemas(list);
-        // `public` first because it almost always is the one being asked about.
-        setSchema(list.includes("public") ? "public" : (list[0] ?? ""));
+        // A schema carried in from another screen wins, but only if this server
+        // really has it — a name from a link to a different database must not
+        // be shown as selected when nothing here answers to it.
+        // `public` otherwise, because it almost always is the one being asked
+        // about.
+        const wanted = initialSchema && list.includes(initialSchema) ? initialSchema : null;
+        setSchema(wanted ?? (list.includes("public") ? "public" : (list[0] ?? "")));
         setSchemaPhase("ready");
       } catch {
         if (cancelled) return;
@@ -142,6 +161,10 @@ export function PerfTargetPicker({
     return () => {
       cancelled = true;
     };
+    // initialSchema is deliberately not a dependency: it is a seed read once
+    // per schema list, and listing it would re-run this fetch every time the
+    // query string changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, schemasReload]);
 
   const picked = connections.find((c) => String(c.id) === connectionId);

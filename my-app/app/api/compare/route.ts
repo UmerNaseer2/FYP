@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireViewer } from "@/lib/auth-guard";
+import { actorFor } from "@/lib/auth-mode";
 import { runComparison, type CompareScreen } from "@/lib/compare-run";
 
 // Re-exported so the screen can name the shape it renders without importing
@@ -15,9 +16,10 @@ export type { CompareScreen };
  * &targetConnection=7" means rather than two that could drift apart.
  *
  * POST rather than GET even though this mostly reads: it can write. `record`
- * stamps the open saved set's "last run" time, and the screen only sets it
- * when somebody actually pressed Compare or opened the set. As a GET this used
- * to count a run every time the page was reloaded or the link was shared.
+ * stamps the open saved set's "last run" time and stores what each pair was
+ * found to differ by, and the screen only sets it when somebody actually
+ * pressed Compare or opened the set. As a GET this used to count a run every
+ * time the page was reloaded or the link was shared.
  */
 export async function POST(request: NextRequest) {
   const gate = await requireViewer();
@@ -33,7 +35,13 @@ export async function POST(request: NextRequest) {
   const query = typeof body.query === "string" ? body.query : "";
 
   try {
-    const screen = await runComparison(new URLSearchParams(query), body.record === true);
+    const screen = await runComparison(
+      new URLSearchParams(query),
+      // actorFor rather than the email: with the auth bypass on, every request
+      // carries the same configured address, and writing it into the history
+      // would name a person who may never have opened this app.
+      body.record === true ? { ranBy: actorFor(gate.principal) } : null,
+    );
     return NextResponse.json(screen);
   } catch (error) {
     // A target that cannot be reached is reported inside the payload, so

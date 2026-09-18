@@ -1533,6 +1533,21 @@ export default function ScriptEditorPage() {
                       View the file on GitHub →
                     </a>
                   )}
+                  {/* Saving publishes the version to the registry; it does not
+                      run it anywhere. Without this line the obvious reading of
+                      a green "Saved" is that the migration has been applied,
+                      and the actual next screen was only findable through the
+                      sidebar.
+
+                      Only on "ok". A partial save means the version went out
+                      without its rollback, and the panel directly below offers
+                      to attach one — which is the better next step, and two
+                      competing ones would just split the reader's attention. */}
+                  {saveResult.kind === "ok" && (
+                    <Link href="/deploy" style={{ color: "var(--text-2)" }}>
+                      Nothing has run yet — deploy it on the Deploy page →
+                    </Link>
+                  )}
                 </div>
               </div>
             )}

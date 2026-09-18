@@ -29,6 +29,7 @@ import {
   type ReplayAnswer,
   type ReplayOutcome,
 } from "@/lib/version-sync";
+import { describeRegistry, type RegistryNote } from "@/lib/registry-report";
 import {
   displayVersion,
   ledgerTimelineEntries,
@@ -427,6 +428,10 @@ export default function VersionSyncPage() {
   const [progress, setProgress] = useState("");
   const [applyError, setApplyError] = useState<ApplyError | null>(null);
   const [applyDone, setApplyDone] = useState("");
+  // What the apply route recorded in GitHub for the last replay (spec 07 —
+  // automatically push approved scripts). Null when there is nothing to say:
+  // GitHub not configured, or the Target's registry already had the file.
+  const [registryNote, setRegistryNote] = useState<RegistryNote | null>(null);
 
   // Open the replay check for these versions. The buttons only offer runs that
   // reach their last version, so this refusal only shows if the ledgers moved
@@ -436,11 +441,13 @@ export default function VersionSyncPage() {
     const check = reachOf(entries, target.entries);
     if (check.stoppedBefore) {
       setApplyDone("");
+      setRegistryNote(null);
       setApplyError({ title: "Replay did not start — nothing ran", detail: stopSentence(check) });
       return;
     }
     setApplyError(null);
     setApplyDone("");
+    setRegistryNote(null);
     setPendingRun(entries);
   }
 
@@ -453,6 +460,7 @@ export default function VersionSyncPage() {
     setApplying(true);
     setApplyError(null);
     setApplyDone("");
+    setRegistryNote(null);
     setProgress(
       entries.length === 1
         ? `Replaying ${scriptLabel(entries[0].scriptName, entries[0].version)} onto ${target.schema}…`
@@ -514,12 +522,19 @@ export default function VersionSyncPage() {
       });
     }
     setApplyDone(`Replayed ${countOf(entries.length, "version")} onto ${target.schema}.`);
+    // A replayed version's SQL came from the Source's ledger, so the Target's
+    // registry folder had no file for it until the apply route wrote one. This
+    // is the case spec 07's automatic push exists for, so say plainly what
+    // reached GitHub — and what did not.
+    const note = describeRegistry(result.registry);
+    setRegistryNote(note.saved || note.problem ? note : null);
   }
 
   // Clear any apply feedback when the Source/Target selection changes, so a
   // stale "Replayed N versions" / error banner never lingers over a new pair.
   useEffect(() => {
     setApplyDone("");
+    setRegistryNote(null);
     setApplyError(null);
     setProgress("");
   }, [source.connectionId, source.schema, target.connectionId, target.schema]);
@@ -662,6 +677,7 @@ export default function VersionSyncPage() {
                     progress,
                     error: applyError,
                     done: applyDone,
+                    registry: registryNote,
                     onRun: requestApply,
                     onReread: () => {
                       setApplyError(null);
@@ -758,6 +774,8 @@ type ApplyCtl = {
   progress: string;
   error: ApplyError | null;
   done: string;
+  /** What the run added to the GitHub registry, and what it could not. */
+  registry: RegistryNote | null;
   /** Open the replay check for these versions. */
   onRun: (entries: LedgerEntry[]) => void;
   /** Read the Target's ledger again, after any failed run: the list may be out of date. */
@@ -889,7 +907,26 @@ function Result({
       {apply.done && (
         <div className="banner" style={SYNC_BANNER}>
           <CheckIcon size={16} className="ico" />
-          <div className="body"><div className="title" style={{ color: "var(--sync)" }}>{apply.done}</div></div>
+          <div className="body">
+            <div className="title" style={{ color: "var(--sync)" }}>{apply.done}</div>
+            {/* Inside the success banner, not beside it: the registry write is
+                part of what this replay did, and a banner of its own would read
+                as a second, separate thing having happened. */}
+            {apply.registry?.saved && <div>{apply.registry.saved}</div>}
+          </div>
+        </div>
+      )}
+      {/* The other half, and amber rather than green: the replay succeeded, so
+          this is not a failure — but the Target now holds a version GitHub does
+          not list, which is the drift this feature exists to stop and is worth
+          acting on. */}
+      {apply.registry?.problem && (
+        <div className="warn-inline">
+          <AlertTriangleIcon size={16} className="ico" />
+          <div className="body">
+            <div className="title">Applied, but not recorded in GitHub</div>
+            <div>{apply.registry.problem}</div>
+          </div>
         </div>
       )}
 

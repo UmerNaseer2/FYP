@@ -29,6 +29,8 @@ import {
   type FixKind,
   type IndexStatement,
 } from "./perf-sql";
+import type { QueryScore } from "./query-score";
+import type { ThresholdBreach } from "./perf-thresholds";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -880,6 +882,19 @@ export type AnalyzeView = {
   /** Findings from the plan and from the query text, merged and ranked. */
   findings: QueryFinding[];
   counts: { high: number; medium: number; low: number; total: number };
+  /** The 0–100 verdict and the reasons behind it. See lib/query-score.ts. */
+  score: QueryScore;
+  /**
+   * The row this analysis was filed as, for the "see every run of this query"
+   * link. Null when the history table could not be written — filing is
+   * best-effort, and a null here is what tells the screen there is no row to
+   * link to rather than linking to an id that does not exist.
+   */
+  historyId: number | null;
+  /** The grouping key for this query's other runs. See lib/query-history.ts. */
+  fingerprint: string;
+  /** Alert thresholds this run broke. Empty unless some are switched on. */
+  breaches: ThresholdBreach[];
 };
 
 /**

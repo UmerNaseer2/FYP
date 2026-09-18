@@ -22,7 +22,7 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // The caller. A test sets mockBypass to play the auth bypass's one principal.
 let mockBypass = false;
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: mockBypass } }),
+  requireEditor: async () => ({ ok: true, principal: { email: "a@test", role: "editor", bypass: mockBypass } }),
 }));
 afterEach(() => {
   mockBypass = false;
@@ -73,6 +73,8 @@ type LedgerRow = {
   change_type: string;
   applied_at: string;
   down_sql: string | null;
+  /** Who applied it. Absent on V1 on purpose — see the archive test. */
+  applied_by?: string | null;
 };
 
 // orders_fix has three versions applied, each with its own rollback.
@@ -83,10 +85,12 @@ const V1: LedgerRow = {
 const V2: LedgerRow = {
   id: 2, version: "2.0.0", title: "Drop legacy", change_type: "breaking",
   applied_at: "2026-02-01T00:00:00.000Z", down_sql: "DROP TABLE t2;",
+  applied_by: "alice@test",
 };
 const V3: LedgerRow = {
   id: 3, version: "3.0.0", title: "Rename a column", change_type: "patch",
   applied_at: "2026-03-01T00:00:00.000Z", down_sql: "DROP TABLE t3;",
+  applied_by: "bob@test",
 };
 
 // Every rollback above is a DROP TABLE, which deletes rows, so the route asks
@@ -95,11 +99,11 @@ const V3: LedgerRow = {
 const UNTICKED = { connectionId: 7, schemaName: "sales", script_name: "orders_fix" };
 const BASE = { ...UNTICKED, acknowledgeDataLoss: true };
 
-function connectionRow(environment: string) {
+function connectionRow(environment: string, execute_role?: string) {
   return {
     host: "db.test", port: 5432, database_name: "sales", username: "app",
     password: "not-a-real-password", connection_string: null, ssl: false,
-    ssl_mode: "disable", environment, name: "Sales dev",
+    ssl_mode: "disable", environment, name: "Sales dev", execute_role,
   };
 }
 
@@ -113,7 +117,10 @@ function ledger(options: {
     ...(options.first ?? []),
     { match: /FROM pg_namespace/, rows: [{ exists: 1 }] },
     { match: /to_regclass/, rows: [{ reg: "script_patch" }] },
-    { match: /column_name = 'down_sql'/, rows: [{ column_name: "down_sql" }] },
+    {
+      match: /column_name IN \('down_sql', 'applied_by'\)/,
+      rows: [{ column_name: "down_sql" }, { column_name: "applied_by" }],
+    },
     { match: /script_name <> \$1/, rows: options.others ?? [] },
     { match: /SELECT id, version, title, change_type, applied_at/, rows: options.rows ?? [V1, V2, V3] },
     { match: /DELETE FROM/, rowCount: 1 },
@@ -472,7 +479,7 @@ describe("which rollback runs", () => {
       expect(ran(mockClient, "DROP TABLE registry_t3;")).toBe(true);
       // The audit row keeps the SQL that actually ran.
       const audit = queriesMatching(mockClient, /INSERT INTO "sales"\.script_patch_reverted/);
-      expect(audit[0].values?.[5]).toBe("DROP TABLE registry_t3;");
+      expect(audit[0].values?.[7]).toBe("DROP TABLE registry_t3;");
     }
   });
 });
@@ -486,9 +493,11 @@ describe("a batch rollback", () => {
     expect(texts.indexOf("DROP TABLE t3;")).toBeLessThan(texts.indexOf("DROP TABLE t2;"));
 
     const audit = queriesMatching(mockClient, /INSERT INTO "sales"\.script_patch_reverted/);
+    // The archive keeps BOTH names: who applied the version (copied from the
+    // ledger row about to be deleted) and who took it out (this request).
     expect(audit.map((q) => q.values)).toEqual([
-      ["orders_fix", "3.0.0", "Rename a column", "patch", V3.applied_at, "DROP TABLE t3;"],
-      ["orders_fix", "2.0.0", "Drop legacy", "breaking", V2.applied_at, "DROP TABLE t2;"],
+      ["orders_fix", "3.0.0", "Rename a column", "patch", V3.applied_at, "bob@test", "a@test", "DROP TABLE t3;"],
+      ["orders_fix", "2.0.0", "Drop legacy", "breaking", V2.applied_at, "alice@test", "a@test", "DROP TABLE t2;"],
     ]);
     expect(queriesMatching(mockClient, /DELETE FROM/).map((q) => q.values)).toEqual([[3], [2]]);
     expect(count(mockClient, "COMMIT")).toBe(1);
@@ -515,6 +524,20 @@ describe("a batch rollback", () => {
     );
     expect(mockClient.releaseCount).toBe(1);
     expect(mockClient.listenersAtRelease).toBe(0);
+  });
+
+  it("archives a null applier for a version the ledger never named one for", async () => {
+    // V1 carries no applied_by: it was applied before the column existed. The
+    // archive says so rather than borrowing the name of whoever reverted it —
+    // an audit row that invents an applier is worse than one that admits it
+    // does not know.
+    const res = await revert({ ...BASE, versions: ["1.0.0", "2.0.0", "3.0.0"] });
+    expect(res.status).toBe(200);
+    const audit = queriesMatching(mockClient, /INSERT INTO "sales"\.script_patch_reverted/);
+    const v1 = audit[audit.length - 1];
+    expect(v1.values?.[1]).toBe("1.0.0");
+    expect(v1.values?.[5]).toBeNull();
+    expect(v1.values?.[6]).toBe("a@test");
   });
 
   it("says so when no version is left, and uses the one-version copy for one", async () => {
@@ -692,5 +715,44 @@ describe("failures", () => {
     // A refusal leaves a perfectly good connection: it goes back to the pool.
     expect(mockClient.releasedWith).toBeUndefined();
     expect(mockClient.listenersAtRelease).toBe(0);
+  });
+});
+
+describe("per-connection execution setting", () => {
+  // The mirror of the apply route's block. A rollback is an execution like any
+  // other — it is the one that DROPS what a migration added — so the same
+  // setting refuses it, with the same sentence.
+
+  it("refuses a read-only connection, dry run included, before BEGIN", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    for (const dryRun of [false, true]) {
+      const res = await revert({ ...BASE, versions: ["3.0.0"], dryRun });
+      expect(res.status).toBe(403);
+      expect(String(res.body.error)).toContain("read-only");
+    }
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  it("refuses an admins-only connection to an editor", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(403);
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  it("is checked before the production acknowledgement, not after", async () => {
+    // Ordering matters for the message, not the outcome: both refuse. A
+    // read-only production connection that answered "tick the box" would send
+    // the operator to find an approval for a run that could never happen.
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod", "none")] });
+    const res = await revert({ ...UNTICKED, versions: ["3.0.0"] });
+    expect(res.status).toBe(403);
+    expect(String(res.body.error)).toContain("read-only");
+  });
+
+  it("lets the default setting through, so old rows keep working", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", undefined)] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(200);
   });
 });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient, QueryConfig } from "pg";
 import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
@@ -27,6 +28,12 @@ import {
   type CatalogRows,
   type PlanStep,
 } from "@/lib/query-analysis";
+import { scoreQuery } from "@/lib/query-score";
+import { fingerprintQuery } from "@/lib/query-history";
+import { recordQuery } from "@/lib/query-history-db";
+import { planSearches } from "@/lib/composite-index";
+import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
+import { evaluateThresholds, type ThresholdReading } from "@/lib/perf-thresholds";
 
 /**
  * POST /api/performance/analyze
@@ -460,6 +467,61 @@ export async function POST(request: NextRequest) {
     ...plan.findings,
     ...readSql(sql, sqlContextFromPlan(plan, catalog)),
   ]);
+  const counts = summarizeFindings(findings);
+
+  // ── 5. Score it, file it, and check it against this schema's alert rules ──
+  //
+  // All three run after the target connection has been released, so none of
+  // them holds a connection to somebody else's database open while the app
+  // talks to its own.
+  const score = scoreQuery(plan, findings);
+
+  // Rows and time only exist for a run that really happened. `executionMs` is
+  // null for an estimate and the top step has no actual row count, so both of
+  // these stay null and the history row records an estimate honestly.
+  // steps[0] is the root of the plan — the node whose output IS the result set.
+  // `actualRows` on it is per loop, but the root never loops, so the multiply is
+  // a no-op there and is kept only so this does not become wrong if it is ever
+  // reused on an inner node.
+  const topStep = plan.steps[0];
+  const rowsReturned =
+    plan.measured && topStep && topStep.actualRows !== null
+      ? topStep.actualRows * (topStep.loops ?? 1)
+      : null;
+
+  // Which columns this plan searched on, for the composite-index rule on the
+  // Suggestions tab. Read here because the plan exists only here, and stored
+  // with the row rather than re-derived later: the plan is not reproducible
+  // from the SQL alone once the data has changed under it.
+  const searches = planSearches(plan.steps, catalog, schema);
+
+  const historyId = await recordQuery({
+    connectionId,
+    schema,
+    sql,
+    score,
+    execTimeMs: plan.executionMs,
+    planningMs: plan.planningMs,
+    rowsReturned,
+    totalCost: plan.totalCost,
+    estimatedRows: plan.estimatedRows,
+    counts,
+    capturedBy: actorFor(gate.principal), searches,
+  });
+
+  // Thresholds are per connection-and-schema and start switched off, so this is
+  // normally an empty list and costs one indexed read. A reading is only
+  // offered for something this run actually measured: an estimate has no time,
+  // and checking a time that does not exist against a limit would fire on 0.
+  const readings: ThresholdReading[] = [{ key: "query_score", actual: score.score, subject: "This query" }];
+  if (plan.measured && plan.executionMs !== null) {
+    readings.push({ key: "query_exec_ms", actual: plan.executionMs, subject: "This query" });
+  }
+  const breaches = evaluateThresholds(
+    readings,
+    await getThresholdsOrDefaults(connectionId, schema)
+  );
+
   const view: AnalyzeView = {
     connectionName: conn.name,
     database: conn.database_name,
@@ -468,7 +530,14 @@ export async function POST(request: NextRequest) {
     headline: describePlan(plan),
     plan,
     findings,
-    counts: summarizeFindings(findings),
+    counts,
+    score,
+    // Null when the analysis could not be filed. The screen uses it to decide
+    // whether to offer a link to the stored row, so a null has to mean "there
+    // is nothing to link to" rather than being papered over with a 0.
+    historyId,
+    fingerprint: fingerprintQuery(sql),
+    breaches,
   };
   return NextResponse.json(view);
 }

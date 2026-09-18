@@ -79,3 +79,34 @@ export const BYPASS_PRINCIPAL = {
   name: "Auth bypass (testing)",
   role: "admin" as Role,
 };
+
+/**
+ * The shape actorFor needs. Principal (lib/auth-guard) satisfies it; this is
+ * written structurally so the audit helper does not have to live beside the
+ * gate that builds one — see below for why that matters.
+ */
+export type Actor = { email: string; bypass: boolean };
+
+/**
+ * What to record as the actor when a principal does something worth auditing.
+ *
+ * Deliberately not just `principal.email`. A principal from the bypass never
+ * signed in — BYPASS_PRINCIPAL is a value in the config, the same one for
+ * everybody — so writing its address into a ledger would record a named person
+ * as having run a migration they may never have heard of. The audit-relevant
+ * fact with the bypass on is that authentication was off, and that is what is
+ * stored instead. It is not an email address on purpose: nothing reading the
+ * column later can mistake it for one.
+ *
+ * It lives here rather than in lib/auth-guard because it is pure. auth-guard
+ * imports next-auth, which ships as ESM Jest cannot load, so every route test
+ * replaces that whole module with a stand-in — and a route importing this from
+ * there would get `undefined` in every one of those tests. A function with no
+ * dependencies has no business sitting behind one.
+ */
+export const BYPASS_ACTOR = "(authentication bypassed)";
+
+/** Who to record. See BYPASS_ACTOR for why this is not always the email. */
+export function actorFor(principal: Actor): string {
+  return principal.bypass ? BYPASS_ACTOR : principal.email;
+}

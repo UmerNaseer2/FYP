@@ -19,6 +19,8 @@ import { DiffReport } from "@/components/studio/DiffReport";
 import { ExportBar } from "@/components/studio/ExportBar";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
+import { CriticalChanges } from "@/components/studio/CriticalChanges";
+import { CompareHistory } from "@/components/studio/CompareHistory";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
 import { CompareVersionTimeline } from "@/components/studio/CompareVersionTimeline";
@@ -67,6 +69,17 @@ import {
  * pressed, so the usual move — dev.public to staging.public — took two
  * submits, and the first one compared a schema the new database might not have.
  */
+/**
+ * The options bar's form id.
+ *
+ * Named rather than written twice because the data panel's table picker sits
+ * far below the bar, outside the <form> element entirely, and reaches it with
+ * the HTML `form` attribute. That is the whole reason the picker needs no
+ * client state: its checkboxes are part of this form despite where they are
+ * drawn, so Compare submits them along with everything else.
+ */
+const COMPARE_FORM_ID = "compare-options";
+
 function SlotPicker({
   role,
   fieldPrefix,
@@ -506,6 +519,7 @@ function CompareScreenView({ query }: { query: string }) {
     sourceError,
     allowDataLoss,
     compareData,
+    dataTables,
     asked,
   } = screen;
 
@@ -561,7 +575,7 @@ function CompareScreenView({ query }: { query: string }) {
       {/* Selection — plain form-GET. The target pickers repeat one pair of field
           names, so the browser submits them as parallel lists and "add target"
           needs no client state at all. */}
-      <form action="/compare" className="source-bar">
+      <form action="/compare" className="source-bar" id={COMPARE_FORM_ID}>
         {/* Only the Compare button sends run=1 — Add target and Remove change
             the pickers without running anything. This copy of it comes first
             because the first submit button in a form is the one Enter
@@ -819,234 +833,257 @@ function CompareScreenView({ query }: { query: string }) {
 
       {outcomes.length > 1 && <RunSummary outcomes={outcomes} />}
 
-      {outcomes.map((outcome) => (
-        <section key={`outcome-${outcome.index}`} className="mt-6">
-          {/* Per-target header: what is being compared, and how much differs. */}
-          <div className="compare-header flex items-center gap-2 flex-wrap mb-3">
-            {/* A heading rather than a span: with several targets this is the
-                only way to jump between their sections. */}
-            <h2 className="section-title m-0">
-              {outcomes.length === 1 ? "Diff" : `Target ${outcome.index + 1}`}
-            </h2>
-            <EnvironmentPill environment={outcome.environment} />
-            {outcome.delta ? (
-              <>
-                <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
-                  <b>{outcome.delta.total}</b> change
-                  {outcome.delta.total === 1 ? "" : "s"} ·{" "}
-                  <b>
-                    {outcome.delta.tablesTouched} table
-                    {outcome.delta.tablesTouched === 1 ? "" : "s"}
-                  </b>
-                </span>
-                <span
-                  style={{ width: 1, height: 18, background: "var(--border)" }}
-                  className="mx-1"
-                />
-                <span
-                  className="delta delta-add"
-                  style={outcome.delta.adds ? undefined : { opacity: 0.5 }}
-                >
-                  + {outcome.delta.adds}
-                </span>
-                <span
-                  className="delta delta-chg"
-                  style={outcome.delta.chgs ? undefined : { opacity: 0.5 }}
-                >
-                  ~ {outcome.delta.chgs}
-                </span>
-                <span
-                  className="delta delta-rem"
-                  style={outcome.delta.rems ? undefined : { opacity: 0.5 }}
-                >
-                  − {outcome.delta.rems}
-                </span>
-              </>
-            ) : null}
-            <span className="ml-auto text-[12px]" style={{ color: "var(--text-3)" }}>
-              <span className="mono">
-                {source.displayName}.{source.schema}
-              </span>{" "}
-              →{" "}
-              <span className="mono">
-                {outcome.displayName}.{outcome.schema}
-              </span>
-            </span>
-            {/* Only for a target that was actually read — swapping in one that
-                could not be reached, or that repeats another, gives a source
-                the next Compare cannot read either. No run=1: the swap only
-                fills the pickers, and the reader decides when to run it. */}
-            {outcome.report && (
-              <Link
-                href={`/compare?${selectionToQuery(swapSourceWithTarget(selection, outcome.index))}`}
-                className="btn btn-ghost btn-sm"
-                title="Make this target the source and the current source a target. Press Compare to run it."
-              >
-                Use as source
-              </Link>
-            )}
-          </div>
-
-          {outcome.sameAsSource ? (
-            <div className="warn-inline">
-              <span className="ico">
-                <AlertTriangleIcon size={14} />
-              </span>
-              <span>
-                {selection.targets[outcome.index]?.connectionId ===
-                selection.sourceConnectionId
-                  ? "This target is the source itself — the same connection and schema ("
-                  : "This target reaches the same database and schema as the source through a different saved connection ("}
+      {outcomes.map((outcome) => {
+        // Flattened once per target, here, because three things below read it:
+        // the export bar, the critical-differences panel, and nothing else may
+        // build a second copy — two copies could grade one change differently.
+        const diffDoc = outcome.report
+          ? buildDiffDocument(outcome.report, outcome.data)
+          : null;
+        return (
+          <section key={`outcome-${outcome.index}`} className="mt-6">
+            {/* Per-target header: what is being compared, and how much differs. */}
+            <div className="compare-header flex items-center gap-2 flex-wrap mb-3">
+              {/* A heading rather than a span: with several targets this is the
+                  only way to jump between their sections. */}
+              <h2 className="section-title m-0">
+                {outcomes.length === 1 ? "Diff" : `Target ${outcome.index + 1}`}
+              </h2>
+              <EnvironmentPill environment={outcome.environment} />
+              {outcome.delta ? (
+                <>
+                  <span className="text-[13px]" style={{ color: "var(--text-2)" }}>
+                    <b>{outcome.delta.total}</b> change
+                    {outcome.delta.total === 1 ? "" : "s"} ·{" "}
+                    <b>
+                      {outcome.delta.tablesTouched} table
+                      {outcome.delta.tablesTouched === 1 ? "" : "s"}
+                    </b>
+                  </span>
+                  <span
+                    style={{ width: 1, height: 18, background: "var(--border)" }}
+                    className="mx-1"
+                  />
+                  <span
+                    className="delta delta-add"
+                    style={outcome.delta.adds ? undefined : { opacity: 0.5 }}
+                  >
+                    + {outcome.delta.adds}
+                  </span>
+                  <span
+                    className="delta delta-chg"
+                    style={outcome.delta.chgs ? undefined : { opacity: 0.5 }}
+                  >
+                    ~ {outcome.delta.chgs}
+                  </span>
+                  <span
+                    className="delta delta-rem"
+                    style={outcome.delta.rems ? undefined : { opacity: 0.5 }}
+                  >
+                    − {outcome.delta.rems}
+                  </span>
+                </>
+              ) : null}
+              <span className="ml-auto text-[12px]" style={{ color: "var(--text-3)" }}>
                 <span className="mono">
-                  {outcome.connectionDatabase ?? outcome.displayName} · {outcome.schema}
+                  {source.displayName}.{source.schema}
+                </span>{" "}
+                →{" "}
+                <span className="mono">
+                  {outcome.displayName}.{outcome.schema}
                 </span>
-                ). A schema always matches itself, so there is nothing to report
-                and nothing to migrate. Pick a different schema or connection for
-                this target, then press Compare.
               </span>
-            </div>
-          ) : outcome.error ? (
-            <div className="warn-inline">
-              <span className="ico">
-                <AlertTriangleIcon size={14} />
-              </span>
-              <span>{outcome.error}</span>
-            </div>
-          ) : outcome.report ? (
-            <>
-              {isProduction(outcome.environment) && (
-                <div className="warn-inline mb-3">
-                  <span className="ico">
-                    <AlertTriangleIcon size={14} />
-                  </span>
-                  {/* Nothing on /compare can reach the target database — the
-                      only mutating request here is the push to the GitHub
-                      registry. Saying "rewrites production" put the alarm one
-                      screen too early and made the real one, on Deploy, look
-                      like a repeat. */}
-                  <span>
-                    <b>This target is production.</b> Nothing on this screen
-                    touches it — Push to GitHub writes the SQL to the registry.
-                    Someone still has to run it from Deploy, and when they do it
-                    rewrites{" "}
-                    <span className="mono">
-                      {outcome.displayName}.{outcome.schema}
-                    </span>
-                    {outcome.counts.breaking > 0
-                      ? ` with ${outcome.counts.breaking} breaking statement${
-                          outcome.counts.breaking === 1 ? "" : "s"
-                        }.`
-                      : "."}
-                  </span>
-                </div>
+              {/* Only for a target that was actually read — swapping in one that
+                  could not be reached, or that repeats another, gives a source
+                  the next Compare cannot read either. No run=1: the swap only
+                  fills the pickers, and the reader decides when to run it. */}
+              {outcome.report && (
+                <Link
+                  href={`/compare?${selectionToQuery(swapSourceWithTarget(selection, outcome.index))}`}
+                  className="btn btn-ghost btn-sm"
+                  title="Make this target the source and the current source a target. Press Compare to run it."
+                >
+                  Use as source
+                </Link>
               )}
+            </div>
 
-              {/* Before the diff, because it can change what the diff MEANS: if
-                  the target declares the higher version, the script on the right
-                  would move it backwards. */}
-              <VersionDetectBar
-                sourceName={`${source.displayName}.${source.schema}`}
-                source={source.detectedVersion}
-                targetName={`${outcome.displayName}.${outcome.schema}`}
-                target={outcome.detectedVersion}
-                verdict={outcome.versionVerdict}
-                // The Workbench's own test for "nothing to push", so the bar
-                // never warns about a backwards push the button can't make.
-                inSync={outcome.statementCount === 0}
-                timeline={
-                  <CompareVersionTimeline
-                    key={runSerial}
-                    left={{
-                      label: "Source",
-                      name: `${source.displayName}.${source.schema}`,
-                      detected: source.detectedVersion,
-                      connectionId: source.connectionId,
-                      schema: source.schema,
-                    }}
-                    right={{
-                      label: "Target",
-                      name: `${outcome.displayName}.${outcome.schema}`,
-                      detected: outcome.detectedVersion,
-                      connectionId: outcome.connectionId,
-                      schema: outcome.schema,
-                    }}
-                    verdict={outcome.versionVerdict}
-                  />
-                }
-              />
+            {outcome.sameAsSource ? (
+              <div className="warn-inline">
+                <span className="ico">
+                  <AlertTriangleIcon size={14} />
+                </span>
+                <span>
+                  {selection.targets[outcome.index]?.connectionId ===
+                  selection.sourceConnectionId
+                    ? "This target is the source itself — the same connection and schema ("
+                    : "This target reaches the same database and schema as the source through a different saved connection ("}
+                  <span className="mono">
+                    {outcome.connectionDatabase ?? outcome.displayName} · {outcome.schema}
+                  </span>
+                  ). A schema always matches itself, so there is nothing to report
+                  and nothing to migrate. Pick a different schema or connection for
+                  this target, then press Compare.
+                </span>
+              </div>
+            ) : outcome.error ? (
+              <div className="warn-inline">
+                <span className="ico">
+                  <AlertTriangleIcon size={14} />
+                </span>
+                <span>{outcome.error}</span>
+              </div>
+            ) : outcome.report && diffDoc ? (
+              <>
+                {isProduction(outcome.environment) && (
+                  <div className="warn-inline mb-3">
+                    <span className="ico">
+                      <AlertTriangleIcon size={14} />
+                    </span>
+                    {/* Nothing on /compare can reach the target database — the
+                        only mutating request here is the push to the GitHub
+                        registry. Saying "rewrites production" put the alarm one
+                        screen too early and made the real one, on Deploy, look
+                        like a repeat. */}
+                    <span>
+                      <b>This target is production.</b> Nothing on this screen
+                      touches it — Push to GitHub writes the SQL to the registry.
+                      Someone still has to run it from Deploy, and when they do it
+                      rewrites{" "}
+                      <span className="mono">
+                        {outcome.displayName}.{outcome.schema}
+                      </span>
+                      {outcome.counts.breaking > 0
+                        ? ` with ${outcome.counts.breaking} breaking statement${
+                            outcome.counts.breaking === 1 ? "" : "s"
+                          }.`
+                        : "."}
+                    </span>
+                  </div>
+                )}
 
-              {/* Two-column body: diff canvas (left) + migration draft (right,
-                  sticky). Stacks under 980px via the .compare-layout rule. */}
-              <div className="compare-layout">
-                <div className="space-y-3">
-                  {/* Built on the server: the export has to grade every change
-                      with the same functions the canvas below grades them
-                      with, and those live in the compare engine. */}
-                  <ExportBar doc={buildDiffDocument(outcome.report, outcome.data)} />
-                  {/* The board first, then the narrative. The diff below only
-                      shows what changed, so it cannot say "nothing happened to
-                      your views" — this can, and it is the answer people scroll
-                      the whole page looking for. */}
-                  {/* Same switch the two widgets below get — without it the
-                      board said "dropped" over a script that has every drop
-                      commented out. */}
-                  <SummaryMatrix
-                    report={outcome.report}
-                    allowDataLoss={allowDataLoss}
-                  />
-                  <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
-                  {outcome.data && (
-                    <DataCompare
-                      result={outcome.data}
+                {/* Before the diff, because it can change what the diff MEANS: if
+                    the target declares the higher version, the script on the right
+                    would move it backwards. */}
+                <VersionDetectBar
+                  sourceName={`${source.displayName}.${source.schema}`}
+                  source={source.detectedVersion}
+                  targetName={`${outcome.displayName}.${outcome.schema}`}
+                  target={outcome.detectedVersion}
+                  verdict={outcome.versionVerdict}
+                  // The Workbench's own test for "nothing to push", so the bar
+                  // never warns about a backwards push the button can't make.
+                  inSync={outcome.statementCount === 0}
+                  timeline={
+                    <CompareVersionTimeline
+                      key={runSerial}
+                      left={{
+                        label: "Source",
+                        name: `${source.displayName}.${source.schema}`,
+                        detected: source.detectedVersion,
+                        connectionId: source.connectionId,
+                        schema: source.schema,
+                      }}
+                      right={{
+                        label: "Target",
+                        name: `${outcome.displayName}.${outcome.schema}`,
+                        detected: outcome.detectedVersion,
+                        connectionId: outcome.connectionId,
+                        schema: outcome.schema,
+                      }}
+                      verdict={outcome.versionVerdict}
+                    />
+                  }
+                />
+
+                {/* Between the version bar and the diff, because it is about the
+                    same two schemas the diff is about — just across time instead
+                    of across databases. Null on the first comparison of a pair:
+                    see the note at the top of CompareHistory. */}
+                {outcome.history && <CompareHistory history={outcome.history} />}
+
+                {/* Two-column body: diff canvas (left) + migration draft (right,
+                    sticky). Stacks under 980px via the .compare-layout rule. */}
+                <div className="compare-layout">
+                  <div className="space-y-3">
+                    {/* One document, three readers: the export writes it out,
+                        CriticalChanges pulls the breaking rows out of it, and
+                        both grade every change with the same functions the canvas
+                        below grades them with. Building it twice would let the
+                        panel and the file disagree about one change. */}
+                    <ExportBar doc={diffDoc} />
+                    {/* Above the board, because the board answers "what kind of
+                        changes are there" and this answers "which of them can
+                        hurt" — and somebody who only reads one line of this page
+                        should read that one. */}
+                    <CriticalChanges doc={diffDoc} allowDataLoss={allowDataLoss} />
+                    {/* The board first, then the narrative. The diff below only
+                        shows what changed, so it cannot say "nothing happened to
+                        your views" — this can, and it is the answer people scroll
+                        the whole page looking for. */}
+                    {/* Same switch the two widgets below get — without it the
+                        board said "dropped" over a script that has every drop
+                        commented out. */}
+                    <SummaryMatrix
+                      report={outcome.report}
                       allowDataLoss={allowDataLoss}
                     />
-                  )}
+                    <DiffReport report={outcome.report} allowDataLoss={allowDataLoss} />
+                    {outcome.data && (
+                      <DataCompare
+                        result={outcome.data}
+                        allowDataLoss={allowDataLoss}
+                        dataTables={dataTables}
+                        formId={COMPARE_FORM_ID}
+                      />
+                    )}
+                  </div>
+                  <MigrationWorkbench
+                    initialSql={outcome.sqlText}
+                    statementCount={outcome.statementCount}
+                    heldBackCount={outcome.heldBackCount}
+                    manualCount={outcome.manualCount}
+                    rollbackManualCount={outcome.rollbackManualCount}
+                    initialRollbackSql={outcome.rollbackText}
+                    rollbackStatementCount={outcome.rollbackStatementCount}
+                    rollbackCounts={outcome.rollbackCounts}
+                    rollbackWarnings={outcome.rollbackWarnings}
+                    // Named after both ends, not just the schemas: with several
+                    // targets on one page they are usually all called "public",
+                    // and three drafts called sync_public_to_public would be
+                    // impossible to tell apart in the registry or in review.
+                    suggestedName={`sync_${outcome.report.right.database}_${outcome.report.right.schema}_from_${outcome.report.left.database}_${outcome.report.left.schema}`
+                      .replace(/[^a-z0-9_]/gi, "_")
+                      .toLowerCase()}
+                    suggestedDescription={`Sync ${outcome.report.right.database}.${outcome.report.right.schema} to match ${outcome.report.left.database}.${outcome.report.left.schema}`}
+                    targetLabel={`${outcome.report.right.database}.${outcome.report.right.schema}`}
+                    targetSchema={outcome.report.right.schema}
+                    targetDatabase={
+                      outcome.connectionDatabase ?? outcome.report.right.database
+                    }
+                    suggestedKind={outcome.overallKind}
+                    counts={outcome.counts}
+                    warnings={outcome.warnings}
+                    // The Workbench reads the versions applied to this target
+                    // through the saved connection, so it can show the same
+                    // next version the Script Editor shows. Null when the
+                    // target has no saved connection: then only GitHub counts.
+                    targetConnectionId={outcome.connectionId}
+                    // The backwards warning above, repeated next to the Push
+                    // button with the same names, so the two never disagree.
+                    versionVerdict={outcome.versionVerdict}
+                    sourceVersion={source.detectedVersion}
+                    targetVersion={outcome.detectedVersion}
+                    sourceName={`${source.displayName}.${source.schema}`}
+                    targetName={`${outcome.displayName}.${outcome.schema}`}
+                    swapHref={screen.swapHref}
+                  />
                 </div>
-                <MigrationWorkbench
-                  initialSql={outcome.sqlText}
-                  statementCount={outcome.statementCount}
-                  heldBackCount={outcome.heldBackCount}
-                  manualCount={outcome.manualCount}
-                  rollbackManualCount={outcome.rollbackManualCount}
-                  initialRollbackSql={outcome.rollbackText}
-                  rollbackStatementCount={outcome.rollbackStatementCount}
-                  rollbackCounts={outcome.rollbackCounts}
-                  rollbackWarnings={outcome.rollbackWarnings}
-                  // Named after both ends, not just the schemas: with several
-                  // targets on one page they are usually all called "public",
-                  // and three drafts called sync_public_to_public would be
-                  // impossible to tell apart in the registry or in review.
-                  suggestedName={`sync_${outcome.report.right.database}_${outcome.report.right.schema}_from_${outcome.report.left.database}_${outcome.report.left.schema}`
-                    .replace(/[^a-z0-9_]/gi, "_")
-                    .toLowerCase()}
-                  suggestedDescription={`Sync ${outcome.report.right.database}.${outcome.report.right.schema} to match ${outcome.report.left.database}.${outcome.report.left.schema}`}
-                  targetLabel={`${outcome.report.right.database}.${outcome.report.right.schema}`}
-                  targetSchema={outcome.report.right.schema}
-                  targetDatabase={
-                    outcome.connectionDatabase ?? outcome.report.right.database
-                  }
-                  suggestedKind={outcome.overallKind}
-                  counts={outcome.counts}
-                  warnings={outcome.warnings}
-                  // The Workbench reads the versions applied to this target
-                  // through the saved connection, so it can show the same
-                  // next version the Script Editor shows. Null when the
-                  // target has no saved connection: then only GitHub counts.
-                  targetConnectionId={outcome.connectionId}
-                  // The backwards warning above, repeated next to the Push
-                  // button with the same names, so the two never disagree.
-                  versionVerdict={outcome.versionVerdict}
-                  sourceVersion={source.detectedVersion}
-                  targetVersion={outcome.detectedVersion}
-                  sourceName={`${source.displayName}.${source.schema}`}
-                  targetName={`${outcome.displayName}.${outcome.schema}`}
-                  swapHref={screen.swapHref}
-                />
-              </div>
-            </>
-          ) : null}
-        </section>
-      ))}
+              </>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }

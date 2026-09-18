@@ -374,7 +374,25 @@ describe("readReplayAnswer", () => {
   // not mean the run rolled back: reading it that way called a refusal
   // "Replay failed" and a 503 from before the first write "refused".
   it("reads a success only when the status and the body both say so", () => {
-    expect(readReplayAnswer(200, { success: true })).toEqual({ ok: true });
+    expect(readReplayAnswer(200, { success: true })).toEqual({ ok: true, registry: [] });
+  });
+
+  it("carries what the run recorded in the GitHub registry", () => {
+    // A replayed version's SQL comes from the Source's ledger, so the Target's
+    // registry has no file for it until the apply route writes one (spec 07).
+    // The page says so, which means this reading has to carry it.
+    const recorded = {
+      script_name: "orders_fix",
+      version: "2.0.0",
+      status: "saved",
+      path: "shop/public/orders_fix/v2.0.0.sql",
+      reason: null,
+      rollback_saved: true,
+    };
+    expect(readReplayAnswer(200, { success: true, registry: [recorded] })).toEqual({
+      ok: true,
+      registry: [recorded],
+    });
     expect(readReplayAnswer(200, { success: false, error: "Odd reply." })).toEqual({
       ok: false,
       failure: "unknown",

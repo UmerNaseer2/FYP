@@ -31,6 +31,7 @@ import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
 import { fetchSchemaNames, fetchSchemaSnapshot, POOL_MAX } from "@/lib/postgres";
 import { mapWithLimit } from "@/lib/concurrency";
 import { compareSchemas, type CompareReport } from "@/lib/compare";
+import type { ChangeSeverity } from "@/lib/compare-types";
 import { compareRowData, type DataCompareReport } from "@/lib/compare-data";
 import {
   determineNewerSchema,
@@ -59,6 +60,20 @@ import {
   markComparisonSetRun,
   type ComparisonSet,
 } from "@/lib/comparison-sets";
+import { buildDiffDocument } from "@/lib/compare-export";
+import {
+  compareRuns,
+  describeDelta,
+  describeItem,
+  snapshotChanges,
+} from "@/lib/comparison-history";
+import {
+  pairKey,
+  readPreviousRuns,
+  recordRuns,
+  type RunPair,
+  type RunRecord,
+} from "@/lib/comparison-history-db";
 import { matchesSet, MAX_COMPARISON_TARGETS } from "@/lib/comparison-set-rules";
 import {
   databaseIdentity,
@@ -200,6 +215,17 @@ export type CompareScreen =
       outcomes: OutcomeView[];
       allowDataLoss: boolean;
       compareData: boolean;
+      /**
+       * The tables the row-data compare was limited to, or [] for all of them
+       * (spec 04 — "compare all or selected table data").
+       *
+       * Named by the label the report gives a table, which is what the screen
+       * displayed and what its checkboxes send back. Echoed here rather than
+       * read from the URL by the screen so that one piece of code decides what
+       * the parameter means — the same reason the whole query string is sent to
+       * this module instead of being parsed in the browser.
+       */
+      dataTables: string[];
       /**
        * Whether somebody actually asked for this comparison: `run=1`, which
        * the Compare button, a saved set and the links from the dashboard,
@@ -503,7 +529,33 @@ type TargetOutcome = {
    * and the reason the structural diff below is the real answer.
    */
   versionVerdict: NewerSchemaVerdict | null;
+  /**
+   * How this pair's differences compare with the last recorded run of the same
+   * pair. Null when there is no earlier run to compare with — which is every
+   * first comparison, and which the screen says nothing about rather than
+   * reporting "nothing appeared" as if that were a finding about the schemas.
+   *
+   * Filled in after the fan-out rather than inside compareOneTarget, because
+   * every target's previous run is read in one query — see readPreviousRuns.
+   */
+  history: ComparisonHistoryView | null;
 };
+
+/** "Since the comparison on 12 September: 2 new differences." */
+export type ComparisonHistoryView = {
+  /** When the run being compared with happened, as stored. */
+  since: string;
+  /** Who ran it — see actorFor for why this is not always an address. */
+  by: string;
+  /** The whole thing in one sentence. See describeDelta. */
+  sentence: string;
+  /** Differences this run has that the previous one did not. */
+  appeared: HistoryLine[];
+  /** Differences the previous run had that this one does not. */
+  resolved: HistoryLine[];
+};
+
+export type HistoryLine = { label: string; severity: ChangeSeverity };
 
 /**
  * Count a script's statements by severity.
@@ -568,6 +620,9 @@ function blankOutcome(slot: {
     warnings: [],
     detectedVersion: null,
     versionVerdict: null,
+    // Filled in after the fan-out, and only for a target that produced a
+    // report — see attachHistory.
+    history: null,
   };
 }
 
@@ -595,9 +650,10 @@ async function compareOneTargetSafely(
   head: TrackedSchemaHead | null,
   allowDataLoss: boolean,
   compareData: boolean,
+  dataTables: string[],
 ): Promise<TargetOutcome> {
   try {
-    return await compareOneTarget(source, slot, head, allowDataLoss, compareData);
+    return await compareOneTarget(source, slot, head, allowDataLoss, compareData, dataTables);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
@@ -650,6 +706,8 @@ async function compareOneTarget(
   head: TrackedSchemaHead | null,
   allowDataLoss: boolean,
   compareData: boolean,
+  /** The tables to read rows from, or [] for every table. See CompareScreen. */
+  dataTables: string[],
 ): Promise<TargetOutcome> {
   const connectionEnvironment = toEnvironment(slot.connection?.environment);
 
@@ -756,6 +814,7 @@ async function compareOneTarget(
         report,
         { config: source.config, schema: source.schema },
         { config: target.config, schema: slot.schema },
+        { only: dataTables },
       )
     : null;
 
@@ -807,16 +866,139 @@ async function compareOneTarget(
 }
 
 /**
+ * Say what has changed since the last run of each pair, and record this one.
+ *
+ * Runs after the fan-out rather than inside compareOneTarget so that every
+ * target's previous run is read in ONE query to the metadata database, instead
+ * of one per target landing in the middle of another database's introspection.
+ *
+ * The history covers the STRUCTURAL differences only — buildDiffDocument's
+ * change list, the same rows the export writes. Row counts move every time
+ * anybody inserts anything, so folding them in would report drift on every run
+ * of a database that is simply being used, and bury the schema change that
+ * actually matters.
+ *
+ * Failures cost the history and never the comparison: readPreviousRuns and
+ * recordRuns both swallow their own errors, and the work here is skipped
+ * entirely when there is no pair to file a run under.
+ */
+async function attachHistory(
+  outcomes: TargetOutcome[],
+  sourceConnectionId: number | null,
+  sourceSchema: string,
+  setId: number | null,
+  record: { ranBy: string } | null,
+): Promise<TargetOutcome[]> {
+  // History is filed against the two SAVED CONNECTIONS, so a comparison whose
+  // source connection has been deleted has nothing to file under and nothing
+  // to look up. That is the honest answer rather than a gap: the run it would
+  // be compared with was measured through a connection that no longer exists.
+  if (sourceConnectionId === null) return outcomes;
+
+  // Keyed by pair, so a pair that somehow appears twice is stored once. Two
+  // targets naming the same database and schema are caught earlier and the
+  // second never gets a report (see duplicateOf), but a second row for one
+  // pair in one run would make that run its own predecessor.
+  const current = new Map<string, { pair: RunPair; findings: ReturnType<typeof snapshotChanges> }>();
+  for (const outcome of outcomes) {
+    if (!outcome.report || !outcome.connection) continue;
+    const pair: RunPair = {
+      sourceConnectionId,
+      sourceSchema,
+      targetConnectionId: outcome.connection.id,
+      targetSchema: outcome.schema,
+    };
+    current.set(pairKey(pair), {
+      pair,
+      findings: snapshotChanges(buildDiffDocument(outcome.report).changes),
+    });
+  }
+  if (current.size === 0) return outcomes;
+
+  const previous = await readPreviousRuns([...current.values()].map((entry) => entry.pair));
+
+  const withHistory = outcomes.map((outcome) => {
+    if (!outcome.report || !outcome.connection) return outcome;
+    const key = pairKey({
+      sourceConnectionId,
+      sourceSchema,
+      targetConnectionId: outcome.connection.id,
+      targetSchema: outcome.schema,
+    });
+    const before = previous.get(key);
+    const now = current.get(key);
+    if (!before || !now) return outcome;
+
+    const delta = compareRuns(before.findings, now.findings);
+    return {
+      ...outcome,
+      history: {
+        since: before.ranAt,
+        by: before.ranBy,
+        sentence: describeDelta(delta, formatRunTime(before.ranAt)),
+        appeared: delta.appeared.map(toHistoryLine),
+        resolved: delta.resolved.map(toHistoryLine),
+      },
+    };
+  });
+
+  // Written AFTER the lookup above, or this run would be its own predecessor
+  // and every comparison would report that nothing had changed since itself.
+  if (record) {
+    const records: RunRecord[] = [...current.values()].map((entry) => ({
+      pair: entry.pair,
+      setId,
+      ranBy: record.ranBy,
+      findings: entry.findings,
+    }));
+    await recordRuns(records);
+  }
+
+  return withHistory;
+}
+
+function toHistoryLine(item: { key: string; severity: ChangeSeverity }): HistoryLine {
+  return { label: describeItem(item), severity: item.severity };
+}
+
+/**
+ * A stored timestamp as the sentence wants it: "on 12 Sep 2026, 14:30".
+ *
+ * Formatted here rather than in the browser because the sentence is built here
+ * — and left as the raw string if it cannot be parsed, since a run that reads
+ * "on Invalid Date" is worse than one that reads as the stamp the database
+ * returned.
+ */
+function formatRunTime(stamp: string): string {
+  const at = new Date(stamp);
+  if (Number.isNaN(at.getTime())) return `at ${stamp}`;
+  return `on ${at.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
+/**
  * Run one comparison and return everything the screen draws.
  *
- * `record` stamps the open saved set's "last run" time, and only the screen's
- * POST passes it. It is a parameter rather than a query flag on purpose: the
- * screen used to be a server component whose GET wrote to the database, so
- * every reload and every shared link counted as a run nobody performed.
+ * `record` stamps the open saved set's "last run" time and stores what each
+ * pair was found to differ by, and only the screen's POST passes it. It is a
+ * parameter rather than a query flag on purpose: the screen used to be a server
+ * component whose GET wrote to the database, so every reload and every shared
+ * link counted as a run nobody performed.
+ *
+ * It carries who to record rather than being a boolean, so that recording a run
+ * without knowing who ran it is not a thing this function can be asked to do.
+ * Passing null still READS the history — what the last run found is worth
+ * showing on a reloaded page; it is the writing that needs somebody to have
+ * pressed the button.
  */
 export async function runComparison(
   query: URLSearchParams,
-  record: boolean,
+  record: { ranBy: string } | null,
 ): Promise<CompareScreen> {
   const params = toParams(query);
   const [savedConnections, savedSets] = await Promise.all([
@@ -1123,6 +1305,13 @@ export async function runComparison(
     activeSet && !hasExplicitTargets
       ? activeSet.compareData
       : pickValue(params.compareData, "") === "1";
+  // Which tables the row compare is limited to. Unlike the two checkboxes above
+  // this is never seeded from a saved set: a set stores a source, its targets
+  // and the two options, and the table names that existed when it was saved are
+  // not part of it. Reading it straight from the URL means a set opens on every
+  // table, which is the answer a set that never recorded a selection should
+  // give.
+  const dataTables = paramList(params.dataTable);
 
   // Only asked of a source that can be read. A missing one has its own
   // message, which says whether it was deleted or never picked. One whose
@@ -1186,6 +1375,7 @@ export async function runComparison(
               : null,
             allowDataLoss,
             compareData,
+            dataTables,
           ),
       );
     }
@@ -1226,6 +1416,17 @@ export async function runComparison(
     // that no longer exists, so the picker shows when each one last ran.
     justRanAt = await markComparisonSetRun(activeSet.id);
   }
+
+  // What each pair differed by last time, and — when somebody pressed the
+  // button — a record of what it differs by now. Both are best-effort: see the
+  // note at the top of comparison-history-db.
+  outcomes = await attachHistory(
+    outcomes,
+    sourceConnection ? sourceConnection.id : null,
+    sourceSchema,
+    activeSet ? activeSet.id : null,
+    record,
+  );
 
   const canAddTarget = resolvedTargets.length < MAX_TARGETS;
 
@@ -1287,6 +1488,7 @@ export async function runComparison(
     outcomes: outcomes.map(toOutcomeView),
     allowDataLoss,
     compareData,
+    dataTables,
     asked,
     swapHref: buildSwapHref(selection),
   };

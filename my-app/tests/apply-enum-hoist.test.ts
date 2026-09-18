@@ -18,7 +18,7 @@ import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: false } }),
+  requireEditor: async () => ({ ok: true, principal: { email: "a@test", role: "editor", bypass: false } }),
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
@@ -36,6 +36,17 @@ jest.mock("../lib/connection-config", () => ({ buildPgConfig: () => ({}) }));
 jest.mock("../lib/lineage-db", () => ({
   findTrackedSchema: async () => null,
   recordAppliedMigrationToLineage: async () => ({ advanced: false }),
+}));
+
+// The GitHub registry. The apply route records every committed version there
+// (spec 07), and the real module reads GITHUB_PAT / GITHUB_REPO_OWNER /
+// GITHUB_REPO_NAME out of .env.local — which next/jest loads exactly as
+// `next dev` does. Left unmocked, a test that reaches COMMIT would write
+// migration files into somebody's actual registry repository. Mocked to answer
+// "not configured", which is the same answer a server with no GitHub settings
+// gives, so the route takes its ordinary path.
+jest.mock("../lib/registry-archive", () => ({
+  archiveAppliedVersions: async () => null,
 }));
 jest.mock("../lib/approvals-db", () => ({
   claimApproval: async () => null,

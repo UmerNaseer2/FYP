@@ -51,7 +51,22 @@ function timelineRow(version: string, down_sql: string | null, sql_content: stri
   return {
     version, title: `v${version}`, description: null, change_type: "additive",
     applied_at: "2026-01-01T00:00:00.000Z", down_sql, sql_content,
+    applied_by: "deployer@test",
   };
+}
+
+/**
+ * The same row as it would have been written before the applied_by column
+ * existed — the key is absent, not null.
+ *
+ * Deletes the key rather than destructuring it away: `({ applied_by, ...rest })`
+ * reads well but leaves a binding nothing ever uses, and lint is right to call
+ * that a mistake when it cannot tell this one from a genuine oversight.
+ */
+function rowBeforeAppliedBy(version: string, down_sql: string | null): Record<string, unknown> {
+  const row: Record<string, unknown> = { ...timelineRow(version, down_sql) };
+  delete row.applied_by;
+  return row;
 }
 
 /** A target whose answers the test chooses. */
@@ -60,10 +75,10 @@ function target(options: {
   revertedTable?: boolean;
   timeline?: Record<string, unknown>[];
   others?: Record<string, unknown>[];
-  /** The optional script_patch columns the catalog reports (both by default). */
+  /** The optional script_patch columns the catalog reports (all by default). */
   columns?: string[];
 }): FakeStep[] {
-  const columns = options.columns ?? ["down_sql", "sql_content"];
+  const columns = options.columns ?? ["down_sql", "sql_content", "applied_by"];
   return [
     // Both existence probes are to_regclass now, so they are told apart by the
     // name they ask about rather than by the query text.
@@ -79,7 +94,7 @@ function target(options: {
     },
     { match: /FROM "sales"\.script_patch_reverted/, rows: options.revertedTable ? REVERTED : [] },
     {
-      match: /column_name IN \('down_sql', 'sql_content'\)/,
+      match: /column_name IN \('down_sql', 'sql_content', 'applied_by'\)/,
       rows: columns.map((column_name) => ({ column_name })),
     },
     { match: /script_name <> \$1/, rows: options.others ?? [] },
@@ -261,8 +276,43 @@ it("returns the SQL each applied version ran", async () => {
   // One catalog question covers both optional columns, and both are read.
   const check = queriesMatching(mockClient, /information_schema\.columns/)[0];
   expect(check.values).toEqual(["sales"]);
-  expect(check.text).toContain("column_name IN ('down_sql', 'sql_content')");
-  expect(timelineQuery(mockClient)).toContain("applied_at, down_sql, sql_content FROM \"sales\".script_patch WHERE script_name = $1");
+  expect(check.text).toContain("column_name IN ('down_sql', 'sql_content', 'applied_by')");
+  expect(timelineQuery(mockClient)).toContain("applied_at, down_sql, sql_content, applied_by FROM \"sales\".script_patch WHERE script_name = $1");
+});
+
+it("says who applied each version, and null where the ledger does not know", async () => {
+  mockClient = createFakeClient(
+    target({
+      timeline: [
+        timelineRow("2.0.0", null),
+        // A row from before applied_by existed, or written by another tool.
+        { ...timelineRow("1.0.0", null), applied_by: null },
+      ],
+    })
+  );
+  const res = await preflight(FAMILY);
+  expect(res.status).toBe(200);
+  const timeline = res.body.timeline as { version: string; applied_by: string | null }[];
+  expect(timeline.map((entry) => [entry.version, entry.applied_by])).toEqual([
+    ["2.0.0", "deployer@test"],
+    ["1.0.0", null],
+  ]);
+});
+
+it("reads applied_by as null on a ledger written before the column existed", async () => {
+  mockClient = createFakeClient(
+    target({
+      columns: ["down_sql", "sql_content"],
+      // No applied_by key at all: a SELECT that names it as NULL::text gets
+      // the column back empty, which is what a real old table would answer.
+      timeline: [rowBeforeAppliedBy("1.0.0", "DROP TABLE t1;")],
+    })
+  );
+  const res = await preflight(FAMILY);
+  expect(res.status).toBe(200);
+  // Named as a NULL rather than selected, so the whole timeline still reads.
+  expect(timelineQuery(mockClient)).toContain("sql_content, NULL::text AS applied_by FROM");
+  expect((res.body.timeline as Record<string, unknown>[])[0]).toHaveProperty("applied_by", null);
 });
 
 it("reads sql_content as null on a ledger written before the column existed", async () => {
@@ -273,7 +323,7 @@ it("reads sql_content as null on a ledger written before the column existed", as
   expect(res.status).toBe(200);
   // The SELECT names only columns that exist, so an old table still answers.
   const sql = timelineQuery(mockClient);
-  expect(sql).toContain("down_sql, NULL::text AS sql_content FROM");
+  expect(sql).toContain("down_sql, NULL::text AS sql_content, NULL::text AS applied_by FROM");
   const timeline = res.body.timeline as { sql_content: string | null; has_down_sql: boolean }[];
   expect(timeline[0]).toMatchObject({ sql_content: null, has_down_sql: true });
 });
@@ -284,7 +334,9 @@ it("reads both optional columns as null when the table has neither", async () =>
   );
   const res = await preflight(FAMILY);
   expect(res.status).toBe(200);
-  expect(timelineQuery(mockClient)).toContain("NULL::text AS down_sql, NULL::text AS sql_content FROM");
+  expect(timelineQuery(mockClient)).toContain(
+    "NULL::text AS down_sql, NULL::text AS sql_content, NULL::text AS applied_by FROM"
+  );
   expect((res.body.timeline as Record<string, unknown>[])[0]).toMatchObject({
     down_sql: null, has_down_sql: false, sql_content: null,
   });
@@ -297,7 +349,9 @@ it("reads the whole schema's history and no other-family list without a scriptNa
   expect(queriesMatching(mockClient, /FROM "sales"\.script_patch_reverted/)[0].values).toEqual([null]);
   expect(queriesMatching(mockClient, /script_name <> \$1/)).toHaveLength(0);
   // The unscoped read carries the applied SQL too.
-  expect(timelineQuery(mockClient)).toContain("applied_at, down_sql, sql_content FROM \"sales\".script_patch ORDER BY");
+  expect(timelineQuery(mockClient)).toContain(
+    "applied_at, down_sql, sql_content, applied_by FROM \"sales\".script_patch ORDER BY"
+  );
   expect((res.body.timeline as Record<string, unknown>[])[0]).toHaveProperty("sql_content", "SELECT 5;");
 });
 

@@ -4,13 +4,16 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { fetchSchemaSnapshot, getPoolForConfig, withoutToolTables } from "@/lib/postgres";
+import type { IndexSnapshot } from "@/lib/postgres";
 import type { PoolClient } from "pg";
 import {
   STATS_LOCK_TIMEOUT_MS,
   STATS_STATEMENT_TIMEOUT_MS,
   STRUCTURE_LOCK_TIMEOUT_MS,
+  analyzePartitioning,
   analyzeSchemaPerformance,
   analyzeTableStats,
+  relationNames,
   attachForeignKeyIndexes,
   foreignKeyIndexes,
   withoutRepeatedDrops,
@@ -25,6 +28,8 @@ import {
   type TableStats,
   type WaitingPartition,
 } from "@/lib/perf-advice";
+import { aggregateSearches, compositeIndexAdvice } from "@/lib/composite-index";
+import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/query-history-db";
 
 /**
  * GET /api/performance/advice?connectionId=<id>&schema=<name>
@@ -505,6 +510,18 @@ export async function GET(request: NextRequest) {
       // below is where a failure lands.
       foreignKeyIndexes(snapshot, invalidIndexes ?? new Set())
     ).map((a) => ({ ...a, origin: "statistics" }));
+
+    // Partitioning advice is structural in everything but one number — how
+    // many rows are really in the table — so it is produced here, where that
+    // number exists, and is marked as coming from the statistics for the same
+    // reason. A table the counters say nothing about is skipped, not guessed.
+    runtime.push(
+      ...analyzePartitioning(
+        schema,
+        snapshot.tables,
+        Object.fromEntries(tables.map((t) => [t.table_name, t.n_live_tup]))
+      ).map((a) => ({ ...a, origin: "statistics" as const }))
+    );
   } catch (error) {
     // Deliberately not fatal — see the note at the top of this file.
     if (client) {
@@ -559,12 +576,51 @@ export async function GET(request: NextRequest) {
     })
   );
 
+  // ── Spec feature 9.3 — patterns across queries ────────────────────────────
+  // Sourced from what has been analysed against this schema, not from the
+  // schema itself, so it is the one rule here that can be right about a table
+  // whose structure says nothing is wrong. A failure to read the history is
+  // reported like the statistics failure above and is never fatal: the rest of
+  // the advice is still correct without it.
+  let patterns: AdviceItem[] = [];
+  let patternsUnavailable: string | null = null;
+  try {
+    const usable = (index: IndexSnapshot) =>
+      // An invalid index is one the planner will not use, so it serves no
+      // pattern. When the invalid list could not be read, every index counts —
+      // which can only make this say less, never something untrue.
+      !(invalidIndexes ?? new Set<string>()).has(index.name);
+
+    patterns = compositeIndexAdvice(
+      schema,
+      aggregateSearches(await listSearches(connectionId, schema)),
+      Object.fromEntries(
+        snapshot.tables.map((t) => [
+          t.name,
+          (t.indexes ?? []).filter(usable).map((i) => ({
+            name: i.name,
+            columns: i.columns,
+            predicate: i.predicate,
+          })),
+        ])
+      ),
+      [...relationNames(snapshot)],
+      SEARCH_PATTERN_DAYS
+    ).map((a) => ({ ...a, origin: "queries" as const }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Performance advice — query patterns unavailable:", message);
+    patternsUnavailable =
+      "The record of queries analysed against this schema could not be read, so nothing" +
+      " here is based on how it is actually being queried.";
+  }
+
   // A whole-table-read finding on a table with an unindexed foreign key gets
   // that key's index as its fix (see attachForeignKeyIndexes), and an unused
   // index that a duplicate or redundant finding already drops is not offered
   // a second time (see withoutRepeatedDrops).
   const advice = sortAdvice(
-    withoutRepeatedDrops(attachForeignKeyIndexes([...structural, ...runtime]))
+    withoutRepeatedDrops(attachForeignKeyIndexes([...structural, ...runtime, ...patterns]))
   );
 
   const view: AdviceView = {
@@ -575,6 +631,7 @@ export async function GET(request: NextRequest) {
     counts: summarizeAdvice(advice),
     tablesAnalyzed: snapshot.tables.length,
     statsUnavailable,
+    patternsUnavailable,
   };
 
   return NextResponse.json(view);

@@ -16,7 +16,7 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // The caller. A test sets mockBypass to play the auth bypass's one principal.
 let mockBypass = false;
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: mockBypass } }),
+  requireEditor: async () => ({ ok: true, principal: { email: "a@test", role: "editor", bypass: mockBypass } }),
 }));
 afterEach(() => {
   mockBypass = false;
@@ -55,6 +55,17 @@ jest.mock("../lib/lineage-db", () => ({
   recordAppliedMigrationToLineage: (...args: unknown[]) => mockRecordLineage(...args),
 }));
 
+// The GitHub registry. The apply route records every committed version there
+// (spec 07), and the real module reads GITHUB_PAT / GITHUB_REPO_OWNER /
+// GITHUB_REPO_NAME out of .env.local — which next/jest loads exactly as
+// `next dev` does. Left unmocked, a test that reaches COMMIT would write
+// migration files into somebody's actual registry repository. Mocked to answer
+// "not configured", which is the same answer a server with no GitHub settings
+// gives, so the route takes its ordinary path.
+jest.mock("../lib/registry-archive", () => ({
+  archiveAppliedVersions: async () => null,
+}));
+
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 jest.mock("../lib/approvals-db", () => ({
   claimApproval: (...args: unknown[]) => mockClaim(...args),
@@ -64,11 +75,11 @@ jest.mock("../lib/approvals-db", () => ({
 type RouteModule = typeof import("../app/api/scripts/apply/route");
 let POST: RouteModule["POST"];
 
-function connectionRow(environment: string) {
+function connectionRow(environment: string, execute_role?: string) {
   return {
     host: "db.test", port: 5432, database_name: "sales", username: "app",
     password: "not-a-real-password", connection_string: null, ssl: false,
-    ssl_mode: "disable", environment,
+    ssl_mode: "disable", environment, name: "Sales dev", execute_role,
   };
 }
 
@@ -652,5 +663,47 @@ describe("an answer given before the first write", () => {
     expect(failed.status).toBe(500);
     expect(failed.body.nothingRan).toBeUndefined();
     expect(count(mockClient, "ROLLBACK")).toBe(1);
+  });
+});
+
+describe("per-connection execution setting", () => {
+  // Spec feature 02. The gate at the top of the route asked whether this caller
+  // may run migrations at all; this asks whether they may run one against THIS
+  // database. A role alone cannot say "trusted on dev, not on the reference
+  // schema", because the role is a property of the person.
+
+  it("refuses a read-only connection before opening it, dry run included", async () => {
+    // Dry run included is the whole point of checking here rather than beside
+    // the production gate: a rehearsal really executes the script against the
+    // target and only then rolls back, so exempting it would make the quiet
+    // way to write to a read-only database the one nobody checks.
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "none")] });
+    for (const dryRun of [false, true]) {
+      const res = await apply({ ...SAFE, dryRun });
+      expect(res.status).toBe(403);
+      expect(String(res.body.error)).toContain("read-only");
+    }
+    // Not a single statement, not even a connection.
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  it("refuses an admins-only connection to an editor, and names both roles", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", "admin")] });
+    const res = await apply(SAFE);
+    expect(res.status).toBe(403);
+    expect(String(res.body.error)).toContain("admin");
+    expect(String(res.body.error)).toContain("editor");
+    expect(mockClient.queries).toEqual([]);
+  });
+
+  it("lets the default setting through, so old rows keep working", async () => {
+    // Every connection saved before this column existed is one an editor could
+    // already deploy to. If the fallback ever flipped to "none", every install
+    // upgrading to this version would stop deploying with no message anybody
+    // could act on — so an absent value is pinned here, not just in the unit
+    // test for toExecuteRole.
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", undefined)] });
+    const res = await apply(SAFE);
+    expect(res.status).toBe(200);
   });
 });

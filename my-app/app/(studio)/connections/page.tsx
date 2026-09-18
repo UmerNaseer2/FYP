@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { parsePostgresUri } from "@/lib/parse-uri";
+import { APPLIES_TO_HEADER_KEY } from "@/lib/application-targeting";
 import {
   DEFAULT_SSL_MODE,
   PORT_MAX,
@@ -26,8 +27,17 @@ import {
   type Environment,
 } from "@/lib/environments";
 import {
+  DEFAULT_EXECUTE_ROLE,
+  EXECUTE_ROLES,
+  describeExecuteRole,
+  toExecuteRole,
+  type ExecuteRole,
+} from "@/lib/connection-access";
+import Link from "next/link";
+import {
   LogoIcon,
   PlusIcon,
+  CompareIcon,
   XIcon,
   CheckIcon,
   TrashIcon,
@@ -39,7 +49,7 @@ import {
   AlertTriangleIcon,
   LockIcon,
 } from "@/components/ui/icons";
-import { EnvironmentPill, FilterPill } from "@/components/ui";
+import { EnvironmentPill, ExecuteRolePill, FilterPill } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 
 // ——— Data shapes ———
@@ -58,6 +68,14 @@ type Connection = {
   // null on rows written before it existed. Read them through connSslMode().
   ssl: boolean;
   ssl_mode?: string | null;
+  // The client's own ApplicationTable, which says which applications this
+  // database hosts. Null on every row until somebody names it. See
+  // lib/application-targeting.ts for what reads it.
+  application_table?: string | null;
+  // Which role may run migrations against this database — "none" (read-only),
+  // "editor" or "admin". Null on rows written before the column existed; read
+  // it through toExecuteRole(), which lands those on the default.
+  execute_role?: string | null;
   // dev / staging / prod. Null on rows written before the column existed; read
   // it through connEnvironment() so those come back as "unset" rather than
   // silently looking like a labelled target.
@@ -106,6 +124,8 @@ const EMPTY_FORM = {
   password: "",
   sslMode: DEFAULT_SSL_MODE,
   environment: DEFAULT_ENVIRONMENT as Environment,
+  applicationTable: "",
+  executeRole: DEFAULT_EXECUTE_ROLE as ExecuteRole,
 };
 
 function isLocalHost(host: string): boolean {
@@ -198,6 +218,10 @@ export default function ConnectionsPage() {
   const deleteRef = useRef<HTMLDivElement>(null);
   const drawerTitleId = useId();
   const deleteTitleId = useId();
+  // The one input on this page with a label that is not directly beside it —
+  // it carries help text between the two — so it gets an explicit association.
+  const appTableId = useId();
+  const executeRoleId = useId();
   useDialogFocus(drawerOpen, drawerRef);
   useDialogFocus(deleteTarget !== null, deleteRef);
   // Set once the API has told us the connection is still in use; the next press
@@ -282,6 +306,8 @@ export default function ConnectionsPage() {
       password: "", // never prefilled; left blank keeps the stored one
       sslMode: connSslMode(conn),
       environment: connEnvironment(conn),
+      applicationTable: conn.application_table ?? "",
+      executeRole: toExecuteRole(conn.execute_role),
     });
     setFormErrors({});
     setFieldMode(hasUri ? "uri" : "fields");
@@ -341,6 +367,11 @@ export default function ConnectionsPage() {
       ssl: sslModeUsesTls(form.sslMode),
       ssl_mode: form.sslMode,
       environment: form.environment,
+      // Sent trimmed, and "" rather than null for "not set": the API turns an
+      // empty string back into NULL. Sending null here would mean the field
+      // could never be cleared once set, since a missing key means "leave it".
+      application_table: form.applicationTable.trim(),
+      execute_role: form.executeRole,
       connection_string: fieldMode === "uri" ? uri : "",
       // In Fields mode the user is defining the target by loose fields, so on
       // save any previously-stored connection string should be cleared (else
@@ -950,9 +981,17 @@ export default function ConnectionsPage() {
                             </div>
                           </div>
                         </td>
-                        {/* Environment */}
+                        {/* Environment, and beside it who may deploy here —
+                            the two things about a target that change what
+                            Deploy will let you do. Only the settings that are
+                            NOT the default get a badge: a pill on every row
+                            saying "editors and admins" would be the same word
+                            on every row, which reads as decoration. */}
                         <td data-label="Environment">
-                          <EnvironmentPill environment={connEnvironment(conn)} />
+                          <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+                            <EnvironmentPill environment={connEnvironment(conn)} />
+                            <ExecuteRolePill role={toExecuteRole(conn.execute_role)} />
+                          </div>
                         </td>
                         {/* Endpoint */}
                         <td data-label="Endpoint">
@@ -1031,12 +1070,34 @@ export default function ConnectionsPage() {
         </div>
 
         {!loading && !loadError && connections.length > 0 && (
-          <div className="mt-5 text-[12px]" style={{ color: "var(--text-3)" }}>
-            Showing{" "}
-            <span className="mono" style={{ color: "var(--text-2)" }}>
-              {visible.length} of {connections.length}
-            </span>{" "}
-            connections.
+          <div className="mt-5 flex items-end justify-between gap-6 flex-wrap">
+            <div className="text-[12px]" style={{ color: "var(--text-3)" }}>
+              Showing{" "}
+              <span className="mono" style={{ color: "var(--text-2)" }}>
+                {visible.length} of {connections.length}
+              </span>{" "}
+              connections.
+            </div>
+            {/* Saving a connection used to be a dead end: this screen is the
+                first thing anybody sets up, and then it just sat there. Every
+                other screen already links BACK here for its empty state, so
+                this was the one direction the app never offered.
+
+                Compare and not Deploy, because comparing is the step that
+                produces something to deploy — and because one connection is
+                enough for it, so the link is never a promise this page cannot
+                keep. See the empty state on the compare page for why one is
+                enough: the two sides are two schemas, and they may share a
+                server. */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                Next:
+              </span>
+              <Link href="/compare" className="btn btn-secondary btn-sm">
+                <CompareIcon size={14} />
+                Compare two schemas
+              </Link>
+            </div>
           </div>
         )}
       </section>
@@ -1377,6 +1438,91 @@ export default function ConnectionsPage() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Who may deploy here. Beside the environment label rather than
+              inside it: the label is a warning the user can click past, and
+              this one they cannot. A prod connection that nobody has locked
+              down is still deployable by any editor — the label shouts, it
+              does not stop anything. */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="label" htmlFor={executeRoleId}>
+                Who may run migrations here
+              </label>
+              <span className="help">Checked by Deploy and by Revert.</span>
+            </div>
+            <select
+              id={executeRoleId}
+              className="input"
+              value={form.executeRole}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, executeRole: toExecuteRole(e.target.value) }))
+              }
+            >
+              {EXECUTE_ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {describeExecuteRole(role)}
+                </option>
+              ))}
+            </select>
+            <div className="help mt-1.5">
+              Comparing, generating scripts, previewing and exporting are unaffected by
+              this — it only decides who may make this app write to this database.
+            </div>
+            {form.executeRole === "none" && (
+              <div className="warn-inline mt-2">
+                <span className="ico">
+                  <InfoIcon size={14} />
+                </span>
+                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                  Read-only applies to everyone, admins included. It is a statement about
+                  the database rather than a rank to be outranked — which is the point for
+                  a reference or model schema that other databases are compared against.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Application table — the other half of per-application script
+              restrictions. A script says who it is for in its header; this
+              says what this database hosts. Optional, and blank is the normal
+              answer: without it, unrestricted scripts deploy exactly as they
+              always did and only restricted ones are held back. */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="label" htmlFor={appTableId}>
+                Application table <span className="help">optional</span>
+              </label>
+              <span className="help">For scripts restricted to an application.</span>
+            </div>
+            <input
+              id={appTableId}
+              className="input mono"
+              value={form.applicationTable}
+              placeholder="public.application"
+              onChange={(e) => setForm((f) => ({ ...f, applicationTable: e.target.value }))}
+            />
+            <div className="help mt-1.5">
+              A table on this database with an <span className="mono">application_name</span>{" "}
+              column, naming the applications it hosts. Deploy reads it to decide whether a
+              script marked{" "}
+              <span className="mono">-- {APPLIES_TO_HEADER_KEY}: billing</span> may run here.
+              Write it as <span className="mono">schema.table</span>, or just the table name to
+              read it in the schema being deployed to.
+            </div>
+            {form.applicationTable.trim() !== "" && (
+              <div className="warn-inline mt-2">
+                <span className="ico">
+                  <InfoIcon size={14} />
+                </span>
+                <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                  If this table can&apos;t be read at deploy time — wrong name, missing, or no
+                  permission — restricted scripts are refused rather than let through. A
+                  restriction that lapses when the lookup fails wouldn&apos;t be one.
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Test result */}

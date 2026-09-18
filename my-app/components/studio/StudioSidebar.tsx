@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Pill } from "@/components/ui";
 import { LogoIcon, ChevronLeftIcon, SunIcon, MoonIcon, SignOutIcon } from "@/components/ui/icons";
 import type { NavItem } from "./nav";
 
@@ -112,11 +111,6 @@ export function StudioSidebar({
               >
                 {item.icon}
                 <span className={labelHidden}>{item.label}</span>
-                {item.badge && (
-                  <Pill tone="drift" dot={false} className={`badge !text-[10px] !py-0 ${labelHidden}`}>
-                    {item.badge}
-                  </Pill>
-                )}
               </Link>
             );
           })}

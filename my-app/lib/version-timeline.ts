@@ -36,6 +36,13 @@ export type TimelineEntry = {
   version: string;
   /** ISO timestamp of when it was applied, or null when the table does not say. */
   appliedAt: string | null;
+  /**
+   * Who applied it (spec 07 — execution history for auditing), or null when
+   * the table does not say. Optional because most sides cannot answer it: a
+   * registry file was never "applied by" anyone, and a ledger written by
+   * another tool has no such column.
+   */
+  appliedBy?: string | null;
   changeType: ChangeLevel;
   /** The SQL that ran, or null when the table does not store it. */
   sqlContent: string | null;

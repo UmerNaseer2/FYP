@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { SchemaMapIcon, ConnectionsIcon } from "@/components/ui/icons";
+import { SchemaMapIcon, ConnectionsIcon, CompareIcon } from "@/components/ui/icons";
 import { VisualizerPane, type VizConnection } from "@/components/studio/visualizer/VisualizerPane";
 
 // The Schema Visualizer. "Single" draws one schema; "Side by side" draws two
@@ -144,7 +144,30 @@ export default function VisualizerPage() {
             foreign-key paths between them. Switch to side by side to compare two schemas at once.
           </p>
         </div>
-        {!noConnections && !narrow && <ModeToggle mode={mode} onChange={setMode} />}
+        {!noConnections && (
+          <div className="flex items-center gap-3">
+            {!narrow && <ModeToggle mode={mode} onChange={setMode} />}
+            {/* The one screen with no way onward. Every other step hands over to
+                the next one, and this one drew a picture and stopped — which is
+                a shame, because "side by side" is somebody looking for a
+                difference by eye. The diagram can show them one; it cannot
+                write the script that fixes it.
+
+                Outside the `narrow` guard, unlike the toggle: side by side is
+                what does not fit on a small screen, but wanting the comparison
+                is not. Hiding the link there would leave exactly the reader
+                with the least room to squint at two diagrams as the only one
+                with no way out.
+
+                Ghost rather than a primary button: reading the diagram is a
+                legitimate reason to be here and most visits end here on
+                purpose. */}
+            <Link href="/compare" className="btn btn-ghost btn-sm">
+              <CompareIcon size={14} />
+              Compare them properly
+            </Link>
+          </div>
+        )}
       </div>
 
       {noConnections ? (

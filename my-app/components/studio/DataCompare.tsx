@@ -3,6 +3,7 @@ import {
   type DataCompareReport,
   type TableDataCompare,
 } from "@/lib/compare-data-summary";
+import { describeSample, type RowSample } from "@/lib/compare-sample";
 import { CheckIcon, AlertTriangleIcon } from "@/components/ui/icons";
 import { dropModeFrom } from "@/components/studio/DiffReport";
 import { plural } from "@/lib/plural";
@@ -16,9 +17,16 @@ import { plural } from "@/lib/plural";
 // exactly what a DROP TABLE destroys and exactly what no down script can bring
 // back.
 //
-// Server component, same as DiffReport, and it reuses that component's visual
-// vocabulary (.table-group / .obj-group / .diff-row) rather than inventing a
-// second one — a reader should not have to learn two diff layouts on one page.
+// It reuses DiffReport's visual vocabulary (.table-group / .obj-group /
+// .diff-row) rather than inventing a second one — a reader should not have to
+// learn two diff layouts on one page.
+//
+// No "use client" of its own, but the compare page is a client component, so
+// this file is compiled into the browser bundle along with everything it
+// imports. That is why the types and helpers below come from
+// compare-data-summary and compare-sample and never from compare-data: that
+// module imports `pg`, and importing it here would pull a database driver into
+// the browser.
 // ---------------------------------------------------------------------------
 
 /** The same collapse affordance the diff canvas uses on its table cards. */
@@ -75,6 +83,83 @@ function DataRow({
   );
 }
 
+/**
+ * One value as it is shown in a sampled row.
+ *
+ * NULL is rendered as the word rather than as an empty cell, because an empty
+ * string is also a value and the two mean different things. Long values are cut
+ * because this is a sample meant to be scanned — a reader who needs the whole
+ * of a 4 KB jsonb column is past what this panel is for and should query it.
+ */
+function CellValue({ value }: { value: string | null }) {
+  if (value === null) {
+    return (
+      <i style={{ color: "var(--text-3)" }} title="SQL NULL">
+        NULL
+      </i>
+    );
+  }
+  const short = value.length > 60 ? `${value.slice(0, 60)}…` : value;
+  // title carries the full value, so the cut is recoverable by hovering rather
+  // than only by going to the database.
+  return <span title={value === short ? undefined : value}>{short}</span>;
+}
+
+/**
+ * The rows that differ for one table (spec 04 — sample mismatched rows).
+ *
+ * Sits under the table's own line rather than in a group of its own: the reader
+ * arrived at this table because the line above said its contents differ, and
+ * this is the answer to the question that line raises.
+ *
+ * Every case that has nothing to show says why — no key to pair rows by, a read
+ * that failed, or a difference that lies past the part of the table the scan
+ * read. A silent absence here would read as "no rows differ", which is the one
+ * thing it never means: the table is in this group because they do.
+ */
+function SampleRows({ sample }: { sample: RowSample }) {
+  const note = describeSample(sample);
+  if (sample.rows.length === 0 && !note) return null;
+
+  return (
+    <div className="sample-rows">
+      {sample.rows.length > 0 && (
+        <div className="sample-rows__head">
+          {sample.rows.length} {plural(sample.rows.length, "row", "rows")} shown, paired
+          by {sample.keyColumns.join(", ")}
+        </div>
+      )}
+      {sample.rows.map((row) => (
+        <div key={row.key.join("\u0000")} className="sample-rows__row">
+          <code className="sample-rows__key">{row.key.join(", ")}</code>
+          {row.kind !== "changed" ? (
+            <span style={{ color: "var(--text-3)" }}>
+              only in the {row.kind === "sourceOnly" ? "source" : "target"}
+            </span>
+          ) : row.differences.length === 0 ? (
+            // Reachable: the keys came from the digest read, and the follow-up
+            // read that fetches their values can fail on its own.
+            <span style={{ color: "var(--text-3)" }}>
+              differs — the values could not be read back
+            </span>
+          ) : (
+            <span className="sample-rows__cols">
+              {row.differences.map((diff) => (
+                <span key={diff.column} className="sample-rows__col">
+                  <b>{diff.column}</b> <CellValue value={diff.left} />
+                  <span style={{ color: "var(--text-3)" }}> → </span>
+                  <CellValue value={diff.right} />
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
+      ))}
+      {note && <div className="sample-rows__note">{note}</div>}
+    </div>
+  );
+}
+
 /** "1,204 → 1,198 rows", or "1,204 rows" when both sides agree. */
 function rowCounts(table: TableDataCompare): string {
   if (table.leftRows === null) {
@@ -119,9 +204,95 @@ function differenceDetail(table: TableDataCompare): string {
   return `${counts}, but the contents differ`;
 }
 
+/**
+ * Which tables the next run reads (spec 04 — "compare all OR SELECTED table
+ * data").
+ *
+ * It lives at the bottom of the panel rather than up in the options bar because
+ * it is a REFINEMENT: there is no list of tables to choose from until a run has
+ * produced one, and the reason to narrow a run is almost always something this
+ * report just said — a table left unread at the cap, or one whose rows differ
+ * and is worth re-reading on its own.
+ *
+ * No state of its own. The checkboxes belong to the options bar's form through
+ * the HTML `form` attribute, so ticking a few and pressing the button submits
+ * the same plain GET the bar does, with the selection in the query string
+ * beside everything else. Their checked state comes from the URL, which is
+ * where the selection lives, so a reload or a shared link reopens exactly the
+ * selection that produced the report underneath.
+ *
+ * KNOWN WART: with several targets each panel draws its own copy, and ticking
+ * a box in one does not move the box in another. Every copy is correct on load
+ * — they all read the same URL — but the last one you touch is the one that
+ * submits, since they all post the same field name. Fixing it properly means
+ * lifting the selection into page state, which is the client-side machinery
+ * the rest of this bar exists to avoid.
+ */
+function TablePicker({
+  tables,
+  selected,
+  formId,
+}: {
+  tables: ReadonlyArray<string>;
+  selected: ReadonlyArray<string>;
+  formId: string;
+}) {
+  const chosen = new Set(selected);
+  return (
+    <details className="panel" open={chosen.size > 0}>
+      <summary className="obj-header px-3.5 py-2.5">
+        <span className="section-title">
+          {chosen.size === 0
+            ? "Reading every table"
+            : `Reading ${chosen.size} of ${tables.length} ${plural(tables.length, "table", "tables")}`}
+        </span>
+        <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
+          click to choose
+        </span>
+      </summary>
+      <div className="table-picker">
+        {tables.map((table) => (
+          <label key={table} className="table-picker__item">
+            <input
+              type="checkbox"
+              form={formId}
+              name="dataTable"
+              value={table}
+              defaultChecked={chosen.has(table)}
+            />
+            <span className="truncate" title={table}>
+              {table}
+            </span>
+          </label>
+        ))}
+      </div>
+      <div className="table-picker__foot">
+        <span className="help">
+          {/* The way back matters more than the way in: after narrowing to one
+              table, clearing the ticks is the only route to the rest, and
+              nothing else on the page says so. */}
+          Tick nothing to read every table again. A selection only changes which
+          tables are READ — the rest are still listed below, as not read.
+        </span>
+        <button
+          type="submit"
+          form={formId}
+          name="run"
+          value="1"
+          className="btn btn-secondary btn-sm"
+        >
+          Compare again
+        </button>
+      </div>
+    </details>
+  );
+}
+
 export function DataCompare({
   result,
   allowDataLoss,
+  dataTables,
+  formId,
 }: {
   result: DataCompareReport;
   /**
@@ -130,6 +301,14 @@ export function DataCompare({
    * states what a sync would cost and claims nothing about what will run.
    */
   allowDataLoss?: boolean;
+  /** The tables this run was limited to, or [] for all of them. */
+  dataTables?: ReadonlyArray<string>;
+  /**
+   * The id of the form the table picker submits through. Leave it undefined on
+   * a view with no such form — an export, a read-only copy — and the picker is
+   * left out rather than rendered as controls that do nothing.
+   */
+  formId?: string;
 }) {
   if (result.error) {
     return (
@@ -298,13 +477,15 @@ export function DataCompare({
               <span className="section-title">Contents differ</span>
             </div>
             {different.map((table) => (
-              <DataRow
-                key={table.table}
-                kind="chg"
-                table={table.table}
-                detail={differenceDetail(table)}
-                note={table.note}
-              />
+              <div key={table.table}>
+                <DataRow
+                  kind="chg"
+                  table={table.table}
+                  detail={differenceDetail(table)}
+                  note={table.note}
+                />
+                {table.sample && <SampleRows sample={table.sample} />}
+              </div>
             ))}
           </div>
         )}
@@ -397,6 +578,14 @@ export function DataCompare({
           </details>
         )}
       </details>
+
+      {formId && (
+        <TablePicker
+          tables={result.tables.map((table) => table.table)}
+          selected={dataTables ?? []}
+          formId={formId}
+        />
+      )}
 
       <div className="help flex items-center gap-2">
         <CheckIcon size={12} />

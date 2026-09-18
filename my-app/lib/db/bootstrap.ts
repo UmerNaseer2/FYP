@@ -3,6 +3,8 @@ import "./models";
 import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
+import { THRESHOLD_KEYS } from "../perf-thresholds";
+import { DEFAULT_EXECUTE_ROLE } from "../connection-access";
 
 /**
  * Create the app's own tables, once per process.
@@ -17,8 +19,9 @@ import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
  * happened to own, and each route calling the two or three it thought it
  * needed. Getting that wrong was silent until a JOIN hit a table nobody had
  * asked for yet. Now the models ARE the schema (lib/db/models.ts) and one
- * `sync()` creates all ten tables in dependency order, so a caller cannot ask
- * for half a database.
+ * `sync()` creates every one of them in dependency order, so a caller cannot ask
+ * for half a database. The count is deliberately not written here: it was "six"
+ * and then "ten" in this comment while the models file said otherwise.
  *
  * Three things sync() cannot express, which is why there is anything below it:
  *
@@ -44,6 +47,9 @@ const ENVIRONMENT_SQL_LIST = ENVIRONMENTS.map((e) => `'${e}'`).join(", ");
 
 /** The drift-source list as a SQL literal, generated the same way. */
 const DRIFT_SOURCE_SQL_LIST = DRIFT_SOURCE_VALUES.map((s) => `'${s}'`).join(", ");
+
+/** The threshold keys as a SQL literal, generated the same way. */
+const THRESHOLD_KEY_SQL_LIST = THRESHOLD_KEYS.map((k) => `'${k}'`).join(", ");
 
 /**
  * Add a CHECK constraint, tolerating the (normal) case where it is already
@@ -136,6 +142,37 @@ async function addConstraints(): Promise<void> {
     "deploy_approvals",
     "deploy_approvals_action_check",
     "action IN ('deploy', 'revert')"
+  );
+  // The score band, so a row can never say "excellent" — a word no part of the
+  // app knows how to draw. bandFor() in lib/query-score.ts is the only thing
+  // that produces this value and it can only produce these three.
+  await addCheckConstraint(
+    "query_history",
+    "query_history_band_check",
+    "band IN ('good', 'fair', 'poor')"
+  );
+  // A score outside 0–100 is arithmetic that went wrong upstream, and it would
+  // be drawn as a bar off the end of its track.
+  await addCheckConstraint(
+    "query_history",
+    "query_history_score_check",
+    "score >= 0 AND score <= 100"
+  );
+  // An estimate has no timing and no row count; a measured run has both. This
+  // is that rule in the database, so a row cannot claim to be measured while
+  // carrying nothing measured, which is the shape that would quietly average
+  // into every trend as a zero.
+  await addCheckConstraint(
+    "query_history",
+    "query_history_measured_check",
+    "measured OR (exec_time_ms IS NULL AND rows_returned IS NULL)"
+  );
+  // Only keys the app knows how to evaluate. A row with an unknown key is a
+  // rule that can never fire, which is worse than no rule: it looks set.
+  await addCheckConstraint(
+    "perf_thresholds",
+    "perf_thresholds_key_check",
+    `threshold_key IN (${THRESHOLD_KEY_SQL_LIST})`
   );
 }
 
@@ -261,6 +298,34 @@ async function backfillOlderTables(): Promise<void> {
   await metadataPool.query(
     `ALTER TABLE deploy_approvals
        ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'deploy'`
+  );
+
+  // Which columns of which tables an analysed query searched on, read off its
+  // plan. Nullable and with no default on purpose: a row stored before this
+  // existed genuinely does not know, and an empty array would tell the
+  // composite-index rule that the query searched on nothing at all.
+  await metadataPool.query(
+    `ALTER TABLE query_history ADD COLUMN IF NOT EXISTS searched_columns JSONB`
+  );
+
+  // Which table on a target database names the applications it hosts, for the
+  // per-application script restriction (lib/application-targeting.ts).
+  // Nullable with no default on purpose: a default would be this app guessing
+  // a table name on somebody's database, and a wrong guess there reads as
+  // "this target hosts nothing" and blocks every restricted script.
+  await metadataPool.query(
+    `ALTER TABLE connections ADD COLUMN IF NOT EXISTS application_table TEXT`
+  );
+
+  // Which role may run a migration against this connection. Defaulted rather
+  // than nullable, and defaulted to the setting every existing row already had
+  // in practice: before this column, any editor could deploy to any saved
+  // connection. Backfilling 'none' would have been the safe-looking choice and
+  // the wrong one — it would stop every deployment in an existing install with
+  // no message anybody could act on. See lib/connection-access.ts.
+  await metadataPool.query(
+    `ALTER TABLE connections
+       ADD COLUMN IF NOT EXISTS execute_role TEXT NOT NULL DEFAULT '${DEFAULT_EXECUTE_ROLE}'`
   );
 
   // When an approval stops authorising its run. No default and no NOT NULL:

@@ -36,7 +36,7 @@ import {
 /** Columns safe to return to the browser. */
 const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
                 (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
-                ssl, ssl_mode, environment,
+                ssl, ssl_mode, environment, application_table, execute_role,
                 last_tested_at, last_test_ok, last_test_version,
                 last_test_latency_ms, last_test_error`;
 
@@ -123,8 +123,8 @@ export async function POST(request: NextRequest) {
     const result = await pool.query(
       `
       INSERT INTO connections
-      (name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      (name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment, application_table, execute_role)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -139,6 +139,8 @@ export async function POST(request: NextRequest) {
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
         value.environment,
+        value.application_table,
+        value.execute_role,
       ]
     );
 
@@ -337,8 +339,10 @@ export async function PUT(request: NextRequest) {
           END,
           ssl = $10,
           ssl_mode = $11,
-          environment = $12
-      WHERE id = $13
+          environment = $12,
+          application_table = $13,
+          execute_role = $14
+      WHERE id = $15
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -355,6 +359,8 @@ export async function PUT(request: NextRequest) {
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
         value.environment,
+        value.application_table,
+        value.execute_role,
         id,
       ]
     );

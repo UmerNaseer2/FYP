@@ -17,6 +17,7 @@
 import { compareVersions, highestVersion } from "./script-status";
 import { timelineKey } from "./version-timeline";
 import { readApplyFailure, type ApplyFailure } from "./apply-failure";
+import { readArchivedVersions, type ArchivedVersion } from "./registry-report";
 
 /** One applied-script entry from a schema's script_patch ledger. */
 export type LedgerEntry = {
@@ -225,7 +226,16 @@ export function cutForwardOnly(entries: LedgerEntry[], targetEntries: LedgerEntr
  * How a replay's call to the apply route ended. A failure is read by
  * readApplyFailure (lib/apply-failure), the reading Deploy uses too.
  */
-export type ReplayOutcome = { ok: true } | { ok: false; failure: ApplyFailure; error: string };
+export type ReplayOutcome =
+  /**
+   * `registry` is what the apply route recorded in GitHub for this replay
+   * (spec 07 — automatically push approved scripts). Usually one entry: a
+   * replayed version's SQL comes from the Source's ledger, so the Target's
+   * registry folder has no file for it until the route writes one. Empty from
+   * a server that predates that, which reads correctly as "nothing to say".
+   */
+  | { ok: true; registry: ArchivedVersion[] }
+  | { ok: false; failure: ApplyFailure; error: string };
 
 /** An apply-route answer as JSON. Only the fields named here are read. */
 export type ReplayAnswer = {
@@ -260,7 +270,9 @@ export function readReplayAnswer(status: number | null, answer: ReplayAnswer | n
       error: `The server answered ${status} with a reply this page could not read.`,
     };
   }
-  if (status >= 200 && status < 300 && answer.success === true) return { ok: true };
+  if (status >= 200 && status < 300 && answer.success === true) {
+    return { ok: true, registry: readArchivedVersions(answer.registry) };
+  }
   const error =
     typeof answer.error === "string" && answer.error.trim() !== ""
       ? answer.error
