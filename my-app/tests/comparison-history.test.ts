@@ -16,6 +16,10 @@ import type { ChangeRow } from "@/lib/compare-export";
  * row is tested separately. What this file is about is the one question the
  * feature exists to answer: given what the last run found and what this one
  * found, what actually moved?
+ *
+ * What is NOT here:
+ *  - The panel that draws this answer on the compare screen:
+ *    tests/component-compare-history.test.tsx.
  */
 
 function change(over: Partial<ChangeRow> = {}): ChangeRow {
