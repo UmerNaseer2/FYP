@@ -266,6 +266,10 @@ export function SeverityFilter({
           <button
             key={o.key}
             type="button"
+            // Which chip is on is otherwise carried by its colour alone, and a
+            // screen reader hears four identical buttons. components/ui's own
+            // FilterPill has said this for its bars from the start.
+            aria-pressed={active}
             // A severity with nothing in it is a filter onto an empty list.
             disabled={o.count === 0}
             onClick={() => onChange(o.key)}
