@@ -39,7 +39,9 @@ const OK_ROUTES = [
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
 
-const drifted = (onDone?: () => void) => (
+// onDone is required on the bar, so the helper always supplies one. Tests that
+// assert on it pass their own.
+const drifted = (onDone: () => void = jest.fn()) => (
   <DriftResolutionBar
     trackedSchemaId={7}
     state="drifted"
@@ -64,7 +66,14 @@ describe("drift resolution bar", () => {
 
   it("offers only a re-check once the schema is back in sync", () => {
     setRoutes(OK_ROUTES);
-    render(<DriftResolutionBar trackedSchemaId={7} state="in_sync" compareHref="/compare?schema=7" />);
+    render(
+      <DriftResolutionBar
+        trackedSchemaId={7}
+        state="in_sync"
+        compareHref="/compare?schema=7"
+        onDone={jest.fn()}
+      />
+    );
 
     // Nothing to resolve, so nothing that resolves — and the remaining button
     // is named for what it now means.
@@ -113,23 +122,20 @@ describe("drift resolution bar", () => {
     );
   });
 
-  it("tells a self-fetching screen to reload, and refreshes the router without one", async () => {
+  it("tells the screen to reload after a write", async () => {
     setRoutes(OK_ROUTES);
     const onDone = jest.fn();
     render(drifted(onDone));
 
     fireEvent.click(screen.getByRole("button", { name: /Acknowledge/ }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    // A screen holding its data in state would see nothing from a router
-    // refresh, so the caller saying which it is has to actually decide it.
+    // There is no router.refresh() fallback behind this any more, and the bar
+    // no longer accepts a missing onDone. Every screen that renders it holds
+    // its data in state, where a router refresh repaints nothing — so the path
+    // that used to be taken when onDone was absent did nothing visible while
+    // reporting success. The caller has to say how to reload, and this is the
+    // assertion that the bar does not quietly do something else instead.
     expect(routerCalls.refresh).toBe(0);
-
-    cleanup();
-    resetPageState();
-    setRoutes(OK_ROUTES);
-    render(<DriftResolutionBar trackedSchemaId={7} state="drifted" compareHref={null} />);
-    fireEvent.click(screen.getByRole("button", { name: /Acknowledge/ }));
-    await waitFor(() => expect(routerCalls.refresh).toBe(1));
   });
 
   it("shows the server's reason when an action is refused, and lets go of the lock", async () => {

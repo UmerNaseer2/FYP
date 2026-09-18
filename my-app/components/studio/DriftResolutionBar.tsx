@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { CompareIcon, CheckIcon } from "@/components/ui/icons";
 import { RecheckDriftButton } from "./RecheckDriftButton";
@@ -19,9 +18,9 @@ type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
  *     without changing the database.
  *   • Re-check — re-runs the drift check (shared RecheckDriftButton island).
  *
- * Every write has to make the hero and the diff above re-read. A screen that
- * fetches its own data passes `onDone` and reloads it; without one this falls
- * back to router.refresh(), which is what a server-rendered caller needs.
+ * Every write has to make the hero and the diff above re-read, so `onDone` is
+ * required rather than falling back to a router refresh — see
+ * RecheckDriftButton, which this bar hands it straight through to.
  */
 export function DriftResolutionBar({
   trackedSchemaId,
@@ -32,9 +31,9 @@ export function DriftResolutionBar({
   trackedSchemaId: number;
   state: DriftState;
   compareHref: string | null;
-  onDone?: () => void;
+  /** Make the screen re-read after any of the writes below. */
+  onDone: () => void;
 }) {
-  const router = useRouter();
   const [confirmRebaseline, setConfirmRebaseline] = useState(false);
   const [busy, setBusy] = useState<null | "rebaseline" | "acknowledge">(null);
   // The nested re-check button runs its own POST, so `busy` above cannot see it.
@@ -61,8 +60,7 @@ export function DriftResolutionBar({
         setError(data?.error ?? "Action failed.");
         return;
       }
-      if (onDone) onDone();
-      else router.refresh();
+      onDone();
     } catch {
       setError("Network error during the action.");
     } finally {

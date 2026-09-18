@@ -121,8 +121,20 @@ beforeEach(() => resetPageState());
 
 type Overrides = Partial<Parameters<typeof RecheckDriftButton>[0]>;
 
+/*
+  onDone is required on the component, so the helper always has one. Tests that
+  care about it pass their own; `defaultDone` is for the rest, and is reset in
+  beforeEach so a leftover count cannot travel between tests.
+*/
+let defaultDone: jest.Mock;
+beforeEach(() => {
+  defaultDone = jest.fn();
+});
+
 function button(over: Overrides = {}) {
-  return render(<RecheckDriftButton trackedSchemaId={SCHEMA_ID} {...over} />);
+  return render(
+    <RecheckDriftButton trackedSchemaId={SCHEMA_ID} onDone={defaultDone} {...over} />
+  );
 }
 
 const check = (name = "Check drift now") => screen.getByRole("button", { name });
@@ -231,7 +243,11 @@ describe("running a check", () => {
     expect(onBusyChange.mock.calls).toEqual([[true], [false]]);
   });
 
-  test("hands back to the caller when it was given a way to", async () => {
+  test("hands back to the caller, which is the only way it can report", async () => {
+    // There is no router.refresh() fallback any more. Every screen that shows
+    // drift holds its data in state, where a router refresh repaints nothing —
+    // so a button that quietly took that path on a missing onDone looked like
+    // it had worked and had not. onDone is required instead.
     const onDone = jest.fn();
     setRoutes([CHECKED]);
     button({ onDone });
@@ -241,19 +257,6 @@ describe("running a check", () => {
 
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(routerCalls.refresh).toBe(0);
-  });
-
-  test("refreshes the server-rendered screen when it was not", async () => {
-    // A screen holding its data in state would see nothing from a router
-    // refresh, and one rendered on the server sees nothing without it — so the
-    // caller decides rather than this button guessing.
-    setRoutes([CHECKED]);
-    button();
-
-    fireEvent.click(check());
-    await flushAsync();
-
-    expect(routerCalls.refresh).toBe(1);
   });
 
   test("treats an unreachable database as an answer, not a failure", async () => {
@@ -292,7 +295,9 @@ describe("when the caller has a write of its own running", () => {
 
   test("offers itself again the moment the caller lets go", () => {
     const view = button({ disabled: true });
-    view.rerender(<RecheckDriftButton trackedSchemaId={SCHEMA_ID} disabled={false} />);
+    view.rerender(
+      <RecheckDriftButton trackedSchemaId={SCHEMA_ID} onDone={defaultDone} disabled={false} />
+    );
     expect(check()).toBeEnabled();
   });
 });
@@ -455,6 +460,9 @@ describe("trying again", () => {
     await flushAsync();
 
     expect(fetchCalls).toHaveLength(2);
-    expect(routerCalls.refresh).toBe(2);
+    // Twice, not once: a second check that runs but never reports leaves the
+    // screen showing the first answer.
+    expect(defaultDone).toHaveBeenCalledTimes(2);
+    expect(routerCalls.refresh).toBe(0);
   });
 });

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui";
 import { RefreshIcon } from "@/components/ui/icons";
 
@@ -9,11 +8,13 @@ import { RefreshIcon } from "@/components/ui/icons";
  * Re-runs the drift check via POST /api/lineage/drift, then tells the screen
  * around it to re-read.
  *
- * How it does that depends on who is asking. A screen that fetches its own data
- * passes `onDone` and reloads it; without one the button falls back to
- * router.refresh(), which is what a server-rendered screen needs. Refreshing
- * the router on a screen that holds its data in state would do nothing visible,
- * so the caller says which it is rather than the button guessing.
+ * `onDone` is required. It used to be optional, falling back to
+ * router.refresh() for a server-rendered caller — but every screen that shows
+ * drift fetches its own data into state, and refreshing the router on one of
+ * those repaints nothing while looking like it worked. A button whose whole
+ * purpose is to make the page show a new answer must not have a quiet path
+ * where it does not, so the type asks instead of guessing. A server-rendered
+ * caller would pass `() => router.refresh()` and be explicit about it.
  *
  * `disabled` and `onBusyChange` exist for callers that put this button beside
  * their OWN writes to the same schema — DriftResolutionBar does. This check
@@ -36,13 +37,13 @@ export function RecheckDriftButton({
   trackedSchemaId: number;
   variant?: "primary" | "secondary";
   label?: string;
-  onDone?: () => void;
+  /** Make the screen re-read. Required — see above. */
+  onDone: () => void;
   /** Another write to this schema is in flight — don't start a check. */
   disabled?: boolean;
   /** Told when this check starts and stops, so the caller can block its own. */
   onBusyChange?: (busy: boolean) => void;
 }) {
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,8 +63,7 @@ export function RecheckDriftButton({
         return;
       }
       // The check wrote a drift_event; make the screen show it.
-      if (onDone) onDone();
-      else router.refresh();
+      onDone();
     } catch {
       setError("Network error during the drift check.");
     } finally {

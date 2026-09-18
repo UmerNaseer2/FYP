@@ -78,8 +78,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON in request body." }, { status: 400 });
   }
 
+  // The same test the GET above uses, rather than a bare falsy check. `!id`
+  // turns away 0, NaN and a missing field but lets -5 and 2.7 through to a
+  // database lookup that can only ever answer 404 — so the two verbs on this
+  // one route used to disagree about what a valid id is, and the refusal a
+  // caller got for the same bad input depended on which one it sent.
   const trackedSchemaId = Number(body.trackedSchemaId);
-  if (!trackedSchemaId) {
+  if (!Number.isInteger(trackedSchemaId) || trackedSchemaId <= 0) {
     return NextResponse.json({ error: "trackedSchemaId is required." }, { status: 400 });
   }
 
