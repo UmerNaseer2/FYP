@@ -21,7 +21,11 @@
  *    covered by any test in this file.
  *  - How the SQL is graded. gradeSql (lib/change-type) has its own suite, and
  *    the fixtures below use it only to reach a known suggestion.
- *  - The draft banner handed over from Performance, which is its own component.
+ *  - The draft banner handed over from Performance, which is its own
+ *    component: tests/component-migration-draft-banner.test.tsx. What this
+ *    page contributes is loadDraft, which turns an accepted offer into the
+ *    editor's own state — it has no test of its own, and planDraftLoad,
+ *    which decides what it sets, is in tests/migration-draft.test.ts.
  */
 
 import "@testing-library/jest-dom";
