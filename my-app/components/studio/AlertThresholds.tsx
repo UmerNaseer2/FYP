@@ -6,6 +6,7 @@ import { AlertCircleIcon, CheckIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
 import { roleAtLeast } from "@/lib/auth-mode";
 import {
+  THRESHOLDS,
   THRESHOLD_KEYS,
   validateThreshold,
   type ThresholdDefinition,
@@ -69,10 +70,19 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
         );
         const data = await res.json();
         if (cancelled) return;
-        if (res.ok) {
-          const view = data as ThresholdsView;
+        const view = data as ThresholdsView;
+        if (res.ok && Array.isArray(view?.settings) && view?.definitions) {
           setLoaded({ key, view, error: null });
           setDraft(toDraft(view));
+        } else if (res.ok) {
+          // An answer arrived, so blaming the network would send whoever reads
+          // this looking in the wrong place. Without this the shape below threw
+          // and landed in the catch, which says the server was never reached.
+          setLoaded({
+            key,
+            view: null,
+            error: "The server answered, but not with the alert thresholds.",
+          });
         } else {
           setLoaded({
             key,
@@ -106,15 +116,19 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
     );
   }
 
-  if (current === null || draft === null) {
-    return (
-      <Card className="p-4 space-y-3">
-        <Skeleton width={220} height={16} />
-        <Skeleton width="100%" height={60} />
-        <Skeleton width="100%" height={60} />
-      </Card>
-    );
-  }
+  const skeleton = (
+    <Card className="p-4 space-y-3">
+      <Skeleton width={220} height={16} />
+      <Skeleton width="100%" height={60} />
+      <Skeleton width="100%" height={60} />
+    </Card>
+  );
+
+  // A read that failed has no draft to fill, so the skeleton cannot wait for
+  // one. Waiting on the draft here left a failed read loading for ever and put
+  // the message below out of reach on a first load, which is when a wrong
+  // connection is most likely to be the reason it failed.
+  if (current === null) return skeleton;
 
   const view = current.view;
   if (!view) {
@@ -128,6 +142,8 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
       </div>
     );
   }
+
+  if (draft === null) return skeleton;
 
   /** Every problem the form can see, keyed so each row can show its own. */
   const problems = validateDraft(draft);
@@ -353,6 +369,15 @@ function toDraft(view: ThresholdsView): Draft {
 function validateDraft(draft: Draft): Partial<Record<ThresholdKey, string>> {
   const problems: Partial<Record<ThresholdKey, string>> = {};
   for (const k of THRESHOLD_KEYS) {
+    // An empty box is not a zero. Number("") is 0, and three of these rules
+    // take 0 as their minimum, so without this a cleared box saved quietly as
+    // 0 — a score rule that can never fire, or a dead-row rule that fires on
+    // everything. Checking the text before it is turned into a number is the
+    // only place the difference between "0" and "" still exists.
+    if (draft[k].text.trim() === "") {
+      problems[k] = `${THRESHOLDS[k].label} needs a number.`;
+      continue;
+    }
     const problem = validateThreshold(k, Number(draft[k].text));
     if (problem) problems[k] = problem;
   }
@@ -361,12 +386,15 @@ function validateDraft(draft: Draft): Partial<Record<ThresholdKey, string>> {
 
 /** 0.9 → "90". An unparseable box is left alone so typing is not fought. */
 function percentText(stored: string): string {
+  if (stored.trim() === "") return stored;
   const n = Number(stored);
   return Number.isFinite(n) ? String(Math.round(n * 100)) : stored;
 }
 
-/** "90" → "0.9", the reverse of the above. */
+/** "90" → "0.9", the reverse of the above. An emptied box stays empty rather
+ *  than becoming "0", which would be a number nobody typed. */
 function ratioText(shown: string): string {
+  if (shown.trim() === "") return shown;
   const n = Number(shown);
   return Number.isFinite(n) ? String(n / 100) : shown;
 }

@@ -19,6 +19,7 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import PerformancePage from "@/app/(studio)/performance/page";
+import { THRESHOLDS } from "@/lib/perf-thresholds";
 import {
   fetchCalls,
   resetPageState,
@@ -97,7 +98,12 @@ describe("which tab the Performance screen opens on", () => {
 
   it("opens the tab named in the address", async () => {
     setSearchParams("tab=alerts");
-    setRoutes([...baseRoutes(), { match: "/api/performance/thresholds", body: { rules: [] } }]);
+    setRoutes([...baseRoutes(), {
+        match: "/api/performance/thresholds",
+        // The shape the route really returns. A stub the panel cannot read
+        // leaves it showing an error, which is not the tab this test opened.
+        body: { connectionName: "Main", schema: "public", settings: [], definitions: THRESHOLDS },
+      }]);
     render(<PerformancePage />);
 
     expect(screen.getByRole("heading", { name: "Alert thresholds" })).toBeInTheDocument();
