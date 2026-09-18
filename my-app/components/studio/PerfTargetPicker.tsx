@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui";
 import { AlertCircleIcon } from "@/components/ui/icons";
@@ -264,8 +265,14 @@ export function PerfTargetPicker({
           <div>
             <div className="title">No PostgreSQL connections saved</div>
             <div className="body">
-              Performance advice is read from a live server. Save a PostgreSQL
-              connection first, then come back.
+              Performance advice is read from a live server, so there is nothing
+              to read yet.{" "}
+              {/* "then come back" is an instruction with no way to follow it.
+                  The link is the come-back. */}
+              <Link href="/connections" className="underline">
+                Save a PostgreSQL connection
+              </Link>{" "}
+              and this picker will find it.
             </div>
           </div>
         </div>

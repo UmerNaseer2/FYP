@@ -2970,9 +2970,21 @@ export default function DeployPage() {
                 />
                 {connectionsLoaded && connections.length === 0 && (
                   <p className="help mt-1">
-                    {connectionsFailed
-                      ? "Could not read your saved connections. Reload the page to try again."
-                      : "No connections saved yet. Add one on the Connections page first."}
+                    {connectionsFailed ? (
+                      "Could not read your saved connections. Reload the page to try again."
+                    ) : (
+                      // Naming the screen without linking to it leaves the one
+                      // person who most needs a next step — somebody on their
+                      // first run — hunting the sidebar for a word they were
+                      // just told. Compare's empty state has always linked.
+                      <>
+                        No connections saved yet.{" "}
+                        <Link href="/connections" className="underline">
+                          Add one on Connections
+                        </Link>{" "}
+                        first.
+                      </>
+                    )}
                   </p>
                 )}
                 {activeConn && (
