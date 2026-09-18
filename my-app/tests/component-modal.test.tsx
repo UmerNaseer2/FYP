@@ -42,20 +42,10 @@
  *  - The `|| el === document.activeElement` fallback is held to the case it
  *    exists for (a focused fixed-position control, which a real browser gives
  *    no offset parent) and no further.
- *  - The `if (blocked) return;` inside the confirm button's own onClick.
- *    Nothing can reach it: the button carries the disabled attribute while it
- *    is blocked, and React does not deliver a click to a disabled button — so
- *    the attribute stops the click first and removing the guard leaves this
- *    suite green. Removing the attribute does not, which is the honest reading
- *    of the tests below. The guard still earns its place: a later switch to
- *    aria-disabled, which is what you use when a blocked control must stay
- *    focusable so a screen reader can find it, would leave the button live and
- *    that line is what would stop it then.
- *  - RiskGate and MigrationWorkbench write their own acknowledgement tick
- *    rather than using ConfirmDialog's `acknowledge`, so nothing in the app
- *    passes that prop today. It is tested anyway: it is a documented prop on a
- *    shared primitive, and the first caller to reach for it will be doing
- *    something worth gating.
+ *  - ConfirmDialog no longer has an `acknowledge` prop. It was never passed:
+ *    RiskGate, MigrationWorkbench and the Script Editor all write their own
+ *    acknowledgement tick, because each of them gates an inline panel rather
+ *    than a dialog. The last test below is what holds it gone.
  */
 
 import "@testing-library/jest-dom";
@@ -512,43 +502,17 @@ describe("the confirm gate", () => {
   });
 });
 
-describe("the extra tick some actions ask for", () => {
-  const ACK = "I understand this runs against production.";
-
-  test("holds the confirm button until the box is ticked", () => {
-    render(
-      <ConfirmDialog
-        open
-        onClose={() => {}}
-        onConfirm={() => {}}
-        title="Run on production?"
-        acknowledge={ACK}
-      />
-    );
-    expect(screen.getByText(ACK)).toBeInTheDocument();
-    expect(button("Confirm")).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("checkbox"));
-    expect(button("Confirm")).toBeEnabled();
-  });
-
-  test("tells the caller the tick was given", () => {
-    const onConfirm = jest.fn();
-    render(
-      <ConfirmDialog
-        open
-        onClose={() => {}}
-        onConfirm={onConfirm}
-        title="Run on production?"
-        acknowledge={ACK}
-      />
-    );
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(button("Confirm"));
-    expect(onConfirm).toHaveBeenCalledWith(true);
-  });
-
-  test("a dialog that never asked reports no tick rather than a silent yes", () => {
+describe("what the dialog does NOT do", () => {
+  test("never renders a tick-this-first checkbox", () => {
+    // ConfirmDialog used to carry an `acknowledge` prop that put a checkbox in
+    // front of the confirm button and disabled it until the box was ticked.
+    // Nothing ever passed it — the three screens that gate on a tick use an
+    // inline panel, not a dialog — so it went, along with the `acknowledged`
+    // argument it made every caller's onConfirm accept.
+    //
+    // This stays as the guard on that: a dialog with a hidden disabled state is
+    // exactly the kind of thing that gets put back by accident, and a confirm
+    // button that silently refuses to fire is very hard to read from outside.
     const onConfirm = jest.fn();
     render(
       <ConfirmDialog open onClose={() => {}} onConfirm={onConfirm} title="Re-baseline?" />
@@ -556,25 +520,6 @@ describe("the extra tick some actions ask for", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(button("Confirm")).toBeEnabled();
     fireEvent.click(button("Confirm"));
-    expect(onConfirm).toHaveBeenCalledWith(false);
-  });
-
-  test("asks again the next time it is opened", () => {
-    const props = {
-      onClose: () => {},
-      onConfirm: () => {},
-      title: "Run on production?",
-      acknowledge: ACK,
-    };
-    const { rerender } = render(<ConfirmDialog open {...props} />);
-    fireEvent.click(screen.getByRole("checkbox"));
-    expect(button("Confirm")).toBeEnabled();
-
-    rerender(<ConfirmDialog open={false} {...props} />);
-    rerender(<ConfirmDialog open {...props} />);
-    // A tick carried over from the last opening is consent the person gave to
-    // a different question.
-    expect(screen.getByRole("checkbox")).not.toBeChecked();
-    expect(button("Confirm")).toBeDisabled();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 });
