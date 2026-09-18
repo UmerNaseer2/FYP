@@ -14,11 +14,28 @@ const createJestConfig = nextJest({ dir: "./" });
 
 /** @type {import("jest").Config} */
 const config = {
-  // Node, not jsdom. Everything under test here is plain logic — SQL
-  // generation, diffing, guards, parsing. Nothing touches the DOM, so a
-  // browser environment would only cost start-up time.
+  // Node by DEFAULT, not for everything. Most of what is under test here is
+  // plain logic — SQL generation, diffing, guards, parsing — and a browser
+  // environment would only cost those suites start-up time.
+  //
+  // The page suites (tests/page-*.test.tsx) do need a DOM, and each one asks
+  // for it in its own first line:
+  //
+  //     /** @jest-environment jsdom */
+  //
+  // Per file rather than a second `projects` entry on purpose. next/jest hands
+  // back a config function rather than an object, so splitting this into two
+  // projects means calling it twice and keeping two copies of everything below
+  // in step; the docblock is one line in the files that need it and leaves the
+  // rest untouched.
   testEnvironment: "node",
-  testMatch: ["<rootDir>/tests/**/*.test.ts"],
+  // Loaded into every suite, node ones included, where it is a no-op — see the
+  // file. It covers the browser APIs jsdom leaves out, so a page test fails on
+  // what it is testing rather than on scrollIntoView not existing.
+  setupFilesAfterEnv: ["<rootDir>/tests/helpers/jsdom-gaps.ts"],
+  // .tsx as well as .ts: a test that renders a page is written in JSX, the
+  // same as the page.
+  testMatch: ["<rootDir>/tests/**/*.test.ts", "<rootDir>/tests/**/*.test.tsx"],
   // `next build` writes a second copy of the app — package.json included —
   // into .next/standalone. Jest crawls the whole project to build its module
   // map, finds two packages both named "my-app", and warns about a naming

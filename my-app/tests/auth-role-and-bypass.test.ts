@@ -96,7 +96,6 @@ describe("the auth bypass switch", () => {
       // again for each spelling. require() and not import: an import is hoisted
       // out of this callback and evaluated once, which is exactly what has to
       // not happen here.
-      /* eslint-disable-next-line @typescript-eslint/no-require-imports */
       result = (require("../lib/auth-mode") as { BYPASS_AUTH: boolean }).BYPASS_AUTH;
     });
 

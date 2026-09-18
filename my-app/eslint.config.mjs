@@ -19,6 +19,15 @@ const eslintConfig = defineConfig([
     files: ["**/*.cjs"],
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
+  {
+    // Same rule, different reason. Jest hoists every jest.mock() call above the
+    // imports in its file, so a factory that referenced an imported binding
+    // would run before that binding existed — require() inside the factory is
+    // the documented way to write one, and the page suites all need it to stand
+    // in for next/navigation and next-auth/react.
+    files: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default eslintConfig;
