@@ -26,9 +26,11 @@ import {
 // would move a newer schema backwards. That is worth a colour, not a footnote.
 // Unless the two structures already match: then there is no migration, nothing
 // moves, and the bar says that instead of warning about a push that can't happen.
-// When neither side records a version — the common case — the bar shrinks to
-// one line that says so, because "we looked and found nothing" is information
-// and silently omitting the bar would read as "there was nothing to look for".
+// When neither side has a version table — the common case — the bar shrinks to
+// one line carrying each side's own reason, because "we looked and found
+// nothing" is information, silently omitting the bar would read as "there was
+// nothing to look for", and a read that failed is not the same answer as a
+// schema that keeps no versions.
 //
 // script_patch keeps separate script groups, and versions compare only inside
 // one group. When both sides have groups the verdict is read group by group,
@@ -206,15 +208,26 @@ export function VersionDetectBar({
   const sourceHas = Boolean(source && source.table);
   const targetHas = Boolean(target && target.table);
 
-  // Neither schema tracks its own versions. Say it in one line and give the
-  // space back to the diff, which is the whole answer in that case.
+  // Neither side has a version table to compare. Say it in one line and give
+  // the space back to the diff, which is the whole answer in that case.
+  //
+  // Each side's own message rather than one sentence covering both: a schema
+  // with no version table and a schema whose version table could not be read
+  // both arrive here with no table name, and they are different problems for
+  // whoever has to act on this screen. Only the detector's message tells them
+  // apart, which is why the full bar prints it too — a line reading "neither
+  // schema keeps a version table" would state as fact something a failed read
+  // never established.
   if (!sourceHas && !targetHas) {
     return (
       <div className="verdet verdet--quiet mb-3">
         <span className="verdet__title">Declared versions</span>
         <span className="verdet__why">
-          Neither schema keeps a version table, so there is no version to compare —
-          the structural diff below is the whole answer.
+          No version to compare, so the structural diff below is the whole answer.
+        </span>
+        <span className="verdet__from">
+          <span className="mono">{sourceName}</span>: {source?.message ?? "not read"} ·{" "}
+          <span className="mono">{targetName}</span>: {target?.message ?? "not read"}
         </span>
       </div>
     );
