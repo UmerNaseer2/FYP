@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Button,
@@ -157,6 +157,13 @@ export default function DashboardPage() {
   const [schemaOptions, setSchemaOptions] = useState<string[]>([]);
   const [schemaPhase, setSchemaPhase] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  // Which schema-list request is the current one. Picking a second connection
+  // while the first is still loading used to let the SLOWER answer land last
+  // and overwrite the newer list, so the box offered schemas that live on a
+  // connection nobody had selected any more — and tracking one of them failed
+  // with "schema not found" naming a schema this screen had just offered.
+  // Same guard the compare screen's slot pickers take.
+  const latestSchemaRequest = useRef(0);
   const [trackSchema, setTrackSchema] = useState("");
   const [trackLabel, setTrackLabel] = useState("");
   // Seeded from the chosen connection, then editable: one server can host a
@@ -257,6 +264,11 @@ export default function DashboardPage() {
     setSchemaOptions([]);
     setSchemaError(null);
     setTrackError(null);
+    // Claimed BEFORE the empty-id exit, not after. Clearing the picker is also
+    // a newer answer than a request still in flight: leaving the counter alone
+    // here let that older request land and fill the box for a connection that
+    // is no longer selected at all.
+    const request = ++latestSchemaRequest.current;
     if (!id) {
       setSchemaPhase("idle");
       return;
@@ -267,6 +279,10 @@ export default function DashboardPage() {
         cache: "no-store",
       });
       const data = await res.json();
+      // Every exit below is guarded, not just the success one: a stale ERROR
+      // would paint a working connection as broken just as wrongly as a stale
+      // list paints it with the wrong schemas.
+      if (request !== latestSchemaRequest.current) return;
       if (!res.ok) {
         setSchemaError(data.error ?? "Could not list schemas for this connection.");
         setSchemaPhase("error");
@@ -275,6 +291,7 @@ export default function DashboardPage() {
       setSchemaOptions(Array.isArray(data.schemas) ? data.schemas : []);
       setSchemaPhase("ready");
     } catch {
+      if (request !== latestSchemaRequest.current) return;
       setSchemaError("Network error while listing schemas.");
       setSchemaPhase("error");
     }

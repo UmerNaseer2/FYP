@@ -261,15 +261,36 @@ export default function AdminPage() {
                         onChange={(value) => void updateRole(u.id, value)}
                         className="flex-1 sm:flex-none sm:w-[128px]"
                       />
+                      {/* `deleting !== null`, not `deleting === u.id`. A removal
+                          already running is the reason nobody may start another:
+                          `deleting` holds a single id, so confirming a second
+                          removal overwrote the first one's marker and the first
+                          one's `finally` then cleared the second's — re-enabling
+                          a row whose DELETE was still in flight. Opening the
+                          dialog was enough to break it on its own: the first
+                          removal finishing runs `setRemoveTarget(null)`, which
+                          closed a confirm dialog the user had just opened for
+                          somebody else. */}
                       <Button
                         variant="ghost"
                         size="sm"
                         aria-label={`Remove ${u.email}`}
-                        title="Remove access"
-                        disabled={deleting === u.id}
+                        title={
+                          deleting !== null
+                            ? "Waiting for the current removal to finish"
+                            : "Remove access"
+                        }
+                        disabled={deleting !== null}
                         onClick={() => setRemoveTarget(u)}
                       >
-                        <TrashIcon size={15} />
+                        {/* The only place the wait is visible. The dialog closes the
+                            instant it is confirmed, so its own button can never show
+                            it — the row has to. */}
+                        {deleting === u.id ? (
+                          <span className="text-[12px]">Removing…</span>
+                        ) : (
+                          <TrashIcon size={15} />
+                        )}
                       </Button>
                     </div>
                   )}
@@ -279,6 +300,9 @@ export default function AdminPage() {
           })}
       </div>
 
+      {/* No "Removing…" confirmLabel — ConfirmDialog runs onConfirm and closes
+          back to back, so a busy label on its own button could never be seen.
+          The row's own button carries the wait instead. */}
       <ConfirmDialog
         open={removeTarget !== null}
         onClose={() => setRemoveTarget(null)}
@@ -286,7 +310,7 @@ export default function AdminPage() {
         destructive
         title={removeTarget ? `Remove ${removeTarget.email}?` : "Remove user?"}
         description="This deletes their profile and role in this app. It does NOT remove their Microsoft/SSO login, so they could sign in again unless you also remove them from your identity provider."
-        confirmLabel={deleting !== null ? "Removing…" : "Remove access"}
+        confirmLabel="Remove access"
       />
     </div>
   );

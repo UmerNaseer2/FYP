@@ -64,7 +64,7 @@ Create `my-app/.env.local` (git-ignored, never commit it):
 | `DRIFT_SCHEDULER` | `off` stops the background drift loop; anything else leaves it on | no, defaults to on |
 | `APP_ENCRYPTION_KEY` | Encrypts saved database passwords at rest. With neither this nor `NEXTAUTH_SECRET` set, passwords are stored as plain text and the server only logs a warning | no, but set it |
 | `ALLOW_PRIVATE_DB_HOSTS` | `true` lets a production deployment dial loopback, unix sockets and RFC1918 addresses. Off, those are refused in production only, so local development still works | no, defaults to off |
-| `NEXT_PUBLIC_AUTH_BYPASS` | `false` (or `0`/`no`/`off`, any case) turns real sign-in on. Read at BUILD time, not run time — see §5 | no, defaults to bypass on |
+| `NEXT_PUBLIC_AUTH_BYPASS` | `true` (or `1`/`yes`/`on`, any case) skips login and signs you in as admin. Read at BUILD time, not run time — see §5 | no, defaults to real sign-in |
 
 Metadata tables are created on first use by `ensureMetadataSchema()`; there is no
 separate migration step for the tool's own storage.
@@ -366,22 +366,33 @@ Some of those are new enough to say where they live:
 
 ### Switched off or incomplete
 
-- **Authentication is bypassed on purpose, for testing.**
-  `NEXT_PUBLIC_AUTH_BYPASS` is not set to any of the off spellings below, so
-  `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
+- **Authentication can be bypassed for testing, and is here.**
+  `.env.local` and `docker-compose.yml` both set `NEXT_PUBLIC_AUTH_BYPASS=true`,
+  so `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
   `lib/auth-guard.ts` let every request through as an admin. The wiring
   underneath is complete: every API route except the NextAuth handler itself
   calls `requireViewer` / `requireEditor` / `requireAdmin`, and the `profiles`
-  table is created with the rest of the metadata schema. Setting `NEXT_PUBLIC_AUTH_BYPASS` to `false` — or `0`, `no`
-  or `off`, in any case, with surrounding spaces ignored — turns the whole thing
-  on, and then the Entra keys in §1 have to be set for anyone to get in.
+  table is created with the rest of the metadata schema. Remove that line — or
+  set it to anything that is not `true`, `1`, `yes` or `on` — and the whole
+  thing turns on, and then the Entra keys in §1 have to be set for anyone to get
+  in.
+
+  **The default is real sign-in, and that asymmetry is deliberate.** It used to
+  be the other way round, because a fresh checkout could then be used straight
+  away. But the two mistakes are not equally visible: a checkout that comes up
+  locked says so on the first click, while one that comes up open looks exactly
+  like one that is properly signed in — there is no sign-in screen either way,
+  and no line anywhere on screen saying which you got. So an unrecognised value,
+  and a deployment that forgets the variable, get real sign-in. The spellings
+  work the same way: an allow-list of the things a person writes meaning *on*,
+  with everything else falling to the safe side.
 
   **It is read when the app is BUILT, not when it runs.** Next substitutes every
   `NEXT_PUBLIC_` variable for its value during compilation, so what ships is a
   hard-coded true or false. `npm run dev` recompiles and picks up an edit to
   `.env.local` on the next request; a built app does not, and setting the
   variable next to a running container does nothing at all. Rebuild, or for
-  Docker pass `--build-arg NEXT_PUBLIC_AUTH_BYPASS=false`. There is no sign-in
+  Docker pass `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true`. There is no sign-in
   screen either way, so nothing on screen tells you which one you got.
 
 ### Two rules that only bite in production

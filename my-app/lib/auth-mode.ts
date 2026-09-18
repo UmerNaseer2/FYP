@@ -7,11 +7,24 @@
  * value. Before this existed the bypass was a hard-coded const inside a client
  * component, which meant the API routes were open whether or not the UI was.
  *
- * DEFAULT: bypass is ON. The project is still being tested end to end and the
- * Microsoft Entra keys are not configured, so a real sign-in cannot complete.
- * Turning auth on is one line in .env.local:
+ * DEFAULT: bypass is OFF — authentication is enforced. Turning it on for
+ * testing is one line in .env.local:
  *
- *     NEXT_PUBLIC_AUTH_BYPASS=false
+ *     NEXT_PUBLIC_AUTH_BYPASS=true
+ *
+ * It used to be the other way round, because the Microsoft Entra keys are not
+ * configured yet and a real sign-in cannot complete, so an unset variable let a
+ * fresh checkout be used straight away. That is the wrong way for a switch that
+ * decides whether an app is open to be wrong. Both mistakes are easy to make
+ * and only one of them is visible: a checkout that comes up locked tells you so
+ * on the first click, while one that comes up open looks exactly like one that
+ * is properly signed in — there is no sign-in screen either way, and no line
+ * anywhere on screen saying which you got. The same asymmetry already decided
+ * the spellings below; it now decides the default too.
+ *
+ * So the deployment that forgets this variable is refused rather than served.
+ * What that costs is that a fresh checkout needs the line above before it can
+ * be used at all, which is one line and one error message away from fixed.
  *
  * ...AND A REBUILD. A NEXT_PUBLIC_ variable is not read at run time: Next
  * substitutes the literal text `process.env.NEXT_PUBLIC_AUTH_BYPASS` below for
@@ -19,37 +32,44 @@
  * development the dev server recompiles and the edit takes effect on the next
  * request; a built app does not, and editing .env.local next to it changes
  * nothing at all. `npm run build` again, or for Docker pass it at build time
- * (`--build-arg NEXT_PUBLIC_AUTH_BYPASS=false`, which is what Dockerfile:33-35
- * is for) — setting it in `docker run -e` is the version that quietly does
- * nothing. That substitution is also why the variable is written out in full
- * here rather than looked up through a helper or a computed key: Next matches
- * the text, so `process.env[name]` is never replaced and always reads
- * undefined in the browser.
+ * (`--build-arg NEXT_PUBLIC_AUTH_BYPASS=true` for a testing image, which is
+ * what the ARG in the Dockerfile is for) — setting it in `docker run -e` is the
+ * version that quietly does nothing. That substitution is also why the variable
+ * is written out in full here rather than looked up through a helper or a
+ * computed key: Next matches the text, so `process.env[name]` is never replaced
+ * and always reads undefined in the browser.
  *
- * Everything needed for that flip is built: the edge proxy, per-route role gates,
- * the `profiles` table and its bootstrap. The only outstanding prerequisites are
- * the four secrets (AZURE_AD_CLIENT_ID / _SECRET / _TENANT_ID, NEXTAUTH_SECRET).
+ * Everything the enforced path needs is built: the edge proxy, per-route role
+ * gates, the `profiles` table and its bootstrap. What is still missing is the
+ * four secrets (AZURE_AD_CLIENT_ID / _SECRET / _TENANT_ID, NEXTAUTH_SECRET), and
+ * until they exist a sign-in cannot COMPLETE — so with this default a checkout
+ * that has not set the variable is shut, not merely asked to sign in. That is
+ * the intended reading: an app nobody can get into is a five-minute fix, and an
+ * app everybody can get into is not something you find out about at all.
  */
 
 /**
- * The spellings that turn the bypass OFF, i.e. that turn real auth ON.
+ * The spellings that turn the bypass ON, i.e. that switch real auth OFF.
  *
- * More than just "false" on purpose, and the asymmetry is the point. Getting
- * this wrong in one direction leaves an app open that its owner believes is
- * shut — and it looks fine, because there is no sign-in screen either way, so
- * nothing on screen says which one you got. `False`, `FALSE`, `0` and `false `
- * with a stray space from the end of a line in .env.local are all things a
- * person writes meaning off; every one of them used to leave the bypass on.
- * Wrong in the other direction merely locks you out of your own dev server,
- * which you notice within seconds.
+ * An allow-list rather than a deny-list, for the reason given above: what is
+ * not understood has to land on the safe side. More than just "true" on
+ * purpose — `True`, `TRUE`, `1`, `yes`, `on` and `true ` with a stray space
+ * from the end of a line in .env.local are all things a person writes meaning
+ * on, and each of them getting you a locked app you meant to leave open would
+ * be an hour of confusion for no reason.
+ *
+ * Every OTHER value, including a typo, an empty string and the variable not
+ * being set at all, leaves authentication enforced. A misspelling of "true"
+ * costs you a sign-in prompt you expected not to see; a misspelling in the
+ * deny-list this replaced left the app open to everybody with nothing to see.
  */
-const BYPASS_OFF = new Set(["false", "0", "no", "off"]);
+const BYPASS_ON = new Set(["true", "1", "yes", "on"]);
 
-// Trimmed and lowercased first — see BYPASS_OFF. Unset still means ON, which is
-// the documented default above and what every existing checkout relies on.
+// Trimmed and lowercased first — see BYPASS_ON. Anything not in that set, unset
+// included, means real authentication.
 const bypassSetting = (process.env.NEXT_PUBLIC_AUTH_BYPASS ?? "").trim().toLowerCase();
 
-export const BYPASS_AUTH: boolean = !BYPASS_OFF.has(bypassSetting);
+export const BYPASS_AUTH: boolean = BYPASS_ON.has(bypassSetting);
 
 /** Roles, lowest privilege first. Order is meaningful — see roleAtLeast(). */
 export const ROLES = ["viewer", "editor", "admin"] as const;

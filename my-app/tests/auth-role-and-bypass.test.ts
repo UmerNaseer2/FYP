@@ -10,6 +10,10 @@
 // AUTH-4 — the bypass switch only understood one spelling of "off". Anything
 // but the exact text `false` left authentication turned off, and there is no
 // sign-in screen either way, so nothing on screen told you which one you got.
+// It is an allow-list now, and the same argument that decided the spellings
+// later decided the default: an unset variable enforces authentication rather
+// than switching it off, so the deployment that forgets it is refused rather
+// than served. Turning the bypass on for testing is a deliberate line.
 import fs from "fs";
 import path from "path";
 import { toRole, DEFAULT_ROLE, ROLES } from "@/lib/auth-mode";
@@ -102,23 +106,42 @@ describe("the auth bypass switch", () => {
   }
 
   it("understands every ordinary way of writing 'off'", async () => {
-    // Each of these used to leave authentication switched off.
+    // These reach the same answer as a typo does now — the allow-list simply
+    // does not contain them — but they are the spellings a person actually
+    // writes meaning off, so they are worth asserting by name: a later edit
+    // that "helpfully" added "no" or "0" to the on-list would fail here.
     for (const off of ["false", "False", "FALSE", "  false  ", "0", "no", "NO", "off", "Off"]) {
       expect(bypassFor(off)).toBe(false);
     }
   });
 
-  it("stays on when the variable is unset, which is the documented default", async () => {
-    // The project is still being tested end to end and the Entra keys are not
-    // configured, so a real sign-in cannot complete. Changing this default
-    // would lock every existing checkout out of its own app.
-    expect(bypassFor(undefined)).toBe(true);
-    expect(bypassFor("")).toBe(true);
+  it("enforces authentication when the variable is unset", async () => {
+    // This is the whole point of the switch being an allow-list. A deployment
+    // that forgets the variable is refused rather than served: the two mistakes
+    // are equally easy to make and only one of them is visible, because a
+    // checkout that comes up locked says so on the first click while one that
+    // comes up open looks exactly like one that is properly signed in.
+    expect(bypassFor(undefined)).toBe(false);
+    expect(bypassFor("")).toBe(false);
   });
 
-  it("stays on for anything that does not mean off", async () => {
-    for (const on of ["true", "True", "1", "yes", "on", "please", "falsey"]) {
+  it("turns the bypass on for every ordinary way of writing 'on'", async () => {
+    // More than just "true" on purpose: each of these is something a person
+    // writes meaning on, and getting a locked app instead would be an hour of
+    // confusion for no reason. The stray spaces are the ones that come off the
+    // end of a line in .env.local.
+    for (const on of ["true", "True", "TRUE", "  true  ", "1", "yes", "YES", "on", "On"]) {
       expect(bypassFor(on)).toBe(true);
+    }
+  });
+
+  it("enforces authentication for anything it does not recognise", async () => {
+    // The case the old deny-list got wrong. It asked whether the value meant
+    // off, so a value it could not read — a typo, a stray quote, half a line —
+    // fell through to leaving the app open to everybody with nothing on screen
+    // to say so. Now an unreadable value costs a sign-in prompt instead.
+    for (const unknown of ["please", "falsey", "truthy", "tru", '"true"', "enabled", "y"]) {
+      expect(bypassFor(unknown)).toBe(false);
     }
   });
 
@@ -139,8 +162,8 @@ describe("the auth bypass switch", () => {
   });
 
   it("says in the file that a built app needs rebuilding", async () => {
-    // The comment used to call switching it off "one line in .env.local", and
-    // for a built app that line does nothing at all.
+    // The comment used to call changing this "one line in .env.local", and for
+    // a built app that line does nothing at all.
     const source = fs.readFileSync(
       path.join(__dirname, "..", "lib", "auth-mode.ts"),
       "utf8"

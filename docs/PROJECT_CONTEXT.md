@@ -133,20 +133,26 @@ a query plan and editor to actually execute the query under `EXPLAIN ANALYZE`.
 `my-app/lib/auth-mode.ts` defines:
 
 ```ts
-export const BYPASS_AUTH: boolean = process.env.NEXT_PUBLIC_AUTH_BYPASS !== "false";
+const BYPASS_ON = new Set(["true", "1", "yes", "on"]);
+export const BYPASS_AUTH: boolean = BYPASS_ON.has(bypassSetting);
 ```
 
-It is currently **ON**, deliberately, so the tool can be worked on without a
-Microsoft tenant. While on, every gate returns a hardcoded admin principal and
-the edge lets everything through.
+An allow-list: only those spellings turn the bypass on, and everything else —
+a typo, an empty string, the variable not being set at all — leaves real
+authentication enforced. It reads as ON in this checkout because `.env.local`
+and `docker-compose.yml` both set it explicitly, deliberately, so the tool can
+be worked on without a Microsoft tenant. While on, every gate returns a
+hardcoded admin principal and the edge lets everything through.
 
-This is a known, intentional development setting, not a defect. The four secrets
+That is a known, intentional development setting, not a defect. The four secrets
 that would let it be switched off — `AZURE_AD_CLIENT_ID`, `AZURE_AD_CLIENT_SECRET`,
 `AZURE_AD_TENANT_ID`, `NEXTAUTH_SECRET` — are not yet provisioned. Note the
-consequence: setting the flag to `false` *today* locks everyone out rather than
-turning sign-in on, because `authUsable` in `auth.config.ts` is false without
-those secrets. Also note `NEXT_PUBLIC_*` is inlined at build time, so flipping it
-needs a rebuild, not a restart.
+consequence: removing the line *today* locks everyone out rather than turning
+sign-in on, because `authUsable` in `auth.config.ts` is false without those
+secrets. That is the intended reading of the default rather than an oversight —
+an app nobody can get into is a five-minute fix, and an app everybody can get
+into is not something you find out about at all. Also note `NEXT_PUBLIC_*` is
+inlined at build time, so changing it needs a rebuild, not a restart.
 
 **Review the code behind the switch, not the switch's current position.**
 

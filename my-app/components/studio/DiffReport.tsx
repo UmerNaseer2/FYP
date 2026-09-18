@@ -250,7 +250,7 @@ function sideValues(diff: ObjectDiff, sides: ReportSides): string {
   return sides === "expected-live" ? `${left}, ${right}` : `${right}, ${left}`;
 }
 
-function objectNote(diff: ObjectDiff, sides: ReportSides): string {
+function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): string {
   // /drift is a record of what already happened; /compare is a plan for what
   // will. The compare engine has one answer for both, so the same "only in A"
   // bucket that means "the migration creates this" on /compare means "this is
@@ -318,9 +318,27 @@ function objectNote(diff: ObjectDiff, sides: ReportSides): string {
       : "only in source — created";
   }
   if (diff.status === "onlyB") {
-    return drift
-      ? "only in the live database — added since the baseline"
-      : "only in target — dropped";
+    if (drift) return "only in the live database — added since the baseline";
+    // /compare. This line used to say "dropped" whatever the switch was set to,
+    // which put it in direct contradiction with the banner at the top of the
+    // same report: that one says the destructive statements are commented out
+    // and the script deletes nothing. One of the two was always lying, and this
+    // was the one — with the reader's rows at stake.
+    //
+    // Not every drop is held back, though, so "held back" everywhere would be
+    // the same mistake pointing the other way. Safe mode comments out the
+    // statements the generator marked destructive, and for an object that means
+    // exactly the ones whose drop throws stored rows away — a materialized view
+    // keeps its own copy of the result set. DROP VIEW on a plain view, DROP
+    // INDEX, DROP SEQUENCE and the rest still run. `dropDestroysData` is the
+    // compare engine's own answer to that question, the same one the banner
+    // counts, so the two cannot drift apart.
+    if (dropMode === "armed") return "only in target — dropped";
+    if (dropMode === "safe") {
+      return diff.dropDestroysData ? "only in target — drop held back" : "only in target — dropped";
+    }
+    // "none" — no script has been generated, so there is nothing to promise.
+    return "only in target";
   }
   if (diff.kind === "ROW SECURITY" || diff.kind === "PARTITIONING") {
     // Which way the switch moves is the entire content of these lines.
@@ -345,6 +363,16 @@ function objectNote(diff: ObjectDiff, sides: ReportSides): string {
     if (diff.replaceNeedsDrop === false) return "options changed — replaced in place";
     // Otherwise CREATE OR REPLACE VIEW refuses the change (or the object is a
     // materialized view), so the generator drops it with CASCADE and rebuilds.
+    //
+    // Except in safe mode, where a rebuild that starts with a destructive drop
+    // is held back at BOTH ends: the drop is commented out, and so is the
+    // CREATE behind it, because CREATE MATERIALIZED VIEW IF NOT EXISTS would
+    // find the old one still sitting there and quietly do nothing. So the
+    // object is neither dropped nor rebuilt, and saying it was is the same
+    // contradiction the "only in target" line above carried.
+    if (dropMode === "safe" && diff.dropDestroysData) {
+      return "definition changed — rebuild held back";
+    }
     return "definition changed — dropped and rebuilt";
   }
   // An index cannot be altered in place either, but nothing depends on one, so
@@ -372,10 +400,13 @@ function ObjectLines({
   label,
   diffs,
   sides,
+  dropMode,
 }: {
   label: string;
   diffs: ObjectDiff[];
   sides: ReportSides;
+  /** What the script does with a drop — see objectNote, which reads it. */
+  dropMode: DropMode;
 }) {
   if (diffs.length === 0) return null;
   return (
@@ -397,7 +428,7 @@ function ObjectLines({
               <span className="muted">on {diff.table} </span>
             )}
             <span className={severity === "breaking" ? "chg-break" : "muted"}>
-              · {objectNote(diff, sides)}
+              · {objectNote(diff, sides, dropMode)}
               {severity === "breaking" ? " · breaking" : ""}
             </span>
           </DiffLine>
@@ -1018,11 +1049,13 @@ function ChangedTableCard({
         label="Indexes"
         diffs={pickKinds(match.objectDiffs, ["INDEX"])}
         sides={sides}
+        dropMode={dropMode}
       />
       <ObjectLines
         label="Triggers"
         diffs={pickKinds(match.objectDiffs, ["TRIGGER"])}
         sides={sides}
+        dropMode={dropMode}
       />
       {/* One heading for the switch and its policies, because reading either
           on its own gives the wrong answer: three policies with the switch off
@@ -1031,6 +1064,7 @@ function ChangedTableCard({
         label="Row security"
         diffs={pickKinds(match.objectDiffs, ["ROW SECURITY", "POLICY"])}
         sides={sides}
+        dropMode={dropMode}
       />
       {/* Partitioning. A partitioned table and a plain one with the same
           columns used to compare as "identical structure", which was a false
@@ -1039,6 +1073,7 @@ function ChangedTableCard({
         label="Partitioning"
         diffs={pickKinds(match.objectDiffs, ["PARTITIONING"])}
         sides={sides}
+        dropMode={dropMode}
       />
     </details>
   );
@@ -1054,9 +1089,11 @@ function ChangedTableCard({
 function SchemaObjectsCard({
   diffs,
   sides,
+  dropMode,
 }: {
   diffs: ObjectDiff[];
   sides: ReportSides;
+  dropMode: DropMode;
 }) {
   const sections = SCHEMA_OBJECT_SECTIONS.map((section) => ({
     label: section.label,
@@ -1089,6 +1126,7 @@ function SchemaObjectsCard({
           label={section.label}
           diffs={section.diffs}
           sides={sides}
+          dropMode={dropMode}
         />
       ))}
 
@@ -1387,7 +1425,7 @@ export function DiffReport({
 
       {/* Views, sequences, types and functions — after the tables, because they
           are usually consequences of a table change rather than the point. */}
-      <SchemaObjectsCard diffs={report.objectDiffs} sides={sides} />
+      <SchemaObjectsCard diffs={report.objectDiffs} sides={sides} dropMode={dropMode} />
 
       {/* Unchanged tables — collapsed summary so the diff stays focused */}
       {unchanged.length > 0 && (

@@ -1142,6 +1142,9 @@ type ReplayDialogProps = {
   diverged: number;
 };
 
+/** The approvals read for one target, and the `connectionId schema` they cover. */
+type LoadedApprovals = { key: string; rows: ApprovalRow[]; error: string | null };
+
 /**
  * The check a replay goes through before anything runs: what it holds and
  * risks, a dry run, and the ticks and approval the apply route will ask for.
@@ -1298,18 +1301,48 @@ function ReplayBody({
     };
   }, [fingerprint]);
 
-  const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
-  const [approvalsLoading, setApprovalsLoading] = useState(true);
-  const [approvalsReadError, setApprovalsReadError] = useState<string | null>(null);
+  // The approvals, together with the `connectionId schema` they were read for.
+  // They used to be a bare list with the error beside it, and neither was reset
+  // when the target changed: the previous target's rows stayed on screen while
+  // the new ones were being read, and a run is matched to an approval by its
+  // fingerprint — which is built from the SCRIPTS alone (see `runHash` above),
+  // not the target — so the old target's "approved" row went on matching and
+  // this panel went on saying the run was cleared for a target nobody had
+  // approved. The server scopes its own claim by connection and schema and
+  // would have refused the run, so what this cost was the truth of the screen,
+  // not the gate itself: you were told to press Deploy and then refused.
+  //
+  // Those leftover rows also kept `unreadable` false when the new read FAILED —
+  // that test asks for an empty list — so a target whose approvals could not be
+  // read at all was reported using another target's answer.
+  //
+  // Same {key, …} shape the Performance tabs use, and the key doubles as the
+  // race guard: a reply for the older target no longer matches.
+  const [loadedApprovals, setLoadedApprovals] = useState<LoadedApprovals | null>(null);
+  const [approvalsReloading, setApprovalsReloading] = useState(false);
   const [approvalsTry, setApprovalsTry] = useState(0);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approvalNotice, setApprovalNotice] = useState("");
   const [approvalNote, setApprovalNote] = useState("");
 
+  // "" when the target is not production. Nothing is read then, so no stored
+  // key can match and the panel falls back to an empty list on its own.
+  const approvalsKey = production ? `${connectionId} ${schema}` : "";
+  const currentApprovals =
+    loadedApprovals && loadedApprovals.key === approvalsKey ? loadedApprovals : null;
+  const approvals = currentApprovals?.rows ?? [];
+  const approvalsReadError = currentApprovals?.error ?? null;
+  // Derived, not stored. Changing target makes the key stop matching, which is
+  // the same instant the old answer stops counting — so this turns true again
+  // with no reset to forget. `approvalsReloading` covers the other case: a
+  // re-read of the SAME target, where the key still matches.
+  const approvalsLoading = approvalsReloading || (production && currentApprovals === null);
+
   // Only a production run needs one, so only then is the list read.
   useEffect(() => {
     if (!production) return;
+    const asked = `${connectionId} ${schema}`;
     let active = true;
     (async () => {
       try {
@@ -1320,15 +1353,28 @@ function ReplayBody({
         const data = (await res.json()) as { approvals?: ApprovalRow[]; error?: string };
         if (!active) return;
         if (res.ok && Array.isArray(data.approvals)) {
-          setApprovals(data.approvals);
-          setApprovalsReadError(null);
+          setLoadedApprovals({ key: asked, rows: data.approvals, error: null });
         } else {
-          setApprovalsReadError(data.error ?? "Could not read the approvals for this target.");
+          // Rows go empty on a failure rather than keeping the last good read.
+          // That is what makes `unreadable` true, and "Approval state unknown"
+          // is the honest answer for a production gate that could not be read —
+          // showing an older list would report it as read when it was not.
+          setLoadedApprovals({
+            key: asked,
+            rows: [],
+            error: data.error ?? "Could not read the approvals for this target.",
+          });
         }
       } catch {
-        if (active) setApprovalsReadError("Network error reading the approvals for this target.");
+        if (active) {
+          setLoadedApprovals({
+            key: asked,
+            rows: [],
+            error: "Network error reading the approvals for this target.",
+          });
+        }
       } finally {
-        if (active) setApprovalsLoading(false);
+        if (active) setApprovalsReloading(false);
       }
     })();
     return () => {
@@ -1337,7 +1383,7 @@ function ReplayBody({
   }, [production, connectionId, schema, approvalsTry]);
 
   function reloadApprovals() {
-    setApprovalsLoading(true);
+    setApprovalsReloading(true);
     setApprovalsTry((t) => t + 1);
   }
 

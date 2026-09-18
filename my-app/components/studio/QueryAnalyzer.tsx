@@ -87,6 +87,9 @@ function starterQuery(table: string | null): string {
   );
 }
 
+/** An answer, and the `connectionId schema` it was asked about. */
+type Loaded = { key: string; view: AnalyzeView | null; error: string | null };
+
 export function QueryAnalyzer({
   target,
   initialTable = null,
@@ -108,13 +111,25 @@ export function QueryAnalyzer({
   }
   const [wantsMeasure, setWantsMeasure] = useState(false);
   const [running, setRunning] = useState(false);
-  const [view, setView] = useState<AnalyzeView | null>(null);
-  // The connection the answer on screen was asked about, noted when the request
-  // went out. The picker can move on while that answer stays on screen, and a
-  // migration saved from it must name the connection it describes.
-  const [viewConnectionId, setViewConnectionId] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // The answer on screen together with the target it was asked about, so the
+  // card can never outlive the picker. It used to be a bare `view`, which meant
+  // analysing against staging and then switching the picker to production left
+  // staging's plan on screen — under a line naming PRODUCTION, because that
+  // line reads the live picker. Nothing on the card named the database it came
+  // from, so there was no way to tell. Storing the key with the answer also
+  // makes this the race guard: a reply to the older target no longer matches
+  // the key, so a slow answer cannot overwrite a newer one.
+  //
+  // Same {key, view, error} shape the other five Performance tabs use.
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
+
+  // "" when no target is picked. analyse() refuses to run without one, so a
+  // stored key is never "" and an empty picker therefore matches nothing.
+  const targetKey = target ? `${target.connectionId} ${target.schema}` : "";
+  const current = loaded && loaded.key === targetKey ? loaded : null;
+  const view = current?.view ?? null;
+  const error = current?.error ?? null;
 
   const ready = Boolean(target && sql.trim() && !running);
 
@@ -127,9 +142,13 @@ export function QueryAnalyzer({
 
   async function analyse() {
     if (!target || !sql.trim()) return;
-    const asked = target.connectionId;
+    const asked = `${target.connectionId} ${target.schema}`;
     setRunning(true);
-    setError(null);
+    // Only the error goes. A re-run against the SAME target keeps the previous
+    // plan visible while the new one is fetched, which is what this screen has
+    // always done; anything belonging to another target is already hidden by
+    // the key and is dropped here rather than left to match again later.
+    setLoaded(current ? { ...current, error: null } : null);
     try {
       const res = await fetch("/api/performance/analyze", {
         method: "POST",
@@ -143,17 +162,18 @@ export function QueryAnalyzer({
       });
       const data = await res.json();
       if (res.ok) {
-        setView(data as AnalyzeView);
-        setViewConnectionId(asked);
+        setLoaded({ key: asked, view: data as AnalyzeView, error: null });
       } else {
         // The old plan is cleared deliberately: leaving it on screen under a
         // new error makes it look like the answer to the query now in the box.
-        setView(null);
-        setError(data?.error ?? "Could not analyse this query.");
+        setLoaded({ key: asked, view: null, error: data?.error ?? "Could not analyse this query." });
       }
     } catch {
-      setView(null);
-      setError("Could not reach the server to analyse this query.");
+      setLoaded({
+        key: asked,
+        view: null,
+        error: "Could not reach the server to analyse this query.",
+      });
     } finally {
       setRunning(false);
     }
@@ -269,7 +289,12 @@ export function QueryAnalyzer({
       )}
 
       {view && (
-        <Result view={view} connectionId={viewConnectionId} filter={filter} onFilter={setFilter} />
+        <Result
+          view={view}
+          connectionId={target?.connectionId ?? ""}
+          filter={filter}
+          onFilter={setFilter}
+        />
       )}
     </div>
   );

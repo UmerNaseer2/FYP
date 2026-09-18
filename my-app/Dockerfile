@@ -29,9 +29,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 # NEXT_PUBLIC_* variables are inlined into the browser bundle at build time, so
 # this one cannot be changed by the runtime environment — an image built with
-# the bypass on has it on. Build with
-# `--build-arg NEXT_PUBLIC_AUTH_BYPASS=false` to get real sign-in.
-ARG NEXT_PUBLIC_AUTH_BYPASS="true"
+# the bypass on has it on, and `docker run -e NEXT_PUBLIC_AUTH_BYPASS=false`
+# against it does nothing at all. The default is off, which means real sign-in:
+# an image somebody builds straight from this file is not one that lets anybody
+# in. Build with `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true` for a testing image
+# — which is exactly what docker-compose.yml does.
+ARG NEXT_PUBLIC_AUTH_BYPASS="false"
 ENV NEXT_PUBLIC_AUTH_BYPASS=$NEXT_PUBLIC_AUTH_BYPASS
 
 # lib/version-db.ts refuses to load without a connection string, and the build

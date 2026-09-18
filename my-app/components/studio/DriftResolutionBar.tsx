@@ -37,6 +37,14 @@ export function DriftResolutionBar({
   const router = useRouter();
   const [confirmRebaseline, setConfirmRebaseline] = useState(false);
   const [busy, setBusy] = useState<null | "rebaseline" | "acknowledge">(null);
+  // The nested re-check button runs its own POST, so `busy` above cannot see it.
+  // It reports in here instead, and every button in this bar reads `anyBusy`.
+  // Without that the three writes overlapped freely on ONE schema: re-baseline
+  // replaces the snapshot the re-check is comparing against, so starting both
+  // left the recorded answer down to which request returned first — a schema
+  // marked in sync with a "drifted" event filed a moment later, or an
+  // acknowledgement pointing at an event the re-check had already replaced.
+  const [recheckBusy, setRecheckBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function post(path: string, kind: "rebaseline" | "acknowledge") {
@@ -62,6 +70,9 @@ export function DriftResolutionBar({
     }
   }
 
+  // Any write to this schema, from this bar or from the re-check inside it.
+  const anyBusy = busy !== null || recheckBusy;
+
   // Resolution actions only make sense when the schema has actually drifted.
   const canResolve = state === "drifted";
   const recheckLabel = state === "in_sync" ? "Re-check" : "Check drift now";
@@ -78,7 +89,7 @@ export function DriftResolutionBar({
           variant="secondary"
           size="sm"
           onClick={() => setConfirmRebaseline(true)}
-          disabled={busy !== null}
+          disabled={anyBusy}
         >
           {busy === "rebaseline" ? "Re-baselining…" : "Re-baseline to live"}
         </Button>
@@ -88,7 +99,7 @@ export function DriftResolutionBar({
           variant="ghost"
           size="sm"
           onClick={() => void post("/api/lineage/acknowledge", "acknowledge")}
-          disabled={busy !== null}
+          disabled={anyBusy}
         >
           {busy === "acknowledge" ? (
             "Acknowledging…"
@@ -105,6 +116,8 @@ export function DriftResolutionBar({
         variant="secondary"
         label={recheckLabel}
         onDone={onDone}
+        disabled={busy !== null}
+        onBusyChange={setRecheckBusy}
       />
 
       {error && (

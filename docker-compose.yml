@@ -33,8 +33,12 @@ services:
     build:
       context: ./my-app
       args:
-        # Inlined into the browser bundle at build time — see the Dockerfile.
-        # Set to "false" and rebuild to require a real sign-in.
+        # Inlined into the browser bundle at build time — see the Dockerfile,
+        # whose own default is "false". THIS LINE is what turns the bypass on:
+        # compose is the one-command demo everybody runs first, and asking for
+        # Microsoft credentials before you can see the app would make it useless
+        # for that. Put NEXT_PUBLIC_AUTH_BYPASS=false in a .env beside this file
+        # (or export it) and rebuild to require a real sign-in.
         NEXT_PUBLIC_AUTH_BYPASS: ${NEXT_PUBLIC_AUTH_BYPASS:-true}
     environment:
       # The container talks to the database over the compose network, so the

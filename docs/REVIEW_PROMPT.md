@@ -32,12 +32,13 @@ Please do not spend findings on any of these. They are known, they are
 intentional or already in hand, and reporting them costs you review budget that
 would be better spent elsewhere.
 
-**1. The authentication bypass.** `my-app/lib/auth-mode.ts` defines
-`BYPASS_AUTH = process.env.NEXT_PUBLIC_AUTH_BYPASS !== "false"`, and it is
-currently ON. While on, every route gate returns a hardcoded admin principal and
-the edge proxy passes everything through. **This is a deliberate development
-setting** — the Microsoft Entra credentials have not been provisioned yet, so
-the alternative is that the app cannot be run at all.
+**1. The authentication bypass.** `my-app/lib/auth-mode.ts` sets `BYPASS_AUTH`
+from an allow-list — `true`, `1`, `yes`, `on`, and nothing else — and this
+checkout turns it ON explicitly, in `.env.local` and in `docker-compose.yml`.
+While on, every route gate returns a hardcoded admin principal and the edge
+proxy passes everything through. **This is a deliberate development setting** —
+the Microsoft Entra credentials have not been provisioned yet, so the
+alternative is that the app cannot be run at all.
 
 Review the authorisation code **behind** the switch, on the assumption that the
 switch is off and the credentials exist. The role model, the gate design in
@@ -45,9 +46,10 @@ switch is off and the credentials exist. The role model, the gate design in
 and the role-lookup-per-request behaviour in `auth.ts` are all fair game and I
 want your judgement on them. The switch's current position is not.
 
-Corollaries also out of scope: that the flag is fail-open on a malformed value;
-that no Microsoft sign-in has ever completed; that `.env.local` lacks
-`AZURE_AD_*` and `NEXTAUTH_SECRET`.
+Corollaries also out of scope: that no Microsoft sign-in has ever completed;
+that `.env.local` lacks `AZURE_AD_*` and `NEXTAUTH_SECRET`. (The flag used to be
+fail-OPEN on a malformed value, and that part was a real defect — it is fixed,
+which is why the allow-list above reads the way it does.)
 
 **2. Secret rotation.** Credentials leaked into the repository's public history
 earlier in the project. The history has been purged and rotation is a known,

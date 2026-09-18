@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertCircleIcon,
@@ -87,10 +87,22 @@ export function ScheduleTable() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const now = useNow(15_000);
 
+  // Which read of the schedule is the current one. The minute poll and the
+  // reload that follows saving a cadence overlap freely, and without this the
+  // SLOWER answer lands last: a poll that started before the save could
+  // repaint the table with the cadence the user had just changed away from,
+  // which looked like the dropdown snapping back on its own.
+  const latestLoad = useRef(0);
+
   const load = useCallback(async () => {
+    const request = ++latestLoad.current;
     try {
       const res = await fetch("/api/lineage/schedule");
       const data = await res.json();
+      // Every exit below is guarded, not just the success one: a stale error
+      // would report a healthy scheduler as unreachable just as wrongly as
+      // stale rows report a cadence nobody chose.
+      if (request !== latestLoad.current) return;
       if (!res.ok) {
         setError(data?.error ?? "Could not read the checking schedule.");
         return;
@@ -98,6 +110,7 @@ export function ScheduleTable() {
       setError(null);
       setView(data as ScheduleView);
     } catch {
+      if (request !== latestLoad.current) return;
       setError("Could not reach the server to read the checking schedule.");
     }
   }, []);
@@ -169,6 +182,36 @@ export function ScheduleTable() {
 
   return (
     <div className="space-y-5">
+      {/* A read that failed AFTER a first one succeeded. `view` is deliberately
+          left alone — the old numbers are still the best answer anybody has —
+          but they have stopped being refreshed, and until this banner existed
+          that was indistinguishable from a healthy screen: `error` was read in
+          exactly one place, the empty state above, which only ever shows when
+          there is nothing to display at all. So the "Next check" countdown went
+          on ticking down and the scheduler pill went on saying "running" long
+          after the answers behind them had gone stale, and a cadence saved into
+          a failing reload silently reverted on screen with nothing said. */}
+      {error && (
+        <div className="warn-inline">
+          <span className="ico" style={{ color: "var(--break)" }}>
+            <AlertCircleIcon size={14} />
+          </span>
+          <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <div>
+              {error} What you see below is the last answer that came back, so
+              the times and cadences may no longer be current.
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm mt-2"
+              onClick={() => void load()}
+            >
+              <RefreshIcon size={13} /> Try again
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Is anything watching? */}
       <Card className="p-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">
