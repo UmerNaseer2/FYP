@@ -89,6 +89,19 @@ export function setUser(role: TestRole | null) {
   sessionStatus = "authenticated";
 }
 
+/**
+ * The frame before next-auth has answered, which is neither signed in nor
+ * signed out.
+ *
+ * Its own setter rather than a third value for setUser, because "loading" is
+ * not a role: there is no user during it, and a gate that read that as "signed
+ * out" would bounce a perfectly signed-in person to /login on every page load.
+ */
+export function setSessionLoading() {
+  session = null;
+  sessionStatus = "loading";
+}
+
 export const sessionStubs = {
   useSession: () => ({ data: session, status: sessionStatus }),
   signIn: () => Promise.resolve(undefined),
