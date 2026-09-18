@@ -60,6 +60,9 @@ export type ComparisonSet = {
   /** Also compare the rows of tables both sides have. Part of the set because
    *  a nightly data check is exactly the kind of run worth saving. */
   compareData: boolean;
+  /** Tables the row compare is limited to. Empty means every table, which is
+   *  also what a set saved before the column existed reads back as. */
+  dataTables: string[];
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
@@ -76,6 +79,7 @@ type SetRow = {
   source_schema: string;
   allow_data_loss: boolean;
   compare_data: boolean;
+  data_tables: unknown;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
@@ -101,6 +105,19 @@ function label(live: string | null, saved: string | null): string {
   return live ?? saved ?? "Deleted connection";
 }
 
+/**
+ * The stored table list as an array of names.
+ *
+ * JSONB hands back whatever was written, and what was written before this
+ * column existed is NULL. Anything that is not a list of strings becomes the
+ * empty list — which the run reads as "every table", the same answer a set
+ * that never recorded a selection has always given.
+ */
+function toTableList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
 function toSet(row: SetRow, targets: ComparisonSetTarget[]): ComparisonSet {
   return {
     id: row.id,
@@ -110,6 +127,7 @@ function toSet(row: SetRow, targets: ComparisonSetTarget[]): ComparisonSet {
     sourceSchema: row.source_schema,
     allowDataLoss: row.allow_data_loss,
     compareData: row.compare_data,
+    dataTables: toTableList(row.data_tables),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastRunAt: row.last_run_at,
@@ -119,8 +137,8 @@ function toSet(row: SetRow, targets: ComparisonSetTarget[]): ComparisonSet {
 
 const SET_SELECT = `
   SELECT s.id, s.name, s.source_connection_id, s.source_connection_label,
-         s.source_schema, s.allow_data_loss, s.compare_data, s.created_at,
-         s.updated_at, s.last_run_at, c.name AS live_source_name
+         s.source_schema, s.allow_data_loss, s.compare_data, s.data_tables,
+         s.created_at, s.updated_at, s.last_run_at, c.name AS live_source_name
     FROM comparison_sets s
     LEFT JOIN connections c ON c.id = s.source_connection_id
 `;
@@ -263,10 +281,10 @@ export async function saveComparisonSet(
       // to guess: the connection's current name is right here.
       `INSERT INTO comparison_sets
          (name, source_connection_id, source_connection_label, source_schema,
-          allow_data_loss, compare_data)
+          allow_data_loss, compare_data, data_tables)
        VALUES ($1, $2,
                COALESCE(NULLIF($3, ''), (SELECT name FROM connections WHERE id = $2), ''),
-               $4, $5, $6)
+               $4, $5, $6, $7::jsonb)
        ON CONFLICT (lower(name)) DO UPDATE
          SET name = EXCLUDED.name,
              source_connection_id = EXCLUDED.source_connection_id,
@@ -274,6 +292,7 @@ export async function saveComparisonSet(
              source_schema = EXCLUDED.source_schema,
              allow_data_loss = EXCLUDED.allow_data_loss,
              compare_data = EXCLUDED.compare_data,
+             data_tables = EXCLUDED.data_tables,
              updated_at = now()
        RETURNING id, (xmax = 0) AS created`,
       [
@@ -283,6 +302,9 @@ export async function saveComparisonSet(
         input.sourceSchema.trim(),
         input.allowDataLoss,
         input.compareData,
+        // Stringified rather than passed as an array: node-postgres would send
+        // a JS array as a Postgres array literal, which jsonb will not take.
+        JSON.stringify(input.dataTables),
       ]
     );
 

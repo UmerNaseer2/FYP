@@ -1,6 +1,7 @@
 import {
   backwardsWarning,
   describeRecentSide,
+  readsHistory,
   readsLedger,
   recentTimelineEntries,
 } from "@/lib/compare-timeline";
@@ -46,6 +47,44 @@ describe("readsLedger", () => {
     expect(readsLedger(detected({ table: "flyway_schema_history" }), 7)).toBe(false);
     expect(readsLedger(detected({ table: null, version: null }), 7)).toBe(false);
     expect(readsLedger(null, 7)).toBe(false);
+  });
+});
+
+describe("readsHistory", () => {
+  /** A Flyway side the comparison could only carry part of. */
+  const flywayPartial = (extra: Partial<DetectedVersion> = {}) =>
+    detected({ table: "flyway_schema_history", recentComplete: false, ...extra });
+
+  it("loads the history of a version table that is not script_patch", () => {
+    expect(readsHistory(flywayPartial(), 7)).toBe(true);
+    expect(readsHistory(flywayPartial({ table: "schema_version" }), 7)).toBe(true);
+  });
+
+  it("does not ask the server for a history the comparison already carried whole", () => {
+    expect(readsHistory(flywayPartial({ recentComplete: true }), 7)).toBe(false);
+  });
+
+  it("leaves script_patch to the ledger, which also carries the scripts", () => {
+    expect(readsHistory(detected({ recentComplete: false }), 7)).toBe(false);
+  });
+
+  it("has nothing to ask without a saved connection or a version table", () => {
+    expect(readsHistory(flywayPartial(), null)).toBe(false);
+    expect(readsHistory(detected({ table: null, version: null, recentComplete: false }), 7)).toBe(false);
+    expect(readsHistory(null, 7)).toBe(false);
+  });
+
+  it("never sends a side down both routes at once", () => {
+    // The component picks the route by asking readsLedger first, so a side the
+    // two agreed on would be read as a ledger and rendered as a history.
+    for (const table of ["script_patch", "flyway_schema_history", "schema_version", null]) {
+      for (const complete of [true, false]) {
+        for (const id of [7, null]) {
+          const side = detected({ table, recentComplete: complete });
+          expect(readsLedger(side, id) && readsHistory(side, id)).toBe(false);
+        }
+      }
+    }
   });
 });
 

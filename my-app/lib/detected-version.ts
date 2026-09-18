@@ -63,6 +63,53 @@ export type DetectedVersion = {
 };
 
 /**
+ * One detected row as the screen draws it. Shared by the trimmed list the
+ * comparison carries and the whole list the timeline loads later, so a row
+ * cannot read one way in the summary and another way in the timeline.
+ */
+function toEntry(entry: VersionTimelineEntry, current: VersionTimelineEntry | null): DetectedVersionEntry {
+  return {
+    version: entry.version,
+    // The detector falls back to the version string for its label when the
+    // table has no title column, which renders as the version printed twice.
+    // Plenty of those tables do carry a description — use it instead.
+    label: entry.label === entry.version ? (entry.description ?? entry.label) : entry.label,
+    appliedAt: entry.appliedAt,
+    changeLevel: entry.changeLevel,
+    scriptName: entry.scriptName ?? null,
+    succeeded: entry.succeeded ?? null,
+    current: entry === current,
+  };
+}
+
+/**
+ * The whole detection result, nothing trimmed away.
+ *
+ * What GET /api/compare/version-history answers with: the comparison itself
+ * carries only the newest few rows of each schema (see the note at the top of
+ * this file), so a schema that keeps its versions in flyway_schema_history or
+ * any other table had no way to show the rest. This reads the same rows the
+ * comparison read, through the same detector, and hands back all of them.
+ *
+ * `recentComplete` is true unless the detector's own row limit cut the history
+ * short, because "all of it" and "as much of it as we read" must not look the
+ * same on screen.
+ */
+export function toFullDetectedVersion(
+  info: VersionDetectionResult,
+  current: VersionTimelineEntry | null
+): DetectedVersion {
+  return {
+    table: info.tableName,
+    version: info.detectedVersion,
+    recent: info.timeline.map((entry) => toEntry(entry, current)),
+    recentComplete: !info.truncated,
+    familyHeads: info.familyHeads,
+    message: info.message,
+  };
+}
+
+/**
  * Trim a full detection result down to what the screen renders.
  *
  * `current` is the entry the detector read the schema's version from
@@ -100,18 +147,7 @@ export function toDetectedVersion(
   return {
     table: info.tableName,
     version: info.detectedVersion,
-    recent: [...newest, ...extra].map((entry) => ({
-      version: entry.version,
-      // The detector falls back to the version string for its label when the
-      // table has no title column, which renders as the version printed twice.
-      // Plenty of those tables do carry a description — use it instead.
-      label: entry.label === entry.version ? (entry.description ?? entry.label) : entry.label,
-      appliedAt: entry.appliedAt,
-      changeLevel: entry.changeLevel,
-      scriptName: entry.scriptName ?? null,
-      succeeded: entry.succeeded ?? null,
-      current: entry === current,
-    })),
+    recent: [...newest, ...extra].map((entry) => toEntry(entry, current)),
     recentComplete: info.timeline.length <= VERSION_TIMELINE_SHOWN,
     familyHeads: info.familyHeads,
     message: info.message,

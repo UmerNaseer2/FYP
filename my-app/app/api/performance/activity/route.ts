@@ -15,6 +15,7 @@ import {
   type ActivitySession,
 } from "@/lib/db-activity";
 import { evaluateThresholds, type ThresholdBreach, type ThresholdReading } from "@/lib/perf-thresholds";
+import { DB_HEALTH_SQL, readDbHealth, dbHealthReadings, type DbHealth, type DbHealthRow } from "@/lib/db-health";
 import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
 
 /**
@@ -50,6 +51,13 @@ export type ActivityView = {
   /** Shown when the server withheld some SQL. Null when it withheld none. */
   hiddenNote: string | null;
   /** Alert rules this reading broke. Empty unless some are switched on. */
+  /**
+   * How the whole database is doing — spec feature 10's database half. Null
+   * when that read failed on its own: the sessions above are the point of this
+   * endpoint and must still arrive if the statistics view is unavailable, which
+   * it is on a server where the caller lacks rights to pg_database_size.
+   */
+  health: DbHealth | null;
   breaches: ThresholdBreach[];
 };
 
@@ -158,6 +166,7 @@ export async function GET(request: NextRequest) {
     longRunning && longRunning.enabled ? longRunning.value : FALLBACK_LONG_RUNNING_SECONDS;
 
   let rows: ActivityRow[];
+  let health: DbHealth | null = null;
   let client: PoolClient | null = null;
   try {
     client = await getPoolForConfig(cfg).connect();
@@ -166,6 +175,24 @@ export async function GET(request: NextRequest) {
     await client.query("BEGIN READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${ACTIVITY_STATEMENT_TIMEOUT_MS}`);
     const result = await client.query<ActivityRow>(ACTIVITY_SQL);
+    // In the same read-only transaction as the sessions above, so the two
+    // halves of the screen describe the same instant rather than two moments
+    // a round trip apart.
+    //
+    // Its own try/catch, and not a second statement in the one above, because
+    // a failure here must not lose the sessions: pg_database_size and
+    // current_setting are refused to some roles, and a health panel nobody can
+    // read is not a reason to stop reporting a query that is stuck.
+    try {
+      const healthResult = await client.query<DbHealthRow>(DB_HEALTH_SQL);
+      health = healthResult.rows.length > 0 ? readDbHealth(healthResult.rows[0]) : null;
+    } catch (error) {
+      console.error(
+        "Activity — could not read database health:",
+        error instanceof Error ? error.message : String(error)
+      );
+      health = null;
+    }
     await client.query("COMMIT");
     rows = result.rows;
   } catch (error) {
@@ -195,16 +222,22 @@ export async function GET(request: NextRequest) {
     (worst, s) => ((s.querySeconds ?? 0) > (worst?.querySeconds ?? 0) ? s : worst),
     null
   );
-  const readings: ThresholdReading[] =
-    slowest && slowest.querySeconds !== null
+  const readings: ThresholdReading[] = [
+    ...(slowest && slowest.querySeconds !== null
       ? [
           {
-            key: "long_running_seconds",
+            key: "long_running_seconds" as const,
             actual: slowest.querySeconds,
             subject: `Session ${slowest.pid}`,
           },
         ]
-      : [];
+      : []),
+    // The cache hit ratio is the one database-wide number the threshold
+    // catalogue has a key for. Until this read existed nothing ever produced a
+    // reading for it, so the setting could be filled in and switched on and
+    // would never fire — see lib/db-health.ts.
+    ...(health ? dbHealthReadings(health) : []),
+  ];
 
   const view: ActivityView = {
     connectionName: conn.name,
@@ -218,6 +251,7 @@ export async function GET(request: NextRequest) {
     summary,
     emptyMessage: NOTHING_ACTIVE,
     hiddenNote: summary.anyHidden ? SOME_HIDDEN : null,
+    health,
     breaches: evaluateThresholds(readings, settings),
   };
   return NextResponse.json(view);

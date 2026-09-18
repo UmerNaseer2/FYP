@@ -46,6 +46,8 @@ type HistoryView = {
   days: number;
   trend: QueryDayPoint[];
   comparison: QueryComparison | null;
+  baselineId: number | null;
+  baselineNote: string | null;
   retentionDays: number;
   maxRows: number;
   pageSize: number;
@@ -70,10 +72,17 @@ export function QueryHistoryPanel({
   const router = useRouter();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [days, setDays] = useState(30);
+  // Which run the newest one is measured against. The fingerprint is stored
+  // beside the id rather than reset in an effect: a run id belongs to one
+  // query, so carrying it to a different query would ask the server to compare
+  // against a run that is not in that query's history at all.
+  const [baseline, setBaseline] = useState<{ fingerprint: string; id: number } | null>(null);
 
   const connectionId = target?.connectionId ?? "";
   const schema = target?.schema ?? "";
-  const key = `${connectionId} ${schema} ${days} ${fingerprint ?? ""}`;
+  const baselineId =
+    fingerprint && baseline && baseline.fingerprint === fingerprint ? baseline.id : null;
+  const key = `${connectionId} ${schema} ${days} ${fingerprint ?? ""} ${baselineId ?? ""}`;
 
   useEffect(() => {
     if (!connectionId || !schema) return;
@@ -83,7 +92,8 @@ export function QueryHistoryPanel({
         const res = await fetch(
           `/api/performance/history?connectionId=${encodeURIComponent(connectionId)}` +
             `&schema=${encodeURIComponent(schema)}&days=${days}` +
-            (fingerprint ? `&fingerprint=${encodeURIComponent(fingerprint)}` : ""),
+            (fingerprint ? `&fingerprint=${encodeURIComponent(fingerprint)}` : "") +
+            (baselineId ? `&baseline=${baselineId}` : ""),
           { cache: "no-store" }
         );
         const data = await res.json();
@@ -102,7 +112,7 @@ export function QueryHistoryPanel({
     return () => {
       cancelled = true;
     };
-  }, [connectionId, schema, days, fingerprint, key]);
+  }, [connectionId, schema, days, fingerprint, baselineId, key]);
 
   const current = loaded && loaded.key === key ? loaded : null;
 
@@ -191,7 +201,25 @@ export function QueryHistoryPanel({
             </button>
           </div>
           {view.comparison ? (
-            <ComparisonLine comparison={view.comparison} />
+            <>
+              <ComparisonLine
+                comparison={view.comparison}
+                newest={view.rows[0]}
+                baseline={view.rows.find((r) => r.id === view.baselineId) ?? null}
+              />
+              <BaselinePicker
+                rows={view.rows}
+                chosen={view.baselineId}
+                onChoose={(id) =>
+                  setBaseline(id === null || !fingerprint ? null : { fingerprint, id })
+                }
+              />
+              {view.baselineNote && (
+                <div className="text-[11.5px]" style={{ color: "var(--drift)" }}>
+                  {view.baselineNote}
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
               There is nothing to compare it to yet. Analyse it again and the two
@@ -214,10 +242,16 @@ export function QueryHistoryPanel({
           </div>
         </div>
 
-        {view.rows.map((row) => (
+        {view.rows.map((row, index) => (
           <HistoryRow
             key={row.id}
             row={row}
+            // Only in single-query mode, where there is a comparison at all.
+            // The newest run is index 0 because the server orders by
+            // captured_at DESC — see the route.
+            role={
+              !view.comparison ? null : index === 0 ? "newest" : row.id === view.baselineId ? "baseline" : null
+            }
             // In single-query mode every row is already the same query, so the
             // button would only ever reload the same page.
             onOpen={fingerprint ? null : () => show(row.fingerprint)}
@@ -228,12 +262,87 @@ export function QueryHistoryPanel({
   );
 }
 
-/** The newest run set against the one before it, in one line. */
-function ComparisonLine({ comparison }: { comparison: QueryComparison }) {
+/**
+ * Which earlier run to measure the newest one against.
+ *
+ * The default — the run immediately before — answers "did the change I just
+ * made help?". It cannot answer the other question people bring to this screen:
+ * a query that has degraded over months does so a few percent at a time, and
+ * every consecutive pair looks fine. Picking the run from before the slide is
+ * the only way to see it.
+ *
+ * rows[0] is left out of the list because it is the run being measured, and
+ * comparing it with itself would print "about the same" — which reads as a
+ * finding and is not one.
+ */
+function BaselinePicker({
+  rows,
+  chosen,
+  onChoose,
+}: {
+  rows: QueryHistoryRow[];
+  chosen: number | null;
+  onChoose: (id: number | null) => void;
+}) {
+  const older = rows.slice(1);
+  if (older.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <label className="text-[11.5px]" style={{ color: "var(--text-3)" }} htmlFor="history-baseline">
+        Compare against
+      </label>
+      <select
+        id="history-baseline"
+        className="input"
+        style={{ width: "auto", maxWidth: "100%", fontSize: 12 }}
+        // The empty string is "whatever the previous run happens to be", which
+        // stays right as new runs arrive; an id would pin this to one run.
+        value={chosen !== null && chosen !== older[0].id ? String(chosen) : ""}
+        onChange={(e) => onChoose(e.target.value === "" ? null : Number(e.target.value))}
+      >
+        <option value="">The previous run</option>
+        {older.map((row) => (
+          <option key={row.id} value={row.id}>
+            {new Date(row.captured_at).toLocaleString()}
+            {row.exec_time_ms !== null ? ` — ${round(row.exec_time_ms)} ms` : " — estimated"}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/**
+ * The newest run set against the chosen baseline, in one line.
+ *
+ * It names both runs by when they were captured. Before the baseline was
+ * selectable this line only ever meant "against the previous run" and did not
+ * have to say so; now that it can mean any earlier run, a verdict with no
+ * mention of what it was measured against would be unreadable.
+ */
+function ComparisonLine({
+  comparison,
+  newest,
+  baseline,
+}: {
+  comparison: QueryComparison;
+  newest: QueryHistoryRow;
+  /** Null only if the row list and the chosen id ever disagree — see below. */
+  baseline: QueryHistoryRow | null;
+}) {
   return (
     <div className="space-y-1">
       <div className="text-[12.5px]" style={{ color: "var(--text)" }}>
         {comparison.verdict}
+      </div>
+      <div className="text-[11.5px]" style={{ color: "var(--text-2)" }}>
+        {new Date(newest.captured_at).toLocaleString()}
+        {" against "}
+        {/* The server picks the baseline and sends back its id, so this only
+            fails to match if the two ever disagree — in which case saying so
+            is better than naming a run that was not the one compared. */}
+        {baseline ? new Date(baseline.captured_at).toLocaleString() : "an earlier run"}
       </div>
       <div className="text-[11.5px] tabular-nums" style={{ color: "var(--text-3)" }}>
         {comparison.execTimeDeltaMs !== null
@@ -256,9 +365,16 @@ function ComparisonLine({ comparison }: { comparison: QueryComparison }) {
 /** One stored analysis. */
 function HistoryRow({
   row,
+  role,
   onOpen,
 }: {
   row: QueryHistoryRow;
+  /**
+   * Its part in the comparison above, so the two runs the verdict is about can
+   * be found in a list of forty. Null for every other row, and for every row
+   * when there is no comparison.
+   */
+  role: "newest" | "baseline" | null;
   /** Null in single-query mode — see the call site. */
   onOpen: (() => void) | null;
 }) {
@@ -269,6 +385,7 @@ function HistoryRow({
         <Pill tone={row.measured ? "sync" : "neutral"}>
           {row.measured ? "Measured" : "Estimated"}
         </Pill>
+        {role && <Pill tone="brand">{role === "newest" ? "Newest" : "Baseline"}</Pill>}
         <span className="text-[12px] tabular-nums" style={{ color: "var(--text)" }}>
           {/* exec_time_ms and rows_returned are null for an estimate by design,
               and are shown as an em dash rather than a 0 — a zero would be a

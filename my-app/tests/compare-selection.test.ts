@@ -81,6 +81,7 @@ function selection(overrides: Partial<CurrentSelection> = {}): CurrentSelection 
     sourceSchema: "public",
     allowDataLoss: false,
     compareData: false,
+    dataTables: [],
     targets: [
       { connectionId: 2, connectionLabel: "Staging (app)", schema: "public" },
       { connectionId: 3, connectionLabel: "Prod (app)", schema: "public" },
@@ -116,6 +117,23 @@ describe("swapSourceWithTarget", () => {
     expect(swapSourceWithTarget(withOptions, 1).allowDataLoss).toBe(true);
     expect(swapSourceWithTarget(withOptions, 1).compareData).toBe(true);
     expect(swapSourceWithTarget(withOptions, 9)).toBe(withOptions);
+  });
+});
+
+describe("selectionToQuery — the table selection", () => {
+  it("writes one dataTable parameter per chosen table", () => {
+    const params = new URLSearchParams(
+      selectionToQuery(selection({ dataTables: ["orders", "customers"] })),
+    );
+    expect(params.getAll("dataTable")).toEqual(["orders", "customers"]);
+  });
+
+  it("writes none at all when nothing is chosen", () => {
+    // An empty `dataTable=` would be a table with no name, and the run would
+    // limit itself to it and compare nothing.
+    const params = new URLSearchParams(selectionToQuery(selection({ dataTables: [] })));
+    expect(params.getAll("dataTable")).toEqual([]);
+    expect(selectionToQuery(selection({ dataTables: [] }))).not.toContain("dataTable");
   });
 });
 

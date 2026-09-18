@@ -166,6 +166,77 @@ it("answers 503 naming a running deploy or rollback when a family lock times out
   expect(res.body.nothingRan).toBeUndefined();
 });
 
+/**
+ * The audit row the route writes for one attempt, or null when it wrote none.
+ *
+ * Read off the METADATA pool, not the target client, and that is the whole
+ * point of the feature: the target's ledger row is written inside the run's
+ * transaction, so the ROLLBACK below takes it away again. This one is on a
+ * different connection and survives.
+ */
+function auditRow(): unknown[] | null {
+  const call = mockPoolQuery.mock.calls.find((args) =>
+    String(args[0]).includes("INSERT INTO deploy_attempts")
+  );
+  return call ? (call[1] as unknown[]) : null;
+}
+
+it("records a lock timeout in the audit trail, which the ROLLBACK cannot erase", async () => {
+  // Spec feature 07 — "Track SQL execution history for auditing".
+  //
+  // This is the case the trail exists for. The run opened its transaction, the
+  // lock timed out, and the ROLLBACK undid every statement in it — including
+  // the script_patch row that would have been the only record of the attempt.
+  // Before this, a timed-out deploy left the target with no memory of it at
+  // all, and the operator with nothing to show anyone.
+  mockClient = createFakeClient(
+    target([
+      {
+        match: /pg_advisory_xact_lock/,
+        when: (values) => values[1] === "family:a_fix",
+        error: { code: "55P03", message: "canceling statement due to lock timeout" },
+      },
+    ])
+  );
+  const res = await apply(RUN);
+  expect(res.status).toBe(503);
+  expect(queryTexts(mockClient)).toContain("ROLLBACK");
+
+  const row = auditRow();
+  expect(row).not.toBeNull();
+  // Ordered as the INSERT lists them: connection, schema, scripts, outcome,
+  // dry_run, http_status, detail, actor.
+  const [, schemaName, scripts, outcome, dryRun, status, detail] = row as unknown[];
+  expect(schemaName).toBe("sales");
+  // "failed", not "refused": it reached its transaction. The two are separate
+  // so a reader knows whether there was ever anything to inspect.
+  expect(outcome).toBe("failed");
+  expect(dryRun).toBe(false);
+  expect(status).toBe(503);
+  // The reason the operator was given, kept verbatim — a refusal they have
+  // since closed the tab on is otherwise unrecoverable.
+  expect(String(detail)).toContain("waited 15 seconds");
+  // Both migrations in the run, so the row says what was asked for and not
+  // just what broke.
+  expect(JSON.parse(String(scripts))).toEqual([
+    { script_name: "b_fix", version: "1.0.0" },
+    { script_name: "a_fix", version: "1.0.0" },
+  ]);
+});
+
+it("records a run that committed, and stores no reason for it", async () => {
+  // The other end of the same trail: a success is a row too, or the history
+  // would be a list of nothing but problems.
+  const res = await apply(RUN);
+  expect(res.status).toBe(200);
+  const row = auditRow();
+  expect(row).not.toBeNull();
+  const [, , , outcome, , status, detail] = row as unknown[];
+  expect(outcome).toBe("applied");
+  expect(status).toBe(200);
+  expect(detail).toBeNull();
+});
+
 it("stores a comment-only rollback as NULL and a real one as written", async () => {
   await apply(RUN);
   const inserts = queriesMatching(mockClient, /INSERT INTO "sales"\.script_patch/);

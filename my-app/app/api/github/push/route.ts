@@ -47,6 +47,7 @@
 //       github_down | github_error | github_unreachable | outcome_unknown
 import { NextRequest, NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth-guard";
+import { MAX_CHANGE_NOTE_LENGTH, stampChangeNote } from "@/lib/change-note";
 import { stampChangeType, type ScriptChangeType } from "@/lib/change-type";
 import {
   contentsFileUrl,
@@ -86,8 +87,11 @@ import { containsTransactionControl, hasExecutableSql } from "@/lib/sql-guard";
 // The state every refusal ends on, so the user always knows GitHub is untouched.
 const NOTHING_SAVED = "Nothing was saved to GitHub.";
 
-// A description becomes the commit body; past this it is a document, not a note.
-const MAX_DESCRIPTION_LENGTH = 1000;
+// A description becomes the commit body and the file's "-- Note:" header; past
+// this it is a document, not a note. The limit lives with the stamping so the
+// two can never disagree — a description this route accepted but the header
+// truncated would be a note that reads as complete and is not.
+const MAX_DESCRIPTION_LENGTH = MAX_CHANGE_NOTE_LENGTH;
 
 // The statements containsTransactionControl refuses, named the way the Script
 // Editor names them.
@@ -316,13 +320,20 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
   //    replace a file that is already there. Its "-- Change-type:" line is
   //    set to the author's level, replacing any stale generator or hand-typed
   //    line, so Deploy reads back exactly the level chosen here.
+  //
+  //    The author's note is stamped in as well, under "-- Note:". It is still
+  //    the commit message too, but a commit message is the one place it could
+  //    not be read back from: the registry is read through the contents API,
+  //    which returns files and not history, so a pulled script arrived with no
+  //    note and Deploy had nothing to record in script_patch.description. In
+  //    the file it travels with the script — see lib/change-note.ts.
   const migrationName = migrationFileName(version);
   const migrationUrl = contentsFileUrl(config, input.database, input.schema, scriptName, migrationName);
   const upRes = await githubFetch(config, migrationUrl, {
     method: "PUT",
     body: {
       message: pushCommitMessage({ ...identity, description: input.description, level }),
-      content: toBase64(stampChangeType(input.sql, level)),
+      content: toBase64(stampChangeNote(stampChangeType(input.sql, level), input.description)),
     },
   });
   if (!upRes) {

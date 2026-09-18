@@ -22,6 +22,7 @@ import { getPoolForConfig } from "./postgres";
 import type { TableSnapshot } from "./postgres";
 import type { CompareReport } from "./compare";
 import type { DataCompareReport, TableDataCompare } from "./compare-data-summary";
+import { MAX_SAVED_DATA_TABLES } from "./comparison-set-rules";
 import {
   differingColumns,
   findMismatchedRows,
@@ -54,8 +55,15 @@ const DEFAULT_TIMEOUT_MS = 5000;
  */
 const DEFAULT_BUDGET_MS = 25000;
 
-/** How many tables one run will look at, most-interesting-first. */
-const DEFAULT_MAX_TABLES = 60;
+/**
+ * How many tables one run will look at, most-interesting-first.
+ *
+ * Imported rather than stated here so a saved set cannot remember more tables
+ * than a run would ever read: lib/comparison-set-rules.ts validates against
+ * the same constant, and it lives there because that module opens no database
+ * and the browser needs the number too.
+ */
+const DEFAULT_MAX_TABLES = MAX_SAVED_DATA_TABLES;
 
 /** Double-quote an identifier for interpolation into SQL. */
 function q(name: string): string {

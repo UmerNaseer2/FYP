@@ -2,6 +2,7 @@ import {
   isNameConflict,
   matchesSet,
   MAX_COMPARISON_TARGETS,
+  MAX_SAVED_DATA_TABLES,
   parseSaveBody,
   saveButtonLabel,
   setOptionLabel,
@@ -25,6 +26,7 @@ function input(overrides: Partial<SaveComparisonSetInput> = {}): SaveComparisonS
     sourceSchema: "public",
     allowDataLoss: false,
     compareData: false,
+    dataTables: [],
     targets: [
       { connectionId: 2, connectionLabel: "Staging (app)", schema: "public" },
       { connectionId: 3, connectionLabel: "Prod (app)", schema: "public" },
@@ -44,6 +46,7 @@ describe("parseSaveBody", () => {
       sourceSchema: "public",
       allowDataLoss: true,
       compareData: true,
+      dataTables: ["orders"],
       targets: [{ connectionId: "2", connectionLabel: "Staging", schema: "public" }],
     });
     expect(parsed).toEqual({
@@ -55,6 +58,7 @@ describe("parseSaveBody", () => {
       sourceSchema: "public",
       allowDataLoss: true,
       compareData: true,
+      dataTables: ["orders"],
       targets: [{ connectionId: 2, connectionLabel: "Staging", schema: "public" }],
     });
   });
@@ -77,6 +81,7 @@ describe("parseSaveBody", () => {
         sourceSchema: "",
         allowDataLoss: false,
         compareData: false,
+        dataTables: [],
         targets: [],
       });
     }
@@ -98,6 +103,39 @@ describe("parseSaveBody", () => {
   it("caps the stored labels", () => {
     const parsed = parseSaveBody({ sourceConnectionLabel: "x".repeat(500) });
     expect(parsed.sourceConnectionLabel).toHaveLength(200);
+  });
+});
+
+describe("parseSaveBody — the table selection", () => {
+  it("keeps the tables the picker sent", () => {
+    expect(parseSaveBody({ dataTables: ["orders", "customers"] }).dataTables).toEqual([
+      "orders",
+      "customers",
+    ]);
+  });
+
+  it("is empty when the key is absent, which reads as every table", () => {
+    // What every set saved before sets remembered a selection sends, and what
+    // a set that deliberately covers everything sends too.
+    expect(parseSaveBody({}).dataTables).toEqual([]);
+  });
+
+  it("drops anything that is not a usable table name", () => {
+    // parseSaveBody never fails, so a hand-made request full of nulls has to
+    // come out as something the validator can talk about rather than throwing.
+    expect(
+      parseSaveBody({ dataTables: ["orders", "", "  ", null, 7, {}, ["x"]] }).dataTables,
+    ).toEqual(["orders"]);
+  });
+
+  it("trims, and counts a repeat once", () => {
+    // The picker cannot produce a duplicate; a request written by hand can,
+    // and two of the same name must not eat two places in the cap.
+    expect(parseSaveBody({ dataTables: [" orders ", "orders"] }).dataTables).toEqual(["orders"]);
+  });
+
+  it("is a list even when the key is not", () => {
+    expect(parseSaveBody({ dataTables: "orders" }).dataTables).toEqual([]);
   });
 });
 
@@ -187,12 +225,28 @@ describe("validateSaveInput", () => {
   });
 });
 
+describe("validateSaveInput — the table cap", () => {
+  it("accepts a selection right up to the ceiling", () => {
+    const tables = Array.from({ length: MAX_SAVED_DATA_TABLES }, (_, i) => `t${i}`);
+    expect(validateSaveInput(input({ dataTables: tables }))).toBeNull();
+  });
+
+  it("refuses one past it, and says what the limit is", () => {
+    // The number belongs in the sentence: "too many tables" leaves the reader
+    // unticking boxes one at a time to find out how many is too many.
+    const tables = Array.from({ length: MAX_SAVED_DATA_TABLES + 1 }, (_, i) => `t${i}`);
+    const message = validateSaveInput(input({ dataTables: tables }));
+    expect(message).toContain(String(MAX_SAVED_DATA_TABLES));
+  });
+});
+
 describe("matchesSet", () => {
   const saved = {
     sourceConnectionId: 1,
     sourceSchema: "public",
     allowDataLoss: false,
     compareData: true,
+    dataTables: ["orders", "customers"],
     targets: [
       { connectionId: 2, schema: "public" },
       { connectionId: 3, schema: "public" },
@@ -212,6 +266,24 @@ describe("matchesSet", () => {
       matchesSet(saved, { ...saved, targets: [saved.targets[0], { connectionId: 3, schema: "sales" }] }),
     ).toBe(false);
     expect(matchesSet(saved, { ...saved, targets: [saved.targets[0]] })).toBe(false);
+    // The table selection is part of the comparison: the same schemas with a
+    // different set of tables checked is a different run, and before it was
+    // stored this was the one change the bar could not see.
+    expect(matchesSet(saved, { ...saved, dataTables: ["orders"] })).toBe(false);
+    expect(matchesSet(saved, { ...saved, dataTables: [] })).toBe(false);
+  });
+
+  it("ignores the order of the table selection, which has none", () => {
+    // Unlike targets, where order decides which migration is shown first. Two
+    // pickers producing the same tables in a different order must not read as
+    // "changed since it was saved", or the bar nags about nothing.
+    expect(matchesSet(saved, { ...saved, dataTables: ["customers", "orders"] })).toBe(true);
+  });
+
+  it("does not confuse a different table of the same count", () => {
+    // Guards the lazy implementation of the rule above: comparing lengths only
+    // would call this a match.
+    expect(matchesSet(saved, { ...saved, dataTables: ["orders", "invoices"] })).toBe(false);
   });
 
   it("still matches a set whose deleted connections are shown as missing", () => {

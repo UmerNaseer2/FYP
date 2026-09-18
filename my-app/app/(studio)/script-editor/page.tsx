@@ -1268,12 +1268,15 @@ export default function ScriptEditorPage() {
               </label>
             )}
             <label className="label mt-3 block" htmlFor="se-desc">
-              Description <span style={{ color: "var(--text-3)" }}>(optional, used as the commit message)</span>
+              Change log{" "}
+              <span style={{ color: "var(--text-3)" }}>
+                (optional — saved in the script and recorded when it is deployed)
+              </span>
             </label>
             <input
               id="se-desc"
               className="input mt-1"
-              placeholder="What this script does"
+              placeholder="Why this version exists"
               // The push route refuses a longer description.
               maxLength={1000}
               value={description}

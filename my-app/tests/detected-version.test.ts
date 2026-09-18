@@ -1,4 +1,4 @@
-import { toDetectedVersion, VERSION_TIMELINE_SHOWN } from "@/lib/detected-version";
+import { toDetectedVersion, toFullDetectedVersion, VERSION_TIMELINE_SHOWN } from "@/lib/detected-version";
 import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/version-detection";
 
 // What the Compare screen receives of each schema's own version table. The
@@ -25,7 +25,8 @@ function row(version: string, extra: Partial<VersionTimelineEntry> = {}): Versio
 function info(
   timeline: VersionTimelineEntry[],
   current: VersionTimelineEntry | null,
-  familyHeads: Record<string, string> | null = null
+  familyHeads: Record<string, string> | null = null,
+  truncated = false
 ): VersionDetectionResult {
   return {
     schema: "public",
@@ -36,6 +37,7 @@ function info(
     versionScheme: "semver",
     timeline,
     familyHeads,
+    truncated,
     fallbackMode: false,
     message: "Version table found: script_patch",
   };
@@ -127,5 +129,43 @@ describe("toDetectedVersion", () => {
     const shown = toDetectedVersion(info([bare], bare), bare);
     expect(shown.recent[0]).toMatchObject({ scriptName: null, succeeded: null, current: true });
     expect(shown.familyHeads).toBeNull();
+  });
+});
+
+describe("toFullDetectedVersion", () => {
+  // What GET /api/compare/version-history answers with, so a schema that keeps
+  // its versions somewhere other than script_patch can still show all of them.
+  const many = Array.from({ length: VERSION_TIMELINE_SHOWN + 4 }, (_, index) => row(`1.0.${index}`));
+
+  it("keeps every entry, where toDetectedVersion keeps the newest few", () => {
+    const current = many[0];
+    const full = toFullDetectedVersion(info(many, current), current);
+    expect(full.recent).toHaveLength(many.length);
+    expect(full.recent.map((entry) => entry.version)).toEqual(many.map((entry) => entry.version));
+    // The point of the route: the trimmed shape it replaces held fewer.
+    expect(toDetectedVersion(info(many, current), current).recent.length).toBeLessThan(full.recent.length);
+  });
+
+  it("marks the current entry, and only it", () => {
+    const current = many[2];
+    const full = toFullDetectedVersion(info(many, current), current);
+    expect(full.recent.filter((entry) => entry.current)).toHaveLength(1);
+    expect(full.recent[2].current).toBe(true);
+  });
+
+  it("calls the history complete only when the detector read all of it", () => {
+    const current = many[0];
+    expect(toFullDetectedVersion(info(many, current), current).recentComplete).toBe(true);
+    // Truncated: the table holds more rows than the detector's limit reads, so
+    // the screen must say "only the entries we read", not "all of them".
+    expect(toFullDetectedVersion(info(many, current, null, true), current).recentComplete).toBe(false);
+  });
+
+  it("carries the table, the version and the groups through unchanged", () => {
+    const current = many[0];
+    const full = toFullDetectedVersion(info(many, current, { users_migration: "1.0.8" }), current);
+    expect(full.table).toBe("script_patch");
+    expect(full.version).toBe(current.version);
+    expect(full.familyHeads).toEqual({ users_migration: "1.0.8" });
   });
 });

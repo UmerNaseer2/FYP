@@ -104,6 +104,29 @@ export type ApplicationVerdict = {
    * case: an unrestricted script, where there is nothing to say.
    */
   reason: string | null;
+  /**
+   * True only when the target's applications are KNOWN and none of them is one
+   * this script names — that is, the script is addressed to a different
+   * database, not merely unconfirmed against this one.
+   *
+   * The distinction matters because it is the only case where leaving a script
+   * out of a run is safe. Deploys run a contiguous range of versions, so a
+   * script that cannot run and cannot be stepped over deadlocks every later
+   * version behind it: the screen ends up saying "pick a range without it"
+   * when no such range exists. A script addressed elsewhere can be stepped
+   * over, because by its own header it touches another application's tables
+   * and nothing after it in this database depends on what it did.
+   *
+   * The other two refusals must NOT be stepped over, which is why this is a
+   * separate flag and not just `!allowed`:
+   *
+   *   • applications not known — nothing has confirmed this database is not
+   *     the one the script is for, so skipping it would silently drop a
+   *     migration that may well belong here.
+   *   • an empty header — the header is broken, and a broken restriction is a
+   *     thing to fix, not a thing to route around.
+   */
+  addressedElsewhere: boolean;
 };
 
 /**
@@ -133,7 +156,7 @@ export function checkApplications(
   restrictedTo: string[] | null,
   target: TargetApplications
 ): ApplicationVerdict {
-  if (restrictedTo === null) return { allowed: true, reason: null };
+  if (restrictedTo === null) return { allowed: true, reason: null, addressedElsewhere: false };
 
   const listed = restrictedTo.join(", ");
 
@@ -144,6 +167,9 @@ export function checkApplications(
         `This script's "${APPLIES_TO_HEADER_KEY}" header names no applications, so there is ` +
         `no target it can run against. Either list the applications it is for, or remove the ` +
         `header to let it run anywhere.`,
+      // A broken header, not a script for somewhere else. Stepping over it
+      // would route around the mistake instead of surfacing it.
+      addressedElsewhere: false,
     };
   }
 
@@ -154,6 +180,9 @@ export function checkApplications(
         `This script is restricted to ${listed}, and this connection has no application table ` +
         `to check that against — so nothing here can confirm this database is one of them. ` +
         `Name the table on the connection, or remove the restriction from the script.`,
+      // "Not confirmed" is not "not for here". Nothing has said this database
+      // is the wrong one, so the script stays in the run and blocks it.
+      addressedElsewhere: false,
     };
   }
 
@@ -165,6 +194,7 @@ export function checkApplications(
       reason:
         `Restricted to ${listed}; ${target.source ?? "the application table"} says this ` +
         `database hosts ${match}.`,
+      addressedElsewhere: false,
     };
   }
 
@@ -177,6 +207,15 @@ export function checkApplications(
           `not name any of them.`
         : `${target.source ?? "the application table"} says this database hosts ` +
           `${target.names.join(", ")}.`),
+    // The one case that may be stepped over: the table was read, it names
+    // applications, and none of them is one this script is for.
+    //
+    // An EMPTY table is deliberately not that case. It is a table nobody has
+    // filled in yet far more often than it is a database that truly hosts
+    // nothing, and reading it as "definitely not billing" would silently drop
+    // every restricted migration on a database whose only real problem is an
+    // unpopulated table. That stays a blocker, so somebody fixes the table.
+    addressedElsewhere: target.names.length > 0,
   };
 }
 

@@ -13,6 +13,7 @@ function selection(overrides: Partial<CurrentSelection> = {}): CurrentSelection 
     sourceSchema: "public",
     allowDataLoss: false,
     compareData: false,
+    dataTables: [],
     targets: [{ connectionId: 7, connectionLabel: "prod", schema: "app" }],
     ...overrides,
   };

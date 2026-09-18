@@ -23,6 +23,17 @@ export const MAX_NAME_LENGTH = 60;
 /** Longest connection label kept with a set — a name, not an essay. */
 const MAX_LABEL_LENGTH = 200;
 
+/**
+ * How many table names a set may remember for its row compare.
+ *
+ * The same ceiling a run applies to the tables it will actually look at —
+ * lib/compare-data.ts imports this rather than stating its own, because a
+ * selection larger than the run would ever read is a selection that silently
+ * does less than it says. Defined here, in the module with no database in it,
+ * so the browser and the endpoint validate against the same number.
+ */
+export const MAX_SAVED_DATA_TABLES = 60;
+
 /** One save request, after parseSaveBody has made it safe to read. */
 export type SaveComparisonSetInput = {
   /**
@@ -40,6 +51,14 @@ export type SaveComparisonSetInput = {
   sourceSchema: string;
   allowDataLoss: boolean;
   compareData: boolean;
+  /**
+   * Which tables the row compare is limited to, or empty for "every table".
+   *
+   * Part of the set because leaving it out made a saved template quietly
+   * broader than the run it was saved from: someone who picked four tables,
+   * saved, and reopened got all sixty back with nothing to say it had changed.
+   */
+  dataTables: string[];
   targets: { connectionId: number | null; connectionLabel: string; schema: string }[];
 };
 
@@ -84,6 +103,16 @@ export function parseSaveBody(body: unknown): SaveComparisonSetInput {
     sourceSchema: toText(raw.sourceSchema),
     allowDataLoss: raw.allowDataLoss === true,
     compareData: raw.compareData === true,
+    // Deduplicated and trimmed here so the same table listed twice — which the
+    // picker cannot produce but a hand-made request can — does not count twice
+    // against the cap below.
+    dataTables: Array.from(
+      new Set(
+        (Array.isArray(raw.dataTables) ? raw.dataTables : [])
+          .map((value) => toText(value).trim())
+          .filter((value) => value.length > 0)
+      )
+    ),
     targets: targets.map((value) => {
       const target = toRecord(value);
       return {
@@ -120,6 +149,9 @@ export function validateSaveInput(input: SaveComparisonSetInput): string | null 
   if (input.targets.length > MAX_COMPARISON_TARGETS) {
     return `A set can hold at most ${MAX_COMPARISON_TARGETS} targets.`;
   }
+  if (input.dataTables.length > MAX_SAVED_DATA_TABLES) {
+    return `A set can remember at most ${MAX_SAVED_DATA_TABLES} tables for the row compare.`;
+  }
 
   const firstSeen = new Map<string, number>();
   for (const [index, target] of input.targets.entries()) {
@@ -148,6 +180,7 @@ type SelectionShape = {
   sourceSchema: string;
   allowDataLoss: boolean;
   compareData: boolean;
+  dataTables: string[];
   targets: { connectionId: number | null; schema: string }[];
 };
 
@@ -159,13 +192,25 @@ type SelectionShape = {
  * matters: a set is an ordered list, and swapping two targets swaps which
  * migration appears first. Both run options count too, because the same
  * schemas compared with row data are a different comparison.
+ *
+ * The table selection counts as well, but order within it does not: the picker
+ * has no notion of a first table, so two selections of the same tables are the
+ * same comparison however they happen to be ordered.
  */
+/** The same tables, in any order. Both sides are already deduplicated. */
+function sameTables(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const seen = new Set(left);
+  return right.every((name) => seen.has(name));
+}
+
 export function matchesSet(set: SelectionShape, selection: SelectionShape): boolean {
   return (
     set.sourceConnectionId === selection.sourceConnectionId &&
     set.sourceSchema === selection.sourceSchema &&
     set.allowDataLoss === selection.allowDataLoss &&
     set.compareData === selection.compareData &&
+    sameTables(set.dataTables, selection.dataTables) &&
     set.targets.length === selection.targets.length &&
     set.targets.every(
       (target, index) =>

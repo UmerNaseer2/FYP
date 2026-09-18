@@ -9,18 +9,22 @@
 //
 // A side whose version table is script_patch, compared through a saved
 // connection, is loaded in full, scripts included, from
-// GET /api/versionsync/ledger. That read waits until the disclosure is opened:
-// most comparisons never open it, and a comparison should not cost another
-// trip to each database for a panel nobody looked at. Every other side shows
-// the entries the comparison already carried. lib/compare-timeline.ts holds
-// the rules for which side is read which way.
+// GET /api/versionsync/ledger. A side that keeps its versions anywhere else —
+// flyway_schema_history, a hand-rolled schema_version — is loaded in full from
+// GET /api/compare/version-history, without scripts, because those tables do
+// not store the SQL they applied. Either read waits until the disclosure is
+// opened: most comparisons never open it, and a comparison should not cost
+// another trip to each database for a panel nobody looked at. A side with no
+// saved connection, or one the comparison already carried whole, shows the
+// entries it came with. lib/compare-timeline.ts holds the rules for which side
+// is read which way.
 // ---------------------------------------------------------------------------
 
 import { useState, type ReactNode } from "react";
 import type { DetectedVersion } from "@/lib/detected-version";
 import type { NewerSchemaVerdict } from "@/lib/version-detection";
 import type { LedgerEntry } from "@/lib/version-sync";
-import { describeRecentSide, readsLedger, recentTimelineEntries } from "@/lib/compare-timeline";
+import { describeRecentSide, readsHistory, readsLedger, recentTimelineEntries } from "@/lib/compare-timeline";
 import {
   ledgerTimelineEntries,
   mergeTimelines,
@@ -42,10 +46,18 @@ export type CompareTimelineSide = {
   schema: string;
 };
 
-/** How far one side's ledger read has got. Null in state: not asked for yet. */
-type LedgerLoad =
+/**
+ * How far one side's read has got. Null in state: not asked for yet.
+ *
+ * Two ready shapes rather than one, because the two routes answer different
+ * questions: the ledger hands back rows with their SQL, the history route
+ * hands back the same DetectedVersion the comparison sends, with every row in
+ * it instead of the newest few.
+ */
+type SideLoad =
   | { kind: "loading" }
-  | { kind: "ready"; hasLedger: boolean; entries: LedgerEntry[] }
+  | { kind: "ledger"; hasLedger: boolean; entries: LedgerEntry[] }
+  | { kind: "history"; detected: DetectedVersion }
   | { kind: "error"; message: string };
 
 type Which = "left" | "right";
@@ -57,16 +69,30 @@ function sentence(text: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** Reads one side's whole script_patch. Never throws: a failure comes back as words. */
-async function fetchLedger(side: CompareTimelineSide): Promise<LedgerLoad> {
-  const url =
-    `/api/versionsync/ledger?connectionId=${encodeURIComponent(String(side.connectionId))}` +
+/**
+ * Reads one side's whole history, from whichever route can answer for it.
+ * Never throws: a failure comes back as words the panel can print.
+ */
+async function fetchSide(side: CompareTimelineSide): Promise<SideLoad> {
+  const ledger = readsLedger(side.detected, side.connectionId);
+  const query =
+    `?connectionId=${encodeURIComponent(String(side.connectionId))}` +
     `&schema=${encodeURIComponent(side.schema)}`;
+  const url = ledger ? `/api/versionsync/ledger${query}` : `/api/compare/version-history${query}`;
   try {
     const response = await fetch(url, { cache: "no-store" });
     const data = await response.json().catch(() => null);
-    if (response.ok && data && Array.isArray(data.entries)) {
-      return { kind: "ready", hasLedger: data.hasLedger === true, entries: data.entries as LedgerEntry[] };
+    if (response.ok && data) {
+      if (ledger && Array.isArray(data.entries)) {
+        return { kind: "ledger", hasLedger: data.hasLedger === true, entries: data.entries as LedgerEntry[] };
+      }
+      // Array.isArray on recent rather than a truthy check on detected: a body
+      // without it would otherwise render as a side with no entries at all,
+      // which reads as "this schema records nothing" — the opposite of what a
+      // failed read means.
+      if (!ledger && data.detected && Array.isArray(data.detected.recent)) {
+        return { kind: "history", detected: data.detected as DetectedVersion };
+      }
     }
     const message =
       data && typeof data.error === "string" ? data.error : `The server answered with status ${response.status}.`;
@@ -89,7 +115,7 @@ type SideView = {
   canRetry: boolean;
 };
 
-function viewOf(side: CompareTimelineSide, load: LedgerLoad | null): SideView {
+function viewOf(side: CompareTimelineSide, load: SideLoad | null): SideView {
   const { detected, connectionId, name } = side;
 
   // No version table: nothing to line up, so every version reads "not recorded".
@@ -104,7 +130,27 @@ function viewOf(side: CompareTimelineSide, load: LedgerLoad | null): SideView {
   }
 
   const ledgerSide = readsLedger(detected, connectionId);
-  if (ledgerSide && load?.kind === "ready" && load.hasLedger) {
+  const historySide = readsHistory(detected, connectionId);
+
+  // The whole table, from the version-history route. Not complete in the way
+  // script_patch is — a Flyway history can record a migration that failed, and
+  // recentComplete is false when the detector's row limit cut it short — so
+  // both of those still travel through to the rows, rather than being assumed
+  // away here.
+  if (historySide && load?.kind === "history" && load.detected.table) {
+    return {
+      entries: recentTimelineEntries(load.detected),
+      partial: !load.detected.recentComplete,
+      // Still worth saying which table this came from and that it holds no
+      // scripts, and describeRecentSide now counts the whole history rather
+      // than the handful the comparison carried.
+      note: describeRecentSide(name, load.detected, connectionId),
+      noScript: NO_STORED_SCRIPT,
+      canRetry: false,
+    };
+  }
+
+  if (ledgerSide && load?.kind === "ledger" && load.hasLedger) {
     // The whole table, and complete: script_patch holds only applied rows,
     // because a rollback moves its row out of the table.
     return {
@@ -120,6 +166,30 @@ function viewOf(side: CompareTimelineSide, load: LedgerLoad | null): SideView {
   // Everything else shows the entries the comparison carried.
   const entries = recentTimelineEntries(detected);
   const partial = !detected.recentComplete;
+  if (historySide && load?.kind === "error") {
+    return {
+      entries,
+      partial,
+      note:
+        `${name}'s ${detected.table} history did not load. ${sentence(load.message)} Nothing was changed. ` +
+        "Until it loads, the timeline shows only the entries the comparison read.",
+      noScript: NO_STORED_SCRIPT,
+      canRetry: true,
+    };
+  }
+  if (historySide && load?.kind === "history") {
+    // The comparison read a version table and the history read, a moment
+    // later, found none: the table went away in between.
+    return {
+      entries,
+      partial,
+      note:
+        `No version table was found on ${name} when the timeline loaded, so it shows the entries ` +
+        "the comparison read. Compare again to refresh the versions above.",
+      noScript: NO_STORED_SCRIPT,
+      canRetry: false,
+    };
+  }
   if (ledgerSide && load?.kind === "error") {
     return {
       entries,
@@ -131,7 +201,7 @@ function viewOf(side: CompareTimelineSide, load: LedgerLoad | null): SideView {
       canRetry: true,
     };
   }
-  if (ledgerSide && load?.kind === "ready") {
+  if (ledgerSide && load?.kind === "ledger") {
     // The comparison found script_patch and the ledger read, a moment later,
     // did not: the table went away in between.
     return {
@@ -166,13 +236,16 @@ export function CompareVersionTimeline({
   /** The bar's verdict. The side it calls behind gets "(Outdated)" here too. */
   verdict: NewerSchemaVerdict | null;
 }) {
-  const [loads, setLoads] = useState<Record<Which, LedgerLoad | null>>({ left: null, right: null });
+  const [loads, setLoads] = useState<Record<Which, SideLoad | null>>({ left: null, right: null });
   const sides: Record<Which, CompareTimelineSide> = { left, right };
-  const needsLedger = (which: Which) => readsLedger(sides[which].detected, sides[which].connectionId);
+  const needsLoad = (which: Which) => {
+    const { detected, connectionId } = sides[which];
+    return readsLedger(detected, connectionId) || readsHistory(detected, connectionId);
+  };
 
   function load(which: Which) {
     setLoads((current) => ({ ...current, [which]: { kind: "loading" } }));
-    void fetchLedger(sides[which]).then((result) => {
+    void fetchSide(sides[which]).then((result) => {
       setLoads((current) => ({ ...current, [which]: result }));
     });
   }
@@ -181,7 +254,7 @@ export function CompareVersionTimeline({
   // waits for Try again rather than repeating every time the panel opens.
   function onOpen() {
     for (const which of BOTH) {
-      if (needsLedger(which) && loads[which] === null) load(which);
+      if (needsLoad(which) && loads[which] === null) load(which);
     }
   }
 
@@ -189,7 +262,7 @@ export function CompareVersionTimeline({
   // opening it the read starts in the same moment.
   const waiting = BOTH.filter((which) => {
     const state = loads[which];
-    return needsLedger(which) && (state === null || state.kind === "loading");
+    return needsLoad(which) && (state === null || state.kind === "loading");
   });
 
   let body: ReactNode;
@@ -198,8 +271,8 @@ export function CompareVersionTimeline({
       <div className="vtl">
         <p className="vtl__note">
           {waiting.length === 2
-            ? "Loading the script_patch history of both schemas…"
-            : `Loading ${sides[waiting[0]].name}'s script_patch history…`}
+            ? "Loading the version history of both schemas…"
+            : `Loading ${sides[waiting[0]].name}'s version history…`}
         </p>
       </div>
     );

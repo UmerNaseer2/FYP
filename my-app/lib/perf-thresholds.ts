@@ -101,8 +101,11 @@ export const THRESHOLDS: Record<ThresholdKey, ThresholdDefinition> = {
     max: 1,
     asPercent: true,
     help:
-      "Fires when the share of table reads served from memory rather than disk " +
-      "falls under this. A cold server after a restart will trip it honestly.",
+      "Checked on the Activity tab, against the whole database. It is the share of " +
+      "block reads PostgreSQL served from its own shared buffers — a miss may still " +
+      "have come from the operating system's cache, so this is a floor on how much " +
+      "was in memory. The counters are totals since they were last reset, so a cold " +
+      "server climbs back out of a breach rather than clearing it at once.",
   },
   dead_row_ratio: {
     key: "dead_row_ratio",
@@ -114,8 +117,10 @@ export const THRESHOLDS: Record<ThresholdKey, ThresholdDefinition> = {
     max: 1,
     asPercent: true,
     help:
-      "Fires when more than this share of a table's rows are dead ones autovacuum " +
-      "has not collected yet.",
+      "The only threshold that changes what a screen reports rather than raising an " +
+      "alert on top of it: it is the share of dead rows at which the Suggestions tab " +
+      "starts reporting a table as needing a vacuum. Left off, that tab uses 20%, " +
+      "which is autovacuum's own trigger point.",
   },
 };
 

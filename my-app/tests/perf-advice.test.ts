@@ -1,10 +1,13 @@
 import {
+  analyzePartitioning as analyzePartitioningRaw,
   analyzeSchemaPerformance as analyzeSchemaPerformanceRaw,
   analyzeTableStats as analyzeTableStatsRaw,
   attachForeignKeyIndexes as attachForeignKeyIndexesRaw,
   describeStatsError,
   describeStructureError,
+  DEAD_ROW_RATIO_DEFAULT,
   foreignKeyIndexes,
+  PARTITION_CANDIDATE_ROWS,
   sortAdvice,
   summarizeAdvice,
   withoutRepeatedDrops,
@@ -76,6 +79,13 @@ function analyzeSchemaPerformance(...args: Parameters<typeof analyzeSchemaPerfor
 /** analyzeTableStats, keeping what it returns in `collected`. */
 function analyzeTableStats(...args: Parameters<typeof analyzeTableStatsRaw>): PerfAdvice[] {
   const advice = analyzeTableStatsRaw(...args);
+  collected.push(...advice);
+  return advice;
+}
+
+/** analyzePartitioning, keeping what it returns in `collected`. */
+function analyzePartitioning(...args: Parameters<typeof analyzePartitioningRaw>): PerfAdvice[] {
+  const advice = analyzePartitioningRaw(...args);
   collected.push(...advice);
   return advice;
 }
@@ -2760,6 +2770,232 @@ describe("summarizeAdvice", () => {
   });
 });
 
+// ── The dead-row threshold ───────────────────────────────────────────────────
+
+describe("the dead-row ratio the rule fires at", () => {
+  /** A table with a given share of dead rows, big enough to be reported at all. */
+  function withDeadRows(share: number): TableStats {
+    const live = 10_000;
+    return stats({ table_name: "orders", n_live_tup: live, n_dead_tup: Math.round(live * share) });
+  }
+
+  it("defaults to autovacuum's own trigger point", () => {
+    // 20%, because reporting above it means reporting tables autovacuum should
+    // already have dealt with. Just under it is not a finding.
+    expect(DEAD_ROW_RATIO_DEFAULT).toBe(0.2);
+    expect(ids(tableAdvice(withDeadRows(0.19)))).not.toContain("dead-tuples");
+    expect(ids(tableAdvice(withDeadRows(0.25)))).toContain("dead-tuples");
+  });
+
+  it("uses the share the user asked for instead", () => {
+    // The defect this closes: "Dead rows above" could be set and switched on in
+    // the settings screen, and the rule went on using its own 20% — so the
+    // setting was stored, validated, shown, and changed nothing.
+    const loose = analyzeTableStats("public", [withDeadRows(0.25)], [], COUNTERS, NOW, [], 0.4);
+    expect(ids(loose)).not.toContain("dead-tuples");
+
+    const strict = analyzeTableStats("public", [withDeadRows(0.06)], [], COUNTERS, NOW, [], 0.05);
+    expect(ids(strict)).toContain("dead-tuples");
+  });
+
+  it("keeps the floor on table size whatever the share is set to", () => {
+    // 900 live rows with 800 dead ones is a table nobody needs to hear about,
+    // however tight the threshold — the whole thing fits in a few pages.
+    const tiny = stats({ table_name: "flags", n_live_tup: 900, n_dead_tup: 800 });
+    expect(ids(analyzeTableStats("public", [tiny], [], COUNTERS, NOW, [], 0.01))).not.toContain(
+      "dead-tuples"
+    );
+  });
+});
+
+// ── Partitioning ─────────────────────────────────────────────────────────────
+
+/**
+ * Partitioning advice is the one rule that describes work this app will never
+ * do for the user: there is no ALTER TABLE that partitions a table in place, so
+ * the fix is a recipe to read, not SQL to run. That makes two things worth
+ * testing hardest. It has to stay quiet unless it is sure, because "rebuild
+ * this 10-million-row table" is expensive advice to act on wrongly. And the
+ * recipe has to name every blocker, because the swap it describes ends in a
+ * rename — and a rename is exactly where the blockers bite silently.
+ */
+describe("analyzePartitioning", () => {
+  /** A table nobody has partitioned, which is what the rule looks for. */
+  const unpartitioned: TablePartitioning = {
+    strategy: null,
+    key: null,
+    partitionOf: null,
+    bounds: null,
+    inherits: [],
+  };
+
+  /** A table big enough to be a candidate, with a date column to key on. */
+  function bigTable(name: string, extra: Partial<TableSnapshot> = {}): TableSnapshot {
+    return table(name, {
+      partitioning: unpartitioned,
+      columns: [
+        column("id", "bigint", { nullable: false, isPrimaryKey: true }),
+        column("created_at", "timestamp with time zone", { nullable: false }),
+      ],
+      ...extra,
+    });
+  }
+
+  const BIG = 20_000_000;
+
+  describe("when it stays quiet", () => {
+    it("says nothing about a table that is not big enough", () => {
+      const small = { orders: PARTITION_CANDIDATE_ROWS - 1 };
+      expect(ids(analyzePartitioning("public", [bigTable("orders")], small))).toEqual([]);
+      // And the row right at the threshold does fire, so the test above is
+      // about the size and not about the fixture being wrong some other way.
+      const at = { orders: PARTITION_CANDIDATE_ROWS };
+      expect(ids(analyzePartitioning("public", [bigTable("orders")], at))).toEqual([
+        "partitioning-candidate",
+      ]);
+    });
+
+    it("says nothing about a table the counters do not mention", () => {
+      // Not the same as zero rows: a table pg_stat_user_tables has no row for
+      // is a table whose size is unknown, and guessing it is large would be
+      // advice from an app that had not looked.
+      expect(ids(analyzePartitioning("public", [bigTable("orders")], {}))).toEqual([]);
+    });
+
+    it("says nothing about a table that is already partitioned, or is a partition", () => {
+      const parent = bigTable("orders", { partitioning: partitionedBy("RANGE (created_at)") });
+      const child = bigTable("orders_2026", {
+        partitioning: { ...unpartitioned, partitionOf: "orders", bounds: "FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')" },
+      });
+      const inheritor = bigTable("orders_old", { partitioning: { ...unpartitioned, inherits: ["orders"] } });
+      const counts = { orders: BIG, orders_2026: BIG, orders_old: BIG };
+      expect(ids(analyzePartitioning("public", [parent, child, inheritor], counts))).toEqual([]);
+    });
+
+    it("says nothing about a snapshot taken before partitioning was recorded", () => {
+      // `partitioning` undefined means the reader never asked, not that the
+      // answer was no — telling somebody to partition a table that is already
+      // partitioned would read as advice from an app that had not looked.
+      const older = bigTable("orders");
+      delete (older as { partitioning?: TablePartitioning }).partitioning;
+      expect(ids(analyzePartitioning("public", [older], { orders: BIG }))).toEqual([]);
+    });
+  });
+
+  describe("what the recipe has to say", () => {
+    /** The one partitioning finding for a schema of one big table. */
+    function found(table: TableSnapshot, schema = "public"): PerfAdvice {
+      return one(analyzePartitioning(schema, [table], { [table.name]: BIG }), "partitioning-candidate");
+    }
+
+    it("runs nothing, whatever it says", () => {
+      // The whole fix is comments. A reader who pastes it gets no statement,
+      // which is the promise "decision" makes and the reason this rule can
+      // describe a rename of a live table at all.
+      const advice = found(bigTable("orders"));
+      expect(advice.fixKind).toBe("decision");
+      expect(advice.undo ?? null).toBeNull();
+      for (const line of advice.fix.split("\n")) {
+        expect(line.trimStart().startsWith("--")).toBe(true);
+      }
+    });
+
+    it("names the unique keys that would have to weaken", () => {
+      // The primary key is `id`, the partition key would be `created_at`, so
+      // the key has to become (id, created_at) — a weaker promise.
+      expect(found(bigTable("orders")).fix).toContain("THE BLOCKER");
+      // And when every key already contains the partition key, it says so
+      // rather than inventing a blocker.
+      const keyed = bigTable("orders", { primaryKey: pk(["id", "created_at"]) });
+      expect(found(keyed).fix).not.toContain("THE BLOCKER");
+    });
+
+    it("names the foreign keys pointing AT the table, which no unique key mentions", () => {
+      // This is the blocker the published recipes leave out. The swap ends in
+      // a rename, a foreign key follows the table and not the name, so after
+      // the rename every child still guards the husk about to be dropped.
+      const orders = bigTable("orders");
+      const items = table("order_items", {
+        foreignKeys: [fk("order_items_order_fk", ["order_id"], { referencedTable: "orders" })],
+      });
+      const refunds = table("refunds", {
+        // A null referencedSchema means "the same schema as the key is on".
+        foreignKeys: [fk("refunds_order_fk", ["order_id"], { referencedTable: "orders", referencedSchema: null })],
+      });
+      const advice = one(
+        analyzePartitioning("public", [orders, items, refunds], { orders: BIG }),
+        "partitioning-candidate"
+      );
+      expect(advice.fix).toContain("THE OTHER BLOCKER: 2 foreign keys");
+      expect(advice.fix).toContain("order_items.order_items_order_fk");
+      expect(advice.fix).toContain("refunds.refunds_order_fk");
+    });
+
+    it("does not count a key pointing at a table of the same name in another schema", () => {
+      const orders = bigTable("orders");
+      const elsewhere = table("archive_orders", {
+        foreignKeys: [fk("archive_fk", ["order_id"], { referencedTable: "orders", referencedSchema: "archive" })],
+      });
+      const advice = one(
+        analyzePartitioning("public", [orders, elsewhere], { orders: BIG }),
+        "partitioning-candidate"
+      );
+      expect(advice.fix).not.toContain("THE OTHER BLOCKER");
+      // And it says plainly that it could only see one schema, rather than
+      // promising there is nothing anywhere pointing at this table.
+      expect(advice.fix).toContain("this app can only see one schema");
+    });
+
+    it("builds a partition per month from the data, not from dates it made up", () => {
+      // A hard-coded FROM/TO would miss whichever months fall outside it and
+      // the INSERT would then fail on those rows. The range comes from the
+      // table's own min and max.
+      const fix = found(bigTable("orders")).fix;
+      expect(fix).toContain("generate_series(date_trunc('month', min(\"created_at\"))::date");
+      expect(fix).toContain("date_trunc('month', max(\"created_at\"))::date");
+      expect(fix).toContain("interval '1 month'");
+    });
+
+    it("warns that LIKE INCLUDING ALL leaves the table's own foreign keys behind", () => {
+      // INCLUDING ALL copies defaults, indexes, constraints — but not foreign
+      // keys, in either direction. Somebody following the recipe without this
+      // line ends up with a table that has quietly lost them.
+      expect(found(bigTable("orders")).fix).toContain("does NOT copy foreign keys");
+    });
+
+    it("quotes the schema and table names it builds partition names from", () => {
+      // format's %I is given a string, so these go in as SQL string literals.
+      // A name holding a quote has to survive that, or the DO block it is
+      // pasted into stops being valid where the reader cannot see why.
+      const odd = bigTable("o'brien");
+      const fix = one(analyzePartitioning("s'x", [odd], { "o'brien": BIG }), "partitioning-candidate").fix;
+      expect(fix).toContain("'s''x'");
+      expect(fix).toContain("'o''brien_p'");
+      expect(fix).toContain("'o''brien_partitioned'");
+    });
+
+    it("falls back to hashing when there is no date column, and says what that costs", () => {
+      const hashable = table("events", {
+        partitioning: unpartitioned,
+        columns: [column("id", "bigint", { nullable: false, isPrimaryKey: true })],
+      });
+      const advice = one(analyzePartitioning("public", [hashable], { events: BIG }), "partitioning-candidate");
+      expect(advice.fixKind).toBe("decision");
+      // The incoming-key blocker applies to a hash swap exactly as it does to
+      // a range one — the rename at the end is the same rename.
+      const child = table("clicks", {
+        foreignKeys: [fk("clicks_event_fk", ["event_id"], { referencedTable: "events" })],
+      });
+      const withChild = one(
+        analyzePartitioning("public", [hashable, child], { events: BIG }),
+        "partitioning-candidate"
+      );
+      expect(withChild.fix).toContain("THE OTHER BLOCKER: 1 foreign key");
+      expect(withChild.fix).toContain("clicks.clicks_event_fk");
+    });
+  });
+});
+
 // ── Every fix, held to its kind ──────────────────────────────────────────────
 // Last in the file on purpose: `collected` holds every finding the tests above
 // produced by the time these run.
@@ -2957,6 +3193,9 @@ describe("every finding's fix", () => {
       "many-indexes": ["decision"],
       "never-analyzed": ["maintenance"],
       "no-primary-key": ["change", "decision"],
+      // Only ever a decision: there is no ALTER TABLE that partitions in place,
+      // so this rule has nothing runnable to offer and must not start pretending.
+      "partitioning-candidate": ["decision"],
       "redundant-index": ["change"],
       "sequential-scan-heavy": ["change", "decision"],
       "serial-not-identity": ["change", "decision"],

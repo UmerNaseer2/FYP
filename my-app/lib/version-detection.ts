@@ -63,6 +63,13 @@ export type VersionDetectionResult = {
    * determineNewerSchema judges group by group.
    */
   familyHeads: Record<string, string> | null;
+  /**
+   * True when the table holds more rows than `timeline` carries, because the
+   * read stopped at TIMELINE_ROW_LIMIT. Kept as a flag and not only as words
+   * in `message`, so a screen can say "all of it" or "as much as we read"
+   * without having to read the sentence back.
+   */
+  truncated: boolean;
   fallbackMode: boolean;
   message: string;
 };
@@ -582,6 +589,7 @@ export async function fetchSchemaVersionInfo(
         versionScheme: null,
         timeline: [],
         familyHeads: null,
+        truncated: false,
         fallbackMode: true,
         message: "no version table in this schema",
       };
@@ -607,6 +615,7 @@ export async function fetchSchemaVersionInfo(
       versionScheme: parsed ? parsed.scheme : null,
       timeline,
       familyHeads,
+      truncated,
       fallbackMode: false,
       message: truncated
         ? `Version table found: ${tableName} — only the newest ` +
@@ -625,6 +634,7 @@ export async function fetchSchemaVersionInfo(
       versionScheme: null,
       timeline: [],
       familyHeads: null,
+      truncated: false,
       fallbackMode: true,
       message: `could not read a version table — ${message}`,
     };

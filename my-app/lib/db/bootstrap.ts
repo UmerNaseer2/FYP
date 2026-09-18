@@ -136,6 +136,15 @@ async function addConstraints(): Promise<void> {
     "deploy_approvals_two_person_check",
     "decided_by IS NULL OR self_approved OR lower(decided_by) <> lower(requested_by)"
   );
+  // An audit trail is only worth reading if its verdicts mean one thing each,
+  // and this table is written from a catch block — the one place a typo is
+  // least likely to be noticed, because the row is never read back by the code
+  // that wrote it.
+  await addCheckConstraint(
+    "deploy_attempts",
+    "deploy_attempts_outcome_check",
+    "outcome IN ('applied', 'failed', 'refused', 'unknown')"
+  );
   // Only the two routes that spend approvals: the apply route ('deploy') and
   // the revert route ('revert').
   await addCheckConstraint(
@@ -315,6 +324,16 @@ async function backfillOlderTables(): Promise<void> {
   // "this target hosts nothing" and blocks every restricted script.
   await metadataPool.query(
     `ALTER TABLE connections ADD COLUMN IF NOT EXISTS application_table TEXT`
+  );
+
+  // Which tables a saved comparison set limits its row compare to. Nullable
+  // with no default, because there are two different states here and a default
+  // would flatten them: a set saved since this column existed and chosen to
+  // cover every table stores [], while a set saved before it stores NULL
+  // because nobody was ever asked. Both run every table — the difference only
+  // matters if we ever want to tell the user which of the two happened.
+  await metadataPool.query(
+    `ALTER TABLE comparison_sets ADD COLUMN IF NOT EXISTS data_tables JSONB`
   );
 
   // Which role may run a migration against this connection. Defaulted rather

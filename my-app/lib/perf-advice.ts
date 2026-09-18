@@ -1714,7 +1714,8 @@ export function analyzeTableStats(
   indexes: IndexStats[],
   countersSince: string | null,
   now: Date,
-  foreignKeys: ForeignKeyIndexes[] = []
+  foreignKeys: ForeignKeyIndexes[] = [],
+  deadRowRatio: number = DEAD_ROW_RATIO_DEFAULT
 ): PerfAdvice[] {
   const advice: PerfAdvice[] = [];
 
@@ -1760,7 +1761,7 @@ export function analyzeTableStats(
       });
     }
 
-    if (t.n_live_tup >= 1_000 && t.n_dead_tup > t.n_live_tup * 0.2) {
+    if (t.n_live_tup >= 1_000 && t.n_dead_tup > t.n_live_tup * deadRowRatio) {
       advice.push({
         id: "dead-tuples",
         severity: "medium",
@@ -2915,6 +2916,19 @@ export function describeStructureError(
  */
 export const PARTITION_CANDIDATE_ROWS = 10_000_000;
 
+/**
+ * When dead rows are worth reporting, as a share of the live ones.
+ *
+ * 0.2 because that is autovacuum's own default trigger point
+ * (autovacuum_vacuum_scale_factor), so reporting above it means reporting
+ * tables autovacuum should already have dealt with and has not — which is the
+ * fact worth knowing. It is a DEFAULT and not a constant in the rule because
+ * the settings screen offers "Dead rows above" as an alert threshold; a user
+ * who sets that to 40% has said what they consider a problem, and a rule that
+ * kept using its own number would leave that setting doing nothing.
+ */
+export const DEAD_ROW_RATIO_DEFAULT = 0.2;
+
 /** Types a RANGE partition key can be built from, matched against typeDisplay. */
 const TIME_TYPES = /^(timestamp|date)/i;
 
@@ -2995,6 +3009,62 @@ function oneLineText(text: string): string {
 }
 
 /**
+ * The second blocker, and the one no unique key names: the foreign keys
+ * pointing AT this table.
+ *
+ * There is no ALTER TABLE that partitions a table in place, so every way of
+ * doing it ends the same way — build the partitioned table beside the old one,
+ * copy the rows, then rename the old one out of the way and the new one into
+ * its place. A foreign key follows the TABLE, not the name. After the swap,
+ * every child still references the table now called `<name>_old`, which is the
+ * husk that is about to be dropped. Nothing errors and nothing warns; the
+ * constraint simply guards the wrong table from that moment on.
+ *
+ * Re-pointing one means dropping it and adding it again, which re-checks every
+ * row of the child table — and on a server older than PostgreSQL 12 it cannot
+ * be re-pointed at all, because a foreign key could not reference a
+ * partitioned table before then.
+ *
+ * `tables` is the whole schema, because the keys that matter are on the OTHER
+ * tables. Only this schema is searched: a snapshot holds one schema, so a
+ * reference from another database or another schema is not visible here, and
+ * the note says so rather than promising a count it cannot make.
+ */
+function referencingKeysNote(tables: TableSnapshot[], schema: string, tableName: string): string {
+  const referencing = tables.flatMap((other) =>
+    other.foreignKeys
+      .filter(
+        (fk) =>
+          fk.referencedTable === tableName &&
+          // null means "the same schema as the table the key is on", which is
+          // this schema, since every table here came from it.
+          (fk.referencedSchema === null || fk.referencedSchema === schema)
+      )
+      .map((fk) => `${other.name}.${fk.name}`)
+  );
+
+  if (referencing.length === 0) {
+    return (
+      `-- No foreign key in ${oneLineText(schema)} points at this table, so the rename at\n` +
+      `-- the end of the swap leaves nothing referencing the old copy. Check any\n` +
+      `-- other schema or database that reads it — this app can only see one schema.`
+    );
+  }
+  return (
+    `-- THE OTHER BLOCKER: ${countOf(referencing.length, "foreign key", "foreign keys")} ` +
+    `${referencing.length === 1 ? "points" : "point"} at this table\n` +
+    `-- (${oneLineText(referencing.join(", "))}).\n` +
+    `-- A foreign key follows the table, not its name, so the rename at the end\n` +
+    `-- of the swap leaves ${referencing.length === 1 ? "it" : "them"} guarding the OLD copy — the empty one\n` +
+    `-- about to be dropped. Nothing errors; the check is simply pointed at the\n` +
+    `-- wrong table from then on. Each one has to be dropped and added again\n` +
+    `-- against the new table, which re-checks every row of the child, and on\n` +
+    `-- PostgreSQL older than 12 cannot be done at all: a foreign key could not\n` +
+    `-- reference a partitioned table before then.`
+  );
+}
+
+/**
  * Spec feature 9 — partitioning advice for tables big enough to justify it.
  *
  * Separate from analyzeSchemaPerformance because it needs one number that no
@@ -3036,6 +3106,16 @@ export function analyzePartitioning(
 
     if (time) {
       const key = quoteIdent(time.column.name);
+      // Built beside the table and renamed into place at the end, so the name
+      // it is created under has to be one that is free today.
+      const newBare = `${table.name}_partitioned`;
+      const newName = qualifiedName(schema, newBare);
+      // The loop below builds each partition's name as a string and hands it to
+      // format(), so these three go in as SQL string literals, not as quoted
+      // identifiers — quoteIdent's double quotes would be part of the name.
+      const schemaText = oneLineText(literal(schema));
+      const newBareText = oneLineText(literal(newBare));
+      const prefixText = oneLineText(literal(`${table.name}_p`));
       advice.push({
         id: "partitioning-candidate",
         severity: "low",
@@ -3054,6 +3134,8 @@ export function analyzePartitioning(
           `--\n` +
           `${uniqueKeysNote(table, oneLineText(time.column.name))}\n` +
           `--\n` +
+          `${referencingKeysNote(tables, schema, table.name)}\n` +
+          `--\n` +
           (time.column.nullable
             ? `-- ${oneLineText(time.column.name)} is nullable, and a partition key cannot be\n` +
               `-- null. It would need SET NOT NULL first, which means finding and filling\n` +
@@ -3069,13 +3151,44 @@ export function analyzePartitioning(
           `-- does not has to read every partition, which is slower than the single\n` +
           `-- table is today. The Analyse tab will tell you which ones do.\n` +
           `--\n` +
-          `-- There is no ALTER TABLE that partitions a table in place. The shape is:\n` +
-          `--   CREATE TABLE ${oneLineText(table.name)}_new (LIKE ${target} INCLUDING ALL)\n` +
+          `-- There is no ALTER TABLE that partitions a table in place. The shape is\n` +
+          `-- below. It is left commented on purpose: it renames a live table, and\n` +
+          `-- which month a partition should start at is a fact about your data, not\n` +
+          `-- about the schema this app read.\n` +
+          `--\n` +
+          `--   BEGIN;\n` +
+          `--   LOCK TABLE ${target} IN ACCESS EXCLUSIVE MODE;\n` +
+          `--   CREATE TABLE ${newName} (LIKE ${target} INCLUDING ALL)\n` +
           `--     PARTITION BY RANGE (${key});\n` +
-          `--   CREATE TABLE ... PARTITION OF ${oneLineText(table.name)}_new\n` +
-          `--     FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');   -- one per month\n` +
-          `--   INSERT INTO ${oneLineText(table.name)}_new SELECT * FROM ${target};\n` +
-          `--   -- then swap the names, inside a transaction, with writes stopped.\n` +
+          `--   -- One partition per month, from the oldest row to the newest, so no\n` +
+          `--   -- row has nowhere to land. Hard-coded dates would miss whichever\n` +
+          `--   -- months fall outside them and the INSERT would fail on those rows.\n` +
+          `--   DO $$\n` +
+          `--   DECLARE start_of_month date;\n` +
+          `--   BEGIN\n` +
+          `--     FOR start_of_month IN\n` +
+          `--       SELECT generate_series(date_trunc('month', min(${key}))::date,\n` +
+          `--                              date_trunc('month', max(${key}))::date,\n` +
+          `--                              interval '1 month')::date\n` +
+          `--       FROM ${target}\n` +
+          `--     LOOP\n` +
+          `--       -- format's %I quotes each name, so a name needing quotes, or one\n` +
+          `--       -- holding a quote, survives being pasted together here.\n` +
+          `--       EXECUTE format(\n` +
+          `--         'CREATE TABLE %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',\n` +
+          `--         ${schemaText}, ${prefixText} || to_char(start_of_month, 'YYYYMM'),\n` +
+          `--         ${schemaText}, ${newBareText},\n` +
+          `--         start_of_month, start_of_month + interval '1 month');\n` +
+          `--     END LOOP;\n` +
+          `--   END $$;\n` +
+          `--   INSERT INTO ${newName} SELECT * FROM ${target};\n` +
+          `--   ALTER TABLE ${target} RENAME TO ${oneLineText(quoteIdent(`${table.name}_old`))};\n` +
+          `--   ALTER TABLE ${newName} RENAME TO ${oneLineText(quoteIdent(table.name))};\n` +
+          `--   COMMIT;\n` +
+          `--\n` +
+          `-- LIKE ... INCLUDING ALL does NOT copy foreign keys — not the ones this\n` +
+          `-- table has, and not the ones pointing at it. Any this table declares have\n` +
+          `-- to be added to the new one by hand before the swap.\n` +
           `--\n` +
           `-- Copying ${rowsText} rows takes time and takes disk for both copies at once.\n` +
           `-- Plan it as an outage or use a tool built for it; do not run the INSERT\n` +
@@ -3118,6 +3231,8 @@ export function analyzePartitioning(
             `--\n` +
             `${uniqueKeysNote(table, hashKey)}\n`
           : `-- There is no single-column primary key to hash on either.\n`) +
+        `--\n` +
+        `${referencingKeysNote(tables, schema, table.name)}\n` +
         `--\n` +
         `-- Before partitioning, check the cheaper answers: an index that suits the\n` +
         `-- common queries, and whether old rows could be archived out of the table\n` +

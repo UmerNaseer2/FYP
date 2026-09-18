@@ -41,6 +41,7 @@ function detected(
     versionScheme: scheme,
     timeline: [],
     familyHeads,
+    truncated: false,
     fallbackMode: version === null,
     message: "test fixture",
   };

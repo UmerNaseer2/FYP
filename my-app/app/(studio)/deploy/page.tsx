@@ -44,6 +44,8 @@ import {
   type ChangeTypeReading,
   type ScriptChangeType,
 } from "@/lib/change-type";
+import { changeNoteSummary, readChangeNote } from "@/lib/change-note";
+import { describeAttempt, type DeployAttemptRow } from "@/lib/deploy-attempts";
 import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
@@ -169,6 +171,12 @@ type Connection = {
 type PatchEntry = {
   version: string;
   title: string | null;
+  /**
+   * The change log stored with the row (spec 07 — "change logs with user
+   * notes"). Optional: a row written by an older build, or by another tool,
+   * has none.
+   */
+  description?: string | null;
   change_type: string;
   applied_at: string;
   /**
@@ -918,6 +926,18 @@ export default function DeployPage() {
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [targetVersion, setTargetVersion] = useState<string>("");
+  /**
+   * What has been ATTEMPTED against this schema, successful or not (spec 07 —
+   * "Track SQL execution history for auditing").
+   *
+   * Separate from the applied history above, and read from a different
+   * database, because it answers a different question. The target's ledger is
+   * written inside the run's transaction, so a run that failed, was refused or
+   * timed out waiting for a lock leaves nothing behind on the target at all.
+   * These rows are this app's own record of the attempt, which no ROLLBACK on
+   * the target can reach.
+   */
+  const [attempts, setAttempts] = useState<DeployAttemptRow[]>([]);
   // Where a "Run …" button takes the reader: the run panel, at its first
   // unticked box or else its Deploy button. And where "Roll back to here…" in
   // the version timeline takes them: the Roll back card.
@@ -1193,7 +1213,7 @@ export default function DeployPage() {
   }, [scopedScripts, schema]);
 
   // Scripts not yet applied to the target — strictly greater than its version.
-  const pendingScripts = useMemo<GitHubScript[]>(() => {
+  const aheadOfTarget = useMemo<GitHubScript[]>(() => {
     if (!scriptGroup || !preflightResult) return [];
     const groupVersions = (groupedScripts[scriptGroup] ?? []).filter(
       (s) => s.schema_name === schema
@@ -1204,6 +1224,33 @@ export default function DeployPage() {
       (s) => compareVersions(s.version, preflightResult.currentVersion!) > 0
     );
   }, [scriptGroup, preflightResult, groupedScripts, schema]);
+
+  // Of those, the ones addressed to some other application — the target's
+  // application table was read, it names applications, and none of them is one
+  // the script's "Applies-to" header lists.
+  //
+  // They are separated out rather than left in the list because a run is a
+  // contiguous range of versions: a script that cannot run and cannot be
+  // stepped over blocks every later version behind it, and the screen ends up
+  // telling the reader to "pick a range without it" when no such range exists.
+  // Stepping over this one case is safe by the feature's own premise — the
+  // script touches another application's tables, which are not in this
+  // database — and it is the only refusal that may be stepped over. See
+  // addressedElsewhere in lib/application-targeting.ts for the other two.
+  const addressedElsewhere = useMemo<GitHubScript[]>(() => {
+    const applications = preflightResult?.applications ?? { known: false, names: [], source: null };
+    return aheadOfTarget.filter(
+      (s) => checkApplications(readAppliesToHeader(s.sql_content), applications).addressedElsewhere
+    );
+  }, [aheadOfTarget, preflightResult]);
+
+  // What this database is actually being asked to run. Nothing disappears
+  // quietly: the versions taken out are listed on screen right below.
+  const pendingScripts = useMemo<GitHubScript[]>(() => {
+    if (addressedElsewhere.length === 0) return aheadOfTarget;
+    const skip = new Set(addressedElsewhere.map((s) => scriptKey(s)));
+    return aheadOfTarget.filter((s) => !skip.has(scriptKey(s)));
+  }, [aheadOfTarget, addressedElsewhere]);
 
   // What a run to the chosen version applies, oldest first: the pending
   // versions up to and including it. pendingPrefixThrough is the one rule for
@@ -1497,8 +1544,12 @@ export default function DeployPage() {
       sqlContent: row.sql_content ?? null,
       // A title that is only the script group's name or the version itself
       // says nothing beside the group heading and the version, so it is not
-      // shown. Any other title is.
-      label: versionTitle(row.title, row.version, scriptGroup),
+      // shown. Any other title is — and failing that, the change log the
+      // author wrote, which is the only human sentence most rows carry (this
+      // screen sends the script's own name as the title). Only its first line
+      // goes here, since a row is one line; the rest is in the note's header,
+      // visible with the script when the row is opened.
+      label: versionTitle(row.title, row.version, scriptGroup) ?? changeNoteSummary(row.description),
     }));
     const reverted = preflightResult?.reverted ?? [];
     const rows = mergeTimelines(left, right).map((row) => {
@@ -2009,6 +2060,12 @@ export default function DeployPage() {
         return false;
       }
       setPreflightResult(data);
+      // The audit trail refreshes with the ledger, which is also what makes a
+      // run that just FAILED show up: the failure path refreshes the ledger
+      // too, and that is the one case the ledger itself has nothing to say
+      // about. Not awaited — a slow or unreachable metadata read must not hold
+      // up the pre-flight answer the buttons depend on.
+      void loadAttempts(id, sch);
       return true;
     } catch {
       setPreflightError("Network error during pre-flight check.");
@@ -2016,6 +2073,24 @@ export default function DeployPage() {
       return false;
     } finally {
       setPreflightLoading(false);
+    }
+  }
+
+  // The deploy audit trail for the chosen schema. Failures are swallowed on
+  // purpose: this is a panel beside the controls, and a metadata database that
+  // is briefly unreachable must not put an error banner over a deploy screen
+  // that is otherwise working. An empty list reads as "nothing recorded", which
+  // is what the reader would conclude from an error anyway.
+  async function loadAttempts(id: string, sch: string): Promise<void> {
+    try {
+      const res = await fetch(
+        `/api/scripts/attempts?connectionId=${Number(id)}&schema=${encodeURIComponent(sch || "public")}`,
+        { cache: "no-store" }
+      );
+      const data = (await res.json()) as { attempts?: DeployAttemptRow[] };
+      setAttempts(res.ok && Array.isArray(data.attempts) ? data.attempts : []);
+    } catch {
+      setAttempts([]);
     }
   }
 
@@ -2584,6 +2659,13 @@ export default function DeployPage() {
             sql_content: script.sql_content,
             version: script.version,
             title: script.script_name,
+            // The change log the author wrote when they published this
+            // version (spec 07 — "change logs with user notes"). It rides in
+            // the file's own "-- Note:" header, so it survives the round trip
+            // through GitHub, and this is where it reaches the ledger: before
+            // this, script_patch.description was NULL on every version
+            // deployed the ordinary way, because this screen never sent one.
+            description: readChangeNote(script.sql_content) ?? undefined,
             // The level this page showed and bumped by. The server stores it
             // only when it is louder than what the SQL says, never quieter.
             change_type: changeTypeSent(script.sql_content),
@@ -2879,6 +2961,7 @@ export default function DeployPage() {
                     setSchema("");
                     setScriptGroup("");
                     setPreflightResult(null);
+                    setAttempts([]);
                     setPreflightError(null);
                     setTargetVersion("");
                     resetRun();
@@ -2952,6 +3035,7 @@ export default function DeployPage() {
                     setSchema(value);
                     setScriptGroup("");
                     setPreflightResult(null);
+                    setAttempts([]);
                     setPreflightError(null);
                     setTargetVersion("");
                     resetRun();
@@ -3112,7 +3196,15 @@ export default function DeployPage() {
                   tick, a tick for rollbacks that delete rows, a tick for other
                   scripts applied since, and on production a second person's
                   approval of this exact rollback SQL. */}
-              {(appliedNewestFirst.length > 0 || rollbackDone || revertedHistory.length > 0) && (
+              {/* attempts.length is in this test on purpose. Every other term
+                  here is something that SUCCEEDED, so a schema whose only
+                  event is a deploy that failed or was refused would hide the
+                  card — and with it the only record that anything was tried,
+                  which is precisely the case the attempt history exists for. */}
+              {(appliedNewestFirst.length > 0 ||
+                rollbackDone ||
+                revertedHistory.length > 0 ||
+                attempts.length > 0) && (
                 <div className="card p-4" ref={rollbackCardRef} tabIndex={-1}>
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="section-title">
@@ -3413,6 +3505,69 @@ export default function DeployPage() {
                       )}
                     </div>
                   )}
+
+                  {/* Spec feature 07 — "Track SQL execution history for
+                      auditing". Everything above this reads the TARGET, and so
+                      can only show what worked: the applied ledger and the
+                      rollback ledger are both written inside the transaction
+                      that did the work. A run that failed, that was refused,
+                      or that timed out waiting for a lock leaves the target
+                      with no memory of it at all. These rows come from the
+                      app's own database, which is why they survive. */}
+                  {attempts.length > 0 && (
+                    <div className="mt-4">
+                      <div className="section-title mb-1">Deploy history (all attempts)</div>
+                      <div className="help mb-1">
+                        Everything run against this schema from here, whether or not it landed.
+                      </div>
+                      {attempts.slice(0, 10).map((row) => (
+                        <div
+                          key={row.id}
+                          className="py-1.5"
+                          style={{ borderTop: "1px solid var(--border)" }}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="mono text-[13px]">
+                              {row.scripts.length === 0
+                                ? "—"
+                                : row.scripts.length === 1
+                                  ? `${row.scripts[0].script_name} ${vLabel(row.scripts[0].version)}`
+                                  : `${row.scripts.length} migrations, through ${vLabel(
+                                      row.scripts[row.scripts.length - 1].version
+                                    )}`}
+                            </span>
+                            <span
+                              className="text-[11px]"
+                              style={{
+                                color:
+                                  row.outcome === "applied"
+                                    ? "var(--text-3)"
+                                    : row.outcome === "unknown"
+                                      ? "var(--warn, var(--text-2))"
+                                      : "var(--text-2)",
+                              }}
+                            >
+                              {`${describeAttempt(row.outcome, row.dry_run)} · ${fmtDate(
+                                row.created_at
+                              )}${row.actor ? ` by ${row.actor}` : ""}`}
+                            </span>
+                          </div>
+                          {/* The reason, for the outcomes that have one. This is
+                              the whole value of the row: a refusal the operator
+                              has since closed the tab on is otherwise
+                              unrecoverable. */}
+                          {row.detail && (
+                            <div className="text-[11px] mt-0.5" style={{ color: "var(--text-3)" }}>
+                              {row.detail}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      {attempts.length > 10 && (
+                        <div className="help mt-1">{`…and ${attempts.length - 10} more.`}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3473,6 +3628,27 @@ export default function DeployPage() {
                             pending version — a later migration alters what an earlier one
                             creates, so there is no way to leave one out and still run the
                             rest.
+                          </p>
+                        )}
+                        {/* Taken out of the run by their own "Applies-to"
+                            header. They are not in the list below, and a
+                            version that is simply absent reads as one that
+                            does not exist. */}
+                        {addressedElsewhere.length > 0 && (
+                          <p className="help mt-1">
+                            {`Not in this run: ${listVersions(
+                              addressedElsewhere.map((script) => script.version)
+                            )} ${addressedElsewhere.length === 1 ? "is" : "are"} for ${
+                              addressedElsewhere.length === 1 ? "an application" : "applications"
+                            } this database does not host, by ${
+                              addressedElsewhere.length === 1 ? "its" : "their"
+                            } Applies-to header. ${
+                              preflightResult?.applications.source ?? "The application table"
+                            } says this database hosts ${
+                              preflightResult?.applications.names.join(", ") || "nothing by name"
+                            }. Later versions still run — ${
+                              addressedElsewhere.length === 1 ? "that script touches" : "those scripts touch"
+                            } another application's tables, which are not here.`}
                           </p>
                         )}
                         {/* Skipped versions are not in the list below, so say
@@ -3834,8 +4010,9 @@ export default function DeployPage() {
                           : blockedByApplication.length > 0
                           ? `${versionRange(
                               blockedByApplication.map((script) => script.version)
-                            )} is restricted to other applications — pick a range without it, ` +
-                            "or name this database's application table on its connection"
+                            )} is restricted, and nothing here can confirm this database is ` +
+                            "one of the applications named — name this database's application " +
+                            "table on its connection, or take the restriction out of the script"
                           : hasTxnViolation
                           ? "Remove the COMMIT or ROLLBACK from the versions named in " +
                             "the checklist, then pull again"
@@ -3894,9 +4071,15 @@ export default function DeployPage() {
                               rather than nothing, so a reader who has used the
                               feature can see it was checked. */}
                           {blockedByApplication.length > 0
-                            ? `Restricted to other applications · ${blockedByApplication
+                            ? `Restriction could not be checked · ${blockedByApplication
                                 .map((script) => vLabel(script.version))
                                 .join(", ")} — see the note on the row`
+                            : addressedElsewhere.length > 0
+                              ? `Applications · ${addressedElsewhere.length} pending ${
+                                  addressedElsewhere.length === 1 ? "version is" : "versions are"
+                                } for other applications and ${
+                                  addressedElsewhere.length === 1 ? "is" : "are"
+                                } not in this run`
                             : preflightResult.applications.known
                               ? `Applications · this database hosts ${
                                   preflightResult.applications.names.length > 0

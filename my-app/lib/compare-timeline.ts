@@ -9,9 +9,12 @@
 //   turns those rows into entries). That list is complete, because
 //   script_patch holds only applied rows (a rollback moves its row out of the
 //   table).
+// - Any other version table, through a saved connection: its whole history,
+//   without SQL, from GET /api/compare/version-history. Those tables do not
+//   store the SQL they applied, so there is none to show — but the history
+//   itself is as complete as script_patch's.
 // - Anything else: the few entries the comparison already carried
-//   (DetectedVersion.recent). Partial unless recentComplete says otherwise,
-//   and never with SQL, because those tables do not store it.
+//   (DetectedVersion.recent). Partial unless recentComplete says otherwise.
 //
 // Pure on purpose: no fetch and no React, so the rules are tested without a
 // browser. Every type import from a module that opens connections is
@@ -37,6 +40,22 @@ import {
  */
 export function readsLedger(detected: DetectedVersion | null, connectionId: number | null): boolean {
   return detected?.table === "script_patch" && connectionId !== null;
+}
+
+/**
+ * True when a side's whole history can be loaded from the version-history
+ * route: it keeps its versions somewhere other than script_patch (which has
+ * its own route, with the scripts), it was compared through a saved
+ * connection, and the comparison did not already carry every row.
+ *
+ * That last test is why this is not simply "not a ledger side". A schema with
+ * three migrations has its whole history on screen already; asking the server
+ * for it again would cost the target a read to be told what we knew.
+ */
+export function readsHistory(detected: DetectedVersion | null, connectionId: number | null): boolean {
+  if (!detected || !detected.table || connectionId === null) return false;
+  if (detected.table === "script_patch") return false;
+  return !detected.recentComplete;
 }
 
 /** The entries the comparison carried for a side, as timeline entries. */

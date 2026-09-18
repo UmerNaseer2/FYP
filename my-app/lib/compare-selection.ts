@@ -21,6 +21,8 @@ export type CurrentSelection = {
   sourceSchema: string;
   allowDataLoss: boolean;
   compareData: boolean;
+  /** Tables the row compare is limited to; empty means every table. */
+  dataTables: string[];
   targets: { connectionId: number | null; connectionLabel: string; schema: string }[];
 };
 
@@ -148,6 +150,11 @@ export function selectionToQuery(selection: CurrentSelection): string {
   }
   if (selection.allowDataLoss) params.set("allowDataLoss", "1");
   if (selection.compareData) params.set("compareData", "1");
+  // Repeated, the way the form submits a set of checkboxes — the server reads
+  // it with paramList. Left out entirely when nothing is selected, because an
+  // empty list already means every table and an empty `dataTable=` would be a
+  // table with no name.
+  for (const table of selection.dataTables) params.append("dataTable", table);
   return params.toString();
 }
 

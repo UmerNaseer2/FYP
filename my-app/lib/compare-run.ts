@@ -1305,13 +1305,16 @@ export async function runComparison(
     activeSet && !hasExplicitTargets
       ? activeSet.compareData
       : pickValue(params.compareData, "") === "1";
-  // Which tables the row compare is limited to. Unlike the two checkboxes above
-  // this is never seeded from a saved set: a set stores a source, its targets
-  // and the two options, and the table names that existed when it was saved are
-  // not part of it. Reading it straight from the URL means a set opens on every
-  // table, which is the answer a set that never recorded a selection should
-  // give.
-  const dataTables = paramList(params.dataTable);
+  // Which tables the row compare is limited to, seeded from the saved set on
+  // the same terms as the two checkboxes above: the URL wins when the page
+  // carries its own targets, and otherwise the set supplies it.
+  //
+  // A set that stored no selection — either because it chose every table, or
+  // because it was saved before sets remembered one — has an empty list here,
+  // and an empty list already means every table. So the old behaviour is what
+  // those sets still get, without a second code path to keep in step.
+  const dataTables =
+    activeSet && !hasExplicitTargets ? activeSet.dataTables : paramList(params.dataTable);
 
   // Only asked of a source that can be read. A missing one has its own
   // message, which says whether it was deleted or never picked. One whose
@@ -1391,6 +1394,7 @@ export async function runComparison(
     sourceSchema,
     allowDataLoss,
     compareData,
+    dataTables,
     targets: resolvedTargets.map((slot) => ({
       connectionId: slot.connection ? slot.connection.id : null,
       connectionLabel: slot.connection

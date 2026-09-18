@@ -9,6 +9,7 @@ import {
   type ActivitySession,
 } from "@/lib/db-activity";
 import type { ThresholdBreach } from "@/lib/perf-thresholds";
+import type { DbHealth, HealthLevel } from "@/lib/db-health";
 import { ThresholdBanner } from "./ThresholdBanner";
 import type { PerfTarget } from "./PerfTargetPicker";
 
@@ -45,7 +46,19 @@ type ActivityView = {
   };
   emptyMessage: string;
   hiddenNote: string | null;
+  health: DbHealth | null;
   breaches: ThresholdBreach[];
+};
+
+/**
+ * How each level is coloured. "unknown" gets the quiet tone on purpose: a
+ * number nobody could measure must not look like a number that came back good.
+ */
+const HEALTH_TONE: Record<HealthLevel, PillTone> = {
+  good: "sync",
+  watch: "drift",
+  bad: "break",
+  unknown: "neutral",
 };
 
 /** Worst kinds get the loud colour; an ordinary running query gets none. */
@@ -193,6 +206,8 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
         )}
       </Card>
 
+      {view.health && <HealthPanel health={view.health} />}
+
       {view.sessions.length === 0 ? (
         <Card className="p-0 overflow-hidden">
           <div style={{ height: 260 }}>
@@ -211,6 +226,63 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Spec feature 10 — the database half of "Table/Database Health Metrics".
+ *
+ * Every number here is a total since the counters were last reset, which is
+ * printed above the grid rather than left for the reader to assume. Without it
+ * a 99% cache hit ratio reads as "right now" when it is really an average over
+ * however many months this server has been up, and the two can differ wildly.
+ *
+ * A metric with nothing to show prints its reason instead of a dash, because a
+ * dash and a zero look alike at a glance and mean opposite things.
+ */
+function HealthPanel({ health }: { health: DbHealth }) {
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div className="text-[13px] font-medium" style={{ color: "var(--text)" }}>
+          Database health
+        </div>
+        <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+          {health.since
+            ? `Totals since the counters were reset on ${new Date(health.since).toLocaleString()}.`
+            : "Totals since this server last started; its counters have never been reset."}
+        </div>
+      </div>
+
+      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+        {health.metrics.map((metric) => (
+          <div
+            key={metric.key}
+            className="rounded-lg p-3 space-y-1.5"
+            style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11.5px]" style={{ color: "var(--text-2)" }}>
+                {metric.label}
+              </span>
+              {metric.display !== null && metric.level !== "good" && (
+                <Pill tone={HEALTH_TONE[metric.level]}>{metric.level}</Pill>
+              )}
+            </div>
+            <div className="text-[17px] font-medium tabular-nums" style={{ color: "var(--text)" }}>
+              {metric.display ?? (
+                <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
+                  Not measurable yet
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] leading-snug" style={{ color: "var(--text-3)" }}>
+              {metric.note}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

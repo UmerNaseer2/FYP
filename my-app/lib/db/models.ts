@@ -710,6 +710,8 @@ export class ComparisonSet extends Model<
   declare allow_data_loss: CreationOptional<boolean>;
   /** Also compare the rows of tables both sides have when the set is run. */
   declare compare_data: CreationOptional<boolean>;
+  /** Table names the row compare is limited to; null or [] means every table. */
+  declare data_tables: CreationOptional<unknown | null>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare last_run_at: CreationOptional<Date | null>;
@@ -724,6 +726,10 @@ ComparisonSet.init(
     source_schema: { type: DataTypes.TEXT, allowNull: false },
     allow_data_loss: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     compare_data: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    // Nullable rather than defaulting to []: a set saved before this column
+    // existed never chose "every table", it simply never recorded a choice,
+    // and both read back the same way without pretending otherwise.
+    data_tables: { type: DataTypes.JSONB, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     last_run_at: { type: DataTypes.DATE, allowNull: true },
@@ -952,6 +958,88 @@ DeployApproval.init(
       {
         name: "deploy_approvals_target_idx",
         fields: ["connection_id", "schema_name", "script_name", "status"],
+      },
+    ],
+  }
+);
+
+// ---------------------------------------------------------------------------
+// The audit trail of what was attempted.
+// ---------------------------------------------------------------------------
+
+/**
+ * One attempt to deploy, whatever came of it.
+ *
+ * Spec feature 07 — "Track SQL execution history for auditing."
+ *
+ * The target's own script_patch table records what it HAS applied, and that is
+ * all it can record: the apply route writes those rows inside the run's
+ * transaction, so a script that failed, a COMMIT the server refused and a run
+ * that timed out waiting for a lock are all rolled back together with the
+ * ledger row that would have described them. An audit trail that keeps only
+ * the successes answers "what is this database at" and cannot answer "what has
+ * anyone tried to do to it", which is the question an audit is usually asked.
+ * Refusals never reached the target at all.
+ *
+ * So the attempt is recorded HERE, in this app's own database, on a different
+ * connection entirely — which is the whole point. No ROLLBACK on the target can
+ * reach across to it, and a run refused because the target could not even be
+ * opened still leaves a row.
+ *
+ * Deliberately not a foreign key to connections: deleting a connection must
+ * not delete the record of what was done through it.
+ */
+export class DeployAttempt extends Model<
+  InferAttributes<DeployAttempt>,
+  InferCreationAttributes<DeployAttempt>
+> {
+  declare id: CreationOptional<number>;
+  /** Null when the request was refused before it named a usable connection. */
+  declare connection_id: CreationOptional<number | null>;
+  declare schema_name: CreationOptional<string | null>;
+  /** The migrations the run asked for: [{ script_name, version }], in order. */
+  declare scripts: CreationOptional<Array<{ script_name: string; version: string }>>;
+  /** applied | failed | refused | unknown — see lib/deploy-attempts. */
+  declare outcome: string;
+  /** A rehearsal, which writes nothing and is recorded as such. */
+  declare dry_run: CreationOptional<boolean>;
+  /** The HTTP status the route answered with, kept for reading the row back. */
+  declare http_status: number;
+  /** What the operator was told, verbatim. Null for a run that succeeded. */
+  declare detail: CreationOptional<string | null>;
+  declare actor: CreationOptional<string | null>;
+  declare created_at: CreationOptional<Date>;
+}
+
+DeployAttempt.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    connection_id: { type: DataTypes.INTEGER, allowNull: true },
+    schema_name: { type: DataTypes.TEXT, allowNull: true },
+    // JSONB rather than a row per script: an attempt is one decision about one
+    // run, and splitting it would make "was this run refused" a join.
+    scripts: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
+    outcome: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      validate: { isIn: [["applied", "failed", "refused", "unknown"]] },
+    },
+    dry_run: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    http_status: { type: DataTypes.INTEGER, allowNull: false },
+    detail: { type: DataTypes.TEXT, allowNull: true },
+    actor: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "deploy_attempts",
+    indexes: [
+      // Every read is "the newest attempts against this schema". Ascending is
+      // enough for a DESC read: the leading columns are fixed by equalities, so
+      // Postgres walks the rest of the index backwards for free.
+      {
+        name: "deploy_attempts_target_idx",
+        fields: ["connection_id", "schema_name", "created_at"],
       },
     ],
   }

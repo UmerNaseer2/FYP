@@ -10,6 +10,7 @@ import {
   STATS_LOCK_TIMEOUT_MS,
   STATS_STATEMENT_TIMEOUT_MS,
   STRUCTURE_LOCK_TIMEOUT_MS,
+  DEAD_ROW_RATIO_DEFAULT,
   analyzePartitioning,
   analyzeSchemaPerformance,
   analyzeTableStats,
@@ -29,6 +30,7 @@ import {
   type WaitingPartition,
 } from "@/lib/perf-advice";
 import { aggregateSearches, compositeIndexAdvice } from "@/lib/composite-index";
+import { getThresholdsOrDefaults } from "@/lib/perf-thresholds-db";
 import { SEARCH_PATTERN_DAYS, listSearches } from "@/lib/query-history-db";
 
 /**
@@ -267,6 +269,20 @@ export async function GET(request: NextRequest) {
   //   • search_path = pg_catalog: pg_get_indexdef then writes the table's
   //     schema out in full, so a definition shown as an undo means the same
   //     thing whatever search_path the reader pastes it into.
+  // The user's alert thresholds, read before the target is opened so a slow app
+  // database never holds a connection to somebody else's server open while it
+  // is waited on — the same order the activity route uses.
+  //
+  // Only one of them changes what the rules report. The rest raise breaches on
+  // screens that measure a single thing (a query's time, a session's age); this
+  // one is a statement about the tables themselves, so it belongs in the rule
+  // rather than in a banner on top of it. A threshold that is off leaves the
+  // rule on its own default: disabled means "I have not said", not "zero".
+  const thresholds = await getThresholdsOrDefaults(connectionId, schema);
+  const deadRowSetting = thresholds.find((t) => t.key === "dead_row_ratio");
+  const deadRowRatio =
+    deadRowSetting && deadRowSetting.enabled ? deadRowSetting.value : DEAD_ROW_RATIO_DEFAULT;
+
   let runtime: AdviceItem[] = [];
   let statsUnavailable: string | null = null;
   // The indexes PostgreSQL has marked invalid, for the structural rules below.
@@ -508,7 +524,11 @@ export async function GET(request: NextRequest) {
       // not use protects nothing, and the foreign-key rule has already counted
       // the key as unindexed. Reached only when the list loaded — the catch
       // below is where a failure lands.
-      foreignKeyIndexes(snapshot, invalidIndexes ?? new Set())
+      foreignKeyIndexes(snapshot, invalidIndexes ?? new Set()),
+      // The user's own "Dead rows above" alert threshold, when they have set
+      // one and switched it on. Before this the rule used its own fixed 20%
+      // and that setting changed nothing it did.
+      deadRowRatio
     ).map((a) => ({ ...a, origin: "statistics" }));
 
     // Partitioning advice is structural in everything but one number — how

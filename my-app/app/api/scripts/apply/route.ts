@@ -3,6 +3,8 @@ import { requireEditor } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
+import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
+import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
@@ -462,9 +464,18 @@ function answerBeforeRun(body: Record<string, unknown>, init: { status: number }
   return NextResponse.json({ ...body, nothingRan: true }, init);
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * The route proper. Wrapped by POST below, which records the attempt.
+ *
+ * `attempt` is filled in as this function learns each fact, rather than
+ * returned at the end: most of the ways a run can end are early returns from
+ * the middle of the validation, and a context assembled only on the happy path
+ * would be empty in exactly the cases the audit trail exists for.
+ */
+async function runApply(request: NextRequest, attempt: AttemptContext) {
   const gate = await requireEditor();
   if (!gate.ok) return gate.response;
+  attempt.actor = actorFor(gate.principal);
 
   // ─── 1. Parse the request body ───────────────────────────────────────────
   //
@@ -538,6 +549,10 @@ export async function POST(request: NextRequest) {
   // apply — the flag has to be asked for explicitly, so a caller that knows
   // nothing about it keeps committing exactly as before.
   const dryRun = body.dryRun === true;
+
+  attempt.connectionId = typeof connectionId === "number" ? connectionId : null;
+  attempt.schemaName = schemaName;
+  attempt.dryRun = dryRun;
 
   // ─── 2. Validate every script in the run ─────────────────────────────────
   if (!connectionId) {
@@ -666,6 +681,11 @@ export async function POST(request: NextRequest) {
 
   // Used by every message that names the run as a whole.
   const lastJob = queue[queue.length - 1];
+
+  attempt.scripts = queue.map((job) => ({
+    script_name: job.scriptName,
+    version: job.version,
+  }));
 
   // ─── 4. Look up the saved connection from the app metadata database ───────
   // version-db is the same pool the Connections screen saves to, so a connection
@@ -1764,4 +1784,46 @@ export async function POST(request: NextRequest) {
     // failure. Hence commitOutcomeUnknown here rather than commitAttempted.
     if (!runCommitted && !commitOutcomeUnknown) await releaseClaimedApproval();
   }
+}
+
+/**
+ * Run the apply, then record that it was attempted — spec feature 07, "Track
+ * SQL execution history for auditing".
+ *
+ * A wrapper rather than a line at each of the route's twenty-odd exits, and
+ * that is the point of it. The ledger this route writes lives in the target's
+ * script_patch table, INSIDE the run's transaction and after the DDL, so every
+ * way a run can go wrong takes the evidence away with it: a script that threw,
+ * a COMMIT the server refused and a lock timeout are all rolled back together
+ * with the row that would have described them, and a refusal never opened a
+ * transaction to begin with. What survived was a record of successes only —
+ * enough to answer "what version is this database at", and no use at all for
+ * answering "what has anyone tried to do to it".
+ *
+ * The row goes to the METADATA database, on a different connection from the
+ * target. That is what makes it survive: a ROLLBACK cannot reach across a
+ * connection it does not own, and an attempt refused because the target could
+ * not be opened still leaves a row. lib/deploy-attempts explains the four
+ * outcomes and why "failed" and "unknown" must not be collapsed together.
+ *
+ * Recording cannot change the answer. It happens after the response exists,
+ * reads a clone of it so the original body is still unread when it is
+ * returned, and swallows its own errors — an audit trail that can turn a
+ * committed deploy into a 500 would be worse than the gap it fills.
+ */
+export async function POST(request: NextRequest) {
+  const attempt: AttemptContext = {};
+  const response = await runApply(request, attempt);
+
+  let body: AttemptResponseBody | null = null;
+  try {
+    // A clone, because a response body can only be read once and this one is
+    // about to be sent. Some answers (the auth gate's) carry no JSON at all.
+    body = (await response.clone().json()) as AttemptResponseBody;
+  } catch {
+    body = null;
+  }
+  await recordDeployAttempt(attempt, response.status, body);
+
+  return response;
 }

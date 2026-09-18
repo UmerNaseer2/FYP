@@ -7,7 +7,8 @@
 // values, and fetch is replaced with a stub that answers only the requests a
 // test names (by method and address) and records anything else as a failure.
 import { NextRequest, NextResponse } from "next/server";
-import { stampChangeType } from "@/lib/change-type";
+import { readChangeNote } from "@/lib/change-note";
+import { readChangeTypeHeader, stampChangeType } from "@/lib/change-type";
 import { CHANGE_LEVEL_REQUIRED, VERSION_FORMAT_HINT, rollbackCommitMessage } from "@/lib/registry-push";
 
 // auth-guard pulls in next-auth, which ships as ESM Jest can't load. The
@@ -239,6 +240,29 @@ describe("POST /api/github/push, a new version", () => {
     expect(subject.length).toBeLessThanOrEqual(72);
     expect(down.body?.message).toBe(rollbackCommitMessage("rollback", IDENTITY));
     expect(String(down.body?.message).endsWith(": rollback")).toBe(true);
+  });
+
+  it("stores the change log in the file, not only in the commit message", async () => {
+    // The commit message is the one place the note could NOT be read back
+    // from: the registry is pulled through the contents API, which returns
+    // files and not history. While that was the note's only destination, a
+    // pulled script came back without it and every version deployed the
+    // ordinary way recorded none — so it goes in the file as well.
+    newFamily();
+    answers[`PUT ${fileUrl("v1.2.0.sql")}`] = saved("v1.2.0.sql");
+    const description = "Support asked for a remarks field on every order.";
+    const { status } = await push({ ...BASE, description });
+    expect(status).toBe(200);
+
+    const save = writes()[0];
+    expect(readChangeNote(decoded(save))).toBe(description);
+    // Both destinations, not one instead of the other: the commit message is
+    // what makes the GitHub history readable and is still written.
+    expect(String(save.body?.message)).toContain(description);
+    // And the note must not displace the stamp the app reads by machine, nor
+    // disturb the SQL underneath it.
+    expect(readChangeTypeHeader(decoded(save))).toBe("additive");
+    expect(decoded(save)).toContain(BASE.sql_content);
   });
 });
 
