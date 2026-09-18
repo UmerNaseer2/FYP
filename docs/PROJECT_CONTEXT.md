@@ -1,7 +1,7 @@
 # Schema Studio — orientation for a reviewer
 
 Written for someone who has never seen this repository and has perhaps an hour.
-Everything below was read out of the code on 2026-09-10, not out of a plan
+Everything below was read out of the code on 2026-09-18, not out of a plan
 document. Where a plan document says otherwise, the code wins — see
 [README.md](README.md) for the specific places the coursework documents have
 gone stale.
@@ -61,27 +61,31 @@ docker-compose.yml         Postgres 17 + the app, two containers
 my-app/
   app/
     (studio)/              11 pages, the whole product
-    api/                   30 route handlers
+    api/                   36 route handlers
     login/                 the sign-in page
     layout.tsx             root layout, dark theme, fonts
-    globals.css            1,271 lines — design tokens + 463 hand-written rules
+    globals.css            1,493 lines — design tokens + hand-written rules
+    error.tsx              the boundaries: one per depth, see §11
   components/
-    studio/                feature components
-    ui/                    the shared kit (EmptyState, Skeleton, dialogs, …)
-  lib/                     46 modules — all the logic
-    db/                    Sequelize: models, bootstrap, the instance
-  tests/                   16 Jest suites, 388 tests
+    studio/                40 feature components
+    ui/                    17 files — the shared kit (EmptyState, Skeleton, dialogs, …)
+  lib/                     83 modules — all the logic
+    db/                    Sequelize: models, bootstrap, the instance (3 more)
+  tests/                   124 Jest suites, 3,209 tests
   proxy.ts                 Next 16's renamed middleware — the page auth gate
   auth.ts, auth.config.ts  NextAuth v5 (Microsoft Entra ID)
   instrumentation.ts       starts the drift scheduler on boot
 ```
 
-Sizes, for scale: `app/` ~17,500 lines, `lib/` ~21,900, `components/` ~8,400,
-`tests/` ~4,400.
+Sizes, for scale: `app/` ~27,000 lines, `lib/` ~43,900, `components/` ~14,000,
+`tests/` ~53,500. The test tree being larger than the source it covers is a
+consequence of how these suites are written: each one opens with a header
+saying what it is pinning down and what deliberately belongs to another file,
+and most assertions carry the reason they exist.
 
 ## 4. Stack
 
-Next.js 16.2.2 (App Router, Turbopack) · React 19.2.4 · TypeScript 5 strict ·
+Next.js 16.3.5 (App Router, Turbopack) · React 19.2.4 · TypeScript 5 strict ·
 Node 22 · PostgreSQL via `pg` 8.20 and Sequelize 6.37 · NextAuth v5 beta with
 Microsoft Entra ID · Tailwind v4 alongside hand-written CSS · Jest 30 ·
 `@xyflow/react` + `@dagrejs/dagre` for the ERD visualiser.
@@ -186,9 +190,10 @@ rather than auto-emitting `ALTER TABLE … RENAME TO`. Primitives are in
 
 ## 8. The `lib/` purity split
 
-Of 46 modules, **28 are pure** — their value-import closure contains no `pg`,
-`sequelize`, `next/*`, `@/auth` or `node:*` — and **18 are impure**. That is
-what decides whether a module can be imported by a client component.
+Of the 86 modules under `lib/`, **63 are pure** — their value-import closure
+contains no `pg`, `sequelize`, `next/*`, `@/auth` or `node:*` — and **23 are
+impure**. That is what decides whether a module can be imported by a client
+component.
 
 Several files exist *only* to preserve that line: `lib/snapshot-facts.ts` holds
 one function so the UI can ask it without pulling in `pg`; `lib/parse-uri.ts`
@@ -202,18 +207,25 @@ the reason.
 The client's product backlog has 38 items (`docs/requirements/COS40005-team-and-project-plan.txt`,
 Table 5). Traced against the code:
 
-**32 done · 5 partial · 1 missing.**
+**36 done · 1 partial · 1 missing.**
 
-The five partials and the one gap, precisely:
+The one partial and the one gap, precisely:
 
 | # | Item | Status |
 |---|---|---|
 | 5 | NextAuth Microsoft OAuth | Code complete and wired end to end; no credentials provisioned, so the flow has never run. Needs env values, not more code. |
-| 28 | Migration execution audit log | Every applied script is recorded in the target's `script_patch` ledger with its SQL, rollback, change type and timestamp — but **no actor**. The route knows the principal and does not persist it. Separately, the screen labelled "audit log" shows *drift* events, not deployments. |
-| 30 | Comparison history and templates | Templates exist (`lib/comparison-sets.ts`). History does not: `last_run_at` is the only trace, so a past comparison cannot be reopened. |
-| 31 | Jest testing | 16 suites, 388 tests, real and running in CI — but confined to `lib/`. Zero `@/app` imports, no `.tsx` tests, no jsdom. No route handler, page or component is under test. |
-| 32 | UI polish and error handling | Polish is genuinely there (shared kit, first-run states, keyboard-reachable rows, print styles). Error handling is not: **no `error.tsx`, `global-error.tsx` or `not-found.tsx` anywhere in `app/`**, so a render error falls through to Next's default screen. |
 | 38 | AI assistance | **Missing.** No AI SDK, no LLM call anywhere. Items 34–36 are rule-based heuristics. The backlog marks this "if time allows". |
+
+Four items that were partial when this file was first written have since been
+finished. They are listed rather than deleted, because a reviewer holding an
+older copy of this document will come looking for them:
+
+| # | Item | What closed it |
+|---|---|---|
+| 28 | Migration execution history and audit log | The ledger row already held the SQL, the rollback, the change type and the timestamp; it now holds the actor too (`applied_by`, added to older ledgers on the next apply), and the Deploy screen's timeline reads "Applied *date* by *who*". The *Audit log* tab on the Drift screen is a different log and always was — drift checks, not deployments. |
+| 30 | Save comparison history and templates | Templates are `lib/comparison-sets.ts`. History is `lib/comparison-history.ts` and `-db.ts`: every run stores the finding set it saw, and the next comparison of the same pair opens with what appeared and what was resolved in between. What is stored is the finding set rather than the whole report, so a past run is compared against, not re-opened. |
+| 31 | Jest testing for the main webpages | 124 suites, 3,209 tests. 12 of the 13 pages are rendered and driven by a suite of their own, alongside 36 component suites; the thirteenth is the four-line redirect at `app/page.tsx`. jsdom is asked for per file, so the logic suites keep a node environment. |
+| 32 | UI polish and error handling | The polish was already there. The error handling is `app/(studio)/error.tsx`, `app/error.tsx`, `app/not-found.tsx` and `app/global-error.tsx` — see §11. |
 
 ### Where the code exceeds the backlog
 
@@ -232,15 +244,15 @@ policies, triggers and partitioning.
 Four commands, all green at the current commit, all run in CI on every branch:
 
 ```bash
-npx tsc --noEmit
-npx eslint app lib components hooks tests proxy.ts auth.ts auth.config.ts instrumentation.ts
-npx jest
+npm run typecheck    # tsc --noEmit
+npm run lint         # eslint, configured by eslint.config.mjs
+npm test             # jest
 npm run build
 ```
 
 `.github/workflows/ci.yml` runs exactly these on push to any branch, pull
-request, and manual dispatch. Production build: 42 static pages, 30 API routes,
-12 page routes, one proxy.
+request, and manual dispatch. Production build: 48 pages generated, 36 API
+routes, 13 page routes plus the 404, one proxy.
 
 ## 11. Known state and honest caveats
 
@@ -258,12 +270,22 @@ request, and manual dispatch. Production build: 42 static pages, 30 API routes,
 - **`/api/lineage/acknowledge` is the only metadata-writing route that never
   calls `syncMetadataTables()`** before querying. On a fresh database it fails
   where its siblings self-heal.
-- **`app/(studio)/performance/` is the only studio route with no `layout.tsx`**,
-  so it is the only page not wrapped in the client `AuthGuard`. Server gates
-  still apply — a UI inconsistency, not a security hole.
-- **`app/api/scripts/apply/route.ts` is 1,244 lines**, by far the largest file
-  in `app/`. It is the most dangerous route in the codebase — it runs arbitrary
-  DDL against a customer database — and repays careful reading.
+- **`app/api/scripts/apply/route.ts` is by far the largest file in `app/`**, at
+  about 1,800 lines. It is the most dangerous route in the codebase — it runs
+  arbitrary DDL against a customer database — and repays careful reading.
+- **A render error is now caught at the depth it happened.**
+  `app/(studio)/error.tsx` sits inside the route group, so a screen that throws
+  is replaced while the sidebar stays up and every other screen is one click
+  away. `app/error.tsx` covers sign-in and the root redirect, which have no
+  sidebar to keep. `app/global-error.tsx` catches a throw in the root layout
+  itself, and therefore ships its own `<html>`, `<body>` and stylesheet and
+  imports nothing — the layout that loads `globals.css` is the thing that has
+  just failed. `app/not-found.tsx` is the 404. Each prints `error.digest` when
+  there is one, because the message itself is redacted in a production build and
+  the digest is the only thread back to the server log.
+- **The auth state is readable on screen.** The bottom-left of the studio rail
+  carries your role, and an `auth off` pill beside it whenever the bypass is on.
+  That is a label, not a guard: the gates are `lib/auth-guard.ts` and `proxy.ts`.
 
 ## 12. House conventions
 

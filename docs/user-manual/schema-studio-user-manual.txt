@@ -3,8 +3,8 @@
                     PostgreSQL Schema Comparison & Versioning
 ================================================================================
 
-VERSION: 2.0.0
-LAST UPDATED: 2026-06-16
+VERSION: 2.1.0
+LAST UPDATED: 2026-09-18
 
 ================================================================================
 TABLE OF CONTENTS
@@ -18,10 +18,11 @@ TABLE OF CONTENTS
 6. SCRIPT EDITOR & VERSION SYNC
 7. VISUALIZER
 8. DRIFT DETECTION
-9. DEPLOY & APPLY
-10. USER MANAGEMENT (ADMIN)
-11. KEYBOARD SHORTCUTS & TIPS
-12. TROUBLESHOOTING
+9. PERFORMANCE
+10. DEPLOY & APPLY
+11. USER MANAGEMENT (ADMIN)
+12. KEYBOARD SHORTCUTS & TIPS
+13. TROUBLESHOOTING
 
 ================================================================================
 1. OVERVIEW
@@ -35,6 +36,7 @@ Schema Studio is a web-based tool for PostgreSQL schema management. It lets you:
   • Replay missed versions from one schema to another (catch-up sync)
   • Visualize table relationships and foreign keys as interactive diagrams
   • Track schema drift over time (unintended divergence from a baseline)
+  • Find what a schema is likely to be slow at, and analyse individual queries
   • Safely apply and audit all schema changes
 
 All work is scoped by your saved database connection. You can have multiple
@@ -51,14 +53,25 @@ Schema Studio uses Microsoft Entra ID (Azure AD) for authentication. Sign in wit
 your organization account.
 
 SIGN IN FLOW
-  1. Click "Sign In" on the login page
+  1. Click "Continue with Microsoft" on the login page
   2. Enter your Microsoft/Azure AD email
   3. Complete multi-factor authentication if prompted
   4. You'll be logged in and redirected to the Dashboard
 
-Once signed in, you have a role: either 'viewer' or 'admin'.
-  • Viewer: can compare, visualize, and review schemas
-  • Admin: can manage users, grant/revoke roles, and remove access
+If the server you're using has no Entra ID credentials configured, that button
+is disabled and says so underneath, rather than failing when you press it. Ask
+whoever set the server up; the four values it needs are listed in the project
+README.
+
+Once signed in, you have one of three roles:
+  • Viewer: can read every screen — compare, visualise, review — but cannot run
+    a migration
+  • Editor: can write and run scripts, on the connections that allow it (see
+    "Who may run migrations here" under Connections)
+  • Admin: everything, including user management
+
+Your role, and whether you got it by signing in at all, are shown in the
+bottom-left of the sidebar under your name. See SETTINGS in section 12.
 
 DASHBOARD
 ---------
@@ -78,20 +91,39 @@ ADDING A CONNECTION
 -------------------
   1. Go to Connections (left sidebar > Connections)
   2. Click "New Connection"
-  3. Fill in the details:
-     • Name: e.g., "production", "staging", "dev local"
-     • Host: e.g., ep-xxxxxxxx-xxxxxxxx.<region>.aws.neon.tech
-     • Port: usually 5432
-     • Database: the default database name (e.g., "neondb")
-     • Username: the database user
-     • Password: the user's password
-     • SSL: toggle on for cloud databases (Neon, AWS RDS)
-  4. Click "Test" to verify the connection works
-  5. Click "Save"
+  3. Give it a friendly name — e.g., "production", "staging", "dev local"
+  4. Set the Environment: unset, dev, staging or prod. This is only a label,
+     but it is the label that drives the production warnings you'll see before
+     a deploy, so it is worth setting.
+  5. Enter the connection details, either way round:
+     • Connection string: paste a postgres:// URI
+     • Fields: host, port (usually 5432), database, username, password
+  6. Pick the SSL mode:
+     • Off — no encryption. Normal for a localhost loopback connection.
+     • Require — encrypts the link but accepts whatever certificate the server
+       presents. This is what hosted Postgres (Supabase, Neon, RDS) needs.
+     • Verify full — also checks the certificate chain and hostname. Fails
+       against a self-signed certificate.
+  7. Choose who may run migrations here:
+     • Editors and admins (the default)
+     • Admins only
+     • Read-only — nobody may run migrations here
+     This is checked by Deploy and by Revert. Comparing, generating scripts,
+     previewing and exporting are unaffected by it — it only decides who may
+     make this app WRITE to this database. A reference or model schema you
+     never want written to is the read-only case.
+  8. Optionally name an Application table — a table on this database with an
+     `application_name` column. Deploy reads it to decide whether a script
+     marked `-- Applies-to: billing` may run here.
+  9. Click "Test" to verify the connection works, then "Save"
 
 Once saved, the connection is listed in a table. You can:
   • Test it again (verify credentials are still valid)
   • View its last-tested timestamp
+  • Edit it — including its environment label. A schema you track through
+    this connection inherits that label when you start tracking it, and can be
+    relabelled afterwards on its own detail page.
+  • Group the list by environment, or filter it
   • Delete it (removes it from the app, not the actual database)
 
 IMPORTANT: Passwords are encrypted at rest and never shown after saving.
@@ -305,7 +337,7 @@ by comparing the live database against that snapshot.
 If the live schema no longer matches the snapshot:
   • Drift status changes to "drifted"
   • Details show which tables/columns changed, when it was first detected
-  • You can manually refresh the snapshot at any time (updates the baseline)
+  • The drift page offers four ways to deal with it (below)
 
 WHY DRIFT MATTERS
 -----------------
@@ -322,8 +354,157 @@ You'll see two tabs:
   • Schema Details: the live state vs. the baseline (red = new, blue = removed)
   • Audit Log: a timeline of detected changes (when drift was first noticed)
 
+RESOLVING DRIFT
+---------------
+Above the diff, a drifted schema offers four actions. Each one does exactly
+what it says and nothing else:
+
+  • Author a migration — opens Compare with this live schema loaded, so you can
+    write the migration that makes the change intentional. No migration is
+    invented for you.
+  • Re-baseline to live — accepts the current structure as the new expected
+    snapshot. Behind a confirm, because it is the one that makes the drift
+    disappear without anybody having explained it.
+  • Acknowledge — records the drift as reviewed. It changes nothing in the
+    database; it only says a person has looked.
+  • Check drift now — re-runs the check, in case the schema has moved since the
+    page was drawn.
+
+The four block one another while any of them is running: re-baselining replaces
+the snapshot a check is comparing against, so running both at once would leave
+the recorded answer down to which request came back first.
+
+A schema that is back in sync keeps only the re-check.
+
 ================================================================================
-9. DEPLOY & APPLY
+9. PERFORMANCE
+================================================================================
+
+Performance answers three separate questions about a database you already have
+a connection to: what is this schema likely to be slow at, why is this one
+query slow, and what has this schema been doing over time.
+
+Go to Performance (left sidebar > Performance). Pick a connection and a schema
+at the top of the page. The picker sits ABOVE the tabs, so moving between tabs
+keeps your choice — all six need the same connection and schema to start with,
+and choosing a database again on every tab would be the wrong kind of careful.
+
+THE SIX TABS
+------------
+  • Suggestions      what this schema is likely to be slow at
+  • Analyse a query  what the server would actually do with one query
+  • History          every query analysed here, and whether it has got slower
+  • Live activity    what the server is doing at this moment
+  • Trends           how this schema has changed over time
+  • Alerts           what should count as a problem here
+
+Three of them read the live database the moment you ask and store nothing about
+the schema (Suggestions, Analyse, Live activity). Two can only show what was
+collected earlier, so they say when they are empty rather than drawing a chart
+of nothing (History, Trends). The last one writes rather than reads: Alerts is
+the only tab that changes what the others will say.
+
+SUGGESTIONS
+-----------
+Worked out from the schema's own structure, and from PostgreSQL's record of how
+its tables have actually been read. Typical findings:
+
+  • A foreign key with no index behind it
+  • A table with many dead rows waiting to be cleaned up
+  • An index that has not been used since the counters started, or one already
+    covered by a wider index
+  • A table the server almost always reads with a sequential scan
+  • A table with no primary key, or a primary key on a text column
+  • A table large enough that partitioning is worth considering
+  • Column types that usually cause trouble later: timestamp without time zone,
+    character(n), serial rather than an identity column
+
+Each finding says what to do about it. The ones that are schema changes can be
+taken away as SQL, from the box under the list:
+
+  • Copy as one script / Download .sql — every ticked fix as one file, with a
+    header saying which connection and schema it came from
+  • Save as a migration — the ticked schema changes AND their rollback, handed
+    to the Script Editor, where the normal version-and-save flow takes over
+
+Query rewrites and judgement calls are not offered as SQL: a rewrite changes
+the query rather than the database, and a judgement call needs you to choose
+first. "Save as a migration" is hidden for viewers, because saving goes through
+the Script Editor and needs the editor role — offering it would only lead to a
+refusal at the end. A fix that belongs to a DIFFERENT schema than the one you
+picked is listed separately and can be copied or downloaded, but not saved: a
+migration is written for one schema.
+
+ANALYSE A QUERY
+---------------
+Paste one query and press Analyse. You get:
+
+  • The server's own plan, step by step, in plain English
+  • A score out of 100
+  • Anything in the plan or in the SQL itself that usually costs more than it
+    looks
+
+Only queries that READ can be analysed: SELECT, WITH, VALUES or TABLE. One
+statement at a time, and without a leading EXPLAIN — the screen adds that
+itself. Anything that would write is refused, both before it runs and again
+after the plan comes back.
+
+By default nothing is executed: the plan is an estimate, and the screen says
+"Estimated". Tick "Run it and measure" and the query really is run (inside a
+transaction that is always rolled back) for real row counts and a real
+execution time; the screen then says "Measured". That tick-box needs the editor
+role, and a measured query is cut off after 15 seconds so a bad one cannot sit
+on the server.
+
+Every analysis is written to History automatically.
+
+HISTORY
+-------
+Every query analysed against this schema, newest first, with what it scored and
+what it cost, plus a day-by-day trend.
+
+Pick one query and you get each of its runs set against an earlier one. That
+comparison is the point of the tab: a single slow reading tells you a query is
+slow, and only two readings tell you it has got slower.
+
+LIVE ACTIVITY
+-------------
+One reading of what the server is doing right now: what is running, what has
+been running too long, and what is sitting in an open transaction holding locks
+nobody is using. The reading carries the moment it was taken, because a list of
+long-running queries with no timestamp on it ages into a lie.
+
+PostgreSQL reports activity for the whole server, not per schema, so this tab
+shows every session on that server — not only the schema you picked above.
+
+TRENDS
+------
+How this schema has changed over time: its structure, its size on disk, and how
+often it drifted from its baseline.
+
+These readings are not gathered when you open the tab. One is taken every time
+a drift check runs, so a schema has a history exactly when the app has been
+watching it. A schema nobody tracks says "not tracked" rather than showing an
+empty chart — an empty chart says "nothing happened", and "not tracked" says
+"nobody was looking". To start a history, track the schema (Dashboard > Track a
+schema) and let its drift checks run.
+
+ALERTS
+------
+What should count as a problem for this connection and schema. Five rules:
+
+  • Query slower than …            ms
+  • Query scores below …           / 100
+  • Session running longer than …  s
+  • Cache hit ratio below …        %
+  • Dead rows above …              %
+
+Every rule starts switched OFF, with a suggested number already in the box. The
+suggestion is this app's guess, not a fact about your database, so nothing is
+flagged until you turn a rule on and agree its number.
+
+================================================================================
+10. DEPLOY & APPLY
 ================================================================================
 
 The Deploy page consolidates the migration flow: from authored SQL to applied
@@ -371,7 +552,7 @@ BEST PRACTICES
     single source of truth
 
 ================================================================================
-10. USER MANAGEMENT (ADMIN)
+11. USER MANAGEMENT (ADMIN)
 ================================================================================
 
 Admins can manage users and roles.
@@ -385,13 +566,13 @@ VIEWING USERS
 -------------
 The Admin page lists all users who've ever signed in. For each user:
   • Email
-  • Current role (viewer or admin)
+  • Current role (viewer, editor or admin)
   • Controls: change role, remove user
 
 CHANGING A USER'S ROLE
 ----------------------
   1. Find the user in the list
-  2. Click the role dropdown (currently shows "Viewer" or "Admin")
+  2. Click the role dropdown — it offers Viewer, Editor and Admin
   3. Select the new role
   4. The change is applied immediately (optimistically updated on screen,
      rolled back if the server rejects it)
@@ -406,16 +587,31 @@ REMOVING A USER
 
 SELF-LOCKOUT PROTECTION
 -----------------------
-If you're the only admin, you can't demote yourself. This prevents accidental
-lockout. To remove yourself as admin, add another user as admin first.
+Your own row has no controls at all — it reads "Your account" where everyone
+else has a dropdown and a delete button. You cannot demote or remove yourself
+from this screen, whether or not other admins exist.
+
+The server enforces two more rules, so nothing gets round them by another
+route:
+  • The last admin cannot be demoted — "This is the last admin. Promote
+    someone else first."
+  • The last admin cannot be deleted, and neither can your own account.
+
+To step down as an admin, promote somebody else first and ask them to change
+your role.
 
 ================================================================================
-11. KEYBOARD SHORTCUTS & TIPS
+12. KEYBOARD SHORTCUTS & TIPS
 ================================================================================
+
+KEYBOARD SHORTCUTS
+  • Esc closes any modal or drawer (and any open dropdown)
+  • Cmd/Ctrl + Enter runs the analysis on Performance > Analyse a query
 
 NAVIGATION
   • Sidebar menu on desktop; hamburger icon on mobile
   • Breadcrumb at top shows your current page
+  • The sidebar collapses to icons; the chevron at its top-right toggles it
   • Back button in browser works (app is fully navigable)
 
 RESPONSIVE DESIGN
@@ -424,18 +620,28 @@ RESPONSIVE DESIGN
   • Modals and drawers adapt to screen size
   • Use landscape mode on mobile for side-by-side visualizer
 
-PERFORMANCE TIPS
+WORKING WITH LARGE SCHEMAS
   • Comparing very large schemas (1000+ tables) may take a few seconds
   • Visualizer is most responsive with < 500 tables
   • Refresh your browser if the page feels sluggish (clears local cache)
+  • For the database's own performance rather than the app's, see section 9
 
 SETTINGS
-  • Your role and email are visible at the top-right (profile icon)
-  • You can sign out there
-  • Some settings may be user-configurable in future versions
+  • Your name, email and role are in the BOTTOM-LEFT of the sidebar, under the
+    navigation. The role is a small pill next to your email — hover it for what
+    that role may do.
+  • The sign-out button is on that same row, on the right.
+  • No role pill means nobody is signed in. The app never guesses a role for
+    you; it shows one only when a session carries it.
+  • An "auth off" pill beside the role means this server was built with
+    authentication switched off (NEXT_PUBLIC_AUTH_BYPASS). Everyone who can
+    reach it is being let in as an admin. That is a testing setting — if you
+    see it on anything real, tell whoever deployed it.
+  • Light and dark themes are toggled from the sidebar, just above your name;
+    the choice is remembered in this browser.
 
 ================================================================================
-12. TROUBLESHOOTING
+13. TROUBLESHOOTING
 ================================================================================
 
 "Unable to compare" or Connection Error
@@ -455,9 +661,11 @@ SETTINGS
 
 "Drift detected" but I didn't change anything
 ----------------------------------------------
-  • Refresh the baseline snapshot (Dashboard > schema card > Refresh)
   • Drift might be from an earlier change you forgot about
   • Check the Audit Log (Drift page) to see when it was detected
+  • If the live structure is the one you want, use "Re-baseline to live" on the
+    Drift page to accept it as the new expected snapshot. (The Refresh button
+    on the Dashboard only re-reads the list; it does not touch a baseline.)
   • If it's spurious (a bug), let your admin know
 
 "Pre-flight check failed" or "SQL syntax error"
@@ -473,6 +681,14 @@ SETTINGS
   • Check that the schema exists: `\dn` in psql or look in the Connections page
   • Introspection queries may time out on very large databases
   • Refresh the page and try again
+
+"I signed in but the sidebar shows no role"
+--------------------------------------------
+  • No role pill means the app has no session for you at all — you are not
+    signed in, even if a screen is visible. Sign in from /login.
+  • If it says "auth off" instead, authentication is switched off on this
+    server and everybody is being let in as an admin. See SETTINGS in
+    section 12.
 
 "I'm locked out of the app (no 'admin' role and need to make changes)"
 ---------------------------------------------------------------------
@@ -519,7 +735,8 @@ Replay: Re-running a stored migration (from the script_patch ledger) against a
 END OF USER MANUAL
 ================================================================================
 
-For more help, contact your system administrator or check the app's internal
-documentation (CODEBASE_WALKTHROUGH.html, for developers).
+For more help, contact your system administrator. Developers: the code is
+described in docs/PROJECT_CONTEXT.md, and docs/README.md says which document to
+trust when two of them disagree.
 
-Last updated: 2026-06-16 · Schema Studio v2.0.0
+Last updated: 2026-09-18 · Schema Studio v2.1.0

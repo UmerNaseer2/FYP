@@ -380,20 +380,28 @@ Some of those are new enough to say where they live:
   **The default is real sign-in, and that asymmetry is deliberate.** It used to
   be the other way round, because a fresh checkout could then be used straight
   away. But the two mistakes are not equally visible: a checkout that comes up
-  locked says so on the first click, while one that comes up open looks exactly
-  like one that is properly signed in — there is no sign-in screen either way,
-  and no line anywhere on screen saying which you got. So an unrecognised value,
-  and a deployment that forgets the variable, get real sign-in. The spellings
-  work the same way: an allow-list of the things a person writes meaning *on*,
-  with everything else falling to the safe side.
+  locked says so on the first click, while one that comes up open used to look
+  exactly like one that is properly signed in — there is no sign-in screen
+  either way. So an unrecognised value, and a deployment that forgets the
+  variable, get real sign-in. The spellings work the same way: an allow-list of
+  the things a person writes meaning *on*, with everything else falling to the
+  safe side.
 
   **It is read when the app is BUILT, not when it runs.** Next substitutes every
   `NEXT_PUBLIC_` variable for its value during compilation, so what ships is a
   hard-coded true or false. `npm run dev` recompiles and picks up an edit to
   `.env.local` on the next request; a built app does not, and setting the
   variable next to a running container does nothing at all. Rebuild, or for
-  Docker pass `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true`. There is no sign-in
-  screen either way, so nothing on screen tells you which one you got.
+  Docker pass `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true`.
+
+  **How to tell which one you got, without reading the source.** The bottom-left
+  corner of the studio rail, under your name and address, carries your role —
+  `viewer`, `editor` or `admin`, with a tooltip saying what it buys you — and,
+  when the bypass is on, an `auth off` pill beside it. Both, never just the
+  role: `admin` on its own is the half that would be reassuring and wrong. The
+  role is withheld entirely when nobody is signed in, because the code's floor
+  for a missing session is `viewer` and a badge saying so under *Not signed in*
+  would read as a role somebody holds.
 
 ### Two rules that only bite in production
 
@@ -460,7 +468,7 @@ and not in a footnote.
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | **partial** — 1,926 tests in 65 suites, but they cover `lib/` and the route handlers, not the pages. The compliance sheet asks for "unit testing for all the webpages"; `jest.config.mjs` runs `testEnvironment: "node"` with no jsdom and no testing-library, and there is not one `.tsx` test file, so none of the 13 pages is rendered by a test |
+| Jest unit tests | met — 3,209 tests in 124 suites. The sheet asks for "unit testing for all the webpages": 12 of the 13 pages are rendered and driven by a suite of their own (`tests/page-*.test.tsx`), alongside 36 component suites, with `lib/` and the route handlers covered as before. The thirteenth is `app/page.tsx`, four lines that redirect to `/studio`. jsdom is asked for per file — `/** @jest-environment jsdom */` on the first line — rather than switched on globally, so the logic suites keep a node environment and their start-up time |
 
 ---
 
