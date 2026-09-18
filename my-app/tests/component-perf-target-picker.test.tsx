@@ -40,10 +40,11 @@
  *    own: tests/unreadable-credentials.test.ts calls its handler for the
  *    unreadable-credentials case and nothing else does.
  *  - The words on the environment pill. toEnvironment is covered in
- *    tests/deploy-safety.test.ts, but ENVIRONMENT_META — the labels themselves —
- *    has no suite anywhere, so a wrong label there would not be caught here or
- *    elsewhere. These tests check only that the pill follows the connection
- *    that is selected.
+ *    tests/deploy-safety.test.ts, and the ENVIRONMENT_META labels are written
+ *    out in tests/component-schema-environment-picker.test.tsx — the screen
+ *    they are edited on — so a wrong label would be caught there rather than
+ *    here. These tests check only that the pill follows the connection that is
+ *    selected.
  *  - Remembering the pair. The picker reports upward and nothing more; it does
  *    not write the choice back into the address bar, so a reload returns to the
  *    link's target or to the first saved server. That belongs to

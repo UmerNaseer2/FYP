@@ -11,6 +11,17 @@
  * from the newest SNAPSHOT, not from the live database: on a drifted schema —
  * exactly when a reader most wants the current shape — they are the shape as
  * it was captured.
+ *
+ * What is NOT here:
+ *  - The environment picker this page hosts, which is the one place that label
+ *    can be corrected: tests/component-schema-environment-picker.test.tsx. What
+ *    this page contributes is the onDone it passes, so a change reloads the
+ *    header above rather than leaving it disagreeing with the buttons.
+ *  - The re-check button beside the drift line, which fetches and reloads the
+ *    page's own data: components/studio/RecheckDriftButton has no suite of its
+ *    own.
+ *  - The route behind every read on this page. GET /api/lineage/[id] has no
+ *    suite of its own; the answers below are written out by hand.
  */
 
 import "@testing-library/jest-dom";
