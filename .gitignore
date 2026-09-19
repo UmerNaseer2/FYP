@@ -7,3 +7,14 @@ node_modules
 # The signed Student Project Agreement must never reach this public repo: it is a
 # legal form carrying signatures and personal details. See docs/README.md.
 docs/**/*Agreement*.pdf
+
+# Local scratch that lives beside the project but is not part of it. The same
+# two lines exist in my-app/.gitignore; these cover the repo root, because a
+# pattern in a subdirectory's file only ever matches inside that subdirectory.
+#
+# /demo/   the bookshop fixture and its runbook — seed data for a walkthrough,
+#          rebuilt from scratch whenever it is needed, so it is not source.
+# /*.pdf   generated handouts at the root, e.g. Schema-Studio-Field-Guide.pdf.
+#          Documents that are meant to be kept go in docs/ and are tracked.
+/demo/
+/*.pdf
