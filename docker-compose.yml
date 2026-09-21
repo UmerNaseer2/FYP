@@ -70,6 +70,33 @@ services:
     ports:
       - "${APP_PORT:-3000}:3000"
     restart: unless-stopped
+    # Compose Watch: rebuild the app image and swap the container whenever a
+    # source file under my-app/ changes. It is OFF until you ask for it, with
+    # `docker compose up --watch`, `docker compose watch`, or `w` in the menu
+    # that `docker compose up` shows.
+    #
+    # `rebuild` rather than `sync` because this container runs a compiled
+    # production build (`next build`, standalone). Copying a changed .tsx into
+    # it would do nothing; only a fresh build picks it up. So every save costs a
+    # rebuild of 30 to 70 seconds. For quick edit-and-look work, `npm run dev`
+    # is still faster.
+    #
+    # Only the app container is rebuilt. The database keeps running
+    # and its data (the pgdata volume) is never touched.
+    develop:
+      watch:
+        - action: rebuild
+          path: ./my-app
+          # Changes here never alter what the running app does, so they should
+          # not cost a rebuild. (.dockerignore already keeps node_modules,
+          # .next and .env* out; they are listed too so this reads on its own.)
+          ignore:
+            - node_modules/
+            - .next/
+            - tests/
+            - docs/
+            - scripts/
+            - README.md
 
 volumes:
   pgdata:
