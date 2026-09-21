@@ -24,3 +24,9 @@ docs/**/*Agreement*.pdf
 # this repo is public, so it must never be committed. my-app/.gitignore already
 # covers my-app/.env*, but not this folder.
 .env
+
+# What deploy/auto-update.sh leaves behind on the server: its lock, the last
+# thing it reported, and the output of the latest build.
+/.deploy.lock/
+/.deploy-state
+/deploy/last-build.log
