@@ -18,3 +18,9 @@ docs/**/*Agreement*.pdf
 #          Documents that are meant to be kept go in docs/ and are tracked.
 /demo/
 /*.pdf
+
+# Settings for `docker compose`, which reads a file named .env beside
+# docker-compose.yml. It holds real keys (APP_ENCRYPTION_KEY and friends), and
+# this repo is public, so it must never be committed. my-app/.gitignore already
+# covers my-app/.env*, but not this folder.
+.env

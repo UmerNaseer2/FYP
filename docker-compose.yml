@@ -43,8 +43,10 @@ services:
     environment:
       # The container talks to the database over the compose network, so the
       # host is the service name and the port is the container's own 5432 —
-      # not whatever it is published as on your machine.
-      DATABASE_URL_A: postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}
+      # not whatever it is published as on your machine. `sslmode=disable`
+      # because the postgres image serves no SSL, and the app only turns SSL
+      # off by itself for localhost (see lib/db/metadata-ssl.ts).
+      DATABASE_URL_A: postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}?sslmode=disable
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-before-anyone-else-uses-this}
       # Optional. Set to a 32-byte base64 or hex key to encrypt stored
       # connection passwords at rest; without it they are stored as typed and

@@ -1,7 +1,7 @@
 import { Sequelize } from "sequelize";
 import * as pg from "pg";
-import { parse as parseConnectionString } from "pg-connection-string";
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
+import { metadataWantsSsl } from "./metadata-ssl";
 
 /**
  * The app's own metadata database, as Sequelize sees it.
@@ -43,20 +43,12 @@ if (!connectionString) {
 
 /**
  * Hosted Postgres (Supabase, Neon, RDS) requires SSL but commonly presents a
- * cert chain the runtime doesn't trust, so accept the cert without local CA
- * verification — the same thing lib/connection-config.ts does for target DBs.
- * Local Postgres (localhost) speaks no SSL, so leave it off there.
+ * cert chain the runtime doesn't trust, so when SSL is on, accept the cert
+ * without local CA verification, the same thing lib/connection-config.ts does
+ * for target DBs. Whether SSL is on at all (it is off for localhost, and for a
+ * URL with sslmode=disable such as the one docker-compose.yml builds) is
+ * decided in ./metadata-ssl.
  */
-function isLocal(url: string): boolean {
-  let host = "";
-  try {
-    host = parseConnectionString(url).host ?? "";
-  } catch {
-    host = "";
-  }
-  return host === "" || host === "localhost" || host === "127.0.0.1" || host === "::1";
-}
-
 function createSequelize(): Sequelize {
   return new Sequelize(connectionString!, {
     dialect: "postgres",
@@ -64,9 +56,9 @@ function createSequelize(): Sequelize {
     // see it — Sequelize's own `require("pg")` is invisible to Turbopack.
     dialectModule: pg,
     logging: false,
-    dialectOptions: isLocal(connectionString!)
-      ? {}
-      : { ssl: { require: true, rejectUnauthorized: false } },
+    dialectOptions: metadataWantsSsl(connectionString!)
+      ? { ssl: { require: true, rejectUnauthorized: false } }
+      : {},
     pool: { max: 5, idle: 10_000 },
     define: {
       // The tables predate this file and are named the way SQL names things.
