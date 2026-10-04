@@ -28,6 +28,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Come back by itself when Docker starts, after a reboot say, like the app
+    # below. Without this the app would come back alone, unable to load or
+    # save anything.
+    restart: unless-stopped
 
   app:
     build:
