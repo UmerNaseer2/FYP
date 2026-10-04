@@ -27,8 +27,7 @@ python3 --version
 curl --version
 ```
 
-If one is missing, ask IT to install it. On Ubuntu, Docker Compose is the
-`docker-compose-v2` package.
+If one is missing, ask IT to install it.
 
 Check your user can run Docker without `sudo`:
 
@@ -37,6 +36,9 @@ docker ps
 ```
 
 If that says "permission denied", ask IT to add your user to the `docker` group.
+If the list includes `schema-studio-app-1`, Schema Studio is already set up on
+this server: stop here and see [Watching it](#watching-it) instead. A second
+copy would break the first (see the rules at the end).
 
 Check the server can reach GitHub:
 
@@ -80,10 +82,11 @@ other branch.
 
 Compose reads a file called `.env` next to `docker-compose.yml`. Without it,
 the stack starts with the demo defaults written in `docker-compose.yml`, which
-are public on GitHub. Make fresh ones for the server:
+are public on GitHub. Make fresh ones for the server. Do this only once:
 
 ```bash
 cat > .env <<EOF
+COMPOSE_PROJECT_NAME=schema-studio
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 NEXTAUTH_SECRET=$(openssl rand -hex 32)
 APP_ENCRYPTION_KEY=$(openssl rand -hex 32)
@@ -93,11 +96,26 @@ EOF
 chmod 600 .env
 ```
 
+To check the file without showing the secrets:
+
+```bash
+awk -F= '{print $1, length($2)}' .env
+```
+
+It should print the six names, with the lengths 13, 48, 64, 64, 14 and 14.
+
 Why each line:
 
-- `POSTGRES_PASSWORD` is only read the first time the database is created.
-  Set it before the first `up`. Changing it later does nothing unless the
-  database volume is deleted too.
+- `COMPOSE_PROJECT_NAME=schema-studio` names the containers
+  `schema-studio-app-1` and `schema-studio-db-1`, and the database volume
+  `schema-studio_pgdata`. Without it Docker names them after the folder,
+  `fyp`. Anything else on the server run from a folder called `FYP` would then
+  share those names, and starting or stopping it would replace or remove this
+  app's containers.
+- `POSTGRES_PASSWORD` is read only once, when the database is first created.
+  That is why the block above must never be run again: the database would keep
+  its first password while the app switched to the new one, and the app would
+  be locked out of its own data.
 - `APP_ENCRYPTION_KEY` encrypts the saved connection passwords. Keep a copy
   somewhere safe: lose it and every saved connection has to be entered again.
 - `POSTGRES_PORT=127.0.0.1:5433` lets only the server itself reach the
@@ -141,6 +159,10 @@ docker compose ps
 Both `app` and `db` should say `healthy`. Open http://localhost:3000 in the
 server's browser to see it.
 
+If `up` stops with "port is already allocated", another program on the server
+already uses that port. In `.env`, change the port it names (`3000` to `3001`,
+or `5433` to `5434`), then run `docker compose up -d` again.
+
 ## 6. Try the updater by hand
 
 ```bash
@@ -160,6 +182,8 @@ Check it is there:
 ```bash
 crontab -l
 ```
+
+The line should be there exactly once.
 
 ## Watching it
 
@@ -218,6 +242,10 @@ running on whatever version it last deployed.
   file meant to be edited on the server is `.env`.
 - **Never run `docker compose down -v`** here. The `-v` deletes the database
   volume, and with it every saved connection and all history.
+- **One copy per server.** Set this up once, with one `~/FYP` and one cron
+  line. A second copy would take over the same containers, since they share
+  the name `schema-studio`, and its own passwords would lock the app out of
+  its database.
 
 ## Before the link is made public
 
