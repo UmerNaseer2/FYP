@@ -3,8 +3,8 @@
                     PostgreSQL Schema Comparison & Versioning
 ================================================================================
 
-VERSION: 2.1.0
-LAST UPDATED: 2026-09-18
+VERSION: 2.2.0
+LAST UPDATED: 2026-10-17
 
 ================================================================================
 TABLE OF CONTENTS
@@ -20,7 +20,7 @@ TABLE OF CONTENTS
 8. DRIFT DETECTION
 9. PERFORMANCE
 10. DEPLOY & APPLY
-11. USER MANAGEMENT (ADMIN)
+11. USERS, ROLES & PERMISSIONS (ADMIN)
 12. KEYBOARD SHORTCUTS & TIPS
 13. TROUBLESHOOTING
 
@@ -63,12 +63,22 @@ is disabled and says so underneath, rather than failing when you press it. Ask
 whoever set the server up; the four values it needs are listed in the project
 README.
 
-Once signed in, you have one of three roles:
-  • Viewer: can read every screen — compare, visualise, review — but cannot run
-    a migration
-  • Editor: can write and run scripts, on the connections that allow it (see
-    "Who may run migrations here" under Connections)
-  • Admin: everything, including user management
+Once signed in, you have a role. Three are built in:
+  • Viewer: starts able to open every screen except Admin (compare, visualise,
+    review) and to change nothing
+  • Editor: starts able to change things too, and to run migrations on the
+    connections that allow it (see "Who may run migrations here" under
+    Connections)
+  • Admin: can do everything, always, including managing people and roles
+
+"Starts able to", because an admin decides what each role may do, feature by
+feature, and can make new roles as well (section 11). The server checks your
+role on every request, not only the screens. A button your role can't use is
+switched off or left out, and anything it is not allowed to do is turned down
+with a message that names the box an admin would need to tick, for example:
+
+    Your role (Viewer) can't add a connection. Ask an admin to allow
+    "Connections: Create" for this role.
 
 Your role, and whether you got it by signing in at all, are shown in the
 bottom-left of the sidebar under your name. See SETTINGS in section 12.
@@ -105,13 +115,16 @@ ADDING A CONNECTION
      • Verify full — also checks the certificate chain and hostname. Fails
        against a self-signed certificate.
   7. Choose who may run migrations here:
-     • Editors and admins (the default)
-     • Admins only
-     • Read-only — nobody may run migrations here
-     This is checked by Deploy and by Revert. Comparing, generating scripts,
-     previewing and exporting are unaffected by it — it only decides who may
-     make this app WRITE to this database. A reference or model schema you
-     never want written to is the read-only case.
+     • Anyone whose role may run deployments (the default)
+     • Admins only: people with the Admin role itself. A role an admin made
+       does not count, whatever its boxes say.
+     • Read-only: nobody may run migrations here, admins included
+     This is checked by Deploy, by Revert and by a Version Sync replay, on top
+     of the "Deploy: Run" permission (section 11). It can only narrow who may
+     run migrations here, never let anyone else in. Comparing, generating
+     scripts, previewing and exporting are unaffected by it: it only decides
+     who may make this app WRITE to this database. A reference or model schema
+     you never want written to is the read-only case.
   8. Optionally name an Application table — a table on this database with an
      `application_name` column. Deploy reads it to decide whether a script
      marked `-- Applies-to: billing` may run here.
@@ -125,6 +138,12 @@ Once saved, the connection is listed in a table. You can:
     relabelled afterwards on its own detail page.
   • Group the list by environment, or filter it
   • Delete it (removes it from the app, not the actual database)
+
+Each of these is its own permission. Adding a connection needs
+"Connections: Create", editing or testing a saved one needs
+"Connections: Update", and deleting one needs "Connections: Delete". Out of the
+box Editor and Admin have all three. A role without one still sees the button,
+switched off, and the page says why once, under its header.
 
 IMPORTANT: Passwords are encrypted at rest and never shown after saving.
 
@@ -294,6 +313,12 @@ to the target schema automatically.
 If a version has no stored SQL (legacy entries before P1), it's marked
 "not replayable" and can't be auto-applied.
 
+A replay writes to the Target, so it needs the same permission as Deploy,
+"Deploy: Run", and a Target whose connection lets your role run migrations
+(see "Who may run migrations here" under Connections). Without the permission
+the lists can still be read, but there is nothing to press, and the screen
+says why.
+
 ================================================================================
 7. VISUALIZER
 ================================================================================
@@ -429,11 +454,12 @@ taken away as SQL, from the box under the list:
 
 Query rewrites and judgement calls are not offered as SQL: a rewrite changes
 the query rather than the database, and a judgement call needs you to choose
-first. "Save as a migration" is hidden for viewers, because saving goes through
-the Script Editor and needs the editor role — offering it would only lead to a
-refusal at the end. A fix that belongs to a DIFFERENT schema than the one you
-picked is listed separately and can be copied or downloaded, but not saved: a
-migration is written for one schema.
+first. "Save as a migration" is left out for a role without "Scripts: Create"
+(out of the box, Viewer), because saving goes through the Script Editor and
+offering it would only lead to a refusal at the end. The box says so, and Copy
+and Download still work. A fix that belongs to a DIFFERENT schema than the one
+you picked is listed separately and can be copied or downloaded, but not saved:
+a migration is written for one schema.
 
 ANALYSE A QUERY
 ---------------
@@ -452,9 +478,10 @@ after the plan comes back.
 By default nothing is executed: the plan is an estimate, and the screen says
 "Estimated". Tick "Run it and measure" and the query really is run (inside a
 transaction that is always rolled back) for real row counts and a real
-execution time; the screen then says "Measured". That tick-box needs the editor
-role, and a measured query is cut off after 15 seconds so a bad one cannot sit
-on the server.
+execution time; the screen then says "Measured". That tick-box needs
+"Performance: Run" (out of the box, Editor and Admin). Without it the box can't
+be ticked and says why, but analysing still works. A measured query is cut off
+after 15 seconds so a bad one cannot sit on the server.
 
 Every analysis is written to History automatically.
 
@@ -542,6 +569,23 @@ When you click "Apply":
 
 If any step fails, everything rolls back. You'll see the error message.
 
+WHO MAY APPLY
+-------------
+Applying, reverting and replaying all write to a database, so all three need
+"Deploy: Run" (out of the box, Editor and Admin). The Target connection has the
+last word on top of that: it can allow anyone who may run deployments, admins
+only, or nobody (see "Who may run migrations here" under Connections). When
+either one stops you, Deploy says which, next to the buttons it switches off.
+
+A Target labelled production needs one more thing: an approval for that exact
+run, from a second person. Asking for one needs "Approvals: Create" (out of the
+box, Editor and Admin), and giving one needs "Approvals: Approve" (out of the
+box, Admin only, but an admin can give it to another role). Nobody can approve
+their own request. An approval covers one run of the SQL it was given, for up
+to 7 days: change the SQL, or wait longer, and it needs approving again. While
+sign-in is switched off for testing there is only one person, so that person
+may approve their own request.
+
 BEST PRACTICES
 --------------
   • Always test migrations on a dev/staging schema first
@@ -552,38 +596,42 @@ BEST PRACTICES
     single source of truth
 
 ================================================================================
-11. USER MANAGEMENT (ADMIN)
+11. USERS, ROLES & PERMISSIONS (ADMIN)
 ================================================================================
 
-Admins can manage users and roles.
+The Admin page, titled "Users and roles", has two tabs. Users decides who has
+which role. Roles & permissions decides what each role may do.
+
+Above the tabs is a short guide, "How roles and permissions work". It sums up
+how to set up a role, what each box in the grid means and the rules below. It
+opens the first time you visit. Once you fold it away by clicking its heading,
+it stays folded in that browser until you open it again.
 
 ACCESSING ADMIN
 ---------------
-Go to Admin (left sidebar > Admin). You must have the 'admin' role. If you
-don't see this option, ask an existing admin to grant you the role.
+Go to Admin (left sidebar > Admin). Only the Admin role can open it, and no
+other role can be given what it takes, so no role can make itself an admin. If
+you don't see Admin in the sidebar, ask an existing admin.
 
-VIEWING USERS
+THE USERS TAB
 -------------
-The Admin page lists all users who've ever signed in. For each user:
+The Users tab lists everyone who has ever signed in. For each person:
   • Email
-  • Current role (viewer, editor or admin)
-  • Controls: change role, remove user
+  • Their role, in a dropdown that offers every role, including the ones an
+    admin made
+  • A bin button, Remove access, which asks you to confirm first
 
-CHANGING A USER'S ROLE
-----------------------
-  1. Find the user in the list
-  2. Click the role dropdown — it offers Viewer, Editor and Admin
-  3. Select the new role
-  4. The change is applied immediately (optimistically updated on screen,
-     rolled back if the server rejects it)
+A change of role applies immediately: the screen shows it straight away and
+puts it back if the server turns it down. One change runs at a time, and each
+one is listed under Recent changes on the Roles & permissions tab.
 
-REMOVING A USER
----------------
-  1. Find the user
-  2. Click the trash/delete icon
-  3. Confirm in the dialog
-  4. The user is removed from the app (their Microsoft/Azure AD account
-     remains untouched — they can be re-added later)
+Removing someone deletes their profile and role in this app. It does NOT
+remove their Microsoft/SSO login, so they could sign in again unless you also
+remove them from your identity provider.
+
+While sign-in is switched off for testing, nobody new is added to this list:
+everyone using the app is the same stand-in admin. The tab says so, and points
+you to View as (below) for seeing the app as another role.
 
 SELF-LOCKOUT PROTECTION
 -----------------------
@@ -599,6 +647,104 @@ route:
 
 To step down as an admin, promote somebody else first and ask them to change
 your role.
+
+THE ROLES & PERMISSIONS TAB
+---------------------------
+Every role is a pill at the top, with the number of people who have it. Pick
+one to see its grid: one row per feature, and one column each for Create,
+Read, Update, Delete, Run and Approve. A blank cell means the feature has no
+such action. Hover a box to see what it allows.
+
+To change what a role may do:
+  1. Pick the role
+  2. Tick or untick its boxes
+  3. Press "Save changes", or "Discard" to drop them
+
+Ticking any box also ticks Read for that feature, because nothing else on it
+can be reached without opening it. Unticking Read clears the whole row.
+
+Admin can always do everything. Its boxes can't be changed, so that nobody can
+lock every admin out of the Admin page. On every other role, the Users and
+Roles & permissions rows read "Admins only": they belong to Admin alone and
+can't be given to any other role.
+
+A save applies straight away, on the server. Anyone with that role who has the
+app open sees the new buttons once they reload the page. Unsaved changes are
+kept for each role while you move between pills, and a pill with unsaved
+changes has a dot after its name. If two admins save the same role, the later
+save is the one that stands.
+
+WHAT THE BOXES MEAN
+-------------------
+The boxes each built-in role starts with on a new install. V is Viewer, Editor
+and Admin; E is Editor and Admin; A is Admin only.
+
+  Feature               Create  Read  Update  Delete  Run  Approve
+  Dashboard                      V
+  Connections             E      V      E       E
+  Compare                        V
+  Comparison sets         E      V      E       E
+  Scripts                 E      V
+  Deploy                         V                     E
+  Approvals               E      V                            A
+  Version Sync                   V
+  Drift tracking          E      V      E       E      E
+  Performance                    V                     E
+  Alert thresholds               V      E
+  Visualizer                     V
+  Users                          A      A       A
+  Roles & permissions     A      A      A       A
+
+A few boxes need a word more:
+  • Deploy: Run covers applying, reverting and replaying migrations. The Target
+    connection's own setting still applies on top (section 3).
+  • Approvals: Approve can be given to another role. Even then, nobody may
+    approve a request they made themselves.
+  • Drift tracking: Update covers changing schedules, environments and
+    baselines, and acknowledging drift. A drift check can be run with either
+    Drift tracking: Run or Deploy: Run.
+  • Comparison sets: saving under a new name needs Create, and saving over an
+    existing set needs Update.
+  • Compare: Read without Comparison sets: Read can still compare, but sees no
+    saved sets.
+
+ADDING A ROLE
+-------------
+  1. Press "New role"
+  2. Name: up to 40 characters, with at least one letter from A to Z or a
+     number in it. Accented letters such as "É" count. No two roles may share
+     a name, even written differently: "QA Lead" and "qa-lead" are the same.
+  3. Start from: "Nothing ticked", or "A copy of" an existing role. A copy of
+     Admin leaves out managing people and roles, which only Admin can do.
+  4. Description (optional): up to 200 characters, shown under the role's name
+  5. Press "Create role"
+Then give the role to people on the Users tab.
+
+RESETTING AND DELETING A ROLE
+-----------------------------
+  • "Reset to default" puts Viewer or Editor back to the boxes it starts with
+    on a new install. It asks first, and every box it changes is listed under
+    Recent changes.
+  • "Delete role" removes a role an admin made. It is switched off while anyone
+    still has the role: give them another role on the Users tab first. The
+    built-in roles can't be deleted.
+
+RECENT CHANGES
+--------------
+Under the grid is a list of changes to roles and to who has them, newest
+first: who made each change, when, and which boxes each save ticked or
+unticked. Making, deleting or giving out a role is listed too.
+
+VIEW AS (TESTING)
+-----------------
+While sign-in is switched off for testing, everyone is the same stand-in admin,
+so nobody can sign in as a viewer to check what a viewer sees. View as is that
+check. It sits under your name in the sidebar while the sidebar is expanded.
+  1. Pick a role. The page reloads, and from then on every screen, and the
+     server too, treats you as that role.
+  2. Pick "Admin (everything)" to go back.
+The choice lasts for this browser session. With real sign-in View as is not
+there, and the server ignores it.
 
 ================================================================================
 12. KEYBOARD SHORTCUTS & TIPS
@@ -628,15 +774,17 @@ WORKING WITH LARGE SCHEMAS
 
 SETTINGS
   • Your name, email and role are in the BOTTOM-LEFT of the sidebar, under the
-    navigation. The role is a small pill next to your email — hover it for what
-    that role may do.
+    navigation. The role is a small pill next to your email showing the role's
+    name: Viewer, Editor, Admin, or one an admin made. Hover it for a one-line
+    summary of that role.
   • The sign-out button is on that same row, on the right.
   • No role pill means nobody is signed in. The app never guesses a role for
     you; it shows one only when a session carries it.
   • An "auth off" pill beside the role means this server was built with
     authentication switched off (NEXT_PUBLIC_AUTH_BYPASS). Everyone who can
-    reach it is being let in as an admin. That is a testing setting — if you
-    see it on anything real, tell whoever deployed it.
+    reach it is being let in as an admin, or as the role picked in View as
+    (section 11). That is a testing setting — if you see it on anything real,
+    tell whoever deployed it.
   • Light and dark themes are toggled from the sidebar, just above your name;
     the choice is remembered in this browser.
 
@@ -687,13 +835,23 @@ SETTINGS
   • No role pill means the app has no session for you at all — you are not
     signed in, even if a screen is visible. Sign in from /login.
   • If it says "auth off" instead, authentication is switched off on this
-    server and everybody is being let in as an admin. See SETTINGS in
-    section 12.
+    server and everybody is being let in as an admin, or as the role picked in
+    View as. See SETTINGS in section 12.
 
 "I'm locked out of the app (no 'admin' role and need to make changes)"
 ---------------------------------------------------------------------
   • Ask an existing admin to grant you the admin role (Admin page)
   • If no other admin exists, contact your system administrator to unlock you
+
+A button is missing, or "Your role (...) can't ..."
+---------------------------------------------------
+  • Your role doesn't have the box that button needs. The message names it,
+    for example "Connections: Create".
+  • Ask an admin to tick that box for your role on Admin > Roles &
+    permissions, then reload the page.
+  • If you are using View as, pick "Admin (everything)" to go back.
+  • A message that starts "Could not check" is different: the app's own
+    database did not answer, so no box is missing. Try again in a moment.
 
 "Script Patch table doesn't exist"
 -----------------------------------
@@ -739,4 +897,4 @@ For more help, contact your system administrator. Developers: the code is
 described in docs/PROJECT_CONTEXT.md, and docs/README.md says which document to
 trust when two of them disagree.
 
-Last updated: 2026-09-18 · Schema Studio v2.1.0
+Last updated: 2026-10-17 · Schema Studio v2.2.0

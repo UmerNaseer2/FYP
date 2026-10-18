@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
@@ -39,7 +39,7 @@ export type VersionHistoryResponse = {
 };
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("compare:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;

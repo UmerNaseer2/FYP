@@ -9,16 +9,30 @@
  * screen that has stopped being refreshed looks exactly like one that is fine,
  * and a dropdown that snaps back to the value you just changed away from looks
  * like you mis-clicked.
+ *
+ * And who may change a cadence: Drift tracking: Update. A role without it still
+ * sees the whole schedule, with the menus switched off and the reason said once
+ * above the table rather than on every row.
  */
 
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import { ScheduleTable, type ScheduleRow } from "@/components/studio/ScheduleTable";
 import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift-schedule";
-import { flushAsync, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
+import {
+  fetchCalls,
+  flushAsync,
+  holdNext,
+  resetPageState,
+  setCustomRole,
+  setRoutes,
+  setSessionLoading,
+  setUser,
+} from "./helpers/render-page";
 
 const HOUR_AGO = new Date(Date.now() - 60 * 60_000).toISOString();
 const IN_AN_HOUR = new Date(Date.now() + 60 * 60_000).toISOString();
@@ -54,6 +68,7 @@ function view(rows: ScheduleRow[], running = true, checksRun = 30) {
 }
 
 const cadenceOf = () => screen.getByRole("combobox", { name: "How often to check shop_dev" });
+const saves = () => fetchCalls.filter((call) => call.method === "PATCH");
 
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
@@ -200,5 +215,80 @@ describe("schedule table", () => {
       "href",
       "/studio"
     );
+  });
+});
+
+describe("for a role that may not change a cadence", () => {
+  const NOTE = "You can see this schedule, but not change it";
+  const REFUSAL =
+    "Your role (Viewer) can't change schedules, environments and baselines, or acknowledge " +
+    'drift. Ask an admin to allow "Drift tracking: Update" for this role.';
+
+  it("shows the schedule, with the menus off and the reason said once above them", async () => {
+    setUser("viewer");
+    setRoutes([{ match: "/api/lineage/schedule", method: "GET", body: view([row(60)]) }]);
+    render(<ScheduleTable />);
+
+    expect(await screen.findByText(NOTE)).toBeInTheDocument();
+    expect(screen.getAllByText(REFUSAL)).toHaveLength(1);
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(cadenceOf()).toHaveTextContent("Every hour");
+    expect(cadenceOf()).toBeDisabled();
+  });
+
+  it("and saves nothing if a menu is pressed anyway", async () => {
+    setUser("viewer");
+    setRoutes([{ match: "/api/lineage/schedule", method: "GET", body: view([row(60)]) }]);
+    render(<ScheduleTable />);
+    await waitFor(() => expect(cadenceOf()).toHaveTextContent("Every hour"));
+
+    fireEvent.click(cadenceOf());
+
+    // The menu never opens, so there is nothing to pick and nothing is sent.
+    expect(screen.queryByRole("option", { name: "Every 5 minutes" })).toBeNull();
+    expect(saves()).toHaveLength(0);
+  });
+
+  it("keeps quiet when nothing is tracked", async () => {
+    // The empty state already says where tracking starts. A note about
+    // changing cadences nobody has would be a second message about nothing.
+    setUser("viewer");
+    setRoutes([{ match: "/api/lineage/schedule", method: "GET", body: view([]) }]);
+    render(<ScheduleTable />);
+
+    expect(await screen.findByText("No schemas are being tracked")).toBeInTheDocument();
+    expect(screen.queryByText(NOTE)).toBeNull();
+  });
+
+  it("saves for a role an admin gave Drift tracking: Update", async () => {
+    setCustomRole("scheduler", "Scheduler", ["drift:update"]);
+    setRoutes([
+      { match: "/api/lineage/schedule", method: "GET", body: view([row(60)]) },
+      { match: "/api/lineage/schedule", method: "PATCH", body: { ok: true } },
+    ]);
+    render(<ScheduleTable />);
+    await waitFor(() => expect(cadenceOf()).toBeEnabled());
+    expect(screen.queryByText(NOTE)).toBeNull();
+
+    fireEvent.click(cadenceOf());
+    fireEvent.click(screen.getByRole("option", { name: "Every 5 minutes" }));
+    await flushAsync();
+
+    expect(saves()).toHaveLength(1);
+    expect(JSON.parse(String(saves()[0].body))).toEqual({
+      trackedSchemaId: 1,
+      intervalMinutes: 5,
+    });
+  });
+
+  it("says nothing while the session is still loading", async () => {
+    // The server decides then, as everywhere else.
+    setSessionLoading();
+    setRoutes([{ match: "/api/lineage/schedule", method: "GET", body: view([row(60)]) }]);
+    render(<ScheduleTable />);
+
+    await waitFor(() => expect(cadenceOf()).toHaveTextContent("Every hour"));
+    expect(screen.queryByText(NOTE)).toBeNull();
+    expect(cadenceOf()).toBeEnabled();
   });
 });

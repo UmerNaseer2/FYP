@@ -71,7 +71,7 @@ my-app/
     ui/                    17 files — the shared kit (EmptyState, Skeleton, dialogs, …)
   lib/                     83 modules — all the logic
     db/                    Sequelize: models, bootstrap, the instance (3 more)
-  tests/                   124 Jest suites, 3,209 tests
+  tests/                   137 Jest suites, 3,776 tests
   proxy.ts                 Next 16's renamed middleware — the page auth gate
   auth.ts, auth.config.ts  NextAuth v5 (Microsoft Entra ID)
   instrumentation.ts       starts the drift scheduler on boot
@@ -104,7 +104,7 @@ client requirement.
 ```
 page.tsx  ──fetch──▶  app/api/**/route.ts
                           │
-                          ├─ requireViewer/Editor/Admin   ← lib/auth-guard.ts
+                          ├─ requirePermission(key)       ← lib/auth-guard.ts
                           ├─ pool                          ← the metadata DB
                           └─ getPoolForConfig(buildPgConfig(row))  ← a target DB
 ```
@@ -113,10 +113,17 @@ page.tsx  ──fetch──▶  app/api/**/route.ts
 
 ## 6. Authorisation
 
-Three roles, ordered: `viewer` < `editor` < `admin`. Defined in
-`my-app/lib/auth-mode.ts`, stored on the `profiles` table, re-read from the
-database on **every** session read (`my-app/auth.ts`), so a role change takes
-effect on the next request rather than at the next sign-in.
+Roles with per-feature permissions. `my-app/lib/permissions.ts` lists every
+feature and the boxes it has (Create, Read, Update, Delete, and Run or Approve
+where a feature has them), 35 in all. What each role may do is stored in the
+database (`roles`, `role_permissions`), edited box by box on the Admin screen,
+and logged in `role_changes`. Three roles are built in and can't be deleted:
+Viewer and Editor start with the boxes that reproduce the old
+`viewer` < `editor` ladder, and Admin can always do everything, so its boxes
+are neither stored nor editable. An admin can add roles of their own. A
+person's role is on the `profiles` table, and the role and its boxes are re-read
+from the database on **every** session read (`my-app/auth.ts`), so a change
+takes effect on the next request rather than at the next sign-in.
 
 Enforced at three layers that share one source of truth:
 
@@ -124,13 +131,22 @@ Enforced at three layers that share one source of truth:
 - **Server** — `my-app/lib/auth-guard.ts` exposes a discriminated union,
   `{ok: true, principal} | {ok: false, response}`. Because the failure branch
   carries the response, forgetting to check `gate.ok` is a *type error*, not a
-  silent hole. **29 of the 30 route handlers call a gate**; the exception is
-  `app/api/auth/[...nextauth]/route.ts`, which must stay open for sign-in.
+  silent hole. **38 of the 39 route files call a gate**:
+  `requirePermission(...keys)`, which passes when the role has any one of the
+  boxes named, or `requireSignedIn()` for `me` and `me/view-as`, which every
+  role needs. The exception is `app/api/auth/[...nextauth]/route.ts`, which must
+  stay open for sign-in. `my-app/tests/permissions-coverage.test.ts` fails if a
+  new route forgets its gate or a box on the grid is checked by no route.
 - **Client** — `components/AuthGuard.tsx`, whose own header comment states it
   "is a convenience, not a security boundary". Believe the comment.
 
-One route escalates mid-handler: `/api/performance/analyze` needs viewer to read
-a query plan and editor to actually execute the query under `EXPLAIN ANALYZE`.
+Some routes ask for a second box mid-handler. `/api/performance/analyze` needs
+Performance: Read to read a query plan and Performance: Run to actually execute
+the query under `EXPLAIN ANALYZE`. Saving a comparison set needs Create for a
+new name and Update for a name already taken. `/api/compare` leaves the saved
+sets out unless the role has Comparison sets: Read. `scripts/apply` and
+`scripts/revert` need Deploy: Run and then the connection's own setting
+(`my-app/lib/connection-access.ts`).
 
 ### The bypass switch — read this before filing an auth finding
 
@@ -146,7 +162,8 @@ a typo, an empty string, the variable not being set at all — leaves real
 authentication enforced. It reads as ON in this checkout because `.env.local`
 and `docker-compose.yml` both set it explicitly, deliberately, so the tool can
 be worked on without a Microsoft tenant. While on, every gate returns a
-hardcoded admin principal and the edge lets everything through.
+hardcoded admin principal, or the role picked in View as on the studio rail,
+and the edge lets everything through.
 
 That is a known, intentional development setting, not a defect. The four secrets
 that would let it be switched off — `AZURE_AD_CLIENT_ID`, `AZURE_AD_CLIENT_SECRET`,
@@ -224,7 +241,7 @@ older copy of this document will come looking for them:
 |---|---|---|
 | 28 | Migration execution history and audit log | The ledger row already held the SQL, the rollback, the change type and the timestamp; it now holds the actor too (`applied_by`, added to older ledgers on the next apply), and the Deploy screen's timeline reads "Applied *date* by *who*". The *Audit log* tab on the Drift screen is a different log and always was — drift checks, not deployments. |
 | 30 | Save comparison history and templates | Templates are `lib/comparison-sets.ts`. History is `lib/comparison-history.ts` and `-db.ts`: every run stores the finding set it saw, and the next comparison of the same pair opens with what appeared and what was resolved in between. What is stored is the finding set rather than the whole report, so a past run is compared against, not re-opened. |
-| 31 | Jest testing for the main webpages | 124 suites, 3,209 tests. 12 of the 13 pages are rendered and driven by a suite of their own, alongside 36 component suites; the thirteenth is the four-line redirect at `app/page.tsx`. jsdom is asked for per file, so the logic suites keep a node environment. |
+| 31 | Jest testing for the main webpages | 137 suites, 3,776 tests. 12 of the 13 pages are rendered and driven by a suite of their own, alongside 37 component suites; the thirteenth is the four-line redirect at `app/page.tsx`. jsdom is asked for per file, so the logic suites keep a node environment. |
 | 32 | UI polish and error handling | The polish was already there. The error handling is `app/(studio)/error.tsx`, `app/error.tsx`, `app/not-found.tsx` and `app/global-error.tsx` — see §11. |
 
 ### Where the code exceeds the backlog

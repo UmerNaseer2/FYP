@@ -69,7 +69,9 @@ const BASE: PanelProps = {
   pending: null,
   latest: null,
   viewerEmail: "me@example.com",
-  isAdmin: true,
+  roleLabel: "Admin",
+  mayRequest: true,
+  mayApprove: true,
   bypass: false,
   note: "",
   onNoteChange: () => {},
@@ -230,14 +232,52 @@ describe("who may clear a request", () => {
     expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
   });
 
-  it("withholds them from a non-admin who did not ask either", () => {
-    const panel = show({ isAdmin: false, pending: row() });
+  it("withholds them from a role that may not approve, and names the box it needs", () => {
+    // "Approvals: Approve" is a box an admin ticks per role on the Admin
+    // screen, so the refusal says which box rather than "needs the admin role":
+    // the admin reading it over someone's shoulder can fix it in one click.
+    const panel = show({ mayApprove: false, roleLabel: "Editor", pending: row() });
 
-    expect(panel).toHaveTextContent("Clearing a production run needs the admin role.");
+    expect(panel).toHaveTextContent(
+      `Your role (Editor) can't clear a production run. Ask an admin to allow "Approvals: Approve" for this role.`
+    );
     expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
     // No note box either: it is only read back off an approval this person
     // cannot record.
     expect(screen.queryByLabelText(/Note for the approval record/)).not.toBeInTheDocument();
+  });
+
+  it("calls it a rollback in that refusal when it is one", () => {
+    const panel = show({
+      action: "revert",
+      versionsLabel: "v3.0.0 and v2.0.0",
+      mayApprove: false,
+      roleLabel: "Editor",
+      pending: row(),
+    });
+
+    expect(panel).toHaveTextContent("Your role (Editor) can't clear a production rollback.");
+    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
+  });
+
+  it("sends a tester viewing as another role back to Admin, not to an admin", () => {
+    // Under the bypass whoever is testing already is the admin, looking at the
+    // app through View as. "Ask an admin" would send them looking for someone
+    // who is themselves, and "Waiting for your approval" would offer them a
+    // decision the role they are viewing as cannot make.
+    const panel = show({
+      bypass: true,
+      mayApprove: false,
+      roleLabel: "Viewer",
+      pending: row({ requested_by: "me@example.com" }),
+    });
+
+    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
+    expect(panel).toHaveTextContent(
+      `Your role (Viewer) can't clear a production run. Switch "View as" back to Admin to do that.`
+    );
+    expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
   });
 
   it("lets the one principal under the bypass clear their own request", () => {
@@ -277,6 +317,41 @@ describe("who may clear a request", () => {
 
     expect(panel).toHaveTextContent("You asked for this rollback, so you cannot approve it.");
     expect(panel).toHaveTextContent("A rollback on production needs a second person.");
+  });
+});
+
+describe("who may ask for one", () => {
+  it("withholds the request from a role that may not make one, and names the box", () => {
+    const panel = show({ mayRequest: false, mayApprove: false, roleLabel: "Viewer" });
+
+    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
+    expect(panel).toHaveTextContent(
+      `Your role (Viewer) can't request a production approval. Ask an admin to allow "Approvals: Create" for this role.`
+    );
+    expect(screen.queryByRole("button", { name: /^Request approval/ })).not.toBeInTheDocument();
+    // The note would only ever be sent along with a request this role cannot make.
+    expect(screen.queryByLabelText(/Note for the record/)).not.toBeInTheDocument();
+  });
+
+  it("does not promise a tester viewing as that role that they clear it themselves", () => {
+    // "You request it and then clear it yourself" is true of the admin under
+    // the bypass, and wrong twice over for the role View as is showing.
+    const panel = show({ bypass: true, mayRequest: false, mayApprove: false, roleLabel: "Viewer" });
+
+    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("clear it yourself");
+    expect(panel).toHaveTextContent(
+      `Your role (Viewer) can't request a production approval. Switch "View as" back to Admin to do that.`
+    );
+    expect(screen.queryByRole("button", { name: /^Request approval/ })).not.toBeInTheDocument();
+  });
+
+  it("still offers the request to a role that may ask but not approve", () => {
+    // The everyday editor: asks, and waits for somebody else to clear it.
+    show({ mayApprove: false, roleLabel: "Editor" });
+
+    expect(screen.getByText("Needs a second person")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request approval" })).toBeEnabled();
   });
 });
 

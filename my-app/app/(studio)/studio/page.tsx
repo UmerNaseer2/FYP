@@ -25,8 +25,11 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { Select } from "@/components/ui/Select";
+import { useDriftCheckRefusal } from "@/components/studio/RecheckDriftButton";
 import { useNow } from "@/hooks/useNow";
+import { useUser } from "@/hooks/useUser";
 import { describeCadence } from "@/lib/drift-schedule";
+import { refusalMessage } from "@/lib/permissions";
 import { displayVersion } from "@/lib/version-timeline";
 import {
   DashboardIcon,
@@ -37,6 +40,7 @@ import {
   PlusIcon,
   TrashIcon,
   ConnectionsIcon,
+  InfoIcon,
 } from "@/components/ui/icons";
 
 /**
@@ -46,6 +50,10 @@ import {
  * here as a card: its lineage HEAD version and its latest drift status. The
  * DRIFTED card is the hero — drifted schemas sort to the front and get a louder
  * treatment. Real data only (GET /api/lineage); no mocks.
+ *
+ * Tracking, checking and untracking each have their own box on the Roles tab
+ * (Drift tracking: Create, Run and Delete). A button the role may not use
+ * stays on screen but off, and the page says why once, under the header.
  */
 
 // ── Types — mirror of GET /api/lineage (TrackedSchemaListItem) ───────────────
@@ -140,6 +148,14 @@ function sortPriority(status: DriftStatus | null): number {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  // What this role may do here, one box per write.
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const trackRefusal =
+    sessionLoading || can("drift:create") ? null : refusalMessage(roleLabel, "drift:create");
+  const checkRefusal = useDriftCheckRefusal();
+  const untrackRefusal =
+    sessionLoading || can("drift:delete") ? null : refusalMessage(roleLabel, "drift:delete");
+
   // The tracked-schema list (the grid + summary strip read from this).
   const [items, setItems] = useState<TrackedSchema[]>([]);
   const [listPhase, setListPhase] = useState<"loading" | "ready" | "error">("loading");
@@ -243,6 +259,8 @@ export default function DashboardPage() {
   }
 
   function openTrack() {
+    // The buttons that open it are off already.
+    if (trackRefusal !== null) return;
     resetTrackForm();
     setTrackOpen(true);
     // Pull the connection list fresh each time the drawer opens — one may have
@@ -298,7 +316,7 @@ export default function DashboardPage() {
   }
 
   async function submitTrack() {
-    if (!trackConnId || !trackSchema) return;
+    if (!trackConnId || !trackSchema || trackRefusal !== null) return;
     setTrackSubmitting(true);
     setTrackError(null);
     try {
@@ -328,6 +346,7 @@ export default function DashboardPage() {
 
   // ── Per-card actions ───────────────────────────────────────────────────────
   async function checkDrift(item: TrackedSchema) {
+    if (checkRefusal !== null) return;
     setCheckingId(item.id);
     setCardError(null);
     try {
@@ -351,7 +370,7 @@ export default function DashboardPage() {
   }
 
   async function confirmUntrack() {
-    if (!untrackTarget) return;
+    if (!untrackTarget || untrackRefusal !== null) return;
     // ConfirmDialog closes itself the moment you press confirm, so the failure
     // has to land on the card — the dialog is gone before the fetch resolves,
     // and a schema that is still tracked looks exactly like one that was
@@ -409,10 +428,23 @@ export default function DashboardPage() {
   );
 
   const trackButton = (
-    <Button variant="primary" onClick={openTrack}>
+    <Button
+      variant="primary"
+      onClick={openTrack}
+      disabled={trackRefusal !== null}
+      title={trackRefusal ?? undefined}
+    >
       <PlusIcon size={14} /> Track a schema
     </Button>
   );
+
+  // Why buttons on this page are off for this role. The card buttons only
+  // count once there are cards to press them on.
+  const roleNotes = [
+    trackRefusal,
+    total > 0 ? checkRefusal : null,
+    total > 0 ? untrackRefusal : null,
+  ].filter((note): note is string => note !== null);
 
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
@@ -437,6 +469,18 @@ export default function DashboardPage() {
           {trackButton}
         </div>
       </header>
+
+      {/* Said once for the page rather than under every card's buttons. */}
+      {roleNotes.length > 0 && (
+        <div className="role-note">
+          <InfoIcon size={15} className="ico" />
+          <div className="body space-y-0.5">
+            {roleNotes.map((note) => (
+              <p key={note}>{note}</p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Summary strip — only meaningful once we have data. Every tile counts
           what is on screen, so the strip and the grid can never disagree. */}
@@ -499,7 +543,10 @@ export default function DashboardPage() {
               {unlabelledCount} tracked schema{unlabelledCount === 1 ? " has" : "s have"} no
               environment.
             </b>{" "}
-            Label them so Compare and Deploy can tell you when a target is production.
+            {sessionLoading || can("drift:update")
+              ? "Label them so Compare and Deploy can tell you when a target is production."
+              : "Compare and Deploy can't tell you when a target is production until they are " +
+                "labelled. Ask someone who may change schema environments to label them."}
           </div>
         </div>
       )}
@@ -589,6 +636,8 @@ export default function DashboardPage() {
               item={item}
               checking={checkingId === item.id}
               error={cardError?.id === item.id ? cardError.msg : null}
+              checkRefusal={checkRefusal}
+              untrackRefusal={untrackRefusal}
               onCheckDrift={() => void checkDrift(item)}
               onUntrack={() => setUntrackTarget(item)}
             />
@@ -873,12 +922,18 @@ function SchemaCard({
   item,
   checking,
   error,
+  checkRefusal,
+  untrackRefusal,
   onCheckDrift,
   onUntrack,
 }: {
   item: TrackedSchema;
   checking: boolean;
   error: string | null;
+  /** Why this role may not check drift, or null. The page says it once. */
+  checkRefusal: string | null;
+  /** Why this role may not stop tracking, or null. */
+  untrackRefusal: string | null;
   onCheckDrift: () => void;
   onUntrack: () => void;
 }) {
@@ -987,7 +1042,8 @@ function SchemaCard({
           variant={meta.hero ? "primary" : "secondary"}
           size="sm"
           onClick={onCheckDrift}
-          disabled={checking}
+          disabled={checking || checkRefusal !== null}
+          title={checkRefusal ?? undefined}
         >
           {checking ? (
             "Checking…"
@@ -1010,6 +1066,8 @@ function SchemaCard({
           className="btn btn-ghost btn-sm ml-auto"
           aria-label={`Stop tracking ${item.schemaName}`}
           onClick={onUntrack}
+          disabled={untrackRefusal !== null}
+          title={untrackRefusal ?? undefined}
         >
           <TrashIcon size={14} />
         </button>

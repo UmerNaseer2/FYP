@@ -11,5 +11,5 @@ export default function DriftLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="drift">{children}</AuthGuard>;
 }

@@ -131,7 +131,7 @@ export type ThresholdSetting = {
   enabled: boolean;
 };
 
-/** Narrow an arbitrary string to a known key, the way toRole does for roles. */
+/** Narrow an arbitrary value (a stored row, a request body) to a known key, or null. */
 export function toThresholdKey(value: unknown): ThresholdKey | null {
   return (THRESHOLD_KEYS as readonly string[]).includes(String(value))
     ? (String(value) as ThresholdKey)

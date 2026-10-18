@@ -9,20 +9,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readChangeNote } from "@/lib/change-note";
 import { readChangeTypeHeader, stampChangeType } from "@/lib/change-type";
+import { refusalMessage } from "@/lib/permissions";
 import { CHANGE_LEVEL_REQUIRED, VERSION_FORMAT_HINT, rollbackCommitMessage } from "@/lib/registry-push";
+import { principalFor } from "./helpers/principals";
 
 // auth-guard pulls in next-auth, which ships as ESM Jest can't load. The
-// route only needs requireEditor's answer, so a stand-in is enough. The path
-// is relative on purpose: next/jest rewrites the @/ alias inside import
+// route only needs requirePermission's answer, so a stand-in is enough. The
+// path is relative on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-const mockRequireEditor = jest.fn(
+const mockRequirePermission = jest.fn(
   async (): Promise<unknown> => ({
     ok: true,
-    principal: { email: "e@x", name: "E", role: "editor", bypass: true },
+    principal: principalFor("editor", { email: "e@x", name: "E" }),
   }),
 );
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: () => mockRequireEditor(),
+  requirePermission: () => mockRequirePermission(),
 }));
 
 type RouteModule = typeof import("../app/api/github/push/route");
@@ -125,7 +127,7 @@ beforeEach(() => {
   calls = [];
   unexpected = [];
   answers = {};
-  mockRequireEditor.mockClear();
+  mockRequirePermission.mockClear();
   // The route logs GitHub's raw answers; keep the test output clean.
   const spy = jest.spyOn(console, "error").mockImplementation(() => {});
   restoreConsole = () => spy.mockRestore();
@@ -711,14 +713,16 @@ describe("POST /api/github/push, setup and access", () => {
     expect(calls).toEqual([]);
   });
 
-  it("returns the guard's answer when the user may not edit", async () => {
-    mockRequireEditor.mockImplementationOnce(async () => ({
+  it("returns the guard's answer when the role may not save scripts", async () => {
+    // Worded the way lib/auth-guard refuses, and passed on unchanged.
+    const refusal = refusalMessage("Viewer", "scripts:create");
+    mockRequirePermission.mockImplementationOnce(async () => ({
       ok: false,
-      response: NextResponse.json({ ok: false, error: "Sign in as an editor to save scripts." }, { status: 403 }),
+      response: NextResponse.json({ error: refusal }, { status: 403 }),
     }));
     const { status, body } = await push(BASE);
     expect(status).toBe(403);
-    expect(body.ok).toBe(false);
+    expect(body.error).toBe(refusal);
     expect(calls).toEqual([]);
   });
 });

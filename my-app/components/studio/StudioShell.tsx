@@ -6,8 +6,10 @@ import { signOut } from "next-auth/react";
 import { useUser, resetUserCache } from "@/hooks/useUser";
 import { useTheme } from "@/hooks/useTheme";
 import { Drawer } from "@/components/ui";
+import { isAdminOnly, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { StudioTopbar } from "./StudioTopbar";
+import { ViewAsSwitcher } from "./ViewAsSwitcher";
 import { NAV_ITEMS, activeNavItem } from "./nav";
 
 // Shown when no one is signed in.
@@ -38,7 +40,7 @@ type StudioShellProps = {
  */
 export function StudioShell({ children, user }: StudioShellProps) {
   const pathname = usePathname();
-  const { user: authUser, isAdmin, role, bypass } = useUser();
+  const { user: authUser, role, roleLabel, bypass, loading, can, accessError } = useUser();
   const { theme, toggleTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -63,11 +65,26 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // Real identity from the NextAuth session; honest signed-out state otherwise.
   const studioUser = useMemo(() => user ?? toStudioUser(authUser), [user, authUser]);
 
-  // Admin-only items (e.g. user management) are hidden from non-admins. The page
-  // + API still gate on the role, so this is presentation, not the security line.
+  // A screen is on the rail when the role may Read its feature, the same
+  // question its AuthGuard asks, so nothing here opens onto "your role can't".
+  // The screens and the API still check for themselves, so this is
+  // presentation, not the security line.
+  //
+  // Until that is known (still loading, nobody signed in, or the database did
+  // not answer) the rail shows every screen except the admin-only ones, as it
+  // always did. An empty rail would look broken, and each screen still says
+  // for itself whether it will open.
   const navItems = useMemo(
-    () => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin),
-    [isAdmin],
+    () =>
+      NAV_ITEMS.filter((item) => {
+        const features = Array.isArray(item.feature) ? item.feature : [item.feature];
+        const [first, ...rest] = features.map(readKeyOf);
+        if (loading || accessError || !authUser) {
+          return ![first, ...rest].every(isAdminOnly);
+        }
+        return can(first, ...rest);
+      }),
+    [loading, accessError, authUser, can],
   );
 
   async function handleSignOut() {
@@ -94,12 +111,17 @@ export function StudioShell({ children, user }: StudioShellProps) {
       // server will actually allow is not something a display identity gets to
       // change. See StudioSidebarProps.
       //
-      // Withheld while nobody is signed in. useUser reports DEFAULT_ROLE for a
-      // missing session — a sensible floor for code asking "may I", and a lie
-      // on screen, where a "viewer" badge under "Not signed in" would read as a
-      // role somebody holds rather than the absence of one.
-      role={authUser ? role : undefined}
+      // Withheld while nobody is signed in, and while the role is still being
+      // looked up. useUser reports DEFAULT_ROLE for both. That is a sensible
+      // floor for code asking "may I", and a lie on screen, where a "Viewer"
+      // badge under "Not signed in" would read as a role somebody holds rather
+      // than the absence of one.
+      role={authUser && !loading ? role : undefined}
+      roleLabel={authUser && !loading ? roleLabel : undefined}
       bypass={bypass}
+      // The View as picker, only while the bypass is on. With real sign-in a
+      // person is their role and nothing else.
+      viewAs={bypass ? <ViewAsSwitcher /> : undefined}
       onSignOut={handleSignOut}
       className={isMobile ? "h-full" : ""}
     />
@@ -116,7 +138,14 @@ export function StudioShell({ children, user }: StudioShellProps) {
       {/* Desktop: sidebar is the first grid column. Mobile: it lives in the drawer. */}
       {!isMobile && sidebar}
 
-      <div className="flex flex-col min-w-0">
+      {/*
+        min-h-0 is what makes <main> the thing that scrolls. Without it this
+        column grows to the height of the page inside it, the grid grows with
+        it, and the whole window scrolls instead: the sidebar scrolls away
+        with the page, and its footer (the theme, Sign out, View as) ends up
+        below the bottom of the screen on any long page.
+      */}
+      <div className="flex flex-col min-w-0 min-h-0">
         <StudioTopbar
           breadcrumbScreen={active.screen}
           showMenu={isMobile}

@@ -6,5 +6,5 @@ import AuthGuard from "@/components/AuthGuard";
  * re-add one scoped to this route only (same pattern as Connections).
  */
 export default function CompareLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="compare">{children}</AuthGuard>;
 }

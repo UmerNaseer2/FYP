@@ -50,7 +50,8 @@ import { countOf } from "@/lib/plural";
 import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
-import { canExecute, toExecuteRole } from "@/lib/connection-access";
+import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { refusalMessage } from "@/lib/permissions";
 import {
   isProduction,
   louderEnvironment,
@@ -163,7 +164,7 @@ type Connection = {
   type: string;
   /** dev / staging / prod, or "unset" when nobody has labelled it. */
   environment: Environment;
-  /** Which role may run migrations here. See lib/connection-access.ts. */
+  /** Who may run migrations here: none, editor or admin. See lib/connection-access.ts. */
   execute_role?: string | null;
 };
 
@@ -895,11 +896,27 @@ function rollbackProblemText(
   };
 }
 
+/**
+ * The toast after an approval request. Under the auth bypass there is only one
+ * principal, so whoever asked is also the one who clears it, unless View as
+ * has them looking at the app as a role that may not approve.
+ */
+function approvalRequestedToast(bypass: boolean, mayApprove: boolean): string {
+  if (!bypass) return "Approval requested — someone else has to clear it";
+  return mayApprove
+    ? "Approval requested — with the auth bypass on, you clear it yourself"
+    : 'Approval requested. Switch "View as" back to Admin to clear it';
+}
+
 export default function DeployPage() {
-  // Who is looking. The approval panel needs two things from this: whether to
-  // offer Approve at all (admins decide), and whether this is the same person
-  // who asked for the run (nobody clears their own).
-  const { user, role, isAdmin, bypass } = useUser();
+  // Who is looking, and what their role may do here. The approval panel needs
+  // to know whether to offer Request and Approve at all (each is a box an
+  // admin ticks for a role on the Admin screen), and whether this is the same
+  // person who asked for the run (nobody clears their own).
+  const { user, roleLabel, isAdmin, bypass, can } = useUser();
+  const mayReadApprovals = can("approvals:read");
+  const mayRequestApproval = can("approvals:create");
+  const mayApprove = can("approvals:approve");
 
   // ── Selection state ──────────────────────────────────────────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -1181,7 +1198,17 @@ export default function DeployPage() {
   // way. See lib/connection-access.
   const targetExecuteRole = toExecuteRole(activeConn?.execute_role);
   const targetIsReadOnly = targetExecuteRole === "none";
-  const mayExecuteOnTarget = canExecute(role, targetExecuteRole);
+  const mayExecuteOnTarget = canExecute(
+    { isAdmin, mayDeploy: can("deploy:run") },
+    targetExecuteRole
+  );
+  // Why not, for the short lines under the buttons. Admins only is named first
+  // because it is the one "Deploy: Run" would not fix: on such a connection a
+  // role that may deploy everywhere else is still refused.
+  const executeBlockedWhy =
+    targetExecuteRole === "admin"
+      ? "is limited to admins"
+      : `needs a role that may run deployments, and yours (${roleLabel}) may not`;
 
   // Scope the pulled scripts to the selected connection's database. GitHub now
   // stores scripts under <database_name>/<schema>/..., so a script only belongs
@@ -1493,7 +1520,7 @@ export default function DeployPage() {
     : targetIsReadOnly
       ? "This connection is marked read-only, so nothing here will run against it"
     : !mayExecuteOnTarget
-      ? `Rolling back on this connection needs the "${targetExecuteRole}" role`
+      ? `Rolling back on this connection ${executeBlockedWhy}`
     : isDeploying
       ? "A deploy is running on this target — wait for it to finish"
       : (targetIsProduction && !rollbackProdAck) ||
@@ -1803,10 +1830,20 @@ export default function DeployPage() {
   // Approvals are only read for a production target, because production is the
   // only place the server asks for one. Fetching them elsewhere would put a
   // panel on screen that gates nothing.
+  //
+  // Nor for a role that may not see them. The route would refuse anyway, and
+  // saying why up front reads better than a 403. The panel then calls the
+  // state unknown rather than "nothing requested yet", which is the truth.
   useEffect(() => {
     if (!targetIsProduction || !connectionId || !schema || !scriptGroup) {
       setApprovals([]);
       setApprovalsReadError(null);
+      return;
+    }
+    if (!mayReadApprovals) {
+      setApprovals([]);
+      setApprovalsLoading(false);
+      setApprovalsReadError(refusalMessage(roleLabel, "approvals:read"));
       return;
     }
     let cancelled = false;
@@ -1838,7 +1875,15 @@ export default function DeployPage() {
     return () => {
       cancelled = true;
     };
-  }, [targetIsProduction, connectionId, schema, scriptGroup, approvalReloadKey]);
+  }, [
+    targetIsProduction,
+    connectionId,
+    schema,
+    scriptGroup,
+    approvalReloadKey,
+    mayReadApprovals,
+    roleLabel,
+  ]);
 
   // Every approval row for this exact batch, newest first (the API orders by
   // id DESC). Anything with a different fingerprint belongs to different SQL
@@ -2304,11 +2349,7 @@ export default function DeployPage() {
       }
       setApprovalNote("");
       // Under the auth bypass the one principal clears its own request.
-      showToast(
-        bypass && isAdmin
-          ? "Approval requested — with the auth bypass on, you clear it yourself"
-          : "Approval requested — someone else has to clear it"
-      );
+      showToast(approvalRequestedToast(bypass, mayApprove));
     } catch {
       setApprovalError("Network error requesting the approval.");
     } finally {
@@ -2355,11 +2396,7 @@ export default function DeployPage() {
       }
       setRollbackApprovalNote("");
       // Under the auth bypass the one principal clears its own request.
-      showToast(
-        bypass && isAdmin
-          ? "Approval requested — with the auth bypass on, you clear it yourself"
-          : "Approval requested — someone else has to clear it"
-      );
+      showToast(approvalRequestedToast(bypass, mayApprove));
     } catch {
       setRollbackApprovalError("Network error requesting the approval.");
     } finally {
@@ -3004,9 +3041,9 @@ export default function DeployPage() {
                     )}
                     {!targetIsReadOnly && !mayExecuteOnTarget && (
                       <span className="help" style={{ color: "var(--break)" }}>
-                        {`Running migrations here needs the "${targetExecuteRole}" role and ` +
-                          `yours is "${role}". Ask an admin to change your role, or to lower ` +
-                          `the requirement on this connection.`}
+                        {/* The apply route's own words, so this line and the
+                            refusal a press would get read the same. */}
+                        {executeRefusal(activeConn.name, roleLabel, targetExecuteRole)}
                       </span>
                     )}
                     {targetExecuteRole === "admin" && mayExecuteOnTarget && (
@@ -3435,7 +3472,9 @@ export default function DeployPage() {
                           pending={pendingRollback}
                           latest={latestRollback}
                           viewerEmail={user?.email ?? ""}
-                          isAdmin={isAdmin}
+                          roleLabel={roleLabel}
+                          mayRequest={mayRequestApproval}
+                          mayApprove={mayApprove}
                           bypass={bypass}
                           note={rollbackApprovalNote}
                           onNoteChange={setRollbackApprovalNote}
@@ -3969,7 +4008,9 @@ export default function DeployPage() {
                             pending={pendingRun}
                             latest={latestRun}
                             viewerEmail={user?.email ?? ""}
-                            isAdmin={isAdmin}
+                            roleLabel={roleLabel}
+                            mayRequest={mayRequestApproval}
+                            mayApprove={mayApprove}
                             bypass={bypass}
                             note={approvalNote}
                             onNoteChange={setApprovalNote}
@@ -4017,8 +4058,7 @@ export default function DeployPage() {
                           ? "This connection is marked read-only on Connections, so nothing " +
                             "here will run against it — not a deploy and not a dry run"
                           : !mayExecuteOnTarget
-                          ? `Running migrations on this connection needs the ` +
-                            `"${targetExecuteRole}" role and yours is "${role}"`
+                          ? `Running migrations on this connection ${executeBlockedWhy}`
                           : blockedByApplication.length > 0
                           ? `${versionRange(
                               blockedByApplication.map((script) => script.version)
@@ -4055,7 +4095,9 @@ export default function DeployPage() {
                           </ChecklistItem>
                         ) : !mayExecuteOnTarget ? (
                           <ChecklistItem ok={false}>
-                            Execution · needs the {targetExecuteRole} role · yours is {role}
+                            {targetExecuteRole === "admin"
+                              ? `Execution · admins only · your role is ${roleLabel}`
+                              : `Execution · needs Deploy: Run · ${roleLabel} does not have it`}
                           </ChecklistItem>
                         ) : targetExecuteRole === "admin" ? (
                           <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>
@@ -4169,7 +4211,7 @@ export default function DeployPage() {
                                 ? `Approved by ${approvedRun.decided_by ?? "a second person"}` +
                                   (approvedRun.self_approved ? " · self-approved under the auth bypass" : "")
                                 : pendingRun
-                                  ? bypass && isAdmin
+                                  ? bypass && mayApprove
                                     ? "Approval requested · waiting for you to clear it"
                                     : "Approval requested · waiting for a second person"
                                   : "Approval · not requested yet"}

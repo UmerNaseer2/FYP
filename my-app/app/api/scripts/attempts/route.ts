@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { listDeployAttempts, type DeployAttemptRow } from "@/lib/deploy-attempts-db";
 
 // GET /api/scripts/attempts?connectionId=<id>&schema=<name>&limit=<n>
@@ -15,7 +15,7 @@ import { listDeployAttempts, type DeployAttemptRow } from "@/lib/deploy-attempts
 // memory of, because the transaction that would have written them was rolled
 // back, or was never opened at all.
 //
-// A viewer gate rather than an editor one: reading what was attempted is how
+// Deploy: Read rather than Deploy: Run. Reading what was attempted is how
 // somebody who cannot deploy finds out why a deploy did not happen, and an
 // audit trail only the people being audited can read is not much of one. No
 // credentials are involved — this route never opens the target.
@@ -26,7 +26,7 @@ export type DeployAttemptsResponse = {
 };
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("deploy:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/auth-guard";
-import { ROLES, type Role } from "@/lib/auth-mode";
+import { requirePermission } from "@/lib/auth-guard";
+import { actorFor } from "@/lib/auth-mode";
+import { ADMIN_ROLE } from "@/lib/permissions";
+import { listRoles, logRoleChanges } from "@/lib/roles-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { MetadataClient } from "@/lib/db/sequelize";
 
@@ -12,6 +14,10 @@ import type { MetadataClient } from "@/lib/db/sequelize";
  * project — the metadata database is `DATABASE_URL_A` — so every query here
  * failed at connect time. It now shares the one pool in lib/version-db, which
  * is also the pool that creates the `profiles` table.
+ *
+ * Each method has its own permission under Users (Read, Update, Delete).
+ * They are admin-only boxes: the Roles tab never offers them to another role,
+ * so nobody but an admin can hand out roles, their own included.
  */
 
 type UserRow = {
@@ -23,11 +29,13 @@ type UserRow = {
   last_seen_at: string | null;
 };
 
-/** Reject a role that isn't one of ours, rather than writing it and letting the CHECK constraint fail. */
-function parseRole(value: unknown): Role | null {
-  return (ROLES as readonly string[]).includes(String(value))
-    ? (String(value) as Role)
-    : null;
+/**
+ * The role asked for, if it is worth looking up. Whether a role by that name
+ * exists is for the roles table to say (see PUT): an admin can add and delete
+ * roles, so there is no fixed list to check it against here.
+ */
+function parseRole(value: unknown): string | null {
+  return typeof value === "string" && value !== "" && value.length <= 64 ? value : null;
 }
 
 /**
@@ -80,28 +88,40 @@ async function otherAdminCount(
 }
 
 export async function GET() {
-  const gate = await requireAdmin();
+  const gate = await requirePermission("users:read");
   if (!gate.ok) return gate.response;
 
   try {
     await syncMetadataTables();
-    const result = await pool.query<UserRow>(
-      `SELECT id, email, name, role, created_at, last_seen_at
-         FROM profiles
-        ORDER BY email`
-    );
-    return NextResponse.json({ users: result.rows });
+    // The roles come along for the role picker on each row: names and labels
+    // only, since what each role may do is the Roles tab's business.
+    const [result, roles] = await Promise.all([
+      pool.query<UserRow>(
+        `SELECT id, email, name, role, created_at, last_seen_at
+           FROM profiles
+          ORDER BY email`
+      ),
+      listRoles(),
+    ]);
+    return NextResponse.json({
+      users: result.rows,
+      roles: roles.map((role) => ({ name: role.name, label: role.label })),
+    });
   } catch (error) {
     console.error("Failed to list users:", error);
     return NextResponse.json(
-      { error: "Could not read the user list." },
+      {
+        error:
+          "Could not read the user list. The app's database may be unreachable. " +
+          "Try again in a moment.",
+      },
       { status: 500 }
     );
   }
 }
 
 export async function PUT(request: NextRequest) {
-  const gate = await requireAdmin();
+  const gate = await requirePermission("users:update");
   if (!gate.ok) return gate.response;
 
   let body: { userId?: unknown; role?: unknown };
@@ -118,10 +138,7 @@ export async function PUT(request: NextRequest) {
 
   const role = parseRole(body.role);
   if (!role) {
-    return NextResponse.json(
-      { error: `Role must be one of: ${ROLES.join(", ")}.` },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Choose a role for this user." }, { status: 400 });
   }
 
   let client;
@@ -145,9 +162,33 @@ export async function PUT(request: NextRequest) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "No such user." }, { status: 404 });
     }
+    const previousRole = current.rows[0].role;
+
+    // The role asked for is looked up, because the Roles tab can add and
+    // delete roles. FOR KEY SHARE keeps it from being deleted until this
+    // commits: deleting a role waits for this transaction, then finds the role
+    // in use and refuses. The person's current role is read alongside it, so
+    // the change log can say what they had before.
+    const named = await client.query<{ name: string; label: string }>(
+      `SELECT name, label FROM roles WHERE name = ANY($1::text[]) FOR KEY SHARE`,
+      [[role, previousRole]]
+    );
+    const labelOf = (name: string) => named.rows.find((row) => row.name === name)?.label;
+    if (labelOf(role) === undefined) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        {
+          error:
+            `There is no role called "${role}". It may have just been deleted: ` +
+            "reload the page to see the roles there are now.",
+        },
+        { status: 400 }
+      );
+    }
+
     if (
-      role !== "admin" &&
-      current.rows[0].role === "admin" &&
+      role !== ADMIN_ROLE &&
+      previousRole === ADMIN_ROLE &&
       (await otherAdminCount(client, userId)) === 0
     ) {
       await client.query("ROLLBACK");
@@ -169,6 +210,21 @@ export async function PUT(request: NextRequest) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "No such user." }, { status: 404 });
     }
+
+    // Written in the same transaction, so the log never shows a change that
+    // did not happen, or misses one that did. Picking the role someone
+    // already has changes nothing and is not logged.
+    if (previousRole !== role) {
+      await logRoleChanges(client, [
+        {
+          role,
+          kind: "assign",
+          subject: result.rows[0].email,
+          detail: labelOf(previousRole) ?? previousRole,
+          actor: actorFor(gate.principal),
+        },
+      ]);
+    }
     await client.query("COMMIT");
     return NextResponse.json({ success: true, user: result.rows[0] });
   } catch (error) {
@@ -186,7 +242,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const gate = await requireAdmin();
+  const gate = await requirePermission("users:delete");
   if (!gate.ok) return gate.response;
 
   let body: { userId?: unknown };
@@ -222,7 +278,7 @@ export async function DELETE(request: NextRequest) {
 
     // Same reasoning as the demotion guard above.
     if (
-      target.rows[0].role === "admin" &&
+      target.rows[0].role === ADMIN_ROLE &&
       (await otherAdminCount(client, userId)) === 0
     ) {
       await client.query("ROLLBACK");

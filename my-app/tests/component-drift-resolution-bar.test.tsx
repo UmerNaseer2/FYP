@@ -10,6 +10,12 @@
  * buttons block one another, belongs to the bar itself and would have to be
  * re-pinned from scratch at every screen that adopted it next.
  *
+ * And who may use them. Re-baselining and acknowledging change how the schema
+ * is tracked, so both need Drift tracking: Update; the re-check needs Run. A
+ * role without a box sees the buttons it would need switched off, and each
+ * reason said once, under the bar, rather than beside every button it turns
+ * off. The re-check is asked to keep quiet beside itself for that reason.
+ *
  * What is NOT here:
  *  - The re-check button's own behaviour — what it sends, what it does with the
  *    answer, and that it reports starting and stopping at all:
@@ -20,15 +26,28 @@
  *    below are written out by hand.
  *  - The screen that renders it, and the onDone it passes down:
  *    tests/page-drift.test.tsx.
+ *  - That Deploy: Run lets the re-check through as well: the button's own
+ *    suite has that, and the bar only passes the question on.
  */
 
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import { DriftResolutionBar } from "@/components/studio/DriftResolutionBar";
-import { fetchCalls, holdNext, resetPageState, routerCalls, setRoutes } from "./helpers/render-page";
+import {
+  fetchCalls,
+  flushAsync,
+  holdNext,
+  resetPageState,
+  routerCalls,
+  setCustomRole,
+  setRoutes,
+  setSessionLoading,
+  setUser,
+} from "./helpers/render-page";
 
 const OK_ROUTES = [
   { match: "/api/lineage/rebaseline", body: { success: true } },
@@ -49,6 +68,14 @@ const drifted = (onDone: () => void = jest.fn()) => (
     onDone={onDone}
   />
 );
+
+// The server's own words, for whichever role is signed in.
+const updateRefusal = (role: string) =>
+  `Your role (${role}) can't change schedules, environments and baselines, or acknowledge ` +
+  `drift. Ask an admin to allow "Drift tracking: Update" for this role.`;
+const runRefusal = (role: string) =>
+  `Your role (${role}) can't run a drift check. ` +
+  `Ask an admin to allow "Drift tracking: Run" for this role.`;
 
 describe("drift resolution bar", () => {
   it("offers all four actions on a drifted schema", () => {
@@ -154,5 +181,100 @@ describe("drift resolution bar", () => {
       method: "POST",
       body: JSON.stringify({ trackedSchemaId: 7 }),
     });
+  });
+});
+
+describe("for a role that may not resolve or re-check", () => {
+  it("leaves every button on screen but off, and says each reason once", () => {
+    setUser("viewer");
+    render(drifted());
+
+    const rebaseline = screen.getByRole("button", { name: "Re-baseline to live" });
+    const acknowledge = screen.getByRole("button", { name: /Acknowledge/ });
+    const recheck = screen.getByRole("button", { name: /Check drift now/ });
+    expect(rebaseline).toBeDisabled();
+    expect(acknowledge).toBeDisabled();
+    expect(recheck).toBeDisabled();
+    expect(rebaseline).toHaveAttribute("title", updateRefusal("Viewer"));
+    expect(acknowledge).toHaveAttribute("title", updateRefusal("Viewer"));
+    expect(recheck).toHaveAttribute("title", runRefusal("Viewer"));
+    // Once each, under the bar. Said beside the re-check as well, the run
+    // reason would be on screen twice.
+    expect(screen.getAllByText(updateRefusal("Viewer"))).toHaveLength(1);
+    expect(screen.getAllByText(runRefusal("Viewer"))).toHaveLength(1);
+  });
+
+  it("sends nothing when a switched-off button is pressed anyway", async () => {
+    // No routes: a request that got out would fail on its own.
+    setUser("viewer");
+    setRoutes([]);
+    render(drifted());
+
+    fireEvent.click(screen.getByRole("button", { name: /Acknowledge/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Re-baseline to live" }));
+    await flushAsync();
+
+    expect(fetchCalls).toHaveLength(0);
+    // Not even the confirm: a role that may not re-baseline is not asked to.
+    expect(screen.queryByRole("button", { name: "Re-baseline" })).toBeNull();
+  });
+
+  it("gives only the re-check's reason on a schema back in sync", () => {
+    setUser("viewer");
+    render(
+      <DriftResolutionBar
+        trackedSchemaId={7}
+        state="in_sync"
+        compareHref="/compare?schema=7"
+        onDone={jest.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /Re-check/ })).toBeDisabled();
+    expect(screen.getByText(runRefusal("Viewer"))).toBeInTheDocument();
+    // Nothing to resolve here, so nothing to explain about resolving.
+    expect(screen.queryByText(updateRefusal("Viewer"))).toBeNull();
+  });
+
+  it("lets a role with Run alone re-check, and names only what it may not do", () => {
+    setCustomRole("watcher", "Watcher", ["drift:run"]);
+    setRoutes(OK_ROUTES);
+    render(drifted());
+
+    expect(screen.getByRole("button", { name: /Check drift now/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Re-baseline to live" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Acknowledge/ })).toBeDisabled();
+    expect(screen.getByText(updateRefusal("Watcher"))).toBeInTheDocument();
+    expect(screen.queryByText(runRefusal("Watcher"))).toBeNull();
+  });
+
+  it("lets a role with Update acknowledge, and keeps the re-check off", async () => {
+    setCustomRole("reviewer", "Reviewer", ["drift:update"]);
+    setRoutes(OK_ROUTES);
+    const onDone = jest.fn();
+    render(drifted(onDone));
+
+    fireEvent.click(screen.getByRole("button", { name: /Acknowledge/ }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]).toMatchObject({ url: "/api/lineage/acknowledge", method: "POST" });
+    // Update is not Run.
+    expect(screen.getByRole("button", { name: /Check drift now/ })).toBeDisabled();
+    expect(screen.getByText(runRefusal("Reviewer"))).toBeInTheDocument();
+    expect(screen.queryByText(updateRefusal("Reviewer"))).toBeNull();
+  });
+
+  it("says nothing while the session is still loading", () => {
+    // The server decides then, so nothing is switched off for a role nobody
+    // knows yet.
+    setSessionLoading();
+    setRoutes(OK_ROUTES);
+    render(drifted());
+
+    expect(screen.getByRole("button", { name: "Re-baseline to live" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Acknowledge/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Check drift now/ })).toBeEnabled();
+    expect(screen.queryByText(/Your role/)).toBeNull();
   });
 });

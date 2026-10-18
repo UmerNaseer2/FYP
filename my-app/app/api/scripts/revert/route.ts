@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
 import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
@@ -259,8 +260,8 @@ type OtherScript = { script_name: string; version: string; applied_at: Date | st
 type PlannedStep = { row: LedgerRow; sql: string; source: "ledger" | "registry" };
 
 export async function POST(request: NextRequest) {
-  // ─── 1. Editors only ─────────────────────────────────────────────────────
-  const gate = await requireEditor();
+  // ─── 1. Only roles that may run deployments ──────────────────────────────
+  const gate = await requirePermission("deploy:run");
   if (!gate.ok) return gate.response;
 
   // ─── 2. Parse and validate the body ──────────────────────────────────────
@@ -322,9 +323,17 @@ export async function POST(request: NextRequest) {
   // marked read-only refuses it for the same reason and with the same sentence.
   {
     const required = toExecuteRole(connRow.execute_role);
-    if (!canExecute(gate.principal.role, required)) {
+    const who = {
+      isAdmin: gate.principal.role === ADMIN_ROLE,
+      mayDeploy: hasPermission(gate.principal, "deploy:run"),
+    };
+    if (!canExecute(who, required)) {
       return fail(403, {
-        error: executeRefusal(connRow.name ?? `connection ${connectionId}`, gate.principal.role, required),
+        error: executeRefusal(
+          connRow.name ?? `connection ${connectionId}`,
+          gate.principal.roleLabel,
+          required
+        ),
       });
     }
   }

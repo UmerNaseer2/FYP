@@ -20,9 +20,10 @@
  * What is NOT here:
  *  - The rail that renders this list:
  *    tests/component-studio-sidebar.test.tsx.
- *  - Filtering adminOnly against the live session role, and the wiring of
- *    activeNavItem into the breadcrumb. Both belong to the shell:
- *    tests/component-studio-shell.test.tsx.
+ *  - Filtering the rows against what the session's role may read, and the
+ *    wiring of activeNavItem into the breadcrumb. Both belong to the shell:
+ *    tests/component-studio-shell.test.tsx. What is here is the data that
+ *    filtering reads: which feature each row belongs to.
  *  - What each screen does once you are on it. Those are the
  *    tests/page-*.test.tsx suites, one per route.
  */
@@ -30,9 +31,21 @@
 import path from "path";
 import { existsSync } from "fs";
 
-import { NAV_ITEMS, activeNavItem } from "@/components/studio/nav";
+import { NAV_ITEMS, activeNavItem, type NavItem } from "@/components/studio/nav";
+import {
+  FEATURES,
+  isAdminOnly,
+  presetFor,
+  readKeyOf,
+  type FeatureKey,
+} from "@/lib/permissions";
 
 const ROOT = path.join(__dirname, "..");
+
+/** A row's features as a list, the way the shell reads them. */
+function featuresOf(item: NavItem): FeatureKey[] {
+  return Array.isArray(item.feature) ? item.feature : [item.feature];
+}
 
 describe("the list of screens", () => {
   test("reads top to bottom as the order the work happens in", () => {
@@ -102,10 +115,41 @@ describe("the list of screens", () => {
     }
   });
 
-  test("keeps Admin the only row the shell has to hide", () => {
-    expect(
-      NAV_ITEMS.filter((item) => item.adminOnly).map((item) => item.screen)
-    ).toEqual(["Admin"]);
+  test("gives every row a feature the permission catalogue knows", () => {
+    // A row is shown when the role may Read its feature. A feature missing
+    // from lib/permissions has no Read box anywhere, so its row would be
+    // hidden from every role, admin included, and nothing would say why.
+    const known = new Set<string>(FEATURES.map((feature) => feature.key));
+    for (const item of NAV_ITEMS) {
+      for (const feature of featuresOf(item)) {
+        expect({ href: item.href, feature, known: known.has(feature) }).toEqual({
+          href: item.href,
+          feature,
+          known: true,
+        });
+      }
+    }
+  });
+
+  test("keeps Admin the only row behind features no box can give away", () => {
+    // Users and Roles & permissions are admin-only: the grid offers no box for
+    // them, so this row stays off every other role's rail whatever is ticked.
+    const adminOnly = NAV_ITEMS.filter((item) =>
+      featuresOf(item).every((feature) => isAdminOnly(readKeyOf(feature)))
+    );
+    expect(adminOnly.map((item) => item.screen)).toEqual(["Admin"]);
+  });
+
+  test("shows a new install's viewer every row except Admin", () => {
+    // What the Viewer role's description promises on the Admin screen, and
+    // what the rail showed a viewer before roles became editable.
+    const viewer = presetFor("viewer") ?? [];
+    const shown = NAV_ITEMS.filter((item) =>
+      featuresOf(item).some((feature) => viewer.includes(readKeyOf(feature)))
+    );
+    expect(shown.map((item) => item.screen)).toEqual(
+      NAV_ITEMS.map((item) => item.screen).filter((screen) => screen !== "Admin")
+    );
   });
 });
 

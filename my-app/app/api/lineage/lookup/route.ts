@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { findTrackedSchema } from "@/lib/lineage-db";
 
 /**
@@ -10,7 +10,7 @@ import { findTrackedSchema } from "@/lib/lineage-db";
  * Returns `{ tracked: false }` when the pair isn't tracked.
  */
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("drift:read", "deploy:read", "version_sync:read");
   if (!gate.ok) return gate.response;
 
   try {

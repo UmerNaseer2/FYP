@@ -514,6 +514,7 @@ function CompareScreenView({ query }: { query: string }) {
     maxTargets,
     activeSetId,
     setNotFound,
+    setsRefusal,
     setModified,
     selection,
     sourceError,
@@ -766,14 +767,15 @@ function CompareScreenView({ query }: { query: string }) {
           recommendation, so a screen nobody asked to run says so and stops. */}
       {/* A link to a saved set that has since been deleted. Said whether or
           not anything ran, because the bar above now shows no set open and
-          would otherwise leave the reader wondering where it went. */}
+          would otherwise leave the reader wondering where it went. A role that
+          may not open saved sets is told that instead: the set may be fine. */}
       {setNotFound && (
         <div className="warn-inline mt-4">
           <span className="ico">
             <AlertTriangleIcon size={14} />
           </span>
           <span>
-            That saved set no longer exists — it may have been deleted.
+            {setsRefusal ?? "That saved set no longer exists — it may have been deleted."}
             {asked
               ? " The comparison below is the one in the pickers."
               : " The pickers show the defaults instead; pick what to compare, then press Compare."}

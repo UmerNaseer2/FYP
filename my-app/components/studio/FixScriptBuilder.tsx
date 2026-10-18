@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
-import { roleAtLeast } from "@/lib/auth-mode";
+import { refusalMessage } from "@/lib/permissions";
 import { saveMigrationDraft } from "@/lib/migration-draft";
 import {
   buildFixScript,
@@ -40,10 +40,10 @@ import { downloadText } from "./ExportBar";
  * table in another schema (the query read the table there), so a change like
  * that is listed apart, and copied or downloaded rather than saved.
  *
- * Save hides for viewers, and when there is no change to the picked schema to
- * save. The Script Editor saves through /api/github/push, which needs the
- * editor role, so offering it to a viewer would only lead to a refusal at the
- * end.
+ * Save hides for a role that may not save scripts, and when there is no change
+ * to the picked schema to save. The Script Editor saves through
+ * /api/github/push, which asks for "Scripts: Create", so offering it to a role
+ * without that would only lead to a refusal at the end.
  */
 
 /** Where the findings came from: printed at the top of the script, and kept with a saved migration. */
@@ -70,8 +70,8 @@ export function FixScriptBuilder({
   target: FixScriptTarget;
 }) {
   const router = useRouter();
-  const { role, loading } = useUser();
-  const canSave = !loading && roleAtLeast(role, "editor");
+  const { roleLabel, loading, can } = useUser();
+  const canSave = !loading && can("scripts:create");
 
   // Above the state, because the state starts from it. Both are pure and live
   // in lib/perf-sql.ts, where they can be tested without a browser.
@@ -310,7 +310,8 @@ export function FixScriptBuilder({
       )}
       {!loading && !canSave && migrationRows.length > 0 && (
         <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-          Saving as a migration needs the editor role.
+          {refusalMessage(roleLabel, "scripts:create")} Copy or download the
+          script instead.
         </p>
       )}
     </Card>

@@ -50,6 +50,8 @@ import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
 import { Pill } from "@/components/ui/Pill";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
+import { useUser } from "@/hooks/useUser";
+import { refusalMessage } from "@/lib/permissions";
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
 type Connection = {
@@ -287,6 +289,16 @@ export default function ScriptEditorPage() {
     text: "",
   });
   const [fixStatus, setFixStatus] = useState<AttachStatus | null>(null);
+
+  // Saving a version, and adding a rollback to one, both write to the script
+  // registry: the "Scripts: Create" box on the Roles tab. A role without it
+  // can still open every saved version here. The push route would refuse it
+  // anyway; this says why before a button is pressed. Nothing is said while
+  // the session loads, so a role that may save is not told for a moment that
+  // it can't.
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const saveRefusal =
+    sessionLoading || can("scripts:create") ? null : refusalMessage(roleLabel, "scripts:create");
 
   // ── A script handed over from Performance ("Save as a migration") ────────
   // Run by the banner's Load button. planDraftLoad (lib/migration-draft.ts)
@@ -590,6 +602,8 @@ export default function ScriptEditorPage() {
    * a disabled button always says what to do about it.
    */
   function whySaveIsBlocked(): string | null {
+    // First, because nothing else on the page would make Save work for this role.
+    if (saveRefusal) return saveRefusal;
     if (githubUnconfigured) return "The GitHub registry is not configured, so nothing can be saved.";
     if (!databaseName || !schema) return "Pick a connection and a schema above.";
     if (!scriptName) return "Pick a script family above.";
@@ -645,6 +659,7 @@ export default function ScriptEditorPage() {
   const fixSaving = fixHere?.kind === "saving";
 
   function whyFixIsBlocked(): string | null {
+    if (saveRefusal) return saveRefusal;
     if (githubUnconfigured) return "The GitHub registry is not configured, so nothing can be saved.";
     if (fixRow === null) return "Pick the version to add a rollback to.";
     if (!fixRuns) return `Write the statements that undo v${fixVersion}'s migration.`;
@@ -927,6 +942,9 @@ export default function ScriptEditorPage() {
   // saved with this same migration.
   async function addRollbackToSaved() {
     if (!attachOffer || savedHere === null || savedRow === null || offerSaving) return;
+    // It writes to the registry like Save does, so it needs the same box.
+    // Only reachable when an admin took the box away after this page saved.
+    if (saveRefusal !== null) return;
     if (attachInFlight.current) return;
     const key = familyKey;
     const savedVersion = savedHere.version;
@@ -1567,7 +1585,8 @@ export default function ScriptEditorPage() {
                     <button
                       type="button"
                       className="btn btn-primary btn-sm mt-2"
-                      disabled={offerSaving}
+                      disabled={offerSaving || saveRefusal !== null}
+                      title={saveRefusal ?? undefined}
                       onClick={addRollbackToSaved}
                     >
                       {offerSaving ? "Saving the rollback…" : retryLabel}

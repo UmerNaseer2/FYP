@@ -36,13 +36,31 @@
  *  - The 400ms debounce on both reads as a timing claim. The tests wait for
  *    the answer rather than counting requests, because a test that pinned the
  *    delay would fail on a change that only made the panel more responsive.
+ *
+ * Pushing needs "Scripts: Create" on the Roles tab. The suite runs as an admin
+ * unless a case says otherwise (resetPageState), so every other rung of the
+ * ladder is reachable; the cases about the role are under "why Push can't be
+ * pressed".
  */
 
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
-import { fetchCalls, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
+import {
+  fetchCalls,
+  holdNext,
+  resetPageState,
+  setCustomRole,
+  setRoutes,
+  setSessionLoading,
+  setUser,
+} from "./helpers/render-page";
+
+// The panel asks useUser whether the role may push, and useUser reads the
+// session from next-auth, which Jest cannot load.
+jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 type Props = Parameters<typeof MigrationWorkbench>[0];
 
@@ -105,6 +123,10 @@ const nameBox = () => screen.getByLabelText("Migration name");
 /** The Push button, whichever of its two labels it is wearing. */
 const pushButton = () => screen.getByRole("button", { name: /to GitHub$/ });
 const bodyOf = (index: number) => JSON.parse(fetchCalls[index].body ?? "{}");
+const pushesSent = () => fetchCalls.filter((call) => call.url.includes("/api/github/push")).length;
+/** What a role without "Scripts: Create" is told, word for word. */
+const pushRefusal = (label: string) =>
+  `Your role (${label}) can't save scripts to the registry. Ask an admin to allow "Scripts: Create" for this role.`;
 
 function show(over: Partial<Props> = {}) {
   return render(<MigrationWorkbench {...BASE} {...over} />);
@@ -520,6 +542,43 @@ describe("why Push can't be pressed", () => {
     const why = "Write a rollback, or tick Save without a rollback. Without one, Deploy cannot undo this version.";
     expect(screen.getByText(why)).toBeInTheDocument();
     expect(pushButton()).toHaveAttribute("title", why);
+  });
+
+  it("puts a role that may not push before everything else, naming the box it needs", async () => {
+    // No edit to the script would make Push work for this role, so a reason
+    // about the script (here the missing rollback) would send them off to fix
+    // the wrong thing.
+    setUser("viewer");
+    show({ initialRollbackSql: "" });
+    await versionReady();
+
+    expect(screen.getByText(pushRefusal("Viewer"))).toBeInTheDocument();
+    expect(pushButton()).toHaveAttribute("title", pushRefusal("Viewer"));
+    expect(pushButton()).toBeDisabled();
+    fireEvent.click(pushButton());
+    expect(pushesSent()).toBe(0);
+  });
+
+  it("lets a role an admin gave the box push, whatever the role is called", async () => {
+    setCustomRole("publisher", "Publisher", ["compare:read", "scripts:create"]);
+    setRoutes([inGitHub(["1.0.0"]), appliedToTarget("1.0.0"), pushSucceeds()]);
+    show();
+    await versionReady();
+
+    expect(screen.queryByText(/Your role/)).not.toBeInTheDocument();
+    fireEvent.click(pushButton());
+    await waitFor(() => expect(pushesSent()).toBe(1));
+  });
+
+  it("says nothing about the role while the session is still loading", async () => {
+    // Every box reads as "no" until the session arrives, which would tell a
+    // role that may push, for a moment, that it can't.
+    setSessionLoading();
+    show();
+    await versionReady();
+
+    expect(screen.queryByText(/Your role/)).not.toBeInTheDocument();
+    expect(pushButton()).not.toHaveAttribute("title");
   });
 
   it("puts the name before everything else", async () => {
@@ -981,10 +1040,11 @@ describe("adding the rollback afterwards", () => {
             ? { ok: true }
             : { ok: true, version: "1.1.0", url: null, rollback_error: "The rollback was not saved." } },
     ]);
-    show();
+    const view = show();
     await versionReady();
     fireEvent.click(pushButton());
     await screen.findByText("The rollback was not saved.");
+    return view;
   }
 
   it("adds it to the version already pushed, making no new version", async () => {
@@ -1011,6 +1071,21 @@ describe("adding the rollback afterwards", () => {
 
     expect(screen.queryByText("The rollback was not saved.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Retry saving the rollback/ })).not.toBeInTheDocument();
+  });
+
+  it("does not add it for a role that may no longer push", async () => {
+    // An admin can untick "Scripts: Create" while the page is open, and the
+    // next session check brings that here. Adding the rollback writes to the
+    // registry like a push does, so the route would refuse it.
+    const { rerender } = await pushWithoutSavedRollback();
+    setUser("viewer");
+    rerender(<MigrationWorkbench {...BASE} />);
+
+    const retry = screen.getByRole("button", { name: "Retry saving the rollback" });
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute("title", pushRefusal("Viewer"));
+    fireEvent.click(retry);
+    expect(pushesSent()).toBe(1);
   });
 
   it("calls it adding, not retrying, when the rollback has changed since", async () => {

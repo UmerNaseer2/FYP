@@ -6,13 +6,16 @@ import {
   AlertCircleIcon,
   Card,
   EmptyState,
+  InfoIcon,
   Pill,
   RefreshIcon,
   Skeleton,
 } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
 import { useNow } from "@/hooks/useNow";
+import { useUser } from "@/hooks/useUser";
 import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift-schedule";
+import { refusalMessage } from "@/lib/permissions";
 
 /** One row of the cadence table (mirrors ScheduleRow on the server). */
 export type ScheduleRow = {
@@ -86,6 +89,10 @@ export function ScheduleTable() {
   const [saving, setSaving] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const now = useNow(15_000);
+  // Changing how often a schema is checked needs Drift tracking: Update.
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const changeRefusal =
+    sessionLoading || can("drift:update") ? null : refusalMessage(roleLabel, "drift:update");
 
   // Which read of the schedule is the current one. The minute poll and the
   // reload that follows saving a cadence overlap freely, and without this the
@@ -124,6 +131,8 @@ export function ScheduleTable() {
   }, [load]);
 
   async function setCadence(row: ScheduleRow, minutes: number) {
+    // The menus are off already. The route would refuse it too.
+    if (changeRefusal !== null) return;
     setSaving(row.trackedSchemaId);
     setSaveError(null);
     try {
@@ -260,6 +269,17 @@ export function ScheduleTable() {
         </div>
       )}
 
+      {/* Said once, above the table, rather than as a dead menu on every row. */}
+      {changeRefusal && rows.length > 0 && (
+        <div className="role-note">
+          <InfoIcon size={15} className="ico" />
+          <div>
+            <div className="title">You can see this schedule, but not change it</div>
+            <div className="body">{changeRefusal}</div>
+          </div>
+        </div>
+      )}
+
       {rows.length === 0 ? (
         <Card className="p-0 overflow-hidden">
           <div style={{ height: 240 }}>
@@ -312,7 +332,7 @@ export function ScheduleTable() {
                       value={String(r.intervalMinutes)}
                       options={options}
                       variant="input"
-                      disabled={saving === r.trackedSchemaId}
+                      disabled={saving === r.trackedSchemaId || changeRefusal !== null}
                       ariaLabel={`How often to check ${r.schemaName}`}
                       onChange={(v) => void setCadence(r, Number(v))}
                     />

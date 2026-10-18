@@ -42,6 +42,7 @@ function ready(over: Partial<Extract<CompareScreen, { kind: "ready" }>> = {}): C
     sets: [],
     activeSetId: null,
     setNotFound: false,
+    setsRefusal: null,
     setModified: false,
     selection: {
       sourceConnectionId: 1,

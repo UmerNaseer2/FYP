@@ -19,6 +19,7 @@ import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { useUser } from "@/hooks/useUser";
+import { refusalMessage } from "@/lib/permissions";
 import {
   cutForwardOnly,
   diffLedgers,
@@ -363,6 +364,12 @@ export default function VersionSyncPage() {
   const source = useLedgerSource();
   const target = useLedgerSource();
 
+  // A replay writes to the Target through the same route Deploy uses, so it
+  // needs the same box: "Deploy: Run". Without it the list is still worth
+  // reading, but there is nothing to press.
+  const { roleLabel, can } = useUser();
+  const mayRun = can("deploy:run");
+
   useEffect(() => {
     let active = true;
     (async () => {
@@ -684,6 +691,8 @@ export default function VersionSyncPage() {
                       target.retry();
                     },
                     targetIsProduction,
+                    mayRun,
+                    runRefusal: refusalMessage(roleLabel, "deploy:run"),
                   }}
                 />
               </>
@@ -782,6 +791,10 @@ type ApplyCtl = {
   onReread: () => void;
   /** Draw Run all red when the Target is live, same as Deploy does. */
   targetIsProduction: boolean;
+  /** The role may replay ("Deploy: Run"). Without it no row has a Run button. */
+  mayRun: boolean;
+  /** Why not, in the words the apply route would refuse with. */
+  runRefusal: string;
 };
 
 const SYNC_BANNER = {
@@ -820,8 +833,9 @@ function Result({
   const stop = reach.stoppedBefore;
   const stopLabel = stop ? scriptLabel(stop.scriptName, stop.version) : "";
   const waiting = stop ? total - reachable - 1 : 0;
-  // Run all only when it runs the whole list and is not the same as Run.
-  const showRunAll = reachable === total && total > 1;
+  // Run all only when it runs the whole list and is not the same as Run, and
+  // only for a role that may replay at all.
+  const showRunAll = apply.mayRun && reachable === total && total > 1;
   // A version named alone ("v1.2.0") is enough with one script group.
   const runLabel = (e: LedgerEntry) =>
     multiFamily ? scriptLabel(e.scriptName, e.version) : displayVersion(e.version, true);
@@ -855,7 +869,7 @@ function Result({
   const listHelp =
     "These are the exact scripts the Source ran, in the order it ran them. A replay runs them " +
     "onto the Target in that order, as one transaction: every version in it applies, or none does." +
-    (reachable === 0
+    (reachable === 0 || !apply.mayRun
       ? ""
       : reachable === 1
         ? " The Run button replays the first version. It opens a check of what will run, " +
@@ -979,6 +993,17 @@ function Result({
           </div>
           <p className="help mb-3" style={{ color: "var(--text-3)" }}>{listHelp}</p>
 
+          {/* Said once, above the list, rather than as a dead button on every row. */}
+          {!apply.mayRun && reachable > 0 && (
+            <div className="role-note mb-3">
+              <InfoIcon size={15} className="ico" />
+              <div>
+                <div className="title">You can read this list, but not replay it</div>
+                <div className="body">{apply.runRefusal}</div>
+              </div>
+            </div>
+          )}
+
           {stop && (
             <div className="warn-inline mb-3">
               <span className="ico"><AlertTriangleIcon size={14} /></span>
@@ -1008,23 +1033,26 @@ function Result({
                       </span>
                     </div>
                     {i < reachable ? (
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        disabled={apply.applying}
-                        title={
-                          i === 0
-                            ? `Replay ${runLabel(e)} onto the Target`
-                            : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
-                              `through ${runLabel(e)}, onto the Target in one transaction`
-                        }
-                        onClick={() => apply.onRun(missing.slice(0, i + 1))}
-                      >
-                        {/* Named the way Deploy names its Run buttons: the one
-                            version, or the first and last with how many. */}
-                        {i === 0
-                          ? `Run ${runLabel(e)}…`
-                          : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
-                      </button>
+                      // The banner above the list says why there is none.
+                      apply.mayRun ? (
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          disabled={apply.applying}
+                          title={
+                            i === 0
+                              ? `Replay ${runLabel(e)} onto the Target`
+                              : `Replay the first ${i + 1} versions in this list, ${runLabel(missing[0])} ` +
+                                `through ${runLabel(e)}, onto the Target in one transaction`
+                          }
+                          onClick={() => apply.onRun(missing.slice(0, i + 1))}
+                        >
+                          {/* Named the way Deploy names its Run buttons: the one
+                              version, or the first and last with how many. */}
+                          {i === 0
+                            ? `Run ${runLabel(e)}…`
+                            : `Run ${runLabel(missing[0])} → ${runLabel(e)} (${i + 1})…`}
+                        </button>
+                      ) : null
                     ) : i === reachable ? (
                       <span className="vsync-stopnote">Runs stop before this version</span>
                     ) : (
@@ -1176,7 +1204,13 @@ function ReplayBody({
   pageEnvironment,
   diverged,
 }: Omit<ReplayDialogProps, "entries"> & { entries: LedgerEntry[]; titleId: string }) {
-  const { user, isAdmin, bypass } = useUser();
+  const { user, roleLabel, bypass, can } = useUser();
+  // Each of these is a box an admin ticks for a role on the Admin screen.
+  // Without "Approvals: Read" the list is not even asked for: the route would
+  // refuse, and the panel says why instead of reporting a 403.
+  const mayReadApprovals = can("approvals:read");
+  const mayRequestApproval = can("approvals:create");
+  const mayApprove = can("approvals:approve");
   const count = entries.length;
   const first = entries[0];
   const last = entries[count - 1];
@@ -1331,17 +1365,24 @@ function ReplayBody({
   const approvalsKey = production ? `${connectionId} ${schema}` : "";
   const currentApprovals =
     loadedApprovals && loadedApprovals.key === approvalsKey ? loadedApprovals : null;
-  const approvals = currentApprovals?.rows ?? [];
-  const approvalsReadError = currentApprovals?.error ?? null;
+  const approvals = mayReadApprovals ? (currentApprovals?.rows ?? []) : [];
+  // A role that may not see approvals gets the reason in place of a read
+  // error. The panel then calls the state unknown rather than "nothing
+  // requested yet", which is the truth.
+  const approvalsReadError = mayReadApprovals
+    ? (currentApprovals?.error ?? null)
+    : refusalMessage(roleLabel, "approvals:read");
   // Derived, not stored. Changing target makes the key stop matching, which is
   // the same instant the old answer stops counting — so this turns true again
   // with no reset to forget. `approvalsReloading` covers the other case: a
   // re-read of the SAME target, where the key still matches.
-  const approvalsLoading = approvalsReloading || (production && currentApprovals === null);
+  const approvalsLoading =
+    mayReadApprovals && (approvalsReloading || (production && currentApprovals === null));
 
-  // Only a production run needs one, so only then is the list read.
+  // Only a production run needs one, so only then is the list read, and only
+  // for a role that may see it.
   useEffect(() => {
-    if (!production) return;
+    if (!production || !mayReadApprovals) return;
     const asked = `${connectionId} ${schema}`;
     let active = true;
     (async () => {
@@ -1380,7 +1421,7 @@ function ReplayBody({
     return () => {
       active = false;
     };
-  }, [production, connectionId, schema, approvalsTry]);
+  }, [production, connectionId, schema, approvalsTry, mayReadApprovals]);
 
   function reloadApprovals() {
     setApprovalsReloading(true);
@@ -1430,11 +1471,15 @@ function ReplayBody({
       }
       setApprovalNote("");
       // Under the auth bypass the one principal clears its own request, with
-      // the Approve button the panel shows right under this line.
+      // the Approve button the panel shows right under this line. Not while
+      // View as has them looking at the app as a role that may not approve:
+      // then clearing it means switching back to Admin first.
       setApprovalNotice(
-        bypass && isAdmin
-          ? "Approval requested — with the auth bypass on, you clear it yourself below."
-          : "Approval requested — someone else has to clear it."
+        !bypass
+          ? "Approval requested — someone else has to clear it."
+          : mayApprove
+            ? "Approval requested — with the auth bypass on, you clear it yourself below."
+            : 'Approval requested. Switch "View as" back to Admin to clear it.'
       );
       reloadApprovals();
     } catch {
@@ -1739,7 +1784,9 @@ function ReplayBody({
               pending={pending}
               latest={latest}
               viewerEmail={user?.email ?? ""}
-              isAdmin={isAdmin}
+              roleLabel={roleLabel}
+              mayRequest={mayRequestApproval}
+              mayApprove={mayApprove}
               bypass={bypass}
               note={approvalNote}
               onNoteChange={setApprovalNote}

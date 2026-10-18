@@ -22,6 +22,7 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import DriftPage from "@/app/(studio)/drift/page";
 import type { CompareReport } from "@/lib/compare-types";

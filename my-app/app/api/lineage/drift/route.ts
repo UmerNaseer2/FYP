@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import type { CompareReport } from "@/lib/compare-types";
 import {
   getDriftDetail,
@@ -27,12 +27,12 @@ export type DriftCheckResult = {
  * GET /api/lineage/drift?trackedSchemaId=N — the drift detail screen's read.
  *
  * Same live recompute as the POST below, but it records nothing and needs only
- * viewer rights. The two are deliberately separate verbs: opening a screen is
- * not a check somebody ran, and an audit log that fills up every time a page is
- * refreshed stops being an audit log.
+ * Drift tracking: Read. The two are deliberately separate verbs: opening a
+ * screen is not a check somebody ran, and an audit log that fills up every
+ * time a page is refreshed stops being an audit log.
  */
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("drift:read");
   if (!gate.ok) return gate.response;
 
   const idParam = new URL(request.url).searchParams.get("trackedSchemaId");
@@ -66,9 +66,13 @@ export async function GET(request: NextRequest) {
  *
  * "Unreachable" (can't connect / read the schema) is returned cleanly with a
  * 200 — it's a normal state for a tracked schema, not a server error.
+ *
+ * Two permissions open it. The dashboard, a schema's page and the Drift
+ * screen run a check (Drift tracking: Run), and Deploy runs one straight
+ * after a migration, so a role that may deploy sees the result too.
  */
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("drift:run", "deploy:run");
   if (!gate.ok) return gate.response;
 
   let body: { trackedSchemaId?: number };

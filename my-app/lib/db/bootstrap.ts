@@ -5,6 +5,12 @@ import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 import { THRESHOLD_KEYS } from "../perf-thresholds";
 import { DEFAULT_EXECUTE_ROLE } from "../connection-access";
+import {
+  BUILT_IN_ROLES,
+  BUILT_IN_ROLE_INFO,
+  ROLE_CHANGE_KINDS,
+  presetFor,
+} from "../permissions";
 
 /**
  * Create the app's own tables, once per process.
@@ -23,7 +29,7 @@ import { DEFAULT_EXECUTE_ROLE } from "../connection-access";
  * for half a database. The count is deliberately not written here: it was "six"
  * and then "ten" in this comment while the models file said otherwise.
  *
- * Three things sync() cannot express, which is why there is anything below it:
+ * Four things sync() cannot express, which is why there is anything below it:
  *
  *   • CHECK constraints. Sequelize's `validate` runs in JavaScript, and a rule
  *     that only holds when it happens to be routed through the ORM is not a
@@ -33,6 +39,8 @@ import { DEFAULT_EXECUTE_ROLE } from "../connection-access";
  *   • Columns added to a table that already exists. `sync()` is
  *     CREATE TABLE IF NOT EXISTS, so it leaves an out-of-date table alone; the
  *     ALTERs bring one forward without asking anybody to run a migration.
+ *   • Rows the app cannot work without: the built-in roles and the permissions
+ *     they start with (setUpRoles).
  *
  * Everything here is idempotent and runs once per process, so the first request
  * after a boot pays a few milliseconds and the rest pay nothing.
@@ -50,6 +58,9 @@ const DRIFT_SOURCE_SQL_LIST = DRIFT_SOURCE_VALUES.map((s) => `'${s}'`).join(", "
 
 /** The threshold keys as a SQL literal, generated the same way. */
 const THRESHOLD_KEY_SQL_LIST = THRESHOLD_KEYS.map((k) => `'${k}'`).join(", ");
+
+/** The role change kinds as a SQL literal, generated the same way. */
+const ROLE_CHANGE_KIND_SQL_LIST = ROLE_CHANGE_KINDS.map((k) => `'${k}'`).join(", ");
 
 /**
  * Add a CHECK constraint, tolerating the (normal) case where it is already
@@ -114,10 +125,21 @@ async function addConstraints(): Promise<void> {
     "tracked_schemas_drift_interval_check",
     "drift_check_interval_minutes >= 0 AND drift_check_interval_minutes <= 10080"
   );
+  // A role key is what profiles.role holds and what the Admin screen sends
+  // back, so it stays plain: lowercase letters, digits and dashes, starting
+  // with a letter or digit. roleKeyFrom in lib/permissions.ts only makes keys
+  // of that shape; this is the rule for anything that does not go through it.
   await addCheckConstraint(
-    "profiles",
-    "profiles_role_check",
-    "role IN ('viewer', 'editor', 'admin')"
+    "roles",
+    "roles_name_check",
+    "name ~ '^[a-z0-9][a-z0-9-]{0,31}$'"
+  );
+  // The change log is read by people, so every row has to be one of the
+  // kinds the Admin screen knows how to describe.
+  await addCheckConstraint(
+    "role_changes",
+    "role_changes_kind_check",
+    `kind IN (${ROLE_CHANGE_KIND_SQL_LIST})`
   );
   await addCheckConstraint(
     "deploy_approvals",
@@ -199,6 +221,129 @@ async function addFunctionalIndexes(): Promise<void> {
     `CREATE UNIQUE INDEX IF NOT EXISTS comparison_sets_name_key
        ON comparison_sets (lower(name))`
   );
+  // Same reason for roles: two roles called "QA" and "qa" would be two rows
+  // in the role picker that nobody could tell apart.
+  await metadataPool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS roles_label_key ON roles (lower(label))`
+  );
+}
+
+/**
+ * The built-in roles, what they start with, and the key that ties every
+ * profile to a role that exists.
+ *
+ * Before roles had a table, profiles.role was one of three words held in place
+ * by a CHECK constraint, and every route compared it against a ladder. This
+ * moves an existing database onto the new shape without anyone running a
+ * migration, and it is a no-op on one that has already moved:
+ *
+ *   1. The old CHECK goes, because a role an admin creates is not one of the
+ *      three words. The foreign key in step 3 is what keeps a role real now.
+ *   2. viewer, editor and admin are written if missing, and viewer and editor
+ *      are given their preset permissions (presetFor in lib/permissions.ts),
+ *      which are exactly what the old ladder allowed them.
+ *   3. profiles.role becomes a foreign key to roles.name. A fresh database
+ *      already has it from sync(); an older one gets it here.
+ *
+ * Step 2 is the careful one. It must not undo an admin's work: if they
+ * untick "Connections: Delete" for editors, the next boot cannot tick it
+ * again. But a permission added to the catalogue later still has to reach the
+ * built-in roles, or a new feature would be invisible to everyone but admins.
+ * `preset_applied` remembers which preset permissions each role has already
+ * been given, so each one is granted once, ever, and after that the admin owns
+ * it.
+ *
+ * Exported for the tests. The app reaches it through syncMetadataTables, which
+ * runs it once per process.
+ */
+export async function setUpRoles(): Promise<void> {
+  await metadataPool.query(
+    `ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_role_check`
+  );
+
+  const client = await metadataPool.connect();
+  try {
+    // One transaction, so two servers booting at once cannot both decide a
+    // permission is new and grant it twice, and a crash halfway leaves nothing
+    // half done. The row lock below is what makes the second one wait.
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO roles (name, label, description, built_in)
+       SELECT name, label, description, true
+         FROM unnest($1::text[], $2::text[], $3::text[]) AS r(name, label, description)
+       ON CONFLICT (name) DO NOTHING`,
+      [
+        [...BUILT_IN_ROLES],
+        BUILT_IN_ROLES.map((role) => BUILT_IN_ROLE_INFO[role].label),
+        BUILT_IN_ROLES.map((role) => BUILT_IN_ROLE_INFO[role].description),
+      ]
+    );
+
+    // Admin is not in this loop: it holds every permission by definition and
+    // has no rows to seed.
+    for (const role of ["viewer", "editor"] as const) {
+      const found = await client.query<{ preset_applied: unknown }>(
+        `SELECT preset_applied FROM roles WHERE name = $1 FOR UPDATE`,
+        [role]
+      );
+      const stored = found.rows[0]?.preset_applied;
+      const applied = new Set(
+        Array.isArray(stored) ? stored.filter((key) => typeof key === "string") : []
+      );
+      const fresh = (presetFor(role) ?? []).filter((key) => !applied.has(key));
+      if (fresh.length === 0) continue;
+
+      await client.query(
+        `INSERT INTO role_permissions (role, feature, action)
+         SELECT $1, feature, action
+           FROM unnest($2::text[], $3::text[]) AS p(feature, action)
+         ON CONFLICT DO NOTHING`,
+        [
+          role,
+          fresh.map((key) => key.split(":")[0]),
+          fresh.map((key) => key.split(":")[1]),
+        ]
+      );
+      await client.query(
+        `UPDATE roles SET preset_applied = $2::jsonb WHERE name = $1`,
+        [role, JSON.stringify([...applied, ...fresh])]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    // The ROLLBACK can fail too (the connection may be what broke), and the
+    // error worth reporting is the first one.
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  try {
+    await metadataPool.query(
+      `ALTER TABLE profiles ADD CONSTRAINT profiles_role_fkey
+         FOREIGN KEY (role) REFERENCES roles (name)
+         ON UPDATE CASCADE ON DELETE RESTRICT`
+    );
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    // 42710 duplicate_object: added on an earlier boot, or by sync() on a
+    // database that started out with roles.
+    if (code === "42710") return;
+    // 23503 foreign_key_violation: somebody's role is not in the table, which
+    // the old CHECK made impossible but a hand-edited database might not.
+    // Refusing to boot over it would lock everyone out, and that person
+    // already gets no permissions (an unknown role holds none), so say so and
+    // carry on without the key.
+    if (code === "23503") {
+      console.warn(
+        "profiles.role could not be tied to the roles table: at least one profile has a role that does not exist. Those people have no permissions until an admin gives them a real role.",
+        error
+      );
+      return;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -412,6 +557,10 @@ async function createEverything(): Promise<void> {
   // at the top of a request.
   await sequelize.sync();
   await backfillOlderTables();
+  // Before addConstraints, which no longer adds the old CHECK on
+  // profiles.role, and before the first profile is written: upsertProfile
+  // waits for this whole function, so the role it assigns already exists.
+  await setUpRoles();
   await addConstraints();
   await addFunctionalIndexes();
 }

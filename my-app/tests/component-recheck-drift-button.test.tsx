@@ -21,6 +21,13 @@
  * a successful check would tell the screen to redraw the old answer as if it
  * were new.
  *
+ * And who may press it. A check needs Drift tracking: Run, or Deploy: Run,
+ * because Deploy runs one straight after a migration and the route takes
+ * either box. A role with neither still sees the button, switched off, with
+ * the reason beside it, so nobody is left pressing a button that does nothing.
+ * A caller that explains a whole row of buttons at once asks it to keep quiet
+ * and says it there instead; the tooltip stays either way.
+ *
  * What is NOT here:
  *  - The mutual block between this button and the bar that hosts it, from the
  *    bar's side: tests/component-drift-resolution-bar.test.tsx has both
@@ -48,6 +55,7 @@ import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import {
@@ -56,7 +64,10 @@ import {
   holdNext,
   resetPageState,
   routerCalls,
+  setCustomRole,
   setRoutes,
+  setSessionLoading,
+  setUser,
   type FetchRoute,
 } from "./helpers/render-page";
 
@@ -464,5 +475,86 @@ describe("trying again", () => {
     // screen showing the first answer.
     expect(defaultDone).toHaveBeenCalledTimes(2);
     expect(routerCalls.refresh).toBe(0);
+  });
+});
+
+describe("for a role that may not run a check", () => {
+  // The server's own words for a viewer, which has neither box on a new install.
+  const RUN_REFUSAL =
+    "Your role (Viewer) can't run a drift check. " +
+    'Ask an admin to allow "Drift tracking: Run" for this role.';
+
+  test("stays on screen, switched off, and says why beside itself", () => {
+    setUser("viewer");
+    button();
+
+    expect(check()).toBeDisabled();
+    expect(check()).toHaveAttribute("title", RUN_REFUSAL);
+    expect(screen.getByText(RUN_REFUSAL)).toBeInTheDocument();
+  });
+
+  test("and sends nothing if it is pressed anyway", async () => {
+    // No routes: a request that got out would be rejected and leave a network
+    // error on screen, so both halves are checked at once.
+    setUser("viewer");
+    setRoutes([]);
+    button();
+
+    fireEvent.click(check());
+    await flushAsync();
+
+    expect(fetchCalls).toHaveLength(0);
+    expect(defaultDone).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Network error/)).toBeNull();
+  });
+
+  test("keeps quiet beside itself when its caller says it instead", () => {
+    setUser("viewer");
+    button({ explainRefusal: false });
+
+    expect(check()).toBeDisabled();
+    expect(screen.queryByText(RUN_REFUSAL)).toBeNull();
+    // The one place left on the button that says why, so it has to stay.
+    expect(check()).toHaveAttribute("title", RUN_REFUSAL);
+  });
+
+  test("runs for a role an admin gave Drift tracking: Run", async () => {
+    setCustomRole("watcher", "Watcher", ["drift:run"]);
+    setRoutes([CHECKED]);
+    button();
+
+    expect(check()).not.toHaveAttribute("title");
+    fireEvent.click(check());
+    await flushAsync();
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(defaultDone).toHaveBeenCalledTimes(1);
+  });
+
+  test("and for one given only Deploy: Run, which the route lets through too", async () => {
+    // Deploy runs a check straight after a migration, so the route takes
+    // either box. A button that asked for Drift tracking: Run alone would be
+    // off for somebody the server would serve.
+    setCustomRole("deployer", "Deployer", ["deploy:run"]);
+    setRoutes([CHECKED]);
+    button();
+
+    expect(check()).toBeEnabled();
+    fireEvent.click(check());
+    await flushAsync();
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(screen.queryByText(/Your role/)).toBeNull();
+  });
+
+  test("says nothing while the session is still loading", () => {
+    // The server decides then. Switching the button off for a role nobody
+    // knows yet would flash a refusal at everyone on every page load.
+    setSessionLoading();
+    button();
+
+    expect(check()).toBeEnabled();
+    expect(check()).not.toHaveAttribute("title");
+    expect(screen.queryByText(/Your role/)).toBeNull();
   });
 });

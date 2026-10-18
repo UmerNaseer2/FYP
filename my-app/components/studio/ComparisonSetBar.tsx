@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { AlertTriangleIcon, TrashIcon } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
 import { useUser } from "@/hooks/useUser";
-import { roleAtLeast } from "@/lib/auth-mode";
+import { refusalMessage } from "@/lib/permissions";
 import {
   MAX_NAME_LENGTH,
   saveButtonLabel,
@@ -119,10 +119,16 @@ export function ComparisonSetBar({
   const currentQuery = useSearchParams().toString();
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
 
-  // Saving and deleting are editor actions, and the API refuses them for a
-  // viewer. Saying so here beats a button that fails with "Forbidden".
-  const { role, loading } = useUser();
-  const canEdit = !loading && roleAtLeast(role, "editor");
+  // Four boxes on the Roles tab, one for each thing this bar does: open a
+  // saved set (Read), save a new one (Create), save over one (Update) and
+  // delete one (Delete). The API refuses each of them on its own, and saying
+  // so here beats a button that fails when it is pressed.
+  const { roleLabel, loading, can } = useUser();
+  const mayRead = can("comparison_sets:read");
+  const mayCreate = can("comparison_sets:create");
+  const mayUpdate = can("comparison_sets:update");
+  const mayDelete = can("comparison_sets:delete");
+  const mayWrite = mayCreate || mayUpdate;
 
   const [name, setName] = useState(activeSet?.name ?? "");
   const [busy, setBusy] = useState<"save" | "delete" | null>(null);
@@ -266,10 +272,38 @@ export function ComparisonSetBar({
     }
   }
 
+  // A role that may not open saved sets has no use for this bar, so it is
+  // left out, the way the rail leaves out a screen the role may not open. It
+  // may not save one either: every box on the Roles tab brings its feature's
+  // Read with it (effectivePermissions in lib/permissions). A link to a saved
+  // set still says why it did not open: the page says so under the pickers.
+  if (!loading && !mayRead) return null;
+
   const options = sets.map((set) => ({
     value: String(set.id),
     label: setOptionLabel(set, ranAgo(set.lastRunAt)),
   }));
+
+  // Save is one button for two boxes, so which one it needs depends on the
+  // name, decided the way saveComparisonSet (lib/comparison-sets) decides it:
+  // a name no saved set has makes a new set (Create), and a name a set already
+  // has, whatever its capitals, saves over that set (Update), whether it is
+  // the open one or another. It follows the name as it is typed, so a role
+  // that may only create is told to pick a new name, and Save comes back the
+  // moment it has one.
+  const typed = name.trim().toLowerCase();
+  const nameTaken =
+    typed !== "" && sets.some((set) => set.name.trim().toLowerCase() === typed);
+  const maySave = nameTaken ? mayUpdate : mayCreate;
+  // Not while the session is still being read: that frame has no
+  // permissions yet, and is not a role that may not save.
+  const saveRefusal =
+    loading || maySave
+      ? null
+      : nameTaken
+        ? refusalMessage(roleLabel, "comparison_sets:update") +
+          (mayCreate ? " Or save it under a new name." : "")
+        : refusalMessage(roleLabel, "comparison_sets:create");
 
   // One sentence under the bar, the one that matters most right now.
   let note: { text: string; tone: "error" | "warn" | "quiet" } | null = null;
@@ -277,25 +311,29 @@ export function ComparisonSetBar({
     note = { text: error, tone: "error" };
   } else if (activeSet?.hasMissingConnection) {
     note = {
-      text: canEdit
+      text: mayUpdate
         ? "A connection this set used has been deleted. Pick a replacement below, press Compare, then Update the set."
-        : "A connection this set used has been deleted. An editor can pick a replacement and update the set.",
+        : mayCreate
+          ? "A connection this set used has been deleted. Pick a replacement below, press Compare, then save it under a new name."
+          : "A connection this set used has been deleted. Someone whose role may update comparison sets can pick a replacement and update the set.",
       tone: "warn",
     };
-  } else if (canEdit && hasUnappliedChanges) {
+  } else if (mayWrite && hasUnappliedChanges) {
     note = {
       text: "Press Compare first — Save stores the selection as the page last loaded it, and your latest changes are not in it yet.",
       tone: "warn",
     };
   } else if (modified) {
     note = {
-      text: canEdit
+      text: mayUpdate
         ? "Changed since it was saved — press Update to keep it, or reopen the set to go back."
-        : "Changed since it was saved — reopen the set to go back.",
+        : mayCreate
+          ? "Changed since it was saved. Save it under a new name to keep it, or reopen the set to go back."
+          : "Changed since it was saved — reopen the set to go back.",
       tone: "quiet",
     };
-  } else if (!loading && !canEdit) {
-    note = { text: "Only editors can save or delete comparison sets.", tone: "quiet" };
+  } else if (saveRefusal) {
+    note = { text: saveRefusal, tone: "quiet" };
   }
 
   const saveLabel =
@@ -312,7 +350,7 @@ export function ComparisonSetBar({
         <span className="set-bar__label">Saved sets</span>
         {sets.length === 0 ? (
           <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
-            {canEdit
+            {mayCreate
               ? "None yet — set up a comparison below, then name it and save it."
               : "None saved yet."}
           </span>
@@ -337,26 +375,25 @@ export function ComparisonSetBar({
           placeholder="Name this comparison…"
           aria-label="Comparison set name"
           maxLength={MAX_NAME_LENGTH}
-          disabled={!canEdit}
+          disabled={!mayWrite}
         />
         <button
           type="button"
           className="btn btn-secondary btn-sm"
           onClick={() => void save()}
-          disabled={busy !== null || hasUnappliedChanges || !canEdit || nothingToUpdate}
+          disabled={busy !== null || hasUnappliedChanges || !maySave || nothingToUpdate}
           title={
-            !canEdit
-              ? "Only editors can save comparison sets"
-              : hasUnappliedChanges
-                ? "Press Compare first"
-                : nothingToUpdate
-                  ? "Nothing to update — this is the comparison the set already holds"
-                  : undefined
+            saveRefusal ??
+            (hasUnappliedChanges
+              ? "Press Compare first"
+              : nothingToUpdate
+                ? "Nothing to update — this is the comparison the set already holds"
+                : undefined)
           }
         >
           {saveLabel}
         </button>
-        {activeSet && canEdit && (
+        {activeSet && mayDelete && (
           <button
             type="button"
             className="btn btn-ghost btn-icon"

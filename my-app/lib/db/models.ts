@@ -11,6 +11,7 @@ import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 import { EXECUTE_ROLES, DEFAULT_EXECUTE_ROLE } from "../connection-access";
+import { DEFAULT_ROLE, ROLE_CHANGE_KINDS } from "../permissions";
 
 /**
  * The app's own tables, as Sequelize models.
@@ -195,16 +196,128 @@ Profile.init(
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     email: { type: DataTypes.TEXT, allowNull: false, unique: true },
     name: { type: DataTypes.TEXT, allowNull: true },
-    role: {
-      type: DataTypes.TEXT,
-      allowNull: false,
-      defaultValue: "viewer",
-      validate: { isIn: [["viewer", "editor", "admin"]] },
-    },
+    // Any role in the `roles` table, which is a foreign key now (see the
+    // relationships at the end of this file) rather than a fixed list of three.
+    // A list here would refuse every role an admin creates.
+    role: { type: DataTypes.TEXT, allowNull: false, defaultValue: DEFAULT_ROLE },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     last_seen_at: { type: DataTypes.DATE, allowNull: true },
   },
   { sequelize, tableName: "profiles" }
+);
+
+// ---------------------------------------------------------------------------
+// Roles, and what each one may do.
+//
+// A role is a named set of permissions from the catalogue in lib/permissions.ts.
+// The three built-in roles are written on boot (setUpRoles in
+// lib/db/bootstrap.ts) and an admin can add more from the Admin screen.
+// ---------------------------------------------------------------------------
+
+export class Role extends Model<InferAttributes<Role>, InferCreationAttributes<Role>> {
+  /** The key profiles.role holds: "viewer", "qa-lead". Never renamed. */
+  declare name: string;
+  /** What the screens show: "Viewer", "QA Lead". */
+  declare label: string;
+  declare description: CreationOptional<string>;
+  /** viewer, editor and admin, which cannot be deleted. */
+  declare built_in: CreationOptional<boolean>;
+  /**
+   * The preset permissions this role has already been given, so a boot after
+   * an admin unticked one does not quietly tick it again. See setUpRoles.
+   */
+  declare preset_applied: CreationOptional<string[]>;
+  declare created_at: CreationOptional<Date>;
+}
+
+Role.init(
+  {
+    name: { type: DataTypes.TEXT, primaryKey: true },
+    label: { type: DataTypes.TEXT, allowNull: false },
+    description: { type: DataTypes.TEXT, allowNull: false, defaultValue: "" },
+    built_in: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    // JSONB like deploy_attempts.scripts: a short list read and written whole,
+    // only ever by setUpRoles.
+    preset_applied: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  { sequelize, tableName: "roles" }
+);
+
+/**
+ * One permission one role holds: ("editor", "connections", "create").
+ *
+ * A row per permission rather than a list on the role, so that granting one is
+ * an INSERT and revoking one is a DELETE, and two admins ticking different
+ * boxes at the same moment cannot overwrite each other's work. The admin role
+ * has no rows at all: it can do everything, and nothing stored can change that.
+ */
+export class RolePermission extends Model<
+  InferAttributes<RolePermission>,
+  InferCreationAttributes<RolePermission>
+> {
+  declare role: string;
+  declare feature: string;
+  declare action: string;
+}
+
+RolePermission.init(
+  {
+    role: { type: DataTypes.TEXT, primaryKey: true },
+    feature: { type: DataTypes.TEXT, primaryKey: true },
+    action: { type: DataTypes.TEXT, primaryKey: true },
+  },
+  { sequelize, tableName: "role_permissions" }
+);
+
+/**
+ * Who changed what a role can do, and when.
+ *
+ * The client's spec asks for an audit trail on access, and a permission grid
+ * that changes silently is exactly the place one is needed: "why can the QA
+ * role suddenly deploy?" has to have an answer.
+ */
+export class RoleChange extends Model<
+  InferAttributes<RoleChange>,
+  InferCreationAttributes<RoleChange>
+> {
+  declare id: CreationOptional<number>;
+  /**
+   * The role the change was about. Deliberately not a foreign key: the history
+   * of a role has to outlive the role, or deleting one would erase the record
+   * of who deleted it.
+   */
+  declare role: string;
+  /** One of ROLE_CHANGE_KINDS in lib/permissions.ts. */
+  declare kind: string;
+  /** For a grant or a revoke: which permission. */
+  declare feature: CreationOptional<string | null>;
+  declare action: CreationOptional<string | null>;
+  /** For an assign: whose role changed, by email. */
+  declare subject: CreationOptional<string | null>;
+  /** Anything else worth reading back: the role an assign moved someone from. */
+  declare detail: CreationOptional<string | null>;
+  declare actor: string;
+  declare created_at: CreationOptional<Date>;
+}
+
+RoleChange.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    role: { type: DataTypes.TEXT, allowNull: false },
+    kind: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      validate: { isIn: [[...ROLE_CHANGE_KINDS]] },
+    },
+    feature: { type: DataTypes.TEXT, allowNull: true },
+    action: { type: DataTypes.TEXT, allowNull: true },
+    subject: { type: DataTypes.TEXT, allowNull: true },
+    detail: { type: DataTypes.TEXT, allowNull: true },
+    actor: { type: DataTypes.TEXT, allowNull: false },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  { sequelize, tableName: "role_changes" }
 );
 
 // ---------------------------------------------------------------------------
@@ -1123,3 +1236,26 @@ ComparisonRun.belongsTo(Connection, {
 // Deleting the template does not delete what it found: the history belongs to
 // the pair of schemas, and the next run of that pair still wants it.
 ComparisonRun.belongsTo(ComparisonSet, { foreignKey: "set_id", onDelete: "SET NULL" });
+
+// A person's role has to be one that exists. RESTRICT, so a role somebody
+// still has cannot be deleted out from under them (the Admin screen says who
+// has it instead). There is deliberately no Role.hasMany(Profile) beside this:
+// for a NOT NULL key Sequelize would default that side to CASCADE, and deleting
+// a role must never delete the people in it. Role keys are never renamed, so
+// the ON UPDATE is only there to be explicit.
+//
+// On a database created before roles existed, sync() leaves `profiles` alone,
+// so setUpRoles in lib/db/bootstrap.ts adds this same key by hand.
+Profile.belongsTo(Role, {
+  foreignKey: "role",
+  as: "assignedRole",
+  onDelete: "RESTRICT",
+  onUpdate: "CASCADE",
+});
+
+// A role's permission rows mean nothing without the role.
+Role.hasMany(RolePermission, { foreignKey: "role", onDelete: "CASCADE" });
+RolePermission.belongsTo(Role, { foreignKey: "role" });
+
+// role_changes.role has no key at all, for the reason on the model: the record
+// of what happened to a role has to outlive the role.

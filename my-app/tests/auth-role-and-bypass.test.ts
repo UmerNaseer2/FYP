@@ -16,28 +16,30 @@
 // than served. Turning the bypass on for testing is a deliberate line.
 import fs from "fs";
 import path from "path";
-import { toRole, DEFAULT_ROLE, ROLES } from "@/lib/auth-mode";
+import { DEFAULT_ROLE, effectivePermissions, presetFor } from "@/lib/permissions";
 
 describe("the role a session gets", () => {
-  it("gives the least privilege when the profile lookup found nothing", async () => {
-    // getProfileRole returns null for "no such profile" and THROWS when the
-    // database cannot be read, so null has exactly one meaning here. It is the
-    // value the session callback now passes straight through.
-    expect(toRole(null)).toBe("viewer");
-    expect(toRole(null)).toBe(DEFAULT_ROLE);
-    expect(toRole(undefined)).toBe(DEFAULT_ROLE);
+  it("starts a person nobody has given a role as a viewer", async () => {
+    // getProfileAccess answers this for "no such profile", and THROWS when the
+    // database cannot be read, so the two cases never look alike. Viewer is the
+    // least the app gives anyone.
+    expect(DEFAULT_ROLE).toBe("viewer");
   });
 
-  it("still honours a role the database does return", async () => {
-    for (const role of ROLES) expect(toRole(role)).toBe(role);
+  it("gives a role it does not know nothing beyond what was granted to it", async () => {
+    // A column somebody edited by hand names a role with no rows. It has no
+    // preset to fall back on, and holds exactly what its rows say: nothing.
+    expect(presetFor("superuser")).toBeNull();
+    expect(effectivePermissions("superuser", [])).toEqual([]);
   });
 
-  it("does not trust a role it does not recognise", async () => {
-    // A column somebody edited by hand, or a claim from a token.
-    expect(toRole("superuser")).toBe(DEFAULT_ROLE);
-    expect(toRole("Admin")).toBe(DEFAULT_ROLE);
-    expect(toRole(42)).toBe(DEFAULT_ROLE);
-    expect(toRole({ role: "admin" })).toBe(DEFAULT_ROLE);
+  it("does not take a differently written admin for the admin", async () => {
+    // "Admin" is not "admin". Only the real key gets everything; any other role
+    // holds what was granted, and never an admin-only permission.
+    expect(effectivePermissions("Admin", ["deploy:run", "users:read"])).toEqual([
+      "deploy:read",
+      "deploy:run",
+    ]);
   });
 });
 
@@ -62,11 +64,12 @@ describe("the session callback in auth.ts", () => {
   })();
 
   it("resolves the role from the lookup alone, never from the token", async () => {
-    expect(sessionCallback).toContain("toRole(role)");
+    expect(sessionCallback).toContain("getProfileAccess(session.user.email)");
+    expect(sessionCallback).toContain("session.user.role = access.role");
+    expect(sessionCallback).toContain("session.user.permissions = access.permissions");
     // The exact shape of the bug, and anything else that reaches for the token
     // while deciding a role.
-    expect(sessionCallback).not.toMatch(/role\s*\?\?\s*token\.role/);
-    expect(sessionCallback).not.toMatch(/toRole\([^)]*token\.role/);
+    expect(sessionCallback).not.toMatch(/token\.role/);
   });
 
   it("still reads the profile id from the token, which is not a privilege", async () => {
@@ -76,10 +79,13 @@ describe("the session callback in auth.ts", () => {
     expect(source).toContain("typeof token.profileId === \"number\"");
   });
 
-  it("falls back to the least privilege when the lookup throws", async () => {
+  it("falls back to no permissions at all when the lookup throws", async () => {
     // The other half: a database that cannot be read must not hand out a role
-    // either. This path is what makes null unambiguous above.
+    // either. The person keeps the least role, holds nothing, and is told the
+    // check failed rather than that their role can't.
     expect(sessionCallback).toContain("session.user.role = DEFAULT_ROLE");
+    expect(sessionCallback).toContain("session.user.permissions = []");
+    expect(sessionCallback).toContain("session.user.accessError = true");
   });
 });
 

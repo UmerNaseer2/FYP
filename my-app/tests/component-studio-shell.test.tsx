@@ -20,8 +20,10 @@
  * The session is shaped directly here rather than through the setUser in
  * tests/helpers/render-page.tsx. That helper hands out fixed identities of the
  * form "A admin", and what needs checking is the mapping itself: a session
- * with a name, one with only an address, and one with neither. Routing still
- * comes from the helper, because usePathname is all this needs of it.
+ * with a name, one with only an address, and one with neither. sessionAs below
+ * still fills in the role the way auth.ts does, with the role's name and what
+ * it starts out able to do, because the rail only offers a screen the role may
+ * open. Routing comes from the helper, because usePathname is all this needs.
  *
  * What is NOT here:
  *  - The rail's own behaviour — sr-only labels, the collapsed brand cell, the
@@ -50,13 +52,35 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import { StudioShell } from "@/components/studio/StudioShell";
 import { type StudioUser } from "@/components/studio/StudioSidebar";
+import { BUILT_IN_ROLE_INFO, presetFor, type BuiltInRole } from "@/lib/permissions";
 import { setPathname } from "./helpers/render-page";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 type MockSession = {
-  user: { name?: string | null; email?: string | null; role?: string };
+  user: {
+    name?: string | null;
+    email?: string | null;
+    role?: string;
+    roleLabel?: string;
+    permissions?: string[];
+  };
 } | null;
+
+/** A signed-in session as auth.ts builds it for a built-in role on a new install. */
+function sessionAs(
+  role: BuiltInRole,
+  who: { name?: string; email?: string } = { name: "Ada Lovelace", email: "ada@example.com" }
+): MockSession {
+  return {
+    user: {
+      ...who,
+      role,
+      roleLabel: BUILT_IN_ROLE_INFO[role].label,
+      permissions: [...(presetFor(role) ?? [])],
+    },
+  };
+}
 
 let mockSession: MockSession = null;
 const mockSignOutCalls: unknown[] = [];
@@ -114,7 +138,7 @@ beforeEach(() => {
   mediaQueries = [];
   mediaListeners.clear();
   mockSignOutCalls.length = 0;
-  mockSession = { user: { name: "Ada Lovelace", email: "ada@example.com", role: "admin" } };
+  mockSession = sessionAs("admin");
   setPathname("/studio");
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
@@ -208,7 +232,7 @@ describe("who the rail says you are", () => {
   });
 
   test("falls back to the address when the session carries no name", () => {
-    mockSession = { user: { email: "ada@example.com", role: "viewer" } };
+    mockSession = sessionAs("viewer", { email: "ada@example.com" });
     renderShell();
     // Shown twice on purpose: the address stands in for the name as well,
     // which is honest about what is known rather than leaving a blank line.
@@ -227,7 +251,7 @@ describe("who the rail says you are", () => {
   test("still calls a session with neither name nor address signed in", () => {
     // A session this thin should not be possible, but rendering an empty name
     // beside an empty address would look like the app had lost track of you.
-    mockSession = { user: { role: "viewer" } };
+    mockSession = sessionAs("viewer", {});
     renderShell();
     expect(screen.getByText("Signed in")).toBeInTheDocument();
     expect(screen.getByText("SI")).toBeInTheDocument();
@@ -246,16 +270,34 @@ describe("what the rail says you are allowed to do", () => {
   // it would switch the bypass on for every test in this file, including the
   // ones above that are about a real session. That the rail draws the pill when
   // it is told to is tests/component-studio-sidebar.test.tsx's.
-  test("shows the role the session carries", () => {
+  // Found by its tooltip, which says what the role starts out able to do: the
+  // word "Admin" is also the name of a rail row.
+  const pill = (role: BuiltInRole) => screen.queryByTitle(BUILT_IN_ROLE_INFO[role].description);
+
+  test("shows the role the session carries, by the name people read", () => {
     renderShell();
-    expect(screen.getByText("admin")).toBeInTheDocument();
+    expect(pill("admin")).toHaveTextContent("Admin");
   });
 
   test("and a different one when the session says so", () => {
-    mockSession = { user: { name: "Ada Lovelace", email: "ada@example.com", role: "viewer" } };
+    mockSession = sessionAs("viewer");
     renderShell();
-    expect(screen.getByText("viewer")).toBeInTheDocument();
-    expect(screen.queryByText("admin")).toBeNull();
+    expect(pill("viewer")).toHaveTextContent("Viewer");
+    expect(pill("admin")).toBeNull();
+  });
+
+  test("names a role an admin made, which has no tooltip of its own words", () => {
+    mockSession = {
+      user: {
+        name: "Ada Lovelace",
+        email: "ada@example.com",
+        role: "qa-lead",
+        roleLabel: "QA Lead",
+        permissions: ["dashboard:read"],
+      },
+    };
+    renderShell();
+    expect(screen.getByText("QA Lead")).toBeInTheDocument();
   });
 
   test("says nothing about a role when nobody is signed in", () => {
@@ -265,7 +307,8 @@ describe("what the rail says you are allowed to do", () => {
     mockSession = null;
     renderShell();
     expect(screen.getByText("Not signed in")).toBeInTheDocument();
-    expect(screen.queryByText("viewer")).toBeNull();
+    expect(pill("viewer")).toBeNull();
+    expect(screen.queryByText("Viewer")).toBeNull();
   });
 
   test("keeps the session's role even when a caller names the user itself", () => {
@@ -274,7 +317,17 @@ describe("what the rail says you are allowed to do", () => {
     // from useUser and ignores it.
     renderShell({ user: { name: "Release bot", email: "bot@example.com", initials: "RB" } });
     expect(screen.getByText("Release bot")).toBeInTheDocument();
-    expect(screen.getByText("admin")).toBeInTheDocument();
+    expect(pill("admin")).toHaveTextContent("Admin");
+  });
+
+  test('offers no "View as" picker with real sign-in, where a person is their role', () => {
+    // The picker is the bypass's stand-in for signing in as somebody else, and
+    // the route behind it answers 404 once sign-in is real
+    // (tests/view-as-routes.test.ts). Shown here, it would be a way to wear
+    // another role that looks like it works. Its own behaviour:
+    // tests/component-view-as-switcher.test.tsx.
+    renderShell();
+    expect(screen.queryByLabelText("View as")).toBeNull();
   });
 });
 
@@ -287,10 +340,40 @@ describe("the admin row", () => {
   test("is not offered to anybody else", () => {
     // Presentation only — the screen and its API check the role again. What
     // this saves is somebody walking into a page that will refuse them.
-    mockSession = { user: { name: "Ada Lovelace", email: "ada@example.com", role: "editor" } };
+    mockSession = sessionAs("editor");
     renderShell();
     expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
     expect(screen.getByRole("link", { name: "Connections" })).toBeInTheDocument();
+  });
+});
+
+describe("which screens the rail offers", () => {
+  test("only the ones the role may open", () => {
+    // A role an admin made that can read the dashboard and Drift and nothing
+    // else. Every other row would open onto "your role can't open this page".
+    mockSession = {
+      user: {
+        name: "Ada Lovelace",
+        email: "ada@example.com",
+        role: "auditor",
+        roleLabel: "Auditor",
+        permissions: ["dashboard:read", "drift:read"],
+      },
+    };
+    renderShell();
+    expect(screen.getByRole("link", { name: "Drift" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Deploy" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Connections" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
+  });
+
+  test("none of them while the session cannot say what the role may do", () => {
+    mockSession = {
+      user: { name: "Ada Lovelace", email: "ada@example.com", role: "editor", permissions: [] },
+    };
+    renderShell();
+    expect(screen.queryByRole("link", { name: "Drift" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Connections" })).toBeNull();
   });
 });
 

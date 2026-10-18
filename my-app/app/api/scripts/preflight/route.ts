@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -207,7 +207,7 @@ async function readOtherScripts(
 }
 
 export async function POST(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("scripts:read", "compare:read", "deploy:read");
   if (!gate.ok) return gate.response;
 
   // ─── 1. Parse and validate the body ──────────────────────────────────────

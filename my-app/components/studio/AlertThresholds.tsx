@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { Card, Pill, Skeleton } from "@/components/ui";
-import { AlertCircleIcon, CheckIcon } from "@/components/ui/icons";
+import { AlertCircleIcon, CheckIcon, InfoIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
-import { roleAtLeast } from "@/lib/auth-mode";
+import { refusalMessage } from "@/lib/permissions";
 import {
   THRESHOLDS,
   THRESHOLD_KEYS,
@@ -45,8 +45,12 @@ type Draft = Record<ThresholdKey, { text: string; enabled: boolean }>;
 type Loaded = { key: string; view: ThresholdsView | null; error: string | null };
 
 export function AlertThresholds({ target }: { target: PerfTarget | null }) {
-  const { role } = useUser();
-  const mayEdit = roleAtLeast(role, "editor");
+  const { roleLabel, can } = useUser();
+  // Two boxes on the Roles tab, because seeing the rules and changing them are
+  // different things: a role can be trusted to read what fires an alert
+  // without being trusted to change it for everyone else.
+  const mayRead = can("alert_thresholds:read");
+  const mayEdit = can("alert_thresholds:update");
 
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -59,7 +63,9 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
   const key = `${connectionId} ${schema}`;
 
   useEffect(() => {
-    if (!connectionId || !schema) return;
+    // Not asked at all without Read: the route would only answer 403, and the
+    // screen already says why below.
+    if (!connectionId || !schema || !mayRead) return;
     let cancelled = false;
     async function load() {
       try {
@@ -103,9 +109,22 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
     return () => {
       cancelled = true;
     };
-  }, [connectionId, schema, key]);
+  }, [connectionId, schema, key, mayRead]);
 
   const current = loaded && loaded.key === key ? loaded : null;
+
+  // Before "choose a connection", because choosing one would not help.
+  if (!mayRead) {
+    return (
+      <div className="role-note">
+        <InfoIcon size={15} className="ico" />
+        <div>
+          <div className="title">{"You can't see the alert thresholds"}</div>
+          <div className="body">{refusalMessage(roleLabel, "alert_thresholds:read")}</div>
+        </div>
+      </div>
+    );
+  }
 
   if (!connectionId || !schema) {
     return (
@@ -224,13 +243,13 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
       </div>
 
       {!mayEdit && (
-        <div className="warn-inline">
-          <AlertCircleIcon size={15} className="ico" />
+        <div className="role-note">
+          <InfoIcon size={15} className="ico" />
           <div>
             <div className="body">
               You can see these rules but not change them. Changing what the app
-              alerts on changes it for everybody using this connection, so it
-              needs the editor role.
+              alerts on changes it for everybody using this connection.{" "}
+              {refusalMessage(roleLabel, "alert_thresholds:update")}
             </div>
           </div>
         </div>

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
 
 /** Test a saved connection by id (used by the per-row "Test" action). */
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("connections:update");
   if (!gate.ok) return gate.response;
 
   try {

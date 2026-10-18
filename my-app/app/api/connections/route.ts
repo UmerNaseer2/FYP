@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getConnectionDependents } from "@/lib/lineage-db";
 import { checkConnectionTarget } from "@/lib/connection-config";
@@ -41,7 +41,7 @@ const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
                 last_test_latency_ms, last_test_error`;
 
 export async function GET() {
-  const gate = await requireViewer();
+  const gate = await requirePermission("connections:read", "dashboard:read", "scripts:read", "deploy:read", "version_sync:read", "performance:read", "visualizer:read");
   if (!gate.ok) return gate.response;
 
   try {
@@ -71,7 +71,7 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("connections:create");
   if (!gate.ok) return gate.response;
 
   let body: Record<string, unknown>;
@@ -152,7 +152,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("connections:update");
   if (!gate.ok) return gate.response;
 
   let body: Record<string, unknown>;
@@ -377,7 +377,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("connections:delete");
   if (!gate.ok) return gate.response;
 
   let body: Record<string, unknown>;

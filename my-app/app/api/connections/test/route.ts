@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { runConnectionTest } from "@/lib/connection-config";
 import {
   parsePort,
@@ -10,7 +10,7 @@ import {
 
 /** Test an unsaved connection from the add/edit drawer (fields or URI + SSL). */
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("connections:create", "connections:update");
   if (!gate.ok) return gate.response;
 
   try {

@@ -15,8 +15,10 @@ import {
 } from "@/lib/connection-validate";
 
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: null }),
-  requireViewer: async () => ({ ok: true, principal: null }),
+  requirePermission: async () => ({
+    ok: true,
+    principal: require("./helpers/principals").principalFor("editor"),
+  }),
 }));
 
 type SavedRow = {

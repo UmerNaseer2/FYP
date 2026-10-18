@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 import { CheckIcon, UsersIcon, XIcon } from "@/components/ui/icons";
 import { utcStamp } from "@/lib/format-date";
+import { permissionLabel, refusalMessage } from "@/lib/permissions";
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { versionKey } from "@/lib/script-status";
@@ -92,7 +93,9 @@ export function ApprovalPanel({
   pending,
   latest,
   viewerEmail,
-  isAdmin,
+  roleLabel,
+  mayRequest,
+  mayApprove,
   bypass,
   note,
   onNoteChange,
@@ -130,7 +133,12 @@ export function ApprovalPanel({
   /** Newest row for this run whatever its state — explains a rejection. */
   latest: ApprovalRow | null;
   viewerEmail: string;
-  isAdmin: boolean;
+  /** The viewer's role as people read it, for the lines that say what it may not do. */
+  roleLabel: string;
+  /** The role may ask for an approval ("Approvals: Create"). */
+  mayRequest: boolean;
+  /** The role may clear one ("Approvals: Approve"). Admins always may. */
+  mayApprove: boolean;
   bypass: boolean;
   note: string;
   onNoteChange: (value: string) => void;
@@ -236,7 +244,10 @@ export function ApprovalPanel({
   // marks the row self_approved. "Someone else has to clear them" above an
   // Approve button offered to the requester would contradict itself, and so
   // would "Needs a second person" before anything has been requested.
-  const soleApprover = bypass && isAdmin;
+  //
+  // Not while View as has them looking at the app as a role that may not
+  // approve: then clearing it means switching back, and the lines below say so.
+  const soleApprover = bypass && mayApprove;
   const bypassSelf =
     pending !== null &&
     soleApprover &&
@@ -252,6 +263,20 @@ export function ApprovalPanel({
         "rollback can run."
       : " Someone else has to read these migrations and clear them before the " +
         "run can start.";
+
+  // What this role may not do here. Under the auth bypass the way round it is
+  // View as rather than an admin: whoever is testing already is the admin,
+  // looking at the app as another role.
+  const switchBack = 'Switch "View as" back to Admin to do that.';
+  const approveRefusal =
+    `Your role (${roleLabel}) can't clear a production ` +
+    `${action === "revert" ? "rollback" : "run"}. ` +
+    (bypass
+      ? switchBack
+      : `Ask an admin to allow "${permissionLabel("approvals:approve")}" for this role.`);
+  const requestRefusal = bypass
+    ? `Your role (${roleLabel}) can't request a production approval. ${switchBack}`
+    : refusalMessage(roleLabel, "approvals:create");
 
   const tone = approved ? "ok" : pending ? "wait" : "no";
 
@@ -340,12 +365,8 @@ export function ApprovalPanel({
             {pendingWhy} A dry run does not need it.
           </p>
           {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
-          {!isAdmin ? (
-            <p className="appr__meta">
-              {action === "revert"
-                ? "Clearing a production rollback needs the admin role."
-                : "Clearing a production run needs the admin role."}
-            </p>
+          {!mayApprove ? (
+            <p className="appr__meta">{approveRefusal}</p>
           ) : selfDecision ? (
             // The server's own words (decisionBlockReason in lib/approvals-db),
             // so this line and the refusal it would give read the same.
@@ -426,28 +447,36 @@ export function ApprovalPanel({
               </>
             ) : null}
           </p>
-          <input
-            className="input mt-2"
-            style={{ fontSize: "12px" }}
-            aria-label="Note for the record — shown to whoever approves this"
-            placeholder="Optional note for the approver"
-            value={note}
-            onChange={(event) => onNoteChange(event.target.value)}
-          />
-          <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
-            Whoever approves this will see it.
-          </p>
-          <div className="appr__actions">
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              disabled={busy}
-              onClick={onRequest}
-            >
-              <UsersIcon size={13} />
-              {latest ? "Request approval again" : "Request approval"}
-            </button>
-          </div>
+          {mayRequest ? (
+            <>
+              <input
+                className="input mt-2"
+                style={{ fontSize: "12px" }}
+                aria-label="Note for the record — shown to whoever approves this"
+                placeholder="Optional note for the approver"
+                value={note}
+                onChange={(event) => onNoteChange(event.target.value)}
+              />
+              <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
+                Whoever approves this will see it.
+              </p>
+              <div className="appr__actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  disabled={busy}
+                  onClick={onRequest}
+                >
+                  <UsersIcon size={13} />
+                  {latest ? "Request approval again" : "Request approval"}
+                </button>
+              </div>
+            </>
+          ) : (
+            // No note box either: it would only be sent with a request this
+            // role cannot make.
+            <p className="appr__meta">{requestRefusal}</p>
+          )}
         </>
       )}
 

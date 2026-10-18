@@ -1,7 +1,8 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { LogoIcon, ChevronLeftIcon, SunIcon, MoonIcon, SignOutIcon } from "@/components/ui/icons";
 import { Pill } from "@/components/ui/Pill";
-import type { Role } from "@/lib/auth-mode";
+import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
 import type { NavItem } from "./nav";
 
 export type StudioUser = {
@@ -20,24 +21,35 @@ type StudioSidebarProps = {
   user: StudioUser;
   /**
    * What the app currently lets this person do. Deliberately NOT part of
-   * StudioUser: `user` can be overridden from above for a fixture, and the two
+   * StudioUser: `user` can be overridden from above for a fixture, and the
    * things below are facts about the running server that an identity passed in
    * by hand must not be able to paint over.
+   *
+   * The role's key: "viewer", "editor", "admin", or a custom role's.
    */
-  role?: Role;
-  /** True when NEXT_PUBLIC_AUTH_BYPASS is on — see lib/auth-mode. */
+  role?: string;
+  /** The role's name as people read it, for the pill. Falls back to `role`. */
+  roleLabel?: string;
+  /** True when NEXT_PUBLIC_AUTH_BYPASS is on. See lib/auth-mode. */
   bypass?: boolean;
+  /** The View as picker. Shown under the identity while the rail is expanded. */
+  viewAs?: ReactNode;
   onSignOut: () => void;
   /** Extra classes (e.g. h-full when hosted in the mobile nav drawer). */
   className?: string;
 };
 
-/** What each role is allowed to do, in the words the screens use. */
-const ROLE_TITLE: Record<Role, string> = {
-  viewer: "Viewer — can read every screen, cannot run a migration",
-  editor: "Editor — can write and run scripts on connections that allow it",
-  admin: "Admin — everything, including user management",
-};
+/**
+ * The pill's tooltip. A built-in role says what it starts out able to do, in
+ * the same words the Admin screen uses. A custom role is whatever an admin
+ * made it, so all the tooltip can honestly say is where to look.
+ */
+const CUSTOM_ROLE_TITLE =
+  "A custom role. An admin decides what it can do on the Admin screen.";
+
+function roleTitle(role: string): string {
+  return isBuiltInRole(role) ? BUILT_IN_ROLE_INFO[role].description : CUSTOM_ROLE_TITLE;
+}
 
 export function StudioSidebar({
   items,
@@ -48,7 +60,9 @@ export function StudioSidebar({
   onToggleTheme,
   user,
   role,
+  roleLabel,
   bypass = false,
+  viewAs,
   onSignOut,
   className = "",
 }: StudioSidebarProps) {
@@ -175,28 +189,28 @@ export function StudioSidebar({
             {/*
               The role, and whether it was earned by signing in.
 
-              Every screen in the app gates on these — Deploy refuses to run a
-              migration, Admin does not appear in the rail above — and until now
-              the one place a person could have read which of the three they
-              were was the source. Worse for the bypass: it hands out the admin
+              Every screen in the app gates on the role (Deploy refuses to run
+              a migration, Admin does not appear in the rail above), and before
+              this pill the one place a person could have read which role they
+              held was the source. Worse for the bypass: it hands out the admin
               role to whoever opens the page, and an app with authentication
               switched off looked exactly like one somebody had signed in to.
 
-              Both pills, not one. "admin" alone is the thing that would be
+              Both pills, not one. "Admin" alone is the thing that would be
               reassuring and wrong.
             */}
             {(role || bypass) && (
               <div className="flex items-center gap-1 mt-1 flex-wrap">
                 {role && (
-                  <Pill tone="neutral" dot={false} title={ROLE_TITLE[role]}>
-                    {role}
+                  <Pill tone="neutral" dot={false} title={roleTitle(role)}>
+                    {roleLabel || role}
                   </Pill>
                 )}
                 {bypass && (
                   <Pill
                     tone="drift"
                     dot={false}
-                    title="NEXT_PUBLIC_AUTH_BYPASS is on: nobody signed in and every request is let through as an admin. Turn it off before this is used for real."
+                    title="NEXT_PUBLIC_AUTH_BYPASS is on: nobody signed in, and every request is let through as an admin, or as the role picked in View as. Turn it off before this is used for real."
                   >
                     auth off
                   </Pill>
@@ -213,6 +227,12 @@ export function StudioSidebar({
             <SignOutIcon size={13} />
           </button>
         </div>
+        {/*
+          View as, while the bypass is on: the testing stand-in for signing in
+          as somebody with another role. Left off the collapsed rail, which has
+          no room for a picker; expanding the rail brings it back.
+        */}
+        {viewAs && !collapsed && <div className="px-2">{viewAs}</div>}
       </div>
     </aside>
   );

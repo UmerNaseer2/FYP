@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangleIcon } from "@/components/ui/icons";
+import { useUser } from "@/hooks/useUser";
+import { refusalMessage } from "@/lib/permissions";
 import {
   ENVIRONMENTS,
   ENVIRONMENT_META,
@@ -25,6 +27,9 @@ import {
  * production warning read the same field. A screen that fetches its own data
  * passes `onDone` and reloads it; without one this falls back to
  * router.refresh(), which is what a server-rendered screen needs.
+ *
+ * Moving the label needs Drift tracking: Update. Without it the buttons show
+ * the current label but do not move, and say why.
  */
 export function SchemaEnvironmentPicker({
   trackedSchemaId,
@@ -39,9 +44,12 @@ export function SchemaEnvironmentPicker({
   const [value, setValue] = useState<Environment>(environment);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const changeRefusal =
+    sessionLoading || can("drift:update") ? null : refusalMessage(roleLabel, "drift:update");
 
   async function choose(next: Environment) {
-    if (next === value || busy) return;
+    if (next === value || busy || changeRefusal !== null) return;
     const previous = value;
     setValue(next);
     setBusy(true);
@@ -84,7 +92,8 @@ export function SchemaEnvironmentPicker({
             role="radio"
             aria-checked={value === option}
             onClick={() => void choose(option)}
-            disabled={busy}
+            disabled={busy || changeRefusal !== null}
+            title={changeRefusal ?? undefined}
             type="button"
             style={{ flex: 1 }}
           >
@@ -93,6 +102,7 @@ export function SchemaEnvironmentPicker({
         ))}
       </div>
       <p className="help mt-1.5">{ENVIRONMENT_META[value].help}</p>
+      {changeRefusal && <p className="help mt-1.5">{changeRefusal}</p>}
       {isProduction(value) && (
         <p
           className="text-[12px] mt-1.5 inline-flex items-center gap-1.5"

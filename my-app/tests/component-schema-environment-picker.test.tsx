@@ -22,9 +22,14 @@
  * server-rendered one passes nothing and gets router.refresh(). Picking the
  * wrong one leaves the header pill above disagreeing with the buttons below.
  *
+ * And who may move it. Relabelling changes how the schema is tracked, so it
+ * needs Drift tracking: Update. A role without that box still sees the label
+ * and what it means, on buttons that are switched off, with the reason under
+ * them.
+ *
  * What is NOT here:
  *  - The route these buttons call. The PATCH in app/api/lineage/route.ts — its
- *    role gate, its refusal of an unknown label, the UPDATE itself — has no
+ *    permission check, its refusal of an unknown label, the UPDATE itself — has no
  *    suite of its own. What is checked below is the request this component
  *    sends and what it makes of each shape of answer.
  *  - The page that hosts the picker and reloads itself when it reports back:
@@ -38,16 +43,18 @@
  *    is filled in, or that the warning is red. All three are CSS and jsdom
  *    applies no stylesheet, so what is asserted is the class and the role the
  *    component asks for, not what a browser would draw from them.
- *  - The second half of the early return, `|| busy`. Nothing can reach it
- *    through the DOM, because the same flag disables every button and React
- *    does not deliver a click to a disabled one. What is asserted instead is
- *    the disabling, which is the guard a person actually meets.
+ *  - The rest of the early return, `|| busy` and the role check after it.
+ *    Nothing can reach either through the DOM, because the same two facts
+ *    disable every button and React does not deliver a click to a disabled
+ *    one. What is asserted instead is the disabling, which is the guard a
+ *    person actually meets.
  */
 
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
 import type { Environment } from "@/lib/environments";
@@ -57,7 +64,10 @@ import {
   holdNext,
   resetPageState,
   routerCalls,
+  setCustomRole,
   setRoutes,
+  setSessionLoading,
+  setUser,
   type FetchRoute,
 } from "./helpers/render-page";
 
@@ -86,14 +96,21 @@ const OK: FetchRoute = {
   }),
 };
 
-// Two refusals, in the exact words the server sends them. The first is what a
-// viewer gets from requireEditor; the second is what happens when the schema
+/** Why a role without Drift tracking: Update may not relabel, in the server's words. */
+const updateRefusal = (role: string) =>
+  `Your role (${role}) can't change schedules, environments and baselines, or acknowledge ` +
+  `drift. Ask an admin to allow "Drift tracking: Update" for this role.`;
+
+// Two refusals, in the exact words the server sends them. The first is what an
+// editor meets when an admin took Drift tracking: Update away from their role
+// after this page loaded: the screen still says they may, but the server reads
+// the role fresh on every request. The second is what happens when the schema
 // was untracked in another tab while this page sat open.
-const VIEWER: FetchRoute = {
+const TAKEN_AWAY: FetchRoute = {
   match: "/api/lineage",
   method: "PATCH",
   status: 403,
-  body: { error: 'This action needs the "editor" role or higher. Yours is "viewer".' },
+  body: { error: updateRefusal("Editor") },
 };
 const GONE: FetchRoute = {
   match: "/api/lineage",
@@ -102,7 +119,12 @@ const GONE: FetchRoute = {
   body: { error: "That schema is not tracked." },
 };
 
-beforeEach(() => resetPageState());
+// Signed in as an editor, whose role may relabel, so everything before the last
+// describe is about what the server answers, not about the screen's own refusal.
+beforeEach(() => {
+  resetPageState();
+  setUser("editor");
+});
 
 function picker(
   over: { environment?: Environment; onDone?: () => void } = {}
@@ -297,7 +319,7 @@ describe("while the change is in flight", () => {
   test("puts them back when the answer is a refusal", async () => {
     // The one that matters: a refused change that left the picker disabled
     // would need a page reload before anyone could try again.
-    setRoutes([VIEWER]);
+    setRoutes([TAKEN_AWAY]);
     picker();
 
     fireEvent.click(radio("Staging"));
@@ -309,7 +331,7 @@ describe("while the change is in flight", () => {
 
 describe("when the server refuses", () => {
   test("puts the buttons back where they were", async () => {
-    setRoutes([VIEWER]);
+    setRoutes([TAKEN_AWAY]);
     picker();
 
     fireEvent.click(radio("Staging"));
@@ -320,15 +342,13 @@ describe("when the server refuses", () => {
   });
 
   test("repeats the reason it was given", async () => {
-    setRoutes([VIEWER]);
+    setRoutes([TAKEN_AWAY]);
     picker();
 
     fireEvent.click(radio("Staging"));
     await flushAsync();
 
-    expect(
-      screen.getByText('This action needs the "editor" role or higher. Yours is "viewer".')
-    ).toBeInTheDocument();
+    expect(screen.getByText(updateRefusal("Editor"))).toBeInTheDocument();
   });
 
   test("and whatever other reason it gives", async () => {
@@ -365,7 +385,7 @@ describe("when the server refuses", () => {
 
   test("tells nobody the screen needs catching up", async () => {
     const onDone = jest.fn();
-    setRoutes([VIEWER]);
+    setRoutes([TAKEN_AWAY]);
     picker({ onDone });
 
     fireEvent.click(radio("Staging"));
@@ -376,7 +396,7 @@ describe("when the server refuses", () => {
   });
 
   test("drops the production warning along with the value", async () => {
-    setRoutes([VIEWER]);
+    setRoutes([TAKEN_AWAY]);
     picker();
 
     fireEvent.click(radio("Production"));
@@ -468,18 +488,79 @@ describe("telling the rest of the screen", () => {
   });
 
   test("clears the last complaint when you try again", async () => {
-    setRoutes([VIEWER]);
+    setRoutes([TAKEN_AWAY]);
     picker();
 
     fireEvent.click(radio("Staging"));
     await flushAsync();
-    expect(screen.getByText(/role or higher/)).toBeInTheDocument();
+    expect(screen.getByText(updateRefusal("Editor"))).toBeInTheDocument();
 
     setRoutes([OK]);
     fireEvent.click(radio("Production"));
     await flushAsync();
 
-    expect(screen.queryByText(/role or higher/)).toBeNull();
+    expect(screen.queryByText(updateRefusal("Editor"))).toBeNull();
     expect(chosen()).toEqual(["Production"]);
+  });
+});
+
+describe("for a role that may not change it", () => {
+  test("shows the label on buttons that are switched off, and says why", () => {
+    setUser("viewer");
+    picker();
+
+    for (const button of radios()) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", updateRefusal("Viewer"));
+    }
+    expect(screen.getByText(updateRefusal("Viewer"))).toBeInTheDocument();
+    // Still the label and what it means: reading them is half of this panel.
+    expect(chosen()).toEqual(["Dev"]);
+    expect(screen.getByText(HELP.dev)).toBeInTheDocument();
+  });
+
+  test("still says what a production label costs", () => {
+    // The warning is about the database, not about who is looking at it.
+    setUser("viewer");
+    picker({ environment: "prod" });
+
+    expect(screen.getByText(WARNING)).toBeInTheDocument();
+  });
+
+  test("and sends nothing if one is pressed anyway", async () => {
+    // No routes, so a request would leave a network error on screen.
+    setUser("viewer");
+    setRoutes([]);
+    picker();
+
+    fireEvent.click(radio("Staging"));
+    await flushAsync();
+
+    expect(fetchCalls).toHaveLength(0);
+    expect(chosen()).toEqual(["Dev"]);
+    expect(screen.queryByText(/Network error/)).toBeNull();
+  });
+
+  test("moves for a role an admin gave Drift tracking: Update", async () => {
+    setCustomRole("labeller", "Labeller", ["drift:update"]);
+    setRoutes([OK]);
+    picker();
+
+    expect(screen.queryByText(/Your role/)).toBeNull();
+    fireEvent.click(radio("Staging"));
+    await flushAsync();
+
+    expect(sent()).toEqual({ id: SCHEMA_ID, environment: "staging" });
+    expect(chosen()).toEqual(["Staging"]);
+  });
+
+  test("says nothing while the session is still loading", () => {
+    // The server decides then. Switching the buttons off for a role nobody
+    // knows yet would flash a refusal at everyone on every page load.
+    setSessionLoading();
+    picker();
+
+    expect(screen.queryByText(/Your role/)).toBeNull();
+    for (const button of radios()) expect(button).toBeEnabled();
   });
 });

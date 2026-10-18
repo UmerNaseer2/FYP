@@ -27,7 +27,10 @@ let client: FakeClient;
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: null }),
+  requirePermission: async () => ({
+    ok: true,
+    principal: require("./helpers/principals").principalFor("editor"),
+  }),
 }));
 
 jest.mock("../lib/connection-config", () => ({

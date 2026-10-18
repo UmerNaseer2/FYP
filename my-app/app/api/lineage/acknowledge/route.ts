@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool from "@/lib/version-db";
 import {
   computeDriftDetail,
@@ -15,7 +15,7 @@ import {
  * whatever it actually is — acknowledging never pretends the drift is gone.
  */
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("drift:update");
   if (!gate.ok) return gate.response;
 
   let body: { trackedSchemaId?: number };

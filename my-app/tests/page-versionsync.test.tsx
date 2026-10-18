@@ -23,7 +23,15 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 import VersionSyncPage from "@/app/(studio)/versionsync/page";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
-import { type FetchRoute, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
+import {
+  type FetchRoute,
+  fetchCalls,
+  holdNext,
+  resetPageState,
+  setCustomRole,
+  setRoutes,
+  setUser,
+} from "./helpers/render-page";
 
 const CONNECTIONS = [
   {
@@ -140,8 +148,8 @@ function pick(box: string, option: string | RegExp) {
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
-/** Pick Staging → Live, then open the replay check for the one missing version. */
-async function openReplayCheck() {
+/** Pick Staging → Live, which puts the one version Live is missing on screen. */
+async function pickStagingToLive() {
   render(<VersionSyncPage />);
   await waitFor(() =>
     expect(screen.getByRole("combobox", { name: "Source connection" })).toBeEnabled()
@@ -154,7 +162,11 @@ async function openReplayCheck() {
   pick("Target connection", /Live/);
   await waitFor(() => expect(screen.getByRole("combobox", { name: "Target schema" })).toBeEnabled());
   pick("Target schema", "public");
+}
 
+/** Pick Staging → Live, then open the replay check for the one missing version. */
+async function openReplayCheck() {
+  await pickStagingToLive();
   fireEvent.click(await screen.findByRole("button", { name: /^Run v2\.0\.0/ }));
 }
 
@@ -277,5 +289,57 @@ describe("the replay check's production approval", () => {
 
     releaseReread();
     expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
+  });
+});
+
+describe("who may replay", () => {
+  it("shows a role without Deploy: Run the list, with nothing to press and one line on why", async () => {
+    // A replay writes to the Target through the same apply route Deploy uses,
+    // so it needs the same box. Reading what the Target is missing does not,
+    // and that is most of what this screen is for: the list stays, the Run
+    // buttons go, and the reason is said once above the list rather than as a
+    // dead button on every row.
+    setUser("viewer");
+    setRoutes(baseRoutes());
+
+    await pickStagingToLive();
+
+    expect(await screen.findByText("You can read this list, but not replay it")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Your role (Viewer) can't apply or revert migrations. Ask an admin to allow "Deploy: Run" for this role.`
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Run / })).not.toBeInTheDocument();
+    // The help line under the heading does not describe buttons that are not there.
+    expect(screen.queryByText(/The Run button replays/)).not.toBeInTheDocument();
+  });
+
+  it("does not ask for approvals a role may not read, and keeps Replay on production shut", async () => {
+    // A role an admin made that may replay but not read approvals. No route
+    // here answers /api/deploy/approvals, so asking for it would fail the
+    // test outright; and the panel must say "unknown" rather than read the
+    // list it never fetched as an empty one.
+    setCustomRole("deployer", "Deployer", ["version_sync:read", "deploy:read", "deploy:run"]);
+    setRoutes(baseRoutes());
+
+    await openReplayCheck();
+
+    expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Your role (Deployer) can't see production approvals. Ask an admin to allow "Approvals: Read" for this role.`
+      )
+    ).toBeInTheDocument();
+    expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I understand, and I mean to replay 1 version against production.",
+      })
+    );
+    // A rehearsal needs no approval, so it frees up; the replay does not.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Dry run" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Replay 1 version on production" })).toBeDisabled();
   });
 });

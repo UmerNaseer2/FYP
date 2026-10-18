@@ -7,14 +7,17 @@
 // values, and fetch is replaced with a stub that answers only the addresses
 // a test names and records anything else as a failure.
 import { NextRequest, NextResponse } from "next/server";
+import { principalFor } from "./helpers/principals";
 
 // auth-guard pulls in next-auth, which ships as ESM Jest can't load. The
-// route only needs requireViewer's answer, so a stand-in is enough. The path
-// is relative on purpose: next/jest rewrites the @/ alias inside import
+// route only needs requirePermission's answer, so a stand-in is enough. The
+// path is relative on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-const mockRequireViewer = jest.fn(async (): Promise<unknown> => ({ ok: true, principal: null }));
+const mockRequirePermission = jest.fn(
+  async (): Promise<unknown> => ({ ok: true, principal: principalFor("viewer") }),
+);
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: () => mockRequireViewer(),
+  requirePermission: () => mockRequirePermission(),
 }));
 
 type RouteModule = typeof import("../app/api/github/family/route");
@@ -61,7 +64,7 @@ beforeEach(() => {
   calls = [];
   unexpected = [];
   answers = {};
-  mockRequireViewer.mockClear();
+  mockRequirePermission.mockClear();
   global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     calls.push({ url, init });
@@ -191,14 +194,14 @@ describe("GET /api/github/family", () => {
     expect(calls).toEqual([]);
   });
 
-  it("returns the guard's answer when the viewer may not read", async () => {
-    mockRequireViewer.mockImplementationOnce(async () => ({
+  it("returns the guard's answer when nobody is signed in", async () => {
+    mockRequirePermission.mockImplementationOnce(async () => ({
       ok: false,
-      response: NextResponse.json({ ok: false, error: "Sign in to see this." }, { status: 401 }),
+      response: NextResponse.json({ error: "Sign in to continue." }, { status: 401 }),
     }));
     const { status, body } = await callRoute(QUERY);
     expect(status).toBe(401);
-    expect(body.ok).toBe(false);
+    expect(body.error).toBe("Sign in to continue.");
     expect(calls).toEqual([]);
   });
 });

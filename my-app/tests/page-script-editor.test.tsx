@@ -32,7 +32,20 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import ScriptEditorPage from "@/app/(studio)/script-editor/page";
-import { fetchCalls, flushAsync, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
+import {
+  fetchCalls,
+  flushAsync,
+  holdNext,
+  resetPageState,
+  setCustomRole,
+  setRoutes,
+  setUser,
+} from "./helpers/render-page";
+
+// The page asks useUser whether the role may save, and useUser reads the
+// session from next-auth, which Jest cannot load.
+jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 const CONNECTIONS = [{ id: 1, name: "Orders DB", host: "db.internal", database_name: "shop" }];
 
@@ -555,5 +568,63 @@ describe("after a save", () => {
     // The version it offers next is worked out again, from a floor that now
     // includes what the route said. A minor bump above v2.0.0 is v2.1.0.
     expect(await saveButton("2.1.0")).toBeEnabled();
+  });
+});
+
+describe("for a role that may not save scripts", () => {
+  // Saving a version and adding a rollback to one are both "Scripts: Create"
+  // on the Roles tab. The suite runs as an admin unless a case says otherwise.
+  const saveRefusal = (label: string) =>
+    `Your role (${label}) can't save scripts to the registry. Ask an admin to allow "Scripts: Create" for this role.`;
+
+  it("names the box Save needs before anything about the script", async () => {
+    // The rollback is missing too, but writing one would leave Save just as
+    // dead for this role.
+    setUser("viewer");
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices");
+    writeSql("SQL", ADDS_A_COLUMN);
+
+    expect(await refusal("1.0.0")).toBe(saveRefusal("Viewer"));
+    expect(screen.getByText(saveRefusal("Viewer"))).toBeInTheDocument();
+  });
+
+  it("refuses the missing-rollback card the same way", async () => {
+    setUser("viewer");
+    setRoutes([
+      {
+        match: "/api/github/pull",
+        body: { ok: true, scripts: [savedScript({ rollback_state: "none" })], warnings: [] },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices", true);
+
+    const button = await screen.findByRole("button", { name: "Save rollback" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", saveRefusal("Viewer"));
+  });
+
+  it("lets a role an admin gave the box save, whatever the role is called", async () => {
+    setCustomRole("author", "Author", ["scripts:read", "scripts:create"]);
+    setRoutes([
+      {
+        match: "/api/github/push",
+        method: "POST",
+        body: { ok: true, version: "1.0.0", rollback_saved: true, paths: {} },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<ScriptEditorPage />);
+    await pickTarget("add_invoices");
+    writeSql("SQL", ADDS_A_COLUMN);
+    writeSql(/Rollback SQL/, DROPS_THE_COLUMN);
+    fireEvent.click(await saveButton("1.0.0"));
+
+    expect(
+      await screen.findByText("v1.0.0 saved to shop/public/add_invoices on GitHub, with its rollback.")
+    ).toBeInTheDocument();
   });
 });

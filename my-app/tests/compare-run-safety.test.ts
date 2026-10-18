@@ -140,7 +140,7 @@ async function compareTwoTargets() {
   query.append("targetSchema", "public");
   query.append("targetConnection", "3");
   query.append("targetSchema", "qa");
-  const screen = await runComparison(query, null);
+  const screen = await runComparison(query, null, null);
   if (screen.kind !== "ready") throw new Error(`expected a ready screen, got ${screen.kind}`);
   return screen;
 }

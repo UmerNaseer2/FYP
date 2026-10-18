@@ -18,8 +18,10 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: async () => ({ ok: true, principal: null }),
-  requireEditor: async () => ({ ok: true, principal: null }),
+  requirePermission: async () => ({
+    ok: true,
+    principal: require("./helpers/principals").principalFor("editor"),
+  }),
 }));
 
 // The metadata database: saved connections, tracked schemas, lineage.
@@ -277,6 +279,7 @@ describe("Compare", () => {
         targetSchema: "sales",
         run: "1",
       }),
+      null,
       null
     );
     // Whatever happens, no secret reaches the browser.

@@ -22,14 +22,15 @@
  * only way to leave the app.
  *
  * What is NOT here:
- *  - Who decides `collapsed`, `theme`, `activeHref`, `role`, `bypass`, or what
- *    sign out actually does. All six are the shell's:
- *    tests/component-studio-shell.test.tsx. In particular, that the role comes
- *    from the session and is withheld when there isn't one is asserted there;
- *    below it is only that whatever arrives is what gets drawn.
- *  - The real list of screens and which route counts as active:
- *    tests/studio-nav.test.ts. The rows below are written out by hand so these
- *    tests keep their meaning the next time a screen is added to that file.
+ *  - Who decides `collapsed`, `theme`, `activeHref`, `role`, `roleLabel`,
+ *    `bypass`, `viewAs`, or what sign out actually does. All of them are the
+ *    shell's: tests/component-studio-shell.test.tsx. In particular, that the
+ *    role comes from the session and is withheld when there isn't one is
+ *    asserted there; below it is only that whatever arrives is what gets drawn.
+ *  - The real list of screens, which route counts as active, and which rows a
+ *    role may see: tests/studio-nav.test.ts, and the shell's suite for the
+ *    filtering itself. The rows below are written out by hand so these tests
+ *    keep their meaning the next time a screen is added to that file.
  *  - The drawer this rail is hosted in on a phone:
  *    tests/component-drawer.test.tsx covers bare mode from the drawer's side.
  *  - That the rail is 64px wide when collapsed, that sr-only text is invisible,
@@ -43,30 +44,35 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 import { StudioSidebar } from "@/components/studio/StudioSidebar";
 import type { NavItem } from "@/components/studio/nav";
+import { BUILT_IN_ROLE_INFO } from "@/lib/permissions";
 
 // A cut-down rail. The icons are stand-ins: what matters is that whatever the
 // caller hands over for a row is what gets drawn in it. One row is given a
 // label that is not its screen name — the two are allowed to differ, and it is
-// the label the rail is supposed to show.
+// the label the rail is supposed to show. Each row names its feature because
+// the type asks for one, but the rail draws every row it is handed: which rows
+// a role may see is decided by the shell before the list gets here.
 const ITEMS: NavItem[] = [
   {
     screen: "Dashboard",
     label: "Dashboard",
     href: "/studio",
     icon: <span data-testid="icon-dashboard" />,
+    feature: "dashboard",
   },
   {
     screen: "Drift",
     label: "Drift watch",
     href: "/drift",
     icon: <span data-testid="icon-drift" />,
+    feature: "drift",
   },
   {
     screen: "Admin",
     label: "Admin",
     href: "/admin",
     icon: <span data-testid="icon-admin" />,
-    adminOnly: true,
+    feature: ["users", "roles"],
   },
 ];
 
@@ -298,20 +304,29 @@ describe("what the rail says you are allowed to do", () => {
     expect(screen.queryByText("auth off")).not.toBeInTheDocument();
   });
 
-  test("names the role, and explains it on hover", () => {
-    renderRail({ role: "editor" });
-    const pill = screen.getByText("editor");
-    expect(pill).toBeInTheDocument();
-    // The word on its own does not say what it buys you. Every screen gates on
-    // the role, so the tooltip is where the rail explains the gate.
-    expect(pill).toHaveAttribute("title", expect.stringContaining("can write and run scripts"));
+  test("names the role the way people read it, and explains it on hover", () => {
+    renderRail({ role: "editor", roleLabel: "Editor" });
+    const pill = screen.getByText("Editor");
+    // The word on its own does not say what it buys you, so the tooltip says
+    // what the role starts out able to do, in the Admin screen's own words.
+    expect(pill).toHaveAttribute("title", BUILT_IN_ROLE_INFO.editor.description);
   });
 
-  test("uses the role it was given, not a fixed one", () => {
+  test("falls back to the role's key when no name came with it", () => {
     renderRail({ role: "viewer" });
     expect(screen.getByText("viewer")).toHaveAttribute(
       "title",
-      expect.stringContaining("cannot run a migration")
+      BUILT_IN_ROLE_INFO.viewer.description
+    );
+  });
+
+  test("calls a role an admin made by its own name, and says where to look", () => {
+    // Nothing in the code knows what a role made on the Admin screen can do,
+    // so the tooltip does not guess at it.
+    renderRail({ role: "qa-lead", roleLabel: "QA Lead" });
+    expect(screen.getByText("QA Lead")).toHaveAttribute(
+      "title",
+      expect.stringContaining("An admin decides what it can do")
     );
   });
 
@@ -336,6 +351,20 @@ describe("what the rail says you are allowed to do", () => {
     // Still answerable to a screen reader, the same way the nav rows are.
     expect(screen.getByText("admin")).toBeInTheDocument();
     expect(screen.getByText("auth off")).toBeInTheDocument();
+  });
+});
+
+describe('the "View as" slot', () => {
+  // The switcher is the shell's to build, and only while the bypass is on. The
+  // rail decides where it goes, and whether there is room for it.
+  test("draws whatever it was handed, under the identity", () => {
+    renderRail({ viewAs: <p>the switcher</p> });
+    expect(screen.getByText("the switcher")).toBeInTheDocument();
+  });
+
+  test("leaves it off the narrow rail, which has no room for a picker", () => {
+    renderRail({ viewAs: <p>the switcher</p>, collapsed: true });
+    expect(screen.queryByText("the switcher")).toBeNull();
   });
 });
 

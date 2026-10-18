@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
+import { useUser } from "@/hooks/useUser";
 import { parsePostgresUri } from "@/lib/parse-uri";
 import { APPLIES_TO_HEADER_KEY } from "@/lib/application-targeting";
 import {
@@ -33,6 +34,7 @@ import {
   toExecuteRole,
   type ExecuteRole,
 } from "@/lib/connection-access";
+import { refusalMessage } from "@/lib/permissions";
 import Link from "next/link";
 import {
   LogoIcon,
@@ -72,9 +74,11 @@ type Connection = {
   // database hosts. Null on every row until somebody names it. See
   // lib/application-targeting.ts for what reads it.
   application_table?: string | null;
-  // Which role may run migrations against this database — "none" (read-only),
-  // "editor" or "admin". Null on rows written before the column existed; read
-  // it through toExecuteRole(), which lands those on the default.
+  // Who may run migrations against this database: "none" (read-only),
+  // "editor" or "admin". "editor" is the stored word for the default, which
+  // means anyone whose role may run deployments. Null on rows written before
+  // the column existed; read it through toExecuteRole(), which lands those on
+  // the default.
   execute_role?: string | null;
   // dev / staging / prod. Null on rows written before the column existed; read
   // it through connEnvironment() so those come back as "unset" rather than
@@ -198,6 +202,25 @@ export default function ConnectionsPage() {
   const [groupByEnv, setGroupByEnv] = useState(false);
   const [rowResults, setRowResults] = useState<Record<number, RowResult>>({});
 
+  // Who may press what. A role without a box still sees the button, switched
+  // off, and the page says why once, under its header. Null while the session
+  // is still loading: the server decides then.
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const createRefusal =
+    sessionLoading || can("connections:create")
+      ? null
+      : refusalMessage(roleLabel, "connections:create");
+  // Testing a saved connection is under Update as well: it logs in with the
+  // stored password, and it records the outcome on the row.
+  const updateRefusal =
+    sessionLoading || can("connections:update")
+      ? null
+      : refusalMessage(roleLabel, "connections:update");
+  const deleteRefusal =
+    sessionLoading || can("connections:delete")
+      ? null
+      : refusalMessage(roleLabel, "connections:delete");
+
   // Drawer (add / edit)
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -284,6 +307,8 @@ export default function ConnectionsPage() {
 
   // ——— Drawer open helpers ———
   function openAdd() {
+    // The buttons that open it are off already.
+    if (createRefusal !== null) return;
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
     setFormErrors({});
@@ -294,6 +319,8 @@ export default function ConnectionsPage() {
   }
 
   function openEdit(conn: Connection) {
+    // The button is off already.
+    if (updateRefusal !== null) return;
     const hasUri = Boolean(conn.has_connection_string);
     setEditingId(conn.id);
     setForm({
@@ -529,6 +556,9 @@ export default function ConnectionsPage() {
       // watched answer lands in the table reading "Last tested: Never".
       // Quietly: "Connection saved" is the message for this action, and a
       // second toast a moment later only competes with it.
+      // testRow() skips it for a role that may add connections but not test
+      // saved ones (that is Connections: Update). Its new row reads "Never",
+      // which is true of the row.
       if (drawerTest.kind === "ok" && typeof data?.id === "number") {
         void testRow(data as Connection, true);
       } else if (editingId !== null) {
@@ -551,6 +581,10 @@ export default function ConnectionsPage() {
 
   // ——— Row test (saved connection) ———
   async function testRow(conn: Connection, quiet = false) {
+    // The button is off already, and the quiet re-test after a save asks the
+    // same route, so a role without Connections: Update skips both.
+    if (updateRefusal !== null) return;
+    const before = rowResults[conn.id];
     setRowResults((r) => ({ ...r, [conn.id]: { status: "testing" } }));
     try {
       const res = await fetch("/api/connections/test-saved", {
@@ -559,6 +593,22 @@ export default function ConnectionsPage() {
         body: JSON.stringify({ id: conn.id }),
       });
       const data = await res.json();
+      // A refusal (a role that lost the box after this page loaded), a row
+      // that has gone or a type the route cannot test is not a verdict on the
+      // database: the route stopped before reaching it, and recorded nothing.
+      // Painting the row "failed" would report a fault the database does not
+      // have, so the row goes back to what it said before (what a reload would
+      // show) and the reason is the toast.
+      if (!res.ok) {
+        setRowResults((r) => {
+          const next = { ...r };
+          if (before) next[conn.id] = before;
+          else delete next[conn.id];
+          return next;
+        });
+        if (!quiet) showToast(data?.error ?? `Could not test ${conn.name}.`);
+        return;
+      }
       // The route records the outcome on the row and sends back the instant it
       // stamped, so the cell shows the same time a reload would.
       const testedAt = typeof data.testedAt === "string" ? data.testedAt : null;
@@ -593,6 +643,8 @@ export default function ConnectionsPage() {
 
   // ——— Delete ———
   function openDelete(conn: Connection) {
+    // The button is off already.
+    if (deleteRefusal !== null) return;
     setDeleteTarget(conn);
     setDeleteDependents(null);
   }
@@ -709,6 +761,14 @@ export default function ConnectionsPage() {
    */
   const noCountsToShow = loadError !== null || connections.length === 0;
 
+  // Why buttons on this page are off for this role. The row buttons only
+  // count once there are rows to press them on.
+  const roleNotes = [
+    createRefusal,
+    connections.length > 0 ? updateRefusal : null,
+    connections.length > 0 ? deleteRefusal : null,
+  ].filter((note): note is string => note !== null);
+
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
       {/* ——— Page header ——— */}
@@ -724,7 +784,12 @@ export default function ConnectionsPage() {
           </div>
 
           <div className="flex flex-col items-end gap-3">
-            <button className="btn btn-primary btn-sm" onClick={openAdd}>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={openAdd}
+              disabled={createRefusal !== null}
+              title={createRefusal ?? undefined}
+            >
               <PlusIcon size={14} />
               Add connection
             </button>
@@ -766,6 +831,20 @@ export default function ConnectionsPage() {
           </div>
         </div>
       </section>
+
+      {/* Said once for the page rather than on every row's buttons. */}
+      {roleNotes.length > 0 && (
+        <section className="px-8 pt-4 pb-2">
+          <div className="role-note">
+            <InfoIcon size={15} className="ico" />
+            <div className="body space-y-0.5">
+              {roleNotes.map((note) => (
+                <p key={note}>{note}</p>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ——— Filters ——— */}
       {!noCountsToShow && (
@@ -822,7 +901,11 @@ export default function ConnectionsPage() {
                 environment.
               </b>{" "}
               Compare and Deploy can only warn you that a target is production once it is
-              labelled — edit each one and pick Dev, Staging or Production.
+              labelled
+              {updateRefusal === null
+                ? " — edit each one and pick Dev, Staging or Production."
+                : ". Ask someone who may edit connections to pick Dev, Staging or " +
+                  "Production for each one."}
             </div>
           </div>
         </section>
@@ -905,7 +988,12 @@ export default function ConnectionsPage() {
                             Drift and Deploy all read through them, so this is the first thing
                             to set up.
                           </div>
-                          <button className="btn btn-primary btn-sm" onClick={openAdd}>
+                          <button
+                            className="btn btn-primary btn-sm"
+                            onClick={openAdd}
+                            disabled={createRefusal !== null}
+                            title={createRefusal ?? undefined}
+                          >
                             <PlusIcon size={14} />
                             Add your first connection
                           </button>
@@ -985,8 +1073,8 @@ export default function ConnectionsPage() {
                             the two things about a target that change what
                             Deploy will let you do. Only the settings that are
                             NOT the default get a badge: a pill on every row
-                            saying "editors and admins" would be the same word
-                            on every row, which reads as decoration. */}
+                            saying "anyone who may deploy" would be the same
+                            words on every row, which reads as decoration. */}
                         <td data-label="Environment">
                           <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
                             <EnvironmentPill environment={connEnvironment(conn)} />
@@ -1040,18 +1128,26 @@ export default function ConnectionsPage() {
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => testRow(conn)}
-                              disabled={result?.status === "testing"}
+                              disabled={result?.status === "testing" || updateRefusal !== null}
+                              title={updateRefusal ?? undefined}
                             >
                               <CheckIcon size={12} />
                               Test
                             </button>
-                            <button className="btn btn-ghost btn-sm" onClick={() => openEdit(conn)}>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => openEdit(conn)}
+                              disabled={updateRefusal !== null}
+                              title={updateRefusal ?? undefined}
+                            >
                               <EditIcon size={12} />
                               Edit
                             </button>
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => openDelete(conn)}
+                              disabled={deleteRefusal !== null}
+                              title={deleteRefusal ?? undefined}
                               style={{ color: "var(--break)" }}
                               aria-label={`Delete ${conn.name}`}
                             >
@@ -1443,8 +1539,8 @@ export default function ConnectionsPage() {
           {/* Who may deploy here. Beside the environment label rather than
               inside it: the label is a warning the user can click past, and
               this one they cannot. A prod connection that nobody has locked
-              down is still deployable by any editor — the label shouts, it
-              does not stop anything. */}
+              down is still deployable by anyone whose role may run
+              deployments. The label shouts; it does not stop anything. */}
           <div className="mt-6">
             <div className="flex items-center justify-between mb-1.5">
               <label className="label" htmlFor={executeRoleId}>

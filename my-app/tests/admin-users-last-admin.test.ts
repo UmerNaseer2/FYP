@@ -17,6 +17,10 @@
 // the row the request then writes, so two of them deadlock on each other; run
 // against a real PostgreSQL 17.11 it aborts one request every time. The data
 // survives, but as a 500 rather than a refusal that names the rule.
+//
+// The last describe block covers the rest of a role change: the role asked for
+// is looked up in the roles table (an admin can add and delete roles), and the
+// change is logged in the same transaction that makes it.
 import { NextRequest } from "next/server";
 
 /** Every statement the route ran, in order, with its values. */
@@ -33,7 +37,11 @@ type Answers = {
   updated?: unknown[];
   /** A statement matching this text throws, to test the rollback path. */
   throwOn?: RegExp;
+  /** The roles table, as name to label. Defaults to the three built-in roles. */
+  roles?: Record<string, string>;
 };
+
+const BUILT_IN_ROLES = { viewer: "Viewer", editor: "Editor", admin: "Admin" };
 let answers: Answers = {};
 
 let released = 0;
@@ -62,6 +70,16 @@ const mockConnect = async () => {
         const rows = answers.updated ?? [{ id: 2, email: "mei@x", role: "viewer" }];
         return { rows, rowCount: rows.length };
       }
+      if (/FROM roles/.test(text)) {
+        // The lookup PUT makes before it changes anything: the role asked for
+        // and the person's current one, each once, if the table has it.
+        const table = new Map(Object.entries(answers.roles ?? BUILT_IN_ROLES));
+        const asked = Array.from(new Set((values?.[0] as string[] | undefined) ?? []));
+        const rows = asked
+          .filter((name) => table.has(name))
+          .map((name) => ({ name, label: table.get(name) }));
+        return { rows, rowCount: rows.length };
+      }
       return { rows: [], rowCount: 0 };
     },
     release: () => {
@@ -83,9 +101,12 @@ jest.mock("../lib/version-db", () => ({
 
 // A real admin, not the bypass, so the "you can't delete yourself" rule is live.
 jest.mock("../lib/auth-guard", () => ({
-  requireAdmin: async () => ({
+  requirePermission: async () => ({
     ok: true,
-    principal: { email: "umer@x", name: "Umer", role: "admin", bypass: false },
+    principal: require("./helpers/principals").principalFor("admin", {
+      email: "umer@x",
+      name: "Umer",
+    }),
   }),
 }));
 
@@ -256,6 +277,87 @@ describe("demoting an admin", () => {
 
     expect(response.status).toBe(500);
     expect(released).toBe(1);
+  });
+});
+
+describe("choosing a role", () => {
+  const LOG = /^INSERT INTO role_changes/;
+
+  it("refuses a role the roles table does not have, and changes nothing", async () => {
+    // How it happens: one admin deletes a role while another still has the
+    // Users tab open with that role in the picker.
+    answers.target = { email: "mei@x", role: "viewer" };
+
+    const response = await PUT(request({ userId: 2, role: "qa-lead" }));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain('There is no role called "qa-lead"');
+    expect(at(/^UPDATE profiles/)).toBe(-1);
+    expect(at(LOG)).toBe(-1);
+    expect(texts()).toContain("ROLLBACK");
+    expect(texts()).not.toContain("COMMIT");
+    expect(released).toBe(1);
+  });
+
+  it("accepts a role an admin added", async () => {
+    answers.target = { email: "mei@x", role: "viewer" };
+    answers.roles = { ...BUILT_IN_ROLES, "qa-lead": "QA lead" };
+    answers.updated = [{ id: 2, email: "mei@x", role: "qa-lead" }];
+
+    const response = await PUT(request({ userId: 2, role: "qa-lead" }));
+
+    expect(response.status).toBe(200);
+    expect(statements[at(/^UPDATE profiles/)].values).toEqual(["qa-lead", 2]);
+  });
+
+  it("holds the role it looked up until the change commits", async () => {
+    // FOR KEY SHARE is what makes deleting that role wait for this
+    // transaction, and then find the role in use and refuse.
+    answers.target = { email: "mei@x", role: "viewer" };
+    answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
+
+    await PUT(request({ userId: 2, role: "editor" }));
+
+    const lookup = at(/FROM roles/);
+    expect(texts()[lookup]).toMatch(/FOR KEY SHARE$/);
+    expect(statements[lookup].values).toEqual([["editor", "viewer"]]);
+    expect(lookup).toBeGreaterThan(at(/^BEGIN/));
+    expect(lookup).toBeLessThan(at(/^UPDATE profiles/));
+  });
+
+  it("logs the change in the same transaction, with the role they had before", async () => {
+    answers.target = { email: "mei@x", role: "viewer" };
+    answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
+
+    const response = await PUT(request({ userId: 2, role: "editor" }));
+
+    expect(response.status).toBe(200);
+    const log = at(LOG);
+    expect(log).toBeGreaterThan(at(/^UPDATE profiles/));
+    expect(log).toBeLessThan(at(/^COMMIT/));
+    // One entry, one value per column in the order the INSERT names them:
+    // role, kind, feature, action, subject, detail, actor.
+    expect(statements[log].values).toEqual([
+      ["editor"],
+      ["assign"],
+      [null],
+      [null],
+      ["mei@x"],
+      ["Viewer"],
+      ["umer@x"],
+    ]);
+  });
+
+  it("logs nothing when the person already had that role", async () => {
+    answers.target = { email: "mei@x", role: "editor" };
+    answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
+
+    const response = await PUT(request({ userId: 2, role: "editor" }));
+
+    expect(response.status).toBe(200);
+    expect(at(LOG)).toBe(-1);
+    expect(texts()).toContain("COMMIT");
   });
 });
 

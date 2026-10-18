@@ -11,7 +11,7 @@ import { checkForwardOnly } from "@/lib/deploy-risk";
 import { createHash } from "node:crypto";
 import { fingerprintBody, rollbackFingerprintBody } from "@/lib/approval-fingerprint";
 import { runFingerprint } from "@/lib/approvals-db";
-import { ROLES, roleAtLeast, toRole } from "@/lib/auth-mode";
+import { BUILT_IN_ROLES, presetFor } from "@/lib/permissions";
 import { pendingPrefixThrough } from "@/lib/script-status";
 
 // approvals-db reads the metadata database through lib/version-db, which
@@ -55,17 +55,20 @@ describe("environments", () => {
 });
 
 describe("roles", () => {
-  it("is ordered viewer < editor < admin", () => {
-    expect(ROLES).toEqual(["viewer", "editor", "admin"]);
-    expect(roleAtLeast("admin", "editor")).toBe(true);
-    expect(roleAtLeast("editor", "admin")).toBe(false);
-    expect(roleAtLeast("viewer", "viewer")).toBe(true);
+  it("has the three built-in roles every install starts with", () => {
+    expect(BUILT_IN_ROLES).toEqual(["viewer", "editor", "admin"]);
   });
 
-  it("falls back to the least privilege it can", () => {
-    expect(toRole("admin")).toBe("admin");
-    expect(toRole("superuser")).toBe("viewer");
-    expect(toRole(undefined)).toBe("viewer");
+  it("starts each one where the old role ladder left it", () => {
+    // Only an editor and up could deploy, and only an admin could approve.
+    expect(presetFor("viewer")).not.toContain("deploy:run");
+    expect(presetFor("editor")).toContain("deploy:run");
+    expect(presetFor("editor")).not.toContain("approvals:approve");
+    expect(presetFor("admin")).toContain("approvals:approve");
+  });
+
+  it("has no preset for a role it does not know", () => {
+    expect(presetFor("superuser")).toBeNull();
   });
 });
 

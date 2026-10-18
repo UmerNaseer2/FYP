@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import {
   createApprovalRequest,
   isApprovalAction,
@@ -51,7 +51,7 @@ function parseScript(value: unknown, index: number, action: ApprovalAction): App
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("approvals:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;
@@ -81,9 +81,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  // Requesting is an editor action: it is the same person who would press
-  // Deploy, and a viewer cannot deploy.
-  const gate = await requireEditor();
+  // Asking for an approval is its own permission (Approvals: Create). Out of
+  // the box the roles that may deploy hold it, since they are the ones who
+  // need a second person before a production run.
+  const gate = await requirePermission("approvals:create");
   if (!gate.ok) return gate.response;
 
   let body: {

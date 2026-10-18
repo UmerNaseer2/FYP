@@ -46,6 +46,7 @@ import {
   flushAsync,
   resetPageState,
   routerCalls,
+  setCustomRole,
   setRoutes,
   setSearchParams,
   setUser,
@@ -154,7 +155,7 @@ describe("opening a saved set", () => {
     expect(screen.queryByLabelText("Open a saved comparison set")).not.toBeInTheDocument();
   });
 
-  it("does not tell a viewer to save one", () => {
+  it("does not tell a role that may not save one to save one", () => {
     setUser("viewer");
     show({ sets: [] });
 
@@ -245,13 +246,16 @@ describe("the name box", () => {
 });
 
 describe("when Save is off", () => {
-  it("is off for a viewer, and says who can", () => {
+  it("is off for a role that may not save sets, and names the box it needs", () => {
     setUser("viewer");
     show();
 
+    const refusal =
+      'Your role (Viewer) can\'t save a new comparison set. Ask an admin to allow "Comparison sets: Create" for this role.';
     expect(saveButton()).toBeDisabled();
+    expect(saveButton()).toHaveAttribute("title", refusal);
     expect(nameBox()).toBeDisabled();
-    expect(screen.getByText("Only editors can save or delete comparison sets.")).toBeInTheDocument();
+    expect(screen.getByText(refusal)).toBeInTheDocument();
   });
 
   it("waits for Compare rather than saving a selection nobody can see", () => {
@@ -524,11 +528,26 @@ describe("deleting", () => {
     expect(screen.queryByRole("button", { name: /^Delete the set/ })).not.toBeInTheDocument();
   });
 
-  it("is not offered to a viewer", () => {
+  it("is not offered to a role that may not delete sets", () => {
     setUser("viewer");
     show({ activeSetId: 7 });
 
     expect(screen.queryByRole("button", { name: /^Delete the set/ })).not.toBeInTheDocument();
+  });
+
+  it("is offered to a role that may delete sets, even one that may not save them", () => {
+    // Four separate boxes: tidying up old sets is not the same trust as
+    // writing new ones.
+    setCustomRole("tidier", "Tidier", [
+      "compare:read",
+      "comparison_sets:read",
+      "comparison_sets:delete",
+    ]);
+    show({ activeSetId: 7 });
+
+    expect(deleteButton()).toBeEnabled();
+    expect(saveButton()).toBeDisabled();
+    expect(nameBox()).toBeDisabled();
   });
 
   it("says what stays behind before it asks", () => {
@@ -668,13 +687,13 @@ describe("the one sentence under the bar", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not tell a viewer to fix it", () => {
+  it("does not tell a role that may not save sets to fix it", () => {
     setUser("viewer");
     show({ activeSetId: 7, sets: [set({ hasMissingConnection: true })] });
 
     expect(
       screen.getByText(
-        "A connection this set used has been deleted. An editor can pick a replacement and update the set."
+        "A connection this set used has been deleted. Someone whose role may update comparison sets can pick a replacement and update the set."
       )
     ).toBeInTheDocument();
   });
@@ -711,13 +730,159 @@ describe("the one sentence under the bar", () => {
   });
 
   it("says nothing about roles while the session is still being read", () => {
-    // The frame before next-auth answers is not a viewer, and saying so would
-    // flash "only editors can" at an editor on every page load.
+    // The frame before next-auth answers has no permissions yet, and is not a
+    // role that may not save: saying so would flash "your role can't" at
+    // everyone on every page load.
     require("./helpers/render-page").setSessionLoading();
     show();
 
+    expect(screen.getByText("Saved sets")).toBeInTheDocument();
+    expect(screen.queryByText(/can't/)).not.toBeInTheDocument();
+    expect(saveButton()).not.toHaveAttribute("title");
+  });
+});
+
+describe("a role an admin has given only some of the boxes", () => {
+  /** May save a new set but not save over one. */
+  const creator = () =>
+    setCustomRole("starter", "Starter", [
+      "compare:read",
+      "comparison_sets:read",
+      "comparison_sets:create",
+    ]);
+  /** May save over a set but not make a new one. */
+  const updater = () =>
+    setCustomRole("keeper", "Keeper", [
+      "compare:read",
+      "comparison_sets:read",
+      "comparison_sets:update",
+    ]);
+
+  const overwriteRefusal = (label: string) =>
+    `Your role (${label}) can't overwrite a saved comparison set. Ask an admin to allow "Comparison sets: Update" for this role.`;
+  const createRefusal = (label: string) =>
+    `Your role (${label}) can't save a new comparison set. Ask an admin to allow "Comparison sets: Create" for this role.`;
+
+  it("lets a role that may only create sets save a new one", async () => {
+    creator();
+    setRoutes(saved(21, true));
+    show();
+
+    fireEvent.change(nameBox(), { target: { value: "Weekly check" } });
+
+    expect(saveButton()).toBeEnabled();
+    expect(screen.queryByText(/can't/)).not.toBeInTheDocument();
+
+    fireEvent.click(saveButton());
+    await flushAsync();
+
+    expect(posts()).toHaveLength(1);
+  });
+
+  it("stops it saving over the open set, and says how to keep the comparison", () => {
+    creator();
+    show({ activeSetId: 7 });
+
+    const refusal = `${overwriteRefusal("Starter")} Or save it under a new name.`;
+    expect(saveButton()).toHaveTextContent("Update");
+    expect(saveButton()).toBeDisabled();
+    expect(saveButton()).toHaveAttribute("title", refusal);
+    expect(screen.getByText(refusal)).toBeInTheDocument();
+  });
+
+  it("gives Save back the moment the name is a new one", () => {
+    creator();
+    show({ activeSetId: 7 });
+
+    fireEvent.change(nameBox(), { target: { value: "Weekly check" } });
+
+    expect(saveButton()).toHaveTextContent("Save as new");
+    expect(saveButton()).toBeEnabled();
+    expect(screen.queryByText(/can't/)).not.toBeInTheDocument();
+  });
+
+  it("counts another set's name as saving over it, whatever the capitals", () => {
+    // The way the server counts it: names are unique regardless of case, so
+    // this would rewrite "Nightly check" rather than make a second one.
+    creator();
+    show();
+
+    fireEvent.change(nameBox(), { target: { value: "  NIGHTLY CHECK " } });
+
+    expect(saveButton()).toBeDisabled();
     expect(
-      screen.queryByText("Only editors can save or delete comparison sets.")
-    ).not.toBeInTheDocument();
+      screen.getByText(`${overwriteRefusal("Starter")} Or save it under a new name.`)
+    ).toBeInTheDocument();
+  });
+
+  it("tells it how to keep a changed set without pressing Update", () => {
+    creator();
+    show({ activeSetId: 7, modified: true });
+
+    expect(
+      screen.getByText(
+        "Changed since it was saved. Save it under a new name to keep it, or reopen the set to go back."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("tells it how to repair a set whose connection was deleted", () => {
+    creator();
+    show({ activeSetId: 7, sets: [set({ hasMissingConnection: true })] });
+
+    expect(
+      screen.getByText(
+        "A connection this set used has been deleted. Pick a replacement below, press Compare, then save it under a new name."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("lets a role that may only update sets save over the open one", () => {
+    updater();
+    show({ activeSetId: 7, modified: true });
+
+    expect(saveButton()).toHaveTextContent("Update");
+    expect(saveButton()).toBeEnabled();
+    expect(
+      screen.getByText(
+        "Changed since it was saved — press Update to keep it, or reopen the set to go back."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("does not let it make a new set, and does not offer the overwrite tip", () => {
+    updater();
+    show({ activeSetId: 7 });
+
+    fireEvent.change(nameBox(), { target: { value: "Weekly check" } });
+
+    expect(saveButton()).toHaveTextContent("Save as new");
+    expect(saveButton()).toBeDisabled();
+    expect(saveButton()).toHaveAttribute("title", createRefusal("Keeper"));
+    expect(screen.getByText(createRefusal("Keeper"))).toBeInTheDocument();
+  });
+
+  it("does not tell a role that may only update sets to make the first one", () => {
+    updater();
+    show({ sets: [] });
+
+    expect(screen.getByText("None saved yet.")).toBeInTheDocument();
+  });
+
+  it("does not suggest a new name to a role that may not save one either", () => {
+    setUser("viewer");
+    show({ activeSetId: 7 });
+
+    expect(screen.getByText(overwriteRefusal("Viewer"))).toBeInTheDocument();
+    expect(screen.queryByText(/under a new name/)).not.toBeInTheDocument();
+  });
+
+  it("leaves the bar out for a role that may not open saved sets", () => {
+    // Such a role may not save one either: every box brings its feature's
+    // Read with it, so there is no role that saves sets without opening them.
+    setCustomRole("looker", "Looker", ["compare:read"]);
+    const { container } = show({ sets: [] });
+
+    expect(container).toBeEmptyDOMElement();
   });
 });

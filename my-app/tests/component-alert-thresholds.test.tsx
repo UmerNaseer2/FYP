@@ -47,11 +47,13 @@ import {
   defaultSettings,
   type ThresholdSetting,
 } from "@/lib/perf-thresholds";
+import { presetFor } from "@/lib/permissions";
 import {
   fetchCalls,
   flushAsync,
   holdNext,
   resetPageState,
+  setCustomRole,
   setRoutes,
   setUser,
 } from "./helpers/render-page";
@@ -358,7 +360,12 @@ describe("saving", () => {
         match: "/api/performance/thresholds",
         method: "PUT",
         status: 403,
-        body: { error: "You need the editor role to change alert thresholds." },
+        // What the route says when an admin unticked the box after this
+        // page loaded, so the screen still thought it could save.
+        body: {
+          error:
+            "Your role (Editor) can't change alert thresholds. Ask an admin to allow \"Alert thresholds: Update\" for this role.",
+        },
       },
     ]);
     show();
@@ -370,7 +377,9 @@ describe("saving", () => {
 
     expect(screen.getByText("The thresholds were not saved")).toBeInTheDocument();
     expect(
-      screen.getByText("You need the editor role to change alert thresholds.")
+      screen.getByText(
+        "Your role (Editor) can't change alert thresholds. Ask an admin to allow \"Alert thresholds: Update\" for this role."
+      )
     ).toBeInTheDocument();
     expect(box("Query slower than")).toHaveValue(250);
     expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
@@ -393,7 +402,7 @@ describe("saving", () => {
   });
 });
 
-describe("who may change them", () => {
+describe("who may see and change them", () => {
   it("lets a viewer read the rules but not touch them", async () => {
     setUser("viewer");
     setRoutes(answers(view()));
@@ -405,7 +414,7 @@ describe("who may change them", () => {
     expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument();
   });
 
-  it("says why, because the rules are not the reader's alone", async () => {
+  it("says why, and which box an admin would have to tick", async () => {
     setUser("viewer");
     setRoutes(answers(view()));
     show();
@@ -413,7 +422,50 @@ describe("who may change them", () => {
 
     expect(
       screen.getByText(/Changing what the app alerts on changes it for everybody/)
+    ).toHaveTextContent(
+      'Your role (Viewer) can\'t change alert thresholds. Ask an admin to allow "Alert thresholds: Update" for this role.'
+    );
+  });
+
+  it("lets a viewer change them once an admin ticks the box for viewers", async () => {
+    // The screen asks about the permission, never the role's name, so this is
+    // all it takes. Before the Roles tab it took the editor role.
+    setUser("viewer", [...(presetFor("viewer") ?? []), "alert_thresholds:update"]);
+    setRoutes(answers(view()));
+    show();
+    await loaded();
+
+    expect(box("Query slower than")).toBeEnabled();
+    expect(check("Query slower than")).toBeEnabled();
+    expect(saveButton()).toBeEnabled();
+    expect(
+      screen.queryByText(/You can see these rules but not change them/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("asks nothing of a role that may not read them, and names the box it needs", async () => {
+    // A custom role with the Performance screen but not this tab of it.
+    setCustomRole("analyst", "Analyst", ["performance:read"]);
+    setRoutes(answers(view()));
+    show();
+    await flushAsync();
+
+    expect(screen.getByText("You can't see the alert thresholds")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Your role (Analyst) can\'t see alert thresholds. Ask an admin to allow "Alert thresholds: Read" for this role.'
+      )
     ).toBeInTheDocument();
+    expect(fetchCalls).toHaveLength(0);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("says that before asking for a schema, because picking one would not help", () => {
+    setCustomRole("analyst", "Analyst", ["performance:read"]);
+    show(null);
+
+    expect(screen.getByText("You can't see the alert thresholds")).toBeInTheDocument();
+    expect(screen.queryByText(/Choose a PostgreSQL connection/)).not.toBeInTheDocument();
   });
 });
 

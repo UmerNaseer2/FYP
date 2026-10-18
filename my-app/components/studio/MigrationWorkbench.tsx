@@ -23,6 +23,8 @@ import {
   rollbackToSend,
   validateScriptName,
 } from "@/lib/registry-push";
+import { useUser } from "@/hooks/useUser";
+import { refusalMessage } from "@/lib/permissions";
 // Type-only imports: compare-run opens the metadata database (pg) and
 // version-detection reads target databases, so a value import would drag
 // server code into the browser bundle.
@@ -261,6 +263,15 @@ export function MigrationWorkbench({
   const [push, setPush] = useState<PushState>({ kind: "idle" });
   const [attach, setAttach] = useState<AttachStatus | null>(null);
 
+  // Pushing saves a new version to the script registry, which is the
+  // "Scripts: Create" box on the Roles tab. A role without it can still read
+  // and copy the migration. The push route would refuse it anyway; this says
+  // why before the button is pressed. Nothing is said while the session
+  // loads, so a role that may push is not told for a moment that it can't.
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  const pushRefusal =
+    sessionLoading || can("scripts:create") ? null : refusalMessage(roleLabel, "scripts:create");
+
   // Everything below reads the pane the user is currently looking at.
   const showingDown = pane === "down";
   const activeSql = showingDown ? rollbackSql : sql;
@@ -404,6 +415,8 @@ export function MigrationWorkbench({
    * a disabled button always says what to do about it.
    */
   function whyPushIsBlocked(): string | null {
+    // First, because no edit to the script would make Push work.
+    if (pushRefusal) return pushRefusal;
     if (nameProblem) return nameProblem;
     if (!hasExecutableSql(sql)) return MIGRATION_NO_STATEMENTS;
     if (upTxnViolation || downTxnViolation) {
@@ -615,6 +628,9 @@ export function MigrationWorkbench({
   // has a rollback with statements.
   async function addRollbackToPushed() {
     if (!attachOffer || pushedHere === null || downSql === undefined || attachSaving) return;
+    // It writes to the registry like a push does, so it needs the same box.
+    // Only reachable when an admin took the box away after this page pushed.
+    if (pushRefusal !== null) return;
     // Taken from this render, so the answer is reported against what was sent.
     const key = familyKey;
     const version = pushedHere.version;
@@ -1206,7 +1222,8 @@ export function MigrationWorkbench({
                         <button
                           type="button"
                           className="btn btn-primary btn-sm mt-2"
-                          disabled={attachSaving}
+                          disabled={attachSaving || pushRefusal !== null}
+                          title={pushRefusal ?? undefined}
                           onClick={addRollbackToPushed}
                         >
                           {attachSaving ? "Saving the rollback…" : attachLabel}

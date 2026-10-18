@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Card, EmptyState, Pill } from "@/components/ui";
 import { useUser } from "@/hooks/useUser";
-import { roleAtLeast } from "@/lib/auth-mode";
+import { refusalMessage } from "@/lib/permissions";
 import { AlertCircleIcon, CheckIcon, PlayIcon } from "@/components/ui/icons";
 import {
   FindingCard,
@@ -98,7 +98,7 @@ export function QueryAnalyzer({
   /** The table a suggestion's "Analyse a query on this table" link named. */
   initialTable?: string | null;
 }) {
-  const { role, loading: roleLoading } = useUser();
+  const { roleLabel, loading: roleLoading, can } = useUser();
   const [sql, setSql] = useState(() => starterQuery(initialTable));
   // A link to a different table while this tab is already open (Back, say)
   // gives the editor that table's starter lines, but only if the reader has
@@ -133,11 +133,12 @@ export function QueryAnalyzer({
 
   const ready = Boolean(target && sql.trim() && !running);
 
-  // Measuring runs the query, so the route asks for the editor role. Deciding
-  // that here as well is not a second gate — the server's is the gate — it is
-  // so a viewer is told before they press the button instead of after, and so a
-  // request can never be sent that we already know will come back a 403.
-  const canMeasure = roleAtLeast(role, "editor");
+  // Measuring runs the query, so the route asks for "Performance: Run".
+  // Deciding that here as well is not a second gate, because the server's is
+  // the gate. It is so the person is told before they press the button instead
+  // of after, and so a request can never be sent that we already know will
+  // come back a 403.
+  const canMeasure = can("performance:run");
   const measure = wantsMeasure && canMeasure;
 
   async function analyse() {
@@ -257,8 +258,8 @@ export function QueryAnalyzer({
                   </>
                 ) : (
                   <>
-                    Running the query needs the editor role, and yours is viewer.
-                    You can still analyse it — the server will say what it would
+                    {refusalMessage(roleLabel, "performance:run")}{" "}
+                    You can still analyse it: the server will say what it would
                     do, using its own estimates, without touching any rows.
                   </>
                 )}

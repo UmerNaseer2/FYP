@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import {
   driftSchedulerStatus,
@@ -57,7 +57,7 @@ type ScheduleQueryRow = {
 };
 
 export async function GET() {
-  const gate = await requireViewer();
+  const gate = await requirePermission("drift:read");
   if (!gate.ok) return gate.response;
 
   try {
@@ -115,11 +115,12 @@ export async function GET() {
 /**
  * PATCH  { trackedSchemaId, intervalMinutes }
  *
- * Change how often one schema is checked. Editor-gated because the number
- * decides how often this app connects to somebody else's database.
+ * Change how often one schema is checked. Needs Drift tracking: Update,
+ * because the number decides how often this app connects to somebody
+ * else's database.
  */
 export async function PATCH(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("drift:update");
   if (!gate.ok) return gate.response;
 
   let body: { trackedSchemaId?: number; intervalMinutes?: number };

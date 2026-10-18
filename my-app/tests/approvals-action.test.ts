@@ -29,8 +29,10 @@ jest.mock("../lib/version-db", () => ({
   syncMetadataTables: async () => undefined,
 }));
 jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", bypass: false } }),
-  requireViewer: async () => ({ ok: true, principal: null }),
+  requirePermission: async () => ({
+    ok: true,
+    principal: require("./helpers/principals").principalFor("editor", { email: "a@test" }),
+  }),
 }));
 
 type RouteModule = typeof import("../app/api/deploy/approvals/route");

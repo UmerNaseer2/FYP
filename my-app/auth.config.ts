@@ -63,10 +63,10 @@ export const authConfig = {
   session: { strategy: "jwt" },
   callbacks: {
     /**
-     * Consulted by the edge proxy for page requests. Roles are NOT checked here —
-     * the edge runtime cannot reach the database, so this only answers "is there
-     * a session at all". Role enforcement happens in lib/auth-guard.ts, on the
-     * node side, where the profile row is readable.
+     * Consulted by the edge proxy for page requests. Permissions are NOT checked
+     * here: the edge runtime cannot reach the database, so this only answers "is
+     * there a session at all". Permission checks happen in lib/auth-guard.ts, on
+     * the node side, where what each role may do is readable.
      */
     authorized({ auth }) {
       return Boolean(auth?.user);

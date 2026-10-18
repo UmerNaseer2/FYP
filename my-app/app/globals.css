@@ -78,7 +78,8 @@ body {
   }
 
   /* Sticky positioning and internal scrolling both fight pagination. */
-  .sticky-panel {
+  .sticky-panel,
+  .role-savebar {
     position: static !important;
   }
 
@@ -93,6 +94,7 @@ body {
   .matrix-wrap,
   .banner,
   .warn-inline,
+  .role-note,
   .rename {
     break-inside: avoid;
     page-break-inside: avoid;
@@ -831,6 +833,84 @@ summary.obj-header::-webkit-details-marker { display:none; }
    risk is real but held back — see DataCompare's drop banner. */
 .warn-inline .title { color:var(--drift); font-weight:600; font-size:12.5px; }
 .warn-inline .body { color:var(--text); line-height:1.5; }
+
+/* What the signed-in role may not do on this screen, said once for the screen
+   rather than beside every button it turns off. Neutral on purpose: it is not
+   an error (.banner) and not a risk (.warn-inline), just a box an admin has
+   not ticked on the Roles tab. Same two-line shape as both. */
+.role-note { display:flex; gap:10px; padding:10px 12px; border-radius:8px;
+             background:var(--surface-2); border:1px solid var(--border);
+             font-size:12.5px; color:var(--text); }
+.role-note .ico { color:var(--text-3); flex:none; margin-top:1px; }
+.role-note .title { color:var(--text); font-weight:600; font-size:12.5px; }
+.role-note .body { color:var(--text-2); line-height:1.5; }
+
+/* Admin > Roles & permissions: one row per feature, one column per action.
+   Headed like the connections table so the two read as one app. The table
+   keeps its width and scrolls inside its own box on a phone (the wrapper in
+   PermissionGrid has overflow-x:auto), because squeezing six checkbox
+   columns into 375px would leave nothing readable. */
+.perm-grid { width:100%; min-width:640px; border-collapse:collapse; font-size:13px; }
+.perm-grid th, .perm-grid td { padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.perm-grid thead th { font-size:11px; font-weight:600; color:var(--text-3); text-transform:uppercase; letter-spacing:.06em;
+                      background:var(--surface-2); border-top:1px solid var(--border); text-align:center; white-space:nowrap; }
+.perm-grid thead th:first-child { text-align:left; }
+.perm-grid tbody th { text-align:left; font-weight:500; min-width:220px; }
+.perm-grid tbody td { text-align:center; width:76px; }
+.perm-grid tbody tr:last-child th,
+.perm-grid tbody tr:last-child td { border-bottom:none; }
+.perm-grid .feature-desc { font-size:12px; font-weight:400; color:var(--text-3); line-height:1.45; margin-top:2px; }
+/* A box that differs from what is saved, so a long edit shows what Save will change. */
+.perm-grid td.changed { background: color-mix(in oklab, var(--brand) 10%, transparent); }
+.perm-grid input[type="checkbox"] { width:16px; height:16px; accent-color:var(--brand); cursor:pointer; vertical-align:middle; }
+.perm-grid input[type="checkbox"]:disabled { cursor:not-allowed; }
+.perm-grid td.admins-only { font-size:12px; color:var(--text-3); }
+
+/* The change log under the grid: one line per save, newest first. */
+.role-log li { display:flex; flex-direction:column; gap:2px; padding:10px 0; border-bottom:1px solid var(--border); }
+.role-log li:first-child { padding-top:0; }
+.role-log li:last-child { border-bottom:none; padding-bottom:0; }
+
+/* Under the grid while a role has unsaved changes, and after a save to say how
+   it went. Sticky, so Save stays in reach at the bottom of the screen while a
+   long grid is scrolled. That only works because the card around it does not
+   clip its contents (no overflow:hidden on it). */
+.role-savebar { position:sticky; bottom:0; z-index:1; display:flex; align-items:center;
+                justify-content:space-between; gap:10px 12px; flex-wrap:wrap; padding:10px 16px;
+                background:var(--surface-2); border-top:1px solid var(--border);
+                border-radius:0 0 13px 13px; }
+.role-savebar > .banner, .role-savebar > .test-banner { flex:1 1 100%; align-items:center; }
+
+/* Admin: the guide at the top of the page (components/admin/PermissionsGuide).
+   A .table-group, so it folds in the same frame as the app's other folding
+   panels. Inside, the steps sit beside what each box means on a wide screen,
+   and above it on a phone. */
+.admin-guide:not([open]) > .tg-header { border-bottom-color:transparent; }
+.admin-guide__ico { color:var(--text-3); flex:none; }
+.admin-guide__title { font-size:13.5px; font-weight:600; color:var(--text); }
+.admin-guide__body { display:grid; gap:20px; padding:16px 18px 18px; font-size:13px;
+                     line-height:1.55; color:var(--text-2); }
+.admin-guide__body b { color:var(--text); font-weight:600; }
+.admin-guide__body .section-title { margin-bottom:10px; }
+.admin-guide__intro { max-width:72ch; }
+.admin-guide__cols { display:grid; gap:20px; }
+@media (min-width: 720px) { .admin-guide__cols { grid-template-columns:1fr 1fr; gap:32px; } }
+/* Each step is numbered in a small circle. Absolutely placed, so the words of a
+   step can run on as ordinary text, bold labels and all. */
+.admin-guide__steps { counter-reset:guide-step; display:grid; gap:10px; }
+.admin-guide__steps > li { counter-increment:guide-step; position:relative; padding-left:32px; }
+.admin-guide__steps > li::before { content:counter(guide-step); position:absolute; left:0; top:-1px;
+                                   width:22px; height:22px; border-radius:999px; display:grid;
+                                   place-items:center; font-size:11.5px; font-weight:600;
+                                   font-variant-numeric:tabular-nums; color:var(--brand);
+                                   background:var(--brand-soft); }
+/* The box names are set like the grid's own column headings, so the two read
+   as the same words. */
+.admin-guide__boxes { display:grid; grid-template-columns:auto 1fr; gap:7px 14px; }
+.admin-guide__boxes dt { font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+                         color:var(--text); line-height:20px; }
+.admin-guide__notes { display:grid; gap:7px; padding-left:18px; list-style:disc; }
+.admin-guide__notes > li::marker { color:var(--text-3); }
 
 /* Production gate — the stop in front of SQL that runs on a live database.
    Louder than .warn-inline on purpose: that one reports a risk, this one is

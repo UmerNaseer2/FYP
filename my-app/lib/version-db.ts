@@ -2,6 +2,7 @@ import { fn, col, where as whereFn } from "sequelize";
 import { metadataPool } from "./db/sequelize";
 import { Profile as ProfileModel } from "./db/models";
 import { syncMetadataTables } from "./db/bootstrap";
+import { ADMIN_ROLE, DEFAULT_ROLE } from "./permissions";
 
 /**
  * The app's own database — the one place that hands out a connection to it.
@@ -48,6 +49,9 @@ function sameEmail(normalised: string) {
  * The FIRST person to sign in becomes `admin` — otherwise a fresh deployment
  * has a profiles table full of viewers and nobody who can promote anyone. Every
  * subsequent sign-in gets `viewer` and has to be promoted from the admin screen.
+ *
+ * What a role may do is read separately, on every session (getProfileAccess
+ * in lib/roles-db.ts), so this only ever decides where a new person starts.
  */
 export async function upsertProfile(email: string, name: string | null): Promise<Profile> {
   await syncMetadataTables();
@@ -64,7 +68,7 @@ export async function upsertProfile(email: string, name: string | null): Promise
     return toProfile(existing);
   }
 
-  const role = (await ProfileModel.count()) === 0 ? "admin" : "viewer";
+  const role = (await ProfileModel.count()) === 0 ? ADMIN_ROLE : DEFAULT_ROLE;
 
   // findOrCreate rather than create: two people signing in at the same moment
   // would otherwise race, and the loser would see a unique-violation error page
@@ -74,16 +78,6 @@ export async function upsertProfile(email: string, name: string | null): Promise
     defaults: { email: normalised, name, role, last_seen_at: new Date() },
   });
   return toProfile(created);
-}
-
-/** Read just the role for an email. Returns null when there is no profile. */
-export async function getProfileRole(email: string): Promise<string | null> {
-  await syncMetadataTables();
-  const row = await ProfileModel.findOne({
-    where: sameEmail(email.trim().toLowerCase()),
-    attributes: ["role"],
-  });
-  return row?.role ?? null;
 }
 
 export default pool;

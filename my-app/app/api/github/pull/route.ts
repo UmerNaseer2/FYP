@@ -24,7 +24,7 @@
 //   502 { ok: false, code, error }  code: github_unreachable | token_rejected |
 //       github_forbidden | github_rate_limited | repo_not_found | github_down | github_error
 import { NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import {
   contentsPathUrl,
   GITHUB_TIMEOUT_MS,
@@ -260,7 +260,7 @@ function byFamilyThenVersion(a: GitHubScript, b: GitHubScript): number {
 }
 
 export async function GET() {
-  const gate = await requireViewer();
+  const gate = await requirePermission("scripts:read", "deploy:read");
   if (!gate.ok) return gate.response;
 
   // The GitHub settings, read now rather than when the module loads. The

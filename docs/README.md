@@ -16,12 +16,13 @@ Team: Umer Naseer, Frandya Meidy F., Cindy Wong IY. Supervisor: Jason Thomas Che
 | `REVIEW_PROMPT.md` | A paste-ready prompt for an external AI reviewer, including what is deliberately out of scope. | Getting a useful outside review instead of a list of things already known. |
 | `requirements/COS40005-team-and-project-plan.*` | The project plan agreed with the client. Stakeholders, scope, the mandated technology stack, and the 38-item Product Backlog (Table 5). | **The requirements.** This is the authoritative statement of what the software is supposed to do. |
 | `requirements/fyp-poster.*` | The academic poster: problem framing, literature review, gap analysis against Flyway and Liquibase. | Why the project exists and how it differs from existing tools. |
-| `user-manual/schema-studio-user-manual.txt` | End-user walkthrough of the app, screen by screen. | **The app as a user meets it.** Re-read against the code on 2026-09-18 (v2.1.0). |
+| `user-manual/schema-studio-user-manual.txt` | End-user walkthrough of the app, screen by screen. | **The app as a user meets it.** Re-read against the code on 2026-09-18 (v2.1.0). Roles and permissions rewritten on 2026-10-17 (v2.2.0). |
+| `demo/week-7-permissions-demo.md` | The script for the Week 7 client demo of roles and permissions: what to set up, what to press, and what the screen says at each step. | Running that demo. Written from the code on 2026-10-17. |
 
 `.txt` files are text extractions of the original documents, kept alongside them
 so a reader that cannot open a PDF still gets the full content.
 
-The first two rows and the last one are maintained alongside the code and
+The first two rows and the last two are maintained alongside the code and
 describe it as it is today. The rest are coursework documents, frozen at the
 date they were submitted.
 
@@ -41,6 +42,10 @@ the example has since been dropped from that walkthrough entirely.
 Read the code first. These documents were written at points in time and the code
 moved past them.
 
+- **The project plan maps Microsoft Entra ID groups to application roles.**
+  Roles are given to people on the Admin page instead, where an admin also
+  decides what each role may do, feature by feature, and can add roles of their
+  own. See `my-app/lib/permissions.ts` and section 11 of the user manual.
 - **The project plan lists rollback and query analysis as later work.** Both are
   built. See `my-app/lib/query-analysis.ts`, `my-app/lib/perf-advice.ts` and the
   `/api/scripts/revert` route.
@@ -48,9 +53,10 @@ moved past them.
   repository carries no Entra ID credentials, so the button is disabled with an
   explanation until a server is given them. A checkout can be opened for testing
   with `NEXT_PUBLIC_AUTH_BYPASS=true` in `.env.local`, which lets everybody in as
-  an admin and says so on screen — an "auth off" pill in the sidebar. Without
-  that line authentication is enforced and an unconfigured checkout is shut, not
-  open: see the reasoning at the top of `my-app/lib/auth-mode.ts`.
+  an admin (or as the role picked in View as) and says so on screen — an "auth
+  off" pill in the sidebar. Without that line authentication is enforced and an
+  unconfigured checkout is shut, not open: see the reasoning at the top of
+  `my-app/lib/auth-mode.ts`.
 
 Two entries left this list on 2026-09-18, when the user manual was re-read
 against the code: it described two roles where there are three, and it had no

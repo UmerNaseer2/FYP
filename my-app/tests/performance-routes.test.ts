@@ -12,14 +12,19 @@ import type { SchemaSnapshot } from "@/lib/postgres";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-// A principal rather than null: requireViewer/requireEditor return
+// A whole principal rather than null: requirePermission returns
 // `{ ok: true; principal: Principal }`, so `ok` being true means there is one.
 // The routes record who analysed a query, and a mock that answers null for the
-// allowed case describes a state the real guard cannot produce.
-const PRINCIPAL = { email: "tester@example.com", name: "Tester", role: "editor" };
+// allowed case describes a state the real guard cannot produce. An editor,
+// because measuring a query needs Performance: Run, which an editor starts with.
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: async () => ({ ok: true, principal: PRINCIPAL }),
-  requireEditor: async () => ({ ok: true, principal: PRINCIPAL }),
+  requirePermission: async () => ({
+    ok: true,
+    principal: require("./helpers/principals").principalFor("editor", {
+      email: "tester@example.com",
+      name: "Tester",
+    }),
+  }),
 }));
 
 // The metadata database, which only holds the saved connection here.

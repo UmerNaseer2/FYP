@@ -1,5 +1,6 @@
 import pool, { syncMetadataTables } from "./version-db";
 import { toEnvironment, type Environment } from "./environments";
+import { refusalMessage } from "./permissions";
 import {
   isNameConflict,
   validateSaveInput,
@@ -227,8 +228,26 @@ export async function getComparisonSet(id: number): Promise<ComparisonSet | null
 export type SaveResult =
   | { ok: true; set: ComparisonSet; created: boolean }
   /** `conflict` is true when the name belongs to another set and nobody has
-   *  confirmed replacing it; the screen asks, then sends `overwrite`. */
-  | { ok: false; error: string; conflict: boolean };
+   *  confirmed replacing it; the screen asks, then sends `overwrite`.
+   *  `refused` is true when the caller's role may not do what this save
+   *  turned out to be (see SaveAccess). */
+  | { ok: false; error: string; conflict: boolean; refused?: boolean };
+
+/**
+ * What the caller's role may do to saved sets, worked out by the route.
+ *
+ * Needed here rather than at the route because one Save button does two
+ * different things, and only this function can tell which: a name nobody has
+ * used makes a new set (Comparison sets: Create), and a name that is already
+ * a set's rewrites that set (Comparison sets: Update). The route lets through
+ * a role with either, and this refuses the one it does not have.
+ */
+export type SaveAccess = {
+  mayCreate: boolean;
+  mayUpdate: boolean;
+  /** The caller's role as people read it, for the refusal. */
+  roleLabel: string;
+};
 
 /**
  * Save a set: create it, update the set that is open, or — once the user has
@@ -245,7 +264,8 @@ export type SaveResult =
  * with fewer targets than it had before the save.
  */
 export async function saveComparisonSet(
-  input: SaveComparisonSetInput
+  input: SaveComparisonSetInput,
+  access: SaveAccess
 ): Promise<SaveResult> {
   const problem = validateSaveInput(input);
   if (problem) return { ok: false, error: problem, conflict: false };
@@ -266,6 +286,27 @@ export async function saveComparisonSet(
       [name]
     );
     const existingId = existing.rows[0]?.id ?? null;
+
+    // A name nobody has used makes a new set, even with a set open (that is
+    // how "save under a new name" works); a taken name rewrites that set.
+    // Checked before the "already exists" question below, so a role that may
+    // not overwrite is never asked whether it wants to. The race above can
+    // still turn a create into an update, which for a saved selection is an
+    // acceptable edge.
+    const creating = existingId === null;
+    if (creating ? !access.mayCreate : !access.mayUpdate) {
+      await client.query("ROLLBACK");
+      return {
+        ok: false,
+        error: creating
+          ? refusalMessage(access.roleLabel, "comparison_sets:create")
+          : refusalMessage(access.roleLabel, "comparison_sets:update") +
+            (access.mayCreate ? " Or save it under a new name." : ""),
+        conflict: false,
+        refused: true,
+      };
+    }
+
     if (isNameConflict(existingId, input.id, input.overwrite)) {
       await client.query("ROLLBACK");
       return {

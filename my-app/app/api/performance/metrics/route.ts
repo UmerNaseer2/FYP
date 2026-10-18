@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { readSchemaMetrics, METRIC_RETENTION_DAYS } from "@/lib/schema-metrics";
 import { normalizeDriftInterval } from "@/lib/drift-schedule";
@@ -64,7 +64,7 @@ function windowDays(raw: string | null): number {
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("performance:read");
   if (!gate.ok) return gate.response;
 
   const connectionId = Number(request.nextUrl.searchParams.get("connectionId") ?? "");

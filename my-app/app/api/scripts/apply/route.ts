@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
+import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
 import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
@@ -473,7 +474,7 @@ function answerBeforeRun(body: Record<string, unknown>, init: { status: number }
  * would be empty in exactly the cases the audit trail exists for.
  */
 async function runApply(request: NextRequest, attempt: AttemptContext) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("deploy:run");
   if (!gate.ok) return gate.response;
   attempt.actor = actorFor(gate.principal);
 
@@ -742,7 +743,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   //
   // The gate at the top of this route asked whether the caller may run
   // migrations at all. This asks whether they may run one against THIS
-  // database, which is the question spec feature 02 is about: the same editor
+  // database, which is the question spec feature 02 is about: the same person
   // is trusted on dev and not on production, and a role alone cannot say so.
   //
   // Before opening a connection to the target, and before the production
@@ -752,9 +753,13 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // the quiet way to write to a read-only database the one nobody checks.
   {
     const required = toExecuteRole(connRow.execute_role);
-    if (!canExecute(gate.principal.role, required)) {
+    const who = {
+      isAdmin: gate.principal.role === ADMIN_ROLE,
+      mayDeploy: hasPermission(gate.principal, "deploy:run"),
+    };
+    if (!canExecute(who, required)) {
       return answerBeforeRun(
-        { error: executeRefusal(connRow.name, gate.principal.role, required) },
+        { error: executeRefusal(connRow.name, gate.principal.roleLabel, required) },
         { status: 403 }
       );
     }

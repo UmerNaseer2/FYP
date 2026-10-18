@@ -14,6 +14,13 @@
 // This file is not a test itself: Jest only runs tests/**/*.test.ts(x).
 
 import { act } from "react";
+import {
+  ALL_PERMISSIONS,
+  BUILT_IN_ROLE_INFO,
+  effectivePermissions,
+  presetFor,
+  type PermissionKey,
+} from "../../lib/permissions";
 
 /* ------------------------------------------------------------------ routing */
 
@@ -63,13 +70,43 @@ export const navigationStubs = {
 
 export type TestRole = "viewer" | "editor" | "admin";
 
-let session: { user: { email: string; name: string; role: TestRole } } | null = {
-  user: { email: "tester@example.com", name: "Tester", role: "admin" },
+/** What auth.ts puts in a real session: the role, its name, and what it may do. */
+type TestSession = {
+  user: {
+    email: string;
+    name: string;
+    role: string;
+    roleLabel: string;
+    permissions: string[];
+    accessError?: boolean;
+  };
+};
+
+let session: TestSession | null = {
+  user: {
+    email: "tester@example.com",
+    name: "Tester",
+    role: "admin",
+    roleLabel: "Admin",
+    permissions: [...ALL_PERMISSIONS],
+  },
 };
 let sessionStatus: "authenticated" | "unauthenticated" | "loading" = "authenticated";
 
 /**
  * Who the page thinks is signed in. Call before render.
+ *
+ * The role starts with the permissions a new install gives it (presetFor),
+ * which are the boxes every screen was built against. Pass `permissions` to
+ * try a role an admin has changed on the Roles tab: the screens only ever ask
+ * about permissions, so a viewer given "Connections: Create" should see the
+ * button for it.
+ *
+ * Either list goes through effectivePermissions, as lib/roles-db does for
+ * every real session, so a test can only build a role the app could hand
+ * out: each box brings its feature's Read with it, and only an admin has the
+ * admin-only ones. A screen tested against a role that cannot exist is
+ * tested against nothing.
  *
  * Worth knowing why this works at all: `lib/auth-mode` reads
  * NEXT_PUBLIC_AUTH_BYPASS once, at module load, and next/jest does not load
@@ -79,13 +116,56 @@ let sessionStatus: "authenticated" | "unauthenticated" | "loading" = "authentica
  * the old default it would have reported an admin bypass whatever this said,
  * and no role gate on any screen could have been tested.
  */
-export function setUser(role: TestRole | null) {
+export function setUser(role: TestRole | null, permissions?: readonly PermissionKey[]) {
   if (role === null) {
     session = null;
     sessionStatus = "unauthenticated";
     return;
   }
-  session = { user: { email: `${role}@example.com`, name: `A ${role}`, role } };
+  session = {
+    user: {
+      email: `${role}@example.com`,
+      name: `A ${role}`,
+      role,
+      roleLabel: BUILT_IN_ROLE_INFO[role].label,
+      permissions: effectivePermissions(role, permissions ?? presetFor(role) ?? []),
+    },
+  };
+  sessionStatus = "authenticated";
+}
+
+/**
+ * A role an admin made on the Roles tab, which no screen knows by name. Call
+ * before render. The boxes go through effectivePermissions, as in setUser.
+ */
+export function setCustomRole(role: string, roleLabel: string, permissions: readonly PermissionKey[]) {
+  session = {
+    user: {
+      email: `${role}@example.com`,
+      name: `A ${roleLabel}`,
+      role,
+      roleLabel,
+      permissions: effectivePermissions(role, permissions),
+    },
+  };
+  sessionStatus = "authenticated";
+}
+
+/**
+ * Signed in, but the database could not say what the role may do (auth.ts
+ * sets `accessError` then, and every route answers 503). Call before render.
+ */
+export function setAccessError(role: TestRole = "viewer") {
+  session = {
+    user: {
+      email: `${role}@example.com`,
+      name: `A ${role}`,
+      role,
+      roleLabel: BUILT_IN_ROLE_INFO[role].label,
+      permissions: [],
+      accessError: true,
+    },
+  };
   sessionStatus = "authenticated";
 }
 

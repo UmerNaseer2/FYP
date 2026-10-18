@@ -4,7 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { CompareIcon, CheckIcon } from "@/components/ui/icons";
-import { RecheckDriftButton } from "./RecheckDriftButton";
+import { useUser } from "@/hooks/useUser";
+import { refusalMessage } from "@/lib/permissions";
+import { RecheckDriftButton, useDriftCheckRefusal } from "./RecheckDriftButton";
 
 type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
 
@@ -21,6 +23,10 @@ type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
  * Every write has to make the hero and the diff above re-read, so `onDone` is
  * required rather than falling back to a router refresh — see
  * RecheckDriftButton, which this bar hands it straight through to.
+ *
+ * Re-baselining and acknowledging both need Drift tracking: Update, and the
+ * re-check needs Run. A role without them sees the buttons off, and the
+ * reasons once, under the bar.
  */
 export function DriftResolutionBar({
   trackedSchemaId,
@@ -46,7 +52,16 @@ export function DriftResolutionBar({
   const [recheckBusy, setRecheckBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const { roleLabel, loading: sessionLoading, can } = useUser();
+  // Both change how the schema is tracked: a new baseline, or a drift marked
+  // as reviewed. Their routes ask for the same box.
+  const resolveRefusal =
+    sessionLoading || can("drift:update") ? null : refusalMessage(roleLabel, "drift:update");
+  const checkRefusal = useDriftCheckRefusal();
+
   async function post(path: string, kind: "rebaseline" | "acknowledge") {
+    // The buttons are off already. The route would refuse it too.
+    if (resolveRefusal !== null) return;
     setBusy(kind);
     setError(null);
     try {
@@ -75,6 +90,12 @@ export function DriftResolutionBar({
   const canResolve = state === "drifted";
   const recheckLabel = state === "in_sync" ? "Re-check" : "Check drift now";
 
+  // Why buttons in this bar are off for this role. The resolve reason only
+  // while those buttons are showing.
+  const notes = [canResolve ? resolveRefusal : null, checkRefusal].filter(
+    (note): note is string => note !== null
+  );
+
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {canResolve && compareHref && (
@@ -87,7 +108,8 @@ export function DriftResolutionBar({
           variant="secondary"
           size="sm"
           onClick={() => setConfirmRebaseline(true)}
-          disabled={anyBusy}
+          disabled={anyBusy || resolveRefusal !== null}
+          title={resolveRefusal ?? undefined}
         >
           {busy === "rebaseline" ? "Re-baselining…" : "Re-baseline to live"}
         </Button>
@@ -97,7 +119,8 @@ export function DriftResolutionBar({
           variant="ghost"
           size="sm"
           onClick={() => void post("/api/lineage/acknowledge", "acknowledge")}
-          disabled={anyBusy}
+          disabled={anyBusy || resolveRefusal !== null}
+          title={resolveRefusal ?? undefined}
         >
           {busy === "acknowledge" ? (
             "Acknowledging…"
@@ -116,12 +139,25 @@ export function DriftResolutionBar({
         onDone={onDone}
         disabled={busy !== null}
         onBusyChange={setRecheckBusy}
+        explainRefusal={false}
       />
 
       {error && (
         <span className="text-[11.5px]" style={{ color: "var(--break)" }}>
           {error}
         </span>
+      )}
+
+      {/* Said once for the bar, on a line of its own, rather than beside
+          each button it turns off. */}
+      {notes.length > 0 && (
+        <div className="basis-full space-y-0.5">
+          {notes.map((note) => (
+            <p key={note} className="help">
+              {note}
+            </p>
+          ))}
+        </div>
       )}
 
       <ConfirmDialog

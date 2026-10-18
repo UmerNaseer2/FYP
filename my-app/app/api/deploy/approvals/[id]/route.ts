@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import {
   decideApproval,
   decisionBlockReason,
@@ -13,8 +13,9 @@ import {
  *
  * Two things make this a real gate rather than a second checkbox:
  *
- *   - It needs the `admin` role, so the person who can run a deploy (editor)
- *     cannot also clear it.
+ *   - It needs Approvals: Approve, a permission of its own, so being allowed
+ *     to run a deploy is not enough to clear one. Out of the box only admins
+ *     hold it.
  *   - It refuses a decision from the person who asked. That check lives here
  *     AND as a CHECK constraint on the table, because a rule enforced only in
  *     application code is one refactor away from not being enforced at all.
@@ -28,7 +29,7 @@ export async function POST(
   request: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
-  const gate = await requireAdmin();
+  const gate = await requirePermission("approvals:approve");
   if (!gate.ok) return gate.response;
 
   const { id: rawId } = await context.params;

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
@@ -18,7 +18,7 @@ import { fetchSchemaNames } from "@/lib/postgres";
  * Returns: { schemas: string[] } on success, or { error } with a 4xx/5xx.
  */
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("dashboard:read", "compare:read", "performance:read");
   if (!gate.ok) return gate.response;
 
   const connectionId = Number(

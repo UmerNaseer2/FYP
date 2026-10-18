@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
@@ -25,7 +25,7 @@ import { requestImmediateCheck } from "@/lib/drift-scheduler";
  * because one server can host a staging schema and a production one.
  */
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("drift:create");
   if (!gate.ok) return gate.response;
 
   await syncMetadataTables();

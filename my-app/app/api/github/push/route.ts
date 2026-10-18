@@ -46,7 +46,7 @@
 //   502 token_rejected | github_forbidden | github_rate_limited | repo_not_found |
 //       github_down | github_error | github_unreachable | outcome_unknown
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { MAX_CHANGE_NOTE_LENGTH, stampChangeNote } from "@/lib/change-note";
 import { stampChangeType, type ScriptChangeType } from "@/lib/change-type";
 import {
@@ -534,8 +534,8 @@ async function attachRollback(config: GitHubConfig, input: AttachPush, files: Re
 }
 
 export async function POST(req: NextRequest) {
-  // 1. Only editors write to the registry.
-  const gate = await requireEditor();
+  // 1. Only a role allowed to save scripts writes to the registry.
+  const gate = await requirePermission("scripts:create");
   if (!gate.ok) return gate.response;
 
   // 2. The GitHub settings, read now rather than when the module loads, so a

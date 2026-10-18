@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getThresholds, saveThresholds } from "@/lib/perf-thresholds-db";
 import {
@@ -52,7 +52,7 @@ async function connectionName(connectionId: number): Promise<string | null> {
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("alert_thresholds:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;
@@ -84,10 +84,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  // Changing what the app alerts on changes what everybody else sees, so this
-  // is an editor's action rather than a viewer's — the same line drawn around
-  // every other setting that outlives the request.
-  const gate = await requireEditor();
+  // Changing what the app alerts on changes what everybody else sees, so it
+  // needs Alert thresholds: Update, not just the Read that showing them needs.
+  // Out of the box that is editors, the same line drawn around every other
+  // setting that outlives the request.
+  const gate = await requirePermission("alert_thresholds:update");
   if (!gate.ok) return gate.response;
 
   let body: { connectionId?: unknown; schema?: unknown; settings?: unknown };

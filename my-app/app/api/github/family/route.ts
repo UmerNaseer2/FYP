@@ -16,7 +16,7 @@
 //   500 { ok: false, code: "github_unconfigured", error }   (the same code as push and pull)
 //   502 { ok: false, code, error }      GitHub could not be read
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import {
   familyVersions,
   GITHUB_UNCONFIGURED_CODE,
@@ -28,9 +28,9 @@ import { familyPathProblem } from "@/lib/registry-push";
 import { highestVersion } from "@/lib/script-status";
 
 export async function GET(request: NextRequest) {
-  // Reading the family is harmless, so any signed-in viewer may do it, the
-  // same as the pull route.
-  const gate = await requireViewer();
+  // Reading the family is harmless, so any role that may open the Script
+  // Editor or Compare (where the Migration Workbench saves from) may do it.
+  const gate = await requirePermission("scripts:read", "compare:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;

@@ -5,13 +5,13 @@
 // the bottom of the second. A rank can always be outranked; "read-only" has to
 // hold against an admin or it is not a statement about the database at all.
 // Most of what is below exists to pin that down, because it is the rule most
-// likely to be quietly "simplified" later into a fourth entry in ROLES.
+// likely to be quietly "simplified" later into one more box on the Roles tab.
 //
 // The rest guards the two directions the refusal can go wrong: a setting that
 // nobody recognises must not lock a connection, and the sentence shown to the
 // person who was refused must not send them looking for something that does
 // not exist.
-import { ROLES } from "@/lib/auth-mode";
+import { BUILT_IN_ROLE_INFO, BUILT_IN_ROLES } from "@/lib/permissions";
 import {
   DEFAULT_EXECUTE_ROLE,
   EXECUTE_ROLES,
@@ -20,36 +20,48 @@ import {
   executeRefusal,
   executeRoleBadge,
   toExecuteRole,
+  type ExecuteAbility,
 } from "@/lib/connection-access";
 
+// A role is no longer a rank, so the module is asked about abilities: whether
+// the person holds "Deploy: Run", and whether they are the Admin role.
+const ADMIN: ExecuteAbility = { isAdmin: true, mayDeploy: true };
+const DEPLOYER: ExecuteAbility = { isAdmin: false, mayDeploy: true };
+const READER: ExecuteAbility = { isAdmin: false, mayDeploy: false };
+/** Cannot happen today (admin holds everything), but the rule must not lean on that. */
+const ADMIN_WITHOUT_DEPLOY: ExecuteAbility = { isAdmin: true, mayDeploy: false };
+const EVERYONE = [ADMIN, DEPLOYER, READER, ADMIN_WITHOUT_DEPLOY];
+
 describe("canExecute", () => {
-  test("read-only refuses every role there is, admin included", () => {
-    // Not "admin is refused" as a one-off — every role, so that adding one
-    // above admin later cannot quietly open a hole in a read-only database.
-    for (const role of ROLES) {
-      expect(canExecute(role, "none")).toBe(false);
+  test("read-only refuses everyone, admin included", () => {
+    // Not "admin is refused" as a one-off: everyone, so that a role made later
+    // with every box ticked cannot quietly open a hole in a read-only database.
+    for (const who of EVERYONE) {
+      expect(canExecute(who, "none")).toBe(false);
     }
   });
 
-  test("an editor clears an editor connection but not an admin one", () => {
-    expect(canExecute("editor", "editor")).toBe(true);
-    expect(canExecute("editor", "admin")).toBe(false);
+  test("a role that may deploy clears a default connection but not an admin one", () => {
+    expect(canExecute(DEPLOYER, "editor")).toBe(true);
+    expect(canExecute(DEPLOYER, "admin")).toBe(false);
   });
 
-  test("an admin clears an editor connection", () => {
+  test("an admin clears both", () => {
     // Upward, not exactly: the requirement is a floor, so being over it is
     // fine. Reading it as an equality would lock admins out of everything
     // except the connections marked for them specifically.
-    expect(canExecute("admin", "editor")).toBe(true);
-    expect(canExecute("admin", "admin")).toBe(true);
+    expect(canExecute(ADMIN, "editor")).toBe(true);
+    expect(canExecute(ADMIN, "admin")).toBe(true);
   });
 
-  test("a viewer clears nothing, whatever the connection says", () => {
-    // The route gate above this already refuses a viewer, so this is the
-    // second of two locks rather than the only one — but it is the one that
-    // survives somebody relaxing the gate.
+  test("nobody without Deploy: Run clears anything, whatever the connection says", () => {
+    // The route gate above this already refuses them, so this is the second of
+    // two locks rather than the only one, and it is the one that survives
+    // somebody relaxing the gate. The setting narrows who may deploy; it never
+    // lets somebody in.
     for (const required of EXECUTE_ROLES) {
-      expect(canExecute("viewer", required)).toBe(false);
+      expect(canExecute(READER, required)).toBe(false);
+      expect(canExecute(ADMIN_WITHOUT_DEPLOY, required)).toBe(false);
     }
   });
 });
@@ -75,7 +87,7 @@ describe("toExecuteRole", () => {
     // Guards the pair of constants against drifting apart: if the default were
     // ever changed to "none", every unrecognised value above would become a
     // frozen connection and the fallback test would still pass.
-    expect(canExecute("editor", DEFAULT_EXECUTE_ROLE)).toBe(true);
+    expect(canExecute(DEPLOYER, DEFAULT_EXECUTE_ROLE)).toBe(true);
   });
 });
 
@@ -102,27 +114,38 @@ describe("executeRefusal", () => {
   test("names the connection, so the reader can tell which one refused", () => {
     // Someone with four saved connections open in four tabs needs to know it
     // was this one. "403" does not tell them that and neither does "denied".
-    expect(executeRefusal("Prod EU", "editor", "admin")).toContain("Prod EU");
-    expect(executeRefusal("Prod EU", "editor", "none")).toContain("Prod EU");
+    expect(executeRefusal("Prod EU", "Editor", "admin")).toContain("Prod EU");
+    expect(executeRefusal("Prod EU", "Editor", "none")).toContain("Prod EU");
+    expect(executeRefusal("Prod EU", "Viewer", "editor")).toContain("Prod EU");
   });
 
-  test("a rank refusal says which rank, and which one they have", () => {
-    const message = executeRefusal("Prod EU", "editor", "admin");
-    expect(message).toContain("admin");
-    expect(message).toContain("editor");
+  test("an admins-only refusal says so, and names the role they have", () => {
+    // By its name as people read it, which for a role an admin made is the
+    // only name it has.
+    const message = executeRefusal("Prod EU", "QA Lead", "admin");
+    expect(message).toContain("limited to admins");
+    expect(message).toContain('"QA Lead"');
   });
 
-  test("the read-only sentence never offers a role to go and ask for", () => {
+  test("a role that may not deploy is told which box to ask for", () => {
+    const message = executeRefusal("Prod EU", "Viewer", "editor");
+    expect(message).toContain('"Viewer"');
+    expect(message).toContain('"Deploy: Run"');
+  });
+
+  test("the read-only sentence never offers a role or a box to go and ask for", () => {
     // The failure this guards is a helpful-sounding message on the wrong rule:
-    // if read-only borrowed the rank wording, it would tell the reader to ask
-    // an admin for a promotion that could not have helped them. Read-only is
-    // not a rank, so the sentence points at the setting instead.
-    const message = executeRefusal("Reference schema", "admin", "none");
+    // if read-only borrowed the role wording, it would tell the reader to ask
+    // an admin for something that could not have helped them. Read-only is not
+    // about the role, so the sentence points at the setting instead.
+    const message = executeRefusal("Reference schema", "Admin", "none");
     expect(message).toContain("read-only");
-    for (const role of ROLES) {
+    for (const role of BUILT_IN_ROLES) {
       expect(message).not.toContain(`"${role}"`);
+      expect(message).not.toContain(`"${BUILT_IN_ROLE_INFO[role].label}"`);
     }
     expect(message).not.toMatch(/ask an admin/i);
+    expect(message).not.toContain("Deploy: Run");
     expect(message).toMatch(/setting/i);
   });
 
@@ -130,7 +153,7 @@ describe("executeRefusal", () => {
     // A read-only connection is a normal, useful connection — it compares and
     // generates scripts like any other. Without this the refusal reads as the
     // connection being broken.
-    const message = executeRefusal("Reference schema", "admin", "none");
+    const message = executeRefusal("Reference schema", "Admin", "none");
     expect(message).toMatch(/compar/i);
   });
 });

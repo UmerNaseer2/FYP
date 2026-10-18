@@ -6,5 +6,5 @@ import AuthGuard from "@/components/AuthGuard";
  * pattern as Deploy, Connections, and Compare.
  */
 export default function ScriptEditorLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="scripts">{children}</AuthGuard>;
 }

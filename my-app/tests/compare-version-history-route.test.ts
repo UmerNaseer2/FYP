@@ -10,13 +10,15 @@
 // The detector is mocked: it opens database connections, and what is being
 // tested is the route around it, not the catalog queries it sends.
 import { NextRequest } from "next/server";
+import type { Principal } from "@/lib/auth-guard";
 import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/version-detection";
+import { principalFor } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-let mockGate: { ok: true; principal: null } | { ok: false; response: Response };
+let mockGate: { ok: true; principal: Principal } | { ok: false; response: Response };
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: async () => mockGate,
+  requirePermission: async () => mockGate,
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));
@@ -99,7 +101,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  mockGate = { ok: true, principal: null };
+  mockGate = { ok: true, principal: principalFor("viewer") };
   mockPoolQuery.mockReset();
   mockPoolQuery.mockResolvedValue({ rows: [CONNECTION] });
   mockBuildPgConfig.mockReset();

@@ -48,6 +48,7 @@ import {
   flushAsync,
   holdNext,
   resetPageState,
+  setCustomRole,
   setRoutes,
   setUser,
   type FetchRoute,
@@ -238,11 +239,13 @@ beforeEach(() => resetPageState());
 afterEach(() => cleanup());
 
 describe("who is allowed to run anything here", () => {
-  it("refuses a connection whose role outranks the viewer, and names both roles", async () => {
+  it("refuses a connection limited to admins, and names the viewer's role", async () => {
     // A 403 from the apply route says "forbidden" about a request the reader
     // already believed was fine. The button greys itself out for the stated
-    // reason instead — and the reason has to name both halves, because either
-    // one can be the thing that changes.
+    // reason instead, and the reason has to name both halves (the connection's
+    // setting and the viewer's role), because either one can be what changes.
+    // An editor may run deployments elsewhere, so "Deploy: Run" is not what is
+    // missing here, and the sentence must not send them to ask for it.
     setUser("editor");
     setRoutes(baseRoutes());
     render(<DeployPage />);
@@ -251,14 +254,75 @@ describe("who is allowed to run anything here", () => {
     expect(await deployButton()).toBeDisabled();
     expect(await dryRunButton()).toBeDisabled();
     expect(
-      screen.getByText('Running migrations on this connection needs the "admin" role and yours is "editor"')
+      screen.getByText("Running migrations on this connection is limited to admins")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Running migrations against "Admins only" is limited to admins, and your role is ' +
+          '"Editor". Ask an admin to run it, or to lower the requirement on this connection.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may run deployments/)).not.toBeInTheDocument();
+  });
+
+  it("refuses a role without Deploy: Run on any connection, and names the box", async () => {
+    // A viewer may read everything on this page (Deploy: Read), which is why
+    // the page opens at all; only running needs the second box.
+    setUser("viewer");
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Dev box/);
+
+    expect(await deployButton()).toBeDisabled();
+    expect(await dryRunButton()).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Running migrations on this connection needs a role that may run deployments, " +
+          "and yours (Viewer) may not"
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Running migrations against "Dev box" needs a role that may run deployments, and ' +
+          'yours ("Viewer") may not. Ask an admin to allow "Deploy: Run" for your role.'
+      )
     ).toBeInTheDocument();
   });
 
+  it("lets a role that may deploy but not read approvals run nothing on production", async () => {
+    // A role an admin made with "Deploy: Run" but without "Approvals: Read".
+    // The page must not ask for a list the route would refuse, and must not
+    // read the missing list as "nothing approved yet" either: the state is
+    // unknown, and Deploy stays shut because nothing on screen can show it is
+    // cleared. (The server checks again on the press either way.)
+    setCustomRole("deployer", "Deployer", ["deploy:read", "deploy:run"]);
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+    await selectBothVersions(/Prod box/);
+
+    expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Your role (Deployer) can't see production approvals. Ask an admin to allow "Approvals: Read" for this role.`
+      )
+    ).toBeInTheDocument();
+    expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I understand, and I mean to run 2 migrations against production.",
+      })
+    );
+    // A rehearsal needs no approval, so it is free once production is confirmed.
+    const dryRun = await dryRunButton();
+    await waitFor(() => expect(dryRun).toBeEnabled());
+    expect(await deployButton(" to production")).toBeDisabled();
+  });
+
   it("runs nothing at all against a read-only connection, rehearsals included", async () => {
-    // Read-only is a fact about the database, not a rank to be outranked, so
-    // an admin is refused here as well — and the sentence must not say "your
-    // role is too low", because raising it changes nothing.
+    // Read-only is a fact about the database, not a permission to be granted,
+    // so an admin is refused here as well, and the sentence must not blame the
+    // role, because no box on the Admin screen changes it.
     setUser("admin");
     setRoutes(baseRoutes());
     render(<DeployPage />);
@@ -274,7 +338,7 @@ describe("who is allowed to run anything here", () => {
           "against it — not a deploy and not a dry run"
       )
     ).toBeInTheDocument();
-    expect(screen.queryByText(/needs the "none" role/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/limited to admins|may run deployments/)).not.toBeInTheDocument();
   });
 });
 

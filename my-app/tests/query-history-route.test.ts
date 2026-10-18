@@ -15,13 +15,15 @@
 //
 // The reads are mocked. What is being tested is the choosing, not the SQL.
 import { NextRequest } from "next/server";
+import type { Principal } from "@/lib/auth-guard";
 import type { QueryHistoryRow } from "@/lib/query-history";
+import { principalFor } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-let mockGate: { ok: true; principal: null } | { ok: false; response: Response };
+let mockGate: { ok: true; principal: Principal } | { ok: false; response: Response };
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: async () => mockGate,
+  requirePermission: async () => mockGate,
 }));
 
 // The metadata pool, which this route uses only to read the connection's name.
@@ -100,7 +102,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  mockGate = { ok: true, principal: null };
+  mockGate = { ok: true, principal: principalFor("viewer") };
   mockPoolQuery.mockReset();
   mockPoolQuery.mockResolvedValue({ rows: [{ name: "Shop dev" }] });
   mockListRuns.mockReset();

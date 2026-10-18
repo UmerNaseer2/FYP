@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { listDriftEvents } from "@/lib/lineage-db";
 
 /** Rows returned when no ?limit is given — the same default lib/lineage-db uses. */
@@ -13,7 +13,7 @@ const DEFAULT_LIMIT = 200;
  * rather than erroring — a bad query string should not empty the audit log.
  */
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("drift:read");
   if (!gate.ok) return gate.response;
 
   try {

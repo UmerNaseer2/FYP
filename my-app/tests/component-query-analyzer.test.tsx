@@ -20,6 +20,7 @@ import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
 import { readPlan } from "@/lib/query-analysis";
 import type { AnalyzeView } from "@/lib/query-analysis";
 import { scoreQuery } from "@/lib/query-score";
+import { presetFor } from "@/lib/permissions";
 import {
   fetchCalls,
   flushAsync,
@@ -160,11 +161,26 @@ describe("running the query", () => {
     // first, rather than being handed a 403 after pressing a button.
     const measure = screen.getByRole("checkbox");
     expect(measure).toBeDisabled();
-    expect(screen.getByText(/needs the editor role, and yours is viewer/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Your role \(Viewer\) can't measure a query on a live database\. Ask an admin to allow "Performance: Run" for this role\. You can still analyse it/
+      )
+    ).toBeInTheDocument();
 
     analyse();
     await waitFor(() => expect(fetchCalls).toHaveLength(1));
     expect(JSON.parse(String(fetchCalls[0].body)).measure).toBe(false);
+  });
+
+  it("offers measuring to a viewer once an admin allows Performance: Run", async () => {
+    // The box follows the permission, not the role's name.
+    setUser("viewer", [...(presetFor("viewer") ?? []), "performance:run"]);
+    setRoutes([{ match: "/api/performance/analyze", body: answer("Ran in 3.1 ms") }]);
+    render(<QueryAnalyzer target={STAGING} />);
+
+    const measure = screen.getByRole("checkbox");
+    expect(measure).toBeEnabled();
+    expect(screen.queryByText(/can't measure a query/)).not.toBeInTheDocument();
   });
 
   it("asks for a measured run when an editor ticks the box", async () => {

@@ -60,7 +60,13 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 import { FixScriptBuilder, type FixScriptTarget } from "@/components/studio/FixScriptBuilder";
 import { readMigrationDraftRaw, type MigrationDraft } from "@/lib/migration-draft";
 import type { FixScriptItem } from "@/lib/perf-sql";
-import { resetPageState, routerCalls, setSessionLoading, setUser } from "./helpers/render-page";
+import {
+  resetPageState,
+  routerCalls,
+  setCustomRole,
+  setSessionLoading,
+  setUser,
+} from "./helpers/render-page";
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -468,37 +474,45 @@ describe("downloading the script", () => {
 });
 
 describe("who is offered a migration at all", () => {
-  it("does not offer it to a viewer, and says which role it needs", () => {
-    // The Script Editor saves through /api/github/push, which turns a viewer
-    // away. Offering the button would spend somebody's time on a refusal at
-    // the far end of the flow.
+  it("does not offer it to a role that may not save scripts, and names the box it needs", () => {
+    // The Script Editor saves through /api/github/push, which turns a role
+    // without "Scripts: Create" away. Offering the button would spend
+    // somebody's time on a refusal at the far end of the flow.
     setUser("viewer");
     show([anIndex]);
 
     expect(screen.queryByRole("button", { name: "Save as a migration" })).not.toBeInTheDocument();
-    expect(screen.getByText("Saving as a migration needs the editor role.")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Your role (Viewer) can\'t save scripts to the registry. Ask an admin to allow "Scripts: Create" for this role. Copy or download the script instead.'
+      )
+    ).toBeInTheDocument();
   });
 
   it("says nothing about roles while next-auth has not answered yet", () => {
-    // Not knowing the role is not the same as knowing it is too low. Saying
-    // "you need the editor role" to an editor for a frame would be a lie the
-    // page corrects a moment later, which is worse than saying nothing.
+    // Not knowing the role is not the same as knowing it may not. Saying
+    // "your role can't" to an editor for a frame would be a lie the page
+    // corrects a moment later, which is worse than saying nothing.
     setSessionLoading();
     show([anIndex]);
 
     expect(screen.queryByRole("button", { name: "Save as a migration" })).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Saving as a migration needs the editor role.")
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/can't save scripts/)).not.toBeInTheDocument();
   });
 
-  it("offers it to an editor and to an admin, because the rule is “at least”", () => {
+  it("offers it to any role that may save scripts, whatever the role is called", () => {
     setUser("editor");
     show([anIndex]);
     expect(saveButton()).toBeInTheDocument();
 
     cleanup();
     setUser("admin");
+    show([anIndex]);
+    expect(saveButton()).toBeInTheDocument();
+
+    // A role an admin made, which no screen knows by name.
+    cleanup();
+    setCustomRole("tuner", "Tuner", ["performance:read", "scripts:read", "scripts:create"]);
     show([anIndex]);
     expect(saveButton()).toBeInTheDocument();
   });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
+import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { runComparison, type CompareScreen } from "@/lib/compare-run";
 
 // Re-exported so the screen can name the shape it renders without importing
@@ -22,7 +23,7 @@ export type { CompareScreen };
  * time the page was reloaded or the link was shared.
  */
 export async function POST(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("compare:read");
   if (!gate.ok) return gate.response;
 
   let body: { query?: string; record?: boolean };
@@ -41,6 +42,11 @@ export async function POST(request: NextRequest) {
       // carries the same configured address, and writing it into the history
       // would name a person who may never have opened this app.
       body.record === true ? { ranBy: actorFor(gate.principal) } : null,
+      // The saved sets ride along on this screen, and reading them is a
+      // permission of its own. Without it they are left off.
+      hasPermission(gate.principal, "comparison_sets:read")
+        ? null
+        : refusalMessage(gate.principal.roleLabel, "comparison_sets:read"),
     );
     return NextResponse.json(screen);
   } catch (error) {

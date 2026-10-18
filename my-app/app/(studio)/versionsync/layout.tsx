@@ -6,5 +6,5 @@ import AuthGuard from "@/components/AuthGuard";
  * Deploy, Compare, and the Script Editor.
  */
 export default function VersionSyncLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="version_sync">{children}</AuthGuard>;
 }

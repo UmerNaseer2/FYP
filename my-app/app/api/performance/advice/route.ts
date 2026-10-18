@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
@@ -159,7 +159,7 @@ function actsOnAnIndex(advice: PerfAdvice): boolean {
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("performance:read");
   if (!gate.ok) return gate.response;
 
   const connectionId = Number(request.nextUrl.searchParams.get("connectionId") ?? "");

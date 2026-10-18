@@ -6,5 +6,5 @@ import AuthGuard from "@/components/AuthGuard";
  * Connections, and the Script Editor.
  */
 export default function VisualizerLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="visualizer">{children}</AuthGuard>;
 }

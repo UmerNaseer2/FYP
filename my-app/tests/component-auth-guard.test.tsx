@@ -6,26 +6,23 @@
  * It is not a security boundary and does not pretend to be one — proxy.ts turns
  * a page request away and lib/auth-guard turns an API call away, both before
  * any of this runs. What AuthGuard decides is what React puts on screen, and
- * the failures worth catching are the two ways that can go wrong from the
- * reader's side: a page whose contents flash up for a frame before the redirect
- * lands, and a signed-in person bounced to /login because the guard read the
- * moment before next-auth answered as a signed-out one.
+ * the failures worth catching are the ways that can go wrong from the reader's
+ * side: a page whose contents flash up for a frame before the redirect lands, a
+ * signed-in person bounced to /login because the guard read the moment before
+ * next-auth answered as a signed-out one, and a refusal that does not say what
+ * to ask for.
  *
- * The role rule is "at least", not "exactly", and the refusal has to name three
- * things — the role needed, the account signed in, and the role it actually has
- * — or the reader cannot tell whether to ask for a different role or a different
- * account.
+ * The rule is the feature's Read box. A page that belongs to several features
+ * names them all, and Read on any one of them is enough, the same as
+ * requirePermission on the server. A refusal names three things: the role, the
+ * account signed in, and the box an admin would have to tick. Without the
+ * account, a reader with two of them cannot tell which one they are using.
  *
  * What is NOT here:
- *  - The bypass branch. BYPASS_AUTH is read once at module load from
- *    NEXT_PUBLIC_AUTH_BYPASS, which next/jest does not load under NODE_ENV=test
- *    (it skips .env.local), so inside this suite it is false and the early
- *    `if (BYPASS_AUTH) return children` is unreachable. That it is false here is
- *    what makes everything below testable at all, and the bypass itself is
- *    covered by tests/auth-role-and-bypass.test.ts against lib/auth-mode.
- *  - toRole's coercion of an unrecognised role string to "viewer", which
- *    tests/auth-role-and-bypass.test.ts pins on the module that does it.
- *  - The real enforcement, in tests/proxy.test.ts and tests/host-guard.test.ts.
+ *  - Which permissions a role holds, and what a box brings with it:
+ *    tests/permissions.test.ts, against lib/permissions.
+ *  - The real enforcement, in tests/proxy.test.ts, tests/host-guard.test.ts and
+ *    the route suites.
  */
 
 import "@testing-library/jest-dom";
@@ -34,15 +31,34 @@ import { cleanup, render, screen } from "@testing-library/react";
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
+let mockBypass = false;
+jest.mock("../lib/auth-mode", () => ({
+  ...jest.requireActual("../lib/auth-mode"),
+  // A getter, so one file can see both sides of a switch that is otherwise
+  // decided once, at module load. See tests/use-user.test.tsx.
+  get BYPASS_AUTH() {
+    return mockBypass;
+  },
+}));
+
 import AuthGuard from "@/components/AuthGuard";
-import type { Role } from "@/lib/auth-mode";
-import { resetPageState, routerCalls, setSessionLoading, setUser } from "./helpers/render-page";
+import { resetUserCache } from "@/hooks/useUser";
+import { presetFor, type FeatureKey } from "@/lib/permissions";
+import {
+  resetPageState,
+  routerCalls,
+  setAccessError,
+  setCustomRole,
+  setRoutes,
+  setSessionLoading,
+  setUser,
+} from "./helpers/render-page";
 
 const SECRET = "the connection list";
 
-function show(requiredRole?: Role) {
+function show(feature?: FeatureKey | FeatureKey[]) {
   render(
-    <AuthGuard requiredRole={requiredRole}>
+    <AuthGuard feature={feature}>
       <p>{SECRET}</p>
     </AuthGuard>
   );
@@ -97,50 +113,151 @@ describe("nobody signed in", () => {
 });
 
 describe("signed in", () => {
-  it("opens a page with no role requirement to anyone", () => {
-    setUser("viewer");
+  it("opens a page that names no feature to anyone, even a role with nothing", () => {
+    setCustomRole("nobody", "Nobody", []);
     show();
 
     expect(screen.getByText(SECRET)).toBeInTheDocument();
     expect(routerCalls.push).toEqual([]);
   });
 
-  it("opens a page to the exact role it asks for", () => {
-    setUser("editor");
-    show("editor");
-
-    expect(screen.getByText(SECRET)).toBeInTheDocument();
-  });
-
-  it("opens it to a more privileged role too", () => {
-    // The rule is "at least". An admin refused from an editor page would have
-    // to be given a second, lesser account to do the work they already may do.
-    setUser("admin");
-    show("editor");
-
-    expect(screen.getByText(SECRET)).toBeInTheDocument();
-  });
-
-  it("refuses a lesser role, and says which three things are wrong", () => {
+  it("opens a page to a role that may read its feature", () => {
     setUser("viewer");
-    show("admin");
+    show("connections");
+
+    expect(screen.getByText(SECRET)).toBeInTheDocument();
+  });
+
+  it("opens a page of several features on Read of any one of them", () => {
+    // A schema's history page belongs to drift tracking and to the dashboard,
+    // and a role that may read either is meant to get in.
+    setCustomRole("watcher", "Watcher", ["dashboard:read"]);
+    show(["drift", "dashboard"]);
+
+    expect(screen.getByText(SECRET)).toBeInTheDocument();
+  });
+
+  it("refuses a role without the box, and says which three things are wrong", () => {
+    // A role an admin made, which nothing in the code knows by name. It is
+    // refused for what it holds, and called by the name people gave it.
+    setCustomRole("auditor", "Auditor", ["dashboard:read"]);
+    show("connections");
 
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
-    expect(screen.getByText('You need the "admin" role to open this page.')).toBeInTheDocument();
-    // The account and its role, because "you need admin" alone leaves a reader
-    // who has two accounts unable to tell which one they are using.
+    expect(screen.getByText("Your role (Auditor) can't open this page.")).toBeInTheDocument();
     const hint = screen.getByText(/You are signed in as/);
-    expect(hint).toHaveTextContent("You are signed in as viewer@example.com");
-    expect(hint).toHaveTextContent('with the "viewer" role');
-    expect(hint).toHaveTextContent("Ask an admin to change it, then reload.");
+    expect(hint).toHaveTextContent("You are signed in as auditor@example.com.");
+    expect(hint).toHaveTextContent(
+      'Ask an admin to allow "Connections: Read" for your role, then reload.'
+    );
+  });
+
+  it("does not offer a box nobody can tick on an admin-only page", () => {
+    // Users and Roles & permissions are admin-only. Telling a viewer to ask for
+    // "Users: Read" would send them after a box that is not on the grid.
+    setUser("viewer");
+    show(["users", "roles"]);
+
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+    expect(screen.getByText("Your role (Viewer) can't open this page.")).toBeInTheDocument();
+    expect(screen.getByText(/You are signed in as/)).toHaveTextContent(
+      "Only admins can open it."
+    );
+    expect(screen.queryByText(/Ask an admin to allow/)).toBeNull();
+  });
+
+  it("opens an admin-only page to an admin", () => {
+    setUser("admin");
+    show(["users", "roles"]);
+
+    expect(screen.getByText(SECRET)).toBeInTheDocument();
   });
 
   it("does not send a refused reader to sign in again", () => {
     // They are signed in. Sending them to /login would land them back here with
     // the same role, which is a loop with no exit the reader can find.
     setUser("editor");
-    show("admin");
+    show(["users", "roles"]);
 
     expect(routerCalls.push).toEqual([]);
+  });
+});
+
+describe("when the database could not say what the role may do", () => {
+  it("says the check failed, not that the role can't", () => {
+    // Every request behind the page would be answered "try again" (503).
+    // "Your role can't" would send the reader to an admin about a problem no
+    // admin can fix.
+    setAccessError("viewer");
+    show("connections");
+
+    expect(screen.getByText("Could not check your access right now.")).toBeInTheDocument();
+    expect(screen.queryByText(/can't open this page/)).toBeNull();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+  });
+
+  it("still opens a page that names no feature", () => {
+    setAccessError("viewer");
+    show();
+
+    expect(screen.getByText(SECRET)).toBeInTheDocument();
+  });
+});
+
+describe('with the bypass on and "View as" picking a role', () => {
+  // What /api/me says while the switcher on the rail is set to Viewer.
+  const VIEWER_ANSWER = {
+    role: "viewer",
+    roleLabel: "Viewer",
+    permissions: presetFor("viewer"),
+    bypass: true,
+    viewingAs: "viewer",
+    accessUnavailable: false,
+  };
+
+  beforeEach(() => {
+    mockBypass = true;
+    document.cookie = "studio-view-as=viewer; path=/";
+    resetUserCache();
+  });
+
+  afterEach(() => {
+    // Unmounted first, so the reset below has nobody to look the role up for.
+    cleanup();
+    document.cookie = "studio-view-as=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    mockBypass = false;
+    resetUserCache();
+  });
+
+  it("checks first, then refuses what the role can't open and says how to go back", async () => {
+    // The server is acting as a viewer, so drawing the admin page for a frame
+    // and then taking it away would show something the API is refusing.
+    setRoutes([{ match: "/api/me", body: VIEWER_ANSWER }]);
+    show(["users", "roles"]);
+
+    expect(screen.getByText("Checking your access…")).toBeInTheDocument();
+    expect(await screen.findByText("Your role (Viewer) can't open this page.")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'You are viewing the app as Viewer. Change "View as" to Admin to see every screen again.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+  });
+
+  it("opens what the role can", async () => {
+    setRoutes([{ match: "/api/me", body: VIEWER_ANSWER }]);
+    show("connections");
+
+    expect(await screen.findByText(SECRET)).toBeInTheDocument();
+  });
+
+  it("says the check failed when /api/me can't answer, and how to get out of it", async () => {
+    setRoutes([{ match: "/api/me", status: 500, body: { error: "boom" } }]);
+    show("connections");
+
+    expect(await screen.findByText("Could not check your access right now.")).toBeInTheDocument();
+    expect(screen.getByText(/Or change "View as" back to Admin\./)).toBeInTheDocument();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
   });
 });

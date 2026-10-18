@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig, MANAGED_SCHEMAS } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 export async function GET(req: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("scripts:read", "deploy:read", "version_sync:read", "visualizer:read");
   if (!gate.ok) return gate.response;
 
   const { searchParams } = new URL(req.url);

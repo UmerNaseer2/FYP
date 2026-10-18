@@ -7,5 +7,5 @@ import AuthGuard from "@/components/AuthGuard";
  * to this route only.
  */
 export default function ConnectionsLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="connections">{children}</AuthGuard>;
 }

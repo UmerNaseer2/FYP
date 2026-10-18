@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import {
   HISTORY_PAGE_SIZE,
@@ -120,7 +120,7 @@ function readBaseline(raw: string | null): number | null | false {
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("performance:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;

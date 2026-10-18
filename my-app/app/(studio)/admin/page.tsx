@@ -1,136 +1,40 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useUser } from "@/hooks/useUser";
-import { ROLES } from "@/lib/auth-mode";
-import {
-  Button,
-  Card,
-  Pill,
-  Skeleton,
-  EmptyState,
-  ConfirmDialog,
-  type PillTone,
-} from "@/components/ui";
-import { Select } from "@/components/ui/Select";
-import {
-  UsersIcon,
-  RefreshIcon,
-  TrashIcon,
-  AlertTriangleIcon,
-  AlertCircleIcon,
-} from "@/components/ui/icons";
+import { refusalMessage } from "@/lib/permissions";
+import { Skeleton } from "@/components/ui";
+import { InfoIcon } from "@/components/ui/icons";
+import { UsersTab } from "@/components/admin/UsersTab";
+import { RolesTab } from "@/components/admin/RolesTab";
+import { PermissionsGuide } from "@/components/admin/PermissionsGuide";
 
-// Mirrors GET /api/admin/users.
-type Profile = {
-  id: number;
-  email: string;
-  role: string;
-};
+/**
+ * The Admin screen: who can use this app (Users) and what each role can do in
+ * it (Roles & permissions). Each tab lives in its own file under
+ * components/admin, and this page only decides which tabs to show.
+ *
+ * A tab shows only for someone allowed to read it. Out of the box that is the
+ * admin role alone for both, so an admin sees both tabs and nobody else gets
+ * this far: the layout's AuthGuard turns everyone else away first.
+ */
 
-// Derived from ROLES so a role added there cannot go missing from this
-// dropdown — "editor" did exactly that.
-const ROLE_OPTIONS = ROLES.map((value) => ({
-  value,
-  label: value[0].toUpperCase() + value.slice(1),
-}));
+type Tab = "users" | "roles";
 
-function roleTone(role: string): PillTone {
-  // The middle role gets its own colour, so it doesn't read as "not an admin".
-  return role === "admin" ? "brand" : role === "editor" ? "sync" : "neutral";
-}
-
-function initialsOf(email: string): string {
-  return email.slice(0, 2).toUpperCase();
-}
+const TABS: { key: Tab; label: string }[] = [
+  { key: "users", label: "Users" },
+  { key: "roles", label: "Roles & permissions" },
+];
 
 export default function AdminPage() {
-  const { isAdmin, loading: roleLoading, user: currentUser } = useUser();
+  const { loading, can, roleLabel, bypass } = useUser();
+  // The tab the person clicked. Null until they click one, which shows the
+  // first tab they may open.
+  const [picked, setPicked] = useState<Tab | null>(null);
 
-  const [users, setUsers] = useState<Profile[]>([]);
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
-  const [updating, setUpdating] = useState<number | null>(null);
-  const [deleting, setDeleting] = useState<number | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [removeTarget, setRemoveTarget] = useState<Profile | null>(null);
-
-  const fetchUsers = useCallback(async () => {
-    setPhase("loading");
-    setActionError(null);
-    try {
-      const res = await fetch("/api/admin/users", { cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok) {
-        setActionError(data.error ?? "Could not load users.");
-        setPhase("error");
-        return;
-      }
-      setUsers(Array.isArray(data.users) ? data.users : []);
-      setPhase("ready");
-    } catch {
-      setActionError("Network error while loading users.");
-      setPhase("error");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isAdmin) void fetchUsers();
-  }, [isAdmin, fetchUsers]);
-
-  async function updateRole(userId: number, newRole: string) {
-    const prev = users;
-    setUpdating(userId);
-    setActionError(null);
-    // Optimistic: reflect the change immediately, roll back on failure.
-    setUsers((list) => list.map((u) => (u.id === userId ? { ...u, role: newRole } : u)));
-    try {
-      const res = await fetch("/api/admin/users", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, role: newRole }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setUsers(prev);
-        setActionError(data.error ?? "Could not update the role.");
-      }
-    } catch {
-      setUsers(prev);
-      setActionError("Network error while updating the role.");
-    } finally {
-      setUpdating(null);
-    }
-  }
-
-  async function confirmRemove() {
-    if (!removeTarget) return;
-    const target = removeTarget;
-    setDeleting(target.id);
-    setActionError(null);
-    try {
-      const res = await fetch("/api/admin/users", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: target.id }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setActionError(data.error ?? "Could not remove the user.");
-        return;
-      }
-      setUsers((list) => list.filter((u) => u.id !== target.id));
-    } catch {
-      setActionError("Network error while removing the user.");
-    } finally {
-      setDeleting(null);
-      setRemoveTarget(null);
-    }
-  }
-
-  // ── Gate states ────────────────────────────────────────────────────────────
-  if (roleLoading) {
+  if (loading) {
     return (
-      <div className="max-w-[820px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
+      <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
         <Skeleton width={140} height={14} />
         <Skeleton width={220} height={28} className="mt-3" />
         <div className="space-y-3 mt-8">
@@ -142,216 +46,82 @@ export default function AdminPage() {
     );
   }
 
-  // No "Admins only" branch here: app/(studio)/admin/layout.tsx wraps this page
-  // in <AuthGuard requiredRole="admin">, which shows that message and can name
-  // the signed-in account and its role — this page cannot.
-  const adminCount = users.filter((u) => u.role === "admin").length;
+  const allowed: Record<Tab, boolean> = {
+    users: can("users:read"),
+    roles: can("roles:read"),
+  };
+  const tabs = TABS.filter((t) => allowed[t.key]);
+  // A tab that was picked and then taken away (the role changed while the
+  // page was open) falls back to the first one still allowed.
+  const tab = picked && allowed[picked] ? picked : (tabs[0]?.key ?? null);
 
   return (
-    <div className="max-w-[820px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
-      {/*
-        "· 0 users, 0 admins" sits directly above the "No users yet" empty
-        state, so the first-run page says the same nothing twice — the second
-        time in the language of a populated list that has been emptied. The
-        counts are worth reading once there is something to count, and the
-        header already suppresses them when they are null.
-      */}
-      <AdminHeader
-        onRefresh={() => void fetchUsers()}
-        refreshing={phase === "loading"}
-        count={phase === "ready" && users.length > 0 ? users.length : null}
-        admins={phase === "ready" && users.length > 0 ? adminCount : null}
-      />
-
-      {actionError && (
-        <div
-          className="flex items-start gap-2 p-3 rounded-xl mt-5"
-          style={{
-            background: "color-mix(in oklab, var(--break) 10%, transparent)",
-            border: "1px solid color-mix(in oklab, var(--break) 30%, transparent)",
-          }}
-        >
-          <AlertTriangleIcon size={15} style={{ color: "var(--break)", marginTop: 1, flex: "none" }} />
-          <span className="text-[13px]" style={{ color: "var(--break)" }}>
-            {actionError}
-          </span>
-        </div>
-      )}
-
-      <div className="mt-6 space-y-3">
-        {phase === "loading" &&
-          [0, 1, 2].map((i) => <Skeleton key={i} width="100%" height={68} radius={14} />)}
-
-        {phase === "error" && (
-          <Card className="p-0 overflow-hidden">
-            <div style={{ minHeight: 240 }}>
-              <EmptyState
-                icon={<AlertCircleIcon size={22} />}
-                title="Couldn't load users"
-                description="The app database may be unreachable. Try again in a moment."
-                actions={
-                  <Button variant="secondary" size="sm" onClick={() => void fetchUsers()}>
-                    <RefreshIcon size={14} /> Retry
-                  </Button>
-                }
-              />
-            </div>
-          </Card>
-        )}
-
-        {phase === "ready" && users.length === 0 && (
-          <Card className="p-0 overflow-hidden">
-            <div style={{ minHeight: 240 }}>
-              <EmptyState
-                icon={<UsersIcon size={22} />}
-                title="No users yet"
-                description="People appear here after they sign in for the first time."
-              />
-            </div>
-          </Card>
-        )}
-
-        {phase === "ready" &&
-          users.map((u) => {
-            const isYou = currentUser?.email === u.email;
-            return (
-              <Card key={u.id} className="p-4">
-                <div className="flex items-center gap-3 flex-wrap">
-                  {/* Identity */}
-                  <div
-                    className="w-9 h-9 rounded-full grid place-items-center flex-none text-white text-[12px] font-semibold"
-                    style={{ background: "linear-gradient(135deg, var(--brand), #a78bfa)" }}
-                    aria-hidden
-                  >
-                    {initialsOf(u.email)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[14px] font-medium truncate">{u.email}</span>
-                      {isYou && (
-                        <span
-                          className="text-[10.5px] px-1.5 py-0.5 rounded-md flex-none"
-                          style={{ background: "var(--surface-2)", color: "var(--text-3)" }}
-                        >
-                          You
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1">
-                      <Pill tone={roleTone(u.role)} dot={u.role === "admin"}>
-                        {u.role}
-                      </Pill>
-                    </div>
-                  </div>
-
-                  {/* Controls — full row on mobile, inline on ≥sm. Your own row is
-                      read-only so you can't demote or delete yourself into a lockout. */}
-                  {isYou ? (
-                    <span className="text-[12px] w-full sm:w-auto sm:text-right" style={{ color: "var(--text-3)" }}>
-                      Your account
-                    </span>
-                  ) : (
-                    <div className="flex items-center gap-2 w-full sm:w-auto">
-                      <Select
-                        variant="input"
-                        ariaLabel={`Role for ${u.email}`}
-                        value={u.role}
-                        disabled={updating === u.id}
-                        options={ROLE_OPTIONS}
-                        onChange={(value) => void updateRole(u.id, value)}
-                        className="flex-1 sm:flex-none sm:w-[128px]"
-                      />
-                      {/* `deleting !== null`, not `deleting === u.id`. A removal
-                          already running is the reason nobody may start another:
-                          `deleting` holds a single id, so confirming a second
-                          removal overwrote the first one's marker and the first
-                          one's `finally` then cleared the second's — re-enabling
-                          a row whose DELETE was still in flight. Opening the
-                          dialog was enough to break it on its own: the first
-                          removal finishing runs `setRemoveTarget(null)`, which
-                          closed a confirm dialog the user had just opened for
-                          somebody else. */}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Remove ${u.email}`}
-                        title={
-                          deleting !== null
-                            ? "Waiting for the current removal to finish"
-                            : "Remove access"
-                        }
-                        disabled={deleting !== null}
-                        onClick={() => setRemoveTarget(u)}
-                      >
-                        {/* The only place the wait is visible. The dialog closes the
-                            instant it is confirmed, so its own button can never show
-                            it — the row has to. */}
-                        {deleting === u.id ? (
-                          <span className="text-[12px]">Removing…</span>
-                        ) : (
-                          <TrashIcon size={15} />
-                        )}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </Card>
-            );
-          })}
-      </div>
-
-      {/* No "Removing…" confirmLabel — ConfirmDialog runs onConfirm and closes
-          back to back, so a busy label on its own button could never be seen.
-          The row's own button carries the wait instead. */}
-      <ConfirmDialog
-        open={removeTarget !== null}
-        onClose={() => setRemoveTarget(null)}
-        onConfirm={() => void confirmRemove()}
-        destructive
-        title={removeTarget ? `Remove ${removeTarget.email}?` : "Remove user?"}
-        description="This deletes their profile and role in this app. It does NOT remove their Microsoft/SSO login, so they could sign in again unless you also remove them from your identity provider."
-        confirmLabel="Remove access"
-      />
-    </div>
-  );
-}
-
-function AdminHeader({
-  onRefresh,
-  refreshing,
-  count,
-  admins,
-}: {
-  onRefresh: (() => void) | null;
-  refreshing: boolean;
-  count: number | null;
-  admins: number | null;
-}) {
-  return (
-    <header className="flex items-end justify-between gap-4 flex-wrap">
-      <div>
+    <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
+      <header>
         <div className="section-title">Admin</div>
         <h1 className="text-[26px] sm:text-[28px] font-semibold tracking-[-0.02em] mt-1">
-          User management
+          Users and roles
         </h1>
         <p className="text-[13.5px] mt-1.5 max-w-[56ch]" style={{ color: "var(--text-2)" }}>
-          Grant or revoke admin access and remove people from this app.
-          {count !== null && (
-            <>
-              {" "}
-              <span style={{ color: "var(--text-3)" }}>
-                · {count} {count === 1 ? "user" : "users"}
-                {admins !== null && `, ${admins} admin${admins === 1 ? "" : "s"}`}
-              </span>
-            </>
-          )}
+          Decide who can use this app and what each role can do in it.
         </p>
-      </div>
-      {onRefresh && (
-        <Button variant="ghost" onClick={onRefresh} disabled={refreshing} aria-label="Refresh">
-          <RefreshIcon size={14} /> Refresh
-        </Button>
+      </header>
+
+      {tab === null ? (
+        // Only a fallback: the layout's <AuthGuard feature={["users", "roles"]}>
+        // is what really turns away a role that may read neither tab.
+        <div className="role-note mt-6">
+          <InfoIcon size={15} className="ico" />
+          <div>
+            <div className="title">{"You can't manage users or roles"}</div>
+            <div className="body">{refusalMessage(roleLabel, "users:read")}</div>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Above the tabs, because it explains both: Roles & permissions
+              says what a role may do, and Users gives it to people. */}
+          <PermissionsGuide showViewAs={bypass} />
+
+          <div className="seg mt-6" role="tablist" aria-label="Admin sections">
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                id={`admin-tab-${t.key}`}
+                aria-controls={`admin-panel-${t.key}`}
+                aria-selected={tab === t.key}
+                className={tab === t.key ? "active" : ""}
+                onClick={() => setPicked(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Both tabs stay mounted and the hidden one is only hidden, so a
+              half-ticked grid or a half-filled form is still there when the
+              person comes back. `active` tells a tab when it is on screen, so
+              it loads then and not while hidden. */}
+          {tabs.map((t) => (
+            <section
+              key={t.key}
+              role="tabpanel"
+              id={`admin-panel-${t.key}`}
+              aria-labelledby={`admin-tab-${t.key}`}
+              hidden={tab !== t.key}
+              className="mt-6"
+            >
+              {t.key === "users" ? (
+                <UsersTab active={tab === "users"} />
+              ) : (
+                <RolesTab active={tab === "roles"} />
+              )}
+            </section>
+          ))}
+        </>
       )}
-    </header>
+    </div>
   );
 }

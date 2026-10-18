@@ -7,5 +7,5 @@ import AuthGuard from "@/components/AuthGuard";
  * Connections and Compare).
  */
 export default function DeployLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="deploy">{children}</AuthGuard>;
 }

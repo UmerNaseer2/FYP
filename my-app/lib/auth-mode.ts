@@ -44,14 +44,17 @@
  * computed key: Next matches the text, so `process.env[name]` is never replaced
  * and always reads undefined in the browser.
  *
- * Everything the enforced path needs is built: the edge proxy, per-route role
- * gates, the `profiles` table and its bootstrap. What is still missing is the
+ * Everything the enforced path needs is built: the edge proxy, the permission
+ * check on every API route, the `profiles`, `roles` and `role_permissions`
+ * tables and their bootstrap. What is still missing is the
  * four secrets (AZURE_AD_CLIENT_ID / _SECRET / _TENANT_ID, NEXTAUTH_SECRET), and
  * until they exist a sign-in cannot COMPLETE — so with this default a checkout
  * that has not set the variable is shut, not merely asked to sign in. That is
  * the intended reading: an app nobody can get into is a five-minute fix, and an
  * app everybody can get into is not something you find out about at all.
  */
+
+import { ADMIN_ROLE } from "./permissions";
 
 /**
  * The spellings that turn the bypass ON, i.e. that switch real auth OFF.
@@ -76,34 +79,27 @@ const bypassSetting = (process.env.NEXT_PUBLIC_AUTH_BYPASS ?? "").trim().toLower
 
 export const BYPASS_AUTH: boolean = BYPASS_ON.has(bypassSetting);
 
-/** Roles, lowest privilege first. Order is meaningful — see roleAtLeast(). */
-export const ROLES = ["viewer", "editor", "admin"] as const;
-export type Role = (typeof ROLES)[number];
-
-export const DEFAULT_ROLE: Role = "viewer";
-
-/** Narrow an arbitrary string (a DB value, a token claim) to a known role. */
-export function toRole(value: unknown): Role {
-  return (ROLES as readonly string[]).includes(String(value))
-    ? (String(value) as Role)
-    : DEFAULT_ROLE;
-}
-
-/** True when `actual` is at least as privileged as `required`. */
-export function roleAtLeast(actual: Role, required: Role): boolean {
-  return ROLES.indexOf(actual) >= ROLES.indexOf(required);
-}
-
 /**
  * Who the app acts as while the bypass is on. Full privileges, so testing sees
  * exactly the app a real admin would; clearly labelled so it can never be
- * mistaken for a signed-in person in a log or an audit row.
+ * mistaken for a signed-in person in a log or an audit row. "View as" can
+ * narrow it to one role's permissions (VIEW_AS_COOKIE, below); the email and
+ * name stay these either way.
  */
 export const BYPASS_PRINCIPAL = {
   email: "bypass@local",
   name: "Auth bypass (testing)",
-  role: "admin" as Role,
+  role: ADMIN_ROLE as string,
 };
+
+/**
+ * The cookie "View as" leaves, naming the role the bypass should act as (see
+ * bypassPrincipal in lib/auth-guard.ts). The server reads it on every request
+ * and the browser reads it to know whether to ask /api/me what that role may
+ * do, so it is not HttpOnly. Only ever honoured while BYPASS_AUTH is on: with
+ * real sign-in a person is their role and nothing else.
+ */
+export const VIEW_AS_COOKIE = "studio-view-as";
 
 /**
  * The shape actorFor needs. Principal (lib/auth-guard) satisfies it; this is

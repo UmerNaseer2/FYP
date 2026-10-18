@@ -10,5 +10,5 @@ import AuthGuard from "@/components/AuthGuard";
  * screen behaves like the rest when sign-in is on.
  */
 export default function PerformanceLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard>{children}</AuthGuard>;
+  return <AuthGuard feature="performance">{children}</AuthGuard>;
 }

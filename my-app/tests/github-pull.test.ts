@@ -8,11 +8,14 @@
 // values, and fetch is replaced with a stub that answers only the addresses a
 // test names and records anything else as a failure.
 import { NextResponse } from "next/server";
+import { principalFor } from "./helpers/principals";
 
 // See tests/github-push.test.ts for why the guard is a relative-path stand-in.
-const mockRequireViewer = jest.fn(async (): Promise<unknown> => ({ ok: true, principal: null }));
+const mockRequirePermission = jest.fn(
+  async (): Promise<unknown> => ({ ok: true, principal: principalFor("viewer") }),
+);
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: () => mockRequireViewer(),
+  requirePermission: () => mockRequirePermission(),
 }));
 
 type RouteModule = typeof import("../app/api/github/pull/route");
@@ -95,7 +98,7 @@ beforeEach(() => {
   calls = [];
   unexpected = [];
   answers = {};
-  mockRequireViewer.mockClear();
+  mockRequirePermission.mockClear();
   const spy = jest.spyOn(console, "error").mockImplementation(() => {});
   restoreConsole = () => spy.mockRestore();
 
@@ -305,10 +308,10 @@ describe("GET /api/github/pull", () => {
     expect(calls).toEqual([]);
   });
 
-  it("returns the guard's answer when the viewer may not read", async () => {
-    mockRequireViewer.mockImplementationOnce(async () => ({
+  it("returns the guard's answer when nobody is signed in", async () => {
+    mockRequirePermission.mockImplementationOnce(async () => ({
       ok: false,
-      response: NextResponse.json({ ok: false, error: "Sign in to see this." }, { status: 401 }),
+      response: NextResponse.json({ error: "Sign in to continue." }, { status: 401 }),
     }));
     const { status } = await pull();
     expect(status).toBe(401);

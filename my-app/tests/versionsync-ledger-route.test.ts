@@ -15,7 +15,10 @@ import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
 jest.mock("../lib/auth-guard", () => ({
-  requireViewer: async () => ({ ok: true, principal: null }),
+  requirePermission: async () => ({
+    ok: true,
+    principal: require("./helpers/principals").principalFor("viewer"),
+  }),
 }));
 
 const mockPoolQuery = jest.fn<Promise<unknown>, unknown[]>(async () => ({ rows: [] }));

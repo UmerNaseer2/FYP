@@ -15,13 +15,28 @@
  * each message through the form would be testing that module twice. The one
  * check made HERE is the one the drawer adds on its own (an empty URI on a new
  * connection), because no other caller has it.
+ *
+ * The last part is about who may press what. Adding a connection needs
+ * Connections: Create, editing or testing a saved one needs Update, and
+ * deleting needs Delete. A role without a box still sees the button, switched
+ * off, and the page says why once, under its header, rather than on every row.
  */
 
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
+
 import ConnectionsPage from "@/app/(studio)/connections/page";
-import { fetchCalls, resetPageState, setRoutes } from "./helpers/render-page";
+import {
+  fetchCalls,
+  flushAsync,
+  resetPageState,
+  setCustomRole,
+  setRoutes,
+  setSessionLoading,
+  setUser,
+} from "./helpers/render-page";
 
 /** A saved row, with everything the table reads spelled out. */
 function conn(over: Partial<Record<string, unknown>> & { id: number; name: string }) {
@@ -376,5 +391,241 @@ describe("the add drawer", () => {
     expect(within(drawer as HTMLElement).getByText("Paste a connection string first."))
       .toBeInTheDocument();
     expect(fetchCalls.filter((c) => c.method === "POST")).toHaveLength(0);
+  });
+});
+
+describe("for a role that may not add, change or delete connections", () => {
+  /** Why each button is off, in the words the page uses. */
+  const refusal = {
+    create: (role: string) =>
+      `Your role (${role}) can't add a connection. ` +
+      `Ask an admin to allow "Connections: Create" for this role.`,
+    update: (role: string) =>
+      `Your role (${role}) can't edit or test a saved connection. ` +
+      `Ask an admin to allow "Connections: Update" for this role.`,
+    delete: (role: string) =>
+      `Your role (${role}) can't delete a connection. ` +
+      `Ask an admin to allow "Connections: Delete" for this role.`,
+  };
+
+  /** The four buttons a row and the header offer, found the way a reader would. */
+  function buttons(name: string) {
+    const row = within(rowFor(name));
+    return {
+      add: screen.getByRole("button", { name: /^Add connection/ }),
+      test: row.getByRole("button", { name: /Test/ }),
+      edit: row.getByRole("button", { name: /Edit/ }),
+      remove: screen.getByRole("button", { name: `Delete ${name}` }),
+    };
+  }
+
+  it("switches each button off and says why once, under the header", async () => {
+    setUser("viewer");
+    setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    const { add, test, edit, remove } = buttons("Orders DB");
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute("title", refusal.create("Viewer"));
+    // Testing is under Update with editing: it logs in with the stored
+    // password, and it records the outcome on the row.
+    for (const button of [test, edit]) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", refusal.update("Viewer"));
+    }
+    expect(remove).toBeDisabled();
+    expect(remove).toHaveAttribute("title", refusal.delete("Viewer"));
+
+    // Once each. The buttons carry them too, but as tooltips, not as text.
+    for (const reason of [refusal.create, refusal.update, refusal.delete]) {
+      expect(screen.getAllByText(reason("Viewer"))).toHaveLength(1);
+    }
+  });
+
+  it("names only the button there is when nothing is saved", async () => {
+    // No rows, so nothing to test, edit or delete. "Add" is offered twice, in
+    // the header and in the empty state, and both are off.
+    setUser("viewer");
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    for (const button of [
+      screen.getByRole("button", { name: /^Add connection/ }),
+      screen.getByRole("button", { name: /Add your first connection/ }),
+    ]) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", refusal.create("Viewer"));
+    }
+    expect(screen.getByText(refusal.create("Viewer"))).toBeInTheDocument();
+    expect(screen.queryByText(refusal.update("Viewer"))).toBeNull();
+    expect(screen.queryByText(refusal.delete("Viewer"))).toBeNull();
+  });
+
+  it("opens nothing and asks the server nothing when they are pressed anyway", async () => {
+    setUser("viewer");
+    setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    for (const button of Object.values(buttons("Orders DB"))) fireEvent.click(button);
+    await flushAsync();
+
+    // Both overlays stay mounted (see deleteDialog), so "open" is the class
+    // that shows them.
+    expect(document.querySelector(".drawer")).not.toHaveClass("open");
+    expect(deleteDialog()).not.toHaveClass("open");
+    expect(fetchCalls.map((c) => c.url)).toEqual(["/api/connections"]);
+  });
+
+  it("lets a role that may only add save one, and leaves its test to the row", async () => {
+    // A passing drawer test is re-run on the row once it is saved, so the
+    // table can say when it was last reached. That test is the row's own,
+    // under Connections: Update, so a role with only Create skips it, and its
+    // new row reads "Never", which is true of the row.
+    setCustomRole("adder", "Adder", ["connections:create"]);
+    const SAVED = conn({ id: 9, name: "Orders DB" });
+    setRoutes([
+      {
+        match: /\/api\/connections\/test$/,
+        method: "POST",
+        body: {
+          ok: true,
+          version: "PostgreSQL 17.2",
+          schemaCount: 1,
+          schemas: ["public"],
+          latencyMs: 8,
+          ssl: true,
+        },
+      },
+      { match: "/api/connections", method: "GET", body: [] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+    fireEvent.change(screen.getByPlaceholderText("e.g. Staging — Neon"), {
+      target: { value: "Orders DB" },
+    });
+    fireEvent.change(
+      screen.getByPlaceholderText("postgres://user:pass@host:5432/database?sslmode=require"),
+      { target: { value: "postgres://app@db.internal:5432/shop?sslmode=require" } }
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Test now/ }));
+    await screen.findByText(/Connected\. Found/);
+
+    // The save, and the list it reloads with the new row in it.
+    setRoutes([
+      { match: "/api/connections", method: "POST", body: SAVED },
+      { match: "/api/connections", method: "GET", body: [SAVED] },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+    await screen.findByRole("button", { name: "Delete Orders DB" });
+    await flushAsync();
+
+    expect(fetchCalls.filter((c) => c.url.includes("/test-saved"))).toHaveLength(0);
+    expect(rowFor("Orders DB")).toHaveTextContent("Never");
+  });
+
+  it("lets a role that may only edit test and edit, and explains the rest", async () => {
+    setCustomRole("fixer", "Fixer", ["connections:update"]);
+    setRoutes([
+      {
+        match: "/api/connections/test-saved",
+        method: "POST",
+        body: {
+          ok: true,
+          version: "PostgreSQL 17.2",
+          latencyMs: 9,
+          testedAt: new Date().toISOString(),
+        },
+      },
+      { match: "/api/connections", method: "GET", body: [conn({ id: 1, name: "Orders DB" })] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    const { add, test, edit, remove } = buttons("Orders DB");
+    for (const button of [test, edit]) {
+      expect(button).toBeEnabled();
+      expect(button).not.toHaveAttribute("title");
+    }
+    expect(add).toBeDisabled();
+    expect(remove).toBeDisabled();
+    expect(screen.getByText(refusal.create("Fixer"))).toBeInTheDocument();
+    expect(screen.getByText(refusal.delete("Fixer"))).toBeInTheDocument();
+    expect(screen.queryByText(/edit or test a saved connection/)).toBeNull();
+
+    fireEvent.click(test);
+    await waitFor(() => expect(rowFor("Orders DB")).toHaveTextContent("PostgreSQL 17.2"));
+  });
+
+  it("says nothing while the session is still loading", async () => {
+    // The server decides then. Switching the buttons off for a role nobody
+    // knows yet would flash a refusal at everyone on every page load.
+    setSessionLoading();
+    setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    for (const button of Object.values(buttons("Orders DB"))) {
+      expect(button).toBeEnabled();
+      expect(button).not.toHaveAttribute("title");
+    }
+    expect(screen.queryByText(/Your role/)).toBeNull();
+  });
+
+  it("leaves the row as it was when the server refuses the test", async () => {
+    // A role can lose the box while the page is open. The route then stops
+    // before it reaches the database and records nothing, so painting the row
+    // "failed" would report a fault the database does not have.
+    const REFUSED = refusal.update("Editor");
+    setUser("editor");
+    setRoutes([
+      {
+        match: "/api/connections/test-saved",
+        method: "POST",
+        status: 403,
+        body: { error: REFUSED },
+      },
+      {
+        match: "/api/connections",
+        method: "GET",
+        body: [
+          conn({
+            id: 1,
+            name: "Orders DB",
+            last_tested_at: new Date(Date.now() - 60 * 60_000).toISOString(),
+            last_test_ok: true,
+            last_test_version: "PostgreSQL 17.2",
+            last_test_latency_ms: 12,
+          }),
+        ],
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    fireEvent.click(buttons("Orders DB").test);
+
+    // The reason is the toast, and the row still says what a reload would.
+    expect(await screen.findByText(REFUSED)).toBeInTheDocument();
+    expect(rowFor("Orders DB")).toHaveTextContent("PostgreSQL 17.2");
+    expect(rowFor("Orders DB")).toHaveTextContent("1h ago");
+    expect(rowFor("Orders DB")).not.toHaveTextContent("failed");
+  });
+
+  it("does not tell a role that may not edit to edit each unlabelled one", async () => {
+    setUser("viewer");
+    setRoutes([
+      { match: "/api/connections", body: [conn({ id: 1, name: "One", environment: null })] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    expect(screen.getByText(/1 connection has/)).toBeInTheDocument();
+    expect(screen.getByText(/Ask someone who may edit connections/)).toBeInTheDocument();
+    expect(screen.queryByText(/edit each one/)).toBeNull();
   });
 });

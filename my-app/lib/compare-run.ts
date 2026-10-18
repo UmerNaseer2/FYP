@@ -207,6 +207,12 @@ export type CompareScreen =
        * link promised that set, and the default pickers are not it.
        */
       setNotFound: boolean;
+      /**
+       * Null when the caller may open saved sets. Otherwise why `sets` is
+       * empty, said in place of "no longer exists" when a `?set=` link asked
+       * for one (see runComparison).
+       */
+      setsRefusal: string | null;
       setModified: boolean;
       selection: CurrentSelection;
       source: SourceView;
@@ -995,15 +1001,23 @@ function formatRunTime(stamp: string): string {
  * Passing null still READS the history — what the last run found is worth
  * showing on a reloaded page; it is the writing that needs somebody to have
  * pressed the button.
+ *
+ * `setsRefusal` is null when the caller may open saved comparison sets
+ * (Comparison sets: Read). Otherwise it is the sentence saying they may not.
+ * Comparing is a different permission, and without this the screen would hand
+ * the saved sets to anyone allowed to compare. The sets are then not read at
+ * all, and a `?set=` link shows that sentence instead of opening the set.
+ * Required rather than defaulted, so a new caller has to decide.
  */
 export async function runComparison(
   query: URLSearchParams,
   record: { ranBy: string } | null,
+  setsRefusal: string | null,
 ): Promise<CompareScreen> {
   const params = toParams(query);
   const [savedConnections, savedSets] = await Promise.all([
     getSavedConnections(),
-    getComparisonSets(),
+    setsRefusal === null ? getComparisonSets() : Promise.resolve([]),
   ]);
 
   // Nothing to compare with: point at Connections rather than rendering an
@@ -1042,7 +1056,9 @@ export async function runComparison(
 
   // A saved-set link whose set has since been deleted. Running it would compare
   // whatever the pickers default to, under a link that promised something else,
-  // so it only fills the pickers and the screen says why.
+  // so it only fills the pickers and the screen says why. A role that may not
+  // open saved sets lands here too, since none were read, and the screen gives
+  // setsRefusal as the reason instead.
   const setNotFound = requestedSetId !== "" && activeSet === null;
 
   // Did anybody actually ask for this comparison?
@@ -1464,6 +1480,7 @@ export async function runComparison(
     sets: setOptions,
     activeSetId: activeSet ? activeSet.id : null,
     setNotFound,
+    setsRefusal,
     setModified,
     selection,
     source: {

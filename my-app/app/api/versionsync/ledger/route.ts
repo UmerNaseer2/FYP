@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -26,7 +26,7 @@ function quoteIdent(name: string): string {
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("version_sync:read", "compare:read");
   if (!gate.ok) return gate.response;
 
   const params = request.nextUrl.searchParams;

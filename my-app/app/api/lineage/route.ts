@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import {
   listTrackedSchemas,
@@ -12,7 +12,7 @@ export type { TrackedSchemaListItem };
 
 /** GET /api/lineage — list every tracked schema with its lineage HEAD + drift. */
 export async function GET() {
-  const gate = await requireViewer();
+  const gate = await requirePermission("drift:read", "dashboard:read");
   if (!gate.ok) return gate.response;
 
   try {
@@ -45,7 +45,7 @@ export async function GET() {
  * "unset" because of a typo would be the same lie the free-text name was.
  */
 export async function PATCH(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("drift:update");
   if (!gate.ok) return gate.response;
 
   try {
@@ -93,7 +93,7 @@ export async function PATCH(request: NextRequest) {
 
 /** DELETE /api/lineage — stop tracking a schema (cascades snapshots/lineage/drift). */
 export async function DELETE(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("drift:delete");
   if (!gate.ok) return gate.response;
 
   try {

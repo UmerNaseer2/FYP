@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient, QueryConfig } from "pg";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
+import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
@@ -61,7 +62,7 @@ import { evaluateThresholds, type ThresholdReading } from "@/lib/perf-thresholds
  *   3. A plain EXPLAIN first, which plans the query without running it. Its
  *      plan is checked for a write or a row lock hiding behind an innocent
  *      first word (a DELETE inside a WITH block, a SELECT … FOR UPDATE).
- *   4. Only then, and only when an editor asked to measure, EXPLAIN ANALYZE,
+ *   4. Only then, and only when asked and allowed to measure, EXPLAIN ANALYZE,
  *      which really runs the query. Before it runs, the query and its plan are
  *      checked against a list of functions that act on the server itself
  *      (ending sessions, reloading settings, writing files, taking advisory
@@ -130,7 +131,7 @@ function fail(error: string, status: number) {
  * from the lexer is a gap: a query that masks as one statement but really holds
  * `; COMMIT; DELETE …` would be sent whole, and over the SIMPLE protocol the
  * server runs every statement in the string — so a plain EXPLAIN in estimate
- * mode, open to any viewer, could commit and then delete.
+ * mode, open to anyone who may open Performance, could commit and then delete.
  *
  * The extended protocol closes that off at the source. A prepared statement may
  * carry exactly one command; a second one is met with "cannot insert multiple
@@ -264,9 +265,10 @@ async function readCatalog(
 }
 
 export async function POST(request: NextRequest) {
-  // Reading a plan is a read. Running the query — even rolled back — is not
-  // something a viewer should be able to make somebody else's database do.
-  const gate = await requireViewer();
+  // Reading a plan is a read (Performance: Read). Running the query, even
+  // rolled back, makes somebody else's database do the work, so measuring
+  // needs Performance: Run as well, checked once the body says which it is.
+  const gate = await requirePermission("performance:read");
   if (!gate.ok) return gate.response;
 
   let body: Partial<AnalyzeRequest> | null;
@@ -287,9 +289,8 @@ export async function POST(request: NextRequest) {
   if (!connectionId) return fail("Choose a connection above before analysing a query.", 400);
   if (!schema) return fail("Choose a schema above before analysing a query.", 400);
 
-  if (measure) {
-    const editor = await requireEditor();
-    if (!editor.ok) return editor.response;
+  if (measure && !hasPermission(gate.principal, "performance:run")) {
+    return fail(refusalMessage(gate.principal.roleLabel, "performance:run"), 403);
   }
 
   // ── Decide from the text alone, before any server hears about it ──────────

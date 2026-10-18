@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { getLineageDetail, type LineageDetail } from "@/lib/lineage-db";
 
 // Re-export so the screen can import the shape from the route it calls.
@@ -19,7 +19,7 @@ export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const gate = await requireViewer();
+  const gate = await requirePermission("drift:read", "dashboard:read");
   if (!gate.ok) return gate.response;
 
   const { id: rawId } = await context.params;

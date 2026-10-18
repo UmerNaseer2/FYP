@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireEditor, requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
+import { hasPermission } from "@/lib/permissions";
 import {
   deleteComparisonSet,
   listComparisonSets,
@@ -10,15 +11,16 @@ import { parseSaveBody } from "@/lib/comparison-set-rules";
 /**
  * Saved comparison sets — the named "source + targets" selections on /compare.
  *
- * Reading a set is a viewer action: it is a selection, not a change to any
- * database. Saving and deleting need editor, matching every other write in this
- * app — a set is what somebody else's finger will click before a migration runs
- * against production, so it is not a viewer's to rewrite.
+ * Reading, saving a new set, overwriting one and deleting one are four
+ * permissions under Comparison sets. Out of the box viewers may read them
+ * and editors may do the rest: a set is what somebody else's finger will
+ * click before a migration runs against production, so rewriting one is not
+ * everybody's to do.
  */
 
 /** GET /api/comparison-sets — every saved set, with its targets in order. */
 export async function GET() {
-  const gate = await requireViewer();
+  const gate = await requirePermission("comparison_sets:read");
   if (!gate.ok) return gate.response;
 
   try {
@@ -42,7 +44,7 @@ export async function GET() {
  * again with `overwrite: true` — the screen asks the user in between.
  */
 export async function POST(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("comparison_sets:create", "comparison_sets:update");
   if (!gate.ok) return gate.response;
 
   let body: unknown;
@@ -56,11 +58,19 @@ export async function POST(request: NextRequest) {
     // parseSaveBody never rejects: a missing or mistyped field becomes empty,
     // and the validation inside saveComparisonSet names it in a sentence the
     // person who pressed Save can act on, passed through below as-is.
-    const result = await saveComparisonSet(parseSaveBody(body));
+    //
+    // The gate above let in a role with either Create or Update, because
+    // which one a save is depends on whether its name is taken, and only
+    // saveComparisonSet can tell. It refuses the one the role lacks.
+    const result = await saveComparisonSet(parseSaveBody(body), {
+      mayCreate: hasPermission(gate.principal, "comparison_sets:create"),
+      mayUpdate: hasPermission(gate.principal, "comparison_sets:update"),
+      roleLabel: gate.principal.roleLabel,
+    });
     if (!result.ok) {
       return NextResponse.json(
         { error: result.error, conflict: result.conflict },
-        { status: result.conflict ? 409 : 400 }
+        { status: result.conflict ? 409 : result.refused ? 403 : 400 }
       );
     }
     return NextResponse.json({ success: true, set: result.set, created: result.created });
@@ -75,7 +85,7 @@ export async function POST(request: NextRequest) {
 
 /** DELETE /api/comparison-sets — remove a set. Body: { id }. */
 export async function DELETE(request: NextRequest) {
-  const gate = await requireEditor();
+  const gate = await requirePermission("comparison_sets:delete");
   if (!gate.ok) return gate.response;
 
   let body: { id?: unknown };

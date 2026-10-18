@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireViewer } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
@@ -76,7 +76,7 @@ const ACTIVITY_STATEMENT_TIMEOUT_MS = 10_000;
 export async function GET(request: NextRequest) {
   // Reading who else is connected is a read, but it is a read of other people's
   // sessions, so it is gated rather than open.
-  const gate = await requireViewer();
+  const gate = await requirePermission("performance:read");
   if (!gate.ok) return gate.response;
 
   const connectionId = Number(request.nextUrl.searchParams.get("connectionId") ?? "");

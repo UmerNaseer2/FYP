@@ -15,10 +15,11 @@ import { BYPASS_AUTH } from "./lib/auth-mode";
  * route handler never runs. This closes that at the edge, before any handler is
  * reached.
  *
- * It answers ONE question: is there a session? Roles are not checked here,
- * because the edge runtime cannot open a Postgres connection to read the
- * profile row. Per-route role enforcement lives in lib/auth-guard.ts, which runs
- * in the node runtime. Both read the same BYPASS_AUTH switch.
+ * It answers ONE question: is there a session? Permissions are not checked
+ * here, because the edge runtime cannot open a Postgres connection to read what
+ * the role may do. The permission check on each API route lives in
+ * lib/auth-guard.ts, which runs in the node runtime. Both read the same
+ * BYPASS_AUTH switch.
  */
 
 type EdgeHandler = (request: NextRequest) => Response | Promise<Response>;
@@ -38,7 +39,8 @@ function getEnforcer(): EdgeHandler {
       // session-shaped object with no user in it (the advisory fixed in
       // next-auth 5.0.0-beta.32 was about exactly that), and a check for "is
       // there anything here" would let it through. Same rule as the
-      // `authorized` callback in auth.config.ts and requireViewer on the server.
+      // `authorized` callback in auth.config.ts. On the server, getPrincipal in
+      // lib/auth-guard.ts asks for a little more: the user's email.
       if (request.auth?.user) return NextResponse.next();
 
       // An unauthenticated API call must get a 401 it can act on, not an HTML

@@ -64,7 +64,7 @@ Create `my-app/.env.local` (git-ignored, never commit it):
 | `DRIFT_SCHEDULER` | `off` stops the background drift loop; anything else leaves it on | no, defaults to on |
 | `APP_ENCRYPTION_KEY` | Encrypts saved database passwords at rest. With neither this nor `NEXTAUTH_SECRET` set, passwords are stored as plain text and the server only logs a warning | no, but set it |
 | `ALLOW_PRIVATE_DB_HOSTS` | `true` lets a production deployment dial loopback, unix sockets and RFC1918 addresses. Off, those are refused in production only, so local development still works | no, defaults to off |
-| `NEXT_PUBLIC_AUTH_BYPASS` | `true` (or `1`/`yes`/`on`, any case) skips login and signs you in as admin. Read at BUILD time, not run time — see §5 | no, defaults to real sign-in |
+| `NEXT_PUBLIC_AUTH_BYPASS` | `true` (or `1`/`yes`/`on`, any case) skips login and signs you in as admin, or as the role picked in View as. Read at BUILD time, not run time — see §5 | no, defaults to real sign-in |
 
 Metadata tables are created on first use by `ensureMetadataSchema()`; there is no
 separate migration step for the tool's own storage.
@@ -141,7 +141,7 @@ my-app/
       schemas/[id]/           lineage detail for one tracked schema
       versionsync/            registry vs ledger vs lineage reconciliation
       visualizer/             React Flow ERD
-      admin/                  role management — list users, change roles, remove
+      admin/                  users and roles: who has which role, what each role can do
       performance/            suggestions, query analysis, trends
     api/                      the route handlers, listed in full below
     globals.css               all styling (see §6)
@@ -182,12 +182,15 @@ my-app/
 | `lib/db/models.ts` | Every metadata table as a Sequelize model — the list in §4 is described from this file |
 | `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
 | `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
+| `lib/permissions.ts` | The permission catalogue: every feature and the boxes it has, what Viewer and Editor start with, the grid's tick rule and the refusal sentence. Pure |
+| `lib/roles-db.ts` | `roles`, `role_permissions` and `role_changes`: what a role may do, making, editing and deleting roles, and the change log |
+| `lib/auth-guard.ts` | `requirePermission()` and `requireSignedIn()`, the gate every route opens with, and the View as role while the bypass is on |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
 | `lib/version-sync.ts` | Ledger reconciliation helpers |
 | `lib/version-detection.ts` | Change-level severity, plus detecting an existing version table in a target |
 | `lib/connection-config.ts` | Builds a `pg` config from a saved row; host allow-list check |
 | `lib/parse-uri.ts` | `postgres://` URI parsing |
-| `lib/connection-access.ts` | Which role may execute against a connection, and why "none" is not the weakest rank. Pure |
+| `lib/connection-access.ts` | Who may execute against a connection on top of "Deploy: Run", and why "none" is not the weakest rank. Pure |
 | `lib/dialects.ts` | What the app knows about each engine, and which ones are actually implemented. Pure |
 | `lib/comparison-history.ts` | Diffs this comparison against the last one of the same pair. Pure |
 | `lib/comparison-history-db.ts` | `comparison_runs`: stores a run, reads the previous one |
@@ -199,26 +202,38 @@ my-app/
 ### API routes
 
 ```
-admin/users            auth/[...nextauth]     compare
-comparison-sets        connections            connections/test
-connections/test-saved deploy/approvals       deploy/approvals/[id]
-github/family          github/pull            github/push
-lineage                lineage/[id]           lineage/acknowledge
-lineage/audit          lineage/drift          lineage/lookup
-lineage/rebaseline     lineage/schedule       lineage/schemas
-lineage/track          performance/activity   performance/advice
-performance/analyze    performance/history    performance/metrics
-performance/thresholds schema/snapshot        scripts/apply
-scripts/preflight      scripts/revert         scripts/schemas
-versionsync/ledger
+admin/roles             admin/users             auth/[...nextauth]
+compare                 compare/version-history comparison-sets
+connections             connections/test        connections/test-saved
+deploy/approvals        deploy/approvals/[id]   github/family
+github/pull             github/push             lineage
+lineage/[id]            lineage/acknowledge     lineage/audit
+lineage/drift           lineage/lookup          lineage/rebaseline
+lineage/schedule        lineage/schemas         lineage/track
+me                      me/view-as              performance/activity
+performance/advice      performance/analyze     performance/history
+performance/metrics     performance/thresholds  schema/snapshot
+scripts/apply           scripts/attempts        scripts/preflight
+scripts/revert          scripts/schemas         versionsync/ledger
 ```
 
-Every one of them opens with a role gate — `requireViewer`, `requireEditor` or
-`requireAdmin` from `lib/auth-guard.ts`, each a thin call on `requireRole()`.
-There are three roles and three gates; approval is not a fourth role, but a
-second *person*, which `lib/approvals-db.ts` enforces per run. The single
-exception is `auth/[...nextauth]`, which *is* the sign-in endpoint and cannot
-require a session to reach.
+Every one of them opens with a gate from `lib/auth-guard.ts`. Most call
+`requirePermission()` with one or more boxes from the Admin screen's grid, such
+as `"connections:update"`, and let the request through when the person's role
+has any one of them. A route that several screens read for their pickers names
+the Read box of each of those screens. `me` and `me/view-as` call
+`requireSignedIn()` instead, because every role needs to know who it is. What
+each role may do lives in the database (`roles`, `role_permissions`), and the
+boxes themselves are listed once, in `lib/permissions.ts`. Approval is not a
+role either, but a second *person*, which `lib/approvals-db.ts` enforces per
+run. The single exception is `auth/[...nextauth]`, which *is* the sign-in
+endpoint and cannot require a session to reach.
+
+Two suites keep this honest. `tests/permissions-coverage.test.ts` fails when a
+route has no gate, or when a box on the grid is checked by no route at all.
+`tests/permissions-equivalence.test.ts` holds every route that existed before
+the grid to the role it needed then: out of the box, that role still gets in and
+the role below it still does not.
 
 ### How the comparison engine works
 
@@ -257,6 +272,9 @@ trusting this table to be complete:
 | `lineage_migrations` | Which migration was applied to which tracked schema |
 | `drift_events` | Detected drift, plus acknowledgement state |
 | `profiles` | Signed-in users and their role; the first to sign in becomes `admin` |
+| `roles` | Every role: the three built in, which can't be deleted, and any an admin makes |
+| `role_permissions` | The boxes each role has ticked, one row per box. Admin has none stored: it can always do everything |
+| `role_changes` | The Recent changes list on the Roles & permissions tab: boxes ticked and unticked, roles made, reset, deleted and given to people |
 | `comparison_sets` | A saved source schema plus its list of targets |
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
 | `deploy_approvals` | Approval requests, decisions, and the two-person record |
@@ -304,7 +322,8 @@ reconciliation · detecting an existing version table in a target · saved
 comparison sets · comparing one source against up to six
 targets · what changed since the last comparison of the same pair ·
 dev/staging/production labels and their warnings ·
-per-connection execution permissions · exporting a diff as
+roles an admin edits box by box for each feature, custom roles and their
+change log · per-connection execution permissions · exporting a diff as
 Markdown, JSON or CSV · the ERD visualizer · scheduled drift checking
 without a button press · query plan analysis · index and schema suggestions ·
 schema metrics over time.
@@ -337,16 +356,19 @@ Some of those are new enough to say where they live:
   structure counts from the snapshot the check already had, plus a size probe
   against `pg_class`. Readings are pruned past 90 days. Charts are hand-drawn
   SVG; there is no charting dependency.
-- **Each connection carries the role required to execute against it**, which is
-  what spec feature 1.2 asks for. A role says what a person is; it cannot say
+- **Each connection says who may execute against it**, which is what spec
+  feature 1.2 asks for. A role says what a person may do anywhere; it cannot say
   that the same editor is trusted on dev and not on the reference schema, and
-  the environment label is only a warning. `lib/connection-access.ts` holds the
-  rule, the setting is a `<select>` on Connections, and both executing routes
-  (`scripts/apply`, `scripts/revert`) check it before opening a connection —
-  dry runs included, because a rehearsal really executes the script and only
-  then rolls back. `none` is read-only and refuses everybody including admins,
-  which is the point for a reference schema others are compared against: it is
-  a fact about the database, not a rank to be outranked.
+  the environment label is only a warning. So running anything needs the
+  "Deploy: Run" box first, and then the connection's own setting on top: anyone
+  whose role may run deployments (the default), the Admin role only, or nobody.
+  `lib/connection-access.ts` holds the rule, the setting is a `<select>` on
+  Connections, and both executing routes (`scripts/apply`, `scripts/revert`)
+  check it before opening a connection. Dry runs are included, because a
+  rehearsal really executes the script and only then rolls back. `none` is
+  read-only and refuses everybody including admins, which is the point for a
+  reference schema others are compared against: it is a fact about the
+  database, not a rank to be outranked.
 - **A comparison says what changed since the last one of the same pair.**
   `comparison_runs` stores what each run found; `lib/comparison-history.ts`
   diffs the current run against the previous one and the panel on Compare
@@ -369,10 +391,11 @@ Some of those are new enough to say where they live:
 - **Authentication can be bypassed for testing, and is here.**
   `.env.local` and `docker-compose.yml` both set `NEXT_PUBLIC_AUTH_BYPASS=true`,
   so `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
-  `lib/auth-guard.ts` let every request through as an admin. The wiring
-  underneath is complete: every API route except the NextAuth handler itself
-  calls `requireViewer` / `requireEditor` / `requireAdmin`, and the `profiles`
-  table is created with the rest of the metadata schema. Remove that line — or
+  `lib/auth-guard.ts` let every request through as an admin, or as the role
+  picked in View as (below). The wiring underneath is complete: every API route
+  except the NextAuth handler itself opens with `requirePermission` or
+  `requireSignedIn`, and the `profiles` and role tables are created with the
+  rest of the metadata schema. Remove that line — or
   set it to anything that is not `true`, `1`, `yes` or `on` — and the whole
   thing turns on, and then the Entra keys in §1 have to be set for anyone to get
   in.
@@ -395,13 +418,24 @@ Some of those are new enough to say where they live:
   Docker pass `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true`.
 
   **How to tell which one you got, without reading the source.** The bottom-left
-  corner of the studio rail, under your name and address, carries your role —
-  `viewer`, `editor` or `admin`, with a tooltip saying what it buys you — and,
-  when the bypass is on, an `auth off` pill beside it. Both, never just the
-  role: `admin` on its own is the half that would be reassuring and wrong. The
+  corner of the studio rail, under your name and address, carries your role's
+  name (Viewer, Editor, Admin or one an admin made), with a tooltip saying what
+  it buys you, and, when the bypass is on, an `auth off` pill beside it. Both,
+  never just the role: Admin on its own is the half that would be reassuring
+  and wrong. The
   role is withheld entirely when nobody is signed in, because the code's floor
   for a missing session is `viewer` and a badge saying so under *Not signed in*
   would read as a role somebody holds.
+
+  **View as, for checking a role without signing in as it.** While the bypass
+  is on, a View as picker sits under your name on the studio rail. Picking a
+  role asks `POST /api/me/view-as` to leave a cookie naming it, for this
+  browser session only, and from then on every route answers as that role and
+  every screen shows what it may use. That is how the boxes on the Admin screen
+  get checked without a Microsoft tenant. "Admin (everything)" clears the
+  cookie, and the picker stays on the rail whatever role is picked, so there is
+  always a way back. With real sign-in the route answers 404 and the cookie is
+  never read, so nobody can use it to raise their own role.
 
 ### Two rules that only bite in production
 
@@ -468,7 +502,7 @@ and not in a footnote.
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | met — 3,209 tests in 124 suites. The sheet asks for "unit testing for all the webpages": 12 of the 13 pages are rendered and driven by a suite of their own (`tests/page-*.test.tsx`), alongside 36 component suites, with `lib/` and the route handlers covered as before. The thirteenth is `app/page.tsx`, four lines that redirect to `/studio`. jsdom is asked for per file — `/** @jest-environment jsdom */` on the first line — rather than switched on globally, so the logic suites keep a node environment and their start-up time |
+| Jest unit tests | met — 3,776 tests in 137 suites. The sheet asks for "unit testing for all the webpages": 12 of the 13 pages are rendered and driven by a suite of their own (`tests/page-*.test.tsx`), alongside 37 component suites, with `lib/` and the route handlers covered as before. The thirteenth is `app/page.tsx`, four lines that redirect to `/studio`. jsdom is asked for per file — `/** @jest-environment jsdom */` on the first line — rather than switched on globally, so the logic suites keep a node environment and their start-up time |
 
 ---
 

@@ -19,11 +19,19 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
-// The caller. A test sets mockBypass to play the auth bypass's one principal.
+// The caller: an editor on a new install, whose role may run deployments. A
+// test sets mockBypass to play the auth bypass's one principal instead, the
+// full admin that answers for everyone while sign-in is off.
 let mockBypass = false;
-jest.mock("../lib/auth-guard", () => ({
-  requireEditor: async () => ({ ok: true, principal: { email: "a@test", role: "editor", bypass: mockBypass } }),
-}));
+jest.mock("../lib/auth-guard", () => {
+  const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
+  return {
+    requirePermission: async () => ({
+      ok: true,
+      principal: mockBypass ? bypassAdminPrincipal() : principalFor("editor", { email: "a@test" }),
+    }),
+  };
+});
 afterEach(() => {
   mockBypass = false;
 });

@@ -11,6 +11,7 @@ import {
   VersionSyncIcon,
   UsersIcon,
 } from "@/components/ui/icons";
+import type { FeatureKey } from "@/lib/permissions";
 
 export type NavItem = {
   /** Short name shown in the breadcrumb. */
@@ -19,8 +20,12 @@ export type NavItem = {
   label: string;
   href: string;
   icon: ReactNode;
-  /** Only shown to admins — the shell filters these on the live session role. */
-  adminOnly?: boolean;
+  /**
+   * The feature this screen belongs to (lib/permissions). The rail shows it
+   * only when the role may Read that feature, or any one of them for a list,
+   * which is the same question the screen's own AuthGuard asks.
+   */
+  feature: FeatureKey | FeatureKey[];
 };
 
 // The order is the order the work happens in, not alphabetical and not by how
@@ -41,61 +46,70 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Dashboard",
     href: "/studio",
     icon: <DashboardIcon className="ico" />,
+    feature: "dashboard",
   },
   {
     screen: "Compare & Author",
     label: "Compare & Author",
     href: "/compare",
     icon: <CompareIcon className="ico" />,
+    feature: "compare",
   },
   {
     screen: "Script Editor",
     label: "Script Editor",
     href: "/script-editor",
     icon: <EditIcon className="ico" />,
+    feature: "scripts",
   },
   {
     screen: "Deploy",
     label: "Deploy",
     href: "/deploy",
     icon: <DeployIcon className="ico" />,
+    feature: "deploy",
   },
   {
     screen: "Version Sync",
     label: "Version Sync",
     href: "/versionsync",
     icon: <VersionSyncIcon className="ico" />,
+    feature: "version_sync",
   },
   {
     screen: "Drift",
     label: "Drift",
     href: "/drift",
     icon: <DriftIcon className="ico" />,
+    feature: "drift",
   },
   {
     screen: "Performance",
     label: "Performance",
     href: "/performance",
     icon: <GaugeIcon className="ico" />,
+    feature: "performance",
   },
   {
     screen: "Visualizer",
     label: "Visualizer",
     href: "/visualizer",
     icon: <SchemaMapIcon className="ico" />,
+    feature: "visualizer",
   },
   {
     screen: "Connections",
     label: "Connections",
     href: "/connections",
     icon: <ConnectionsIcon className="ico" />,
+    feature: "connections",
   },
   {
     screen: "Admin",
     label: "Admin",
     href: "/admin",
     icon: <UsersIcon className="ico" />,
-    adminOnly: true,
+    feature: ["users", "roles"],
   },
 ];
 
