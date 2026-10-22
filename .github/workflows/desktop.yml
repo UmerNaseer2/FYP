@@ -235,15 +235,10 @@ jobs:
           # runs as an ordinary user, and xvfb-run gives it a screen.
           useradd --create-home tester
 
-          # For one run only, the test also runs as it did at first, through
-          # a login shell, to find out why that failed on Ubuntu 24.04 with
-          # exit code 127. Its result is noted and does not decide the job.
-          login_status=0
-          runuser -l tester -c "xvfb-run --auto-servernum schema-studio --self-test" > /tmp/login-shell.txt 2>&1 || login_status=$?
-          if [ "$login_status" -ne 0 ]; then
-            runuser -l tester -c 'echo "PATH is $PATH"; echo "xvfb-run is $(command -v xvfb-run)"; echo "schema-studio is $(command -v schema-studio)"' >> /tmp/login-shell.txt 2>&1 || true
-            annotate warning "Through a login shell the self-test exited with $login_status" /tmp/login-shell.txt
-          fi
+          # A screen server keeps its sockets in /tmp/.X11-unix. Ubuntu makes
+          # that folder, owned by root, when it starts up, but a container
+          # does not start up that way, so it is made here.
+          install -d -m 1777 /tmp/.X11-unix
 
           # The test runs in the user's home folder, with a plain environment
           # of its own and the PATH an ordinary user has, so no profile

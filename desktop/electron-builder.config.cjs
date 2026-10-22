@@ -65,18 +65,31 @@ module.exports = {
     compression: "xz",
     // Setting depends replaces electron-builder's own list, so its list
     // comes first here.
+    //
+    // Ubuntu 24.04 gave three of these libraries new names ending in t64.
+    // The new name comes first: where it exists, apt installs exactly that
+    // package, and older Ubuntu versions, which do not have it, fall back to
+    // the old name.
     depends: [
-      "libgtk-3-0 | libgtk-3-0t64",
+      "libgtk-3-0t64 | libgtk-3-0",
       "libnotify4",
       "libnss3",
       "libxss1",
       "libxtst6",
       "xdg-utils",
-      "libatspi2.0-0 | libatspi2.0-0t64",
+      "libatspi2.0-0t64 | libatspi2.0-0",
       "libuuid1",
       "libsecret-1-0",
       // What Electron needs besides: sound, and drawing with the graphics card.
-      "libasound2 | libasound2t64",
+      //
+      // The sound library needs versions as well. Another package,
+      // liboss4-salsa-asound2, claims its names too (the old one on Ubuntu
+      // 24.04, both on later versions), but it only imitates the sound
+      // library and lacks functions Electron uses, so the app would not even
+      // start. On a fresh Ubuntu 24.04, apt chose it. It claims the names
+      // without a version, and such a claim never meets a dependency that
+      // asks for one, so only the real library can be installed here.
+      "libasound2t64 (>= 1.0.17) | libasound2 (>= 1.0.17)",
       "libgbm1",
       // What PostgreSQL's libraries need.
       "libstdc++6",
