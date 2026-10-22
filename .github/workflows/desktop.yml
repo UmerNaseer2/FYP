@@ -194,10 +194,63 @@ jobs:
         run: apt-get install -y --no-install-recommends xvfb xauth desktop-file-utils
       - name: Run the self-test
         run: |
+          # Only someone signed in to GitHub can read a job's log, but anyone
+          # can read the annotations on a run's page. So if this step fails
+          # for any reason, what explains it goes in annotations. GitHub
+          # reads a % or a line break in one as part of its own format, so
+          # those are written its way.
+          annotate() {
+            local text
+            text="$(tail -c 4000 "$3" 2>&1 || true)"
+            text=${text//'%'/'%25'}
+            text=${text//$'\r'/'%0D'}
+            text=${text//$'\n'/'%0A'}
+            echo "::$1 title=$2::$text"
+          }
+          explain() {
+            local status=$?
+            if [ "$status" -eq 0 ]; then
+              return
+            fi
+            {
+              echo "The step stopped with exit code $status."
+              echo "PATH is $PATH"
+              getent passwd tester || true
+              ls -l /usr/bin/schema-studio /etc/alternatives/schema-studio "/opt/Schema Studio/schema-studio" || true
+              for tool in useradd runuser xvfb-run Xvfb xauth mcookie getopt; do
+                echo "$tool is $(command -v "$tool" || echo missing)"
+              done
+            } > /tmp/facts.txt 2>&1
+            annotate error "The self-test step failed" /tmp/facts.txt
+            if [ -f /tmp/self-test.txt ]; then
+              annotate error "What the self-test printed" /tmp/self-test.txt
+            fi
+            if [ -f /tmp/xvfb-errors.txt ]; then
+              annotate error "What the screen server printed" /tmp/xvfb-errors.txt
+            fi
+          }
+          trap explain EXIT
+
           # Chromium and PostgreSQL both refuse to run as root, so the test
           # runs as an ordinary user, and xvfb-run gives it a screen.
           useradd --create-home tester
-          runuser -l tester -c "xvfb-run --auto-servernum schema-studio --self-test"
+
+          # For one run only, the test also runs as it did at first, through
+          # a login shell, to find out why that failed on Ubuntu 24.04 with
+          # exit code 127. Its result is noted and does not decide the job.
+          login_status=0
+          runuser -l tester -c "xvfb-run --auto-servernum schema-studio --self-test" > /tmp/login-shell.txt 2>&1 || login_status=$?
+          if [ "$login_status" -ne 0 ]; then
+            runuser -l tester -c 'echo "PATH is $PATH"; echo "xvfb-run is $(command -v xvfb-run)"; echo "schema-studio is $(command -v schema-studio)"' >> /tmp/login-shell.txt 2>&1 || true
+            annotate warning "Through a login shell the self-test exited with $login_status" /tmp/login-shell.txt
+          fi
+
+          # The test runs in the user's home folder, with a plain environment
+          # of its own and the PATH an ordinary user has, so no profile
+          # script of any Ubuntu version plays a part in it.
+          cd /home/tester
+          runuser -u tester -- env -i HOME=/home/tester USER=tester LOGNAME=tester PATH=/usr/local/bin:/usr/bin:/bin \
+            xvfb-run --auto-servernum --error-file=/tmp/xvfb-errors.txt schema-studio --self-test 2>&1 | tee /tmp/self-test.txt
       - name: Check the app grid entry
         run: |
           entry=/usr/share/applications/io.github.umernaseer2.SchemaStudio.desktop
