@@ -22,5 +22,5 @@
     "rootDir": "src",
     "outDir": "out"
   },
-  "include": ["src/main", "src/server", "src/core", "src/shared/ipc.ts", "src/test"]
+  "include": ["src/main", "src/server", "src/core", "src/shared/ipc.ts", "src/shared/remote", "src/test"]
 }
