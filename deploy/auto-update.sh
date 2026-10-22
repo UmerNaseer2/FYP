@@ -122,13 +122,16 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   exit 1
 fi
 
-# Prints success, pending or failed for commit $1, going by the GitHub Actions
-# runs that a push to $BRANCH started on it. Runs on other branches and on pull
-# requests are left out: the same commit is often pushed to several branches,
-# and a run cancelled on one of those must not block the deploy here. Anything
-# unexpected (no network, GitHub's hourly limit for anonymous callers) prints
-# unknown, and the next run just asks again. The repo is public, so no token is
-# needed and none is stored on the server.
+# Prints success, pending or failed for commit $1, going by the run of the CI
+# workflow (.github/workflows/ci.yml) that a push to $BRANCH started on it.
+# Other workflows are left out: the desktop workflow builds installers the
+# server never runs, so it must neither hold a deploy back nor stop one. Runs
+# on other branches and on pull requests are left out too: the same commit is
+# often pushed to several branches, and a run cancelled on one of those must
+# not block the deploy here. Anything unexpected (no network, GitHub's hourly
+# limit for anonymous callers) prints unknown, and the next run just asks
+# again. The repo is public, so no token is needed and none is stored on the
+# server.
 ci_state() {
   local slug json
   slug="$(git config --get remote.origin.url | sed -E 's#^(https://github\.com/|git@github\.com:)##; s#\.git$##')"
@@ -141,6 +144,9 @@ try:
 except Exception:
     print("unknown")
     sys.exit()
+# Only the CI workflow decides. The desktop workflow builds the installers,
+# which the server does not run, and takes far longer.
+runs = [r for r in runs if r.get("name") == "CI"]
 # Only the newest run of each workflow counts. An older one may have been
 # cancelled because the same commit was pushed to the branch a second time.
 newest = {}
