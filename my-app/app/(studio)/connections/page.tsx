@@ -53,6 +53,8 @@ import {
 } from "@/components/ui/icons";
 import { EnvironmentPill, ExecuteRolePill, FilterPill } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
+import { LocalDatabaseFinder } from "@/components/studio/LocalDatabaseFinder";
+import type { FoundDatabase } from "@/lib/desktop-bridge";
 
 // ——— Data shapes ———
 type Connection = {
@@ -231,6 +233,15 @@ export default function ConnectionsPage() {
   const [saving, setSaving] = useState(false);
   const [formErrors, setFormErrors] = useState<FieldErrors>({});
 
+  // The desktop app's "On this computer" finder (components/studio/
+  // LocalDatabaseFinder). finderRound gives it a fresh key on every Add, so it
+  // never offers what it found the last time the drawer was open: that server
+  // may have stopped since. pickedName is the name it last filled in, so a
+  // second pick can replace that name but never one the person typed.
+  const [finderRound, setFinderRound] = useState(0);
+  const pickedName = useRef<string | null>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Connection | null>(null);
 
@@ -315,6 +326,8 @@ export default function ConnectionsPage() {
     setFieldMode("uri");
     setShowPassword(false);
     setDrawerTest({ kind: "idle" });
+    setFinderRound((round) => round + 1);
+    pickedName.current = null;
     setDrawerOpen(true);
   }
 
@@ -368,6 +381,39 @@ export default function ConnectionsPage() {
     }
     setFieldMode("uri");
     setDrawerTest({ kind: "idle" });
+  }
+
+  // A database the desktop app found running on this computer. Fills in what
+  // the app learned, in Fields mode so each part is on show, and leaves the
+  // password for the person to type.
+  function pickFoundDatabase(found: FoundDatabase) {
+    // Read before the update below: React may run that function later, after
+    // pickedName has already moved on to this pick.
+    const previousPick = pickedName.current;
+    pickedName.current = found.label;
+    setForm((f) => ({
+      ...f,
+      name: !f.name || f.name === previousPick ? found.label : f.name,
+      uri: "",
+      host: found.host,
+      port: String(found.port),
+      // Unknown for a server only seen answering on a port, so the usual
+      // defaults go in, ready to be corrected.
+      database: found.database ?? EMPTY_FORM.database,
+      user: found.user ?? EMPTY_FORM.user,
+      // A password typed for some other server is not this one's.
+      password: "",
+      // A local PostgreSQL rarely has SSL set up, and a database on this
+      // computer is a development one, as with quickStart("local").
+      sslMode: "disable",
+      environment: "dev",
+    }));
+    setFieldMode("fields");
+    setFormErrors({});
+    setDrawerTest({ kind: "idle" });
+    // The password box only exists in Fields mode, so it can be focused once
+    // this click's update is on screen.
+    window.setTimeout(() => passwordRef.current?.focus(), 0);
   }
 
   // A tested result describes one exact set of credentials — the moment any of
@@ -1260,6 +1306,13 @@ export default function ConnectionsPage() {
             </div>
           </div>
 
+          {/* Desktop app only: databases running on this computer. Not offered
+              while editing, where one press would quietly point a saved
+              connection, and the history kept for it, at another database. */}
+          {editingId === null && (
+            <LocalDatabaseFinder key={finderRound} onPick={pickFoundDatabase} />
+          )}
+
           {/* Name */}
           <div className="mb-4">
             <div className="flex items-center justify-between mb-1.5">
@@ -1462,6 +1515,7 @@ export default function ConnectionsPage() {
                   </div>
                   <div className="relative">
                     <input
+                      ref={passwordRef}
                       className="input mono"
                       style={{ paddingRight: 38 }}
                       type={showPassword ? "text" : "password"}

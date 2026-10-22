@@ -51,6 +51,7 @@ import { Pill } from "@/components/ui/Pill";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
 import { useUser } from "@/hooks/useUser";
+import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { refusalMessage } from "@/lib/permissions";
 
 // ── Shapes of the data we pull from existing endpoints ──────────────────────
@@ -238,6 +239,9 @@ export default function ScriptEditorPage() {
   // The pull's error code. "github_unconfigured" means GitHub is not set up on
   // this server: read from the code rather than the wording of the message.
   const [pullCode, setPullCode] = useState<string | null>(null);
+  // Inside the desktop app the GitHub details are filled in on its Settings
+  // window rather than in a file, so the "not set up" message offers to open it.
+  const desktop = useDesktopBridge();
   // Starts true: before the pull lands, an empty registry is unknown, not empty.
   const [githubLoading, setGithubLoading] = useState(true);
 
@@ -1186,7 +1190,20 @@ export default function ScriptEditorPage() {
                 className="help mt-3"
                 style={{ color: githubUnconfigured ? "var(--break)" : "var(--drift)" }}
               >
-                {githubUnconfigured ? (
+                {githubUnconfigured && desktop ? (
+                  <>
+                    The GitHub registry is not set up yet, so nothing can be listed and
+                    nothing can be saved. Add the registry repository and an access token
+                    in Settings.{" "}
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => desktop.openSettings()}
+                    >
+                      Open Settings
+                    </button>
+                  </>
+                ) : githubUnconfigured ? (
                   <>
                     The GitHub registry is not configured, so nothing can be listed and
                     nothing can be saved. Set GITHUB_REPO_OWNER, GITHUB_REPO_NAME and

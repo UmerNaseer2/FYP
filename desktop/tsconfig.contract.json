@@ -1,0 +1,16 @@
+{
+  // Checks, without building anything, that what the main process sends back
+  // over IPC has exactly the shapes the web app's bridge promises. See
+  // src/contract/bridge-contract.ts.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom"],
+    "module": "node16",
+    "moduleResolution": "node16",
+    "types": [],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/contract"]
+}

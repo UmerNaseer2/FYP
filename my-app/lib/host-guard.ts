@@ -113,6 +113,21 @@ export function checkConnectableHost(
   // so they are judged with localhost rather than let through as "not 127.".
   const isLocalMachine = h === "" || h.startsWith("/") || h.startsWith("@");
 
+  // The desktop app (desktop/ at the root of this repository) keeps its own
+  // database on the same computer, reachable only through a private unix
+  // socket where the operating system vouches for who is connecting. This
+  // server runs as that same person, so a saved connection that named the
+  // socket would be let straight into the app's own tables, the users and
+  // their roles included. The databases people work on are always reached on
+  // a port, so the desktop app refuses every socket spelling outright.
+  if (process.env.SCHEMA_STUDIO_DESKTOP === "1" && isLocalMachine) {
+    return {
+      ok: false,
+      message:
+        "The desktop app connects to databases over the network only. Use localhost or 127.0.0.1 with the database's port.",
+    };
+  }
+
   const blockPrivate =
     process.env.NODE_ENV === "production" &&
     process.env.ALLOW_PRIVATE_DB_HOSTS !== "true";

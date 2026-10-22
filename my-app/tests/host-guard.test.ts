@@ -29,6 +29,8 @@ jest.mock("pg", () => ({
 
 const BLOCKED = "That host isn't allowed.";
 const PRIVATE = "Connections to internal/private hosts are disabled on this server.";
+const DESKTOP_SOCKET =
+  "The desktop app connects to databases over the network only. Use localhost or 127.0.0.1 with the database's port.";
 
 /**
  * Run one call with different environment values, then put them back.
@@ -83,6 +85,28 @@ describe("checkConnectableHost — the app server's own machine", () => {
     withEnv({ NODE_ENV: "production", ALLOW_PRIVATE_DB_HOSTS: "true" }, () => {
       expect(checkConnectableHost("/var/run/postgresql").ok).toBe(true);
       expect(checkConnectableHost("localhost").ok).toBe(true);
+    });
+  });
+
+  it("refuses them in the desktop app, whose own database sits behind a socket", () => {
+    // The desktop app's database answers only on a private unix socket, to the
+    // same person this server runs as, so a socket here would lead into the
+    // app's own tables. It runs as production with private hosts allowed,
+    // because a database on this computer's port is exactly what it is for.
+    const desktop = { NODE_ENV: "production", ALLOW_PRIVATE_DB_HOSTS: "true", SCHEMA_STUDIO_DESKTOP: "1" };
+    withEnv(desktop, () => {
+      for (const host of ["/run/user/1000/schema-studio", "/tmp", "@abstract-socket", "", undefined]) {
+        expect(checkConnectableHost(host)).toEqual({ ok: false, message: DESKTOP_SOCKET });
+      }
+      expect(
+        checkConnectionTarget({ connectionString: "postgres://app:pw@localhost/app?host=/tmp" })
+      ).toEqual({ ok: false, message: DESKTOP_SOCKET });
+
+      expect(checkConnectableHost("localhost").ok).toBe(true);
+      expect(checkConnectableHost("127.0.0.1").ok).toBe(true);
+      expect(checkConnectableHost("db.example.com").ok).toBe(true);
+      // The rule for addresses that are never a database still comes first.
+      expect(checkConnectableHost("169.254.169.254")).toEqual({ ok: false, message: BLOCKED });
     });
   });
 });

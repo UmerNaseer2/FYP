@@ -23,7 +23,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
@@ -37,6 +37,12 @@ import {
   setSessionLoading,
   setUser,
 } from "./helpers/render-page";
+import type { FoundDatabase } from "@/lib/desktop-bridge";
+import {
+  installDesktopBridge,
+  removeDesktopBridge,
+  type FakeDesktopBridge,
+} from "./helpers/desktop-bridge";
 
 /** A saved row, with everything the table reads spelled out. */
 function conn(over: Partial<Record<string, unknown>> & { id: number; name: string }) {
@@ -627,5 +633,226 @@ describe("for a role that may not add, change or delete connections", () => {
     expect(screen.getByText(/1 connection has/)).toBeInTheDocument();
     expect(screen.getByText(/Ask someone who may edit connections/)).toBeInTheDocument();
     expect(screen.queryByText(/edit each one/)).toBeNull();
+  });
+});
+
+describe("finding databases on this computer, in the desktop app", () => {
+  // The desktop app can look for PostgreSQL servers running on the computer it
+  // is on, and the add drawer offers what it finds. A web page cannot look
+  // around the computer it runs on, so in a browser the drawer has no such
+  // section at all.
+  const FROM_DOCKER: FoundDatabase = {
+    source: "docker",
+    label: "shop-db",
+    host: "localhost",
+    port: 5433,
+    user: "shop",
+    database: "shop_dev",
+    container: "shop-db",
+  };
+  const ON_A_PORT: FoundDatabase = {
+    source: "port",
+    label: "PostgreSQL on port 5432",
+    host: "localhost",
+    port: 5432,
+    user: null,
+    database: null,
+  };
+
+  let bridge: FakeDesktopBridge;
+  beforeEach(() => {
+    bridge = installDesktopBridge();
+    setRoutes([{ match: "/api/connections", body: [] }]);
+  });
+  afterEach(() => removeDesktopBridge());
+
+  /** The drawer, which stays mounted; queries are kept inside it. */
+  function drawer() {
+    return within(document.querySelector(".drawer") as HTMLElement);
+  }
+
+  async function openAddDrawer() {
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+  }
+
+  /** Keeps the search going until the case says what it found. */
+  function holdSearch() {
+    let answer: (found: FoundDatabase[]) => void = () => {};
+    bridge.findLocalDatabases.mockImplementation(
+      () =>
+        new Promise<FoundDatabase[]>((resolve) => {
+          answer = resolve;
+        })
+    );
+    return (found: FoundDatabase[]) => act(async () => answer(found));
+  }
+
+  /**
+   * The Fields-mode inputs, found by what they show while empty. Their labels
+   * are not tied to them, and Database and User share a placeholder, Database
+   * first.
+   */
+  function fields() {
+    const [database, user] = drawer().getAllByPlaceholderText("postgres");
+    return {
+      name: drawer().getByPlaceholderText("e.g. Staging — Neon"),
+      host: drawer().getByPlaceholderText("db.example.com"),
+      port: drawer().getByPlaceholderText("5432"),
+      database,
+      user,
+      password: drawer().getByPlaceholderText("••••••••"),
+    };
+  }
+
+  it("is not offered in a browser, which cannot look around the computer", async () => {
+    removeDesktopBridge();
+    await openAddDrawer();
+
+    expect(drawer().queryByText("On this computer")).not.toBeInTheDocument();
+    expect(drawer().queryByRole("button", { name: "Find databases" })).not.toBeInTheDocument();
+  });
+
+  it("looks only when asked, then lists what it found", async () => {
+    const answer = holdSearch();
+    await openAddDrawer();
+    // Opening the drawer is not asking. A search knocks on ports and asks
+    // Docker, which nobody adding a hosted database wants done.
+    expect(bridge.findLocalDatabases).not.toHaveBeenCalled();
+
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+    expect(bridge.findLocalDatabases).toHaveBeenCalledTimes(1);
+    expect(drawer().getByText("Looking on the usual ports and in Docker…")).toBeInTheDocument();
+    expect(drawer().getByRole("button", { name: "Looking…" })).toBeDisabled();
+
+    await answer([FROM_DOCKER, ON_A_PORT]);
+    expect(
+      await drawer().findByText("Found 2 databases. Pick one to fill in the details below.")
+    ).toBeInTheDocument();
+    const list = within(drawer().getByRole("list", { name: "Databases found on this computer" }));
+    expect(list.getByText("localhost:5433 · user shop · database shop_dev")).toBeInTheDocument();
+    // A server only seen answering on a port says what is not known, rather
+    // than showing the defaults as if they had been read from it.
+    expect(list.getByText("localhost:5432 · user and database not known")).toBeInTheDocument();
+    expect(list.getByText("Docker")).toHaveAttribute("title", "Docker container shop-db");
+    expect(drawer().getByRole("button", { name: "Look again" })).toBeEnabled();
+  });
+
+  it("fills in everything but the password, then puts the cursor there", async () => {
+    bridge.findLocalDatabases.mockResolvedValue([FROM_DOCKER, ON_A_PORT]);
+    await openAddDrawer();
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+    fireEvent.click(await drawer().findByRole("button", { name: /shop-db/ }));
+
+    const f = fields();
+    expect(f.name).toHaveValue("shop-db");
+    expect(f.host).toHaveValue("localhost");
+    expect(f.port).toHaveValue(5433);
+    expect(f.database).toHaveValue("shop_dev");
+    expect(f.user).toHaveValue("shop");
+    // The app never reads a password, not even from a container's settings,
+    // so the person types it, and the cursor is already in the box.
+    expect(f.password).toHaveValue("");
+    await waitFor(() => expect(f.password).toHaveFocus());
+    // The details went into the fields, so the drawer shows the fields.
+    expect(drawer().getByRole("button", { name: "Fields" })).toHaveClass("active");
+    // A database on this computer is a development one, and seldom has SSL set
+    // up, the same as the "Local Postgres" quick start.
+    expect(drawer().getByRole("radio", { name: "Dev" })).toHaveAttribute("aria-checked", "true");
+    expect(drawer().getByRole("radio", { name: "Off" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("replaces a name it filled in, but never one the person typed", async () => {
+    bridge.findLocalDatabases.mockResolvedValue([FROM_DOCKER, ON_A_PORT]);
+    await openAddDrawer();
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+    fireEvent.click(await drawer().findByRole("button", { name: /shop-db/ }));
+
+    // A second pick is a change of mind, so the first pick's name goes too,
+    // and what the port server could not say goes back to the defaults rather
+    // than keeping shop-db's.
+    fireEvent.click(drawer().getByRole("button", { name: /PostgreSQL on port 5432/ }));
+    expect(fields().name).toHaveValue("PostgreSQL on port 5432");
+    expect(fields().port).toHaveValue(5432);
+    expect(fields().database).toHaveValue("postgres");
+    expect(fields().user).toHaveValue("postgres");
+
+    fireEvent.change(fields().name, { target: { value: "My laptop" } });
+    fireEvent.click(drawer().getByRole("button", { name: /shop-db/ }));
+    expect(fields().name).toHaveValue("My laptop");
+    expect(fields().port).toHaveValue(5433);
+  });
+
+  it("clears a password that was typed for some other server", async () => {
+    bridge.findLocalDatabases.mockResolvedValue([FROM_DOCKER]);
+    await openAddDrawer();
+    fireEvent.click(drawer().getByRole("button", { name: "Fields" }));
+    fireEvent.change(fields().password, { target: { value: "typed-for-another-server" } });
+
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+    expect(
+      await drawer().findByText("Found 1 database. Pick it to fill in the details below.")
+    ).toBeInTheDocument();
+    fireEvent.click(drawer().getByRole("button", { name: /shop-db/ }));
+    expect(fields().password).toHaveValue("");
+  });
+
+  it("says so when nothing answered, and offers to look again", async () => {
+    // The fake's default search finds nothing.
+    await openAddDrawer();
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+
+    expect(await drawer().findByText(/^Nothing found\./)).toBeInTheDocument();
+    expect(
+      drawer().queryByRole("list", { name: "Databases found on this computer" })
+    ).not.toBeInTheDocument();
+    fireEvent.click(drawer().getByRole("button", { name: "Look again" }));
+    expect(bridge.findLocalDatabases).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the app's own error out of the drawer when the search fails", async () => {
+    bridge.findLocalDatabases.mockRejectedValue(
+      new Error("Error invoking remote method 'find-local-databases': Error: EACCES")
+    );
+    await openAddDrawer();
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+
+    expect(
+      await drawer().findByText(
+        "Schema Studio could not look for databases just now. Look again, or fill in the details below."
+      )
+    ).toBeInTheDocument();
+    expect(drawer().queryByText(/EACCES|remote method/)).not.toBeInTheDocument();
+    expect(drawer().getByRole("button", { name: "Look again" })).toBeEnabled();
+  });
+
+  it("is not offered while a saved connection is being edited", async () => {
+    // One press would quietly point the saved connection, and the history
+    // kept for it, at a different database.
+    setRoutes([{ match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(within(rowFor("Orders DB")).getByRole("button", { name: /Edit/ }));
+
+    expect(drawer().getByRole("heading", { name: "Edit Orders DB" })).toBeInTheDocument();
+    expect(drawer().queryByText("On this computer")).not.toBeInTheDocument();
+  });
+
+  it("starts over each time the drawer opens", async () => {
+    // What it found the last time may have stopped since, so the old list is
+    // not offered again.
+    bridge.findLocalDatabases.mockResolvedValue([FROM_DOCKER]);
+    await openAddDrawer();
+    fireEvent.click(drawer().getByRole("button", { name: "Find databases" }));
+    await drawer().findByRole("list", { name: "Databases found on this computer" });
+
+    fireEvent.click(drawer().getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+    expect(drawer().getByRole("button", { name: "Find databases" })).toBeEnabled();
+    expect(
+      drawer().queryByRole("list", { name: "Databases found on this computer" })
+    ).not.toBeInTheDocument();
+    expect(bridge.findLocalDatabases).toHaveBeenCalledTimes(1);
   });
 });

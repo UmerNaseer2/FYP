@@ -31,6 +31,27 @@ export const viewport: Viewport = {
   maximumScale: 5,
 };
 
+/**
+ * Inside the desktop app, puts the right theme on the page before it is first
+ * drawn.
+ *
+ * The server always sends `data-theme="dark"`, and hooks/useTheme only corrects
+ * that once React has started, so on a PC set to Ubuntu's light style every
+ * window would open dark and then flick to light. The desktop app's preload
+ * script has put its bridge on `window` before this runs, so this can tell it
+ * is inside the app and read the app's theme from `prefers-color-scheme`, which
+ * Electron answers from the app's own setting. In a browser it does nothing at
+ * all: there the saved choice still comes from localStorage, as before.
+ */
+const DESKTOP_THEME_SCRIPT = `try {
+  if (window.schemaStudioDesktop) {
+    document.documentElement.setAttribute(
+      "data-theme",
+      window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
+    );
+  }
+} catch (e) {}`;
+
 export default function RootLayout({
   children,
 }: {
@@ -43,6 +64,9 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable}`}
       suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: DESKTOP_THEME_SCRIPT }} />
+      </head>
       <body>
         <ClientProvider>{children}</ClientProvider>
       </body>

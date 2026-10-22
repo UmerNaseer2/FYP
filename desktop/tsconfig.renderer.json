@@ -1,0 +1,28 @@
+{
+  // The scripts of the app's own two pages, the start screen and Settings.
+  // They are ordinary web page scripts: no Node at all, and only what the
+  // preload script hands them on `window`. Like the preloads, they reach the
+  // shared types through `import("...")` type expressions, which makes the
+  // compiler write out/shared/ipc.js as well. It comes out the same as the
+  // main program's copy, and no page loads it.
+  //
+  // "moduleDetection": "auto" keeps each one a plain script, as in
+  // tsconfig.preload.json. A module starts with a line that uses `exports`,
+  // which a web page does not have, so the page would stop right there.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom"],
+    "module": "node16",
+    "moduleResolution": "node16",
+    "moduleDetection": "auto",
+    "types": [],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "out"
+  },
+  "include": ["src/renderer"]
+}

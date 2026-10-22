@@ -128,6 +128,55 @@ describe("edge proxy", () => {
     });
   });
 
+  describe("inside the desktop app", () => {
+    // The desktop app carries no client secret and needs none: it does the
+    // Microsoft sign-in itself, so the two IDs and the session secret it makes
+    // for itself are all it takes for the proxy to start checking.
+    const desktop = {
+      NEXT_PUBLIC_AUTH_BYPASS: "false",
+      SCHEMA_STUDIO_DESKTOP: "1",
+      AZURE_AD_CLIENT_ID: "client",
+      AZURE_AD_CLIENT_SECRET: "",
+      AZURE_AD_TENANT_ID: "tenant",
+      NEXTAUTH_SECRET: "a-test-secret-that-is-long-enough",
+    };
+
+    afterEach(() => {
+      mockSession = null;
+    });
+
+    it("guards pages and API routes without a client secret", async () => {
+      const { proxy } = await loadProxy(desktop);
+      expect((await proxy(api())).status).toBe(401);
+      const response = await proxy(page());
+      expect(response.status).toBe(307);
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.pathname).toBe("/login");
+      expect(location.searchParams.get("callbackUrl")).toBe("/studio");
+      // Sign-in is set up, so the login screen offers it rather than an error.
+      expect(location.searchParams.get("error")).toBeNull();
+    });
+
+    it("lets a signed-in user through", async () => {
+      mockSession = { user: { email: "someone@example.com" }, expires: "2099-01-01" };
+      const { proxy } = await loadProxy(desktop);
+      expect((await proxy(page())).status).toBe(200);
+      expect((await proxy(api())).status).toBe(200);
+    });
+
+    it("says sign-in is not set up in an app built without the two IDs", async () => {
+      const { proxy } = await loadProxy({
+        ...desktop,
+        AZURE_AD_CLIENT_ID: "",
+        AZURE_AD_TENANT_ID: "",
+      });
+      const response = await proxy(page());
+      expect(response.status).toBe(307);
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.searchParams.get("error")).toBe("Configuration");
+    });
+  });
+
   it("guards the pages that need it and leaves sign-in reachable", async () => {
     const { config } = await loadProxy({ NEXT_PUBLIC_AUTH_BYPASS: "true" });
     // Anchored, the way Next compiles a matcher. Unanchored it would happily

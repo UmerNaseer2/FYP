@@ -37,9 +37,14 @@
  */
 
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import { useTheme } from "@/hooks/useTheme";
+import {
+  installDesktopBridge,
+  removeDesktopBridge,
+  type FakeDesktopBridge,
+} from "./helpers/desktop-bridge";
 
 /** The hook has no UI of its own, so give it the smallest one that shows both halves. */
 function Probe() {
@@ -158,5 +163,89 @@ describe("a browser that will not store anything", () => {
     toggle();
     expect(shown()).toBe("light");
     expect(root()).toHaveAttribute("data-theme", "light");
+  });
+});
+
+describe("inside the desktop app", () => {
+  // The app keeps the theme instead of localStorage. Electron answers
+  // prefers-color-scheme from the app's own setting, which follows Ubuntu's
+  // light or dark style until the person pins one with the toggle, so the hook
+  // reads that query and keeps listening to it.
+  const realMatchMedia = window.matchMedia;
+  let light = false;
+  const listeners = new Set<() => void>();
+  let bridge: FakeDesktopBridge;
+
+  beforeEach(() => {
+    light = false;
+    listeners.clear();
+    window.matchMedia = ((query: string) =>
+      ({
+        media: query,
+        get matches() {
+          return query === "(prefers-color-scheme: light)" && light;
+        },
+        onchange: null,
+        addEventListener: (_type: string, listener: () => void) => {
+          listeners.add(listener);
+        },
+        removeEventListener: (_type: string, listener: () => void) => {
+          listeners.delete(listener);
+        },
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList) as typeof window.matchMedia;
+    bridge = installDesktopBridge();
+  });
+
+  afterEach(() => {
+    window.matchMedia = realMatchMedia;
+    removeDesktopBridge();
+  });
+
+  /** Ubuntu's style changing while the window is open. */
+  function ubuntuSwitchesTo(next: "light" | "dark") {
+    light = next === "light";
+    act(() => listeners.forEach((listener) => listener()));
+  }
+
+  test("opens in the app's theme, whatever localStorage says", () => {
+    // localStorage is not where the app keeps the theme, so a value found
+    // there is not a choice anybody made inside the app.
+    localStorage.setItem("ss-theme", "dark");
+    light = true;
+    render(<Probe />);
+    expect(shown()).toBe("light");
+    expect(root()).toHaveAttribute("data-theme", "light");
+  });
+
+  test("follows Ubuntu between light and dark while the window is open", () => {
+    render(<Probe />);
+    expect(shown()).toBe("dark");
+    ubuntuSwitchesTo("light");
+    expect(shown()).toBe("light");
+    expect(root()).toHaveAttribute("data-theme", "light");
+    ubuntuSwitchesTo("dark");
+    expect(shown()).toBe("dark");
+    expect(root()).toHaveAttribute("data-theme", "dark");
+  });
+
+  test("hands the toggle's choice to the app, which keeps it for every window", () => {
+    render(<Probe />);
+    toggle();
+    expect(shown()).toBe("light");
+    expect(root()).toHaveAttribute("data-theme", "light");
+    expect(bridge.setTheme).toHaveBeenCalledTimes(1);
+    expect(bridge.setTheme).toHaveBeenCalledWith("light");
+    // Not in localStorage as well, where the app would never read it back.
+    expect(localStorage.getItem("ss-theme")).toBeNull();
+  });
+
+  test("stops listening once the screen is gone", () => {
+    const { unmount } = render(<Probe />);
+    expect(listeners.size).toBe(1);
+    unmount();
+    expect(listeners.size).toBe(0);
   });
 });

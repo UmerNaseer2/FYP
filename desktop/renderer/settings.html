@@ -1,0 +1,123 @@
+<!doctype html>
+<!--
+  Settings: the GitHub registry, the theme, and where the app keeps its
+  files. src/renderer/settings.ts fills it in and sends each change to the
+  main process. The page is served with a strict security policy
+  (src/main/protocol.ts), so it has no inline script or style.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Settings</title>
+    <link rel="stylesheet" href="app.css">
+    <script src="settings.js" defer></script>
+  </head>
+  <body class="settings">
+    <main class="settings-main">
+      <h1 class="visually-hidden">Settings</h1>
+      <p id="load-error" class="banner" role="alert" hidden></p>
+      <div id="content" class="groups" hidden>
+        <form id="github-form" class="group" aria-labelledby="github-title" novalidate>
+          <h2 id="github-title" class="group-title">GitHub registry</h2>
+          <p class="group-intro">The repository Schema Studio publishes scripts to. Leave the owner and the repository empty to work without one.</p>
+          <div class="list">
+            <div class="row">
+              <label class="row-label" for="owner">Owner</label>
+              <input id="owner" class="input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="octocat" aria-describedby="owner-error">
+              <p id="owner-error" class="field-error" hidden></p>
+            </div>
+            <div class="row">
+              <label class="row-label" for="repo">Repository</label>
+              <input id="repo" class="input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="schema-registry" aria-describedby="repo-error">
+              <p id="repo-error" class="field-error" hidden></p>
+            </div>
+            <div class="row" role="group" aria-labelledby="token-title">
+              <span id="token-title" class="row-label">Access token</span>
+              <div id="token-saved" class="token" hidden>
+                <span class="token-state"><span class="dot dot-good" aria-hidden="true"></span>A token is saved</span>
+                <span class="token-actions">
+                  <button id="token-replace" class="button" type="button" aria-describedby="token-error">Replace</button>
+                  <button id="token-remove" class="button button-bad" type="button">Remove</button>
+                </span>
+              </div>
+              <div id="token-none" class="token" hidden>
+                <span class="token-state"><span class="dot" aria-hidden="true"></span>No token saved</span>
+                <span class="token-actions">
+                  <button id="token-add" class="button" type="button" aria-describedby="token-error">Add a token</button>
+                </span>
+              </div>
+              <div id="token-entry" class="token-entry" hidden>
+                <input id="token" class="input" type="password" autocomplete="off" spellcheck="false" aria-labelledby="token-title" aria-describedby="token-hint token-error">
+                <button id="token-cancel" class="button" type="button">Cancel</button>
+              </div>
+              <p id="token-hint" class="hint" hidden>Paste a GitHub access token that can read and write this repository. It is kept with the app's other keys.</p>
+              <div id="token-removing" class="token" hidden>
+                <span class="token-state"><span class="dot dot-bad" aria-hidden="true"></span>The token will be removed when you save</span>
+                <span class="token-actions">
+                  <button id="token-keep" class="button" type="button" aria-describedby="token-error">Keep it</button>
+                </span>
+              </div>
+              <p id="token-error" class="field-error" hidden></p>
+            </div>
+          </div>
+          <div class="group-footer">
+            <div class="group-footer-text">
+              <p id="github-error" class="field-error" role="alert" hidden></p>
+              <p id="github-status" class="status" role="status"></p>
+            </div>
+            <button id="github-save" class="button button-primary" type="submit">Save</button>
+          </div>
+        </form>
+
+        <section class="group" aria-labelledby="appearance-title">
+          <h2 id="appearance-title" class="group-title">Appearance</h2>
+          <fieldset class="list">
+            <legend class="visually-hidden">Theme</legend>
+            <label class="row row-choice">
+              <input type="radio" name="theme" value="system">
+              <span class="choice-text">
+                <span class="choice-name">Match Ubuntu</span>
+                <span class="hint">Light or dark, as chosen in Ubuntu's Settings under Appearance</span>
+              </span>
+            </label>
+            <label class="row row-choice">
+              <input type="radio" name="theme" value="light">
+              <span class="choice-text"><span class="choice-name">Light</span></span>
+            </label>
+            <label class="row row-choice">
+              <input type="radio" name="theme" value="dark">
+              <span class="choice-text"><span class="choice-name">Dark</span></span>
+            </label>
+          </fieldset>
+        </section>
+
+        <section class="group" aria-labelledby="storage-title">
+          <h2 id="storage-title" class="group-title">Storage</h2>
+          <dl class="list">
+            <div class="row row-fact">
+              <dt>Keys</dt>
+              <dd id="secrets-kept-in"></dd>
+            </div>
+            <div class="row row-fact">
+              <dt>Data</dt>
+              <dd><code id="data-path" class="path"></code></dd>
+            </div>
+            <div class="row row-fact">
+              <dt>Logs</dt>
+              <dd class="fact-action">
+                <code id="logs-path" class="path"></code>
+                <button id="open-logs" class="button" type="button">Open logs</button>
+              </dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </main>
+    <footer class="settings-footer">
+      <span id="version" class="version"></span>
+      <button id="close" class="button" type="button">Close</button>
+    </footer>
+  </body>
+</html>

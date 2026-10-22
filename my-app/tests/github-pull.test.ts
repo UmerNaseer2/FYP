@@ -27,7 +27,12 @@ const ROOT = `${REPO}/contents`;
 const RAW = "https://raw.example.test/acme/registry/main";
 const FAMILY = "db/public/orders_fix";
 
-const ENV_KEYS = ["GITHUB_PAT", "GITHUB_REPO_OWNER", "GITHUB_REPO_NAME"] as const;
+const ENV_KEYS = [
+  "GITHUB_PAT",
+  "GITHUB_REPO_OWNER",
+  "GITHUB_REPO_NAME",
+  "SCHEMA_STUDIO_DESKTOP",
+] as const;
 let savedEnv: Record<string, string | undefined> = {};
 const realFetch = global.fetch;
 let restoreConsole = () => {};
@@ -305,6 +310,21 @@ describe("GET /api/github/pull", () => {
     expect(status).toBe(500);
     expect(body.code).toBe("github_unconfigured");
     expect(body.error).toContain("Missing now: GITHUB_PAT.");
+    expect(calls).toEqual([]);
+  });
+
+  it("inside the desktop app, names the missing settings as its Settings window does", async () => {
+    // The app keeps these three for the person and passes them to its own
+    // server, so the fix there is a form to fill in, and a key name would
+    // mean nothing to the person reading it.
+    process.env.SCHEMA_STUDIO_DESKTOP = "1";
+    process.env.GITHUB_PAT = "";
+    const { status, body } = await pull();
+    expect(status).toBe(500);
+    expect(body.code).toBe("github_unconfigured");
+    expect(body.error).toContain("Missing now: access token.");
+    expect(body.error).toContain("Open Settings from the File menu");
+    expect(body.error).not.toContain("GITHUB_PAT");
     expect(calls).toEqual([]);
   });
 

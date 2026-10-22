@@ -1,0 +1,30 @@
+{
+  // The two preload scripts. They run inside each window's renderer, so they
+  // see the web page's `window` ("dom"), but they are sandboxed: Electron lets
+  // a sandboxed preload `require` only "electron" and a few Node built-ins,
+  // never another file of ours. That is why each preload is one plain script
+  // with no `import` or `export`, and reaches the shared types only through
+  // `import("...")` type expressions, which vanish when compiled.
+  // Reading those types makes the compiler write out/shared/*.js as well.
+  // They come out the same as the main program's, and no window loads them.
+  //
+  // Under node16 the compiler treats every file as a module unless told
+  // otherwise, and a module starts with a line that uses `exports`.
+  // "moduleDetection": "auto" keeps each preload a plain script.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom"],
+    "module": "node16",
+    "moduleResolution": "node16",
+    "moduleDetection": "auto",
+    "types": ["node"],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "out"
+  },
+  "include": ["src/preload"]
+}

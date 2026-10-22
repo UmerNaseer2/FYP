@@ -496,6 +496,21 @@ body {
             border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
 .ssl-card.on { border-color: color-mix(in oklab, var(--sync) 35%, var(--border)); background: color-mix(in oklab, var(--sync) 6%, var(--surface)); }
 
+/* "On this computer": the desktop app's list of databases it found running
+   locally (components/studio/LocalDatabaseFinder). Each row is one button, so
+   the whole row is the thing to press, with the same focus ring as .btn. */
+.local-finder { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.local-finder__pick { width:100%; display:flex; align-items:center; gap:10px; padding:9px 12px; text-align:left;
+                      background:var(--surface-2); border:1px solid var(--border); border-radius:10px;
+                      color:var(--text); cursor:pointer; font:inherit;
+                      transition: border-color .12s ease, background .12s ease; }
+.local-finder__pick:hover { border-color:var(--border-strong); background:var(--surface-3); }
+.local-finder__pick:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+.local-finder__text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.local-finder__name { font-size:13px; font-weight:500; overflow-wrap:anywhere; }
+.local-finder__where { font-size:11.5px; color:var(--text-3); overflow-wrap:anywhere; }
+.local-finder__chev { color:var(--text-3); flex:none; }
+
 /* test result banners */
 .test-banner { display:flex; gap:10px; padding:12px; border-radius:10px; font-size:13px; line-height:1.55; align-items:flex-start; }
 .test-ok   { background: color-mix(in oklab, var(--sync) 10%, var(--surface)); border:1px solid color-mix(in oklab, var(--sync) 30%, transparent); color: var(--sync); }

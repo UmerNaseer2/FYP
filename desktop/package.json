@@ -1,0 +1,38 @@
+{
+  "name": "schema-studio",
+  "productName": "Schema Studio",
+  "version": "2.0.0",
+  "description": "Schema Studio for Ubuntu: compare, version and deploy database schemas on your own computer.",
+  "homepage": "https://github.com/UmerNaseer2/FYP",
+  "license": "UNLICENSED",
+  "private": true,
+  "author": {
+    "name": "Schema Studio team",
+    "email": "schema-studio@users.noreply.github.com"
+  },
+  "main": "out/main/main.js",
+  "desktopName": "io.github.umernaseer2.SchemaStudio.desktop",
+  "scripts": {
+    "build:ts": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.contract.json",
+    "build:config": "node scripts/write-build-config.mjs",
+    "build:server": "node scripts/build-server.mjs",
+    "fetch:postgres": "node scripts/fetch-postgres.mjs",
+    "build": "npm run build:ts && npm run build:config && npm run build:server && npm run fetch:postgres",
+    "start": "npm run build:ts && npm run build:config && electron .",
+    "test": "npm run build:ts && node --test \"out/test/*.test.js\"",
+    "make-icon": "electron scripts/make-icon.cjs",
+    "dist:deb": "npm run build && electron-builder --config electron-builder.config.cjs --linux deb"
+  },
+  "dependencies": {
+    "@azure/msal-node": "7.1.0",
+    "pg": "8.20.0"
+  },
+  "devDependencies": {
+    "@electron/fuses": "2.1.3",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.20.0",
+    "electron": "44.9.2",
+    "electron-builder": "26.15.3",
+    "typescript": "5.9.3"
+  }
+}

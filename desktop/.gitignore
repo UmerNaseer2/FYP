@@ -1,0 +1,10 @@
+# Everything here is made by a build and made again by the next one.
+node_modules/
+out/
+dist/
+build/server/
+build/postgres/
+
+# The Microsoft sign-in IDs for this build. They are not secrets, but they
+# belong to one Entra app registration, so each person building keeps their own.
+.env.desktop

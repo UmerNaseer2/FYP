@@ -53,6 +53,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { StudioShell } from "@/components/studio/StudioShell";
 import { type StudioUser } from "@/components/studio/StudioSidebar";
 import { BUILT_IN_ROLE_INFO, presetFor, type BuiltInRole } from "@/lib/permissions";
+import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 import { setPathname } from "./helpers/render-page";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
@@ -382,6 +383,22 @@ describe("signing out", () => {
     renderShell();
     fireEvent.click(button("Sign out"));
     expect(mockSignOutCalls).toEqual([{ callbackUrl: "/login" }]);
+  });
+
+  test("inside the desktop app, leaves it to the app, which forgets the Microsoft account too", async () => {
+    // The app holds the account so that it can re-check it in the background.
+    // Ending only the session would leave the account behind, so the app ends
+    // both and brings up the login screen itself.
+    const bridge = installDesktopBridge();
+    try {
+      renderShell();
+      fireEvent.click(button("Sign out"));
+      await act(async () => {});
+      expect(bridge.signOut).toHaveBeenCalledTimes(1);
+      expect(mockSignOutCalls).toEqual([]);
+    } finally {
+      removeDesktopBridge();
+    }
   });
 });
 

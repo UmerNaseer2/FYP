@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { useUser, resetUserCache } from "@/hooks/useUser";
 import { useTheme } from "@/hooks/useTheme";
+import { getDesktopBridge } from "@/lib/desktop-bridge";
 import { Drawer } from "@/components/ui";
 import { isAdminOnly, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
@@ -89,6 +90,15 @@ export function StudioShell({ children, user }: StudioShellProps) {
 
   async function handleSignOut() {
     resetUserCache();
+    // The desktop app also holds the Microsoft account itself, so that it can
+    // keep checking it in the background. Signing out of the session alone
+    // would leave that behind, so the app signs out of both and then shows the
+    // login screen on its own.
+    const desktop = getDesktopBridge();
+    if (desktop) {
+      await desktop.signOut();
+      return;
+    }
     await signOut({ callbackUrl: "/login" });
   }
 

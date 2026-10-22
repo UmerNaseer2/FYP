@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { handlers } from "@/auth";
-import { authUsable } from "@/auth.config";
+import { authUsable, desktopMode } from "@/auth.config";
 
 /**
  * NextAuth's own endpoints, with one thing in front of them.
@@ -40,9 +40,14 @@ function offlineResponse(request: NextRequest): NextResponse | null {
   }
   return NextResponse.json(
     {
-      error:
-        "Sign-in is not set up on this server. It needs NEXTAUTH_SECRET and the " +
-        "three AZURE_AD_* keys.",
+      // The desktop app makes its own NEXTAUTH_SECRET, so the only thing it
+      // can be missing is the two IDs it was built with.
+      error: desktopMode
+        ? "Sign-in is not set up in this copy of the desktop app. It was built " +
+          "without AZURE_AD_CLIENT_ID and AZURE_AD_TENANT_ID: add them to " +
+          "desktop/.env.desktop and build it again."
+        : "Sign-in is not set up on this server. It needs NEXTAUTH_SECRET and the " +
+          "three AZURE_AD_* keys.",
     },
     { status: 503 }
   );

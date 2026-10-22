@@ -1,0 +1,26 @@
+{
+  // The Node side of the app: Electron's main process, the server launcher
+  // that runs inside a utility process, the pure helpers both of them use,
+  // and the tests for those helpers. None of it runs in a web page, so there
+  // is deliberately no "dom" library here: a stray `window` or `document` in
+  // the main process is a compile error rather than a crash on someone's PC.
+  //
+  // The preload scripts and the two small app:// pages are compiled by
+  // tsconfig.preload.json and tsconfig.renderer.json, which do have it.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "node16",
+    "moduleResolution": "node16",
+    "types": ["node"],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "out"
+  },
+  "include": ["src/main", "src/server", "src/core", "src/shared/ipc.ts", "src/test"]
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  The splash: what the main window shows while Schema Studio starts.
+  src/renderer/splash.ts fills it in, and app.css gives each step its look.
+  The page is served with a strict security policy (src/main/protocol.ts),
+  so it has no inline script or style.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Schema Studio</title>
+    <link rel="stylesheet" href="app.css">
+    <script src="splash.js" defer></script>
+  </head>
+  <body class="splash">
+    <main class="splash-main">
+      <header class="brand">
+        <img class="brand-mark" src="icon.svg" alt="" width="64" height="64">
+        <h1 class="brand-name">Schema Studio</h1>
+      </header>
+      <div class="panel">
+        <ol id="steps" class="steps" aria-label="Starting Schema Studio">
+          <li class="step" data-step="secrets" data-state="current" aria-current="step"><span class="step-mark" aria-hidden="true"></span>Unlocking your keys</li>
+          <li class="step" data-step="database" data-state="pending"><span class="step-mark" aria-hidden="true"></span>Starting the database</li>
+          <li class="step" data-step="server" data-state="pending"><span class="step-mark" aria-hidden="true"></span>Starting Schema Studio</li>
+          <li class="step" data-step="sign-in" data-state="pending"><span class="step-mark" aria-hidden="true"></span>Checking your sign-in</li>
+        </ol>
+        <section id="failure" class="failure" aria-labelledby="failure-title" hidden>
+          <h2 id="failure-title" class="failure-title"></h2>
+          <p id="failure-message" class="failure-message"></p>
+          <div id="failure-actions" class="actions">
+            <button id="retry" class="button button-primary" type="button">Try again</button>
+            <button id="open-logs" class="button" type="button">Open logs</button>
+            <button id="copy-details" class="button" type="button">Copy details</button>
+          </div>
+          <p id="copy-note" class="note" role="status"></p>
+        </section>
+      </div>
+      <p id="live" class="visually-hidden" role="status"></p>
+    </main>
+  </body>
+</html>

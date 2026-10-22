@@ -51,8 +51,30 @@ export function githubConfig(): ({ ok: true } & GitHubConfig) | { ok: false; mis
   return { ok: true, owner, repo, token };
 }
 
+/**
+ * What the desktop app's Settings window calls each key. The app keeps these
+ * three for the person (the token in the system keyring) and passes them to
+ * its server, so the fix there is a form to fill in, not a file to edit.
+ */
+const DESKTOP_SETTING_NAMES: Record<string, string> = {
+  GITHUB_REPO_OWNER: "repository owner",
+  GITHUB_REPO_NAME: "repository name",
+  GITHUB_PAT: "access token",
+};
+
 /** The readable 500 message when the GitHub settings are missing. Names keys, never values. */
 export function githubNotConfiguredMessage(missing: ReadonlyArray<string>): string {
+  if (process.env.SCHEMA_STUDIO_DESKTOP === "1") {
+    const which =
+      missing.length > 0
+        ? ` Missing now: ${missing.map((key) => DESKTOP_SETTING_NAMES[key] ?? key).join(", ")}.`
+        : "";
+    return (
+      `GitHub is not set up in this app yet.${which} Nothing was read from or written to ` +
+      `GitHub. Open Settings from the File menu and add the registry repository and an access token.`
+    );
+  }
+
   const which = missing.length > 0 ? ` Missing now: ${missing.join(", ")}.` : "";
   return (
     `GitHub is not set up on the server: GITHUB_REPO_OWNER, GITHUB_REPO_NAME and GITHUB_PAT must be set.${which} ` +

@@ -41,6 +41,7 @@ import {
   setRoutes,
   setUser,
 } from "./helpers/render-page";
+import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 
 // The page asks useUser whether the role may save, and useUser reads the
 // session from next-auth, which Jest cannot load.
@@ -197,6 +198,33 @@ describe("when the editor cannot do its job", () => {
     expect(
       screen.getByText("The GitHub registry is not configured, so nothing can be saved.")
     ).toBeInTheDocument();
+  });
+
+  it("inside the desktop app, sends the person to Settings instead of naming server keys", async () => {
+    // The app keeps the registry details for the person, on its Settings
+    // window. Key names would send them looking for a file that is not on
+    // their PC.
+    const bridge = installDesktopBridge();
+    try {
+      setRoutes([
+        {
+          match: "/api/github/pull",
+          status: 500,
+          body: { error: "GitHub is not set up in this app yet.", code: "github_unconfigured" },
+        },
+        ...baseRoutes(),
+      ]);
+      render(<ScriptEditorPage />);
+      await pickTarget("add_invoices");
+      writeSql("SQL", ADDS_A_COLUMN);
+
+      expect(await screen.findByText(/The GitHub registry is not set up yet/)).toBeInTheDocument();
+      expect(screen.queryByText(/Set GITHUB_REPO_OWNER/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+      expect(bridge.openSettings).toHaveBeenCalledTimes(1);
+    } finally {
+      removeDesktopBridge();
+    }
   });
 
   it("still offers a new family when the listing alone failed", async () => {

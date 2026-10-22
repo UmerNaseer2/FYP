@@ -3,6 +3,12 @@
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useTheme } from "@/hooks/useTheme";
+import { useDesktopBridge } from "@/hooks/useDesktopBridge";
+import {
+  getDesktopBridge,
+  type DesktopBridge,
+  type DesktopSignInResult,
+} from "@/lib/desktop-bridge";
 import {
   LogoIcon,
   SunIcon,
@@ -13,13 +19,25 @@ import {
   AlertCircleIcon,
 } from "@/components/ui/icons";
 
-type Status = "idle" | "redirecting" | "error";
+/**
+ * "redirecting" is the browser sign-in, on its way to Microsoft. The desktop
+ * app's sign-in has two steps of its own instead: "waiting" while the person
+ * signs in in their web browser, and "finishing" while this server checks the
+ * ID token the app got back.
+ */
+type Status = "idle" | "redirecting" | "waiting" | "finishing" | "error";
 
 /**
  * NextAuth reports a failed sign-in by bouncing the browser back to
  * /login?error=<code>. The page used to ignore that parameter completely, so a
  * failure looked like a button that did nothing. These are the codes NextAuth
  * can send, written out in plain words.
+ *
+ * The last three only ever come from the desktop app. CredentialsSignin is what
+ * NextAuth sends when lib/desktop-sign-in.ts refuses the app's ID token, and
+ * the app itself signs a person out and sends them here with SessionRevoked
+ * (Microsoft no longer accepts their sign-in) or OfflineTooLong (the computer
+ * went 30 days without being able to ask).
  */
 const ERROR_MESSAGES: Record<string, string> = {
   Configuration: "Sign-in is not set up on this server yet.",
@@ -29,6 +47,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   OAuthCallback: "Microsoft rejected the sign-in response.",
   OAuthAccountNotLinked: "That email already signed in a different way.",
   SessionRequired: "Sign in to continue.",
+  CredentialsSignin: "Schema Studio could not confirm your Microsoft sign-in.",
+  SessionRevoked: "Your Microsoft sign-in has ended. Sign in again to carry on.",
+  OfflineTooLong:
+    "This computer has been offline for more than 30 days, so you need to sign in again.",
 };
 
 function errorMessage(code: string): string {
@@ -49,6 +71,8 @@ function MsMark() {
 
 export default function LoginPage() {
   const { theme, toggleTheme } = useTheme();
+  /** The desktop app's bridge, or null in a browser. Only the wording uses it. */
+  const desktop = useDesktopBridge();
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   /** null while we are still asking the server which providers it has. */
@@ -72,7 +96,9 @@ export default function LoginPage() {
       try {
         const res = await fetch("/api/auth/providers");
         const providers: Record<string, unknown> = res.ok ? await res.json() : {};
-        ready = Boolean(providers["microsoft-entra-id"]);
+        // Inside the desktop app the server offers the app's own "desktop"
+        // provider instead of the browser one (see auth.config.ts).
+        ready = Boolean(providers[getDesktopBridge() ? "desktop" : "microsoft-entra-id"]);
       } catch {
         ready = false;
       }
@@ -91,10 +117,57 @@ export default function LoginPage() {
     };
   }, []);
 
+  /**
+   * The desktop app's sign-in. The app opens the system browser on Microsoft's
+   * page and hands back the ID token Microsoft gave it; this posts that token
+   * to the "desktop" provider in auth.config.ts, which checks it.
+   *
+   * Like the browser sign-in, the last step navigates by itself: to /studio
+   * when the token is accepted, or back here with ?error=CredentialsSignin when
+   * it is not, which the effect above then puts into words.
+   */
+  async function desktopSignIn(bridge: DesktopBridge) {
+    setStatus("waiting");
+    let result: DesktopSignInResult;
+    try {
+      result = await bridge.signIn();
+    } catch (error) {
+      // The app answers every sign-in with a result, failures included, so
+      // this only happens when something in the app itself broke. What arrives
+      // then is wrapped in Electron's wording, which would mean nothing to the
+      // person reading it; the details are in the app's log.
+      console.error(error);
+      result = {
+        ok: false,
+        reason: "failed",
+        message:
+          "Schema Studio could not start the sign-in. Try again, or open the app's log from Help > Open Logs.",
+      };
+    }
+    if (!result.ok) {
+      // Cancelling is the person changing their mind, not a failure, so it
+      // goes quietly back to the button.
+      if (result.reason === "cancelled") {
+        setStatus("idle");
+      } else {
+        setErrorMsg(result.message);
+        setStatus("error");
+      }
+      return;
+    }
+    setStatus("finishing");
+    await signIn("desktop", { idToken: result.idToken, callbackUrl: "/studio" });
+  }
+
   async function handleLogin() {
-    setStatus("redirecting");
     setErrorMsg(null);
     try {
+      const bridge = getDesktopBridge();
+      if (bridge) {
+        await desktopSignIn(bridge);
+        return;
+      }
+      setStatus("redirecting");
       // Phase 2: Azure SSO via NextAuth (microsoft-entra-id)
       await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
     } catch (error: unknown) {
@@ -214,12 +287,22 @@ export default function LoginPage() {
                     <AlertCircleIcon size={16} className="ico" />
                     <div className="body">
                       <div className="title">Single sign-on is not set up.</div>
-                      <div style={{ color: "var(--text-2)" }}>
-                        This server has no Microsoft Entra ID credentials, so
-                        there is nothing to sign in against. Whoever runs it
-                        needs to set AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET,
-                        AZURE_AD_TENANT_ID and NEXTAUTH_SECRET, then restart.
-                      </div>
+                      {desktop ? (
+                        <div style={{ color: "var(--text-2)" }}>
+                          This copy of the desktop app was built without its
+                          Microsoft sign-in IDs, so there is nothing to sign in
+                          against. Whoever built it needs to add
+                          AZURE_AD_CLIENT_ID and AZURE_AD_TENANT_ID to
+                          desktop/.env.desktop, then build it again.
+                        </div>
+                      ) : (
+                        <div style={{ color: "var(--text-2)" }}>
+                          This server has no Microsoft Entra ID credentials, so
+                          there is nothing to sign in against. Whoever runs it
+                          needs to set AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET,
+                          AZURE_AD_TENANT_ID and NEXTAUTH_SECRET, then restart.
+                        </div>
+                      )}
                     </div>
                   </div>
                   <button
@@ -248,8 +331,43 @@ export default function LoginPage() {
                     <ChevronRightIcon size={14} className="chev" />
                   </button>
                   <p className="text-[12px] mt-3 text-center" style={{ color: "var(--text-3)" }}>
-                    You&apos;ll be redirected to your organization&apos;s Microsoft sign-in.
+                    {desktop
+                      ? "Opens your web browser for your organization's Microsoft sign-in."
+                      : "You'll be redirected to your organization's Microsoft sign-in."}
                   </p>
+                </div>
+              )}
+
+              {ssoReady !== false && status === "waiting" && (
+                <div>
+                  <button type="button" className="sso-btn" disabled aria-busy="true">
+                    <span className="spin" aria-hidden="true" />
+                    <span className="label">Waiting for your browser…</span>
+                    <ChevronRightIcon size={14} className="chev" />
+                  </button>
+                  <div className="mt-3 flex flex-col items-center gap-2 text-center">
+                    <p className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                      Finish signing in with Microsoft in your web browser. This
+                      window carries on by itself once you have.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => getDesktopBridge()?.cancelSignIn()}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {ssoReady !== false && status === "finishing" && (
+                <div>
+                  <button type="button" className="sso-btn" disabled aria-busy="true">
+                    <span className="spin" aria-hidden="true" />
+                    <span className="label">Signing you in…</span>
+                    <ChevronRightIcon size={14} className="chev" />
+                  </button>
                 </div>
               )}
 
