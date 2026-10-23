@@ -1,0 +1,26 @@
+{
+  // The Worker, as Cloudflare runs it. `npm run check` type-checks it here;
+  // wrangler bundles the TypeScript itself, so nothing is written out.
+  //
+  // Its globals are Cloudflare's (@cloudflare/workers-types), not Node's or a
+  // web page's, so a call the platform does not have is a compile error here
+  // rather than a crash once it is online. Only src/worker.ts is listed, and
+  // TypeScript follows its imports from there, so this checks exactly what
+  // the Worker runs and none of the shared code it does not use.
+  //
+  // The tests run in Node instead, and tsconfig.test.json compiles them.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "types": ["@cloudflare/workers-types"],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/worker.ts"]
+}

@@ -1,8 +1,8 @@
 # Builds and tests the desktop app in desktop/, the .deb that installs
 # Schema Studio on Ubuntu.
 #
-# Four jobs. build waits for test, and install and apparmor both wait for
-# build:
+# Five jobs. build waits for test, install and apparmor both wait for
+# build, and relay runs by itself:
 #
 # 1. test runs the desktop app's unit tests.
 # 2. build makes the .deb on an amd64 machine and on an arm64 one, checks
@@ -17,10 +17,15 @@
 #    on an Ubuntu desktop from 24.04 on, the window's sandbox only starts
 #    under the AppArmor profile that the .deb brings, so this shows that the
 #    profile works. The containers in job 3 cannot load AppArmor profiles.
+# 5. relay type-checks the relay in relay/, which passes the phone link's
+#    messages between a phone and the computer, and runs its tests. They
+#    run the whole relay on the runner, the way Cloudflare runs it. Nothing
+#    here deploys it.
 #
-# It runs only when desktop/, my-app/ (the desktop app is built from it) or
-# this file changes. The server updater, deploy/auto-update.sh, goes by the
-# CI workflow alone, so a desktop build never holds a server deploy back.
+# It runs only when desktop/, my-app/ (the desktop app is built from it),
+# relay/ or this file changes. The server updater, deploy/auto-update.sh,
+# goes by the CI workflow alone, so a desktop build never holds a server
+# deploy back.
 #
 # Microsoft sign-in needs the app registration's two IDs. They are public
 # IDs, not secrets, and come from the repository variables AZURE_AD_CLIENT_ID
@@ -32,9 +37,9 @@ name: Desktop
 on:
   push:
     branches: ["**"]
-    paths: ["desktop/**", "my-app/**", ".github/workflows/desktop.yml"]
+    paths: ["desktop/**", "my-app/**", "relay/**", ".github/workflows/desktop.yml"]
   pull_request:
-    paths: ["desktop/**", "my-app/**", ".github/workflows/desktop.yml"]
+    paths: ["desktop/**", "my-app/**", "relay/**", ".github/workflows/desktop.yml"]
   workflow_dispatch:
 
 # A newer push to the same branch replaces a run that is still going.
@@ -323,3 +328,27 @@ jobs:
             echo "Removing the package left its AppArmor profile behind."
             exit 1
           fi
+
+  relay:
+    name: Relay tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Keeps wrangler from sending Cloudflare its anonymous usage figures.
+      WRANGLER_SEND_METRICS: "false"
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run check
+      - name: Test
+        run: npm test

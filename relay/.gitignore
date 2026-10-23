@@ -1,0 +1,10 @@
+# Everything here is made by a tool and made again the next time it runs.
+node_modules/
+out/
+
+# What `wrangler dev` keeps between runs, such as its local copy of the rooms.
+.wrangler/
+
+# Where Wrangler looks for secrets during `wrangler dev`. The relay has none,
+# and anything put here must never reach this public repo.
+.dev.vars*

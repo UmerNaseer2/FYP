@@ -32,7 +32,11 @@
  *  - phone to relay: ping.
  * "online" always means the computer has just connected and knows nothing of
  * this phone yet, so the phone starts a new handshake. Pings keep idle
- * connections from being dropped along the way; the relay answers them.
+ * connections from being dropped along the way; the relay answers them
+ * without waking the room. Both apps send their first ping as soon as the
+ * connection opens: the Workers runtime may hold on to a connection that has
+ * sent nothing yet for some seconds after the relay closes it (until its room
+ * next sleeps), and the app would hear of the close only then.
  *
  * Reading is strict: anything that is not exactly one of these messages is
  * refused, so the relay and both apps always agree on what a message means.

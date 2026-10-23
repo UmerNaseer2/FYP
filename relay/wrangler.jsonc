@@ -1,0 +1,22 @@
+{
+  // The relay: a Cloudflare Worker that passes the phone link's sealed
+  // messages between a phone and the computer it is paired with. Each
+  // computer has a room there, a Durable Object named after the computer's
+  // ID (src/room.ts), so all of one computer's connections meet in one place.
+  //
+  // `npm run dev` runs it on this machine, and `npm test` starts it the same
+  // way for src/test/relay.e2e.test.ts. Putting it online needs a Cloudflare
+  // account (`npm run deploy`).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "schema-studio-relay",
+  "main": "src/worker.ts",
+  // From 2026-04-07 on, the platform answers a WebSocket's closing message
+  // by itself (web_socket_auto_reply_to_close), which src/room.ts relies on.
+  "compatibility_date": "2026-10-19",
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  // New Durable Object classes must keep their storage in SQLite, the only
+  // kind on the free plan. A room stores nothing but its sign-in alarm.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "schema-studio-relay",
+  "version": "1.0.0",
+  "description": "Passes the Schema Studio phone link's sealed messages between a phone and the computer it is paired with.",
+  "homepage": "https://github.com/UmerNaseer2/FYP",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --test --test-timeout=30000 \"out/test/*.test.js\"",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261022.1",
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3",
+    "wrangler": "4.152.0"
+  }
+}

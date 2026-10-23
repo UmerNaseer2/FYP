@@ -1,0 +1,21 @@
+{
+  // The tests, which run in Node (`npm test`): the room's rules
+  // (src/room-logic.ts) with pretend connections, and the whole relay run on
+  // this machine by wrangler. The rules and the shared code use only what
+  // Node has as well, so they are compiled here too, against Node's globals.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "out"
+  },
+  "include": ["src/room-logic.ts", "src/shared", "src/test"]
+}

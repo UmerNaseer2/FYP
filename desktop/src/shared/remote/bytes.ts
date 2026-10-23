@@ -107,7 +107,10 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export function utf8(text: string): Bytes {
-  return encoder.encode(text);
+  // TextEncoder always gives bytes in an ordinary ArrayBuffer, but Cloudflare's
+  // type definitions do not promise it, so the relay would not compile without
+  // this copy, which costs little next to the encoding itself.
+  return new Uint8Array(encoder.encode(text));
 }
 
 /** Reads UTF-8 text, or gives null when the bytes are not valid UTF-8. */
