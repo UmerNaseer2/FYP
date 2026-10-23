@@ -81,6 +81,7 @@ const ADDED: Record<string, Gate> = {
   "PUT /api/admin/roles": { kind: "permission", keys: ["roles:update"] },
   "DELETE /api/admin/roles": { kind: "permission", keys: ["roles:delete"] },
   "POST /api/compare/phone": { kind: "permission", keys: ["compare:read"] },
+  "GET /api/connections/phone": { kind: "permission", keys: ["compare:read", "visualizer:read"] },
   "GET /api/me": { kind: "signed-in" },
   "GET /api/me/view-as": { kind: "signed-in" },
   "POST /api/me/view-as": { kind: "signed-in" },
@@ -176,4 +177,15 @@ test("a phone's comparison lets in whoever may use Compare", () => {
   const compare = handlers.get("POST /api/compare")?.gate;
   expect(handlers.get("POST /api/compare/phone")?.gate).toEqual(compare);
   expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
+});
+
+test("a phone's connection list lets in whoever may compare or read a schema", () => {
+  // GET /api/connections answers with the hosts, so it leaves Compare out. The
+  // phone's list holds only what Compare's pickers show, so it asks for the two
+  // boxes a phone uses it for, and a viewer gets in.
+  expect(handlers.get("GET /api/connections/phone")?.gate).toEqual({
+    kind: "permission",
+    keys: ["compare:read", "visualizer:read"],
+  });
+  expect(startsAllowed("viewer", ["compare:read", "visualizer:read"])).toBe(true);
 });

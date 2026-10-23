@@ -25,6 +25,7 @@
  * lost and nothing is left running.
  */
 import crypto from "node:crypto";
+import os from "node:os";
 
 import {
   app,
@@ -50,7 +51,9 @@ import {
   type RecheckOutcome,
 } from "../core/offline";
 import { displayPath, type AppPaths } from "../core/paths";
+import { parsePhoneLinkState, type PhoneLinkState } from "../core/phone-link-file";
 import { ensurePrivateDir, UnsafeDirError } from "../core/private-dir";
+import { GATE_HEADER } from "../server/desktop-gate";
 import {
   STARTUP,
   type SaveGithubResult,
@@ -69,9 +72,11 @@ import { findLocalDatabases } from "./finder";
 import { registerIpc } from "./ipc";
 import { addLogSecret, logError, logFolder, logInfo, logWarn } from "./log";
 import { buildMenu } from "./menu";
+import { openPhoneLink, type PhoneLink } from "./phone-link";
+import type { AppAnswer } from "./phone-requests";
 import { startPostgres, type RunningPostgres } from "./postgres";
 import { APP_HOST, APP_ORIGIN, serveAppPages } from "./protocol";
-import { keyringBackend } from "./secrets";
+import { keyringBackend, ProtectedStore } from "./secrets";
 import { secureWindows } from "./security";
 import type { RunningServer } from "./server";
 import { StartupError } from "./startup-error";
@@ -185,6 +190,8 @@ export class DesktopApp {
   private auth: Auth | null = null;
   private postgres: RunningPostgres | null = null;
   private server: RunningServer | null = null;
+  /** The phone link, once it has opened and started. */
+  private phoneLink: PhoneLink | null = null;
   private mainWindow: BrowserWindow | null = null;
   private settingsWindow: BrowserWindow | null = null;
   private startup: StartupState = { phase: "starting", step: "secrets" };
@@ -364,6 +371,8 @@ export class DesktopApp {
       this.started = true;
       logInfo("Schema Studio is ready.");
       this.startRechecks(!first.checked);
+      // Never throws: a phone link that cannot start is logged, and the rest of the app carries on without it.
+      await this.startPhoneLink();
     } catch (error) {
       // Quitting stopped the step under way, which is not a failure to report.
       if (signal.aborted) return;
@@ -525,6 +534,70 @@ export class DesktopApp {
     contents.navigationHistory.clear();
   }
 
+  // The phone link
+
+  /** Opens the phone link and starts it. It answers phones through the server, so it starts once the server is up. */
+  private async startPhoneLink(): Promise<void> {
+    try {
+      const opening = await openPhoneLink({
+        store: new ProtectedStore<PhoneLinkState>({
+          file: this.paths.phoneLinkFile,
+          what: "the phone link's keys",
+          parse: parsePhoneLinkState,
+          allowKeyring: true,
+        }),
+        fileLabel: displayPath(this.paths.phoneLinkFile, this.home),
+        call: (method, path, body, signal) => this.callServer(method, path, body, signal),
+        appVersion: app.getVersion(),
+        computerName: os.hostname(),
+      });
+      if (!opening.ok) {
+        logWarn(`The phone link is unavailable: ${opening.reason}`);
+        return;
+      }
+      // The app began quitting while the keys were opening.
+      if (this.quitting) return;
+      this.phoneLink = opening.link;
+      opening.link.start();
+    } catch (error) {
+      logError("The phone link could not start.", error);
+    }
+  }
+
+  /**
+   * Asks the app's own server, for a phone's request. It asks as the window
+   * does, with the window's sign-in cookie, so a phone sees only what the
+   * person signed in here may see.
+   */
+  private async callServer(method: "GET" | "POST", path: string, body: unknown, signal: AbortSignal): Promise<AppAnswer> {
+    const { ses, server } = this;
+    if (ses === null || server === null) throw new Error("Schema Studio's server is not running.");
+    // The token that lets a request through to the server (src/server/desktop-gate.ts). The request hook in
+    // security.ts puts it on every request to the server as well; it is set here too so that this call does not
+    // lean on that.
+    const headers: Record<string, string> = { [GATE_HEADER]: this.gateToken };
+    if (method === "POST") headers["content-type"] = "application/json";
+    const response = await ses.fetch(server.origin + path, {
+      method,
+      headers,
+      body: method === "POST" ? JSON.stringify(body) : undefined,
+      // The sign-in cookie lives in this session, which the window shares.
+      credentials: "include",
+      // The routes a phone asks for answer directly. A redirect, such as to the sign-in page, is no answer to pass on.
+      redirect: "error",
+      cache: "no-store",
+      signal,
+    });
+    let json: unknown = null;
+    try {
+      json = await response.json();
+    } catch (error) {
+      // A body that is not JSON, such as an error page, leaves json null. A phone that gave up is passed on as it is.
+      if (signal.aborted) throw error;
+    }
+    return { status: response.status, json };
+  }
+
   // When something stops
 
   /** The database or the server stopped while the app was using it. */
@@ -624,6 +697,7 @@ export class DesktopApp {
     this.stopStarting.abort(new Error("Schema Studio is quitting."));
     if (this.recheckTimer !== null) clearInterval(this.recheckTimer);
     this.auth?.cancelSignIn();
+    this.phoneLink?.stop();
     // Never rejects. Waiting for it means a database still starting is known about, and stopped below.
     await this.startupRun;
     const { server, postgres } = this;

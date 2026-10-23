@@ -547,8 +547,16 @@ function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isSchemaName(value: unknown): value is string {
-  return typeof value === "string" && value.length >= 1 && value.length <= MAX_SCHEMA_NAME_LENGTH;
+/**
+ * True for a schema name a request may hold: 1 to MAX_SCHEMA_NAME_LENGTH
+ * characters, with no space at either end. The app's Compare trims every
+ * name it is given, so " public" would compare "public" while the phone
+ * showed the other name, and my-app/lib/phone-compare.ts refuses such a name
+ * for the same reason. The computer leaves these out of the schemas it lists,
+ * so a phone is never shown one it cannot ask about.
+ */
+export function isSchemaName(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= MAX_SCHEMA_NAME_LENGTH && value.trim() === value;
 }
 
 /** A check for one of a fixed list of words. */

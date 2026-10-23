@@ -3,8 +3,9 @@
  * that every Ubuntu desktop uses:
  *
  *   ~/.config/schema-studio        Electron's own profile (the sign-in cookie,
- *                                  window caches) plus config.json and the
- *                                  saved Microsoft sign-in (auth.json).
+ *                                  window caches) plus config.json, the
+ *                                  saved Microsoft sign-in (auth.json) and
+ *                                  the paired phones (phone-link.json).
  *   ~/.local/share/schema-studio   The app's real data: its own PostgreSQL
  *                                  database and the keys that protect what is
  *                                  saved in it (secrets.json). These two live
@@ -34,6 +35,8 @@ export type AppPaths = {
   configFile: string;
   authFile: string;
   secretsFile: string;
+  /** The paired phones and the phone link's own keys (src/core/phone-link-file.ts). */
+  phoneLinkFile: string;
 };
 
 /** The XDG folder from `value`, or the default under the home folder. */
@@ -54,6 +57,7 @@ export function resolveAppPaths(env: Record<string, string | undefined>, home: s
     configFile: path.join(config, "config.json"),
     authFile: path.join(config, "auth.json"),
     secretsFile: path.join(data, "secrets.json"),
+    phoneLinkFile: path.join(config, "phone-link.json"),
   };
 }
 

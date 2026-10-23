@@ -10,6 +10,7 @@ import {
   MAX_COMPARE_TARGETS,
   MAX_REQUEST_BYTES,
   MAX_SCHEMA_NAME_LENGTH,
+  isSchemaName,
   readAnswer,
   readRequest,
   readResult,
@@ -205,6 +206,9 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "schema.read", params: { connectionId: 7 } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "" } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "a".repeat(MAX_SCHEMA_NAME_LENGTH + 1) } },
+    // The app would trim these and read a different schema.
+    { id: 5, method: "schema.read", params: { connectionId: 7, schema: " public" } },
+    { id: 5, method: "schema.read", params: { connectionId: 7, schema: "public " } },
     { id: 5, method: "schema.read", params: named },
     { id: 5, method: "compare.run", params: { source: REF } },
     { id: 5, method: "compare.run", params: { source: REF, targets: [] } },
@@ -215,6 +219,8 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "compare.run", params: { source: REF, targets: [REF], x: 1 } },
     { id: 5, method: "compare.run", params: { source: named, targets: [REF] } },
     { id: 5, method: "compare.run", params: { source: REF, targets: [REF, named] } },
+    { id: 5, method: "compare.run", params: { source: { connectionId: 7, schema: "public\n" }, targets: [REF] } },
+    { id: 5, method: "compare.run", params: { source: REF, targets: [REF, { connectionId: 8, schema: "\tpublic" }] } },
   ]) {
     assert.deepEqual(readRequest(message(value)), { ok: false, id: 5, code: "bad-request" }, JSON.stringify(value));
   }
@@ -238,6 +244,16 @@ test("reads a comparison with one target or the most it takes, and the longest s
   ];
   for (const request of requests) {
     assert.deepEqual(readRequest(writeRequest(request)), { ok: true, request }, String(request.id));
+  }
+});
+
+test("takes a schema name the app reads exactly as it is written", () => {
+  for (const name of ["public", "Public", "my schema", "a".repeat(MAX_SCHEMA_NAME_LENGTH)]) {
+    assert.equal(isSchemaName(name), true, name);
+  }
+  const noBreakSpace = String.fromCharCode(0xa0);
+  for (const name of ["", " ", " public", "public ", "\tpublic", "public\n", `${noBreakSpace}public`, "a".repeat(MAX_SCHEMA_NAME_LENGTH + 1), 7, null]) {
+    assert.equal(isSchemaName(name), false, JSON.stringify(name));
   }
 });
 

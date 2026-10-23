@@ -1,0 +1,444 @@
+/**
+ * Answering a phone's requests through the app's own server
+ * (src/main/phone-requests.ts). A fake plays the server, so these tests check
+ * which routes are asked, that only shared connections are asked about, that
+ * an answer carries nothing the phone was not meant to see, and that every
+ * refusal is one of the fixed sentences.
+ */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test, { after } from "node:test";
+
+import { initLog, logFilePaths } from "../main/log";
+import { REFUSALS, answerRequest, writeRefusal, type AppAnswer, type AppCaller, type Refusal } from "../main/phone-requests";
+import { readAnswer, type Answer, type CompareSummary, type Request } from "../shared/remote/rpc.js";
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "ss-phone-requests-"));
+initLog(path.join(root, "logs"), { echo: false });
+after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+/** How much of the log the tests have read so far. */
+let logRead = 0;
+
+/** What has been logged since the last call. */
+function newLogLines(): string {
+  const file = logFilePaths()?.main;
+  assert.ok(file, "the log has a folder");
+  let text = "";
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    // Nothing logged yet.
+  }
+  const fresh = text.slice(logRead);
+  logRead = text.length;
+  return fresh;
+}
+
+/** A database host that the server's error messages name. It must never reach a phone. */
+const HOST = "dev-db.example.test";
+
+type Call = { method: string; path: string; body: unknown };
+
+/**
+ * Plays the app's server: answers each "METHOD path" listed, copying what it
+ * gives the way a trip through JSON would. It throws for an Error, and for a
+ * path it does not list, as a server that could not be reached would.
+ */
+function fakeApp(routes: Record<string, AppAnswer | Error>): { call: AppCaller; calls: Call[] } {
+  const calls: Call[] = [];
+  const call: AppCaller = async (method, target, body) => {
+    calls.push({ method, path: target, body: structuredClone(body) });
+    const answer = routes[`${method} ${target}`];
+    if (answer === undefined) throw new Error(`The test app has no ${method} ${target}.`);
+    if (answer instanceof Error) throw answer;
+    return { status: answer.status, json: structuredClone(answer.json) };
+  };
+  return { call, calls };
+}
+
+function ok(json: unknown): AppAnswer {
+  return { status: 200, json };
+}
+
+/** Answers `request` as the computer would, with these connections shared, and reads the answer as a phone would. */
+async function answer(request: Request, call: AppCaller, options: { shared?: readonly number[]; signal?: AbortSignal } = {}): Promise<Answer> {
+  const shared = options.shared ?? [1, 2, 3];
+  const sent = await answerRequest(request, { call, sharedConnectionIds: () => shared, appVersion: "1.2.3" }, options.signal ?? new AbortController().signal);
+  const read = readAnswer(sent);
+  assert.ok(read, "a phone can read the answer");
+  assert.equal(read.id, request.id);
+  return read;
+}
+
+/** The answer that refuses request `id` for this reason, as a phone reads it. */
+function refused(id: number, refusal: Refusal): Answer {
+  return { id, ok: false, error: { code: REFUSALS[refusal].code, message: REFUSALS[refusal].message } };
+}
+
+/** What GET /api/me answers with for a role holding these permissions. */
+function me(permissions: string[], fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return { role: "viewer", roleLabel: "Viewer", permissions, bypass: false, viewingAs: null, accessUnavailable: false, ...fields };
+}
+
+/** A capture as GET /api/schema/snapshot answers with one (SchemaSnapshot in my-app/lib/postgres.ts), with more than a phone is shown. */
+const SNAPSHOT = {
+  formatVersion: 3,
+  database: "shop",
+  schema: "my schema&x",
+  tables: [
+    {
+      name: "orders",
+      columns: [
+        { name: "id", ordinalPosition: 1, typeDisplay: "integer", nullable: false, columnDefault: "nextval('orders_id_seq'::regclass)", generated: null },
+        { name: "customer_id", ordinalPosition: 2, typeDisplay: "integer", nullable: true, columnDefault: null },
+      ],
+      primaryKey: { name: "orders_pkey", kind: "PRIMARY KEY", columns: ["id"], definition: "PRIMARY KEY (id)", normalizedDefinition: "PRIMARY KEY (id)" },
+      uniqueConstraints: [],
+      foreignKeys: [
+        {
+          name: "orders_customer_fk",
+          kind: "FOREIGN KEY",
+          columns: ["customer_id"],
+          definition: "FOREIGN KEY (customer_id) REFERENCES crm.customers(id)",
+          normalizedDefinition: "FOREIGN KEY (customer_id) REFERENCES crm.customers(id)",
+          referencedSchema: "crm",
+          referencedTable: "customers",
+          referencedColumns: ["id"],
+          onUpdate: "NO ACTION",
+          onDelete: "CASCADE",
+        },
+        {
+          name: "orders_unknown_fk",
+          kind: "FOREIGN KEY",
+          columns: ["customer_id"],
+          definition: "",
+          normalizedDefinition: "",
+          referencedSchema: null,
+          referencedTable: null,
+          referencedColumns: [],
+          onUpdate: "NO ACTION",
+          onDelete: "NO ACTION",
+        },
+      ],
+      checkConstraints: [],
+      excludeConstraints: [],
+      indexes: [{ name: "orders_pkey", definition: "CREATE UNIQUE INDEX orders_pkey ON orders USING btree (id)" }],
+      triggers: [],
+    },
+    {
+      name: "audit_log",
+      columns: [{ name: "at", ordinalPosition: 1, typeDisplay: "timestamp with time zone", nullable: false, columnDefault: "now()" }],
+      primaryKey: null,
+      uniqueConstraints: [],
+      foreignKeys: [],
+      checkConstraints: [],
+      excludeConstraints: [],
+    },
+  ],
+  views: [
+    { name: "recent_orders", materialized: false, definition: "SELECT * FROM orders", normalizedDefinition: "SELECT * FROM orders", columns: [] },
+    { name: "daily_totals", materialized: true, definition: "SELECT 1", normalizedDefinition: "SELECT 1", columns: [] },
+  ],
+};
+
+/** What a phone is shown of SNAPSHOT. */
+const OVERVIEW = {
+  database: "shop",
+  schema: "my schema&x",
+  tables: [
+    {
+      name: "orders",
+      columns: [
+        { name: "id", type: "integer", nullable: false, default: "nextval('orders_id_seq'::regclass)" },
+        { name: "customer_id", type: "integer", nullable: true, default: null },
+      ],
+      primaryKey: ["id"],
+      foreignKeys: [
+        { columns: ["customer_id"], referencedSchema: "crm", referencedTable: "customers", referencedColumns: ["id"] },
+        { columns: ["customer_id"], referencedSchema: null, referencedTable: null, referencedColumns: [] },
+      ],
+    },
+    {
+      name: "audit_log",
+      columns: [{ name: "at", type: "timestamp with time zone", nullable: false, default: "now()" }],
+      primaryKey: [],
+      foreignKeys: [],
+    },
+  ],
+  views: [
+    { name: "recent_orders", materialized: false },
+    { name: "daily_totals", materialized: true },
+  ],
+};
+
+const SNAPSHOT_PATH = "GET /api/schema/snapshot?connectionId=3&schema=my%20schema%26x";
+const READ_SCHEMA: Request = { id: 8, method: "schema.read", params: { connectionId: 3, schema: "my schema&x" } };
+
+/** A comparison as POST /api/compare/phone answers with one. */
+const SUMMARY: CompareSummary = {
+  source: { connectionId: 1, name: "Dev", environment: "dev", schema: "public", error: null },
+  targets: [
+    {
+      connectionId: 2,
+      name: "Prod",
+      environment: "prod",
+      schema: "public",
+      status: "compared",
+      error: null,
+      changes: 2,
+      breaking: 1,
+      manual: 0,
+      lines: [
+        { category: "Column", table: "orders", object: "total", change: "dropped", severity: "breaking", detail: "numeric(10,2)", manual: false },
+        { category: "Table", table: "", object: "audit_log", change: "added", severity: "safe", detail: "", manual: false },
+      ],
+      moreLines: 0,
+      history: null,
+    },
+  ],
+};
+
+test("says who is signed in on the computer, and what their role lets a phone do", async () => {
+  const app = fakeApp({ "GET /api/me": ok(me(["dashboard:read", "compare:read", "visualizer:read"])) });
+  assert.deepEqual(await answer({ id: 1, method: "hello" }, app.call), {
+    id: 1,
+    ok: true,
+    result: { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true, appVersion: "1.2.3" },
+  });
+  assert.deepEqual(app.calls, [{ method: "GET", path: "/api/me", body: undefined }]);
+
+  // Reading a schema takes the Visualizer, and one of the boxes that lists a connection's schemas.
+  const cases: [string[], boolean, boolean][] = [
+    [[], false, false],
+    [["visualizer:read"], false, false],
+    [["visualizer:read", "performance:read"], false, true],
+    [["compare:read"], true, false],
+    [["dashboard:read", "visualizer:read"], false, true],
+  ];
+  for (const [permissions, canCompare, canReadSchemas] of cases) {
+    const read = await answer({ id: 2, method: "hello" }, fakeApp({ "GET /api/me": ok(me(permissions)) }).call);
+    assert.deepEqual(
+      read,
+      { id: 2, ok: true, result: { signedIn: true, role: "Viewer", canCompare, canReadSchemas, appVersion: "1.2.3" } },
+      permissions.join(" ") || "no permissions",
+    );
+  }
+});
+
+test("names the role by its key when it has no name to show, and by nothing when it has neither", async () => {
+  const byKey = await answer({ id: 1, method: "hello" }, fakeApp({ "GET /api/me": ok({ role: "auditor", permissions: [] }) }).call);
+  assert.equal(byKey.ok && (byKey.result as { role: unknown }).role, "auditor");
+  const unnamed = await answer({ id: 2, method: "hello" }, fakeApp({ "GET /api/me": ok({ permissions: [] }) }).call);
+  assert.equal(unnamed.ok && (unnamed.result as { role: unknown }).role, null);
+});
+
+test("answers hello with nobody signed in, rather than refusing it, and logs nothing", async () => {
+  newLogLines();
+  const app = fakeApp({ "GET /api/me": { status: 401, json: { error: "Sign in to continue." } } });
+  assert.deepEqual(await answer({ id: 3, method: "hello" }, app.call), {
+    id: 3,
+    ok: true,
+    result: { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: "1.2.3" },
+  });
+  assert.equal(newLogLines(), "");
+});
+
+test("refuses hello when the server could not read what the role may do", async () => {
+  const unknown = fakeApp({ "GET /api/me": ok(me(["compare:read"], { accessUnavailable: true })) });
+  assert.deepEqual(await answer({ id: 4, method: "hello" }, unknown.call), refused(4, "access-unknown"));
+  assert.equal(REFUSALS["access-unknown"].code, "failed");
+});
+
+test("lists the shared connections only, in the app's order, with only what a phone shows", async () => {
+  const app = fakeApp({
+    "GET /api/connections/phone": ok({
+      connections: [
+        { id: 5, name: "Billing", environment: "prod", database: "billing", host: HOST },
+        { id: 2, name: "Orders", environment: "staging", database: "orders", host: HOST },
+        { id: 9, name: "Search", environment: "dev", database: "search", host: HOST, port: 5432 },
+      ],
+    }),
+  });
+  // 77 is shared but has been deleted on the computer since.
+  const read = await answer({ id: 5, method: "connections.list" }, app.call, { shared: [9, 5, 77] });
+  assert.deepEqual(read, {
+    id: 5,
+    ok: true,
+    result: {
+      connections: [
+        { id: 5, name: "Billing", environment: "prod", database: "billing" },
+        { id: 9, name: "Search", environment: "dev", database: "search" },
+      ],
+    },
+  });
+  assert.ok(!JSON.stringify(read).includes(HOST));
+  assert.deepEqual(app.calls, [{ method: "GET", path: "/api/connections/phone", body: undefined }]);
+});
+
+test("fails the list when the app describes a shared connection wrongly, and ignores the ones not shared", async () => {
+  newLogLines();
+  const wrong = fakeApp({ "GET /api/connections/phone": ok({ connections: [{ id: 1, name: "A", environment: "qa", database: "a" }] }) });
+  assert.deepEqual(await answer({ id: 6, method: "connections.list" }, wrong.call), refused(6, "failed"));
+  assert.match(newLogLines(), /answered with a connection the phone link cannot read/);
+
+  const notList = fakeApp({ "GET /api/connections/phone": ok({ connections: null }) });
+  assert.deepEqual(await answer({ id: 7, method: "connections.list" }, notList.call), refused(7, "failed"));
+  assert.match(newLogLines(), /did not answer with a list of connections/);
+
+  const unshared = fakeApp({
+    "GET /api/connections/phone": ok({
+      connections: [{ id: 1, name: "A", environment: "dev", database: "a" }, { id: 4, environment: "qa" }, "not a connection", null],
+    }),
+  });
+  assert.deepEqual(await answer({ id: 8, method: "connections.list" }, unshared.call, { shared: [1] }), {
+    id: 8,
+    ok: true,
+    result: { connections: [{ id: 1, name: "A", environment: "dev", database: "a" }] },
+  });
+});
+
+test("lists a shared connection's schemas, leaving out any name a request could not hold", async () => {
+  const app = fakeApp({
+    "GET /api/lineage/schemas?connectionId=2": ok({ schemas: ["public", " padded", "", "a".repeat(129), 5, "sales", "b".repeat(128)] }),
+  });
+  newLogLines();
+  assert.deepEqual(await answer({ id: 9, method: "schemas.list", params: { connectionId: 4 } }, app.call), refused(9, "not-shared"));
+  assert.deepEqual(app.calls, [], "a connection that is not shared is never asked about");
+  assert.equal(newLogLines(), "");
+
+  assert.deepEqual(await answer({ id: 10, method: "schemas.list", params: { connectionId: 2 } }, app.call), {
+    id: 10,
+    ok: true,
+    result: { schemas: ["public", "sales", "b".repeat(128)] },
+  });
+  assert.deepEqual(app.calls, [{ method: "GET", path: "/api/lineage/schemas?connectionId=2", body: undefined }]);
+});
+
+test("reads a shared schema's tables and views, and nothing more of the capture", async () => {
+  const app = fakeApp({ [SNAPSHOT_PATH]: ok({ snapshot: SNAPSHOT }) });
+  assert.deepEqual(await answer(READ_SCHEMA, app.call), { id: 8, ok: true, result: OVERVIEW });
+  // The schema's name is written into the query so that its space and & survive.
+  assert.deepEqual(app.calls, [{ method: "GET", path: SNAPSHOT_PATH.slice("GET ".length), body: undefined }]);
+  assert.deepEqual(await answer(READ_SCHEMA, app.call, { shared: [1, 2] }), refused(8, "not-shared"));
+  assert.equal(app.calls.length, 1);
+});
+
+test("shows no views for a capture that did not record them", async () => {
+  // Through JSON, as the server sends it, a capture without views has no views field at all.
+  const withoutViews: unknown = JSON.parse(JSON.stringify({ ...SNAPSHOT, views: undefined }));
+  const read = await answer(READ_SCHEMA, fakeApp({ [SNAPSHOT_PATH]: ok({ snapshot: withoutViews }) }).call);
+  assert.deepEqual(read, { id: 8, ok: true, result: { ...OVERVIEW, views: [] } });
+});
+
+test("fails a schema read when the capture is not one the phone link can read, and logs why", async () => {
+  newLogLines();
+  const [orders, auditLog] = SNAPSHOT.tables;
+  const noType = { ...orders, columns: [{ name: "id", nullable: false, columnDefault: null }] };
+  for (const snapshot of [{ ...SNAPSHOT, tables: [noType, auditLog] }, { ...SNAPSHOT, tables: null }, { ...SNAPSHOT, views: [null] }, null]) {
+    const read = await answer(READ_SCHEMA, fakeApp({ [SNAPSHOT_PATH]: ok({ snapshot }) }).call);
+    assert.deepEqual(read, refused(8, "failed"));
+    assert.match(newLogLines(), /answered with a schema the phone link cannot read/);
+  }
+});
+
+test("compares only shared schemas, and passes on the summary with only the fields a phone reads", async () => {
+  const source = { connectionId: 1, schema: "public" };
+  const app = fakeApp({
+    "POST /api/compare/phone": ok({ ...SUMMARY, targets: [{ ...SUMMARY.targets[0], host: HOST }], hosts: [HOST] }),
+  });
+  const unshared: Request = { id: 11, method: "compare.run", params: { source, targets: [{ connectionId: 2, schema: "public" }, { connectionId: 4, schema: "public" }] } };
+  assert.deepEqual(await answer(unshared, app.call), refused(11, "not-shared"));
+  assert.deepEqual(await answer({ ...unshared, params: { ...unshared.params, source: { connectionId: 4, schema: "public" } } }, app.call, { shared: [2] }), refused(11, "not-shared"));
+  assert.deepEqual(app.calls, []);
+
+  const shared: Request = { id: 12, method: "compare.run", params: { source, targets: [{ connectionId: 2, schema: "public" }] } };
+  const read = await answer(shared, app.call);
+  assert.deepEqual(read, { id: 12, ok: true, result: SUMMARY });
+  assert.ok(!JSON.stringify(read).includes(HOST));
+  assert.deepEqual(app.calls, [{ method: "POST", path: "/api/compare/phone", body: { source, targets: [{ connectionId: 2, schema: "public" }] } }]);
+});
+
+test("fails a comparison whose summary is not one the phone link can read, and logs why", async () => {
+  newLogLines();
+  const broken = { ...SUMMARY, targets: [{ ...SUMMARY.targets[0], status: "maybe" }] };
+  const request: Request = { id: 13, method: "compare.run", params: { source: { connectionId: 1, schema: "public" }, targets: [{ connectionId: 2, schema: "public" }] } };
+  assert.deepEqual(await answer(request, fakeApp({ "POST /api/compare/phone": ok(broken) }).call), refused(13, "failed"));
+  assert.match(newLogLines(), /answered with a summary the phone link cannot read/);
+});
+
+test("refuses with a fixed sentence for each status, never with the server's words", async () => {
+  const cases: [number, Refusal, boolean][] = [
+    [401, "signed-out", false],
+    [403, "forbidden", false],
+    [404, "not-found", false],
+    [502, "unreachable", false],
+    [503, "access-unknown", true],
+    [500, "failed", true],
+    [400, "failed", true],
+    [418, "failed", true],
+  ];
+  newLogLines();
+  for (const [status, refusal, logged] of cases) {
+    const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": { status, json: { error: `Could not connect to ${HOST}:5432 as reporting.` } } });
+    const read = await answer({ id: 14, method: "schemas.list", params: { connectionId: 1 } }, app.call);
+    assert.deepEqual(read, refused(14, refusal), String(status));
+    assert.ok(!JSON.stringify(read).includes(HOST), String(status));
+    const lines = newLogLines();
+    if (logged) {
+      // The server's words go to the computer's log, but not which connection was asked about.
+      assert.ok(lines.includes(`GET /api/lineage/schemas with ${status}: Could not connect to`), lines);
+      assert.ok(!lines.includes("connectionId"), lines);
+    } else {
+      assert.equal(lines, "", String(status));
+    }
+  }
+});
+
+test("says the app did not answer when it cannot be reached, and logs it unless the phone has stopped waiting", async () => {
+  newLogLines();
+  const down = fakeApp({ "GET /api/me": new Error("connect ECONNREFUSED 127.0.0.1:41234") });
+  assert.deepEqual(await answer({ id: 15, method: "hello" }, down.call), refused(15, "no-answer"));
+  assert.match(newLogLines(), /could not reach the app for GET \/api\/me\.\n.*ECONNREFUSED/);
+
+  const stopped = new AbortController();
+  stopped.abort();
+  assert.deepEqual(await answer({ id: 16, method: "hello" }, down.call, { signal: stopped.signal }), refused(16, "no-answer"));
+  assert.equal(newLogLines(), "");
+});
+
+test("fails a request when the app answers with something unexpected, and logs it unless the phone has stopped waiting", async () => {
+  newLogLines();
+  const app = fakeApp({ "GET /api/me": ok(null) });
+  assert.deepEqual(await answer({ id: 17, method: "hello" }, app.call), refused(17, "failed"));
+  assert.match(newLogLines(), /could not answer a phone's hello\.\n.*did not answer with a list of permissions/);
+
+  const stopped = new AbortController();
+  stopped.abort();
+  assert.deepEqual(await answer({ id: 18, method: "hello" }, app.call, { signal: stopped.signal }), refused(18, "failed"));
+  assert.equal(newLogLines(), "");
+});
+
+test("reads which connections are shared at every request, so a change in Settings counts at once", async () => {
+  let shared: number[] = [1];
+  const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": ok({ schemas: ["public"] }) });
+  const options = { call: app.call, sharedConnectionIds: () => shared, appVersion: "1.2.3" };
+  const ask = async (id: number) => readAnswer(await answerRequest({ id, method: "schemas.list", params: { connectionId: 1 } }, options, new AbortController().signal));
+  assert.deepEqual(await ask(1), { id: 1, ok: true, result: { schemas: ["public"] } });
+  shared = [];
+  assert.deepEqual(await ask(2), refused(2, "not-shared"));
+  shared = [1];
+  assert.deepEqual(await ask(3), { id: 3, ok: true, result: { schemas: ["public"] } });
+  assert.equal(app.calls.length, 2);
+});
+
+test("refuses only with short plain sentences, each one a code every phone knows", () => {
+  for (const [refusal, { code, message }] of Object.entries(REFUSALS)) {
+    assert.match(message, /^[ -~]+\.$/, refusal);
+    assert.deepEqual(readAnswer(writeRefusal(7, refusal as Refusal)), { id: 7, ok: false, error: { code, message } }, refusal);
+  }
+  // The computer's own three reasons go out as "failed", with a sentence that says more.
+  for (const refusal of ["access-unknown", "no-answer", "too-slow"] as const) assert.equal(REFUSALS[refusal].code, "failed");
+});
