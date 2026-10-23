@@ -9,8 +9,9 @@
  *
  * The pages are served with a strict security policy (src/main/protocol.ts):
  * no style attributes and no inline styles. So everything about their look
- * lives here, and the pages' scripts change only text, data attributes and
- * the hidden attribute.
+ * lives here: the pages' scripts change only text, attributes, the classes
+ * named here and the hidden attribute, and build any rows and the pairing
+ * code's drawing from plain elements.
  */
 
 /* Colors. The light set is the default, and the dark set replaces it when the app is dark. */
@@ -563,6 +564,73 @@ input {
   color: var(--text-2);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+/* The Phone section of Settings */
+
+.phone-parts {
+  display: grid;
+  gap: 12px;
+}
+
+.subgroup-title {
+  margin: 8px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+}
+
+.pairing {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+/* Black on white in both themes, as cameras read that best, at about 3 px a square for a pairing code's 61 or so squares. */
+.qr {
+  overflow: hidden;
+  width: 183px;
+  height: 183px;
+  border-radius: var(--radius-small);
+  background: #ffffff;
+}
+
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.pairing-text {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.phone-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+}
+
+.phone-row .choice-name {
+  overflow-wrap: anywhere;
+}
+
+/* In a narrow window the code goes above its text. */
+@media (max-width: 520px) {
+  .pairing {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .qr {
+    justify-self: center;
+  }
 }
 
 /* Without motion, the running step shows a filled dot instead of a spinning ring. */

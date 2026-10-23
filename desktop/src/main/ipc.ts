@@ -16,10 +16,15 @@ import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents }
 import { isThemeChoice } from "../core/config";
 import {
   BRIDGE,
+  PHONE,
   SETTINGS,
   STARTUP,
   type FoundDatabase,
+  type PhoneConnections,
+  type PhonePairing,
+  type PhoneView,
   type SaveGithubResult,
+  type SetRelayResult,
   type SettingsView,
   type SignInResult,
   type StartupState,
@@ -61,6 +66,19 @@ export type IpcHandlers = {
     setTheme(choice: ThemeChoice): void;
     openLogs(): void;
     close(): void;
+  };
+  /** The Settings window's Phone section (src/main/phone-settings.ts). */
+  phone: {
+    get(): PhoneView;
+    setEnabled(enabled: boolean): void;
+    /** Takes what the page sent as it is; it is read before it is used. */
+    setRelay(origin: unknown): SetRelayResult;
+    setShared(ids: unknown): void;
+    forget(key: string): void;
+    pair(): PhonePairing;
+    cancelPairing(): void;
+    connectNow(): void;
+    connections(): Promise<PhoneConnections>;
   };
 };
 
@@ -145,4 +163,18 @@ export function registerIpc(handlers: IpcHandlers): void {
   });
   on(settings, SETTINGS.openLogs, () => handlers.settings.openLogs());
   on(settings, SETTINGS.close, () => handlers.settings.close());
+
+  handle(settings, PHONE.get, () => handlers.phone.get());
+  on(settings, PHONE.setEnabled, (enabled) => {
+    if (typeof enabled === "boolean") handlers.phone.setEnabled(enabled);
+  });
+  handle(settings, PHONE.setRelay, (origin) => handlers.phone.setRelay(origin));
+  on(settings, PHONE.setShared, (ids) => handlers.phone.setShared(ids));
+  on(settings, PHONE.forget, (key) => {
+    if (typeof key === "string") handlers.phone.forget(key);
+  });
+  handle(settings, PHONE.pair, () => handlers.phone.pair());
+  on(settings, PHONE.cancelPairing, () => handlers.phone.cancelPairing());
+  on(settings, PHONE.connectNow, () => handlers.phone.connectNow());
+  handle(settings, PHONE.connections, () => handlers.phone.connections());
 }

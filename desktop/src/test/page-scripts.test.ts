@@ -15,6 +15,7 @@ test("each page script runs as a plain page script, up to its first look at the 
   for (const [file, page] of [
     ["splash.js", "splash"],
     ["settings.js", "Settings page"],
+    ["settings-phone.js", "Settings page"],
   ]) {
     const code = fs.readFileSync(path.join(__dirname, "..", "renderer", file), "utf8");
     // An empty page has none of the parts the script looks for, so the

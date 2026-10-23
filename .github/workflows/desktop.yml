@@ -116,7 +116,7 @@ jobs:
           # with a slash, which is taken off here.
           asar_file="$(ls dist/linux*-unpacked/resources/app.asar)"
           npx --no asar list "$asar_file" | sed 's#^/##' > "$RUNNER_TEMP/asar.txt"
-          for file in package.json out/build-config.json out/main/main.js out/preload/app-preload.js out/preload/settings-preload.js renderer/splash.html renderer/settings.html renderer/app.css assets/icon.png node_modules/pg/package.json node_modules/@azure/msal-node/package.json; do
+          for file in package.json out/build-config.json out/main/main.js out/preload/app-preload.js out/preload/settings-preload.js renderer/splash.html renderer/settings.html renderer/app.css assets/icon.png node_modules/pg/package.json node_modules/@azure/msal-node/package.json node_modules/qrcode-generator/package.json; do
             if ! grep -qxF "$file" "$RUNNER_TEMP/asar.txt"; then
               echo "app.asar is missing $file."
               exit 1

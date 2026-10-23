@@ -55,7 +55,9 @@ import { parsePhoneLinkState, type PhoneLinkState } from "../core/phone-link-fil
 import { ensurePrivateDir, UnsafeDirError } from "../core/private-dir";
 import { GATE_HEADER } from "../server/desktop-gate";
 import {
+  PHONE,
   STARTUP,
+  type PhoneConnections,
   type SaveGithubResult,
   type SettingsView,
   type SignInResult,
@@ -74,6 +76,7 @@ import { addLogSecret, logError, logFolder, logInfo, logWarn } from "./log";
 import { buildMenu } from "./menu";
 import { openPhoneLink, type PhoneLink } from "./phone-link";
 import type { AppAnswer } from "./phone-requests";
+import { CONNECTIONS_FAILED, makePairing, phoneView, readPhoneConnections, setRelay } from "./phone-settings";
 import { startPostgres, type RunningPostgres } from "./postgres";
 import { APP_HOST, APP_ORIGIN, serveAppPages } from "./protocol";
 import { keyringBackend, ProtectedStore } from "./secrets";
@@ -103,6 +106,9 @@ const SAVE_FAILED = "Schema Studio could not save the settings. Open the logs fo
 const FIRST_CHECK_MS = 20_000;
 /** How long a check in the background waits for Microsoft. */
 const BACKGROUND_CHECK_MS = 30_000;
+/** How long Settings waits for the server to list the saved connections that phones may be shown. */
+const PHONE_CONNECTIONS_MS = 15_000;
+const PHONE_LINK_FAILED = "The phone link could not start. Schema Studio's log has the details.";
 /** How long quitting waits for the server and the database to stop before the app stops anyway. */
 const QUIT_LIMIT_MS = 20_000;
 /** How long to wait, after the server or the database stops, before saying so. A start failing because of it explains itself on the splash in that time. */
@@ -192,6 +198,8 @@ export class DesktopApp {
   private server: RunningServer | null = null;
   /** The phone link, once it has opened and started. */
   private phoneLink: PhoneLink | null = null;
+  /** Why the phone link could not open or start, for Settings. */
+  private phoneLinkProblem: string | null = null;
   private mainWindow: BrowserWindow | null = null;
   private settingsWindow: BrowserWindow | null = null;
   private startup: StartupState = { phase: "starting", step: "secrets" };
@@ -299,6 +307,17 @@ export class DesktopApp {
         setTheme: (choice) => this.setTheme(choice),
         openLogs: () => void this.openLogs(),
         close: () => this.settingsWindow?.close(),
+      },
+      phone: {
+        get: () => phoneView(this.phoneLink, this.phoneLinkProblem),
+        setEnabled: (enabled) => this.phoneLink?.setEnabled(enabled),
+        setRelay: (origin) => setRelay(this.phoneLink, origin, this.phoneLinkProblem),
+        setShared: (ids) => this.phoneLink?.setSharedConnections(ids),
+        forget: (key) => this.phoneLink?.forgetPhone(key),
+        pair: () => makePairing(this.phoneLink, this.phoneLinkProblem),
+        cancelPairing: () => this.phoneLink?.cancelPairing(),
+        connectNow: () => this.phoneLink?.connectNow(),
+        connections: () => this.phoneConnections(),
       },
     });
   }
@@ -550,17 +569,43 @@ export class DesktopApp {
         call: (method, path, body, signal) => this.callServer(method, path, body, signal),
         appVersion: app.getVersion(),
         computerName: os.hostname(),
+        onChange: () => this.phoneChanged(),
+        onPaired: (phone) => liveContents(this.settingsWindow)?.send(PHONE.paired, phone.name),
       });
       if (!opening.ok) {
         logWarn(`The phone link is unavailable: ${opening.reason}`);
+        this.phoneLinkProblem = opening.reason;
+        this.phoneChanged();
         return;
       }
       // The app began quitting while the keys were opening.
       if (this.quitting) return;
-      this.phoneLink = opening.link;
       opening.link.start();
+      // Kept once it has started, so that Settings says why if starting fails.
+      this.phoneLink = opening.link;
+      this.phoneChanged();
     } catch (error) {
       logError("The phone link could not start.", error);
+      this.phoneLinkProblem = PHONE_LINK_FAILED;
+      this.phoneChanged();
+    }
+  }
+
+  /** Tells Settings, if it is open, how the phone link stands now. */
+  private phoneChanged(): void {
+    liveContents(this.settingsWindow)?.send(PHONE.changed, phoneView(this.phoneLink, this.phoneLinkProblem));
+  }
+
+  /** The saved connections, for Settings to choose which ones phones may see. The server lists them for whoever is signed in. */
+  private async phoneConnections(): Promise<PhoneConnections> {
+    if (this.server === null) return { ok: false, message: STILL_STARTING };
+    try {
+      return readPhoneConnections(
+        await this.callServer("GET", "/api/connections/phone", undefined, AbortSignal.timeout(PHONE_CONNECTIONS_MS)),
+      );
+    } catch (error) {
+      logWarn("Could not list the saved connections for the phone link.", error);
+      return { ok: false, message: CONNECTIONS_FAILED };
     }
   }
 
@@ -740,6 +785,8 @@ export class DesktopApp {
     this.settingsWindow = window;
     window.on("closed", () => {
       if (this.settingsWindow === window) this.settingsWindow = null;
+      // A code shown in Settings must not pair a phone once Settings has closed.
+      this.phoneLink?.cancelPairing();
     });
   }
 

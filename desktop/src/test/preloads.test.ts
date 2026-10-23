@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
-import { BRIDGE, SETTINGS, STARTUP } from "../shared/ipc";
+import { BRIDGE, PHONE, SETTINGS, STARTUP } from "../shared/ipc";
 
 type Message = { kind: "invoke" | "send"; channel: string; args: unknown[] };
 type Api = Record<string, (...args: unknown[]) => unknown>;
@@ -129,7 +129,7 @@ test("any other page in the main window gets nothing", () => {
 
 test("the Settings page gets its own messages, and no other page gets them", async () => {
   const { exposed, messages } = runPreload("settings-preload.js", "app://schema-studio/settings.html");
-  assert.deepEqual([...exposed.keys()], ["schemaStudioSettings"]);
+  assert.deepEqual([...exposed.keys()], ["schemaStudioSettings", "schemaStudioPhone"]);
   const settings = exposed.get("schemaStudioSettings");
   assert.ok(settings);
 
@@ -151,4 +151,56 @@ test("the Settings page gets its own messages, and no other page gets them", asy
   for (const href of ["app://schema-studio/splash.html", "http://127.0.0.1:4100/studio", "https://example.com/settings.html"]) {
     assert.equal(runPreload("settings-preload.js", href).exposed.size, 0, href);
   }
+});
+
+test("the Settings page's Phone section gets the phone link's messages, and cannot add anything to them", async () => {
+  const { exposed, messages, listeners } = runPreload("settings-preload.js", "app://schema-studio/settings.html");
+  const phone = exposed.get("schemaStudioPhone");
+  assert.ok(phone);
+
+  await phone.get("extra");
+  phone.setEnabled(true, "extra");
+  await phone.setRelay("https://relay.example.com", "extra");
+  phone.setShared([1, 2], "extra");
+  phone.forget("key", "extra");
+  await phone.pair("extra");
+  phone.cancelPairing("extra");
+  phone.connectNow("extra");
+  await phone.connections("extra");
+  phone.onChange(() => {});
+  phone.onPaired(() => {});
+
+  assert.deepEqual(messages, [
+    { kind: "invoke", channel: PHONE.get, args: [] },
+    { kind: "send", channel: PHONE.setEnabled, args: [true] },
+    { kind: "invoke", channel: PHONE.setRelay, args: ["https://relay.example.com"] },
+    { kind: "send", channel: PHONE.setShared, args: [[1, 2]] },
+    { kind: "send", channel: PHONE.forget, args: ["key"] },
+    { kind: "invoke", channel: PHONE.pair, args: [] },
+    { kind: "send", channel: PHONE.cancelPairing, args: [] },
+    { kind: "send", channel: PHONE.connectNow, args: [] },
+    { kind: "invoke", channel: PHONE.connections, args: [] },
+  ]);
+  assert.deepEqual([...listeners.keys()], [PHONE.changed, PHONE.paired]);
+});
+
+test("the Phone section hears each change and each pairing as the news alone, never with Electron's message event", () => {
+  const { exposed, listeners } = runPreload("settings-preload.js", "app://schema-studio/settings.html");
+  const phone = exposed.get("schemaStudioPhone");
+  assert.ok(phone);
+  const views: unknown[][] = [];
+  const names: unknown[][] = [];
+  phone.onChange((...args: unknown[]) => views.push(args));
+  phone.onPaired((...args: unknown[]) => names.push(args));
+
+  const changed = listeners.get(PHONE.changed);
+  const paired = listeners.get(PHONE.paired);
+  assert.ok(changed && paired);
+  const event = { sender: { send() {} }, ports: [] };
+  const view = { available: false, message: "The phone link starts once Schema Studio has started." };
+  changed(event, view);
+  paired(event, "Pixel 9", "extra");
+
+  assert.deepEqual(views, [[view]]);
+  assert.deepEqual(names, [["Pixel 9"]]);
 });

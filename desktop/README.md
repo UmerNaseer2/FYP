@@ -27,6 +27,13 @@ from a `.deb` package.
   as well.
 - The GitHub token, for keeping schemas in a GitHub repository, is typed into
   Settings (File, then Settings) and kept the same way.
+- Lets phones you pair see the schemas of the saved connections you choose,
+  while Schema Studio is running (File, then Settings, then Phone). A phone
+  pairs by pointing its camera at a code the app shows. What the two send each
+  other is encrypted end to end and goes through a relay your team runs (see
+  `relay/README.md`), which passes it on but cannot read it. The phone link's
+  keys are kept the same way as the others. The page the phones open is still
+  being built.
 
 ## Supported systems
 
@@ -61,7 +68,7 @@ carries on where it left off.
 
 | Folder | What is in it |
 | --- | --- |
-| `~/.config/schema-studio` | Settings (`config.json`), the saved Microsoft sign-in (`auth.json`) and the window's own browser profile |
+| `~/.config/schema-studio` | Settings (`config.json`), the saved Microsoft sign-in (`auth.json`), the phone link's keys and paired phones (`phone-link.json`) and the window's own browser profile |
 | `~/.local/share/schema-studio` | The app's own PostgreSQL database and the keys that protect what is saved in it (`secrets.json`) |
 | `~/.local/state/schema-studio/logs` | Logs, which can be deleted at any time |
 

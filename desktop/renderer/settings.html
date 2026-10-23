@@ -1,9 +1,10 @@
 <!doctype html>
 <!--
-  Settings: the GitHub registry, the theme, and where the app keeps its
-  files. src/renderer/settings.ts fills it in and sends each change to the
-  main process. The page is served with a strict security policy
-  (src/main/protocol.ts), so it has no inline script or style.
+  Settings: the GitHub registry, the phone link, the theme, and where the
+  app keeps its files. src/renderer/settings.ts fills it in and sends each
+  change to the main process, and src/renderer/settings-phone.ts does the
+  same for the Phone section. The page is served with a strict security
+  policy (src/main/protocol.ts), so it has no inline script or style.
 -->
 <html lang="en">
   <head>
@@ -13,6 +14,7 @@
     <title>Settings</title>
     <link rel="stylesheet" href="app.css">
     <script src="settings.js" defer></script>
+    <script src="settings-phone.js" defer></script>
   </head>
   <body class="settings">
     <main class="settings-main">
@@ -70,6 +72,75 @@
             <button id="github-save" class="button button-primary" type="submit">Save</button>
           </div>
         </form>
+
+        <section id="phone" class="group" aria-labelledby="phone-title">
+          <h2 id="phone-title" class="group-title">Phone</h2>
+          <p class="group-intro">Paired phones can see the schemas of the connections you choose, through a relay that passes on messages it cannot read.</p>
+          <p id="phone-unavailable" class="banner" role="alert" hidden></p>
+          <div id="phone-content" class="phone-parts" hidden>
+            <div class="list">
+              <label class="row row-choice">
+                <input id="phone-enabled" type="checkbox">
+                <span class="choice-text">
+                  <span class="choice-name">Let paired phones connect</span>
+                  <span class="hint">While Schema Studio is running</span>
+                </span>
+              </label>
+              <div class="row">
+                <div class="token">
+                  <span class="token-state"><span id="phone-status-dot" class="dot" aria-hidden="true"></span><span id="phone-status" role="status"></span></span>
+                  <span class="token-actions"><button id="phone-connect-now" class="button" type="button" hidden></button></span>
+                </div>
+                <p id="phone-retry" class="hint countdown" hidden></p>
+              </div>
+            </div>
+            <form id="phone-relay-form" class="list" aria-label="Relay" novalidate>
+              <div class="row">
+                <label class="row-label" for="phone-relay">Relay</label>
+                <div class="token-entry">
+                  <input id="phone-relay" class="input" type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://relay.example.com" aria-describedby="phone-relay-hint phone-relay-warning phone-relay-error">
+                  <button id="phone-relay-save" class="button" type="submit">Save</button>
+                </div>
+                <p id="phone-relay-hint" class="hint">The address of the relay your team runs. Phones open it to pair and to connect.</p>
+                <p id="phone-relay-warning" class="field-error" hidden></p>
+                <p id="phone-relay-error" class="field-error" hidden></p>
+                <p id="phone-relay-status" class="status" role="status"></p>
+              </div>
+            </form>
+            <div class="list">
+              <div class="row">
+                <div id="phone-pair-row" class="token">
+                  <span class="choice-text"><span class="choice-name">Pair a phone</span><span id="phone-pair-hint" class="hint"></span></span>
+                  <span class="token-actions"><button id="phone-pair" class="button button-primary" type="button" aria-describedby="phone-pair-hint">Show a code</button></span>
+                </div>
+                <div id="phone-pairing" class="pairing" hidden>
+                  <div id="phone-qr" class="qr"></div>
+                  <div class="pairing-text">
+                    <p>Point your phone's camera at this code and open the link it finds, which leads to <code id="phone-pairing-relay" class="path"></code>.</p>
+                    <p id="phone-pairing-expiry" class="hint countdown"></p>
+                    <span class="token-actions">
+                      <button id="phone-pairing-renew" class="button" type="button" hidden>Make a new code</button>
+                      <button id="phone-pairing-cancel" class="button" type="button">Cancel</button>
+                    </span>
+                  </div>
+                </div>
+                <p id="phone-pair-status" class="status" role="status"></p>
+                <p id="phone-pair-error" class="field-error" role="alert" hidden></p>
+              </div>
+            </div>
+            <h3 id="phone-connections-title" class="subgroup-title">Connections phones may see</h3>
+            <div id="phone-connections" class="list" role="group" aria-labelledby="phone-connections-title" hidden></div>
+            <div id="phone-connections-problem" class="list row" hidden>
+              <div class="token">
+                <p id="phone-connections-message" class="hint" role="status"></p>
+                <button id="phone-connections-retry" class="button" type="button">Check again</button>
+              </div>
+            </div>
+            <h3 id="phone-phones-title" class="subgroup-title">Paired phones</h3>
+            <div id="phone-phones" class="list" role="list" aria-labelledby="phone-phones-title" hidden></div>
+            <p id="phone-phones-empty" class="list row hint">No phones are paired yet.</p>
+          </div>
+        </section>
 
         <section class="group" aria-labelledby="appearance-title">
           <h2 id="appearance-title" class="group-title">Appearance</h2>

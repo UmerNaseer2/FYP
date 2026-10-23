@@ -6,10 +6,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BRIDGE, SETTINGS, STARTUP } from "../shared/ipc";
+import { BRIDGE, PHONE, SETTINGS, STARTUP } from "../shared/ipc";
 
 test("every message channel has a name of its own", () => {
-  const names = [...Object.values(BRIDGE), ...Object.values(STARTUP), ...Object.values(SETTINGS)];
+  const names = [
+    ...Object.values(BRIDGE),
+    ...Object.values(STARTUP),
+    ...Object.values(SETTINGS),
+    ...Object.values(PHONE),
+  ];
   assert.equal(new Set(names).size, names.length);
 });
 
@@ -17,4 +22,5 @@ test("each channel's name starts with the part of the app it belongs to", () => 
   for (const name of Object.values(BRIDGE)) assert.match(name, /^desktop:[a-z-]+$/);
   for (const name of Object.values(STARTUP)) assert.match(name, /^startup:[a-z-]+$/);
   for (const name of Object.values(SETTINGS)) assert.match(name, /^settings:[a-z-]+$/);
+  for (const name of Object.values(PHONE)) assert.match(name, /^phone:[a-z-]+$/);
 });

@@ -18,7 +18,7 @@ export type AppFiles = {
   root: string;
   /** splash.html, settings.html and app.css. */
   renderer: string;
-  /** splash.js and settings.js, compiled from src/renderer. */
+  /** splash.js, settings.js and settings-phone.js, compiled from src/renderer. */
   rendererScripts: string;
   assets: string;
   appPreload: string;

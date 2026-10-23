@@ -9,7 +9,8 @@
  *    and nothing else.
  *  - The start screen (app://schema-studio/splash.html), shown while the
  *    database and the server start. It only reads progress and offers Retry.
- *  - The Settings window (app://schema-studio/settings.html).
+ *  - The Settings window (app://schema-studio/settings.html), including its
+ *    Phone section, which runs the phone link.
  *
  * The main process checks, on every message, that it came from the right kind
  * of page in one of the app's own windows (src/main/ipc.ts), so a page can
@@ -70,6 +71,21 @@ export const SETTINGS = {
   close: "settings:close",
 } as const;
 
+/** The Settings window's Phone section. "changed" and "paired" go the other way, from the main process to the page. */
+export const PHONE = {
+  get: "phone:get",
+  changed: "phone:changed",
+  paired: "phone:paired",
+  setEnabled: "phone:set-enabled",
+  setRelay: "phone:set-relay",
+  setShared: "phone:set-shared",
+  forget: "phone:forget",
+  pair: "phone:pair",
+  cancelPairing: "phone:cancel-pairing",
+  connectNow: "phone:connect-now",
+  connections: "phone:connections",
+} as const;
+
 /** The steps the start screen lists, in the order they happen. */
 export type StartupStep = "secrets" | "database" | "server" | "sign-in";
 
@@ -123,4 +139,77 @@ export interface SettingsApi {
   setTheme(choice: ThemeChoice): void;
   openLogs(): void;
   close(): void;
+}
+
+/**
+ * Where the phone link stands (src/main/phone-link.ts): "off" while it is
+ * turned off, "needs-relay" while it has no relay yet, and otherwise where its
+ * connection to the relay stands. "waiting" means the connection was lost, or
+ * could not be made, for the reason given (written for a person), and the
+ * phone link tries again at retryAt. "replaced" means another Schema Studio
+ * signed in to the relay as this computer, and this one waits to be told to
+ * connect again.
+ */
+export type PhoneStatus =
+  | { state: "off" }
+  | { state: "needs-relay" }
+  | { state: "connecting" }
+  | { state: "connected" }
+  | { state: "waiting"; retryAt: number; reason: string }
+  | { state: "replaced" };
+
+/** A paired phone, as the Phone section lists it. The name came from the phone. */
+export type PhoneSummary = { key: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean };
+
+/** What the Phone section shows, or why there is nothing to show yet. */
+export type PhoneView =
+  | { available: false; message: string }
+  | {
+      available: true;
+      status: PhoneStatus;
+      enabled: boolean;
+      relayOrigin: string | null;
+      /** The saved connections phones may see, by their numbers. */
+      sharedConnectionIds: number[];
+      phones: PhoneSummary[];
+      /** Why a phone cannot pair now, as a sentence for a person, or null when one can. */
+      cannotPair: string | null;
+    };
+
+/**
+ * A new pairing code, as its QR drawing (src/main/qr.ts), and when it runs
+ * out, or why a phone cannot pair now. The page never gets the pairing link
+ * itself, because the link carries a one-time secret.
+ */
+export type PhonePairing =
+  | { ok: true; expiresAt: number; qr: { size: number; path: string } }
+  | { ok: false; message: string };
+
+/** The answer to saving the relay's address: the address as it was saved, or why it was not. */
+export type SetRelayResult = { ok: true; relayOrigin: string } | { ok: false; message: string };
+
+/** A saved connection that phones may be allowed to see. Never its host, user name or password. */
+export type PhoneConnection = { id: number; name: string; environment: "unset" | "dev" | "staging" | "prod"; database: string };
+
+/** The saved connections, for the Phone section to choose from, or why they could not be listed. */
+export type PhoneConnections = { ok: true; connections: PhoneConnection[] } | { ok: false; message: string };
+
+/** What the Settings preload puts on `window.schemaStudioPhone`, for the Phone section. */
+export interface PhoneSettingsApi {
+  get(): Promise<PhoneView>;
+  /** Hears the new view after each change: to the connection, to the phones or to a setting. */
+  onChange(listener: (view: PhoneView) => void): void;
+  /** Hears the name of a phone that has just paired with the code on show. */
+  onPaired(listener: (name: string) => void): void;
+  setEnabled(enabled: boolean): void;
+  setRelay(origin: string): Promise<SetRelayResult>;
+  setShared(ids: number[]): void;
+  /** Unpairs a phone, by its key. */
+  forget(key: string): void;
+  pair(): Promise<PhonePairing>;
+  /** Makes the code on show pair nothing. */
+  cancelPairing(): void;
+  /** Connects to the relay at once instead of waiting to try again. */
+  connectNow(): void;
+  connections(): Promise<PhoneConnections>;
 }
