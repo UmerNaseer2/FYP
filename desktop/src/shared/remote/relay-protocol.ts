@@ -60,6 +60,33 @@ export function readRelayPath(pathname: string): { role: Role; desktopId: string
   return { role: match[1] === "desktop" ? "desktop" : "phone", desktopId: match[2] };
 }
 
+/**
+ * The relay's own address, such as https://relay.example.com, written the one
+ * way a browser writes it, or null when the text is not an address the apps
+ * may use. It must be https, except for a relay on the same machine, which is
+ * how one is tried out (`npm run dev` puts it at http://localhost:8787), and
+ * nothing may follow the host and port.
+ */
+export function readRelayOrigin(text: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  const onThisMachine = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && onThisMachine)) return null;
+  // No user name or password, path, query or fragment, not even an empty one.
+  return url.href === `${url.origin}/` ? url.origin : null;
+}
+
+/** The WebSocket address of one of a room's doors, at the relay with this address. */
+export function relaySocketUrl(relayOrigin: string, role: Role, desktopId: string): string {
+  const origin = readRelayOrigin(relayOrigin);
+  if (origin === null) throw new Error("That is not a relay's address.");
+  return origin.replace(/^http/, "ws") + relayPath(role, desktopId);
+}
+
 /** The size of the channel number in front of each binary message between the computer and the relay. */
 export const CHANNEL_BYTES = 4;
 /** The biggest message the relay passes on. Any Noise message fits (noise.ts). */

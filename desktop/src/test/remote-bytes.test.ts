@@ -68,9 +68,9 @@ test("compares bytes", () => {
 });
 
 test("writes and reads UTF-8, and refuses bytes that are not UTF-8", () => {
-  const text = "café \u{1f511}";
+  const text = "caf\u00e9 \u{1f511}";
   assert.equal(readUtf8(utf8(text)), text);
-  assert.deepEqual(utf8("é"), Uint8Array.of(0xc3, 0xa9));
+  assert.deepEqual(utf8("\u00e9"), Uint8Array.of(0xc3, 0xa9));
   assert.equal(readUtf8(Uint8Array.of(0xff)), null);
   // The first byte of a two-byte character, with nothing after it.
   assert.equal(readUtf8(Uint8Array.of(0xc3)), null);
@@ -79,7 +79,7 @@ test("writes and reads UTF-8, and refuses bytes that are not UTF-8", () => {
 });
 
 test("keeps a byte order mark, so the text read is exactly what was sent", () => {
-  assert.equal(readUtf8(Uint8Array.of(0xef, 0xbb, 0xbf, 0x41)), "﻿A");
+  assert.equal(readUtf8(Uint8Array.of(0xef, 0xbb, 0xbf, 0x41)), "\ufeffA");
 });
 
 test("gives fresh random bytes of the length asked for", () => {

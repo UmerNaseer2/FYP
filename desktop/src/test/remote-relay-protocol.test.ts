@@ -24,8 +24,10 @@ import {
   PONG,
   readChannel,
   readControl,
+  readRelayOrigin,
   readRelayPath,
   relayPath,
+  relaySocketUrl,
   writeControl,
   type Control,
 } from "../shared/remote/relay-protocol.js";
@@ -55,6 +57,52 @@ test("refuses any other address", () => {
   ]) {
     assert.equal(readRelayPath(path), null, path);
   }
+});
+
+test("reads a relay's address, and gives it the one way a browser writes it", () => {
+  const cases: [string, string][] = [
+    ["https://relay.example.com", "https://relay.example.com"],
+    ["https://relay.example.com/", "https://relay.example.com"],
+    ["https://RELAY.Example.com:443/", "https://relay.example.com"],
+    ["https://relay.example.com:8443", "https://relay.example.com:8443"],
+    [" https://relay.example.com ", "https://relay.example.com"],
+    // A relay on this machine, for trying things out, may use http.
+    ["http://localhost:8787", "http://localhost:8787"],
+    ["http://127.0.0.1:8787/", "http://127.0.0.1:8787"],
+    ["http://[::1]:8787", "http://[::1]:8787"],
+  ];
+  for (const [text, origin] of cases) {
+    assert.equal(readRelayOrigin(text), origin, text);
+  }
+});
+
+test("refuses any other relay address", () => {
+  for (const text of [
+    "",
+    "not an address",
+    "relay.example.com",
+    "http://relay.example.com",
+    "ws://localhost:8787",
+    "wss://relay.example.com",
+    "ftp://relay.example.com",
+    "https://someone@relay.example.com",
+    "https://relay.example.com/v1",
+    "https://relay.example.com/?",
+    "https://relay.example.com/?x=1",
+    "https://relay.example.com/#",
+    // Names that only look like this machine's.
+    "http://localhost.:8787",
+    "http://localhost.example.com:8787",
+  ]) {
+    assert.equal(readRelayOrigin(text), null, JSON.stringify(text));
+  }
+});
+
+test("gives the WebSocket address of each of a room's doors", () => {
+  assert.equal(relaySocketUrl("https://relay.example.com", "desktop", ID), `wss://relay.example.com/v1/desktop/${ID}`);
+  assert.equal(relaySocketUrl("http://localhost:8787/", "phone", ID), `ws://localhost:8787/v1/phone/${ID}`);
+  assert.throws(() => relaySocketUrl("http://relay.example.com", "phone", ID), /not a relay's address/);
+  assert.throws(() => relaySocketUrl("https://relay.example.com", "phone", ID.slice(1)), /not a computer's ID/);
 });
 
 test("puts a message's channel in front of it in four bytes, most significant first", () => {
