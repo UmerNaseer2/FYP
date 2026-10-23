@@ -22,6 +22,7 @@ const FULL: AppConfig = {
   port: 23456,
   window: WINDOW,
   theme: "dark",
+  keepRunning: true,
   github: { owner: "octocat", repo: "schema-registry" },
 };
 
@@ -29,12 +30,13 @@ function parseWith(changes: Record<string, unknown>) {
   return parseConfig(JSON.stringify({ ...FULL, ...changes }));
 }
 
-test("the defaults are: no port yet, no saved window, follow Ubuntu's theme, no registry", () => {
+test("the defaults are: no port yet, no saved window, follow Ubuntu's theme, quit when the window closes, no registry", () => {
   assert.deepEqual(defaultConfig(), {
     version: 1,
     port: null,
     window: null,
     theme: "system",
+    keepRunning: false,
     github: { owner: "", repo: "" },
   });
 });
@@ -95,6 +97,19 @@ test("maximized is only true when it says exactly true", () => {
 
 test("an unknown theme goes back to following Ubuntu, and the file counts as damaged", () => {
   assert.deepEqual(parseWith({ theme: "blue" }), { config: { ...FULL, theme: "system" }, damaged: true });
+});
+
+test("keep running is on only when it says exactly true, and anything but true or false counts as damaged", () => {
+  assert.deepEqual(parseWith({ keepRunning: false }), { config: { ...FULL, keepRunning: false }, damaged: false });
+  for (const keepRunning of ["true", 1, null, {}]) {
+    assert.deepEqual(parseWith({ keepRunning }), { config: { ...FULL, keepRunning: false }, damaged: true }, String(keepRunning));
+  }
+});
+
+test("a file saved before keep running existed quits when the window closes, and is not damaged", () => {
+  const { keepRunning, ...older } = FULL;
+  assert.equal(keepRunning, true);
+  assert.deepEqual(parseConfig(JSON.stringify(older)), { config: { ...FULL, keepRunning: false }, damaged: false });
 });
 
 test("a registry GitHub would refuse is forgotten, and the file counts as damaged", () => {

@@ -6,14 +6,18 @@
  * takes the same steps as a normal start, in folders of its own that are
  * removed afterwards, and then checks the result: it makes the app's keys,
  * starts the database and the server, checks that the server refuses a
- * request that does not come from the app, loads the sign-in page, and
- * waits for the server to make its tables. It prints what happened as JSON
- * and exits with 0 only when every step worked.
+ * request that does not come from the app, loads the sign-in page, waits
+ * for the server to make its tables, and turns start at sign-in on and off
+ * again. It prints what happened as JSON and exits with 0 only when every
+ * step worked.
  *
  * The keyring is left alone, because a test machine has none: the keys go
  * in a file only the account can read, as on a computer without a keyring.
+ * Start at sign-in is turned on and off in the self-test's own folders too,
+ * so what the person's own sign-in starts never changes.
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +25,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { Client } from "pg";
 
+import { AUTOSTART_ENTRY, autostartFileFor, isAutostartOn, setAutostart } from "../core/autostart";
 import type { AppPaths } from "../core/paths";
 import { metadataDatabaseUrl } from "../core/postgres-files";
 import { ensurePrivateDir } from "../core/private-dir";
@@ -37,7 +42,7 @@ import { openSecrets, startServerOnFreePort } from "./steps";
 type StepResult = { name: string; ok: boolean; detail: string };
 type Started = { postgres: RunningPostgres | null; server: RunningServer | null };
 
-const STEP_NAMES = ["secrets", "database", "server", "gate", "page", "tables"];
+const STEP_NAMES = ["secrets", "database", "server", "gate", "page", "tables", "autostart"];
 const REQUEST_TIMEOUT_MS = 15_000;
 /** The server makes its tables as soon as it starts. Half a minute is ample even on a slow test machine. */
 const TABLES_WAIT_MS = 30_000;
@@ -99,6 +104,29 @@ async function waitForTables(socketDir: string): Promise<number> {
   } finally {
     await client.end().catch((error: unknown) => logWarn("Could not close the self-test's database connection.", error));
   }
+}
+
+/**
+ * Turns start at sign-in on and off again, and checks the file in between:
+ * what it says, and that it has the mode every .desktop file has. Its name
+ * comes from the installed package.json, so this also proves the package
+ * still names the app grid entry.
+ */
+function checkAutostart(files: AppFiles, paths: AppPaths): void {
+  const file = autostartFileFor(files.packageJson, paths.autostartDir);
+  if (file === null) {
+    throw new Error("The app's package.json names no app grid entry, so start at sign-in has no file to write.");
+  }
+  if (isAutostartOn(file)) throw new Error("Start at sign-in was already on before the self-test turned it on.");
+  setAutostart(file, true);
+  if (!isAutostartOn(file)) throw new Error("Start at sign-in was still off after turning it on.");
+  if (fs.readFileSync(file, "utf8") !== AUTOSTART_ENTRY) {
+    throw new Error("The start-at-sign-in file does not say what the app wrote.");
+  }
+  const mode = fs.statSync(file).mode & 0o777;
+  if (mode !== 0o644) throw new Error(`The start-at-sign-in file has mode ${mode.toString(8)} instead of 644.`);
+  setAutostart(file, false);
+  if (fs.existsSync(file)) throw new Error("The start-at-sign-in file was still there after turning it off.");
 }
 
 async function runSteps(files: AppFiles, paths: AppPaths, build: BuildInfo, results: StepResult[], started: Started) {
@@ -206,13 +234,19 @@ export async function runSelfTest(files: AppFiles, paths: AppPaths, build: Build
   } finally {
     await stopAll(started);
   }
-  for (const name of STEP_NAMES) {
-    if (!results.some((result) => result.name === name)) {
-      results.push({ name, ok: false, detail: "not reached, because an earlier step failed" });
-    }
-  }
-  const ok = results.every((result) => result.ok);
-  process.stdout.write(`${JSON.stringify({ ok, steps: results }, null, 2)}\n`);
+  // It needs neither the database nor the server, so it runs whatever happened above.
+  await attempt(results, "autostart", async () => checkAutostart(files, paths), () => "turns start at sign-in on and off");
+  // In the order they run. A step that an earlier failure kept from running shows as not reached.
+  const steps = STEP_NAMES.map(
+    (name) =>
+      results.find((result) => result.name === name) ?? {
+        name,
+        ok: false,
+        detail: "not reached, because an earlier step failed",
+      },
+  );
+  const ok = steps.every((step) => step.ok);
+  process.stdout.write(`${JSON.stringify({ ok, steps }, null, 2)}\n`);
   if (!ok) printLogTails();
   return ok ? 0 : 1;
 }

@@ -4,8 +4,10 @@
  * The main window shows the splash while the app starts, then Schema Studio
  * itself, which the app's own server sends from this computer. It opens
  * where it was last left and at the size it was left, unless that place is
- * no longer on any screen. Settings is a small window of its own on top of
- * it.
+ * no longer on any screen. With Keep running on, closing it only hides it
+ * (src/main/desktop-app.ts), and a start in the background, at sign-in,
+ * leaves it hidden until it is opened again. Settings is a small window of
+ * its own on top of it.
  *
  * Both are locked down the same way: the page runs in Chromium's sandbox,
  * cannot reach Node.js, and only gets the few functions its preload script
@@ -88,7 +90,9 @@ function rememberPlace(window: BrowserWindow, save: (saved: SavedWindow) => void
   const saveNow = () => {
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    if (window.isDestroyed()) return;
+    // A hidden window, closed to the top bar or not shown yet, is not where
+    // the person left it, and on X11 it can report that it is not maximized.
+    if (window.isDestroyed() || !window.isVisible()) return;
     // The size it has when not maximized, so un-maximizing after a restart gives it back.
     const bounds = window.getNormalBounds();
     save({
@@ -116,6 +120,8 @@ export type MainWindowOptions = {
   /** Where the window was last left, if anywhere. */
   saved: SavedWindow | null;
   packaged: boolean;
+  /** Starts the window hidden, for a start in the background. Showing it is then up to the caller. */
+  hidden: boolean;
   /** Called with where the window is, a moment after it moves or changes size. */
   saveWindow(saved: SavedWindow): void;
 };
@@ -141,7 +147,7 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
   // this one. The title bar and the window switcher keep the app's own name,
   // the one the app grid and the dock show.
   window.on("page-title-updated", (event) => event.preventDefault());
-  showWhenReady(window, placement.maximized);
+  if (!options.hidden) showWhenReady(window, placement.maximized);
   rememberPlace(window, options.saveWindow);
   return window;
 }

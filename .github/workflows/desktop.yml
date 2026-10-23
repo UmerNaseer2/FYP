@@ -73,8 +73,15 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install dependencies
         run: npm ci
+      # The start-at-sign-in file's test checks the file with
+      # desktop-file-validate, the checker Ubuntu's own tools use. Here the
+      # test fails when the checker is missing, rather than skip it.
+      - name: Install desktop-file-validate
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends desktop-file-utils
       - name: Test
         run: npm test
+        env:
+          REQUIRE_DESKTOP_FILE_VALIDATE: "1"
 
   build:
     name: Build the .deb (${{ matrix.arch }})

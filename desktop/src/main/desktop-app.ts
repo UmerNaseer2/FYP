@@ -21,6 +21,14 @@
  * the person stays signed in for up to 30 days after the last successful
  * check, which is what lets the app work offline.
  *
+ * With Keep running on (Settings, Background), closing the window only
+ * hides it. The app goes on running with its icon in the top bar
+ * (src/main/tray.ts), so paired phones can still reach it, and it quits
+ * from the icon's menu, or from the File menu once the window is open
+ * again. Start at sign-in writes the file that has Ubuntu start the app
+ * when the person signs in (src/core/autostart.ts). With Keep running on as
+ * well, that start shows only the icon, not the window.
+ *
  * Quitting stops the server and then the database, cleanly, so nothing is
  * lost and nothing is left running.
  */
@@ -42,6 +50,7 @@ import {
   type WebContents,
 } from "electron";
 
+import { autostartFileFor, BACKGROUND_FLAG, isAutostartOn, setAutostart } from "../core/autostart";
 import { checkGithubSettings, readGithubSettingsInput } from "../core/github-settings";
 import {
   decideAfterRecheck,
@@ -53,6 +62,7 @@ import {
 import { displayPath, type AppPaths } from "../core/paths";
 import { parsePhoneLinkState, type PhoneLinkState } from "../core/phone-link-file";
 import { ensurePrivateDir, UnsafeDirError } from "../core/private-dir";
+import { trayStatus } from "../core/tray-status";
 import { GATE_HEADER } from "../server/desktop-gate";
 import {
   PHONE,
@@ -61,6 +71,7 @@ import {
   type SaveGithubResult,
   type SettingsView,
   type SignInResult,
+  type StartAtLoginResult,
   type StartupState,
   type StartupStep,
   type ThemeChoice,
@@ -85,6 +96,7 @@ import type { RunningServer } from "./server";
 import { StartupError } from "./startup-error";
 import { openSecrets, startServerOnFreePort, type OpenedSecrets } from "./steps";
 import { applyTheme, onThemeUpdated, windowBackground } from "./theme";
+import { AppTray } from "./tray";
 import { APP_PARTITION, createMainWindow, createSettingsWindow } from "./windows";
 
 export type DesktopAppOptions = {
@@ -95,6 +107,8 @@ export type DesktopAppOptions = {
   packaged: boolean;
   /** The person's home folder, which Settings writes as "~". */
   home: string;
+  /** Started at sign-in by the start-at-sign-in file (src/core/autostart.ts), rather than by someone opening it. */
+  background: boolean;
 };
 
 const START_FAILED_TITLE = "Schema Studio could not start";
@@ -178,17 +192,31 @@ function logSignOut(reason: SignOutReason): void {
   );
 }
 
+/**
+ * Has the app start again once this copy has quit. The new copy opens its
+ * window even when this one was started at sign-in, since someone asked for
+ * the restart.
+ */
+function relaunchWithWindow(): void {
+  app.relaunch({ args: process.argv.slice(1).filter((arg) => arg !== BACKGROUND_FLAG) });
+}
+
 export class DesktopApp {
   private readonly files: AppFiles;
   private readonly paths: AppPaths;
   private readonly build: BuildInfo;
   private readonly packaged: boolean;
   private readonly home: string;
+  private readonly background: boolean;
   /** Proves to the server that a request comes from this app's own windows. A new one every time the app starts. */
   private readonly gateToken = crypto.randomBytes(32).toString("base64url");
   private readonly config: ConfigStore;
   /** The Appearance choice in use. It still applies for now when saving it failed. */
   private theme: ThemeChoice;
+  /** Keep running, as chosen. Like the theme, it still applies for now when saving it failed. */
+  private keepRunning: boolean;
+  /** Where the start-at-sign-in file goes, or null when this copy cannot start at sign-in. */
+  private readonly autostartFile: string | null;
   /** Aborted when the app quits, which stops whatever step of starting is under way. */
   private readonly stopStarting = new AbortController();
   private ses: Session | null = null;
@@ -202,6 +230,8 @@ export class DesktopApp {
   private phoneLinkProblem: string | null = null;
   private mainWindow: BrowserWindow | null = null;
   private settingsWindow: BrowserWindow | null = null;
+  /** The icon in the top bar, there while Keep running is on. */
+  private tray: AppTray | null = null;
   private startup: StartupState = { phase: "starting", step: "secrets" };
   private startupRun: Promise<void> = Promise.resolve();
   /** Whether starting got as far as the first page. */
@@ -222,9 +252,12 @@ export class DesktopApp {
     this.build = options.build;
     this.packaged = options.packaged;
     this.home = options.home;
+    this.background = options.background;
     addLogSecret(this.gateToken);
     this.config = openConfig(options.paths);
     this.theme = this.config.get().theme;
+    this.keepRunning = this.config.get().keepRunning;
+    this.autostartFile = this.findAutostartFile();
   }
 
   /** Opens the window, shows the splash and starts the app. Called once, when Electron is ready. */
@@ -260,24 +293,33 @@ export class DesktopApp {
         if (window !== null && !window.isDestroyed()) window.setBackgroundColor(color);
       }
     });
-    // A sign-in can end while the computer sleeps.
     powerMonitor.on("resume", () => {
+      // A sign-in can end while the computer sleeps.
       void this.recheckNow();
+      // A wait to try the relay again does not count the time asleep, and
+      // the network may well be back by now. Trying at once gets paired
+      // phones back sooner.
+      if (this.phoneLink?.status().state === "waiting") this.phoneLink.connectNow();
     });
     app.on("child-process-gone", (_event, details) => {
       if (details.reason !== "clean-exit") logWarn(`A ${details.type} process stopped (${details.reason}).`);
     });
 
     this.refreshMenu();
+    if (this.keepRunning) this.showTray();
     this.openMainWindow();
     this.startupRun = this.runStartup().catch((error: unknown) => logError("Starting went wrong unexpectedly.", error));
   }
 
-  /** Brings the main window to the front, as when Schema Studio is opened again while it runs. */
+  /** Brings the main window to the front, as when Schema Studio is opened again while it runs, or from its icon. */
   focusWindow(): void {
     const window = this.mainWindow;
     if (window === null || window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
+    // A window closed to the top bar, or never shown after a start in the
+    // background, comes back maximized if it was left that way. maximize()
+    // shows it as well.
+    else if (!window.isVisible() && this.config.get().window?.maximized === true) window.maximize();
     window.show();
     window.focus();
   }
@@ -305,6 +347,8 @@ export class DesktopApp {
         get: () => this.settingsView(),
         saveGithub: (input) => this.saveGithub(input),
         setTheme: (choice) => this.setTheme(choice),
+        setKeepRunning: (on) => this.setKeepRunning(on),
+        setStartAtLogin: (on) => this.setStartAtLogin(on),
         openLogs: () => void this.openLogs(),
         close: () => this.settingsWindow?.close(),
       },
@@ -327,11 +371,28 @@ export class DesktopApp {
       files: this.files,
       saved: this.config.get().window,
       packaged: this.packaged,
+      // Started at sign-in with Keep running on, only the icon shows.
+      hidden: this.background && this.keepRunning,
       saveWindow: (saved) => {
         this.config.save({ ...this.config.get(), window: saved });
       },
     });
     this.mainWindow = window;
+    // With Keep running on, closing the window only hides it, and the app
+    // goes on running with its icon in the top bar. Once the app is
+    // quitting, the window closes for real.
+    window.on("close", (event) => {
+      // Settings belongs to the window, so it goes too, whether the window
+      // closes or only hides. destroy() rather than close(), because on a
+      // Mac, closing the window puts its Settings sheet away before this
+      // runs, and close() does nothing to a sheet that is not on show.
+      // Settings has nothing to finish as it closes, and its closed event,
+      // which cancels any pairing code on show, still fires.
+      this.settingsWindow?.destroy();
+      if (this.quitting || !this.keepRunning) return;
+      event.preventDefault();
+      window.hide();
+    });
     window.on("closed", () => {
       this.mainWindow = null;
     });
@@ -437,13 +498,17 @@ export class DesktopApp {
     // The window may be showing a server page that failed to load, rather than the splash.
     if (this.splashContents() !== null) this.pushStartup();
     else this.showSplash();
+    // With the window hidden (a start in the background, or a window closed
+    // to the top bar while the app started), the failure would go unseen.
+    const window = this.mainWindow;
+    if (window !== null && !window.isDestroyed() && !window.isVisible()) this.focusWindow();
   }
 
   /** "Try again" on the splash: a fresh start is the surest way to clear whatever went wrong. */
   private retry(): void {
     if (this.startup.phase !== "failed" || this.quitting) return;
     logInfo("Starting again, as asked.");
-    app.relaunch();
+    relaunchWithWindow();
     app.quit();
   }
 
@@ -591,9 +656,11 @@ export class DesktopApp {
     }
   }
 
-  /** Tells Settings, if it is open, how the phone link stands now. */
+  /** Tells Settings, if it is open, and the icon's menu how the phone link stands now. */
   private phoneChanged(): void {
-    liveContents(this.settingsWindow)?.send(PHONE.changed, phoneView(this.phoneLink, this.phoneLinkProblem));
+    const view = phoneView(this.phoneLink, this.phoneLinkProblem);
+    liveContents(this.settingsWindow)?.send(PHONE.changed, view);
+    this.tray?.update(trayStatus(view));
   }
 
   /** The saved connections, for Settings to choose which ones phones may see. The server lists them for whoever is signed in. */
@@ -677,7 +744,7 @@ export class DesktopApp {
         await this.openLogs();
         continue;
       }
-      if (response === 0) app.relaunch();
+      if (response === 0) relaunchWithWindow();
       app.quit();
       return;
     }
@@ -706,10 +773,11 @@ export class DesktopApp {
     else app.quit();
   }
 
-  /** A message box on top of the main window, or on its own when the window has closed. */
+  /** A message box on top of the main window, or on its own when the window is hidden or has closed. */
   private messageBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
     const window = this.mainWindow;
-    return window !== null && !window.isDestroyed()
+    // A box on top of a hidden window would be hidden with it.
+    return window !== null && !window.isDestroyed() && window.isVisible()
       ? dialog.showMessageBox(window, options)
       : dialog.showMessageBox(options);
   }
@@ -735,6 +803,8 @@ export class DesktopApp {
 
   private async cleanUp(): Promise<void> {
     this.quitting = true;
+    // The icon goes at once, rather than once the database has stopped.
+    this.hideTray();
     const hardStop = setTimeout(() => {
       logWarn("Schema Studio took too long to stop, so it stopped without waiting any longer.");
       app.exit(0);
@@ -771,6 +841,82 @@ export class DesktopApp {
     app.exit(0);
   }
 
+  // Keep running, and starting at sign-in
+
+  private setKeepRunning(on: boolean): void {
+    this.keepRunning = on;
+    // ConfigStore logs a failure to save. The choice still applies until the app quits.
+    this.config.save({ ...this.config.get(), keepRunning: on });
+    logInfo(`Keep running is now ${on ? "on" : "off"}.`);
+    if (on) this.showTray();
+    else this.hideTray();
+  }
+
+  /** Puts the icon in the top bar, unless it is there already. */
+  private showTray(): void {
+    if (this.tray !== null) return;
+    try {
+      this.tray = new AppTray(this.files.icon, trayStatus(phoneView(this.phoneLink, this.phoneLinkProblem)), {
+        open: () => this.focusWindow(),
+        quit: () => app.quit(),
+      });
+    } catch (error) {
+      // The app grid still opens the window again.
+      logWarn("Could not put Schema Studio's icon in the top bar.", error);
+    }
+  }
+
+  private hideTray(): void {
+    this.tray?.destroy();
+    this.tray = null;
+  }
+
+  /**
+   * Where the start-at-sign-in file goes, or null when this copy cannot start
+   * at sign-in. A copy run from the source code has no installed command for
+   * the file to start, and only Linux reads the file.
+   */
+  private findAutostartFile(): string | null {
+    if (!this.packaged || process.platform !== "linux") return null;
+    try {
+      const file = autostartFileFor(this.files.packageJson, this.paths.autostartDir);
+      if (file === null) logWarn("package.json names no app grid entry, so Schema Studio cannot start at sign-in.");
+      return file;
+    } catch (error) {
+      logWarn("Could not read package.json, so Schema Studio cannot start at sign-in.", error);
+      return null;
+    }
+  }
+
+  /** Whether the app starts at sign-in, or null when this copy cannot. */
+  private startAtLogin(): boolean | null {
+    const file = this.autostartFile;
+    if (file === null) return null;
+    try {
+      return isAutostartOn(file);
+    } catch (error) {
+      // Shown as off. Turning it on then writes the file afresh, or says why it cannot.
+      logWarn(`Could not read ${file}.`, error);
+      return false;
+    }
+  }
+
+  private setStartAtLogin(on: boolean): StartAtLoginResult {
+    const file = this.autostartFile;
+    if (file === null) return { ok: false, message: "Only an installed copy of Schema Studio can start when you sign in." };
+    try {
+      setAutostart(file, on);
+    } catch (error) {
+      logError(`Could not turn start at sign-in ${on ? "on" : "off"}.`, error);
+      return {
+        ok: false,
+        message: `Schema Studio could not change this. Check that you can write to ${displayPath(this.paths.autostartDir, this.home)}, then try again.`,
+      };
+    }
+    logInfo(`Start at sign-in is now ${on ? "on" : "off"}.`);
+    return { ok: true };
+  }
+
   // Settings, the menu and Help
 
   private openSettings(): void {
@@ -797,6 +943,8 @@ export class DesktopApp {
     return {
       github: { owner: github.owner, repo: github.repo, hasToken: opened.secrets.githubToken !== null },
       theme: this.theme,
+      keepRunning: this.keepRunning,
+      startAtLogin: this.startAtLogin(),
       secretsKeptIn: opened.protection === "keyring" ? "keyring" : "file",
       paths: {
         data: displayPath(this.paths.data, this.home),
@@ -905,12 +1053,18 @@ export class DesktopApp {
     if (this.databaseGone !== null) database = `stopped unexpectedly: ${this.databaseGone}`;
     let serverState = server === null ? "not started" : `running on port ${server.port}`;
     if (this.serverGone !== null) serverState = `stopped unexpectedly: ${this.serverGone}`;
+    const startsAtLogin = this.startAtLogin();
+    let startAtLogin = "not available in this copy";
+    if (startsAtLogin !== null) startAtLogin = startsAtLogin ? "on" : "off";
     return [
       ["Starting", progress],
+      ["Started", this.background ? "at sign-in" : "when opened"],
       ["Database", database],
       ["Server", serverState],
       ["Microsoft sign-in", signIn],
       ["Appearance", this.theme],
+      ["Keep running", this.keepRunning ? "on" : "off"],
+      ["Start at sign-in", startAtLogin],
     ];
   }
 

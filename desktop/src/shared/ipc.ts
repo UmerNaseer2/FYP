@@ -67,6 +67,8 @@ export const SETTINGS = {
   get: "settings:get",
   saveGithub: "settings:save-github",
   setTheme: "settings:set-theme",
+  setKeepRunning: "settings:set-keep-running",
+  setStartAtLogin: "settings:set-start-at-login",
   openLogs: "settings:open-logs",
   close: "settings:close",
 } as const;
@@ -114,6 +116,10 @@ export interface StartupApi {
 export type SettingsView = {
   github: { owner: string; repo: string; hasToken: boolean };
   theme: ThemeChoice;
+  /** Whether closing the window leaves the app running, with its icon in the top bar. */
+  keepRunning: boolean;
+  /** Whether the app starts at sign-in, or null when this copy cannot, such as one run from the source code. */
+  startAtLogin: boolean | null;
   /** Where the app keeps its secrets: the system keyring, or a private file. */
   secretsKeptIn: "keyring" | "file";
   paths: { data: string; logs: string };
@@ -132,11 +138,16 @@ export type SaveGithubResult =
   | { ok: true; view: SettingsView }
   | { ok: false; field: "owner" | "repo" | "token" | null; message: string };
 
+/** The answer to turning start at sign-in on or off: done, or why not. */
+export type StartAtLoginResult = { ok: true } | { ok: false; message: string };
+
 /** What the Settings preload puts on `window.schemaStudioSettings`. */
 export interface SettingsApi {
   get(): Promise<SettingsView>;
   saveGithub(input: GithubSettingsInput): Promise<SaveGithubResult>;
   setTheme(choice: ThemeChoice): void;
+  setKeepRunning(on: boolean): void;
+  setStartAtLogin(on: boolean): Promise<StartAtLoginResult>;
   openLogs(): void;
   close(): void;
 }

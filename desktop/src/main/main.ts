@@ -6,7 +6,9 @@
  * out of the environment, so the person's own (PGHOST, PGPASSWORD and the
  * like) can never reach the app's database. Once Electron is ready, it
  * either runs the self-test (`schema-studio --self-test`, used by the
- * install tests) or hands over to DesktopApp.
+ * install tests) or hands over to DesktopApp. The start-at-sign-in file
+ * starts it with --background (src/core/autostart.ts), which with Keep
+ * running on leaves the window hidden.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -14,6 +16,7 @@ import path from "node:path";
 
 import { app, dialog } from "electron";
 
+import { BACKGROUND_FLAG } from "../core/autostart";
 import { resolveAppPaths } from "../core/paths";
 import { appFiles } from "./app-files";
 import { readBuildInfo, versionLabel } from "./build-info";
@@ -34,6 +37,8 @@ if (process.getuid?.() === 0) {
 }
 
 const selfTest = process.argv.includes("--self-test");
+/** Started at sign-in by the start-at-sign-in file, rather than by someone opening it. */
+const background = process.argv.includes(BACKGROUND_FLAG);
 
 for (const name of Object.keys(process.env)) {
   if (name.startsWith("PG")) delete process.env[name];
@@ -61,6 +66,16 @@ app.setAppLogsPath(paths.logs);
 
 let desktop: DesktopApp | null = null;
 
+/**
+ * Whether a second copy, from what it sent along, was started at sign-in.
+ * It finds this copy already running, say because the person opened Schema
+ * Studio before the sign-in got round to starting it, and then it should
+ * not bring a window up that nobody asked for.
+ */
+function startedInBackground(data: unknown): boolean {
+  return typeof data === "object" && data !== null && (data as { background?: unknown }).background === true;
+}
+
 async function ready(): Promise<void> {
   initLog(paths.logs, { echo: !app.isPackaged || selfTest });
   const files = appFiles();
@@ -76,12 +91,13 @@ async function ready(): Promise<void> {
     app.exit(code);
     return;
   }
-  desktop = new DesktopApp({ files, paths, build, packaged: app.isPackaged, home: os.homedir() });
+  desktop = new DesktopApp({ files, paths, build, packaged: app.isPackaged, home: os.homedir(), background });
   desktop.start();
 }
 
-if (!selfTest && !app.requestSingleInstanceLock()) {
-  // Schema Studio is already open. That copy brings its window to the front.
+if (!selfTest && !app.requestSingleInstanceLock({ background })) {
+  // Schema Studio is already open. That copy brings its window to the front,
+  // unless this one was started at sign-in.
   app.quit();
 } else {
   registerAppScheme();
@@ -90,7 +106,9 @@ if (!selfTest && !app.requestSingleInstanceLock()) {
   process.on("SIGINT", () => app.quit());
   process.on("unhandledRejection", (reason) => logError("Something went wrong in the background.", reason));
   app.on("window-all-closed", () => app.quit());
-  app.on("second-instance", () => desktop?.focusWindow());
+  app.on("second-instance", (_event, _argv, _workingDirectory, data) => {
+    if (!startedInBackground(data)) desktop?.focusWindow();
+  });
   app
     .whenReady()
     .then(ready)

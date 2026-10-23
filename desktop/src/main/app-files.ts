@@ -16,6 +16,8 @@ import { app } from "electron";
 export type AppFiles = {
   /** app.asar, or the desktop folder in a development run. */
   root: string;
+  /** The app's package.json, which names its app grid entry (src/core/autostart.ts). */
+  packageJson: string;
   /** splash.html, settings.html and app.css. */
   renderer: string;
   /** splash.js, settings.js and settings-phone.js, compiled from src/renderer. */
@@ -45,6 +47,7 @@ export function appFiles(): AppFiles {
   const resources = process.resourcesPath;
   return {
     root,
+    packageJson: path.join(root, "package.json"),
     renderer: path.join(root, "renderer"),
     rendererScripts: path.join(root, "out", "renderer"),
     assets: path.join(root, "assets"),

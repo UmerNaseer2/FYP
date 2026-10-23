@@ -34,6 +34,12 @@ from a `.deb` package.
   `relay/README.md`), which passes it on but cannot read it. The phone link's
   keys are kept the same way as the others. The page the phones open is still
   being built.
+- Can keep running with its window closed, so paired phones can still reach
+  it (File, then Settings, then Background). Its icon in the top bar opens
+  the window again and quits the app, and opening Schema Studio from the app
+  grid brings the window back too. It can also start when you sign in to
+  Ubuntu, and with Keep running on as well it then starts with only its icon
+  showing.
 
 ## Supported systems
 
@@ -71,11 +77,15 @@ carries on where it left off.
 | `~/.config/schema-studio` | Settings (`config.json`), the saved Microsoft sign-in (`auth.json`), the phone link's keys and paired phones (`phone-link.json`) and the window's own browser profile |
 | `~/.local/share/schema-studio` | The app's own PostgreSQL database and the keys that protect what is saved in it (`secrets.json`) |
 | `~/.local/state/schema-studio/logs` | Logs, which can be deleted at any time |
+| `~/.config/autostart` | Only while start at sign-in is on: `io.github.umernaseer2.SchemaStudio.desktop`, the file that has Ubuntu start Schema Studio when you sign in. The folder is Ubuntu's, and other apps keep files in it too |
 
 Back up or move `~/.local/share/schema-studio` as a whole: the database is no
-use without its keys. The three folders follow `XDG_CONFIG_HOME`,
-`XDG_DATA_HOME` and `XDG_STATE_HOME` when those are set. To start completely
-fresh, quit Schema Studio and delete all three.
+use without its keys. The folders follow `XDG_CONFIG_HOME`, `XDG_DATA_HOME`
+and `XDG_STATE_HOME` when those are set. To start completely fresh, quit
+Schema Studio and delete the three `schema-studio` folders. Removing the app
+leaves the start-at-sign-in file behind if start at sign-in was on, but
+Ubuntu skips the file once the app is gone. Turning start at sign-in off
+before removing the app takes the file away.
 
 ## When something goes wrong
 
@@ -179,9 +189,10 @@ schema-studio --self-test
 It runs the same steps as a normal start, in folders of its own that are
 removed afterwards: it makes the app's keys, starts the database and the
 server, checks that the server turns away a request that is not from the app,
-loads the sign-in page and waits for the tables. It prints a JSON report and
-exits with 0 only when every step worked. It leaves the keyring alone. On a
-computer without a screen, run it under `xvfb-run`.
+loads the sign-in page, waits for the tables, and turns start at sign-in on
+and off in its own folders. It prints a JSON report and exits with 0 only
+when every step worked. It leaves the keyring alone. On a computer without a
+screen, run it under `xvfb-run`.
 
 ## The icon
 
@@ -191,8 +202,8 @@ both.
 
 ## How it fits together
 
-- `src/main` is the app itself: its windows and menus, the sign-in, the
-  keyring, and starting PostgreSQL and the server.
+- `src/main` is the app itself: its windows, menus and top bar icon, the
+  sign-in, the keyring, and starting PostgreSQL and the server.
 - `src/server` runs inside the server's own process. `desktop-gate.ts` turns
   away every request that does not come from this computer, is not addressed
   to `127.0.0.1` on the app's port, or does not carry the token the app made

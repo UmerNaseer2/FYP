@@ -17,6 +17,7 @@ test("puts everything in the usual Ubuntu folders when no XDG folder is set", ()
     authFile: "/home/sam/.config/schema-studio/auth.json",
     secretsFile: "/home/sam/.local/share/schema-studio/secrets.json",
     phoneLinkFile: "/home/sam/.config/schema-studio/phone-link.json",
+    autostartDir: "/home/sam/.config/autostart",
   });
 });
 
@@ -34,6 +35,7 @@ test("follows XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_STATE_HOME", () => {
     authFile: "/xdg/config/schema-studio/auth.json",
     secretsFile: "/xdg/data/schema-studio/secrets.json",
     phoneLinkFile: "/xdg/config/schema-studio/phone-link.json",
+    autostartDir: "/xdg/config/autostart",
   });
 });
 
@@ -43,6 +45,7 @@ test("ignores an XDG folder that is relative or empty, as the XDG rules say to",
     "/home/sam",
   );
   assert.equal(paths.config, "/home/sam/.config/schema-studio");
+  assert.equal(paths.autostartDir, "/home/sam/.config/autostart");
   assert.equal(paths.data, "/home/sam/.local/share/schema-studio");
   assert.equal(paths.logs, "/home/sam/.local/state/schema-studio/logs");
 });

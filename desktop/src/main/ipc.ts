@@ -27,6 +27,7 @@ import {
   type SetRelayResult,
   type SettingsView,
   type SignInResult,
+  type StartAtLoginResult,
   type StartupState,
   type ThemeChoice,
 } from "../shared/ipc";
@@ -64,6 +65,8 @@ export type IpcHandlers = {
     /** Takes what the page sent as it is; it is checked before anything is saved. */
     saveGithub(input: unknown): SaveGithubResult;
     setTheme(choice: ThemeChoice): void;
+    setKeepRunning(on: boolean): void;
+    setStartAtLogin(on: boolean): StartAtLoginResult;
     openLogs(): void;
     close(): void;
   };
@@ -160,6 +163,13 @@ export function registerIpc(handlers: IpcHandlers): void {
   handle(settings, SETTINGS.saveGithub, (input) => handlers.settings.saveGithub(input));
   on(settings, SETTINGS.setTheme, (choice) => {
     if (isThemeChoice(choice)) handlers.settings.setTheme(choice);
+  });
+  on(settings, SETTINGS.setKeepRunning, (keep) => {
+    if (typeof keep === "boolean") handlers.settings.setKeepRunning(keep);
+  });
+  handle(settings, SETTINGS.setStartAtLogin, (start) => {
+    if (typeof start !== "boolean") throw new Error(REFUSED);
+    return handlers.settings.setStartAtLogin(start);
   });
   on(settings, SETTINGS.openLogs, () => handlers.settings.openLogs());
   on(settings, SETTINGS.close, () => handlers.settings.close());

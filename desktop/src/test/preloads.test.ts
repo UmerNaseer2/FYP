@@ -137,6 +137,8 @@ test("the Settings page gets its own messages, and no other page gets them", asy
   await settings.get("extra");
   await settings.saveGithub(input, "extra");
   settings.setTheme("light", "extra");
+  settings.setKeepRunning(true, "extra");
+  await settings.setStartAtLogin(true, "extra");
   settings.openLogs("extra");
   settings.close("extra");
 
@@ -144,6 +146,8 @@ test("the Settings page gets its own messages, and no other page gets them", asy
     { kind: "invoke", channel: SETTINGS.get, args: [] },
     { kind: "invoke", channel: SETTINGS.saveGithub, args: [input] },
     { kind: "send", channel: SETTINGS.setTheme, args: ["light"] },
+    { kind: "send", channel: SETTINGS.setKeepRunning, args: [true] },
+    { kind: "invoke", channel: SETTINGS.setStartAtLogin, args: [true] },
     { kind: "send", channel: SETTINGS.openLogs, args: [] },
     { kind: "send", channel: SETTINGS.close, args: [] },
   ]);

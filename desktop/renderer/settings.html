@@ -1,10 +1,11 @@
 <!doctype html>
 <!--
-  Settings: the GitHub registry, the phone link, the theme, and where the
-  app keeps its files. src/renderer/settings.ts fills it in and sends each
-  change to the main process, and src/renderer/settings-phone.ts does the
-  same for the Phone section. The page is served with a strict security
-  policy (src/main/protocol.ts), so it has no inline script or style.
+  Settings: the GitHub registry, the phone link, what the app does in the
+  background, the theme, and where the app keeps its files.
+  src/renderer/settings.ts fills it in and sends each change to the main
+  process, and src/renderer/settings-phone.ts does the same for the Phone
+  section. The page is served with a strict security policy
+  (src/main/protocol.ts), so it has no inline script or style.
 -->
 <html lang="en">
   <head>
@@ -140,6 +141,27 @@
             <div id="phone-phones" class="list" role="list" aria-labelledby="phone-phones-title" hidden></div>
             <p id="phone-phones-empty" class="list row hint">No phones are paired yet.</p>
           </div>
+        </section>
+
+        <section class="group" aria-labelledby="background-title">
+          <h2 id="background-title" class="group-title">Background</h2>
+          <div class="list">
+            <label class="row row-choice">
+              <input id="keep-running" type="checkbox">
+              <span class="choice-text">
+                <span class="choice-name">Keep running when the window is closed</span>
+                <span class="hint">Paired phones can still connect. Open it again from its icon in the top bar, or from the app grid.</span>
+              </span>
+            </label>
+            <label class="row row-choice">
+              <input id="start-at-login" type="checkbox" aria-describedby="start-at-login-error">
+              <span class="choice-text">
+                <span class="choice-name">Start when you sign in to Ubuntu</span>
+                <span id="start-at-login-hint" class="hint"></span>
+              </span>
+            </label>
+          </div>
+          <p id="start-at-login-error" class="field-error" role="alert" hidden></p>
         </section>
 
         <section class="group" aria-labelledby="appearance-title">

@@ -1,6 +1,7 @@
 /**
  * Keeps config.json: the server's port, the window's size and place, the
- * theme, and which GitHub repository holds the schema registry.
+ * theme, whether closing the window keeps the app running, and which GitHub
+ * repository holds the schema registry.
  *
  * Reading never stops the app: a missing file gives the defaults, and a
  * damaged one keeps what it can (see src/core/config.ts) and says so in the

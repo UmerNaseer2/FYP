@@ -503,6 +503,15 @@ input {
   background: var(--surface-2);
 }
 
+/* A choice this copy cannot make, such as start at sign-in when run from the source code, does not light up. */
+.row-choice:has(input:disabled):hover {
+  background: none;
+}
+
+.row-choice:has(input:disabled) .choice-name {
+  color: var(--text-2);
+}
+
 .row-choice input {
   width: 16px;
   height: 16px;

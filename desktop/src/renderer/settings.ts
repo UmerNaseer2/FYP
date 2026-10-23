@@ -2,11 +2,13 @@
  * The Settings window (renderer/settings.html).
  *
  * It shows what the main process sends when the page loads, and sends each
- * change back: the theme as soon as it is picked, and the GitHub registry
- * (the repository Schema Studio publishes scripts to, and the token it uses
- * there) when Save is pressed. The main process checks the GitHub boxes
- * again before it saves anything and says which box is wrong, and the page
- * shows that message under the box.
+ * change back: the theme and the Background boxes as soon as they are
+ * picked, and the GitHub registry (the repository Schema Studio publishes
+ * scripts to, and the token it uses there) when Save is pressed. The main
+ * process checks the GitHub boxes again before it saves anything and says
+ * which box is wrong, and the page shows that message under the box. When
+ * start at sign-in cannot be changed, its box goes back and the reason
+ * shows under it.
  *
  * The token is never shown here or sent to this page; the page only knows
  * whether one is saved. A new token goes from its box straight to the main
@@ -32,6 +34,9 @@
     keyring: "In the system keyring",
     file: "In a file only your account can read, because no keyring was available",
   };
+  const START_HINT = "With Keep running on too, it starts with only its icon in the top bar.";
+  const START_UNAVAILABLE = "Only an installed copy of Schema Studio can start when you sign in.";
+  const START_NOT_CHANGED = "Schema Studio could not change this. Try again, and if it keeps happening, the logs say why.";
 
   function element<T extends HTMLElement>(id: string): T {
     const found = document.getElementById(id);
@@ -67,6 +72,10 @@
   const formError = element<HTMLParagraphElement>("github-error");
   const saveStatus = element<HTMLParagraphElement>("github-status");
   const saveButton = element<HTMLButtonElement>("github-save");
+  const keepRunning = element<HTMLInputElement>("keep-running");
+  const startAtLogin = element<HTMLInputElement>("start-at-login");
+  const startAtLoginHint = element<HTMLElement>("start-at-login-hint");
+  const startAtLoginError = element<HTMLParagraphElement>("start-at-login-error");
   const themeInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="theme"]'));
   const keptIn = element<HTMLElement>("secrets-kept-in");
   const dataPath = element<HTMLElement>("data-path");
@@ -78,6 +87,8 @@
   let hasToken = false;
   let tokenMode: TokenMode = "keep";
   let saving = false;
+  /** Start at sign-in is being changed, and the main process has not answered yet. */
+  let changingStart = false;
 
   /** Shows the token controls that fit what is saved now and what Save would do. */
   function showToken(): void {
@@ -141,6 +152,10 @@
     inputs.repo.value = view.github.repo;
     hasToken = view.github.hasToken;
     showToken();
+    keepRunning.checked = view.keepRunning;
+    startAtLogin.checked = view.startAtLogin === true;
+    startAtLogin.disabled = view.startAtLogin === null;
+    startAtLoginHint.textContent = view.startAtLogin === null ? START_UNAVAILABLE : START_HINT;
     for (const input of themeInputs) input.checked = input.value === view.theme;
     keptIn.textContent = KEPT_IN[view.secretsKeptIn];
     dataPath.textContent = view.paths.data;
@@ -193,6 +208,28 @@
     }
   }
 
+  /** Turns start at sign-in on or off as its box now says, and puts the box back if that fails. */
+  async function changeStartAtLogin(api: SettingsApi): Promise<void> {
+    const want = startAtLogin.checked;
+    changingStart = true;
+    startAtLoginError.hidden = true;
+    startAtLoginError.textContent = "";
+    let problem: string | null = null;
+    try {
+      const result = await api.setStartAtLogin(want);
+      if (!result.ok) problem = result.message;
+    } catch {
+      problem = START_NOT_CHANGED;
+    } finally {
+      changingStart = false;
+    }
+    if (problem === null) return;
+    startAtLogin.checked = !want;
+    // Shown before the text goes in, so that a screen reader announces it.
+    startAtLoginError.hidden = false;
+    startAtLoginError.textContent = problem;
+  }
+
   /** Makes the Close button and the Escape key call `close`. */
   function closeOn(close: () => void): void {
     closeButton.addEventListener("click", () => close());
@@ -219,6 +256,13 @@
     tokenParts.remove.addEventListener("click", () => setTokenMode("remove"));
     tokenParts.cancel.addEventListener("click", () => setTokenMode("keep"));
     tokenParts.keep.addEventListener("click", () => setTokenMode("keep"));
+    keepRunning.addEventListener("change", () => api.setKeepRunning(keepRunning.checked));
+    startAtLogin.addEventListener("click", (event) => {
+      // A second change before the first is answered could leave the box
+      // saying the opposite of what was done, so it has to wait.
+      if (changingStart) event.preventDefault();
+    });
+    startAtLogin.addEventListener("change", () => void changeStartAtLogin(api));
     for (const input of themeInputs) {
       input.addEventListener("change", () => {
         if (input.checked) api.setTheme(input.value as ThemeChoice);

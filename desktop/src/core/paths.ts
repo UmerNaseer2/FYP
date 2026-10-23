@@ -18,6 +18,12 @@
  * XDG_STATE_HOME. The rules say a relative path in one of those variables is
  * invalid and must be ignored, so it is.
  *
+ * One more folder belongs to Ubuntu rather than to the app:
+ * ~/.config/autostart, which lists the programs to start when someone signs
+ * in, and which moves with XDG_CONFIG_HOME too. Other programs keep their
+ * files there as well. The app puts a file of its own there only while start
+ * at sign-in is turned on in Settings (src/core/autostart.ts).
+ *
  * Pure: everything comes in as arguments, so the tests can try any setup.
  */
 import path from "node:path";
@@ -37,6 +43,8 @@ export type AppPaths = {
   secretsFile: string;
   /** The paired phones and the phone link's own keys (src/core/phone-link-file.ts). */
   phoneLinkFile: string;
+  /** Ubuntu's folder of programs to start at sign-in, which other programs share (src/core/autostart.ts). */
+  autostartDir: string;
 };
 
 /** The XDG folder from `value`, or the default under the home folder. */
@@ -46,7 +54,8 @@ function xdgHome(value: string | undefined, home: string, fallback: string): str
 }
 
 export function resolveAppPaths(env: Record<string, string | undefined>, home: string): AppPaths {
-  const config = path.join(xdgHome(env.XDG_CONFIG_HOME, home, ".config"), APP_DIR_NAME);
+  const configHome = xdgHome(env.XDG_CONFIG_HOME, home, ".config");
+  const config = path.join(configHome, APP_DIR_NAME);
   const data = path.join(xdgHome(env.XDG_DATA_HOME, home, ".local/share"), APP_DIR_NAME);
   const state = path.join(xdgHome(env.XDG_STATE_HOME, home, ".local/state"), APP_DIR_NAME);
   return {
@@ -58,6 +67,7 @@ export function resolveAppPaths(env: Record<string, string | undefined>, home: s
     authFile: path.join(config, "auth.json"),
     secretsFile: path.join(data, "secrets.json"),
     phoneLinkFile: path.join(config, "phone-link.json"),
+    autostartDir: path.join(configHome, "autostart"),
   };
 }
 

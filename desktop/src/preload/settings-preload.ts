@@ -3,8 +3,9 @@
  * the main process to do.
  *
  * Only app://schema-studio/settings.html gets anything. It may read the
- * settings, save the GitHub registry, change the theme, open the logs and
- * close the window, and its Phone section runs the phone link through
+ * settings, save the GitHub registry, change the theme, choose whether the
+ * app keeps running with its window closed and starts at sign-in, open the
+ * logs and close the window, and its Phone section runs the phone link through
  * `window.schemaStudioPhone`. As in the main window's preload (app-preload.ts), the
  * main process checks every message again before it acts on it, the message
  * names are repeated here because a sandboxed preload can load nothing but
@@ -19,6 +20,8 @@
     get: "settings:get",
     saveGithub: "settings:save-github",
     setTheme: "settings:set-theme",
+    setKeepRunning: "settings:set-keep-running",
+    setStartAtLogin: "settings:set-start-at-login",
     openLogs: "settings:open-logs",
     close: "settings:close",
   };
@@ -44,6 +47,8 @@
       get: () => ipcRenderer.invoke(SETTINGS.get),
       saveGithub: (input) => ipcRenderer.invoke(SETTINGS.saveGithub, input),
       setTheme: (choice) => ipcRenderer.send(SETTINGS.setTheme, choice),
+      setKeepRunning: (on) => ipcRenderer.send(SETTINGS.setKeepRunning, on),
+      setStartAtLogin: (on) => ipcRenderer.invoke(SETTINGS.setStartAtLogin, on),
       openLogs: () => ipcRenderer.send(SETTINGS.openLogs),
       close: () => ipcRenderer.send(SETTINGS.close),
     };
