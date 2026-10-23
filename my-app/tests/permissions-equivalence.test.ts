@@ -80,6 +80,7 @@ const ADDED: Record<string, Gate> = {
   "POST /api/admin/roles": { kind: "permission", keys: ["roles:create"] },
   "PUT /api/admin/roles": { kind: "permission", keys: ["roles:update"] },
   "DELETE /api/admin/roles": { kind: "permission", keys: ["roles:delete"] },
+  "POST /api/compare/phone": { kind: "permission", keys: ["compare:read"] },
   "GET /api/me": { kind: "signed-in" },
   "GET /api/me/view-as": { kind: "signed-in" },
   "POST /api/me/view-as": { kind: "signed-in" },
@@ -153,12 +154,12 @@ describe("checks made after the gate", () => {
   });
 });
 
-describe.each(Object.entries(ADDED))("%s, added with this work", (name, gate) => {
+describe.each(Object.entries(ADDED))("%s, added since 256a210", (name, gate) => {
   test("asks for what was decided", () => {
     expect(handlers.get(name)?.gate).toEqual(gate);
   });
 
-  if (gate.kind === "permission") {
+  if (gate.kind === "permission" && name.endsWith("/api/admin/roles")) {
     test("is for admins only", () => {
       // Managing roles must not be grantable, or a role allowed to edit roles
       // could tick its own way to admin.
@@ -167,4 +168,12 @@ describe.each(Object.entries(ADDED))("%s, added with this work", (name, gate) =>
       expect(startsAllowed("editor", gate.keys)).toBe(false);
     });
   }
+});
+
+test("a phone's comparison lets in whoever may use Compare", () => {
+  // POST /api/compare/phone runs the same comparison as the Compare screen, so
+  // it asks for the same box, and a viewer gets in, as at POST /api/compare.
+  const compare = handlers.get("POST /api/compare")?.gate;
+  expect(handlers.get("POST /api/compare/phone")?.gate).toEqual(compare);
+  expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
 });
