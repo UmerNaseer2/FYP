@@ -17,6 +17,7 @@
  * counts as no keyring at all. The self-test passes allowKeyring false, so it
  * never touches the person's keyring or makes it ask to be unlocked.
  */
+import fs from "node:fs";
 import path from "node:path";
 import { safeStorage } from "electron";
 
@@ -132,5 +133,10 @@ export class ProtectedStore<T> {
     }
     writeFileAtomic(this.options.file, serializeEnvelope(envelope));
     return envelope.protection;
+  }
+
+  /** Removes the file. Nothing happens when there is none; throws when it is there and cannot be removed. */
+  remove(): void {
+    fs.rmSync(this.options.file, { force: true });
   }
 }

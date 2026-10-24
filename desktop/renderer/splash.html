@@ -1,7 +1,8 @@
 <!doctype html>
 <!--
-  The splash: what the main window shows while Schema Studio starts.
-  src/renderer/splash.ts fills it in, and app.css gives each step its look.
+  The splash: what the main window shows while Schema Studio starts, and
+  while a backup is restored. src/renderer/splash.ts fills it in, and app.css
+  gives each step its look.
   The page is served with a strict security policy (src/main/protocol.ts),
   so it has no inline script or style.
 -->
@@ -21,6 +22,10 @@
         <h1 class="brand-name">Schema Studio</h1>
       </header>
       <div class="panel">
+        <div id="restoring" class="restoring" hidden>
+          <p id="restoring-step" class="step" data-state="current"><span class="step-mark" aria-hidden="true"></span>Restoring the backup</p>
+          <p id="restoring-note" class="hint restoring-note">Schema Studio starts again by itself when it is done.</p>
+        </div>
         <ol id="steps" class="steps" aria-label="Starting Schema Studio">
           <li class="step" data-step="secrets" data-state="current" aria-current="step"><span class="step-mark" aria-hidden="true"></span>Unlocking your keys</li>
           <li class="step" data-step="database" data-state="pending"><span class="step-mark" aria-hidden="true"></span>Starting the database</li>

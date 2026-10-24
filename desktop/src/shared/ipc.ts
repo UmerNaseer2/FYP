@@ -8,9 +8,11 @@
  *    http://127.0.0.1. They get the web app's desktop bridge (see bridge.ts),
  *    and nothing else.
  *  - The start screen (app://schema-studio/splash.html), shown while the
- *    database and the server start. It only reads progress and offers Retry.
+ *    database and the server start, and while a backup is restored. It only
+ *    reads progress and offers Retry.
  *  - The Settings window (app://schema-studio/settings.html), including its
- *    Phone section, which runs the phone link.
+ *    Phone section, which runs the phone link, and its Backup section, which
+ *    saves and restores backups.
  *
  * The main process checks, on every message, that it came from the right kind
  * of page in one of the app's own windows (src/main/ipc.ts), so a page can
@@ -88,15 +90,25 @@ export const PHONE = {
   connections: "phone:connections",
 } as const;
 
+/** The Settings window's Backup section. */
+export const BACKUP = {
+  save: "backup:save",
+  choose: "backup:choose",
+  restore: "backup:restore",
+} as const;
+
 /** The steps the start screen lists, in the order they happen. */
 export type StartupStep = "secrets" | "database" | "server" | "sign-in";
 
 /**
  * What the start screen shows. There is no "ready" state: once everything is
- * up, the window simply moves on to Schema Studio itself.
+ * up, the window simply moves on to Schema Studio itself. While a backup is
+ * restored, the screen says so instead, and Schema Studio starts again by
+ * itself once the backup is in.
  */
 export type StartupState =
   | { phase: "starting"; step: StartupStep }
+  | { phase: "restoring" }
   | { phase: "failed"; title: string; message: string };
 
 /** What the start screen's preload puts on `window.schemaStudioStartup`. */
@@ -223,4 +235,40 @@ export interface PhoneSettingsApi {
   /** Connects to the relay at once instead of waiting to try again. */
   connectNow(): void;
   connections(): Promise<PhoneConnections>;
+}
+
+/** The answer to saving a backup: the name of the file it went into, or that the person closed the file dialog, or which box to fix and why. */
+export type SaveBackupResult =
+  | { ok: true; fileName: string }
+  | { ok: false; reason: "cancelled" }
+  | { ok: false; reason: "failed"; field: "passphrase" | "repeat" | null; message: string };
+
+/** The answer to choosing a backup to restore: the chosen file's name, or that none was chosen, or why not. */
+export type ChooseBackupResult =
+  | { ok: true; fileName: string }
+  | { ok: false; reason: "cancelled" }
+  | { ok: false; reason: "failed"; message: string };
+
+/**
+ * The answer to restoring the chosen backup: it is going in, and Schema Studio
+ * starts again once it is; or the person said no when asked; or which box to
+ * fix and why.
+ */
+export type RestoreBackupResult =
+  | { ok: true }
+  | { ok: false; reason: "cancelled" }
+  | { ok: false; reason: "failed"; field: "passphrase" | null; message: string };
+
+/**
+ * What the Settings preload puts on `window.schemaStudioBackup`, for the
+ * Backup section. The page only ever learns a file's name: where the file is
+ * stays with the main process, which shows the file dialogs itself.
+ */
+export interface BackupSettingsApi {
+  /** Asks where to save, then saves a backup locked with the passphrase, which the person typed twice. */
+  save(passphrase: string, repeat: string): Promise<SaveBackupResult>;
+  /** Asks which backup to restore. */
+  choose(): Promise<ChooseBackupResult>;
+  /** Opens the chosen backup with the passphrase, asks once more, then restores it. */
+  restore(passphrase: string): Promise<RestoreBackupResult>;
 }

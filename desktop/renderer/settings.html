@@ -1,11 +1,12 @@
 <!doctype html>
 <!--
   Settings: the GitHub registry, the phone link, what the app does in the
-  background, the theme, and where the app keeps its files.
+  background, the theme, where the app keeps its files, and backups.
   src/renderer/settings.ts fills it in and sends each change to the main
-  process, and src/renderer/settings-phone.ts does the same for the Phone
-  section. The page is served with a strict security policy
-  (src/main/protocol.ts), so it has no inline script or style.
+  process, src/renderer/settings-phone.ts does the same for the Phone
+  section, and src/renderer/settings-backup.ts for the Backup section. The
+  page is served with a strict security policy (src/main/protocol.ts), so it
+  has no inline script or style.
 -->
 <html lang="en">
   <head>
@@ -16,6 +17,7 @@
     <link rel="stylesheet" href="app.css">
     <script src="settings.js" defer></script>
     <script src="settings-phone.js" defer></script>
+    <script src="settings-backup.js" defer></script>
   </head>
   <body class="settings">
     <main class="settings-main">
@@ -205,6 +207,61 @@
               </dd>
             </div>
           </dl>
+        </section>
+
+        <section id="backup" class="group" aria-labelledby="backup-title">
+          <h2 id="backup-title" class="group-title">Backup</h2>
+          <p class="group-intro">One file with the saved connections, the comparison and drift history, the people and their roles, the GitHub registry and the app's keys, locked with a passphrase. Restore it here or on another computer to put them back as they were.</p>
+          <p id="backup-unavailable" class="banner" role="alert" hidden></p>
+          <div id="backup-content" class="backup-parts" hidden>
+            <h3 id="backup-save-title" class="subgroup-title">Save a backup</h3>
+            <form id="backup-save-form" class="backup-form" aria-labelledby="backup-save-title" novalidate>
+              <div class="list">
+                <div class="row">
+                  <label class="row-label" for="backup-passphrase">Passphrase</label>
+                  <input id="backup-passphrase" class="input" type="password" autocomplete="off" spellcheck="false" aria-describedby="backup-passphrase-hint backup-passphrase-error">
+                  <p id="backup-passphrase-hint" class="hint">At least 12 characters. Keep it somewhere safe: without it, nobody can open the backup, Schema Studio included.</p>
+                  <p id="backup-passphrase-error" class="field-error" hidden></p>
+                </div>
+                <div class="row">
+                  <label class="row-label" for="backup-repeat">Passphrase again</label>
+                  <input id="backup-repeat" class="input" type="password" autocomplete="off" spellcheck="false" aria-describedby="backup-repeat-error">
+                  <p id="backup-repeat-error" class="field-error" hidden></p>
+                </div>
+              </div>
+              <div class="group-footer">
+                <div class="group-footer-text">
+                  <p id="backup-save-error" class="field-error" role="alert" hidden></p>
+                  <p id="backup-save-status" class="status" role="status"></p>
+                </div>
+                <button id="backup-save" class="button button-primary" type="submit">Save&hellip;</button>
+              </div>
+            </form>
+            <h3 id="backup-restore-title" class="subgroup-title">Restore a backup</h3>
+            <form id="backup-restore-form" class="backup-form" aria-labelledby="backup-restore-title" novalidate>
+              <div class="list">
+                <div class="row">
+                  <div class="token">
+                    <span class="choice-text"><span class="choice-name">Backup file</span><span id="backup-file" class="hint">None chosen yet</span></span>
+                    <span class="token-actions"><button id="backup-choose" class="button" type="button" aria-describedby="backup-file">Choose&hellip;</button></span>
+                  </div>
+                </div>
+                <div class="row">
+                  <label class="row-label" for="backup-restore-passphrase">Passphrase</label>
+                  <input id="backup-restore-passphrase" class="input" type="password" autocomplete="off" spellcheck="false" aria-describedby="backup-restore-passphrase-hint backup-restore-passphrase-error">
+                  <p id="backup-restore-passphrase-hint" class="hint">The one the backup was saved with.</p>
+                  <p id="backup-restore-passphrase-error" class="field-error" hidden></p>
+                </div>
+              </div>
+              <div class="group-footer">
+                <div class="group-footer-text">
+                  <p id="backup-restore-error" class="field-error" role="alert" hidden></p>
+                  <p id="backup-restore-status" class="status" role="status"></p>
+                </div>
+                <button id="backup-restore" class="button button-bad" type="submit">Restore&hellip;</button>
+              </div>
+            </form>
+          </div>
         </section>
       </div>
     </main>

@@ -456,7 +456,8 @@ function lastComplaint(offset: number): string | null {
   return said === "" ? null : redact(said, { secrets: [], home: os.homedir() }).slice(0, 300);
 }
 
-async function withClient<T>(socketDir: string, database: string, work: (client: Client) => Promise<T>): Promise<T> {
+/** Runs `work` with a connection to `database` over the socket in `socketDir`, and closes the connection afterwards. */
+export async function withClient<T>(socketDir: string, database: string, work: (client: Client) => Promise<T>): Promise<T> {
   const client = new Client({
     host: socketDir,
     port: PG_PORT,
@@ -520,8 +521,8 @@ async function ensureAppDatabase(socketDir: string): Promise<void> {
   });
 }
 
-/** A database name as SQL: in double quotes, with any double quote in it doubled. */
-function quoteIdent(name: string): string {
+/** A name (of a database, table or column) as SQL: in double quotes, with any double quote in it doubled. */
+export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 

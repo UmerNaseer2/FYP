@@ -383,6 +383,17 @@ input {
   margin-top: 12px;
 }
 
+/* While a backup is restored: one running step, and what happens once it is done. */
+.restoring {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+}
+
+.restoring-note {
+  padding: 4px 12px 6px;
+}
+
 /* Settings */
 
 .settings {
@@ -640,6 +651,19 @@ input {
   .qr {
     justify-self: center;
   }
+}
+
+/* The Backup section of Settings */
+
+.backup-parts {
+  display: grid;
+  gap: 12px;
+}
+
+/* Each form's boxes, then what it says and its button. */
+.backup-form {
+  display: grid;
+  gap: 8px;
 }
 
 /* Without motion, the running step shows a filled dot instead of a spinning ring. */

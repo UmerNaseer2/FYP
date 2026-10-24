@@ -12,6 +12,11 @@
  *                                  side by side on purpose: the database is
  *                                  useless without its keys, so a backup or a
  *                                  move of this one folder takes both.
+ *                                  While a backup is being restored, the
+ *                                  backup's keys wait beside them
+ *                                  (restore-pending.json) until the
+ *                                  restored database is known to be in
+ *                                  place.
  *   ~/.local/state/schema-studio   Logs, which can be deleted at any time.
  *
  * Each of the three can be moved with XDG_CONFIG_HOME, XDG_DATA_HOME and
@@ -41,6 +46,8 @@ export type AppPaths = {
   configFile: string;
   authFile: string;
   secretsFile: string;
+  /** A restore's keys, waiting until the restored database is known to be in place (src/main/backup.ts). */
+  restorePendingFile: string;
   /** The paired phones and the phone link's own keys (src/core/phone-link-file.ts). */
   phoneLinkFile: string;
   /** Ubuntu's folder of programs to start at sign-in, which other programs share (src/core/autostart.ts). */
@@ -66,6 +73,7 @@ export function resolveAppPaths(env: Record<string, string | undefined>, home: s
     configFile: path.join(config, "config.json"),
     authFile: path.join(config, "auth.json"),
     secretsFile: path.join(data, "secrets.json"),
+    restorePendingFile: path.join(data, "restore-pending.json"),
     phoneLinkFile: path.join(config, "phone-link.json"),
     autostartDir: path.join(configHome, "autostart"),
   };

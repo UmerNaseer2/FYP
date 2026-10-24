@@ -7,4 +7,5 @@ interface Window {
   schemaStudioStartup?: import("../shared/ipc").StartupApi;
   schemaStudioSettings?: import("../shared/ipc").SettingsApi;
   schemaStudioPhone?: import("../shared/ipc").PhoneSettingsApi;
+  schemaStudioBackup?: import("../shared/ipc").BackupSettingsApi;
 }

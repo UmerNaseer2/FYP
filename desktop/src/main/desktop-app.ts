@@ -6,7 +6,8 @@
  *
  * 1. secrets: unlock the app's keys, kept in Ubuntu's keyring.
  * 2. database: start the app's own PostgreSQL, where Schema Studio keeps its
- *    records.
+ *    records. Right after a backup is restored (src/main/backup.ts), this
+ *    step also puts the backup's keys and settings in place.
  * 3. server: start Schema Studio's server, which only this computer can
  *    reach.
  * 4. sign-in: choose the first page. Someone still signed in goes straight
@@ -29,11 +30,19 @@
  * when the person signs in (src/core/autostart.ts). With Keep running on as
  * well, that start shows only the icon, not the window.
  *
+ * Settings' Backup section saves everything Schema Studio keeps into one
+ * file locked with a passphrase, and restores such a file
+ * (src/main/backup.ts). While a backup is restored, the window shows the
+ * splash, which says so, and the app then starts again by itself, which
+ * puts the backup's keys and settings in place.
+ *
  * Quitting stops the server and then the database, cleanly, so nothing is
  * lost and nothing is left running.
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 
 import {
   app,
@@ -51,6 +60,7 @@ import {
 } from "electron";
 
 import { autostartFileFor, BACKGROUND_FLAG, isAutostartOn, setAutostart } from "../core/autostart";
+import { BACKUP_EXTENSION, defaultBackupName, parsePendingRestore, type PendingRestore } from "../core/backup-file";
 import { checkGithubSettings, readGithubSettingsInput } from "../core/github-settings";
 import {
   decideAfterRecheck,
@@ -62,12 +72,16 @@ import {
 import { displayPath, type AppPaths } from "../core/paths";
 import { parsePhoneLinkState, type PhoneLinkState } from "../core/phone-link-file";
 import { ensurePrivateDir, UnsafeDirError } from "../core/private-dir";
+import { newSecretValues, type SecretValues } from "../core/secrets-file";
 import { trayStatus } from "../core/tray-status";
 import { GATE_HEADER } from "../server/desktop-gate";
 import {
   PHONE,
   STARTUP,
+  type ChooseBackupResult,
   type PhoneConnections,
+  type RestoreBackupResult,
+  type SaveBackupResult,
   type SaveGithubResult,
   type SettingsView,
   type SignInResult,
@@ -78,6 +92,29 @@ import {
 } from "../shared/ipc";
 import type { AppFiles } from "./app-files";
 import { Auth } from "./auth";
+import {
+  checkBackup,
+  FINISH_RESTORE_TITLE,
+  finishPendingRestore,
+  loadBackup,
+  saveBackup,
+  type CheckedBackup,
+} from "./backup";
+import {
+  BACKUP_BUSY,
+  BACKUP_NOT_CHECKED,
+  BACKUP_NOT_CHOSEN,
+  BACKUP_NOT_SAVED,
+  backupFailure,
+  nameTaken,
+  NOTHING_CHOSEN,
+  RESTORE_FAILED_TITLE,
+  restoreFailure,
+  restoreProblem,
+  restoreQuestion,
+  saveProblem,
+  withBackupExtension,
+} from "./backup-settings";
 import { versionLabel, type BuildInfo } from "./build-info";
 import { ConfigStore } from "./config-store";
 import { makeDiagnostics } from "./diagnostics";
@@ -123,10 +160,19 @@ const BACKGROUND_CHECK_MS = 30_000;
 /** How long Settings waits for the server to list the saved connections that phones may be shown. */
 const PHONE_CONNECTIONS_MS = 15_000;
 const PHONE_LINK_FAILED = "The phone link could not start. Schema Studio's log has the details.";
+/** Why a restore cannot finish while phone-link.json is locked: what phones may see has to change with the restore. */
+const PHONE_LINK_LOCKED = `Schema Studio needs the phone link's keys to finish restoring the backup, and they are locked with your login keyring, which did not open. Log out and back in, or unlock the "Login" keyring in Passwords and Keys, then press Try again.`;
 /** How long quitting waits for the server and the database to stop before the app stops anyway. */
 const QUIT_LIMIT_MS = 20_000;
 /** How long to wait, after the server or the database stops, before saying so. A start failing because of it explains itself on the splash in that time. */
 const STOPPED_NOTICE_DELAY_MS = 1_000;
+/** How long a restore waits for the splash to show before it carries on without it. */
+const SPLASH_WAIT_MS = 5_000;
+/** What the file dialogs list: backups, or every file, for a backup saved under another name. */
+const BACKUP_FILTERS = [
+  { name: "Schema Studio backups", extensions: [BACKUP_EXTENSION] },
+  { name: "All files", extensions: ["*"] },
+];
 
 type SignOutReason = Extract<RecheckDecision, { action: "sign-out" }>["reason"];
 
@@ -166,6 +212,18 @@ function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> 
         reject(error);
       },
     );
+  });
+}
+
+/** Settles when `promise` does, or after `ms` milliseconds if that comes first. Never rejects. */
+function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    promise.then(done, done);
   });
 }
 
@@ -245,6 +303,16 @@ export class DesktopApp {
   private cleaning: Promise<void> | null = null;
   private cleanedUp = false;
   private stoppedNoticeShown = false;
+  /** Whether a file dialog for a backup is open, or a backup is being saved or checked. One at a time. */
+  private backupBusy = false;
+  /** The backup chosen in Settings to restore. It stays here, since the page only gets its name. */
+  private chosenBackup: string | null = null;
+  /**
+   * Whether a backup is being restored. It stays set if the restore fails,
+   * since only starting again (Try again on the splash) brings the app back.
+   */
+  private restoring = false;
+  private restoreRun: Promise<void> = Promise.resolve();
 
   constructor(options: DesktopAppOptions) {
     this.files = options.files;
@@ -363,6 +431,11 @@ export class DesktopApp {
         connectNow: () => this.phoneLink?.connectNow(),
         connections: () => this.phoneConnections(),
       },
+      backup: {
+        save: (passphrase, repeat) => this.saveBackupAs(passphrase, repeat),
+        choose: () => this.chooseBackup(),
+        restore: (passphrase) => this.restoreChosenBackup(passphrase),
+      },
     });
   }
 
@@ -401,7 +474,7 @@ export class DesktopApp {
     contents.on("unresponsive", () => logWarn("The window stopped responding."));
     contents.on("responsive", () => logInfo("The window is responding again."));
     contents.on("preload-error", (_event, _file, error) => logError("The window's preload script failed.", error));
-    this.showSplash();
+    void this.showSplash();
   }
 
   // Starting
@@ -431,6 +504,13 @@ export class DesktopApp {
       const postgres = await startPostgres({ installDir: this.files.postgresDir, paths: this.paths, signal });
       this.postgres = postgres;
       postgres.onUnexpectedExit((description) => this.stoppedUnexpectedly("database", description));
+      // A backup restored just before the app last stopped puts its keys
+      // and settings in place now, before the server starts with them.
+      const restored = await finishPendingRestore({
+        socketDir: postgres.socketDir,
+        pending: this.pendingRestoreStore(),
+        apply: (pending) => this.applyRestore(opened, auth, pending),
+      });
 
       this.setStep("server");
       const server = await startServerOnFreePort({
@@ -450,6 +530,7 @@ export class DesktopApp {
       await this.loadServerPage(first.page);
       this.started = true;
       logInfo("Schema Studio is ready.");
+      if (restored !== "none") void this.noticeRestore(restored);
       this.startRechecks(!first.checked);
       // Never throws: a phone link that cannot start is logged, and the rest of the app carries on without it.
       await this.startPhoneLink();
@@ -475,11 +556,15 @@ export class DesktopApp {
     return contents !== null && isAppPage(contents.getURL(), "/splash.html") ? contents : null;
   }
 
-  private showSplash(): void {
+  /** Shows the splash in the main window. Settles once it has loaded, or once it could not. Never rejects. */
+  private showSplash(): Promise<void> {
     const contents = liveContents(this.mainWindow);
-    if (contents === null) return;
-    contents.loadURL(`${APP_ORIGIN}/splash.html`).catch((error: unknown) => {
-      if (!wasInterrupted(error)) logError("Could not show the splash.", error);
+    if (contents === null) return Promise.resolve();
+    return contents.loadURL(`${APP_ORIGIN}/splash.html`).catch((error: unknown) => {
+      // Another page took its place, or the window closed before the splash
+      // had loaded, as it does when the app quits: nothing went wrong.
+      if (wasInterrupted(error) || this.quitting || contents.isDestroyed()) return;
+      logError("Could not show the splash.", error);
     });
   }
 
@@ -497,7 +582,7 @@ export class DesktopApp {
     this.startup = { phase: "failed", title, message };
     // The window may be showing a server page that failed to load, rather than the splash.
     if (this.splashContents() !== null) this.pushStartup();
-    else this.showSplash();
+    else void this.showSplash();
     // With the window hidden (a start in the background, or a window closed
     // to the top bar while the app started), the failure would go unseen.
     const window = this.mainWindow;
@@ -564,12 +649,14 @@ export class DesktopApp {
   private async recheckNow(): Promise<void> {
     const { auth } = this;
     if (auth === null || !auth.configured || !this.started || this.quitting || this.rechecking) return;
+    // A restore under way has stopped the server, and the app starts again once the backup is in.
+    if (this.restoring) return;
     this.rechecking = true;
     try {
       if (!(await auth.hasAccount())) return;
       const outcome = await this.checkSignIn(auth, BACKGROUND_CHECK_MS, this.stopStarting.signal);
       const decision = decideAfterRecheck(outcome, auth.lastOnlineCheck(), Date.now());
-      if (decision.action === "sign-out" && !this.quitting) {
+      if (decision.action === "sign-out" && !this.quitting && !this.restoring) {
         logSignOut(decision.reason);
         await this.endSession(`/login?error=${decision.reason}`);
       }
@@ -624,12 +711,7 @@ export class DesktopApp {
   private async startPhoneLink(): Promise<void> {
     try {
       const opening = await openPhoneLink({
-        store: new ProtectedStore<PhoneLinkState>({
-          file: this.paths.phoneLinkFile,
-          what: "the phone link's keys",
-          parse: parsePhoneLinkState,
-          allowKeyring: true,
-        }),
+        store: this.phoneLinkStore(),
         fileLabel: displayPath(this.paths.phoneLinkFile, this.home),
         call: (method, path, body, signal) => this.callServer(method, path, body, signal),
         appVersion: app.getVersion(),
@@ -654,6 +736,16 @@ export class DesktopApp {
       this.phoneLinkProblem = PHONE_LINK_FAILED;
       this.phoneChanged();
     }
+  }
+
+  /** phone-link.json, which keeps the phone link's keys, the paired phones and what they may see. */
+  private phoneLinkStore(): ProtectedStore<PhoneLinkState> {
+    return new ProtectedStore<PhoneLinkState>({
+      file: this.paths.phoneLinkFile,
+      what: "the phone link's keys",
+      parse: parsePhoneLinkState,
+      allowKeyring: true,
+    });
   }
 
   /** Tells Settings, if it is open, and the icon's menu how the phone link stands now. */
@@ -710,6 +802,329 @@ export class DesktopApp {
     return { status: response.status, json };
   }
 
+  // Backups
+
+  /** restore-pending.json, which keeps a restored backup's keys and settings until the next start puts them in place. */
+  private pendingRestoreStore(): ProtectedStore<PendingRestore> {
+    return new ProtectedStore<PendingRestore>({
+      file: this.paths.restorePendingFile,
+      what: "the keys of the backup being restored",
+      parse: parsePendingRestore,
+      allowKeyring: true,
+    });
+  }
+
+  /**
+   * Puts a restored backup's keys and settings in place of the ones in use,
+   * at the first start after its rows went in (finishPendingRestore). A stop
+   * partway through has the next start do all of it again, so each part is
+   * safe to do twice.
+   */
+  private async applyRestore(opened: OpenedSecrets, auth: Auth, pending: PendingRestore): Promise<void> {
+    const secrets: SecretValues = {
+      // A new cookie key ends every sign-in from before the restore.
+      nextauthSecret: newSecretValues((size) => crypto.randomBytes(size)).nextauthSecret,
+      // The backup's own key, which opens the connection passwords saved in its rows.
+      appEncryptionKey: pending.secrets.appEncryptionKey,
+      githubToken: pending.secrets.githubToken,
+    };
+    try {
+      opened.protection = opened.store.save(secrets);
+    } catch (error) {
+      throw new StartupError(
+        FINISH_RESTORE_TITLE,
+        `Schema Studio could not save the backup's keys in ${displayPath(this.paths.secretsFile, this.home)}. Check that there is space on the disk, then press Try again.`,
+        error,
+      );
+    }
+    opened.secrets = secrets;
+    addLogSecret(secrets.nextauthSecret);
+    this.unsharePhoneConnections();
+    // The backup's GitHub registry goes with its token. ConfigStore logs a
+    // failure to save, and the registry in use then stays.
+    this.config.save({ ...this.config.get(), github: pending.config.github });
+    this.setTheme(pending.config.theme);
+    // The restored rows hold the people of the computer the backup came
+    // from, so everyone signs in again. Nothing the pages kept from before
+    // is left either, since it may name connections the restore numbers
+    // differently.
+    await auth.signOut();
+    await this.clearSessionData();
+  }
+
+  /**
+   * Stops phones seeing any saved connection. The restored rows number the
+   * connections as the backup did, so a number chosen before may now be a
+   * different connection.
+   */
+  private unsharePhoneConnections(): void {
+    const store = this.phoneLinkStore();
+    const loaded = store.load();
+    if (loaded.status === "locked") {
+      logWarn(loaded.message);
+      throw new StartupError(FINISH_RESTORE_TITLE, PHONE_LINK_LOCKED);
+    }
+    // A file that is missing or damaged shows phones nothing.
+    if (loaded.status !== "values" || loaded.values.sharedConnectionIds.length === 0) return;
+    try {
+      store.save({ ...loaded.values, sharedConnectionIds: [] });
+    } catch (error) {
+      throw new StartupError(
+        FINISH_RESTORE_TITLE,
+        `Schema Studio could not save the phone link's settings in ${displayPath(this.paths.phoneLinkFile, this.home)}. Check that there is space on the disk, then press Try again.`,
+        error,
+      );
+    }
+    logInfo("Phones no longer see any saved connection, since the restore may have changed which is which.");
+  }
+
+  /** Removes everything the window's session keeps for the studio's pages: cookies, saved page data and the cache. */
+  private async clearSessionData(): Promise<void> {
+    const { ses } = this;
+    if (ses === null) return;
+    try {
+      await ses.clearStorageData();
+      await ses.clearCache();
+      // Saved at once, as when signing out.
+      await ses.cookies.flushStore();
+    } catch (error) {
+      logWarn("Could not clear what the studio's pages kept from before the restore.", error);
+    }
+  }
+
+  /** Says, once the first page is up, how the restore that was waiting ended. */
+  private async noticeRestore(outcome: "finished" | "not-in"): Promise<void> {
+    await this.messageBox(
+      outcome === "finished"
+        ? {
+            type: "info",
+            title: "Schema Studio",
+            message: "The backup is restored.",
+            detail:
+              "Sign in again to carry on. Paired phones no longer see any saved connections, since the restore may have changed which is which. Choose them again in Settings.",
+            buttons: ["OK"],
+            noLink: true,
+          }
+        : {
+            type: "warning",
+            title: "Schema Studio",
+            message: "The backup was not restored.",
+            detail:
+              "Schema Studio stopped before restoring it had finished, so nothing changed. Restore it again from Settings if you still want it.",
+            buttons: ["OK"],
+            noLink: true,
+          },
+    );
+  }
+
+  /** Where the file dialogs for backups open: the Documents folder, or the home folder on a computer without one. */
+  private backupFolder(): string {
+    try {
+      return app.getPath("documents");
+    } catch {
+      // Electron throws when the folder cannot be found.
+      return this.home;
+    }
+  }
+
+  /**
+   * Settings' Save a backup: asks where to save it, then saves everything
+   * Schema Studio keeps there, locked with the passphrase.
+   */
+  private async saveBackupAs(passphrase: string, repeat: string): Promise<SaveBackupResult> {
+    if (this.backupBusy || this.restoring) return { ok: false, reason: "failed", field: null, message: BACKUP_BUSY };
+    const problem = saveProblem(passphrase, repeat);
+    if (problem !== null) return { ok: false, reason: "failed", ...problem };
+    const { postgres, opened } = this;
+    if (postgres === null || opened === null || !this.started) {
+      return { ok: false, reason: "failed", field: null, message: STILL_STARTING };
+    }
+    const window = this.settingsWindow;
+    if (window === null || window.isDestroyed()) return { ok: false, reason: "cancelled" };
+    this.backupBusy = true;
+    try {
+      const answer = await dialog.showSaveDialog(window, {
+        title: "Save a backup",
+        defaultPath: path.join(this.backupFolder(), defaultBackupName(new Date())),
+        filters: BACKUP_FILTERS,
+        properties: ["showOverwriteConfirmation", "createDirectory"],
+      });
+      if (answer.canceled || !answer.filePath || this.quitting) return { ok: false, reason: "cancelled" };
+      const file = withBackupExtension(answer.filePath);
+      // The dialog asked before replacing the name that was typed, but not this one.
+      if (file !== answer.filePath && fs.existsSync(file)) {
+        return { ok: false, reason: "failed", field: null, message: nameTaken(path.basename(file)) };
+      }
+      // An error from deep inside may quote what it was given, and the log must never show the passphrase.
+      addLogSecret(passphrase);
+      await saveBackup({
+        socketDir: postgres.socketDir,
+        file,
+        passphrase,
+        appVersion: app.getVersion(),
+        secrets: { appEncryptionKey: opened.secrets.appEncryptionKey, githubToken: opened.secrets.githubToken },
+        config: { theme: this.theme, github: this.config.get().github },
+      });
+      // Not where: a file's name and folder can say more about a person than the log needs to.
+      logInfo("Saved a backup.");
+      return { ok: true, fileName: path.basename(file) };
+    } catch (error) {
+      const failure = backupFailure(error);
+      if (failure !== null) {
+        logWarn(`Could not save a backup: ${failure.message}`);
+        return { ok: false, reason: "failed", field: null, message: failure.message };
+      }
+      logError("Could not save a backup.", error);
+      return { ok: false, reason: "failed", field: null, message: BACKUP_NOT_SAVED };
+    } finally {
+      this.backupBusy = false;
+    }
+  }
+
+  /** Settings' Choose: asks which backup to restore, and keeps it for Restore. */
+  private async chooseBackup(): Promise<ChooseBackupResult> {
+    if (this.backupBusy || this.restoring) return { ok: false, reason: "failed", message: BACKUP_BUSY };
+    const window = this.settingsWindow;
+    if (window === null || window.isDestroyed()) return { ok: false, reason: "cancelled" };
+    this.backupBusy = true;
+    try {
+      const answer = await dialog.showOpenDialog(window, {
+        title: "Choose a backup",
+        defaultPath: this.backupFolder(),
+        filters: BACKUP_FILTERS,
+        properties: ["openFile"],
+      });
+      // Settings may have closed while the dialog was open, and a choice made for it is no choice now.
+      if (answer.canceled || answer.filePaths.length === 0 || this.settingsWindow !== window || window.isDestroyed()) {
+        return { ok: false, reason: "cancelled" };
+      }
+      const file = answer.filePaths[0];
+      this.chosenBackup = file;
+      return { ok: true, fileName: path.basename(file) };
+    } catch (error) {
+      logError("Could not ask which backup to restore.", error);
+      return { ok: false, reason: "failed", message: BACKUP_NOT_CHOSEN };
+    } finally {
+      this.backupBusy = false;
+    }
+  }
+
+  /**
+   * Settings' Restore: opens the chosen backup with the passphrase and checks
+   * that it fits, asks once more, then restores it (runRestore). The answer
+   * comes as soon as the restore begins, since Settings closes for it.
+   */
+  private async restoreChosenBackup(passphrase: string): Promise<RestoreBackupResult> {
+    if (this.backupBusy || this.restoring) return { ok: false, reason: "failed", field: null, message: BACKUP_BUSY };
+    const file = this.chosenBackup;
+    if (file === null) return { ok: false, reason: "failed", field: null, message: NOTHING_CHOSEN };
+    const problem = restoreProblem(passphrase);
+    if (problem !== null) return { ok: false, reason: "failed", field: "passphrase", message: problem };
+    const { postgres } = this;
+    if (postgres === null || !this.started) {
+      return { ok: false, reason: "failed", field: null, message: STILL_STARTING };
+    }
+    const window = this.settingsWindow;
+    if (window === null || window.isDestroyed()) return { ok: false, reason: "cancelled" };
+    this.backupBusy = true;
+    try {
+      // A wrong passphrase may be a near miss of the right one, so the log must never show it either.
+      addLogSecret(passphrase);
+      let checked: CheckedBackup;
+      try {
+        checked = await checkBackup({ socketDir: postgres.socketDir, file, passphrase, appVersion: app.getVersion() });
+      } catch (error) {
+        const failure = backupFailure(error);
+        if (failure !== null) {
+          logWarn(`Could not open a backup to restore: ${failure.message}`);
+          return { ok: false, reason: "failed", ...failure };
+        }
+        logError("Could not open a backup to restore.", error);
+        return { ok: false, reason: "failed", field: null, message: BACKUP_NOT_CHECKED };
+      }
+      // The backup's keys are secrets from here on, wherever they turn up.
+      const { secrets } = checked.manifest;
+      addLogSecret(secrets.appEncryptionKey);
+      if (secrets.githubToken !== null) addLogSecret(secrets.githubToken);
+      // Settings may have closed while the backup was checked, and the question needs it to stand on.
+      if (this.quitting || this.settingsWindow !== window || window.isDestroyed()) {
+        return { ok: false, reason: "cancelled" };
+      }
+      const question = restoreQuestion(checked.manifest);
+      const { response } = await dialog.showMessageBox(window, {
+        type: "warning",
+        title: "Schema Studio",
+        message: question.message,
+        detail: question.detail,
+        buttons: ["Restore and restart", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (response !== 0 || this.quitting || window.isDestroyed()) return { ok: false, reason: "cancelled" };
+      this.restoreRun = this.runRestore(checked);
+      return { ok: true };
+    } finally {
+      this.backupBusy = false;
+    }
+  }
+
+  /**
+   * Restores a backup that checkBackup opened, then starts the app again,
+   * which puts the backup's keys and settings in place
+   * (finishPendingRestore). The splash says what is happening meanwhile.
+   * Never rejects.
+   */
+  private async runRestore(backup: CheckedBackup): Promise<void> {
+    // Set at once, before the first await, so that nothing else starts meanwhile.
+    this.restoring = true;
+    try {
+      logInfo("Restoring a backup, as asked.");
+      if (this.recheckTimer !== null) clearInterval(this.recheckTimer);
+      this.recheckTimer = null;
+      this.auth?.cancelSignIn();
+      // Phones lose the app for now, and connect again once it has started again.
+      this.phoneLink?.stop();
+      this.settingsWindow?.destroy();
+      this.startup = { phase: "restoring" };
+      // The splash is up before the server stops, so that the window never
+      // shows a page whose server has gone, and so that even a quick restore
+      // is seen. A splash slow to load does not hold the restore up for long.
+      await waitAtMost(this.showSplash(), SPLASH_WAIT_MS);
+      // The server stops first, so that nothing writes to the tables while
+      // they are replaced. A stop on purpose is not one stoppedUnexpectedly
+      // reports.
+      const { server, postgres } = this;
+      this.server = null;
+      if (server !== null) {
+        try {
+          await server.stop();
+        } catch (error) {
+          logWarn("The server did not stop cleanly.", error);
+        }
+      }
+      if (postgres === null) throw new Error("Schema Studio's database is not running.");
+      const store = this.pendingRestoreStore();
+      await loadBackup({
+        socketDir: postgres.socketDir,
+        backup,
+        appVersion: app.getVersion(),
+        writePending: (pending) => {
+          store.save(pending);
+        },
+        removePending: () => store.remove(),
+      });
+      logInfo("The backup's rows are in. Starting again to finish restoring it.");
+      // Quitting meanwhile: the next start finishes the restore by itself.
+      if (this.quitting) return;
+      relaunchWithWindow();
+      app.quit();
+    } catch (error) {
+      if (this.quitting) return;
+      this.fail(new StartupError(RESTORE_FAILED_TITLE, restoreFailure(error), error));
+    }
+  }
+
   // When something stops
 
   /** The database or the server stopped while the app was using it. */
@@ -718,7 +1133,8 @@ export class DesktopApp {
     else this.serverGone = description;
     logError(`The ${what} stopped unexpectedly: ${description}`);
     setTimeout(() => {
-      if (this.quitting || this.startup.phase === "failed" || this.stoppedNoticeShown) return;
+      // A restore says on the splash itself when it fails, and offers to start again.
+      if (this.quitting || this.restoring || this.startup.phase === "failed" || this.stoppedNoticeShown) return;
       this.stoppedNoticeShown = true;
       void this.noticeStopped(what);
     }, STOPPED_NOTICE_DELAY_MS);
@@ -815,6 +1231,9 @@ export class DesktopApp {
     this.phoneLink?.stop();
     // Never rejects. Waiting for it means a database still starting is known about, and stopped below.
     await this.startupRun;
+    // A restore under way finishes first, so that its rows go in whole or not
+    // at all before the database stops. Never rejects either.
+    await this.restoreRun;
     const { server, postgres } = this;
     if (server !== null) {
       try {
@@ -921,7 +1340,7 @@ export class DesktopApp {
 
   private openSettings(): void {
     const parent = this.mainWindow;
-    if (this.opened === null || parent === null || parent.isDestroyed()) return;
+    if (this.opened === null || this.restoring || parent === null || parent.isDestroyed()) return;
     const open = this.settingsWindow;
     if (open !== null && !open.isDestroyed()) {
       open.focus();
@@ -933,6 +1352,8 @@ export class DesktopApp {
       if (this.settingsWindow === window) this.settingsWindow = null;
       // A code shown in Settings must not pair a phone once Settings has closed.
       this.phoneLink?.cancelPairing();
+      // Nor is a backup chosen there still chosen, since Settings opens again showing none.
+      this.chosenBackup = null;
     });
   }
 
@@ -1040,6 +1461,7 @@ export class DesktopApp {
     const { startup, server, auth } = this;
     let progress: string;
     if (startup.phase === "failed") progress = `failed: ${startup.title}. ${startup.message}`;
+    else if (startup.phase === "restoring") progress = "restoring a backup";
     else if (this.started) progress = "finished";
     else progress = `at the "${startup.step}" step`;
     let signIn: string;

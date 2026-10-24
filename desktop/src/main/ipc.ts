@@ -15,14 +15,18 @@ import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents }
 
 import { isThemeChoice } from "../core/config";
 import {
+  BACKUP,
   BRIDGE,
   PHONE,
   SETTINGS,
   STARTUP,
+  type ChooseBackupResult,
   type FoundDatabase,
   type PhoneConnections,
   type PhonePairing,
   type PhoneView,
+  type RestoreBackupResult,
+  type SaveBackupResult,
   type SaveGithubResult,
   type SetRelayResult,
   type SettingsView,
@@ -82,6 +86,12 @@ export type IpcHandlers = {
     cancelPairing(): void;
     connectNow(): void;
     connections(): Promise<PhoneConnections>;
+  };
+  /** The Settings window's Backup section. */
+  backup: {
+    save(passphrase: string, repeat: string): Promise<SaveBackupResult>;
+    choose(): Promise<ChooseBackupResult>;
+    restore(passphrase: string): Promise<RestoreBackupResult>;
   };
 };
 
@@ -187,4 +197,14 @@ export function registerIpc(handlers: IpcHandlers): void {
   on(settings, PHONE.cancelPairing, () => handlers.phone.cancelPairing());
   on(settings, PHONE.connectNow, () => handlers.phone.connectNow());
   handle(settings, PHONE.connections, () => handlers.phone.connections());
+
+  handle(settings, BACKUP.save, (passphrase, repeat) => {
+    if (typeof passphrase !== "string" || typeof repeat !== "string") throw new Error(REFUSED);
+    return handlers.backup.save(passphrase, repeat);
+  });
+  handle(settings, BACKUP.choose, () => handlers.backup.choose());
+  handle(settings, BACKUP.restore, (passphrase) => {
+    if (typeof passphrase !== "string") throw new Error(REFUSED);
+    return handlers.backup.restore(passphrase);
+  });
 }

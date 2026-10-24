@@ -5,12 +5,13 @@
  * Only app://schema-studio/settings.html gets anything. It may read the
  * settings, save the GitHub registry, change the theme, choose whether the
  * app keeps running with its window closed and starts at sign-in, open the
- * logs and close the window, and its Phone section runs the phone link through
- * `window.schemaStudioPhone`. As in the main window's preload (app-preload.ts), the
- * main process checks every message again before it acts on it, the message
- * names are repeated here because a sandboxed preload can load nothing but
- * Electron, and the types make the compiler check them against
- * src/shared/ipc.ts.
+ * logs and close the window. Its Phone section runs the phone link through
+ * `window.schemaStudioPhone`, and its Backup section saves and restores
+ * backups through `window.schemaStudioBackup`. As in the main window's
+ * preload (app-preload.ts), the main process checks every message again
+ * before it acts on it, the message names are repeated here because a
+ * sandboxed preload can load nothing but Electron, and the types make the
+ * compiler check them against src/shared/ipc.ts.
  */
 {
   const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
@@ -38,6 +39,12 @@
     cancelPairing: "phone:cancel-pairing",
     connectNow: "phone:connect-now",
     connections: "phone:connections",
+  };
+
+  const BACKUP: Ipc["BACKUP"] = {
+    save: "backup:save",
+    choose: "backup:choose",
+    restore: "backup:restore",
   };
 
   const here = new URL(location.href);
@@ -72,5 +79,12 @@
       connections: () => ipcRenderer.invoke(PHONE.connections),
     };
     contextBridge.exposeInMainWorld("schemaStudioPhone", phone);
+
+    const backup: import("../shared/ipc").BackupSettingsApi = {
+      save: (passphrase, repeat) => ipcRenderer.invoke(BACKUP.save, passphrase, repeat),
+      choose: () => ipcRenderer.invoke(BACKUP.choose),
+      restore: (passphrase) => ipcRenderer.invoke(BACKUP.restore, passphrase),
+    };
+    contextBridge.exposeInMainWorld("schemaStudioBackup", backup);
   }
 }

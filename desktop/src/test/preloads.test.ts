@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
-import { BRIDGE, PHONE, SETTINGS, STARTUP } from "../shared/ipc";
+import { BACKUP, BRIDGE, PHONE, SETTINGS, STARTUP } from "../shared/ipc";
 
 type Message = { kind: "invoke" | "send"; channel: string; args: unknown[] };
 type Api = Record<string, (...args: unknown[]) => unknown>;
@@ -129,7 +129,7 @@ test("any other page in the main window gets nothing", () => {
 
 test("the Settings page gets its own messages, and no other page gets them", async () => {
   const { exposed, messages } = runPreload("settings-preload.js", "app://schema-studio/settings.html");
-  assert.deepEqual([...exposed.keys()], ["schemaStudioSettings", "schemaStudioPhone"]);
+  assert.deepEqual([...exposed.keys()], ["schemaStudioSettings", "schemaStudioPhone", "schemaStudioBackup"]);
   const settings = exposed.get("schemaStudioSettings");
   assert.ok(settings);
 
@@ -207,4 +207,25 @@ test("the Phone section hears each change and each pairing as the news alone, ne
 
   assert.deepEqual(views, [[view]]);
   assert.deepEqual(names, [["Pixel 9"]]);
+});
+
+test("the Settings page's Backup section gets the backup messages, and cannot add anything to them", async () => {
+  const { exposed, messages, listeners } = runPreload("settings-preload.js", "app://schema-studio/settings.html");
+  const backup = exposed.get("schemaStudioBackup");
+  assert.ok(backup);
+  // Made up here, in place of what a person would type.
+  const passphrase = ["not", "a", "real", "passphrase"].join("-");
+  const repeat = ["not", "the", "same", "one"].join("-");
+
+  await backup.save(passphrase, repeat, "extra");
+  await backup.choose("extra");
+  await backup.restore(passphrase, "extra");
+
+  assert.deepEqual(messages, [
+    { kind: "invoke", channel: BACKUP.save, args: [passphrase, repeat] },
+    { kind: "invoke", channel: BACKUP.choose, args: [] },
+    { kind: "invoke", channel: BACKUP.restore, args: [passphrase] },
+  ]);
+  // The main process announces nothing to this section: it only answers.
+  assert.equal(listeners.size, 0);
 });

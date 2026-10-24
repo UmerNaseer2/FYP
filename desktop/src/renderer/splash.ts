@@ -8,6 +8,10 @@
  * helping. Once the last step is done, the main process replaces this page
  * with Schema Studio itself.
  *
+ * While a backup is restored (from Settings), the page shows that instead,
+ * as one running step. Schema Studio then starts again by itself, and if the
+ * restore fails, the page says why, as it does when a start fails.
+ *
  * The main process announces every change, and also answers when asked.
  * The page asks once, because it may load after the start has moved on,
  * and from then on it listens.
@@ -47,6 +51,9 @@
   const copyButton = element<HTMLButtonElement>("copy-details");
   const copyNote = element<HTMLParagraphElement>("copy-note");
   const live = element<HTMLParagraphElement>("live");
+  const restoring = element<HTMLDivElement>("restoring");
+  const restoringStep = element<HTMLParagraphElement>("restoring-step");
+  const restoringNote = element<HTMLParagraphElement>("restoring-note");
 
   /** The last step the main process reported, so that a failure shows against the step it stopped at. */
   let lastStep: StartupStep | null = null;
@@ -78,6 +85,15 @@
   }
 
   function render(state: StartupState): void {
+    if (state.phase === "restoring") {
+      stepList.hidden = true;
+      failure.hidden = true;
+      restoring.hidden = false;
+      // Said as a whole, so that a screen reader also hears what comes next.
+      live.textContent = `${restoringStep.textContent?.trim() ?? ""}. ${restoringNote.textContent?.trim() ?? ""}`;
+      return;
+    }
+    restoring.hidden = true;
     if (state.phase === "starting") {
       lastStep = state.step;
       markSteps(state.step, false);

@@ -5,7 +5,7 @@
  * The app serves them itself rather than opening them as file:// pages,
  * because a file:// page can read any file the person can, and every file://
  * page counts as the same site as every other. app://schema-studio is a site
- * of its own on which only the seven files below exist; any other address is
+ * of its own on which only the eight files below exist; any other address is
  * "not found". Every answer carries a strict content security policy, so the
  * pages run only their own scripts, load only their own files, and cannot
  * send anything anywhere.
@@ -44,7 +44,7 @@ const SECURITY_HEADERS: Record<string, string> = {
 const HTML = "text/html; charset=utf-8";
 const JAVASCRIPT = "text/javascript; charset=utf-8";
 
-/** The file behind an app:// address, or null for any address that is not one of the seven. */
+/** The file behind an app:// address, or null for any address that is not one of the eight. */
 function pageFile(files: AppFiles, pathname: string): { file: string; type: string } | null {
   switch (pathname) {
     case "/splash.html":
@@ -59,6 +59,8 @@ function pageFile(files: AppFiles, pathname: string): { file: string; type: stri
       return { file: path.join(files.rendererScripts, "settings.js"), type: JAVASCRIPT };
     case "/settings-phone.js":
       return { file: path.join(files.rendererScripts, "settings-phone.js"), type: JAVASCRIPT };
+    case "/settings-backup.js":
+      return { file: path.join(files.rendererScripts, "settings-backup.js"), type: JAVASCRIPT };
     case "/icon.svg":
       return { file: path.join(files.assets, "icon.svg"), type: "image/svg+xml" };
     default:
