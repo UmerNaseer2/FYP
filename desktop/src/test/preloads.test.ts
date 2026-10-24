@@ -139,6 +139,7 @@ test("the Settings page gets its own messages, and no other page gets them", asy
   settings.setTheme("light", "extra");
   settings.setKeepRunning(true, "extra");
   await settings.setStartAtLogin(true, "extra");
+  settings.setDriftAlerts(false, "extra");
   settings.openLogs("extra");
   settings.close("extra");
 
@@ -148,6 +149,7 @@ test("the Settings page gets its own messages, and no other page gets them", asy
     { kind: "send", channel: SETTINGS.setTheme, args: ["light"] },
     { kind: "send", channel: SETTINGS.setKeepRunning, args: [true] },
     { kind: "invoke", channel: SETTINGS.setStartAtLogin, args: [true] },
+    { kind: "send", channel: SETTINGS.setDriftAlerts, args: [false] },
     { kind: "send", channel: SETTINGS.openLogs, args: [] },
     { kind: "send", channel: SETTINGS.close, args: [] },
   ]);

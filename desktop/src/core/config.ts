@@ -1,9 +1,9 @@
 /**
  * The app's small settings file, config.json: the port its server uses, the
  * window's size and place, the light or dark choice, whether closing the
- * window keeps the app running, and which GitHub repository holds the schema
- * registry. Nothing secret goes in here (the access token is in secrets.json,
- * protected by the keyring).
+ * window keeps the app running, whether drift checks show notifications, and
+ * which GitHub repository holds the schema registry. Nothing secret goes in
+ * here (the access token is in secrets.json, protected by the keyring).
  *
  * Every field is checked on its own when the file is read. A damaged or
  * hand-edited field falls back to its default and the rest are kept, so one
@@ -35,11 +35,24 @@ export type AppConfig = {
    * closing the window then quits, as people expect.
    */
   keepRunning: boolean;
+  /**
+   * Whether a scheduled drift check that finds something new shows a
+   * notification (src/core/drift-alerts.ts). On at first.
+   */
+  driftAlerts: boolean;
   github: { owner: string; repo: string };
 };
 
 export function defaultConfig(): AppConfig {
-  return { version: 1, port: null, window: null, theme: "system", keepRunning: false, github: { owner: "", repo: "" } };
+  return {
+    version: 1,
+    port: null,
+    window: null,
+    theme: "system",
+    keepRunning: false,
+    driftAlerts: true,
+    github: { owner: "", repo: "" },
+  };
 }
 
 /** Ports the app may use: any unprivileged one, from 1024 up. */
@@ -116,6 +129,7 @@ export function parseConfig(text: string | null): { config: AppConfig; damaged: 
     window: readWindow(r.window),
     theme: readTheme(r.theme),
     keepRunning: r.keepRunning === true,
+    driftAlerts: typeof r.driftAlerts === "boolean" ? r.driftAlerts : true,
     github: readGithub(r.github),
   };
   const damaged =
@@ -124,6 +138,7 @@ export function parseConfig(text: string | null): { config: AppConfig; damaged: 
     (r.window !== undefined && r.window !== null && config.window === null) ||
     (r.theme !== undefined && r.theme !== config.theme) ||
     (r.keepRunning !== undefined && typeof r.keepRunning !== "boolean") ||
+    (r.driftAlerts !== undefined && typeof r.driftAlerts !== "boolean") ||
     (r.github !== undefined && !sameGithub(r.github, config.github));
   return { config, damaged };
 }

@@ -40,6 +40,20 @@ from a `.deb` package.
   grid brings the window back too. It can also start when you sign in to
   Ubuntu, and with Keep running on as well it then starts with only its icon
   showing.
+- Shows a notification when a scheduled drift check finds new drift, finds
+  it fixed, or cannot reach the database, and opens that schema on the
+  Drift page when you click it. A notification names the schema and its
+  connection, never a host or an error message. With Keep running on, this
+  works with the window closed too. It can be turned off (File, then
+  Settings, then Notifications).
+- Saves everything Schema Studio keeps (the saved connections and the key
+  that unlocks their passwords, the comparison and drift history, the
+  people and their roles, and the GitHub registry and its token) into one
+  file locked with a passphrase, and restores such a file on this computer
+  or another one (File, then Settings, then Backup). A wrong passphrase or
+  a damaged file is found before anything changes. After a restore the app
+  starts again, everyone signs in again, and paired phones see no
+  connections until you choose them again.
 
 ## Supported systems
 

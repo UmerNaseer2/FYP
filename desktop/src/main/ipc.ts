@@ -71,6 +71,7 @@ export type IpcHandlers = {
     setTheme(choice: ThemeChoice): void;
     setKeepRunning(on: boolean): void;
     setStartAtLogin(on: boolean): StartAtLoginResult;
+    setDriftAlerts(on: boolean): void;
     openLogs(): void;
     close(): void;
   };
@@ -180,6 +181,9 @@ export function registerIpc(handlers: IpcHandlers): void {
   handle(settings, SETTINGS.setStartAtLogin, (start) => {
     if (typeof start !== "boolean") throw new Error(REFUSED);
     return handlers.settings.setStartAtLogin(start);
+  });
+  on(settings, SETTINGS.setDriftAlerts, (alerts) => {
+    if (typeof alerts === "boolean") handlers.settings.setDriftAlerts(alerts);
   });
   on(settings, SETTINGS.openLogs, () => handlers.settings.openLogs());
   on(settings, SETTINGS.close, () => handlers.settings.close());

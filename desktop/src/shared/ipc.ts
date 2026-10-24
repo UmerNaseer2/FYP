@@ -71,6 +71,7 @@ export const SETTINGS = {
   setTheme: "settings:set-theme",
   setKeepRunning: "settings:set-keep-running",
   setStartAtLogin: "settings:set-start-at-login",
+  setDriftAlerts: "settings:set-drift-alerts",
   openLogs: "settings:open-logs",
   close: "settings:close",
 } as const;
@@ -132,6 +133,8 @@ export type SettingsView = {
   keepRunning: boolean;
   /** Whether the app starts at sign-in, or null when this copy cannot, such as one run from the source code. */
   startAtLogin: boolean | null;
+  /** Whether a scheduled drift check that finds something new shows a notification. */
+  driftAlerts: boolean;
   /** Where the app keeps its secrets: the system keyring, or a private file. */
   secretsKeptIn: "keyring" | "file";
   paths: { data: string; logs: string };
@@ -160,6 +163,7 @@ export interface SettingsApi {
   setTheme(choice: ThemeChoice): void;
   setKeepRunning(on: boolean): void;
   setStartAtLogin(on: boolean): Promise<StartAtLoginResult>;
+  setDriftAlerts(on: boolean): void;
   openLogs(): void;
   close(): void;
 }

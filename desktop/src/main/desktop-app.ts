@@ -30,6 +30,11 @@
  * when the person signs in (src/core/autostart.ts). With Keep running on as
  * well, that start shows only the icon, not the window.
  *
+ * A scheduled drift check that finds new drift, finds it fixed, or cannot
+ * reach the database shows a notification (src/main/drift-watcher.ts and
+ * src/core/drift-alerts.ts), unless Settings turns that off. Clicking it
+ * opens that schema on the Drift page.
+ *
  * Settings' Backup section saves everything Schema Studio keeps into one
  * file locked with a passphrase, and restores such a file
  * (src/main/backup.ts). While a backup is restored, the window shows the
@@ -49,6 +54,7 @@ import {
   clipboard,
   dialog,
   Menu,
+  Notification,
   powerMonitor,
   session,
   shell,
@@ -61,6 +67,7 @@ import {
 
 import { autostartFileFor, BACKGROUND_FLAG, isAutostartOn, setAutostart } from "../core/autostart";
 import { BACKUP_EXTENSION, defaultBackupName, parsePendingRestore, type PendingRestore } from "../core/backup-file";
+import { driftNotification, type DriftAlert, type DriftNotification } from "../core/drift-alerts";
 import { checkGithubSettings, readGithubSettingsInput } from "../core/github-settings";
 import {
   decideAfterRecheck,
@@ -71,6 +78,7 @@ import {
 } from "../core/offline";
 import { displayPath, type AppPaths } from "../core/paths";
 import { parsePhoneLinkState, type PhoneLinkState } from "../core/phone-link-file";
+import { DB_NAME } from "../core/postgres-files";
 import { ensurePrivateDir, UnsafeDirError } from "../core/private-dir";
 import { newSecretValues, type SecretValues } from "../core/secrets-file";
 import { trayStatus } from "../core/tray-status";
@@ -118,6 +126,7 @@ import {
 import { versionLabel, type BuildInfo } from "./build-info";
 import { ConfigStore } from "./config-store";
 import { makeDiagnostics } from "./diagnostics";
+import { DriftWatcher } from "./drift-watcher";
 import { findLocalDatabases } from "./finder";
 import { registerIpc } from "./ipc";
 import { addLogSecret, logError, logFolder, logInfo, logWarn } from "./log";
@@ -125,7 +134,7 @@ import { buildMenu } from "./menu";
 import { openPhoneLink, type PhoneLink } from "./phone-link";
 import type { AppAnswer } from "./phone-requests";
 import { CONNECTIONS_FAILED, makePairing, phoneView, readPhoneConnections, setRelay } from "./phone-settings";
-import { startPostgres, type RunningPostgres } from "./postgres";
+import { startPostgres, withClient, type RunningPostgres } from "./postgres";
 import { APP_HOST, APP_ORIGIN, serveAppPages } from "./protocol";
 import { keyringBackend, ProtectedStore } from "./secrets";
 import { secureWindows } from "./security";
@@ -173,6 +182,8 @@ const BACKUP_FILTERS = [
   { name: "Schema Studio backups", extensions: [BACKUP_EXTENSION] },
   { name: "All files", extensions: ["*"] },
 ];
+/** The most notifications held at once. Electron forgets one nobody holds, and clicking it then does nothing. */
+const MAX_NOTIFICATIONS = 20;
 
 type SignOutReason = Extract<RecheckDecision, { action: "sign-out" }>["reason"];
 
@@ -273,6 +284,8 @@ export class DesktopApp {
   private theme: ThemeChoice;
   /** Keep running, as chosen. Like the theme, it still applies for now when saving it failed. */
   private keepRunning: boolean;
+  /** Drift alerts, as chosen. Like the theme, it still applies for now when saving it failed. */
+  private driftAlerts: boolean;
   /** Where the start-at-sign-in file goes, or null when this copy cannot start at sign-in. */
   private readonly autostartFile: string | null;
   /** Aborted when the app quits, which stops whatever step of starting is under way. */
@@ -290,6 +303,12 @@ export class DesktopApp {
   private settingsWindow: BrowserWindow | null = null;
   /** The icon in the top bar, there while Keep running is on. */
   private tray: AppTray | null = null;
+  /** Watches the drift log for news once the database has started. */
+  private driftWatcher: DriftWatcher | null = null;
+  /** The notifications on show, held until clicked or closed (see MAX_NOTIFICATIONS). */
+  private readonly notifications = new Set<Notification>();
+  /** Whether it has been logged that this computer cannot show notifications, which happens once. */
+  private noNotificationsLogged = false;
   private startup: StartupState = { phase: "starting", step: "secrets" };
   private startupRun: Promise<void> = Promise.resolve();
   /** Whether starting got as far as the first page. */
@@ -325,6 +344,7 @@ export class DesktopApp {
     this.config = openConfig(options.paths);
     this.theme = this.config.get().theme;
     this.keepRunning = this.config.get().keepRunning;
+    this.driftAlerts = this.config.get().driftAlerts;
     this.autostartFile = this.findAutostartFile();
   }
 
@@ -417,6 +437,7 @@ export class DesktopApp {
         setTheme: (choice) => this.setTheme(choice),
         setKeepRunning: (on) => this.setKeepRunning(on),
         setStartAtLogin: (on) => this.setStartAtLogin(on),
+        setDriftAlerts: (on) => this.setDriftAlerts(on),
         openLogs: () => void this.openLogs(),
         close: () => this.settingsWindow?.close(),
       },
@@ -511,6 +532,16 @@ export class DesktopApp {
         pending: this.pendingRestoreStore(),
         apply: (pending) => this.applyRestore(opened, auth, pending),
       });
+      // The rows already in the drift log are old news, or came with a
+      // restored backup. Nothing writes to it before the server starts, so
+      // this is where the news begins.
+      const watcher = new DriftWatcher({
+        query: (sql, values) =>
+          withClient(postgres.socketDir, DB_NAME, (client) => client.query(sql, values)).then((answer) => answer.rows),
+      });
+      await watcher.prime();
+      watcher.onAlerts((alerts) => this.alertDrift(alerts));
+      this.driftWatcher = watcher;
 
       this.setStep("server");
       const server = await startServerOnFreePort({
@@ -532,6 +563,7 @@ export class DesktopApp {
       logInfo("Schema Studio is ready.");
       if (restored !== "none") void this.noticeRestore(restored);
       this.startRechecks(!first.checked);
+      watcher.start();
       // Never throws: a phone link that cannot start is logged, and the rest of the app carries on without it.
       await this.startPhoneLink();
     } catch (error) {
@@ -1085,6 +1117,9 @@ export class DesktopApp {
       this.auth?.cancelSignIn();
       // Phones lose the app for now, and connect again once it has started again.
       this.phoneLink?.stop();
+      // Nor is drift told about while the drift log is replaced. It stops at
+      // once; a look under way finishes without showing anything.
+      void this.driftWatcher?.stop();
       this.settingsWindow?.destroy();
       this.startup = { phase: "restoring" };
       // The splash is up before the server stops, so that the window never
@@ -1234,6 +1269,8 @@ export class DesktopApp {
     // A restore under way finishes first, so that its rows go in whole or not
     // at all before the database stops. Never rejects either.
     await this.restoreRun;
+    // A look at the drift log under way finishes before the database stops. Never rejects.
+    await this.driftWatcher?.stop();
     const { server, postgres } = this;
     if (server !== null) {
       try {
@@ -1336,6 +1373,60 @@ export class DesktopApp {
     return { ok: true };
   }
 
+  // Drift alerts
+
+  private setDriftAlerts(on: boolean): void {
+    this.driftAlerts = on;
+    // ConfigStore logs a failure to save. The choice still applies until the app quits.
+    this.config.save({ ...this.config.get(), driftAlerts: on });
+    logInfo(`Drift alerts are now ${on ? "on" : "off"}.`);
+  }
+
+  /** Shows what the drift watcher found, unless drift alerts are off or the app is going away. */
+  private alertDrift(alerts: DriftAlert[]): void {
+    if (!this.driftAlerts || this.quitting || this.restoring) return;
+    // Ubuntu reads the body of a notification as markup, so its <, > and & are written out there.
+    const text = driftNotification(alerts, { markup: process.platform === "linux" });
+    if (text !== null) this.notify(text);
+  }
+
+  /** Shows a notification that opens `text.page` when clicked. Public so that a test can catch what would be shown. */
+  notify(text: DriftNotification): void {
+    if (!Notification.isSupported()) {
+      if (!this.noNotificationsLogged) logWarn("This computer cannot show notifications, so Schema Studio cannot tell you about drift.");
+      this.noNotificationsLogged = true;
+      return;
+    }
+    const notification = new Notification({ title: text.title, body: text.body, icon: this.files.icon });
+    if (this.notifications.size >= MAX_NOTIFICATIONS) {
+      // The oldest goes first. It stays on show, but clicking it does nothing.
+      const oldest = this.notifications.values().next();
+      if (!oldest.done) this.notifications.delete(oldest.value);
+    }
+    this.notifications.add(notification);
+    notification.on("click", () => {
+      this.notifications.delete(notification);
+      this.focusWindow();
+      void this.openDriftPage(text.page);
+    });
+    notification.on("close", () => {
+      this.notifications.delete(notification);
+    });
+    notification.show();
+  }
+
+  /** Opens a page of the Drift screen in the window, keeping Back to the page before it. */
+  private async openDriftPage(page: string): Promise<void> {
+    const contents = liveContents(this.mainWindow);
+    const origin = this.server?.origin;
+    if (!this.started || this.restoring || this.quitting || contents === null || origin === undefined) return;
+    try {
+      await contents.loadURL(origin + page);
+    } catch (error) {
+      if (!wasInterrupted(error)) logWarn("Could not open the Drift page.", error);
+    }
+  }
+
   // Settings, the menu and Help
 
   private openSettings(): void {
@@ -1366,6 +1457,7 @@ export class DesktopApp {
       theme: this.theme,
       keepRunning: this.keepRunning,
       startAtLogin: this.startAtLogin(),
+      driftAlerts: this.driftAlerts,
       secretsKeptIn: opened.protection === "keyring" ? "keyring" : "file",
       paths: {
         data: displayPath(this.paths.data, this.home),
@@ -1487,6 +1579,7 @@ export class DesktopApp {
       ["Appearance", this.theme],
       ["Keep running", this.keepRunning ? "on" : "off"],
       ["Start at sign-in", startAtLogin],
+      ["Drift alerts", this.driftAlerts ? "on" : "off"],
     ];
   }
 

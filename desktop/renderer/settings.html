@@ -1,7 +1,8 @@
 <!doctype html>
 <!--
   Settings: the GitHub registry, the phone link, what the app does in the
-  background, the theme, where the app keeps its files, and backups.
+  background, drift alerts, the theme, where the app keeps its files, and
+  backups.
   src/renderer/settings.ts fills it in and sends each change to the main
   process, src/renderer/settings-phone.ts does the same for the Phone
   section, and src/renderer/settings-backup.ts for the Backup section. The
@@ -164,6 +165,19 @@
             </label>
           </div>
           <p id="start-at-login-error" class="field-error" role="alert" hidden></p>
+        </section>
+
+        <section class="group" aria-labelledby="notifications-title">
+          <h2 id="notifications-title" class="group-title">Notifications</h2>
+          <div class="list">
+            <label class="row row-choice">
+              <input id="drift-alerts" type="checkbox">
+              <span class="choice-text">
+                <span class="choice-name">Tell me when a tracked schema drifts</span>
+                <span class="hint">A scheduled check that finds new drift, finds it fixed, or cannot reach the database shows a notification. With Keep running on, this works with the window closed too.</span>
+              </span>
+            </label>
+          </div>
         </section>
 
         <section class="group" aria-labelledby="appearance-title">

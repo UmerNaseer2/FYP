@@ -2,13 +2,13 @@
  * The Settings window (renderer/settings.html).
  *
  * It shows what the main process sends when the page loads, and sends each
- * change back: the theme and the Background boxes as soon as they are
- * picked, and the GitHub registry (the repository Schema Studio publishes
- * scripts to, and the token it uses there) when Save is pressed. The main
- * process checks the GitHub boxes again before it saves anything and says
- * which box is wrong, and the page shows that message under the box. When
- * start at sign-in cannot be changed, its box goes back and the reason
- * shows under it.
+ * change back: the theme, the Background boxes and the drift alerts box as
+ * soon as they are picked, and the GitHub registry (the repository Schema
+ * Studio publishes scripts to, and the token it uses there) when Save is
+ * pressed. The main process checks the GitHub boxes again before it saves
+ * anything and says which box is wrong, and the page shows that message
+ * under the box. When start at sign-in cannot be changed, its box goes back
+ * and the reason shows under it.
  *
  * The token is never shown here or sent to this page; the page only knows
  * whether one is saved. A new token goes from its box straight to the main
@@ -76,6 +76,7 @@
   const startAtLogin = element<HTMLInputElement>("start-at-login");
   const startAtLoginHint = element<HTMLElement>("start-at-login-hint");
   const startAtLoginError = element<HTMLParagraphElement>("start-at-login-error");
+  const driftAlerts = element<HTMLInputElement>("drift-alerts");
   const themeInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="theme"]'));
   const keptIn = element<HTMLElement>("secrets-kept-in");
   const dataPath = element<HTMLElement>("data-path");
@@ -156,6 +157,7 @@
     startAtLogin.checked = view.startAtLogin === true;
     startAtLogin.disabled = view.startAtLogin === null;
     startAtLoginHint.textContent = view.startAtLogin === null ? START_UNAVAILABLE : START_HINT;
+    driftAlerts.checked = view.driftAlerts;
     for (const input of themeInputs) input.checked = input.value === view.theme;
     keptIn.textContent = KEPT_IN[view.secretsKeptIn];
     dataPath.textContent = view.paths.data;
@@ -263,6 +265,7 @@
       if (changingStart) event.preventDefault();
     });
     startAtLogin.addEventListener("change", () => void changeStartAtLogin(api));
+    driftAlerts.addEventListener("change", () => api.setDriftAlerts(driftAlerts.checked));
     for (const input of themeInputs) {
       input.addEventListener("change", () => {
         if (input.checked) api.setTheme(input.value as ThemeChoice);

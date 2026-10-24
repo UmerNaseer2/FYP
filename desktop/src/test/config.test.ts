@@ -23,6 +23,7 @@ const FULL: AppConfig = {
   window: WINDOW,
   theme: "dark",
   keepRunning: true,
+  driftAlerts: false,
   github: { owner: "octocat", repo: "schema-registry" },
 };
 
@@ -30,13 +31,14 @@ function parseWith(changes: Record<string, unknown>) {
   return parseConfig(JSON.stringify({ ...FULL, ...changes }));
 }
 
-test("the defaults are: no port yet, no saved window, follow Ubuntu's theme, quit when the window closes, no registry", () => {
+test("the defaults are: no port yet, no saved window, follow Ubuntu's theme, quit when the window closes, drift alerts on, no registry", () => {
   assert.deepEqual(defaultConfig(), {
     version: 1,
     port: null,
     window: null,
     theme: "system",
     keepRunning: false,
+    driftAlerts: true,
     github: { owner: "", repo: "" },
   });
 });
@@ -110,6 +112,19 @@ test("a file saved before keep running existed quits when the window closes, and
   const { keepRunning, ...older } = FULL;
   assert.equal(keepRunning, true);
   assert.deepEqual(parseConfig(JSON.stringify(older)), { config: { ...FULL, keepRunning: false }, damaged: false });
+});
+
+test("drift alerts are off only when it says exactly false, and anything but true or false counts as damaged", () => {
+  assert.deepEqual(parseWith({ driftAlerts: true }), { config: { ...FULL, driftAlerts: true }, damaged: false });
+  for (const driftAlerts of ["false", 0, null, {}]) {
+    assert.deepEqual(parseWith({ driftAlerts }), { config: { ...FULL, driftAlerts: true }, damaged: true }, String(driftAlerts));
+  }
+});
+
+test("a file saved before drift alerts existed has them on, and is not damaged", () => {
+  const { driftAlerts, ...older } = FULL;
+  assert.equal(driftAlerts, false);
+  assert.deepEqual(parseConfig(JSON.stringify(older)), { config: { ...FULL, driftAlerts: true }, damaged: false });
 });
 
 test("a registry GitHub would refuse is forgotten, and the file counts as damaged", () => {

@@ -4,14 +4,14 @@
  *
  * Only app://schema-studio/settings.html gets anything. It may read the
  * settings, save the GitHub registry, change the theme, choose whether the
- * app keeps running with its window closed and starts at sign-in, open the
- * logs and close the window. Its Phone section runs the phone link through
- * `window.schemaStudioPhone`, and its Backup section saves and restores
- * backups through `window.schemaStudioBackup`. As in the main window's
- * preload (app-preload.ts), the main process checks every message again
- * before it acts on it, the message names are repeated here because a
- * sandboxed preload can load nothing but Electron, and the types make the
- * compiler check them against src/shared/ipc.ts.
+ * app keeps running with its window closed, starts at sign-in and shows
+ * drift alerts, open the logs and close the window. Its Phone section runs
+ * the phone link through `window.schemaStudioPhone`, and its Backup section
+ * saves and restores backups through `window.schemaStudioBackup`. As in the
+ * main window's preload (app-preload.ts), the main process checks every
+ * message again before it acts on it, the message names are repeated here
+ * because a sandboxed preload can load nothing but Electron, and the types
+ * make the compiler check them against src/shared/ipc.ts.
  */
 {
   const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
@@ -23,6 +23,7 @@
     setTheme: "settings:set-theme",
     setKeepRunning: "settings:set-keep-running",
     setStartAtLogin: "settings:set-start-at-login",
+    setDriftAlerts: "settings:set-drift-alerts",
     openLogs: "settings:open-logs",
     close: "settings:close",
   };
@@ -56,6 +57,7 @@
       setTheme: (choice) => ipcRenderer.send(SETTINGS.setTheme, choice),
       setKeepRunning: (on) => ipcRenderer.send(SETTINGS.setKeepRunning, on),
       setStartAtLogin: (on) => ipcRenderer.invoke(SETTINGS.setStartAtLogin, on),
+      setDriftAlerts: (on) => ipcRenderer.send(SETTINGS.setDriftAlerts, on),
       openLogs: () => ipcRenderer.send(SETTINGS.openLogs),
       close: () => ipcRenderer.send(SETTINGS.close),
     };
