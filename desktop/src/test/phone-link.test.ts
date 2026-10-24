@@ -739,13 +739,18 @@ test("pairs a phone through the relay, answers it, and sends it away once it is 
   const saved: PairedPhone = { key, name: "Test phone", pairedAt: clock.now(), lastSeenAt: clock.now() };
   assert.deepEqual(paired, [saved]);
   assert.deepEqual(store.last.phones, [saved]);
-  assert.deepEqual(link.view().phones, [{ ...saved, connected: true }]);
-  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: true }]);
+  // It shows as connected once a message from it opens.
+  assert.deepEqual(link.view().phones, [{ ...saved, connected: false }]);
+  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: false }]);
 
   // A phone sees only the connections shared with it, and the app is not asked about any other.
   const refused = await ask(phone, socket, 1, { id: 1, method: "schemas.list", params: { connectionId: 3 } });
   assert.deepEqual(refused, readAnswer(writeRefusal(1, "not-shared")));
   assert.deepEqual(caller.calls, []);
+  await settle();
+  assert.deepEqual(store.last.phones, [saved]);
+  assert.deepEqual(link.view().phones, [{ ...saved, connected: true }]);
+  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: true }]);
 
   link.setSharedConnections([3]);
   caller.answers.set("GET /api/lineage/schemas?connectionId=3", { status: 200, json: { schemas: ["public"] } });
@@ -796,8 +801,16 @@ test("lets a phone paired before back in, notes when it was last seen, and shows
   link.start();
   const socket = await signIn(opener, link);
 
-  const { answer } = await connectPhone(socket, 5, phoneKey, await publicKeyOf("X25519", state.staticKey), { kind: "session" });
+  const { answer, link: phone } = await connectPhone(socket, 5, phoneKey, await publicKeyOf("X25519", state.staticKey), { kind: "session" });
   assert.deepEqual(answer, { ok: true, name: "Test computer" });
+  assert.ok(phone);
+  // Seen, and connected, only once a message from it opens.
+  assert.deepEqual(link.view().phones, [
+    { ...before, connected: false },
+    { ...other, connected: false },
+  ]);
+  const refused = await ask(phone, socket, 5, { id: 1, method: "schemas.list", params: { connectionId: 3 } });
+  assert.deepEqual(refused, readAnswer(writeRefusal(1, "not-shared")));
   const seen: PairedPhone = { ...before, lastSeenAt: clock.now() };
   assert.deepEqual(store.last.phones, [seen, other]);
   await settle();

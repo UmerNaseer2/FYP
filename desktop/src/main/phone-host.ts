@@ -8,7 +8,10 @@
  * channel). Everything is encrypted from end to end, so the relay never sees
  * a request or an answer, and it cannot pretend to be a paired phone: the
  * handshake proves that the phone holds the private half of the key it was
- * paired with.
+ * paired with. The relay could play a phone's first message again, and the
+ * computer answers that as it would the phone, but without the phone's keys
+ * the relay can neither read the answer nor send a message that opens. So a
+ * phone counts as connected, and as seen, only once a message from it opens.
  *
  * Pure apart from the log. The relay connection (src/main/phone-relay.ts),
  * the saved phones (src/main/phone-link.ts) and the answers
@@ -76,8 +79,9 @@ export type PhoneHostOptions = {
   /** Told when a phone pairs, so that Settings can show it at once. It must not throw. */
   onPaired?: (phone: PairedPhone) => void;
   /**
-   * Told when a phone is let in, and when a phone that was let in goes, so
-   * that Settings can show which phones are connected. It must not throw.
+   * Told when the first message from a phone that was let in opens, and when
+   * such a phone goes, so that Settings can show which phones are connected.
+   * It must not throw.
    */
   onConnectedChange?: () => void;
   /** The time and timers: the computer's own clock unless a test passes one. */
@@ -90,7 +94,8 @@ type Pending = { controller: AbortController; timer: unknown };
 /**
  * One phone's connection. It is "waiting" for the phone's first message,
  * "opening" while the computer works out its answer, and "open" once the
- * phone is let in.
+ * phone is let in. An open connection is confirmed once a message from the
+ * phone opens.
  */
 type Channel = {
   state: "waiting" | "opening" | "open";
@@ -98,6 +103,13 @@ type Channel = {
   phoneKey: string | null;
   /** The encrypted link, once the phone is let in. */
   link: Link | null;
+  /**
+   * Whether a message from the phone has opened since it was let in. A relay
+   * can play a phone's first message again, and the computer answers it, but
+   * whoever plays it can neither read the answer nor send a message that
+   * opens. So only a phone that has sent one counts as connected and as seen.
+   */
+  confirmed: boolean;
   /** The requests being answered, by their number. */
   pending: Map<number, Pending>;
   handshakeTimer: unknown;
@@ -136,11 +148,11 @@ export class PhoneHost {
     this.pairing = null;
   }
 
-  /** The keys of the phones let in now, each once, however many connections it has. */
+  /** The keys of the phones connected now, whose messages have opened, each once, however many connections it has. */
   connectedPhones(): string[] {
     const keys = new Set<string>();
     for (const channel of this.channels.values()) {
-      if (channel.state === "open" && channel.phoneKey !== null) keys.add(channel.phoneKey);
+      if (channel.confirmed && channel.phoneKey !== null) keys.add(channel.phoneKey);
     }
     return [...keys];
   }
@@ -163,7 +175,7 @@ export class PhoneHost {
       this.options.close(number);
       return;
     }
-    const channel: Channel = { state: "waiting", phoneKey: null, link: null, pending: new Map(), handshakeTimer: null };
+    const channel: Channel = { state: "waiting", phoneKey: null, link: null, confirmed: false, pending: new Map(), handshakeTimer: null };
     channel.handshakeTimer = this.clock.setTimeout(() => {
       if (channel.state !== "open") this.shut(number, channel, "did not finish connecting in time");
     }, HANDSHAKE_WITHIN_MS);
@@ -197,7 +209,10 @@ export class PhoneHost {
         if (link === null) return;
         // The link opens messages in the order they arrive, so requests are handled in the order they were sent.
         void link.receive(message).then(
-          (whole) => this.handle(number, channel, whole),
+          (whole) => {
+            this.confirm(number, channel);
+            this.handle(number, channel, whole);
+          },
           () => this.shut(number, channel, "sent a message that could not be opened"),
         );
         return;
@@ -250,24 +265,21 @@ export class PhoneHost {
     this.clock.clearTimeout(channel.handshakeTimer);
     channel.handshakeTimer = null;
     this.options.send(number, message);
-    // Told only now, as a phone saved above was not yet let in, so it showed as not connected.
-    this.options.onConnectedChange?.();
   }
 
   /**
    * Whether a phone is let in, and what it is told. A pairing is saved here,
    * at once, with nothing awaited, so two phones that use one link at the same
    * moment cannot both pair. A phone that goes before it hears the answer can
-   * pair again with a new link.
+   * pair again with a new link. A paired phone is not noted as seen here, as
+   * its first message could be one played again: confirm notes it once a
+   * message from it opens.
    */
   private admit(key: string, opening: Opening): OpeningAnswer {
     const now = this.clock.now();
     const phones = this.options.phones();
     if (opening.kind === "session") {
-      const phone = phones.find((known) => known.key === key);
-      if (phone === undefined) return { ok: false, reason: "not-paired" };
-      this.options.savePhones(withPhoneSeen(phones, key, now));
-      logInfo(`A paired phone connected: "${phone.name}".`);
+      if (!phones.some((known) => known.key === key)) return { ok: false, reason: "not-paired" };
       return { ok: true, name: this.options.computerName };
     }
     const pairing = this.pairing;
@@ -285,6 +297,23 @@ export class PhoneHost {
       this.options.onPaired?.(phone);
     }
     return { ok: true, name: this.options.computerName };
+  }
+
+  /**
+   * Counts a phone as connected, and notes it as seen, the first time a
+   * message from it opens on this connection: only the phone itself, which
+   * holds the keys of the handshake, could have sent one.
+   */
+  private confirm(number: number, channel: Channel): void {
+    if (channel.confirmed || this.channels.get(number) !== channel) return;
+    channel.confirmed = true;
+    const phones = this.options.phones();
+    const phone = phones.find((known) => known.key === channel.phoneKey);
+    if (phone !== undefined) {
+      this.options.savePhones(withPhoneSeen(phones, phone.key, this.clock.now()));
+      logInfo(`A paired phone connected: "${phone.name}".`);
+    }
+    this.options.onConnectedChange?.();
   }
 
   /** Handles one whole message from a phone that is let in. */
@@ -364,7 +393,7 @@ export class PhoneHost {
     channel.pending.clear();
     if (this.channels.get(number) === channel) {
       this.channels.delete(number);
-      if (channel.state === "open") this.options.onConnectedChange?.();
+      if (channel.confirmed) this.options.onConnectedChange?.();
     }
   }
 }

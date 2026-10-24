@@ -325,8 +325,10 @@ test("pairs one phone with the latest pairing link, and answers what it asks", a
   const expected: PairedPhone[] = [{ key: phone.keyText, name: "Pixel 9", pairedAt: clock.time, lastSeenAt: clock.time }];
   assert.deepEqual(saved(), expected);
   assert.deepEqual(paired, expected);
-  assert.deepEqual(host.connectedPhones(), [phone.keyText]);
+  // It counts as connected once a message from it opens.
+  assert.deepEqual(host.connectedPhones(), []);
   assert.deepEqual(await phone.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
+  assert.deepEqual(host.connectedPhones(), [phone.keyText]);
 
   // A link pairs one phone only.
   const second = await newPhone(2);
@@ -399,6 +401,7 @@ test("lets a paired phone in, and turns away one that is not paired", async () =
   clock.advance(60_000);
   const phone = await newPhone(1, known);
   assert.deepEqual(await phone.connect(SESSION), LET_IN);
+  assert.deepEqual(await phone.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
   assert.deepEqual(saved(), [{ key: phone.keyText, name: "Pixel 9", pairedAt: 1, lastSeenAt: clock.time }]);
   assert.match(newLogLines(), /A paired phone connected: "Pixel 9"\./);
 
@@ -408,7 +411,91 @@ test("lets a paired phone in, and turns away one that is not paired", async () =
   assert.match(newLogLines(), /Closed a phone's connection: it is not paired with this computer\./);
   assert.deepEqual(paired, []);
   assert.deepEqual(host.connectedPhones(), [phone.keyText]);
+  assert.deepEqual(await phone.request(schemasOf(2)), { id: 2, ok: true, result: { schemas: ["public"] } });
+});
+
+test("counts a phone as connected, and as seen, only once a message from it opens", async () => {
+  const known = await generateKeyPair("X25519", false);
+  const phones: PairedPhone[] = [{ key: toBase64Url(known.publicKey), name: "Pixel 9", pairedAt: 1, lastSeenAt: 2 }];
+  const { host, clock, saved, connectedChanges, newPhone } = await setUp({ phones });
+  newLogLines();
+  clock.advance(60_000);
+  const phone = await newPhone(1, known);
+  assert.deepEqual(await phone.connect(SESSION), LET_IN);
+  await quiet();
+  assert.deepEqual(host.connectedPhones(), []);
+  assert.deepEqual(connectedChanges, []);
+  assert.deepEqual(saved(), phones);
+  assert.doesNotMatch(newLogLines(), /A paired phone connected/);
+
   assert.deepEqual(await phone.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
+  const seenAt = clock.time;
+  assert.deepEqual(host.connectedPhones(), [phone.keyText]);
+  assert.deepEqual(connectedChanges, [[phone.keyText]]);
+  assert.deepEqual(saved(), [{ key: phone.keyText, name: "Pixel 9", pairedAt: 1, lastSeenAt: seenAt }]);
+  assert.match(newLogLines(), /A paired phone connected: "Pixel 9"\./);
+
+  // Later messages change nothing more.
+  clock.advance(60_000);
+  assert.deepEqual(await phone.request(schemasOf(2)), { id: 2, ok: true, result: { schemas: ["public"] } });
+  assert.deepEqual(connectedChanges, [[phone.keyText]]);
+  assert.deepEqual(saved(), [{ key: phone.keyText, name: "Pixel 9", pairedAt: 1, lastSeenAt: seenAt }]);
+  assert.equal(newLogLines(), "");
+});
+
+test("answers a phone's first message played again, but never counts that as the phone connecting", async () => {
+  const known = await generateKeyPair("X25519", false);
+  const phones: PairedPhone[] = [{ key: toBase64Url(known.publicKey), name: "Pixel 9", pairedAt: 1, lastSeenAt: 2 }];
+  const { host, wire, clock, computerKey, saved, connectedChanges } = await setUp({ phones });
+  newLogLines();
+  // The phone's first message, as a relay could keep it and play it again.
+  const initiator = new Initiator({ prologue: PHONE_LINK_PROLOGUE, staticKey: known, remoteStaticKey: computerKey.publicKey });
+  const recorded = await initiator.writeFirstMessage(writeOpening(SESSION));
+  for (const channel of [1, 2]) {
+    host.opened(channel);
+    host.received(channel, recorded);
+    // The computer cannot tell it from the phone's own, so it answers, but only the phone could read the answer.
+    await wire.next(channel);
+  }
+  clock.advance(HANDSHAKE_WITHIN_MS * 2);
+  assert.deepEqual(host.connectedPhones(), []);
+  assert.deepEqual(saved(), phones);
+  assert.doesNotMatch(newLogLines(), /A paired phone connected/);
+
+  // Without the phone's keys, nothing sent after it opens.
+  host.received(2, new Uint8Array(64));
+  await wire.waitClosed(2);
+  host.closed(1);
+  assert.deepEqual(connectedChanges, []);
+  assert.deepEqual(host.connectedPhones(), []);
+});
+
+test("counts any message from a phone that opens, but none that opens after the phone has gone", async () => {
+  const known = await generateKeyPair("X25519", false);
+  const phones: PairedPhone[] = [{ key: toBase64Url(known.publicKey), name: "Pixel 9", pairedAt: 1, lastSeenAt: 2 }];
+  const { host, wire, clock, saved, connectedChanges, newPhone } = await setUp({ phones });
+  newLogLines();
+  clock.advance(60_000);
+  // The relay says the phone went while the computer was still opening its message.
+  const gone = await newPhone(1, known);
+  assert.deepEqual(await gone.connect(SESSION), LET_IN);
+  await gone.send(writeRequest(schemasOf(1)));
+  host.closed(1);
+  await quiet();
+  assert.deepEqual(connectedChanges, []);
+  assert.deepEqual(saved(), phones);
+  assert.doesNotMatch(newLogLines(), /A paired phone connected/);
+
+  // A message that is not a request still came from the phone, which is seen before it is sent away.
+  const phone = await newPhone(2, known);
+  assert.deepEqual(await phone.connect(SESSION), LET_IN);
+  await phone.send(utf8("not a request"));
+  await wire.waitClosed(2);
+  assert.deepEqual(connectedChanges, [[phone.keyText], []]);
+  assert.deepEqual(saved(), [{ key: phone.keyText, name: "Pixel 9", pairedAt: 1, lastSeenAt: clock.time }]);
+  const lines = newLogLines();
+  assert.match(lines, /A paired phone connected: "Pixel 9"\./);
+  assert.match(lines, /Closed a phone's connection: it sent a request that could not be read\./);
 });
 
 test("answers each phone on its own link, whatever order the answers are ready in", async () => {
@@ -529,10 +616,13 @@ test("stops what a phone asked for once the relay says the phone went", async ()
 test("stops sending an answer once the relay sends the phone away part way through it", async () => {
   const { host, wire, pairedPhone } = await setUp({ answer: async (request) => answerOfSize(request.id, 3 * PIECE_BYTES) });
   const phone = await pairedPhone(1);
+  // One whole answer first, so the log already says the phone connected.
+  await phone.send(writeRequest(schemasOf(1)));
+  await phone.message();
   newLogLines();
   // The relay tells the host the phone went from inside the host's send, as the first piece of the answer goes.
   wire.onSend = (channel) => host.closed(channel);
-  await phone.send(writeRequest(schemasOf(1)));
+  await phone.send(writeRequest(schemasOf(2)));
   await until(() => wire.waiting(1) > 0, "the first piece of the answer");
   await quiet();
   // The rest of the answer did not go to a phone that has gone, and the host did not close what the relay closed.
@@ -594,8 +684,12 @@ test("sends away a phone that speaks too soon, or whose first message is not a h
 test("forgetting a phone unpairs it, and sends away each connection it has", async () => {
   const { host, wire, saved, newPhone, pairedPhone } = await setUp();
   const a = await pairedPhone(1, undefined, "A");
-  assert.deepEqual(await (await newPhone(2, a.key)).connect(SESSION), LET_IN);
+  const again = await newPhone(2, a.key);
+  assert.deepEqual(await again.connect(SESSION), LET_IN);
   const b = await pairedPhone(3, undefined, "B");
+  // Each counts as connected once a message from it opens. A's first connection has sent none, but goes too.
+  assert.deepEqual(await again.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
+  assert.deepEqual(await b.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
   assert.deepEqual(host.connectedPhones(), [a.keyText, b.keyText]);
   host.forgetPhone(a.keyText);
   assert.deepEqual(wire.closed, [1, 2]);
@@ -605,7 +699,7 @@ test("forgetting a phone unpairs it, and sends away each connection it has", asy
   );
   assert.deepEqual(host.connectedPhones(), [b.keyText]);
   assert.deepEqual(await (await newPhone(4, a.key)).connect(SESSION), { ok: false, reason: "not-paired" });
-  assert.deepEqual(await b.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
+  assert.deepEqual(await b.request(schemasOf(2)), { id: 2, ok: true, result: { schemas: ["public"] } });
 });
 
 test("lets go of every phone when the relay connection drops, and keeps the pairing link", async () => {
@@ -633,10 +727,16 @@ test("lets go of every phone when the relay connection drops, and keeps the pair
   assert.deepEqual(await (await newPhone(1)).connect(pairWith(code.secret)), LET_IN);
 });
 
-test("says when a phone is let in and when a connected phone goes, and only then", async () => {
+test("says when a phone's first message opens and when such a phone goes, and only then", async () => {
   const { host, wire, clock, connectedChanges, newPhone, pairedPhone } = await setUp();
   const first = await pairedPhone(1);
+  // Let in, but not yet connected: its first message could have been played again.
+  assert.deepEqual(connectedChanges, []);
+  await first.request(schemasOf(1));
   assert.deepEqual(connectedChanges, [[first.keyText]]);
+  // Only the first message that opens says so.
+  await first.request(schemasOf(2));
+  assert.equal(connectedChanges.length, 1);
 
   // A phone that is turned away, or that never finishes connecting, was never connected.
   assert.deepEqual(await (await newPhone(2)).connect(SESSION), { ok: false, reason: "not-paired" });
@@ -647,19 +747,24 @@ test("says when a phone is let in and when a connected phone goes, and only then
 
   // The relay says a phone went, and a phone is forgotten.
   const second = await pairedPhone(4);
+  await second.request(schemasOf(1));
   host.closed(1);
   host.forgetPhone(second.keyText);
   assert.deepEqual(connectedChanges.slice(1), [[first.keyText, second.keyText], [second.keyText], []]);
 
   // A paired phone comes back, and goes when the relay gives its channel to a new phone.
-  assert.deepEqual(await (await newPhone(5, first.key)).connect(SESSION), LET_IN);
+  const back = await newPhone(5, first.key);
+  assert.deepEqual(await back.connect(SESSION), LET_IN);
+  await back.request(schemasOf(1));
   host.opened(5);
   assert.deepEqual(connectedChanges.slice(4), [[first.keyText], []]);
 
-  // The channel given again is not let in yet, so dropping it says nothing.
-  const third = await pairedPhone(6);
+  // The channel given again, and a phone let in that has sent nothing, say nothing as they go.
+  await pairedPhone(6);
+  const fourth = await pairedPhone(7);
+  await fourth.request(schemasOf(1));
   host.dropAll();
-  assert.deepEqual(connectedChanges.slice(6), [[third.keyText], []]);
+  assert.deepEqual(connectedChanges.slice(6), [[fourth.keyText], []]);
 });
 
 test("ignores a channel it never opened, and takes a channel opened again for a new phone", async () => {
@@ -673,6 +778,8 @@ test("ignores a channel it never opened, and takes a channel opened again for a 
   const fresh = await pairedPhone(1, undefined, "Tablet");
   assert.equal(first.signal.aborted, true);
   assert.deepEqual(wire.closed, []);
+  await fresh.send(writeRequest(schemasOf(2)));
+  await askedFor(fake.asked, 2);
   assert.deepEqual(host.connectedPhones(), [fresh.keyText]);
   first.answer.resolve(schemasAnswer(1, ["old"]));
   await quiet();
