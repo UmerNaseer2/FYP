@@ -40,6 +40,8 @@ export type DriftRow = {
   counts: DriftCounts | null;
   schemaName: string;
   label: string | null;
+  /** The saved connection the schema is on, by its number in the app. */
+  connectionId: number | null;
   connectionName: string | null;
   /** The status of the row just before this one for the same schema, whatever wrote it. */
   previousStatus: string | null;
@@ -59,6 +61,13 @@ export type DriftAlert = {
   trackedSchemaId: number;
   /** The schema's label, or else its name, made fit for one line. */
   name: string;
+  /**
+   * The saved connection the schema is on, by its number in the app, or null
+   * when the row did not say. Drift alerts go to phones only for the
+   * connections shared with them (src/main/phone-link.ts), so an alert with
+   * no number goes to none.
+   */
+  connectionId: number | null;
   connectionName: string | null;
   counts: DriftCounts | null;
   /** Whether the check found drift, which "reachable" says too. */
@@ -150,6 +159,7 @@ export function readDriftRow(raw: Record<string, unknown>): DriftRow | null {
     counts: readCounts(raw.detail),
     schemaName,
     label: readText(raw.label),
+    connectionId: readId(raw.connection_id),
     connectionName: readText(raw.connection_name),
     previousStatus: readText(raw.previous_status),
     lastFingerprint: readText(raw.last_fingerprint),
@@ -206,6 +216,7 @@ export function driftAlert(row: DriftRow): DriftAlert | null {
     eventId: row.id,
     trackedSchemaId: row.trackedSchemaId,
     name: cleanName(row.label) ?? cleanName(row.schemaName) ?? `Schema ${row.trackedSchemaId}`,
+    connectionId: row.connectionId,
     connectionName: cleanName(row.connectionName),
     counts: row.counts,
     drifted: row.status === "drifted",

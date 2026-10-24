@@ -1,7 +1,8 @@
 /**
  * What phone-link.json holds: whether the phone link is on, the relay it goes
  * through, which saved connections phones may see, the phones paired with this
- * computer, and the phone link's own two keys.
+ * computer with the drift alerts each has asked for, and the phone link's own
+ * keys.
  *
  *  - signingKey proves to the relay that this is the computer the phones
  *    paired with (src/shared/remote/relay-auth.ts). The relay knows the
@@ -9,14 +10,23 @@
  *  - staticKey is the computer's end of every phone's encrypted link
  *    (src/shared/remote/noise.ts). A paired phone keeps its public half and
  *    refuses any computer that cannot prove it holds this one.
+ *  - pushKey signs the drift alerts the computer sends through phones' push
+ *    services (src/core/web-push.ts). A phone's browser turns alerts on with
+ *    its public half.
  *
- * Each is 32 random bytes, which is all an Ed25519 or X25519 private key is.
- * They are checked exactly when the file is read: a key that changed would make
- * this a different computer to every paired phone, so a damaged key leaves the
- * phone link off instead of quietly making a new one. The other fields are
- * checked one by one, and one that cannot be read falls back to its default, as
- * in config.json. Every fallback gives phones less, never more: a phone or a
- * shared connection that cannot be read is left out.
+ * Each is 32 random bytes. That is all an Ed25519 or X25519 private key is, and
+ * a P-256 one too, as long as the bytes make a number below the curve's order
+ * (newPushKey tries again when they do not). The keys are checked exactly when
+ * the file is read: a key that changed would make this a different computer to
+ * every paired phone, so a damaged signing or static key leaves the phone link
+ * off instead of quietly making a new one. The push key is the exception,
+ * because losing it costs only drift alerts: when it cannot be read,
+ * src/main/phone-link.ts makes a new one and turns every phone's alerts off,
+ * since a push service takes alerts signed only with the key they were turned
+ * on with, until each phone turns them on again. The other fields are checked
+ * one by one, and one that cannot be read falls back to its default, as in
+ * config.json. Every fallback gives phones less, never more: a phone, a shared
+ * connection or a phone's alerts that cannot be read are left out.
  *
  * The file is kept the way secrets.json is (src/core/secrets-file.ts), locked
  * with a key from the login keyring where there is one.
@@ -27,9 +37,16 @@ import { fromBase64UrlOfLength } from "../shared/remote/bytes";
 import { KEY_BYTES } from "../shared/remote/keys";
 import { cleanDeviceName } from "../shared/remote/pairing";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
+import { isPushKey, newPushKey, readPushSubscription, type PushSubscriptionFields } from "./web-push";
 
 /** The most phones one computer pairs with. The relay lets the same number connect at once (relay/src/room-logic.ts). */
 export const MAX_PAIRED_PHONES = 8;
+
+/** Where a phone's browser takes drift alerts for it, and the keys to encrypt them for it (src/core/web-push.ts). */
+export type PhoneSubscription = PushSubscriptionFields & {
+  /** When the phone turned drift alerts on, in milliseconds since 1970. */
+  since: number;
+};
 
 export type PairedPhone = {
   /** The phone's public key (X25519, as base64url). The phone proves it holds the private half each time it connects. */
@@ -40,6 +57,8 @@ export type PairedPhone = {
   pairedAt: number;
   /** When it last connected, in milliseconds since 1970. When it pairs, that counts. */
   lastSeenAt: number;
+  /** Where to send it drift alerts. Left out until the phone turns them on. */
+  push?: PhoneSubscription;
 };
 
 export type PhoneLinkState = {
@@ -54,6 +73,11 @@ export type PhoneLinkState = {
   signingKey: string;
   /** The X25519 private key at the computer's end of every phone's link, as base64url. */
   staticKey: string;
+  /**
+   * The P-256 private key that signs drift alerts to phones, as base64url, or
+   * null when the file held none that could be read, until phone-link.ts makes one.
+   */
+  pushKey: string | null;
 };
 
 /** A first run's state: new keys, the link off, nothing shared and no phones. `random` is crypto.randomBytes, passed in so tests can fix it. */
@@ -65,6 +89,7 @@ export function newPhoneLinkState(random: (size: number) => Buffer): PhoneLinkSt
     phones: [],
     signingKey: random(KEY_BYTES).toString("base64url"),
     staticKey: random(KEY_BYTES).toString("base64url"),
+    pushKey: newPushKey(random),
   };
 }
 
@@ -91,16 +116,27 @@ export function readConnectionIds(value: unknown): number[] {
   return [...ids];
 }
 
+function readSubscription(value: unknown): PhoneSubscription | null {
+  if (!isRecord(value)) return null;
+  const { endpoint, p256dh, auth, since } = value;
+  const subscription = readPushSubscription({ endpoint, p256dh, auth });
+  return subscription !== null && isTime(since) ? { ...subscription, since } : null;
+}
+
 function readPhone(value: unknown): PairedPhone | null {
   if (!isRecord(value)) return null;
   const { key, name, pairedAt, lastSeenAt } = value;
   if (!isKey(key) || !isTime(pairedAt)) return null;
+  // A subscription that cannot be read is left out, so that phone gets no
+  // drift alerts until it turns them on again.
+  const push = readSubscription(value.push);
   return {
     key,
     // "Phone" is also the name readOpening gives a phone that sent none.
     name: cleanDeviceName(typeof name === "string" ? name : "", "Phone"),
     pairedAt,
     lastSeenAt: isTime(lastSeenAt) ? lastSeenAt : pairedAt,
+    ...(push === null ? {} : { push }),
   };
 }
 
@@ -119,7 +155,7 @@ function readPhones(value: unknown): PairedPhone[] {
 /** The state read back from phone-link.json, or null when its keys are not what the app wrote. */
 export function parsePhoneLinkState(value: unknown): PhoneLinkState | null {
   if (!isRecord(value)) return null;
-  const { signingKey, staticKey } = value;
+  const { signingKey, staticKey, pushKey } = value;
   if (!isKey(signingKey) || !isKey(staticKey)) return null;
   return {
     enabled: value.enabled === true,
@@ -128,6 +164,7 @@ export function parsePhoneLinkState(value: unknown): PhoneLinkState | null {
     phones: readPhones(value.phones),
     signingKey,
     staticKey,
+    pushKey: isPushKey(pushKey) ? pushKey : null,
   };
 }
 
@@ -152,4 +189,26 @@ export function withPhoneSeen(phones: readonly PairedPhone[], key: string, now: 
 /** The phones without this one. */
 export function withoutPhone(phones: readonly PairedPhone[], key: string): PairedPhone[] {
   return phones.filter((phone) => phone.key !== key);
+}
+
+/** The phone as it is without drift alerts. */
+function withoutPush({ key, name, pairedAt, lastSeenAt }: PairedPhone): PairedPhone {
+  return { key, name, pairedAt, lastSeenAt };
+}
+
+/** The phones with this one's drift alerts turned on with `subscription`, or turned off when it is null. */
+export function withPhoneSubscription(phones: readonly PairedPhone[], key: string, subscription: PhoneSubscription | null): PairedPhone[] {
+  return phones.map((phone) => {
+    if (phone.key !== key) return phone;
+    return subscription === null ? withoutPush(phone) : { ...withoutPush(phone), push: subscription };
+  });
+}
+
+/**
+ * The state with a new push key made with `random`. Each phone turned drift
+ * alerts on for the old key, and push services refuse alerts signed with any
+ * other, so every phone's alerts are turned off with it.
+ */
+export function withNewPushKey(state: PhoneLinkState, random: (size: number) => Buffer): PhoneLinkState {
+  return { ...state, pushKey: newPushKey(random), phones: state.phones.map(withoutPush) };
 }

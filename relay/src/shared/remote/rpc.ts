@@ -6,11 +6,12 @@
  * the same number, so answers may come back in any order: a comparison can
  * take a while, and a list asked for after it need not wait for it.
  *
- * A phone can only look, never change anything. The computer answers every
- * request through its own copy of the app, which checks it as it checks
- * anything asked from the app's window, so a phone may do only what the
- * person signed in on the computer may do, and only with the connections
- * chosen for phones in Settings.
+ * A phone can only look, never change anything in the app. The one thing it
+ * may change is whether it gets drift alerts itself (push.subscribe and
+ * push.unsubscribe). The computer answers every request through its own copy
+ * of the app, which checks it as it checks anything asked from the app's
+ * window, so a phone may do only what the person signed in on the computer
+ * may do, and only with the connections chosen for phones in Settings.
  *
  * Every message is read strictly, except what a successful answer holds:
  *  - the computer refuses anything that is not exactly a request it knows,
@@ -24,7 +25,7 @@
  * phone that this file does not list, however much more the app's server
  * said.
  */
-import { utf8, type Bytes } from "./bytes.js";
+import { fromBase64UrlOfLength, utf8, type Bytes } from "./bytes.js";
 import { hasExactly, objectFields, readJsonObject } from "./json.js";
 
 /** The biggest request a phone may send. The biggest real one, a comparison with every target, is a few kilobytes. */
@@ -40,8 +41,16 @@ export const ANSWER_WITHIN_MS = 120_000;
 export const MAX_COMPARE_TARGETS = 6;
 /** The longest schema name a request may hold. PostgreSQL's own limit is 63 bytes. */
 export const MAX_SCHEMA_NAME_LENGTH = 128;
+/**
+ * The longest each of a push subscription's three fields may be in a request,
+ * in characters. Real ones are far shorter: an endpoint is a web address of a
+ * few hundred characters, and the phone's two keys are 87 and 22 characters.
+ */
+export const MAX_PUSH_FIELD_LENGTH = 2048;
 /** The longest error message read from an answer, in characters. The computer's own are a sentence or two. */
 const MAX_ERROR_MESSAGE_LENGTH = 500;
+/** How long the computer's public push key is: a P-256 point, written out whole. */
+const PUSH_PUBLIC_KEY_BYTES = 65;
 
 /** A connection's environment, as the app labels it (my-app/lib/environments.ts). */
 export type Environment = "unset" | "dev" | "staging" | "prod";
@@ -56,6 +65,15 @@ export type SchemaRef = {
 };
 
 /**
+ * Where a phone's push service takes drift alerts for it, as its browser's
+ * push subscription gives them: the endpoint, a web address, and the phone's
+ * two keys for reading the alerts, as base64url. A request only checks that
+ * each is a string of 1 to MAX_PUSH_FIELD_LENGTH characters. The computer
+ * checks them properly before it uses them (desktop/src/core/web-push.ts).
+ */
+export type PushSubscriptionParams = { endpoint: string; p256dh: string; auth: string };
+
+/**
  * What a phone may ask:
  *  - hello: who is signed in on the computer, and what a phone may do. A
  *    phone asks it first.
@@ -64,13 +82,22 @@ export type SchemaRef = {
  *  - schema.read: one schema's tables and views.
  *  - compare.run: compares one schema with up to MAX_COMPARE_TARGETS others,
  *    as the app's Compare screen does.
+ *  - push.status: the key a phone's browser subscribes with to get drift
+ *    alerts from the computer, and whether this phone gets them.
+ *  - push.subscribe: turns this phone's drift alerts on, sent through the
+ *    push subscription its browser made with that key. Only someone who may
+ *    see drift in the app may turn them on.
+ *  - push.unsubscribe: turns this phone's drift alerts off.
  */
 export type Request =
   | { id: number; method: "hello" }
   | { id: number; method: "connections.list" }
   | { id: number; method: "schemas.list"; params: { connectionId: number } }
   | { id: number; method: "schema.read"; params: SchemaRef }
-  | { id: number; method: "compare.run"; params: { source: SchemaRef; targets: SchemaRef[] } };
+  | { id: number; method: "compare.run"; params: { source: SchemaRef; targets: SchemaRef[] } }
+  | { id: number; method: "push.status" }
+  | { id: number; method: "push.subscribe"; params: PushSubscriptionParams }
+  | { id: number; method: "push.unsubscribe" };
 
 export type Method = Request["method"];
 
@@ -201,6 +228,17 @@ export type TargetSummary = ComparedSide & {
 
 export type CompareSummary = { source: SourceSummary; targets: TargetSummary[] };
 
+/**
+ * The answer to push.status, push.subscribe and push.unsubscribe:
+ *  - key: the computer's public push key, as base64url. A phone's browser
+ *    subscribes with it, and its push service then takes only alerts signed
+ *    with the private half. When it is not the key the phone subscribed
+ *    with, the computer has made a new one, and the old subscription is no
+ *    use any more.
+ *  - subscribed: whether this phone gets drift alerts.
+ */
+export type PushStatus = { key: string; subscribed: boolean };
+
 /** What the answer to each request holds when it succeeds. */
 export type Results = {
   hello: HelloResult;
@@ -208,6 +246,9 @@ export type Results = {
   "schemas.list": SchemaList;
   "schema.read": SchemaOverview;
   "compare.run": CompareSummary;
+  "push.status": PushStatus;
+  "push.subscribe": PushStatus;
+  "push.unsubscribe": PushStatus;
 };
 
 /**
@@ -260,7 +301,7 @@ export type Answer = { id: number; ok: true; result: unknown } | { id: number; o
  */
 export type RequestReading = { ok: true; request: Request } | { ok: false; id: number | null; code: "bad-request" | "unknown-method" };
 
-const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run"];
+const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe"];
 
 /** Writes a request. Only its own fields are written, so a SchemaRef that carries more, such as a connection's name, goes out without it. */
 export function writeRequest(request: Request): Bytes {
@@ -268,6 +309,8 @@ export function writeRequest(request: Request): Bytes {
   switch (request.method) {
     case "hello":
     case "connections.list":
+    case "push.status":
+    case "push.unsubscribe":
       return writeJson({ id, method: request.method });
     case "schemas.list":
       return writeJson({ id, method: request.method, params: { connectionId: request.params.connectionId } });
@@ -276,6 +319,10 @@ export function writeRequest(request: Request): Bytes {
     case "compare.run": {
       const { source, targets } = request.params;
       return writeJson({ id, method: request.method, params: { source: copySchemaRef(source), targets: targets.map(copySchemaRef) } });
+    }
+    case "push.subscribe": {
+      const { endpoint, p256dh, auth } = request.params;
+      return writeJson({ id, method: request.method, params: { endpoint, p256dh, auth } });
     }
   }
 }
@@ -294,7 +341,9 @@ export function readRequest(message: Bytes): RequestReading {
 /** The request in a message whose id is good, or null when it is not exactly one of the requests above. */
 function readKnownRequest(id: number, fields: Record<string, unknown>): Request | null {
   const method = fields.method;
-  if (method === "hello" || method === "connections.list") return hasExactly(fields, "id", "method") ? { id, method } : null;
+  if (method === "hello" || method === "connections.list" || method === "push.status" || method === "push.unsubscribe") {
+    return hasExactly(fields, "id", "method") ? { id, method } : null;
+  }
   const params = objectFields(fields.params);
   if (!hasExactly(fields, "id", "method", "params") || params === null) return null;
   switch (method) {
@@ -311,6 +360,11 @@ function readKnownRequest(id: number, fields: Record<string, unknown>): Request 
       const targets = readEach(params.targets, readSchemaRef);
       if (!hasExactly(params, "source", "targets") || source === null || targets === null) return null;
       return targets.length >= 1 && targets.length <= MAX_COMPARE_TARGETS ? { id, method, params: { source, targets } } : null;
+    }
+    case "push.subscribe": {
+      const { endpoint, p256dh, auth } = params;
+      if (!hasExactly(params, "endpoint", "p256dh", "auth") || !isPushField(endpoint) || !isPushField(p256dh) || !isPushField(auth)) return null;
+      return { id, method, params: { endpoint, p256dh, auth } };
     }
     default:
       return null;
@@ -355,6 +409,9 @@ const RESULT_READERS: { [M in Method]: (value: unknown) => Results[M] | null } =
   "schemas.list": readSchemaList,
   "schema.read": readSchemaOverview,
   "compare.run": readCompareSummary,
+  "push.status": readPushStatus,
+  "push.subscribe": readPushStatus,
+  "push.unsubscribe": readPushStatus,
 };
 
 /** Reads what a successful answer to this kind of request holds, or gives null when it is not that. */
@@ -497,6 +554,14 @@ function readChangeLine(value: unknown): ChangeLine | null {
   return { category, table, object, change, severity, detail, manual };
 }
 
+function readPushStatus(value: unknown): PushStatus | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { key, subscribed } = fields;
+  if (typeof key !== "string" || fromBase64UrlOfLength(key, PUSH_PUBLIC_KEY_BYTES) === null || typeof subscribed !== "boolean") return null;
+  return { key, subscribed };
+}
+
 /** A strict copy of a SchemaRef in a request: exactly its two fields, each of the right kind. */
 function readSchemaRef(value: unknown): SchemaRef | null {
   const fields = objectFields(value);
@@ -557,6 +622,11 @@ function isCount(value: unknown): value is number {
  */
 export function isSchemaName(value: unknown): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= MAX_SCHEMA_NAME_LENGTH && value.trim() === value;
+}
+
+/** True for one of a push subscription's fields in a request: a string of 1 to MAX_PUSH_FIELD_LENGTH characters. */
+function isPushField(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= MAX_PUSH_FIELD_LENGTH;
 }
 
 /** A check for one of a fixed list of words. */

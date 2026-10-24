@@ -169,16 +169,16 @@ function deferred<T>(): Deferred<T> {
 }
 
 /** A request the host passed on, with the answer the test gives it by hand. */
-type Asked = { request: Request; signal: AbortSignal; answer: Deferred<Bytes> };
+type Asked = { request: Request; signal: AbortSignal; phoneKey: string; answer: Deferred<Bytes> };
 
 /** Answers that wait for the test to give each one. */
 function fakeAnswers(): { asked: Asked[]; answer: PhoneHostOptions["answer"] } {
   const asked: Asked[] = [];
   return {
     asked,
-    answer: (request, signal) => {
+    answer: (request, signal, phoneKey) => {
       const answer = deferred<Bytes>();
-      asked.push({ request, signal, answer });
+      asked.push({ request, signal, phoneKey, answer });
       return answer.promise;
     },
   };
@@ -498,7 +498,7 @@ test("counts any message from a phone that opens, but none that opens after the 
   assert.match(lines, /Closed a phone's connection: it sent a request that could not be read\./);
 });
 
-test("answers each phone on its own link, whatever order the answers are ready in", async () => {
+test("answers each phone on its own link, whatever order the answers are ready in, and tells each answer which phone asked", async () => {
   const fake = fakeAnswers();
   const { wire, pairedPhone } = await setUp({ answer: fake.answer });
   const a = await pairedPhone(1);
@@ -507,6 +507,9 @@ test("answers each phone on its own link, whatever order the answers are ready i
   await b.send(writeRequest(schemasOf(2)));
   const forA = await askedFor(fake.asked, 1);
   const forB = await askedFor(fake.asked, 2);
+  // A request about the phone itself, such as its drift alerts, is answered for the phone that sent it.
+  assert.equal(forA.phoneKey, a.keyText);
+  assert.equal(forB.phoneKey, b.keyText);
   forB.answer.resolve(schemasAnswer(2, ["b"]));
   assert.deepEqual(await b.answer(), { id: 2, ok: true, result: { schemas: ["b"] } });
   forA.answer.resolve(schemasAnswer(1, ["a"]));

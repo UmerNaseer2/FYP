@@ -50,6 +50,7 @@ export function phoneView(link: PhoneSettingsLink | null, problem: string | null
       pairedAt: phone.pairedAt,
       lastSeenAt: phone.lastSeenAt,
       connected: phone.connected,
+      alerts: phone.alerts,
     })),
     cannotPair: pairingProblem(view),
   };

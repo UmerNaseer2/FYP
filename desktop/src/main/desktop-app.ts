@@ -33,7 +33,10 @@
  * A scheduled drift check that finds new drift, finds it fixed, or cannot
  * reach the database shows a notification (src/main/drift-watcher.ts and
  * src/core/drift-alerts.ts), unless Settings turns that off. Clicking it
- * opens that schema on the Drift page.
+ * opens that schema on the Drift page. Each paired phone that turned drift
+ * alerts on gets them too, for the connections phones may see
+ * (src/main/phone-link.ts), whatever Settings says about this computer's own
+ * notifications.
  *
  * Settings' Backup section saves everything Schema Studio keeps into one
  * file locked with a passphrase, and restores such a file
@@ -136,6 +139,7 @@ import type { AppAnswer } from "./phone-requests";
 import { CONNECTIONS_FAILED, makePairing, phoneView, readPhoneConnections, setRelay } from "./phone-settings";
 import { startPostgres, withClient, type RunningPostgres } from "./postgres";
 import { APP_HOST, APP_ORIGIN, serveAppPages } from "./protocol";
+import { sendToPushService } from "./push-transport";
 import { keyringBackend, ProtectedStore } from "./secrets";
 import { secureWindows } from "./security";
 import type { RunningServer } from "./server";
@@ -541,6 +545,7 @@ export class DesktopApp {
       });
       await watcher.prime();
       watcher.onAlerts((alerts) => this.alertDrift(alerts));
+      watcher.onAlerts((alerts) => this.pushDrift(alerts));
       this.driftWatcher = watcher;
 
       this.setStep("server");
@@ -748,6 +753,7 @@ export class DesktopApp {
         call: (method, path, body, signal) => this.callServer(method, path, body, signal),
         appVersion: app.getVersion(),
         computerName: os.hostname(),
+        pushTransport: sendToPushService,
         onChange: () => this.phoneChanged(),
         onPaired: (phone) => liveContents(this.settingsWindow)?.send(PHONE.paired, phone.name),
       });
@@ -1388,6 +1394,18 @@ export class DesktopApp {
     // Ubuntu reads the body of a notification as markup, so its <, > and & are written out there.
     const text = driftNotification(alerts, { markup: process.platform === "linux" });
     if (text !== null) this.notify(text);
+  }
+
+  /**
+   * Sends what the drift watcher found to the phones that turned drift alerts
+   * on, unless the app is going away. Each phone turns its own alerts on and
+   * off, so Settings' choice for this computer's notifications does not
+   * count here.
+   */
+  private pushDrift(alerts: DriftAlert[]): void {
+    if (this.quitting || this.restoring) return;
+    // Never throws: the phone link logs an alert it could not send.
+    void this.phoneLink?.pushDrift(alerts);
   }
 
   /** Shows a notification that opens `text.page` when clicked. Public so that a test can catch what would be shown. */

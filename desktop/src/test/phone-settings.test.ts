@@ -22,8 +22,8 @@ import { pairingQr } from "../main/qr";
 const RELAY = "https://relay.example.com";
 const KEYS_PROBLEM = "The phone link could not open its keys. Schema Studio's log has the details.";
 
-function phone(number: number, connected = false) {
-  return { key: `key-${number}`, name: `Phone ${number}`, pairedAt: 1_000 + number, lastSeenAt: 2_000 + number, connected };
+function phone(number: number, connected = false, alerts = false) {
+  return { key: `key-${number}`, name: `Phone ${number}`, pairedAt: 1_000 + number, lastSeenAt: 2_000 + number, connected, alerts };
 }
 
 /** A phone link that shows the view it is given and notes what Settings asks of it. */
@@ -66,7 +66,7 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
   const { link, view } = fakeLink({
     status: { state: "waiting", retryAt: 5_000, reason: "The relay could not be reached." },
     sharedConnectionIds: [3, 1],
-    phones: [extra, phone(2)],
+    phones: [extra, phone(2, false, true)],
   });
   const shown = phoneView(link, null);
   assert.deepEqual(shown, {
@@ -75,7 +75,7 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
     enabled: true,
     relayOrigin: RELAY,
     sharedConnectionIds: [3, 1],
-    phones: [phone(1, true), phone(2)],
+    phones: [phone(1, true), phone(2, false, true)],
     cannotPair: "The phone link is not connected to the relay yet, and a phone pairs through it.",
   });
   assert.notEqual(shown.sharedConnectionIds, view.sharedConnectionIds);

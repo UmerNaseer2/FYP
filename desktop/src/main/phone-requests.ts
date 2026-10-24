@@ -9,6 +9,13 @@
  * Settings. That is checked here, before the server is asked anything, so a
  * request about any other connection never reaches it.
  *
+ * The one thing a phone may change is whether it gets drift alerts itself.
+ * push.subscribe turns them on only while the role signed in on the computer
+ * may see drift in the app (drift:read), since drift is what they show, and
+ * src/main/phone-link.ts checks that again before each alert it sends.
+ * push.unsubscribe needs no permission at all: turning alerts off shows a
+ * phone nothing.
+ *
  * Nothing the server says in words reaches a phone. Its error messages can
  * name a database's host or repeat what the database said, so a refusal is
  * always one of the fixed sentences in REFUSALS, picked by the answer's
@@ -16,9 +23,10 @@
  * field by field into the shapes rpc.ts names, and writeResult checks it
  * again, so a field the server adds one day stays on the computer.
  *
- * Pure apart from the log: the server is asked through `call`, so the tests
- * can play its part.
+ * Pure apart from the log: the server is asked through `call`, and a phone's
+ * drift alerts are kept through `alerts`, so the tests can play both parts.
  */
+import { readPushSubscription, type PushSubscriptionFields } from "../core/web-push";
 import type { Bytes } from "../shared/remote/bytes";
 import { objectFields } from "../shared/remote/json";
 import {
@@ -30,6 +38,8 @@ import {
   type ConnectionList,
   type ErrorCode,
   type HelloResult,
+  type PushStatus,
+  type PushSubscriptionParams,
   type Request,
   type SchemaList,
   type SchemaOverview,
@@ -46,19 +56,31 @@ export type AppAnswer = { status: number; json: unknown };
  */
 export type AppCaller = (method: "GET" | "POST", path: string, body: unknown, signal: AbortSignal) => Promise<AppAnswer>;
 
+/** The drift alerts of one paired phone, as src/main/phone-link.ts keeps them. */
+export type PhoneAlerts = {
+  /** The computer's public push key, as base64url, which the phone's browser turns alerts on with. */
+  key: string;
+  /** Whether the phone has drift alerts on. */
+  on: () => boolean;
+  /** Turns the phone's drift alerts on with this subscription, or off with null, and saves that. */
+  set: (subscription: PushSubscriptionFields | null) => void;
+};
+
 export type RequestOptions = {
   call: AppCaller;
   /** The connections shared with phones. Read for every request, so a change in Settings counts at once. */
   sharedConnectionIds: () => readonly number[];
   /** The version of the app on the computer, for hello. */
   appVersion: string;
+  /** The drift alerts of the phone that asked, which push.status, push.subscribe and push.unsubscribe answer about. */
+  alerts: PhoneAlerts;
 };
 
 /**
  * Why the computer answers with an error: the codes rpc.ts gives a phone, and
- * three more that tell the person more than "failed" alone would.
+ * four more that tell the person more than "failed" or "bad-request" alone would.
  */
-export type Refusal = ErrorCode | "access-unknown" | "no-answer" | "too-slow";
+export type Refusal = ErrorCode | "access-unknown" | "bad-subscription" | "no-answer" | "too-slow";
 
 /** The code and the sentence each refusal sends: words for the person holding the phone, with nothing from the server in them. */
 export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: string }>> = {
@@ -73,6 +95,10 @@ export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: stri
   "unknown-method": { code: "unknown-method", message: "Schema Studio on the computer is too old for that. Update it, then try again." },
   failed: { code: "failed", message: "The computer could not do that. Its log has the details." },
   "access-unknown": { code: "failed", message: "The computer could not check what the signed-in role may do. Try again in a moment." },
+  "bad-subscription": {
+    code: "bad-request",
+    message: "The computer cannot send drift alerts through this browser's push service. Try another browser on the phone.",
+  },
   "no-answer": { code: "failed", message: "Schema Studio on the computer did not answer. Try again in a moment." },
   "too-slow": { code: "failed", message: "The computer took too long to answer." },
 };
@@ -125,6 +151,13 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
       return writeResult(id, "schema.read", await readSchema(request.params, options, signal));
     case "compare.run":
       return writeResult(id, "compare.run", await compare(request.params.source, request.params.targets, options, signal));
+    case "push.status":
+      return writeResult(id, "push.status", pushStatus(options.alerts));
+    case "push.subscribe":
+      return writeResult(id, "push.subscribe", await subscribe(request.params, options, signal));
+    case "push.unsubscribe":
+      options.alerts.set(null);
+      return writeResult(id, "push.unsubscribe", pushStatus(options.alerts));
   }
 }
 
@@ -134,19 +167,16 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
  * finding that out is what a phone asks hello for.
  */
 async function hello(options: RequestOptions, signal: AbortSignal): Promise<HelloResult> {
-  let me: Record<string, unknown> | null;
+  let json: unknown;
   try {
-    me = objectFields(await ask(options, "GET", "/api/me", undefined, signal));
+    json = await ask(options, "GET", "/api/me", undefined, signal);
   } catch (error) {
     if (error instanceof Refused && error.refusal === "signed-out") {
       return { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: options.appVersion };
     }
     throw error;
   }
-  const permissions = me?.permissions;
-  if (me === null || !Array.isArray(permissions)) throw new Error("GET /api/me did not answer with a list of permissions.");
-  // The server could not read the role from its database, so the list says nothing about what the role may do.
-  if (me.accessUnavailable === true) throw new Refused("access-unknown");
+  const { me, permissions } = readMe(json);
   const may = (key: string): boolean => permissions.includes(key);
   return {
     signedIn: true,
@@ -158,6 +188,16 @@ async function hello(options: RequestOptions, signal: AbortSignal): Promise<Hell
     canReadSchemas: may("visualizer:read") && (may("dashboard:read") || may("compare:read") || may("performance:read")),
     appVersion: options.appVersion,
   };
+}
+
+/** What GET /api/me answered with, and the keys of the role's permissions in it, such as "drift:read". */
+function readMe(json: unknown): { me: Record<string, unknown>; permissions: unknown[] } {
+  const me = objectFields(json);
+  const permissions = me?.permissions;
+  if (me === null || !Array.isArray(permissions)) throw new Error("GET /api/me did not answer with a list of permissions.");
+  // The server could not read the role from its database, so the list says nothing about what the role may do.
+  if (me.accessUnavailable === true) throw new Refused("access-unknown");
+  return { me, permissions };
 }
 
 /**
@@ -263,6 +303,51 @@ async function compare(source: SchemaRef, targets: readonly SchemaRef[], options
   return summary;
 }
 
+function pushStatus(alerts: PhoneAlerts): PushStatus {
+  return { key: alerts.key, subscribed: alerts.on() };
+}
+
+/**
+ * Turns the phone's drift alerts on with the subscription its browser made,
+ * once the signed-in role turns out to be one that may see drift. A
+ * subscription the computer would not send to (readPushSubscription) is
+ * refused before the server is asked anything.
+ */
+async function subscribe(params: PushSubscriptionParams, options: RequestOptions, signal: AbortSignal): Promise<PushStatus> {
+  const subscription = readPushSubscription(params);
+  if (subscription === null) throw new Refused("bad-subscription");
+  await checkDriftAlerts(options, signal);
+  // A phone that has stopped waiting never hears that its alerts are on, so
+  // they stay off rather than arrive as a surprise.
+  signal.throwIfAborted();
+  options.alerts.set(subscription);
+  return pushStatus(options.alerts);
+}
+
+/**
+ * Whether drift alerts may go to phones now: "yes" when someone is signed in
+ * on the computer whose role may see drift, or else why not. The phone link
+ * asks before each alert it sends, since the person signed in, or their
+ * role, may have changed since a phone turned its alerts on. It never throws,
+ * and logs anything unexpected unless `signal` has aborted.
+ */
+export async function driftAlertsAllowed(call: AppCaller, signal: AbortSignal): Promise<"yes" | Refusal> {
+  try {
+    await checkDriftAlerts({ call }, signal);
+    return "yes";
+  } catch (error) {
+    if (error instanceof Refused) return error.refusal;
+    if (!signal.aborted) logWarn("The phone link could not check whether drift alerts may go to phones.", error);
+    return "failed";
+  }
+}
+
+/** Refuses unless the role signed in on the computer may see drift (drift:read), which is what drift alerts show. */
+async function checkDriftAlerts(options: Pick<RequestOptions, "call">, signal: AbortSignal): Promise<void> {
+  const { permissions } = readMe(await ask(options, "GET", "/api/me", undefined, signal));
+  if (!permissions.includes("drift:read")) throw new Refused("forbidden");
+}
+
 /** Refuses unless every connection named is shared with phones. */
 function checkShared(connectionIds: readonly number[], options: RequestOptions): void {
   const shared = options.sharedConnectionIds();
@@ -275,7 +360,7 @@ function checkShared(connectionIds: readonly number[], options: RequestOptions):
  * with a refusal that does not explain itself; the others, such as a database
  * that is down, are expected, and the server logs them in its own log anyway.
  */
-async function ask(options: RequestOptions, method: "GET" | "POST", path: string, body: unknown, signal: AbortSignal): Promise<unknown> {
+async function ask(options: Pick<RequestOptions, "call">, method: "GET" | "POST", path: string, body: unknown, signal: AbortSignal): Promise<unknown> {
   // The route without its query: which connection and schema a phone asked about does not belong in the log.
   const route = `${method} ${path.split("?")[0]}`;
   let answer: AppAnswer;
@@ -288,7 +373,7 @@ async function ask(options: RequestOptions, method: "GET" | "POST", path: string
   if (answer.status === 200) return answer.json;
   const refusal = refusalFor(answer.status);
   if (refusal === "failed" || refusal === "access-unknown") {
-    logWarn(`The app answered a phone's ${route} with ${answer.status}: ${serverWords(answer.json)}`);
+    logWarn(`The app answered the phone link's ${route} with ${answer.status}: ${serverWords(answer.json)}`);
   }
   throw new Refused(refusal);
 }

@@ -46,6 +46,15 @@ from a `.deb` package.
   connection, never a host or an error message. With Keep running on, this
   works with the window closed too. It can be turned off (File, then
   Settings, then Notifications).
+- Sends the same drift alerts to each paired phone that turned them on,
+  while Schema Studio is running here. They go from this computer straight
+  to the push service of the phone's browser (Google's, Apple's, Mozilla's
+  or Microsoft's), locked so that only that phone can read them, and the
+  phone shows them even when it does not have Schema Studio open. A phone
+  only hears about the connections chosen for phones, and only while the
+  person signed in here may see drift. Each phone turns its own alerts on
+  and off from the page the phones open, so the Notifications setting is
+  for this computer alone.
 - Saves everything Schema Studio keeps (the saved connections and the key
   that unlocks their passwords, the comparison and drift history, the
   people and their roles, and the GitHub registry and its token) into one

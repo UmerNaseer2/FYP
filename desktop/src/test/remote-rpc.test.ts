@@ -5,9 +5,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readUtf8, utf8, type Bytes } from "../shared/remote/bytes.js";
+import { readUtf8, toBase64Url, utf8, type Bytes } from "../shared/remote/bytes.js";
 import {
   MAX_COMPARE_TARGETS,
+  MAX_PUSH_FIELD_LENGTH,
   MAX_REQUEST_BYTES,
   MAX_SCHEMA_NAME_LENGTH,
   isSchemaName,
@@ -23,6 +24,7 @@ import {
   type ErrorCode,
   type ForeignKeyOverview,
   type Method,
+  type PushSubscriptionParams,
   type Request,
   type Results,
   type SchemaOverview,
@@ -45,10 +47,16 @@ function json(bytes: Bytes): unknown {
 }
 
 /** Every kind of request, in the order rpc.ts lists them. */
-const METHODS: Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run"];
+const METHODS: Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe"];
 
 /** A schema in one of the computer's saved connections. */
 const REF: SchemaRef = { connectionId: 7, schema: "public" };
+
+/** A push subscription, as a phone's browser gives it. rpc.ts checks only that each field is a string of a length a request takes. */
+const SUBSCRIPTION: PushSubscriptionParams = { endpoint: "https://push.example.com/send/a1b2c3", p256dh: "B".repeat(87), auth: "A".repeat(22) };
+
+/** The computer's public push key: a P-256 point written out whole, which starts with the byte 4. */
+const PUSH_KEY = toBase64Url(Uint8Array.from({ length: 65 }, (_, index) => (index === 0 ? 4 : index)));
 
 /** One of each request a phone may send. */
 const REQUESTS: Request[] = [
@@ -58,6 +66,9 @@ const REQUESTS: Request[] = [
   { id: 4, method: "schema.read", params: REF },
   // The biggest number JSON carries exactly.
   { id: Number.MAX_SAFE_INTEGER, method: "compare.run", params: { source: REF, targets: [{ connectionId: 8, schema: "public" }, { connectionId: 7, schema: "archive" }] } },
+  { id: 5, method: "push.status" },
+  { id: 6, method: "push.subscribe", params: SUBSCRIPTION },
+  { id: 7, method: "push.unsubscribe" },
 ];
 
 /** A column, as the computer describes it. */
@@ -136,6 +147,9 @@ const RESULTS: { [M in Method]: Results[M] } = {
   "schemas.list": { schemas: ["public", "archive"] },
   "schema.read": OVERVIEW,
   "compare.run": SUMMARY,
+  "push.status": { key: PUSH_KEY, subscribed: false },
+  "push.subscribe": { key: PUSH_KEY, subscribed: true },
+  "push.unsubscribe": { key: PUSH_KEY, subscribed: false },
 };
 
 /** OVERVIEW with its table changed. */
@@ -160,6 +174,9 @@ test("writes only a request's own fields", () => {
   assert.deepEqual(json(writeRequest({ id: 1, method: "schema.read", params: shown })), { id: 1, method: "schema.read", params: REF });
   const compare = json(writeRequest({ id: 2, method: "compare.run", params: { source: shown, targets: [shown, shown] } }));
   assert.deepEqual(compare, { id: 2, method: "compare.run", params: { source: REF, targets: [REF, REF] } });
+  // A subscription with more than the computer needs, such as when it ends.
+  const fromBrowser = { ...SUBSCRIPTION, expirationTime: null };
+  assert.deepEqual(json(writeRequest({ id: 3, method: "push.subscribe", params: fromBrowser })), { id: 3, method: "push.subscribe", params: SUBSCRIPTION });
 });
 
 test("cannot answer a message that does not say which request it is", () => {
@@ -221,6 +238,16 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "compare.run", params: { source: REF, targets: [REF, named] } },
     { id: 5, method: "compare.run", params: { source: { connectionId: 7, schema: "public\n" }, targets: [REF] } },
     { id: 5, method: "compare.run", params: { source: REF, targets: [REF, { connectionId: 8, schema: "\tpublic" }] } },
+    { id: 5, method: "push.status", params: {} },
+    { id: 5, method: "push.unsubscribe", x: 1 },
+    { id: 5, method: "push.subscribe" },
+    { id: 5, method: "push.subscribe", params: { endpoint: SUBSCRIPTION.endpoint, p256dh: SUBSCRIPTION.p256dh } },
+    { id: 5, method: "push.subscribe", params: { ...SUBSCRIPTION, expirationTime: null } },
+    { id: 5, method: "push.subscribe", params: { ...SUBSCRIPTION, auth: "" } },
+    { id: 5, method: "push.subscribe", params: { ...SUBSCRIPTION, p256dh: null } },
+    { id: 5, method: "push.subscribe", params: { ...SUBSCRIPTION, endpoint: "a".repeat(MAX_PUSH_FIELD_LENGTH + 1) } },
+    // How a browser writes a whole subscription, with the phone's two keys inside another object.
+    { id: 5, method: "push.subscribe", params: { endpoint: SUBSCRIPTION.endpoint, expirationTime: null, keys: { p256dh: SUBSCRIPTION.p256dh, auth: SUBSCRIPTION.auth } } },
   ]) {
     assert.deepEqual(readRequest(message(value)), { ok: false, id: 5, code: "bad-request" }, JSON.stringify(value));
   }
@@ -245,6 +272,12 @@ test("reads a comparison with one target or the most it takes, and the longest s
   for (const request of requests) {
     assert.deepEqual(readRequest(writeRequest(request)), { ok: true, request }, String(request.id));
   }
+});
+
+test("reads a push subscription whose fields are as long as a request takes", () => {
+  const longest = "a".repeat(MAX_PUSH_FIELD_LENGTH);
+  const request: Request = { id: 1, method: "push.subscribe", params: { endpoint: longest, p256dh: longest, auth: longest } };
+  assert.deepEqual(readRequest(writeRequest(request)), { ok: true, request });
 });
 
 test("takes a schema name the app reads exactly as it is written", () => {
@@ -340,6 +373,7 @@ test("reads a result with fields it does not know, and leaves them out", () => {
     targets: SUMMARY.targets.map((target) => ({ ...target, lines: target.lines.map((line) => ({ ...line, risk: "high" })) })),
   };
   assert.deepEqual(readResult("compare.run", summary), SUMMARY);
+  assert.deepEqual(readResult("push.status", { ...RESULTS["push.status"], since: 1_640_000_000_000 }), RESULTS["push.status"]);
 });
 
 test("refuses a result whose fields are the wrong kind", () => {
@@ -363,6 +397,13 @@ test("refuses a result whose fields are the wrong kind", () => {
     ["compare.run", summaryWith({ history: 7 })],
     ["compare.run", summaryWith({ lines: [{ ...NOTE_LINE, severity: "warning" }] })],
     ["compare.run", summaryWith({ lines: [{ ...NOTE_LINE, change: "moved" }] })],
+    ["push.status", { subscribed: true }],
+    ["push.status", { key: PUSH_KEY, subscribed: "yes" }],
+    ["push.subscribe", { key: PUSH_KEY, subscribed: null }],
+    // A key a byte short, and one written with padding.
+    ["push.subscribe", { key: toBase64Url(new Uint8Array(64)), subscribed: true }],
+    ["push.unsubscribe", { key: `${PUSH_KEY}=`, subscribed: false }],
+    ["push.unsubscribe", null],
   ];
   for (const [method, value] of cases) {
     assert.equal(readResult(method, value), null, `${method}: ${JSON.stringify(value)}`);

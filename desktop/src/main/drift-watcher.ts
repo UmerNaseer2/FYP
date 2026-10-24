@@ -56,7 +56,7 @@ const NEWEST_SQL = "SELECT COALESCE(max(id), 0) AS newest FROM public.drift_even
 // so they are skipped there. "Before" is in the order the server shows the
 // log in: by time, then by number.
 const ROWS_SQL = `SELECT e.id, e.tracked_schema_id, e.status, e.source, e.fingerprint, e.detail,
-  t.schema_name, t.label, c.name AS connection_name,
+  t.schema_name, t.label, t.connection_id, c.name AS connection_name,
   prev.status AS previous_status, lastfp.fingerprint AS last_fingerprint
 FROM public.drift_events e
 JOIN public.tracked_schemas t ON t.id = e.tracked_schema_id

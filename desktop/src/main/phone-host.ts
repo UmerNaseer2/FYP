@@ -68,10 +68,12 @@ export type PhoneHostOptions = {
   savePhones: (phones: PairedPhone[]) => void;
   /**
    * The answer to a phone's request, ready to send (answerRequest in
-   * src/main/phone-requests.ts). Once `signal` aborts, what it gives is not
+   * src/main/phone-requests.ts). `phoneKey` is the key of the phone that
+   * asked, as base64url, for a request about the phone itself, such as
+   * whether it gets drift alerts. Once `signal` aborts, what it gives is not
    * sent. If it throws, the phone hears that the computer could not do that.
    */
-  answer: (request: Request, signal: AbortSignal) => Promise<Bytes>;
+  answer: (request: Request, signal: AbortSignal, phoneKey: string) => Promise<Bytes>;
   /** Sends a message to the phone on this channel, through the relay. */
   send: (channel: number, message: Bytes) => void;
   /** Asks the relay to send the phone on this channel away. */
@@ -320,6 +322,9 @@ export class PhoneHost {
   private handle(number: number, channel: Channel, message: Bytes | null): void {
     // Null is a piece of a longer message, which waits for the rest.
     if (message === null || this.channels.get(number) !== channel) return;
+    const phoneKey = channel.phoneKey;
+    // greet notes the phone's key before it lets the phone in, so this is only in case.
+    if (phoneKey === null) return;
     const reading = readRequest(message);
     if (!reading.ok) {
       // Without the request's number, an answer could not say which request it is for.
@@ -350,7 +355,7 @@ export class PhoneHost {
     channel.pending.set(id, entry);
     // Started from a resolved promise, so that an answer that throws at once is caught like one that fails later.
     void Promise.resolve()
-      .then(() => this.options.answer(request, controller.signal))
+      .then(() => this.options.answer(request, controller.signal, phoneKey))
       .then(
         (answer) => this.finish(number, channel, id, entry, answer),
         (error: unknown) => {

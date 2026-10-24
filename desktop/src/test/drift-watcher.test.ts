@@ -155,6 +155,7 @@ function checkRow(id: number, changes: Record<string, unknown> = {}): Record<str
     detail: { tablesAdded: 1 },
     schema_name: "sales",
     label: "Orders",
+    connection_id: 5,
     connection_name: "Production",
     previous_status: "in_sync",
     last_fingerprint: null,
@@ -603,9 +604,16 @@ test("judges each new scheduled check against the rows before it, with a real Po
   assert.deepEqual(first.counts, { tablesAdded: 2, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 1, objectsChanged: 0 });
   assert.equal(first.name, "Orders");
   assert.equal(first.connectionName, "Production");
+  const [{ connection_id: production }] = await rows<{ connection_id: number }>(
+    "SELECT connection_id FROM public.tracked_schemas WHERE id = $1",
+    [orders],
+  );
+  assert.equal(first.connectionId, production);
   assert.equal(second.trackedSchemaId, orders);
   assert.equal(third.name, "billing");
   assert.equal(third.connectionName, null);
+  // Its connection has no row, but the schema still says which number it was on.
+  assert.equal(third.connectionId, 999);
   assert.equal(fourth.drifted, false);
   // The database's own error, which names its host, never reaches an alert.
   assert.doesNotMatch(JSON.stringify(told), /internal|10\.1\.2\.3|same again/);

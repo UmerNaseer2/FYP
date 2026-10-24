@@ -31,6 +31,7 @@ function rowWith(changes: Partial<DriftRow>): DriftRow {
     counts: { ...NONE, tablesAdded: 2 },
     schemaName: "public",
     label: "Orders",
+    connectionId: 5,
     connectionName: "Production",
     previousStatus: "in_sync",
     lastFingerprint: null,
@@ -103,6 +104,7 @@ test("reads a row of the watcher's query by its column names, but never the summ
       detail: { tablesAdded: 1 },
       schema_name: "public",
       label: null,
+      connection_id: 5,
       connection_name: "Production",
       previous_status: "in_sync",
       last_fingerprint: null,
@@ -116,6 +118,7 @@ test("reads a row of the watcher's query by its column names, but never the summ
       counts: { ...NONE, tablesAdded: 1 },
       schemaName: "public",
       label: null,
+      connectionId: 5,
       connectionName: "Production",
       previousStatus: "in_sync",
       lastFingerprint: null,
@@ -126,6 +129,9 @@ test("reads a row of the watcher's query by its column names, but never the summ
 test("refuses a row without a usable number, status, source or schema name", () => {
   const good = { id: 12, tracked_schema_id: 4, status: "drifted", source: "scheduled", schema_name: "public" };
   assert.ok(readDriftRow(good));
+  // The connection is not needed to tell about drift, though an alert without one goes to no phone.
+  assert.equal(readDriftRow(good)?.connectionId, null);
+  assert.equal(readDriftRow({ ...good, connection_id: "0" })?.connectionId, null);
   assert.equal(readDriftRow({ ...good, id: "9007199254740991" })?.id, Number.MAX_SAFE_INTEGER);
   const bad: [string, unknown][] = [
     ["id", 0],
@@ -182,12 +188,13 @@ test("tells about drift that changed only when both fingerprints are known and d
   assert.equal(kindOf({ previousStatus: "drifted", fingerprint: "a", lastFingerprint: null }), null);
 });
 
-test("an alert carries the row's number, schema, counts and whether it found drift", () => {
+test("an alert carries the row's number, schema, connection, counts and whether it found drift", () => {
   assert.deepEqual(alertFor({ id: 41, trackedSchemaId: 7 }), {
     kind: "drifted",
     eventId: 41,
     trackedSchemaId: 7,
     name: "Orders",
+    connectionId: 5,
     connectionName: "Production",
     counts: { ...NONE, tablesAdded: 2 },
     drifted: true,

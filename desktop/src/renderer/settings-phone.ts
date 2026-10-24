@@ -396,12 +396,13 @@
     }
   }
 
-  /** When a phone was last seen, or that it is connected now, and when it paired. */
+  /** When a phone was last seen, or that it is connected now, when it paired, and whether it gets drift alerts. */
   function phoneDetail(phone: PhoneSummary): string {
     const pairedOn = new Date(phone.pairedAt).toLocaleDateString(undefined, { dateStyle: "medium" });
-    if (phone.connected) return `Connected now. Paired on ${pairedOn}.`;
+    const alerts = phone.alerts ? " Gets drift alerts." : "";
+    if (phone.connected) return `Connected now. Paired on ${pairedOn}.${alerts}`;
     const lastSeen = new Date(phone.lastSeenAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    return `Last seen ${lastSeen}. Paired on ${pairedOn}.`;
+    return `Last seen ${lastSeen}. Paired on ${pairedOn}.${alerts}`;
   }
 
   /** One of the buttons in a phone's row. Every row has the same buttons, so Remove's name says which phone it is for. */

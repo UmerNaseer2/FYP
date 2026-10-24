@@ -185,8 +185,11 @@ export type PhoneStatus =
   | { state: "waiting"; retryAt: number; reason: string }
   | { state: "replaced" };
 
-/** A paired phone, as the Phone section lists it. The name came from the phone. */
-export type PhoneSummary = { key: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean };
+/**
+ * A paired phone, as the Phone section lists it. The name came from the phone,
+ * and `alerts` says whether it gets drift alerts (where they go stays in main).
+ */
+export type PhoneSummary = { key: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean; alerts: boolean };
 
 /** What the Phone section shows, or why there is nothing to show yet. */
 export type PhoneView =

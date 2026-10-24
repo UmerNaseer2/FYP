@@ -11,9 +11,20 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 
+import type { PushSubscriptionFields } from "../core/web-push";
 import { initLog, logFilePaths } from "../main/log";
-import { REFUSALS, answerRequest, writeRefusal, type AppAnswer, type AppCaller, type Refusal } from "../main/phone-requests";
+import {
+  REFUSALS,
+  answerRequest,
+  driftAlertsAllowed,
+  writeRefusal,
+  type AppAnswer,
+  type AppCaller,
+  type PhoneAlerts,
+  type Refusal,
+} from "../main/phone-requests";
 import { readAnswer, type Answer, type CompareSummary, type Request } from "../shared/remote/rpc.js";
+import { newPhone, subscriptionOf } from "./push-phone";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ss-phone-requests-"));
 initLog(path.join(root, "logs"), { echo: false });
@@ -63,10 +74,39 @@ function ok(json: unknown): AppAnswer {
   return { status: 200, json };
 }
 
-/** Answers `request` as the computer would, with these connections shared, and reads the answer as a phone would. */
-async function answer(request: Request, call: AppCaller, options: { shared?: readonly number[]; signal?: AbortSignal } = {}): Promise<Answer> {
+/** The computer's public push key. Any P-256 public key will do, so a test phone's keys make one. */
+const PUSH_KEY = newPhone().p256dh.toString("base64url");
+
+/** Where a phone's browser takes its drift alerts: an address at one of the push services the computer sends to. */
+const ENDPOINT = "https://fcm.googleapis.com/fcm/send/a1b2c3";
+
+/** A phone's drift alerts as the phone link keeps them, with each subscription it was told to save, or null for off. */
+function fakeAlerts(subscription: PushSubscriptionFields | null = null): PhoneAlerts & { saved: (PushSubscriptionFields | null)[] } {
+  let current = subscription;
+  const saved: (PushSubscriptionFields | null)[] = [];
+  return {
+    key: PUSH_KEY,
+    on: () => current !== null,
+    set: (next) => {
+      current = next;
+      saved.push(next);
+    },
+    saved,
+  };
+}
+
+/**
+ * Answers `request` as the computer would, with these connections shared and
+ * these drift alerts for the phone, and reads the answer as a phone would.
+ */
+async function answer(
+  request: Request,
+  call: AppCaller,
+  options: { shared?: readonly number[]; alerts?: PhoneAlerts; signal?: AbortSignal } = {},
+): Promise<Answer> {
   const shared = options.shared ?? [1, 2, 3];
-  const sent = await answerRequest(request, { call, sharedConnectionIds: () => shared, appVersion: "1.2.3" }, options.signal ?? new AbortController().signal);
+  const requestOptions = { call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts() };
+  const sent = await answerRequest(request, requestOptions, options.signal ?? new AbortController().signal);
   const read = readAnswer(sent);
   assert.ok(read, "a phone can read the answer");
   assert.equal(read.id, request.id);
@@ -369,6 +409,116 @@ test("fails a comparison whose summary is not one the phone link can read, and l
   assert.match(newLogLines(), /answered with a summary the phone link cannot read/);
 });
 
+test("says whether the phone has drift alerts on, and the key its browser turns them on with, without asking the server", async () => {
+  const app = fakeApp({});
+  const off = fakeAlerts();
+  assert.deepEqual(await answer({ id: 1, method: "push.status" }, app.call, { alerts: off }), { id: 1, ok: true, result: { key: PUSH_KEY, subscribed: false } });
+  const on = fakeAlerts(subscriptionOf(newPhone(), ENDPOINT));
+  assert.deepEqual(await answer({ id: 2, method: "push.status" }, app.call, { alerts: on }), { id: 2, ok: true, result: { key: PUSH_KEY, subscribed: true } });
+  assert.deepEqual(app.calls, []);
+  assert.deepEqual([...off.saved, ...on.saved], []);
+});
+
+test("turns drift alerts on for a role that may see drift, saving the subscription written the one way", async () => {
+  const alerts = fakeAlerts();
+  const app = fakeApp({ "GET /api/me": ok(me(["dashboard:read", "drift:read"])) });
+  // The URL standard writes a host in lower case, without the usual port.
+  const params = subscriptionOf(newPhone(), "https://FCM.googleapis.com:443/fcm/send/a1b2c3");
+  assert.deepEqual(await answer({ id: 3, method: "push.subscribe", params }, app.call, { alerts }), {
+    id: 3,
+    ok: true,
+    result: { key: PUSH_KEY, subscribed: true },
+  });
+  assert.deepEqual(alerts.saved, [{ ...params, endpoint: ENDPOINT }]);
+  assert.deepEqual(app.calls, [{ method: "GET", path: "/api/me", body: undefined }]);
+});
+
+test("leaves drift alerts off for a role that may not see drift, or when nobody is signed in", async () => {
+  const params = subscriptionOf(newPhone(), ENDPOINT);
+  const cases: [AppAnswer, Refusal][] = [
+    [ok(me(["dashboard:read", "compare:read", "visualizer:read"])), "forbidden"],
+    [{ status: 401, json: { error: "Sign in to continue." } }, "signed-out"],
+    [ok(me(["drift:read"], { accessUnavailable: true })), "access-unknown"],
+    [ok({ role: "viewer" }), "failed"],
+  ];
+  newLogLines();
+  for (const [mine, refusal] of cases) {
+    const alerts = fakeAlerts();
+    const read = await answer({ id: 4, method: "push.subscribe", params }, fakeApp({ "GET /api/me": mine }).call, { alerts });
+    assert.deepEqual(read, refused(4, refusal), refusal);
+    assert.deepEqual(alerts.saved, [], refusal);
+  }
+  // Only the answer that was not what GET /api/me gives is worth a line in the log.
+  const lines = newLogLines();
+  assert.match(lines, /could not answer a phone's push\.subscribe\.\n.*did not answer with a list of permissions/);
+  assert.equal(lines.match(/could not answer/g)?.length, 1, lines);
+});
+
+test("refuses a subscription the computer would not send alerts to, without asking the server", async () => {
+  const good = subscriptionOf(newPhone(), ENDPOINT);
+  const app = fakeApp({ "GET /api/me": ok(me(["drift:read"])) });
+  const alerts = fakeAlerts();
+  const cases: Record<string, PushSubscriptionFields> = {
+    "an address that is not https": { ...good, endpoint: "http://fcm.googleapis.com/fcm/send/a1b2c3" },
+    "an address at no push service the computer knows": { ...good, endpoint: "https://push.example.com/send/a1b2c3" },
+    "a phone key that is not a P-256 point": { ...good, p256dh: good.auth },
+    "a secret of the wrong length": { ...good, auth: good.p256dh },
+  };
+  for (const [what, params] of Object.entries(cases)) {
+    assert.deepEqual(await answer({ id: 5, method: "push.subscribe", params }, app.call, { alerts }), refused(5, "bad-subscription"), what);
+  }
+  assert.deepEqual(app.calls, []);
+  assert.deepEqual(alerts.saved, []);
+});
+
+test("leaves drift alerts off when the phone stops waiting before the server has answered", async () => {
+  const stopped = new AbortController();
+  const alerts = fakeAlerts();
+  // The phone goes just as the server answers.
+  const call: AppCaller = async () => {
+    stopped.abort();
+    return ok(me(["drift:read"]));
+  };
+  newLogLines();
+  const request: Request = { id: 6, method: "push.subscribe", params: subscriptionOf(newPhone(), ENDPOINT) };
+  assert.deepEqual(await answer(request, call, { alerts, signal: stopped.signal }), refused(6, "failed"));
+  assert.deepEqual(alerts.saved, []);
+  assert.equal(newLogLines(), "");
+});
+
+test("turns drift alerts off without asking the server, whatever the role may do", async () => {
+  const alerts = fakeAlerts(subscriptionOf(newPhone(), ENDPOINT));
+  const app = fakeApp({});
+  assert.deepEqual(await answer({ id: 7, method: "push.unsubscribe" }, app.call, { alerts }), { id: 7, ok: true, result: { key: PUSH_KEY, subscribed: false } });
+  assert.deepEqual(alerts.saved, [null]);
+  assert.deepEqual(app.calls, []);
+});
+
+test("says whether drift alerts may go to phones from what the signed-in role may do, and logs only the unexpected", async () => {
+  const signal = new AbortController().signal;
+  const cases: [AppAnswer, "yes" | Refusal][] = [
+    [ok(me(["drift:read"])), "yes"],
+    [ok(me(["dashboard:read", "compare:read"])), "forbidden"],
+    [{ status: 401, json: { error: "Sign in to continue." } }, "signed-out"],
+    [ok(me(["drift:read"], { accessUnavailable: true })), "access-unknown"],
+  ];
+  newLogLines();
+  for (const [mine, allowed] of cases) assert.equal(await driftAlertsAllowed(fakeApp({ "GET /api/me": mine }).call, signal), allowed, allowed);
+  assert.equal(newLogLines(), "");
+
+  assert.equal(await driftAlertsAllowed(fakeApp({ "GET /api/me": ok(null) }).call, signal), "failed");
+  assert.match(newLogLines(), /could not check whether drift alerts may go to phones\.\n.*did not answer with a list of permissions/);
+
+  const down = fakeApp({ "GET /api/me": new Error("connect ECONNREFUSED 127.0.0.1:41234") });
+  assert.equal(await driftAlertsAllowed(down.call, signal), "no-answer");
+  assert.match(newLogLines(), /could not reach the app for GET \/api\/me\./);
+
+  const stopped = new AbortController();
+  stopped.abort();
+  assert.equal(await driftAlertsAllowed(down.call, stopped.signal), "no-answer");
+  assert.equal(newLogLines(), "");
+});
+
 test("refuses with a fixed sentence for each status, never with the server's words", async () => {
   const cases: [number, Refusal, boolean][] = [
     [401, "signed-out", false],
@@ -424,7 +574,7 @@ test("fails a request when the app answers with something unexpected, and logs i
 test("reads which connections are shared at every request, so a change in Settings counts at once", async () => {
   let shared: number[] = [1];
   const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": ok({ schemas: ["public"] }) });
-  const options = { call: app.call, sharedConnectionIds: () => shared, appVersion: "1.2.3" };
+  const options = { call: app.call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: fakeAlerts() };
   const ask = async (id: number) => readAnswer(await answerRequest({ id, method: "schemas.list", params: { connectionId: 1 } }, options, new AbortController().signal));
   assert.deepEqual(await ask(1), { id: 1, ok: true, result: { schemas: ["public"] } });
   shared = [];
@@ -439,6 +589,7 @@ test("refuses only with short plain sentences, each one a code every phone knows
     assert.match(message, /^[ -~]+\.$/, refusal);
     assert.deepEqual(readAnswer(writeRefusal(7, refusal as Refusal)), { id: 7, ok: false, error: { code, message } }, refusal);
   }
-  // The computer's own three reasons go out as "failed", with a sentence that says more.
+  // The computer's own four reasons go out with a code every phone knows, and a sentence that says more.
   for (const refusal of ["access-unknown", "no-answer", "too-slow"] as const) assert.equal(REFUSALS[refusal].code, "failed");
+  assert.equal(REFUSALS["bad-subscription"].code, "bad-request");
 });

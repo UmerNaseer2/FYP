@@ -10,12 +10,16 @@ import {
   MAX_PAIRED_PHONES,
   newPhoneLinkState,
   parsePhoneLinkState,
+  withNewPushKey,
   withPairedPhone,
   withPhoneSeen,
+  withPhoneSubscription,
   withoutPhone,
   type PairedPhone,
   type PhoneLinkState,
+  type PhoneSubscription,
 } from "../core/phone-link-file";
+import { readPushKey } from "../core/web-push";
 import { fromBase64Url } from "../shared/remote/bytes.js";
 import { importKeyPair } from "../shared/remote/keys.js";
 
@@ -26,6 +30,14 @@ function keyOf(fill: number): string {
 
 const PHONE: PairedPhone = { key: keyOf(7), name: "Work phone", pairedAt: 1_700_000_000_000, lastSeenAt: 1_700_000_500_000 };
 
+/** Drift alerts turned on the way a phone's browser turns them on: a push service's address, and keys made now. */
+const PUSH: PhoneSubscription = {
+  endpoint: "https://fcm.googleapis.com/fcm/send/phone-1",
+  p256dh: crypto.createECDH("prime256v1").generateKeys().toString("base64url"),
+  auth: crypto.randomBytes(16).toString("base64url"),
+  since: 1_700_000_600_000,
+};
+
 function saved(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     enabled: true,
@@ -34,6 +46,7 @@ function saved(overrides: Record<string, unknown> = {}): Record<string, unknown>
     phones: [PHONE],
     signingKey: keyOf(1),
     staticKey: keyOf(2),
+    pushKey: keyOf(3),
     ...overrides,
   };
 }
@@ -45,7 +58,7 @@ test("starts with new keys, the link off, nothing shared and no phones", () => {
     sizes.push(size);
     return Buffer.alloc(size, ++fill);
   });
-  assert.deepEqual(sizes, [32, 32]);
+  assert.deepEqual(sizes, [32, 32, 32]);
   assert.deepEqual(state, {
     enabled: false,
     relayOrigin: null,
@@ -53,6 +66,7 @@ test("starts with new keys, the link off, nothing shared and no phones", () => {
     phones: [],
     signingKey: keyOf(1),
     staticKey: keyOf(2),
+    pushKey: keyOf(3),
   });
 });
 
@@ -69,9 +83,10 @@ test("makes keys that the phone link can use", async () => {
   const link = await importKeyPair("X25519", fromBase64Url(state.staticKey)!);
   assert.equal(signing.publicKey.length, 32);
   assert.equal(link.publicKey.length, 32);
+  assert.equal(readPushKey(state.pushKey)?.publicKey.length, 65);
 });
 
-test("counts the file as damaged when either key is not what the app wrote", () => {
+test("counts the file as damaged when its signing or static key is not what the app wrote", () => {
   const short = Buffer.alloc(31, 1).toString("base64url");
   const long = Buffer.alloc(33, 1).toString("base64url");
   // The same 32 bytes as keyOf(1) would be, with an unused bit set in the last character.
@@ -82,6 +97,15 @@ test("counts the file as damaged when either key is not what the app wrote", () 
   }
   for (const value of [null, undefined, "text", 5, [saved()]]) {
     assert.equal(parsePhoneLinkState(value), null, String(value));
+  }
+});
+
+test("reads a push key that cannot be used as none, and still reads the rest", () => {
+  // The curve's order, the first number too big to be a P-256 private key.
+  const order = Buffer.from("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", "hex").toString("base64url");
+  const short = Buffer.alloc(31, 3).toString("base64url");
+  for (const bad of [undefined, null, "", keyOf(0), keyOf(255), order, short, keyOf(3) + "=", 5, [keyOf(3)]]) {
+    assert.deepEqual(parsePhoneLinkState(saved({ pushKey: bad })), { ...saved(), pushKey: null }, `push key ${String(bad)}`);
   }
 });
 
@@ -147,6 +171,28 @@ test("cleans a paired phone's name, and takes its pairing time when its last con
   ]);
 });
 
+test("keeps a phone's drift alerts only when they can be used, and keeps the phone either way", () => {
+  assert.deepEqual(parsePhoneLinkState(saved({ phones: [{ ...PHONE, push: PUSH }] }))?.phones, [{ ...PHONE, push: PUSH }]);
+  const broken = [
+    { ...PUSH, endpoint: "https://push.example.com/phone-1" },
+    { ...PUSH, endpoint: "http://fcm.googleapis.com/fcm/send/phone-1" },
+    // 65 bytes that start the way a phone's key does, but are not a point on the curve.
+    { ...PUSH, p256dh: Buffer.alloc(65, 4).toString("base64url") },
+    { ...PUSH, p256dh: PUSH.auth },
+    { ...PUSH, auth: Buffer.alloc(15, 5).toString("base64url") },
+    { ...PUSH, since: -1 },
+    { ...PUSH, since: "today" },
+    { endpoint: PUSH.endpoint, p256dh: PUSH.p256dh, auth: PUSH.auth },
+    "on",
+    null,
+    [PUSH],
+  ];
+  for (const push of broken) {
+    // The phone comes back with no push field at all, not one set to undefined.
+    assert.deepEqual(parsePhoneLinkState(saved({ phones: [{ ...PHONE, push }] }))?.phones, [PHONE], JSON.stringify(push));
+  }
+});
+
 test("pairs a new phone at the end, until the most it pairs with", () => {
   let phones: PairedPhone[] = [];
   for (let i = 0; i < MAX_PAIRED_PHONES; i++) {
@@ -178,10 +224,44 @@ test("notes when a phone last connected, and forgets a phone", () => {
   assert.equal(phones.length, 2);
 });
 
-test("writes a state that reads back the same after a phone pairs", () => {
+test("keeps a phone's drift alerts when it pairs again or connects", () => {
+  const phones = [{ ...PHONE, push: PUSH }];
+  assert.deepEqual(withPairedPhone(phones, PHONE.key, "New name", 5000), [{ ...PHONE, name: "New name", lastSeenAt: 5000, push: PUSH }]);
+  assert.deepEqual(withPhoneSeen(phones, PHONE.key, 6000), [{ ...PHONE, lastSeenAt: 6000, push: PUSH }]);
+});
+
+test("turns a phone's drift alerts on, changes where they go, and turns them off", () => {
+  const other: PairedPhone = { ...PHONE, key: keyOf(8) };
+  const phones = [PHONE, other];
+  const on = withPhoneSubscription(phones, other.key, PUSH);
+  assert.deepEqual(on, [PHONE, { ...other, push: PUSH }]);
+  const moved: PhoneSubscription = { ...PUSH, endpoint: "https://fcm.googleapis.com/fcm/send/phone-2", since: PUSH.since + 1 };
+  assert.deepEqual(withPhoneSubscription(on, other.key, moved), [PHONE, { ...other, push: moved }]);
+  // Turned off, the phone is as it was before, with no push field left behind.
+  assert.deepEqual(withPhoneSubscription(on, other.key, null), phones);
+  assert.deepEqual(withPhoneSubscription(phones, keyOf(99), PUSH), phones);
+  // The list it was given is left as it was.
+  assert.deepEqual(on, [PHONE, { ...other, push: PUSH }]);
+});
+
+test("makes a new push key, and turns off every phone's drift alerts, which were for the old one", () => {
+  const state: PhoneLinkState = { ...newPhoneLinkState(crypto.randomBytes), phones: [{ ...PHONE, push: PUSH }, { ...PHONE, key: keyOf(8) }] };
+  const sizes: number[] = [];
+  const next = withNewPushKey(state, (size) => {
+    sizes.push(size);
+    return Buffer.alloc(size, 4);
+  });
+  assert.deepEqual(sizes, [32]);
+  assert.deepEqual(next, { ...state, pushKey: keyOf(4), phones: [PHONE, { ...PHONE, key: keyOf(8) }] });
+  assert.deepEqual(state.phones[0].push, PUSH);
+});
+
+test("writes a state that reads back the same after a phone pairs and turns drift alerts on", () => {
   const state: PhoneLinkState = { ...newPhoneLinkState(crypto.randomBytes), sharedConnectionIds: [5] };
   const paired = withPairedPhone(state.phones, keyOf(50), "Pixel", 1234);
   assert.ok(paired);
   const next: PhoneLinkState = { ...state, phones: paired };
   assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(next))), next);
+  const alerted: PhoneLinkState = { ...next, phones: withPhoneSubscription(paired, keyOf(50), PUSH) };
+  assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(alerted))), alerted);
 });
