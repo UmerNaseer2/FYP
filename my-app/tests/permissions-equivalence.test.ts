@@ -82,6 +82,8 @@ const ADDED: Record<string, Gate> = {
   "DELETE /api/admin/roles": { kind: "permission", keys: ["roles:delete"] },
   "POST /api/compare/phone": { kind: "permission", keys: ["compare:read"] },
   "GET /api/connections/phone": { kind: "permission", keys: ["compare:read", "visualizer:read"] },
+  "GET /api/deploy/approvals/phone": { kind: "permission", keys: ["approvals:read"] },
+  "GET /api/deploy/approvals/[id]/phone": { kind: "permission", keys: ["approvals:read"] },
   "GET /api/me": { kind: "signed-in" },
   "GET /api/me/view-as": { kind: "signed-in" },
   "POST /api/me/view-as": { kind: "signed-in" },
@@ -188,4 +190,40 @@ test("a phone's connection list lets in whoever may compare or read a schema", (
     keys: ["compare:read", "visualizer:read"],
   });
   expect(startsAllowed("viewer", ["compare:read", "visualizer:read"])).toBe(true);
+});
+
+test("a phone's approval queue lets in whoever may read approvals, and says who may decide", () => {
+  // The queue holds what the Deploy screen's list holds, so it has the same
+  // gate. Whether the person may decide is only reported, from the box the
+  // decision route itself asks for.
+  const list = handlers.get("GET /api/deploy/approvals")?.gate;
+  expect(handlers.get("GET /api/deploy/approvals/phone")?.gate).toEqual(list);
+  expect(list).toEqual({ kind: "permission", keys: ["approvals:read"] });
+  expect(startsAllowed("viewer", ["approvals:read"])).toBe(true);
+  expect(hasPermissionLiterals(path.join(API_DIR, "deploy", "approvals", "phone", "route.ts"))).toEqual([
+    "approvals:approve",
+  ]);
+  expect(handlers.get("POST /api/deploy/approvals/[id]")?.gate).toEqual({
+    kind: "permission",
+    keys: ["approvals:approve"],
+  });
+});
+
+test("a phone sees a request's SQL only where the Deploy screen would show it", () => {
+  // On the Deploy screen the approver reads the SQL from the registry, through
+  // GET /api/github/pull. The phone's copy asks for one of the same two boxes,
+  // on top of reading approvals, and a viewer has both out of the box.
+  expect(handlers.get("GET /api/deploy/approvals/[id]/phone")?.gate).toEqual({
+    kind: "permission",
+    keys: ["approvals:read"],
+  });
+  expect(
+    hasPermissionLiterals(path.join(API_DIR, "deploy", "approvals", "[id]", "phone", "route.ts"))
+  ).toEqual(["scripts:read", "deploy:read"]);
+  expect(handlers.get("GET /api/github/pull")?.gate).toEqual({
+    kind: "permission",
+    keys: ["scripts:read", "deploy:read"],
+  });
+  expect(startsAllowed("viewer", ["approvals:read"])).toBe(true);
+  expect(startsAllowed("viewer", ["scripts:read", "deploy:read"])).toBe(true);
 });

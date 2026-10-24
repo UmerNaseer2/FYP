@@ -12,16 +12,19 @@ import {
   parsePhoneLinkState,
   withNewPushKey,
   withPairedPhone,
+  withPhonePasskey,
   withPhoneSeen,
   withPhoneSubscription,
   withoutPhone,
   type PairedPhone,
   type PhoneLinkState,
+  type PhonePasskey,
   type PhoneSubscription,
 } from "../core/phone-link-file";
 import { readPushKey } from "../core/web-push";
 import { fromBase64Url } from "../shared/remote/bytes.js";
 import { importKeyPair } from "../shared/remote/keys.js";
+import { newSoftwarePasskey } from "./software-passkey";
 
 /** A made-up key: 32 bytes of `fill`, as base64url. */
 function keyOf(fill: number): string {
@@ -36,6 +39,16 @@ const PUSH: PhoneSubscription = {
   p256dh: crypto.createECDH("prime256v1").generateKeys().toString("base64url"),
   auth: crypto.randomBytes(16).toString("base64url"),
   since: 1_700_000_600_000,
+};
+
+/** Approvals set up the way the computer saves them, with a passkey made now. */
+const SOFT_PASSKEY = newSoftwarePasskey();
+const PASSKEY: PhonePasskey = {
+  credentialId: SOFT_PASSKEY.credentialId.toString("base64url"),
+  publicKey: { x: SOFT_PASSKEY.x.toString("base64url"), y: SOFT_PASSKEY.y.toString("base64url") },
+  signCount: 3,
+  approver: "ab".repeat(32),
+  addedAt: 1_700_000_700_000,
 };
 
 function saved(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -264,4 +277,47 @@ test("writes a state that reads back the same after a phone pairs and turns drif
   assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(next))), next);
   const alerted: PhoneLinkState = { ...next, phones: withPhoneSubscription(paired, keyOf(50), PUSH) };
   assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(alerted))), alerted);
+});
+
+test("keeps a phone's passkey when its drift alerts turn on or off, or the push key changes", () => {
+  const phones = [{ ...PHONE, passkey: PASSKEY }];
+  const on = withPhoneSubscription(phones, PHONE.key, PUSH);
+  assert.deepEqual(on, [{ ...PHONE, passkey: PASSKEY, push: PUSH }]);
+  assert.deepEqual(withPhoneSubscription(on, PHONE.key, null), phones);
+  const state: PhoneLinkState = { ...newPhoneLinkState(crypto.randomBytes), phones: on };
+  assert.deepEqual(withNewPushKey(state, crypto.randomBytes).phones, phones);
+});
+
+test("sets up and takes away a phone's passkey, keeping its drift alerts and the other phones as they were", () => {
+  const other: PairedPhone = { ...PHONE, key: keyOf(8) };
+  const phones = [{ ...PHONE, push: PUSH }, other];
+  const set = withPhonePasskey(phones, PHONE.key, PASSKEY);
+  assert.deepEqual(set, [{ ...PHONE, push: PUSH, passkey: PASSKEY }, other]);
+  assert.deepEqual(withPhonePasskey(set, PHONE.key, { ...PASSKEY, signCount: 4 })[0].passkey?.signCount, 4);
+  // Taken away, the phone is as it was before, with no passkey field left behind.
+  assert.deepEqual(withPhonePasskey(set, PHONE.key, null), phones);
+  assert.deepEqual(withPhonePasskey(phones, keyOf(99), PASSKEY), phones);
+});
+
+test("reads a saved passkey back, and leaves out one that cannot be used", () => {
+  const state: PhoneLinkState = { ...newPhoneLinkState(crypto.randomBytes), phones: [{ ...PHONE, passkey: PASSKEY }] };
+  assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(state))), state);
+  const offCurve = Buffer.alloc(32, 1).toString("base64url");
+  const bad: Record<string, unknown>[] = [
+    { credentialId: "" },
+    { credentialId: PASSKEY.credentialId + "=" },
+    { credentialId: Buffer.alloc(1024, 1).toString("base64url") },
+    { publicKey: { x: PASSKEY.publicKey.x, y: offCurve } },
+    { publicKey: { x: PASSKEY.publicKey.x } },
+    { signCount: -1 },
+    { signCount: 2 ** 32 },
+    { signCount: 1.5 },
+    { approver: "AB".repeat(32) },
+    { approver: "ab" },
+    { addedAt: "today" },
+  ];
+  for (const change of bad) {
+    const saved = { ...state, phones: [{ ...PHONE, passkey: { ...PASSKEY, ...change } }] };
+    assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(saved))), { ...state, phones: [PHONE] }, JSON.stringify(Object.keys(change)));
+  }
 });

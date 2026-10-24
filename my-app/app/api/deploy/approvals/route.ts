@@ -17,9 +17,10 @@ import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
  * action by a different person and deserves its own gate.
  *
  * Both handlers are deliberately quiet about what the migrations do: the SQL
- * goes into a fingerprint and is not stored here. The approver reads the
- * migrations on the Deploy screen, from the registry, which is the copy that
- * will actually run.
+ * goes into a fingerprint, and neither one ever answers with it. The approver
+ * reads the migrations on the Deploy screen, from the registry, which is the
+ * copy that will actually run. A copy is kept with the request only for a
+ * paired phone to show, and only ./[id]/phone/route.ts reads it.
  *
  * POST takes an optional `action`: "deploy" (the default, so every caller
  * written before rollbacks needed approval keeps working) or "revert". For a

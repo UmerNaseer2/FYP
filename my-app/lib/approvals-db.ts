@@ -45,6 +45,12 @@ export type { ApprovalScript };
  * route, "revert" for the revert route), and a rollback's fingerprint is built
  * under a different header (rollbackFingerprintBody), so an approval for one
  * can never be spent on the other.
+ *
+ * A request also keeps a copy of its SQL, in `scripts`, so that a paired
+ * phone can show the approver what they are deciding. The copy is only for
+ * reading. What an approval covers is still pinned by the fingerprint, and
+ * the phone's route hands the copy out only when it hashes back to it (see
+ * getApprovalScripts).
  */
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "used";
@@ -116,6 +122,69 @@ export function runFingerprint(scripts: ApprovalScript[], action: ApprovalAction
   return createHash("sha256").update(body, "utf8").digest("hex");
 }
 
+/**
+ * Stands in for a person's email wherever the only question is "is this still
+ * the same person?".
+ *
+ * The desktop app remembers who set up approvals on a paired phone, so that a
+ * yes from that phone is refused once somebody else is signed in on the
+ * computer. Comparing is all it ever does, so it keeps this hash instead of
+ * the address. Lower-cased, like every other email comparison in this file.
+ */
+export function approverKey(email: string): string {
+  return createHash("sha256")
+    .update(`schema-studio approver\n${email.trim().toLowerCase()}`, "utf8")
+    .digest("hex");
+}
+
+/**
+ * The most SQL a request keeps a copy of: one million characters, over every
+ * script in the run. A phone is sent the whole copy in one answer, and a run
+ * bigger than this is better read on the Deploy screen anyway. A request over
+ * it works exactly the same. It just has no copy, and the phone says so.
+ */
+export const MAX_STORED_SQL_CHARS = 1_000_000;
+
+/**
+ * Whether PostgreSQL can keep this text inside JSONB. It refuses a NUL
+ * character and half of a surrogate pair (text that does not survive being
+ * written as UTF-8), and either would otherwise fail the whole request over a
+ * copy that is only there to be read.
+ */
+function jsonbCanHold(text: string): boolean {
+  return !text.includes(String.fromCharCode(0)) && Buffer.from(text, "utf8").toString("utf8") === text;
+}
+
+/**
+ * The run as the `scripts` column keeps it, or null when it is too big or
+ * cannot be kept. JSON text rather than an array, because pg would send a
+ * JavaScript array as a PostgreSQL array, which a ::jsonb cast refuses.
+ */
+function storedScripts(scripts: ApprovalScript[]): string | null {
+  const size = scripts.reduce((total, script) => total + script.sqlContent.length, 0);
+  if (size > MAX_STORED_SQL_CHARS) return null;
+  // Exactly these three fields, whatever else the caller's objects carry, so
+  // the copy hashes back to the fingerprint.
+  const kept = scripts.map(({ scriptName, version, sqlContent }) => ({ scriptName, version, sqlContent }));
+  if (!kept.every((script) => Object.values(script).every(jsonbCanHold))) return null;
+  return JSON.stringify(kept);
+}
+
+/** A copy read back from the `scripts` column, or null when there is none or it is not one storedScripts wrote. */
+function readStoredScripts(value: unknown): ApprovalScript[] | null {
+  if (!Array.isArray(value)) return null;
+  const scripts: ApprovalScript[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) return null;
+    const { scriptName, version, sqlContent } = item as Record<string, unknown>;
+    if (typeof scriptName !== "string" || typeof version !== "string" || typeof sqlContent !== "string") {
+      return null;
+    }
+    scripts.push({ scriptName, version, sqlContent });
+  }
+  return scripts;
+}
+
 export async function createApprovalRequest(input: {
   connectionId: number;
   schemaName: string;
@@ -130,6 +199,7 @@ export async function createApprovalRequest(input: {
 }): Promise<DeployApproval> {
   await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts, input.action);
+  const scripts = storedScripts(input.scripts);
 
   // An identical request that is still open is the same request. Returning it
   // rather than inserting a second row keeps the approver from seeing the same
@@ -146,13 +216,24 @@ export async function createApprovalRequest(input: {
       ORDER BY id DESC LIMIT 1`,
     [input.connectionId, input.schemaName, fingerprint, input.action]
   );
-  if (open.rows.length > 0) return open.rows[0];
+  if (open.rows.length > 0) {
+    // A request made before copies were kept gets one now, so a phone can
+    // show it after somebody asks again. The fingerprints matched, so this is
+    // the SQL that request covers.
+    if (scripts !== null) {
+      await pool.query(
+        `UPDATE deploy_approvals SET scripts = $2::jsonb WHERE id = $1 AND scripts IS NULL`,
+        [open.rows[0].id, scripts]
+      );
+    }
+    return open.rows[0];
+  }
 
   const created = await pool.query<DeployApproval>(
     `INSERT INTO deploy_approvals
        (connection_id, schema_name, script_name, target_version, run_fingerprint,
-        migration_count, breaking_count, requested_by, note, action)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        migration_count, breaking_count, requested_by, note, action, scripts)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
      RETURNING ${COLUMNS}`,
     [
       input.connectionId,
@@ -165,6 +246,7 @@ export async function createApprovalRequest(input: {
       input.requestedBy,
       input.note,
       input.action,
+      scripts,
     ]
   );
   return created.rows[0];
@@ -254,6 +336,54 @@ export async function getApproval(id: number): Promise<DeployApproval | null> {
     [id]
   );
   return result.rows[0] ?? null;
+}
+
+/** A request waiting for a decision, and whether a copy of its SQL was kept. */
+export type PendingApproval = DeployApproval & { has_sql: boolean };
+
+/**
+ * The newest hundred requests still waiting for a decision, on every
+ * connection, for the phone's route. The desktop app then keeps only the ones
+ * on connections shared with phones. The copies of their SQL stay behind:
+ * getApprovalScripts reads one at a time.
+ */
+export async function listPendingApprovals(): Promise<PendingApproval[]> {
+  await syncMetadataTables();
+  const result = await pool.query<PendingApproval>(
+    `SELECT ${COLUMNS}, scripts IS NOT NULL AS has_sql FROM deploy_approvals
+      WHERE status = 'pending'
+      ORDER BY id DESC LIMIT 100`
+  );
+  return result.rows;
+}
+
+/**
+ * One request and the copy of its SQL, or null when there is no such row.
+ *
+ * `scripts` is the copy only when it hashes back to the request's own
+ * fingerprint. The fingerprint is what an approval covers, so a copy that
+ * disagreed with it (a row changed by hand, say) would show the approver SQL
+ * other than the SQL their yes lets run. `copy` says why `scripts` is null.
+ */
+export async function getApprovalScripts(id: number): Promise<{
+  approval: DeployApproval;
+  scripts: ApprovalScript[] | null;
+  copy: "kept" | "not-kept" | "does-not-match";
+} | null> {
+  await syncMetadataTables();
+  const result = await pool.query<DeployApproval & { scripts: unknown }>(
+    `SELECT ${COLUMNS}, scripts FROM deploy_approvals WHERE id = $1`,
+    [id]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const { scripts: stored, ...approval } = row;
+  const scripts = readStoredScripts(stored);
+  if (scripts === null) return { approval, scripts: null, copy: "not-kept" };
+  if (runFingerprint(scripts, approval.action) !== approval.run_fingerprint) {
+    return { approval, scripts: null, copy: "does-not-match" };
+  }
+  return { approval, scripts, copy: "kept" };
 }
 
 /**

@@ -121,7 +121,7 @@ describe("queries", () => {
     expect(dedupe.sql).toContain("action = $4");
     expect(dedupe.values[3]).toBe("revert");
     const insert = call(1);
-    expect(insert.sql).toMatch(/note, action\)/);
+    expect(insert.sql).toMatch(/note, action, scripts\)/);
     expect(insert.values[4]).toBe(runFingerprint(RUN, "revert"));
     expect(insert.values[9]).toBe("revert");
   });

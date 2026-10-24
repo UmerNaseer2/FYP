@@ -1,8 +1,8 @@
 /**
  * What phone-link.json holds: whether the phone link is on, the relay it goes
  * through, which saved connections phones may see, the phones paired with this
- * computer with the drift alerts each has asked for, and the phone link's own
- * keys.
+ * computer with the drift alerts each has asked for and the passkey each
+ * approves requests with, and the phone link's own keys.
  *
  *  - signingKey proves to the relay that this is the computer the phones
  *    paired with (src/shared/remote/relay-auth.ts). The relay knows the
@@ -33,11 +33,12 @@
  *
  * Pure: reading and writing the file is src/main/phone-link.ts.
  */
-import { fromBase64UrlOfLength } from "../shared/remote/bytes";
+import { fromBase64Url, fromBase64UrlOfLength, toBase64Url } from "../shared/remote/bytes";
 import { KEY_BYTES } from "../shared/remote/keys";
 import { cleanDeviceName } from "../shared/remote/pairing";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { isPushKey, newPushKey, readPushSubscription, type PushSubscriptionFields } from "./web-push";
+import { isUsableKey, MAX_CREDENTIAL_ID_BYTES, type PasskeyKey } from "./webauthn";
 
 /** The most phones one computer pairs with. The relay lets the same number connect at once (relay/src/room-logic.ts). */
 export const MAX_PAIRED_PHONES = 8;
@@ -46,6 +47,20 @@ export const MAX_PAIRED_PHONES = 8;
 export type PhoneSubscription = PushSubscriptionFields & {
   /** When the phone turned drift alerts on, in milliseconds since 1970. */
   since: number;
+};
+
+/** The passkey a phone set up to approve or reject deploy and rollback requests (src/core/webauthn.ts), and who set it up. */
+export type PhonePasskey = {
+  /** The passkey's ID, as base64url. The phone's browser is asked for this one passkey by it. */
+  credentialId: string;
+  /** The passkey's public key: a point on P-256, as two base64url coordinates. */
+  publicKey: PasskeyKey;
+  /** The passkey's signature counter when it last signed. One that keeps none, as a synced passkey does, stays at 0. */
+  signCount: number;
+  /** Who was signed in on the computer when it was set up: the app's hash of their email, 64 lowercase hex characters. Its decisions are made as this person only. */
+  approver: string;
+  /** When it was set up, in milliseconds since 1970. */
+  addedAt: number;
 };
 
 export type PairedPhone = {
@@ -59,6 +74,8 @@ export type PairedPhone = {
   lastSeenAt: number;
   /** Where to send it drift alerts. Left out until the phone turns them on. */
   push?: PhoneSubscription;
+  /** The passkey it approves and rejects requests with. Left out until approvals are set up on it. */
+  passkey?: PhonePasskey;
 };
 
 export type PhoneLinkState = {
@@ -123,6 +140,20 @@ function readSubscription(value: unknown): PhoneSubscription | null {
   return subscription !== null && isTime(since) ? { ...subscription, since } : null;
 }
 
+function readPasskey(value: unknown): PhonePasskey | null {
+  if (!isRecord(value) || !isRecord(value.publicKey)) return null;
+  const { credentialId, signCount, approver, addedAt } = value;
+  const { x, y } = value.publicKey;
+  if (typeof credentialId !== "string" || typeof x !== "string" || typeof y !== "string" || typeof approver !== "string" || typeof signCount !== "number") return null;
+  // The ID is kept as the computer wrote it, so it must read back as the same text.
+  const id = fromBase64Url(credentialId);
+  if (id === null || id.length === 0 || id.length > MAX_CREDENTIAL_ID_BYTES || toBase64Url(id) !== credentialId) return null;
+  if (fromBase64UrlOfLength(x, 32) === null || fromBase64UrlOfLength(y, 32) === null || !isUsableKey({ x, y })) return null;
+  if (!Number.isSafeInteger(signCount) || signCount < 0 || signCount > 0xffffffff) return null;
+  if (!/^[0-9a-f]{64}$/.test(approver) || !isTime(addedAt)) return null;
+  return { credentialId, publicKey: { x, y }, signCount, approver, addedAt };
+}
+
 function readPhone(value: unknown): PairedPhone | null {
   if (!isRecord(value)) return null;
   const { key, name, pairedAt, lastSeenAt } = value;
@@ -130,6 +161,8 @@ function readPhone(value: unknown): PairedPhone | null {
   // A subscription that cannot be read is left out, so that phone gets no
   // drift alerts until it turns them on again.
   const push = readSubscription(value.push);
+  // So is a passkey, so approvals have to be set up on that phone again.
+  const passkey = readPasskey(value.passkey);
   return {
     key,
     // "Phone" is also the name readOpening gives a phone that sent none.
@@ -137,6 +170,7 @@ function readPhone(value: unknown): PairedPhone | null {
     pairedAt,
     lastSeenAt: isTime(lastSeenAt) ? lastSeenAt : pairedAt,
     ...(push === null ? {} : { push }),
+    ...(passkey === null ? {} : { passkey }),
   };
 }
 
@@ -191,9 +225,22 @@ export function withoutPhone(phones: readonly PairedPhone[], key: string): Paire
   return phones.filter((phone) => phone.key !== key);
 }
 
-/** The phone as it is without drift alerts. */
-function withoutPush({ key, name, pairedAt, lastSeenAt }: PairedPhone): PairedPhone {
-  return { key, name, pairedAt, lastSeenAt };
+/** The phone as it is without drift alerts. Its passkey stays, since drift alerts have nothing to do with approvals. */
+function withoutPush({ key, name, pairedAt, lastSeenAt, passkey }: PairedPhone): PairedPhone {
+  return { key, name, pairedAt, lastSeenAt, ...(passkey === undefined ? {} : { passkey }) };
+}
+
+/** The phone as it is without approvals set up. Its drift alerts stay. */
+function withoutPasskey({ key, name, pairedAt, lastSeenAt, push }: PairedPhone): PairedPhone {
+  return { key, name, pairedAt, lastSeenAt, ...(push === undefined ? {} : { push }) };
+}
+
+/** The phones with this one's passkey set to `passkey`, or taken away when it is null. */
+export function withPhonePasskey(phones: readonly PairedPhone[], key: string, passkey: PhonePasskey | null): PairedPhone[] {
+  return phones.map((phone) => {
+    if (phone.key !== key) return phone;
+    return passkey === null ? withoutPasskey(phone) : { ...withoutPasskey(phone), passkey };
+  });
 }
 
 /** The phones with this one's drift alerts turned on with `subscription`, or turned off when it is null. */

@@ -1021,6 +1021,12 @@ export class DeployApproval extends Model<
   declare action: CreationOptional<string>;
   /** When the approval stops authorising the run. Null on a row decided before expiry existed. */
   declare expires_at: CreationOptional<Date | null>;
+  /**
+   * A copy of the run's SQL, so a paired phone can show it to the approver
+   * (ApprovalScript[] in lib/approval-fingerprint). Null when the run was too
+   * big to keep, and on a row asked for before the copy was kept.
+   */
+  declare scripts: CreationOptional<unknown | null>;
 }
 
 DeployApproval.init(
@@ -1061,6 +1067,13 @@ DeployApproval.init(
     // before this column existed stay good, because inventing an expiry for a
     // decision somebody already made would be the tool answering for them.
     expires_at: { type: DataTypes.DATE, allowNull: true },
+    // Written with the request by lib/approvals-db, or later from the same
+    // SQL when an older open request is asked for again. Only for reading:
+    // run_fingerprint still pins what an approval covers, and the phone's
+    // route hands the copy out only when it hashes back to it. JSONB like
+    // deploy_attempts.scripts, read and written whole. Nullable because a run
+    // too big to keep has no copy, and the phone then says so.
+    scripts: { type: DataTypes.JSONB, allowNull: true },
   },
   {
     sequelize,

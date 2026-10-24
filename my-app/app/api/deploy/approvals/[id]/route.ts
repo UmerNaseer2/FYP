@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import {
+  approverKey,
   decideApproval,
   decisionBlockReason,
   getApproval,
@@ -24,6 +25,19 @@ import {
  * on there is exactly one principal, so "a second person" cannot exist and the
  * whole path would be untestable. The row records that it happened, in
  * `self_approved`, rather than quietly looking like a real two-person approval.
+ *
+ * A paired phone decides through here too, by way of the desktop app's phone
+ * link (desktop/src/main/phone-approvals.ts). It sends two more fields, and
+ * the decision is recorded only while both still hold:
+ *
+ *   - `expectedFingerprint`: the run the person read on the phone. A request's
+ *     fingerprint never changes, so a different one means the phone was shown
+ *     some other request (one from before a backup was restored, say).
+ *   - `expectedApprover`: approverKey of the person who set up approvals on
+ *     that phone, so the phone cannot decide as whoever signs in here next.
+ *
+ * Either one that does not match gets a 412 and changes nothing. The Deploy
+ * screen sends neither, so nothing changes for it.
  */
 export async function POST(
   request: NextRequest,
@@ -38,7 +52,12 @@ export async function POST(
     return NextResponse.json({ error: "Unknown approval." }, { status: 400 });
   }
 
-  let body: { decision?: string; note?: string };
+  let body: {
+    decision?: string;
+    note?: string;
+    expectedFingerprint?: unknown;
+    expectedApprover?: unknown;
+  };
   try {
     body = await request.json();
   } catch {
@@ -53,10 +72,45 @@ export async function POST(
     );
   }
 
+  // Checked before anything is read, so a field the phone link wrote wrongly
+  // is never mistaken for a request that changed.
+  const { expectedFingerprint, expectedApprover } = body;
+  if (expectedFingerprint !== undefined && !isDigest(expectedFingerprint)) {
+    return NextResponse.json(
+      { error: "expectedFingerprint must be 64 lowercase hex characters." },
+      { status: 400 }
+    );
+  }
+  if (expectedApprover !== undefined && !isDigest(expectedApprover)) {
+    return NextResponse.json(
+      { error: "expectedApprover must be 64 lowercase hex characters." },
+      { status: 400 }
+    );
+  }
+
   try {
     const approval = await getApproval(id);
     if (!approval) {
       return NextResponse.json({ error: "That approval no longer exists." }, { status: 404 });
+    }
+
+    if (expectedFingerprint !== undefined && approval.run_fingerprint !== expectedFingerprint) {
+      return NextResponse.json(
+        {
+          error:
+            "This request is not for the SQL that was read before deciding. Read it again, then decide.",
+        },
+        { status: 412 }
+      );
+    }
+    if (expectedApprover !== undefined && approverKey(gate.principal.email) !== expectedApprover) {
+      return NextResponse.json(
+        {
+          error:
+            "The person signed in is not the one who set up approvals on that phone, so the decision was not recorded.",
+        },
+        { status: 412 }
+      );
     }
 
     const blocked = decisionBlockReason(approval, gate.principal.email, gate.principal.bypass);
@@ -98,4 +152,9 @@ export async function POST(
       { status: 500 }
     );
   }
+}
+
+/** A SHA-256 written the way runFingerprint and approverKey write it. */
+function isDigest(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }

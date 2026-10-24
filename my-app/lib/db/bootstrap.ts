@@ -502,6 +502,14 @@ async function backfillOlderTables(): Promise<void> {
        ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`
   );
 
+  // A copy of the SQL each approval request covers, so a paired phone can show
+  // the approver what they are deciding. Nullable with no default on purpose:
+  // a request made before this column existed never had its SQL kept, and the
+  // phone says so instead of showing an empty run.
+  await metadataPool.query(
+    `ALTER TABLE deploy_approvals ADD COLUMN IF NOT EXISTS scripts JSONB`
+  );
+
   await alterTimestampColumns();
 }
 
