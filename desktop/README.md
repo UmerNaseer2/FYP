@@ -380,3 +380,7 @@ The installed app is locked down as well: the server listens on `127.0.0.1`
 only, and the app cannot be made to run code other than its own (as a plain
 Node.js, through `NODE_OPTIONS`, with a debugger attached from the command
 line, or from anything but its own `app.asar`).
+
+`SECURITY.md` says what the app protects, from whom and how, and what it
+does not protect against. `DEMO.md` is a walkthrough for showing the app to
+someone.
