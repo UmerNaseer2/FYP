@@ -10,6 +10,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "schema-studio-relay",
   "main": "src/worker.ts",
+  // The phone app, which `npm run build` puts together in public/. A request
+  // for one of its files gets that file, and every other request, such as
+  // one for a room's WebSocket door, goes on to the Worker.
+  "assets": { "directory": "./public" },
   // From 2026-04-07 on, the platform answers a WebSocket's closing message
   // by itself (web_socket_auto_reply_to_close), which src/room.ts relies on.
   "compatibility_date": "2026-10-19",

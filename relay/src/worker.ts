@@ -1,7 +1,10 @@
 /**
  * The relay's front door. It checks each request's address and passes
  * WebSocket connections on to the room of the computer they name (room.ts).
- * The phone app will be served from here too, later.
+ *
+ * The phone app's files, in public/, never reach this code: Cloudflare
+ * serves a request for one of them itself ("assets" in wrangler.jsonc), so
+ * the Worker sees only the rest.
  */
 import { readRelayPath } from "./shared/remote/relay-protocol.js";
 

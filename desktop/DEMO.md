@@ -34,9 +34,15 @@ behind each step, and `SECURITY.md` the reasons behind the security points.
   SQL
   ```
 
-- For the phone part, a relay's address (`relay/README.md` says how to run
-  one). The phone page is still being built, so this part shows the
-  computer's side only.
+- For the phone part, the deployed relay's https:// address
+  (`relay/README.md` says how to deploy it), and a phone with a screen lock
+  set: an iPhone with iOS 17 or later, or an Android phone with Chrome 133
+  or later. On an iPhone, open the relay's address in Safari, add it to the
+  Home Screen (Share, then Add to Home Screen) and open it from there before
+  the demo, because Safari and the Home Screen app keep separate storage.
+- For the approval part, a deploy request on a connection chosen for
+  phones, asked for by someone other than the person signed in on the
+  computer, since nobody may decide their own request.
 
 ## Install it
 
@@ -135,8 +141,22 @@ File, then Settings, then Phone:
   deploy and rollback requests can be approved or rejected from it with a
   passkey), Turn off approvals, and Remove.
 
-The phone page is still being built, so pairing a real phone, and its drift
-alerts and approvals, wait for it.
+Then, with the phone:
+
+1. Show a code, and scan it with Scan the code in the phone app. The phone
+   lists the connections chosen for phones.
+2. Open the connection, then `shop`, to browse its tables. With a second
+   connection chosen for phones, Compare this schema compares `shop` with
+   the same schema there.
+3. On the computer, choose Allow approvals for the phone. On the phone, open
+   Requests, choose Set up approvals, and confirm with Face ID, a
+   fingerprint or the screen lock.
+4. Open the waiting request under Requests, read its SQL, and choose
+   Approve or Reject. The Deploy screen in Schema Studio shows the
+   decision.
+5. In the phone app's Settings, choose Turn on drift alerts, then make the
+   schema change from Drift alerts above. The phone shows the alert too,
+   even with the app closed.
 
 Point out that the relay passes on messages it cannot read, that the
 pairing code never reaches the relay, and that a phone can do only what the

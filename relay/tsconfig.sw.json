@@ -1,0 +1,22 @@
+{
+  // The phone app's service worker (src/phone/sw.ts), which keeps a copy of
+  // the app's files so that it opens without a connection too. It runs with
+  // a service worker's globals (the "webworker" library), not a page's, so
+  // it is compiled on its own, and it imports nothing: browsers load it as
+  // a classic script. `npm run build` puts the list of the app's files in
+  // front of it as it writes it out to public/sw.js.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "webworker"],
+    "module": "es2022",
+    "types": [],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src/phone",
+    "outDir": "public"
+  },
+  "files": ["src/phone/sw.ts"]
+}

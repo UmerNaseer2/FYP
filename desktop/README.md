@@ -32,8 +32,8 @@ from a `.deb` package.
   pairs by pointing its camera at a code the app shows. What the two send each
   other is encrypted end to end and goes through a relay your team runs (see
   `relay/README.md`), which passes it on but cannot read it. The phone link's
-  keys are kept the same way as the others. The page the phones open is still
-  being built.
+  keys are kept the same way as the others. The phones open the phone app,
+  which the relay serves too, and can add it to their Home Screen.
 - Can keep running with its window closed, so paired phones can still reach
   it (File, then Settings, then Background). Its icon in the top bar opens
   the window again and quits the app, and opening Schema Studio from the app
@@ -53,8 +53,8 @@ from a `.deb` package.
   phone shows them even when it does not have Schema Studio open. A phone
   only hears about the connections chosen for phones, and only while the
   person signed in here may see drift. Each phone turns its own alerts on
-  and off from the page the phones open, so the Notifications setting is
-  for this computer alone.
+  and off in the phone app's Settings, so the Notifications setting is for
+  this computer alone.
 - Lets a paired phone approve or reject the deploy and rollback requests
   waiting on the connections chosen for phones, after reading their exact
   SQL on the phone. Each decision is signed by a passkey on the phone (Face

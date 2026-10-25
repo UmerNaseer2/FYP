@@ -1,8 +1,13 @@
 {
   // The tests, which run in Node (`npm test`): the room's rules
-  // (src/room-logic.ts) with pretend connections, and the whole relay run on
-  // this machine by wrangler. The rules and the shared code use only what
-  // Node has as well, so they are compiled here too, against Node's globals.
+  // (src/room-logic.ts) with pretend connections, the phone app's connection
+  // to the computer (src/phone/connection.ts) with a pretend relay and
+  // computer, the phone app's addresses, wording, approval rules, saved
+  // record and scanner arithmetic (routes.ts, format.ts, approvals.ts,
+  // store.ts and scan.ts in src/phone), the built service worker, and
+  // the whole relay run on this machine by wrangler. These parts and the
+  // shared code use only what Node has as well, so they are compiled here
+  // too, against Node's globals.
   "compilerOptions": {
     "target": "es2023",
     "lib": ["es2023"],
@@ -17,5 +22,16 @@
     "rootDir": "src",
     "outDir": "out"
   },
-  "include": ["src/room-logic.ts", "src/shared", "src/test"]
+  "include": [
+    "src/room-logic.ts",
+    "src/phone/approvals.ts",
+    "src/phone/clock.ts",
+    "src/phone/connection.ts",
+    "src/phone/format.ts",
+    "src/phone/routes.ts",
+    "src/phone/scan.ts",
+    "src/phone/store.ts",
+    "src/shared",
+    "src/test"
+  ]
 }

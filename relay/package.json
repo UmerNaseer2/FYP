@@ -7,14 +7,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc -p tsconfig.json",
-    "test": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --test --test-timeout=30000 \"out/test/*.test.js\"",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "build": "node scripts/build-phone.mjs",
+    "check": "tsc -p tsconfig.json && tsc -p tsconfig.phone.json --noEmit && tsc -p tsconfig.sw.json --noEmit",
+    "test": "npm run build && node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --test --test-timeout=30000 \"out/test/*.test.js\"",
+    "e2e:phone": "npm run build && node scripts/phone-e2e.mjs",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261022.1",
     "@types/node": "24.19.2",
+    "jsqr": "1.4.0",
+    "qrcode-generator": "2.0.4",
     "typescript": "5.9.3",
     "wrangler": "4.152.0"
   }

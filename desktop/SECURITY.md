@@ -2,7 +2,7 @@
 
 This file says what the desktop app keeps safe, from whom and how, and what
 it does not protect against. It covers the desktop app in `desktop/`, the
-relay in `relay/`, the phone page the relay serves, and the apt source that
+relay in `relay/`, the phone app the relay serves, and the apt source that
 installed copies update from. The web app's own checks (who may do what, and
 the SQL it runs) belong to the web app and are not covered here.
 
@@ -176,8 +176,9 @@ keys alone decide nothing:
 - Each decision signs a one-time number (32 random bytes, removed before it
   is checked), the request, the decision and a fingerprint of the request's
   exact SQL (`approvalChallenge` in `src/shared/remote/approval.ts`). The
-  phone page, which is still being built, works the fingerprint out from the
-  SQL it shows, so the signature covers what the person saw.
+  phone app (`relay/src/phone/approvals.ts`) works the fingerprint out from
+  the SQL it shows, and offers Approve only when it matches, so the
+  signature covers what the person saw.
 - The computer checks the signature, that the fingerprint is still the
   request's and, to approve, that the SQL it holds still hashes to that
   fingerprint. The server then checks the fingerprint and the person again
@@ -200,6 +201,28 @@ keys alone decide nothing:
   cannot read it, and signed with this copy's own push key (VAPID).
 - It says only what the desktop notification says (`src/main/phone-push.ts`),
   and only for connections that phones may see.
+
+### The phone app in its browser
+
+- The relay serves the phone app with a strict Content Security Policy
+  (`relay/public/_headers`): only the app's own scripts and styles run, with
+  no inline script or style, it can connect only to the relay it came from,
+  and no other site can frame it. It may use the camera, and has the
+  microphone and location turned off.
+- The app builds its screens from text and never sets `innerHTML`
+  (`relay/src/phone/dom.ts`), so nothing the computer sends can become
+  markup.
+- It runs only over HTTPS. It reads the pairing code from the address and
+  takes it out of the address at once, and it logs nothing.
+- The phone's own key is made so that the page can use it but never read it
+  out, and is kept in the phone's IndexedDB with the paired computer's
+  record (`relay/src/phone/idb-store.ts`).
+- Its passkeys belong to the relay's name, need the person's face,
+  fingerprint or screen lock each time, and use ES256, the one kind of key
+  the computer checks.
+- Its service worker keeps a copy of the app's own files only. It shows a
+  push as a drift alert only when it is one it can read, and anything else
+  as a fixed notice that it could not read it (`relay/src/phone/sw.ts`).
 
 ### Backup files
 
@@ -261,9 +284,9 @@ passphrase, or what a phone asked to compare.
 - **Someone who sees the QR code within its 5 minutes** can pair as a phone
   before the person does. The code works only once, every phone is listed in
   Settings and logged when it pairs, and a phone can be removed at once.
-- **The phone page comes from the relay.** The relay cannot read or change
+- **The phone app comes from the relay.** The relay cannot read or change
   what the computer and a phone say to each other, but it serves the phone
-  page's code, so whoever controls the relay could serve a page that does
+  app's code, so whoever controls the relay could serve an app that does
   something else. Keep the Cloudflare account that runs it locked down.
 - **What the relay sees:** the computer's ID, IP addresses, and when and how
   much is sent.

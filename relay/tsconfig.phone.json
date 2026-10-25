@@ -1,0 +1,28 @@
+{
+  // The phone app, as browsers run it: src/phone/main.ts and everything it
+  // imports, the shared code among it. `npm run build` compiles it into
+  // public/js, keeping the folders as they are here (public/js/phone/main.js
+  // imports ../shared/remote/link.js, and so on), so browsers load the
+  // modules as they are, with no bundler. Only main.ts is listed, and
+  // TypeScript follows its imports from there, so this compiles exactly what
+  // a phone loads.
+  //
+  // Its globals are a web page's (the "dom" library) and nothing else's, so
+  // a call that only Node or the Worker has is a compile error here. The
+  // service worker has other globals, so tsconfig.sw.json compiles it.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "types": [],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "public/js"
+  },
+  "include": ["src/phone/main.ts"]
+}

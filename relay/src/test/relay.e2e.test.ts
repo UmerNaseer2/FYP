@@ -211,7 +211,8 @@ function sample(length: number): Bytes {
 
 test("lets in only WebSocket connections to a room's doors, and none from other web sites", async () => {
   const computer = await newComputer();
-  for (const path of ["/", "/v1/phone/short", `/v1/laptop/${computer.id}`, `/v1/phone/${computer.id}/more`]) {
+  // "/" is the phone app now, so an address with nothing at it stands in for it.
+  for (const path of ["/nothing-here", "/v1/phone/short", `/v1/laptop/${computer.id}`, `/v1/phone/${computer.id}/more`]) {
     const response = await harness.fetch(path);
     assert.equal(response.status, 404, path);
     await response.text();
@@ -225,6 +226,17 @@ test("lets in only WebSocket connections to a room's doors, and none from other 
   // The phone app is served from the relay itself, so it connects from the relay's own web site.
   const phoneApp = new Client("phone app", "phone", computer.id, base.origin);
   assert.deepEqual(await phoneApp.nextControl(), { type: "offline" });
+});
+
+test("serves the phone app from the relay's own address, with its security headers", async () => {
+  const page = await harness.fetch("/");
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /^text\/html/);
+  assert.match(page.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
+  assert.equal(page.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(page.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(page.headers.get("cross-origin-opener-policy"), "same-origin");
+  await page.text();
 });
 
 test("tells a waiting phone when its computer signs in, and the computer about the phone", async () => {

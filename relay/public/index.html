@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)">
+    <meta name="referrer" content="no-referrer">
+    <meta name="description" content="Schema Studio on a phone: the schemas a paired computer shares, its drift alerts, and its deploy requests.">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Schema Studio">
+    <title>Schema Studio</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+    <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+    <link rel="stylesheet" href="/app.css">
+    <!-- All of the app is in its own files, because the page's rules (_headers) run no script and apply no style written in the page itself. -->
+    <script type="module" src="/js/phone/main.js"></script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="bar">
+        <button type="button" id="back" class="back" hidden>
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+          Back
+        </button>
+        <span class="brand"><img src="/icons/icon.svg" alt="" width="24" height="24">Schema Studio</span>
+      </div>
+      <div id="status" class="status" role="status" hidden></div>
+    </header>
+    <main id="app" class="app" tabindex="-1">
+      <p class="loading">Opening the phone app…</p>
+      <noscript><p>The phone app needs JavaScript. Turn it on for this site, then reload the page.</p></noscript>
+    </main>
+    <nav id="tabs" class="tabs" aria-label="Sections" hidden></nav>
+  </body>
+</html>

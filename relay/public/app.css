@@ -1,0 +1,909 @@
+/*
+ * The phone app's look. It follows the computer app (desktop/renderer/app.css):
+ * the same colors in light and dark, the same corners and the same system
+ * fonts, because this page may load nothing but its own files (_headers).
+ *
+ * The same rules allow no style="..." in the page, so every screen is styled
+ * here by its classes, and the app hides things with the `hidden` attribute,
+ * which the first rule makes win over every other.
+ */
+
+[hidden] {
+  display: none !important;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f8;
+  --surface: #fff;
+  --surface-2: #fafafa;
+  --surface-3: #f3f3f5;
+  --border: #e7e7eb;
+  --border-strong: #d4d4d8;
+  --text: #18181b;
+  --text-2: #52525b;
+  --text-3: #8a8a93;
+  --brand: #6366f1;
+  /* The brand color as text: a shade darker than --brand, so small text on white stays easy to read. */
+  --brand-ink: #4f52e0;
+  --brand-soft: #eef0ff;
+  --accent-fill: #4f52e0;
+  --accent-fill-hover: #4346cf;
+  --on-accent: #fff;
+  --good: #16a34a;
+  --good-ink: #166534;
+  --good-soft: #e8f6ed;
+  --warn: #d97706;
+  --warn-ink: #92400e;
+  --warn-soft: #fdf3e1;
+  --bad: #dc2626;
+  --bad-ink: #b91c1c;
+  --bad-soft: #fdeded;
+  --shadow: 0 1px 2px rgb(24 24 27 / 0.05), 0 12px 32px rgb(24 24 27 / 0.06);
+  --radius: 12px;
+  --radius-small: 8px;
+  --font: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
+  --bar-height: 52px;
+  --tabs-height: 56px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0a0c;
+    --surface: #15161a;
+    --surface-2: #1b1c21;
+    --surface-3: #232428;
+    --border: #26272d;
+    --border-strong: #363740;
+    --text: #f3f3f5;
+    --text-2: #b0b0ba;
+    --text-3: #7a7a85;
+    --brand: #7c7fff;
+    --brand-ink: #a3a5ff;
+    --brand-soft: #1d1e34;
+    --accent-fill: #5558e8;
+    --accent-fill-hover: #6366f1;
+    --good: #22c55e;
+    --good-ink: #4ade80;
+    --good-soft: #10261a;
+    --warn: #f59e0b;
+    --warn-ink: #fbbf24;
+    --warn-soft: #2a2110;
+    --bad: #f87171;
+    --bad-ink: #f87171;
+    --bad-soft: #2a1618;
+    --shadow: none;
+  }
+}
+
+/* The page */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 1rem/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+p,
+ul,
+ol,
+dl,
+dd,
+pre,
+form {
+  margin: 0;
+}
+
+img,
+svg,
+video {
+  display: block;
+}
+
+strong {
+  font-weight: 600;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  touch-action: manipulation;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* The bar along the top: Back, the app's name, and the line that says how the link to the computer is doing. */
+
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-top: env(safe-area-inset-top);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: var(--bar-height);
+  padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+}
+
+.back {
+  grid-column: 1;
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 12px 0 4px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--brand-ink);
+  font-size: 1.0625rem;
+  cursor: pointer;
+}
+
+.brand {
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+}
+
+.brand img {
+  border-radius: 6px;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 10px max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
+.status-text {
+  flex: 1 1 12rem;
+}
+
+/* The time next to the status, such as when the next try is. */
+.status > span:not(.status-text) {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.status > button {
+  min-height: 36px;
+  padding: 6px 14px;
+}
+
+/* The screen */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 20px max(16px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+
+/* Room under the last thing on a screen for the tabs, which sit over the bottom of it. */
+body:has(> .tabs:not([hidden])) .app {
+  padding-bottom: calc(var(--tabs-height) + 32px + env(safe-area-inset-bottom));
+}
+
+.app:focus,
+.title:focus {
+  outline: none;
+}
+
+.title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.lead {
+  color: var(--text-2);
+  font-size: 1.0625rem;
+  text-wrap: pretty;
+}
+
+.section {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* A heading over a list sits closer to it than to what is above. */
+.app > .section {
+  margin-bottom: -6px;
+  color: var(--text-2);
+  font-size: 0.9375rem;
+}
+
+.hint {
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
+.muted {
+  color: var(--text-2);
+}
+
+.small {
+  font-size: 0.8125rem;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+#alerts-state {
+  font-weight: 500;
+}
+
+/* Buttons */
+
+.primary,
+.secondary,
+.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.primary {
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+
+.secondary {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.danger {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--bad-ink);
+}
+
+.primary:not(:disabled):active {
+  background: var(--accent-fill-hover);
+}
+
+.secondary:not(:disabled):active,
+.danger:not(:disabled):active {
+  background: var(--surface-3);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* On a phone the buttons share the width, so each one is easy to reach with a thumb. */
+.actions > button {
+  flex: 1 1 9rem;
+}
+
+/* Cards and lists */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* A table that opens to show its columns. Browsers lay out <details> best as a plain block. */
+details.card {
+  display: block;
+}
+
+details.card > * + * {
+  margin-top: 12px;
+}
+
+details.table > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+
+details.table > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.table > summary::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 4px 0 2px;
+  border: solid var(--text-3);
+  border-width: 0 2px 2px 0;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+details.table[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+details.table > summary .muted {
+  margin-left: auto;
+  font-size: 0.875rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.list > * + * {
+  border-top: 1px solid var(--border);
+}
+
+.card .list {
+  box-shadow: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+button.row,
+label.row {
+  cursor: pointer;
+}
+
+button.row:active {
+  background: var(--surface-3);
+}
+
+/* The arrow that says a row opens another screen. */
+button.row::after {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: 0 4px 0 auto;
+  border: solid var(--text-3);
+  border-width: 2px 2px 0 0;
+  transform: rotate(45deg);
+}
+
+.row:focus-visible {
+  outline-offset: -3px;
+}
+
+.row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.row > .row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row-title {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+input[type="checkbox"] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent-fill);
+}
+
+@media (hover: hover) {
+  .primary:not(:disabled):hover {
+    background: var(--accent-fill-hover);
+  }
+
+  .secondary:not(:disabled):hover,
+  .danger:not(:disabled):hover,
+  button.row:hover {
+    background: var(--surface-2);
+  }
+
+  .tab:hover {
+    color: var(--text);
+  }
+}
+
+/* Labels */
+
+.tag,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: 0.1em;
+}
+
+.tag {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.tag + .tag {
+  margin-left: 6px;
+}
+
+.badge {
+  flex: none;
+}
+
+/* The environments, colored as the web app colors them: an unlabeled one looks unfinished, production looks like a warning. */
+.env-unset {
+  border-color: var(--border-strong);
+  border-style: dashed;
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.env-dev {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+.env-staging {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.env-prod {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+
+/* Messages */
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  font-size: 0.9375rem;
+}
+
+.notice-bad {
+  border-color: color-mix(in srgb, var(--bad) 35%, transparent);
+  background: var(--bad-soft);
+}
+
+.notice-info {
+  border-color: color-mix(in srgb, var(--brand) 30%, transparent);
+  background: var(--brand-soft);
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-2);
+}
+
+.loading::before {
+  content: "";
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Forms */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+input[type="text"],
+input[type="search"],
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  color: var(--text);
+  /* 16px at least, or iOS zooms the page in when the field is touched. */
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+input[type="search"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input::placeholder {
+  color: var(--text-3);
+}
+
+input[type="text"]:focus,
+input[type="search"]:focus,
+select:focus {
+  border-color: var(--brand);
+  outline: 2px solid var(--brand);
+  outline-offset: 0;
+}
+
+/* Pairing */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.steps > li {
+  position: relative;
+  min-height: 28px;
+  padding: 2px 0 0 42px;
+  counter-increment: step;
+}
+
+.steps > li::before {
+  content: counter(step);
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+/* The camera, square, with a frame to aim the computer's code into. It is black in either theme, as camera views are. */
+.scan-view {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  max-width: 26rem;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.scan-view video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scan-frame {
+  position: absolute;
+  inset: 15%;
+  border: 3px solid rgb(255 255 255 / 0.92);
+  border-radius: 20px;
+  box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.38);
+  pointer-events: none;
+}
+
+dl.card {
+  gap: 0;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.pair-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 12px 0;
+}
+
+.pair-row + .pair-row {
+  border-top: 1px solid var(--border);
+}
+
+.pair-row dt {
+  color: var(--text-2);
+}
+
+.pair-row dd {
+  margin-left: auto;
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* Schemas */
+
+.columns {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  list-style: none;
+}
+
+.columns > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.columns > li > .mono:first-child {
+  font-weight: 500;
+}
+
+.columns .tag + .tag {
+  margin-left: 0;
+}
+
+/* Comparing */
+
+.change {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* The first label on a change says how risky it is. */
+.sev-breaking .small > .tag:first-child {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+
+.sev-safe .small > .tag:first-child {
+  background: var(--good-soft);
+  color: var(--good-ink);
+}
+
+.sev-info .small > .tag:first-child {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+/* Requests */
+
+.script-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.script-name .tag + .tag {
+  margin-left: 0;
+}
+
+/* SQL keeps its lines as written and scrolls sideways in its own box, so the screen never does. */
+.sql {
+  overflow-x: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-small);
+  background: var(--surface-3);
+  font: 0.8125rem/1.6 var(--mono);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* The tabs along the bottom */
+
+.tabs {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tabs-height);
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab[aria-current="page"] {
+  color: var(--brand-ink);
+  font-weight: 600;
+}
+
+.tab[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: 28%;
+  left: 28%;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: var(--brand);
+}
+
+.tab:focus-visible {
+  outline-offset: -3px;
+}
+
+/* How many requests are waiting. */
+.count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Where the browser can blur what scrolls under the bars, they let a little of it show through. */
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) and (background: color-mix(in srgb, red 50%, transparent)) {
+  .top {
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    -webkit-backdrop-filter: saturate(180%) blur(16px);
+    backdrop-filter: saturate(180%) blur(16px);
+  }
+
+  .tabs {
+    background: color-mix(in srgb, var(--surface) 86%, transparent);
+    -webkit-backdrop-filter: saturate(180%) blur(16px);
+    backdrop-filter: saturate(180%) blur(16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -8,3 +8,9 @@ out/
 # Where Wrangler looks for secrets during `wrangler dev`. The relay has none,
 # and anything put here must never reach this public repo.
 .dev.vars*
+
+# The phone app's compiled scripts and its service worker. `npm run build`
+# (scripts/build-phone.mjs) makes them again from src/phone before every
+# test, `wrangler dev` and deploy.
+public/js/
+public/sw.js
