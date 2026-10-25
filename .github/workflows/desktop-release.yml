@@ -1,0 +1,205 @@
+# Publishes a new version of the desktop app, so that every computer with
+# Schema Studio installed gets it through apt, with the rest of its updates.
+#
+# A new tag starts it, and nothing else does. After raising the version in
+# desktop/package.json, pushing and waiting for the desktop workflow to
+# pass, tag that commit desktop-v<version> and push the tag
+# (desktop/README.md, Publishing a new version, says how). It then:
+#
+# 1. runs every check in desktop.yml on the tagged commit, and stops if one
+#    fails.
+# 2. adds the apt source and its key to both .deb files, then signs the apt
+#    repository's index files (desktop/scripts/add-apt-source.sh and
+#    make-apt-repo.sh).
+# 3. puts them all in a new GitHub release for the tag, marked as the
+#    latest one. Installed copies look for updates in the latest release.
+# 4. checks that apt finds the new version there and fetches the very file
+#    it published.
+#
+# A tag starts it rather than a Run workflow button, because GitHub shows
+# that button only for workflows on the default branch, and this one has
+# to work from any branch.
+#
+# Signing needs the APT_SIGNING_KEY secret of the desktop-release
+# environment, which has to be added first (the same README section says
+# how). The key is only ever in this run's temporary folder, and is deleted
+# at the end.
+name: Publish the desktop app
+
+on:
+  push:
+    tags: ["desktop-v*"]
+
+# Two runs at once would race to be the latest release, so a second one
+# waits for the first.
+concurrency:
+  group: desktop-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Desktop checks
+    uses: ./.github/workflows/desktop.yml
+
+  publish:
+    name: Publish
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The signing key is a secret of this environment, so only this job can
+    # read it.
+    environment: desktop-release
+    permissions:
+      # To make the release.
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      # The .deb files that the checks above built and tested, in this run.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: schema-studio-*
+          merge-multiple: true
+          path: plain
+      - name: Install the apt tools
+        run: |
+          if ! command -v apt-ftparchive >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends apt-utils
+          fi
+      # The tag must name the version that both .deb files have, which must
+      # be newer than the latest release, and the tag may not have a release
+      # yet. Published versions are three plain numbers, because apt and
+      # GitHub do not always agree on other characters in a file's name.
+      - name: Check the version
+        run: |
+          version="$(dpkg-deb -f plain/schema-studio_*_amd64.deb Version)"
+          arm64_version="$(dpkg-deb -f plain/schema-studio_*_arm64.deb Version)"
+          if [ "$version" != "$arm64_version" ]; then
+            echo "::error::The amd64 package has version $version but the arm64 one has $arm64_version."
+            exit 1
+          fi
+          plain_version='^[0-9]+[.][0-9]+[.][0-9]+$'
+          if ! [[ $version =~ $plain_version ]]; then
+            echo "::error::Version $version is not three plain numbers like 2.1.0. Published versions must be, because apt and GitHub do not always agree on other characters in a file's name."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "desktop-v$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match version $version in desktop/package.json. Delete the tag, then tag the commit desktop-v$version."
+            exit 1
+          fi
+          # Every release's tag, drafts too, newest first.
+          tags="$(gh release list --limit 100 --json tagName --jq '.[].tagName')"
+          if grep -qxF "$GITHUB_REF_NAME" <<< "$tags"; then
+            echo "::error::The tag $GITHUB_REF_NAME has a release already, perhaps a draft from a run that failed. Delete that release on the Releases page, then choose Re-run all jobs on this run's page."
+            exit 1
+          fi
+          latest="$(gh release list --limit 100 --json tagName,isLatest --jq '.[] | select(.isLatest) | .tagName')"
+          case "$latest" in
+            "")
+              echo "This is the first desktop release."
+              ;;
+            desktop-v*)
+              if ! dpkg --compare-versions "$version" gt "${latest#desktop-v}"; then
+                echo "::error::Version $version is not newer than the latest release, $latest. Delete the tag, raise the version in desktop/package.json and tag that commit."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::The latest release, $latest, is not a desktop release. Installed copies look for updates in the latest release, so only desktop releases may be marked as latest. Mark the newest desktop release as latest, or remove the mark, then choose Re-run all jobs on this run's page."
+              exit 1
+              ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      # The key goes into a gpg folder in this run's temporary folder, which
+      # the last step deletes.
+      - name: Load the signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::error::The desktop-release environment has no APT_SIGNING_KEY secret. desktop/README.md (Publishing a new version) says how to add it."
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+          if [ "$(gpg --batch --with-colons --list-secret-keys | grep -c '^sec:')" != 1 ]; then
+            echo "::error::APT_SIGNING_KEY must hold exactly one secret key."
+            exit 1
+          fi
+          key="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" && fpr == "" { fpr = $10 } END { print fpr }')"
+          echo "APT_KEY=$key" >> "$GITHUB_ENV"
+          gpg --batch --export "$key" > "$RUNNER_TEMP/archive-keyring.gpg"
+      # Each .deb gets an apt source that points at the latest release, and
+      # the public half of the key, which apt checks each release with.
+      - name: Add the apt source to the packages
+        run: |
+          mkdir release
+          for deb in plain/*.deb; do
+            bash desktop/scripts/add-apt-source.sh "$deb" "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/" "$RUNNER_TEMP/archive-keyring.gpg" "release/$(basename "$deb")"
+          done
+      - name: Sign the apt repository
+        run: bash desktop/scripts/make-apt-repo.sh release "$APT_KEY"
+      # The release starts as a draft, which installed copies cannot see,
+      # and becomes the latest one only once all its files are in.
+      - name: Make the GitHub release
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Schema Studio desktop $VERSION for Ubuntu.
+
+          A computer that has Schema Studio installed gets this version with the rest of its updates, through Software Updater or \`sudo apt update && sudo apt upgrade\`.
+
+          To install it for the first time, download the \`.deb\` below that matches the computer's processor, then, in the folder it went to, run \`sudo apt install ./schema-studio_${VERSION}_amd64.deb\` (or \`_arm64.deb\` on an arm64 computer).
+
+          Packages, Packages.gz, Release, InRelease and Release.gpg are for apt.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Schema Studio desktop $VERSION" --notes-file "$RUNNER_TEMP/notes.md" release/*
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+      # The way an installed copy would find it, with the apt source and key
+      # from the new package. GitHub can take a moment to serve a new
+      # release's files, so it tries a few times.
+      - name: Check that apt finds the new version
+        run: |
+          for file in etc/apt/sources.list.d/schema-studio.sources usr/share/keyrings/schema-studio-archive-keyring.gpg; do
+            dpkg-deb --fsys-tarfile "release/schema-studio_${VERSION}_amd64.deb" | tar -xO "./$file" | sudo tee "/$file" >/dev/null
+          done
+          found=""
+          for attempt in 1 2 3 4 5 6; do
+            sudo apt-get update > "$RUNNER_TEMP/apt-update.txt" 2>&1 || true
+            candidate="$(apt-cache policy schema-studio | sed -n 's/^ *Candidate: //p')"
+            if [ "$candidate" = "$VERSION" ] && ! grep -qE '^(W|E|Err|Warning|Error):.*releases/latest/download' "$RUNNER_TEMP/apt-update.txt"; then
+              found=yes
+              break
+            fi
+            if [ "$attempt" != 6 ]; then
+              sleep 20
+            fi
+          done
+          if [ -z "$found" ]; then
+            cat "$RUNNER_TEMP/apt-update.txt"
+            echo "::error::apt did not find version $VERSION in the new release. Delete the new release on the Releases page, check that the previous desktop release shows as the latest again, then find out why."
+            exit 1
+          fi
+          fetched="$(mktemp -d)"
+          (cd "$fetched" && apt-get download "schema-studio=$VERSION")
+          if ! cmp "$fetched/schema-studio_${VERSION}_amd64.deb" "release/schema-studio_${VERSION}_amd64.deb"; then
+            echo "::error::apt fetched a different file from the release than the one this run published. Delete the new release on the Releases page, check that the previous desktop release shows as the latest again, then find out why."
+            exit 1
+          fi
+          echo "apt finds version $VERSION in the new release and fetches the very file that was published."
+      # Whatever happened above, the key leaves the runner.
+      - name: Remove the signing key from this runner
+        if: always()
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg" gpgconf --kill all 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/gnupg"

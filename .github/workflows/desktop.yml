@@ -1,31 +1,42 @@
 # Builds and tests the desktop app in desktop/, the .deb that installs
 # Schema Studio on Ubuntu.
 #
-# Five jobs. build waits for test, install and apparmor both wait for
-# build, and relay runs by itself:
+# Six jobs. build waits for test, apt-test-source waits for build, install
+# and apparmor both wait for apt-test-source, and relay runs by itself:
 #
-# 1. test runs the desktop app's unit tests.
+# 1. test runs the desktop app's unit tests and checks the shell scripts.
 # 2. build makes the .deb on an amd64 machine and on an arm64 one, checks
 #    what went into it, and keeps each .deb as an artifact of the run, which
 #    can be downloaded from the run's page.
-# 3. install puts each .deb on a fresh Ubuntu 20.04, 22.04, 24.04 and 26.04,
-#    and on the newest release (Docker's rolling image), with nothing else
-#    installed first. It checks that every library the app loads is there,
-#    runs the installed app's self-test, checks its entry in the app grid
-#    and removes it again.
-# 4. apparmor installs each .deb on the runner's own Ubuntu 24.04. There, as
-#    on an Ubuntu desktop from 24.04 on, the window's sandbox only starts
-#    under the AppArmor profile that the .deb brings, so this shows that the
-#    profile works. The containers in job 3 cannot load AppArmor profiles.
-# 5. relay type-checks the relay in relay/, which passes the phone link's
+# 3. apt-test-source makes two copies of each .deb with an apt source in
+#    them, as a published version has (desktop/scripts/add-apt-source.sh),
+#    but pointing at a folder on the test machine and signed with a key
+#    made for this run alone. The second copy has a higher version number
+#    and goes into that folder as a signed apt repository.
+# 4. install puts the first copy of each .deb on a fresh Ubuntu 20.04,
+#    22.04, 24.04 and 26.04, and on the newest release (Docker's rolling
+#    image), with nothing else installed first. It checks that every library
+#    the app loads is there, runs the installed app's self-test and checks
+#    its entry in the app grid. Then it updates the app through apt to the
+#    second copy, the way an installed copy gets a new version, checks that
+#    apt can fetch files from GitHub Releases, where published versions go,
+#    and removes the app again.
+# 5. apparmor installs the first copy of each .deb on the runner's own
+#    Ubuntu 24.04 and updates it the same way. There, as on an Ubuntu
+#    desktop from 24.04 on, the window's sandbox only starts under the
+#    AppArmor profile that the .deb brings, so this shows that the profile
+#    works, before the update and after it. The containers in job 4 cannot
+#    load AppArmor profiles.
+# 6. relay type-checks the relay in relay/, which passes the phone link's
 #    messages between a phone and the computer, and runs its tests. They
 #    run the whole relay on the runner, the way Cloudflare runs it. Nothing
 #    here deploys it.
 #
-# It runs only when desktop/, my-app/ (the desktop app is built from it),
-# relay/ or this file changes. The server updater, deploy/auto-update.sh,
-# goes by the CI workflow alone, so a desktop build never holds a server
-# deploy back.
+# It runs when desktop/, my-app/ (the desktop app is built from it), relay/
+# or this file changes, and desktop-release.yml runs all of it before it
+# publishes a new version. The server updater, deploy/auto-update.sh, goes
+# by the CI workflow alone, so a desktop build never holds a server deploy
+# back.
 #
 # Microsoft sign-in needs the app registration's two IDs. They are public
 # IDs, not secrets, and come from the repository variables AZURE_AD_CLIENT_ID
@@ -41,10 +52,15 @@ on:
   pull_request:
     paths: ["desktop/**", "my-app/**", "relay/**", ".github/workflows/desktop.yml"]
   workflow_dispatch:
+  # desktop-release.yml runs it before it publishes a new version.
+  workflow_call:
 
-# A newer push to the same branch replaces a run that is still going.
+# A newer push to the same branch replaces a run that is still going. The
+# group carries the workflow's name, which is the caller's name when
+# desktop-release.yml runs this file, so a push never stops the checks of a
+# release that is being published, or the other way around.
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -78,6 +94,13 @@ jobs:
       # test fails when the checker is missing, rather than skip it.
       - name: Install desktop-file-validate
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends desktop-file-utils
+      # shellcheck finds the usual shell mistakes in scripts/, such as a
+      # missing pair of quotes, which a test run may never come across. It
+      # fails on any finding.
+      - name: Check the shell scripts
+        run: |
+          command -v shellcheck >/dev/null || sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck scripts/*.sh
       # The backup tests restore into a real PostgreSQL, the same build the
       # .deb carries. Here they fail when it is missing, rather than skip.
       - name: Fetch PostgreSQL
@@ -145,16 +168,90 @@ jobs:
           path: desktop/dist/*.deb
           if-no-files-found: error
 
+  apt-test-source:
+    name: Make a test apt source
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: schema-studio-*
+          merge-multiple: true
+          path: plain
+      - name: Install the apt tools
+        run: |
+          if ! command -v apt-ftparchive >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends apt-utils
+          fi
+      # Two copies of each .deb, both with an apt source that points at
+      # /srv/schema-studio-apt/ on the test machine and a key made for this
+      # run alone. The second copy has a higher version number and goes in
+      # a signed apt repository, so the jobs below can install the first and
+      # update it to the second through apt. The key's secret half stays in
+      # this job's temporary folder and is deleted at the end.
+      - name: Make the test packages and their apt source
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          trap 'gpgconf --kill all || true; rm -rf "$GNUPGHOME"' EXIT
+          gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key "Schema Studio test source" ed25519 sign never
+          key="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" && fpr == "" { fpr = $10 } END { print fpr }')"
+          gpg --batch --export "$key" > "$RUNNER_TEMP/test-keyring.gpg"
+          mkdir source
+          for deb in plain/*.deb; do
+            arch="$(dpkg-deb -f "$deb" Architecture)"
+            # desktop-release.yml finds each package by this name, so the
+            # build must keep naming them this way.
+            wanted="schema-studio_$(dpkg-deb -f "$deb" Version)_${arch}.deb"
+            if [ "$(basename "$deb")" != "$wanted" ]; then
+              echo "::error::The build named a package $(basename "$deb"), but publishing (desktop-release.yml) looks for $wanted."
+              exit 1
+            fi
+            newer="$(dpkg-deb -f "$deb" Version)+aptcheck"
+            mkdir -p "apt-test-$arch/first" "apt-test-$arch/source"
+            bash desktop/scripts/add-apt-source.sh "$deb" file:/srv/schema-studio-apt/ "$RUNNER_TEMP/test-keyring.gpg" "apt-test-$arch/first/$(basename "$deb")"
+            bash desktop/scripts/add-apt-source.sh "$deb" file:/srv/schema-studio-apt/ "$RUNNER_TEMP/test-keyring.gpg" "source/schema-studio_${newer}_${arch}.deb" "$newer"
+            echo "$newer" > "apt-test-$arch/newer-version"
+          done
+          bash desktop/scripts/make-apt-repo.sh source "$key"
+          # Each processor's test machine gets the signed index files and
+          # only its own .deb, which keeps each download to one package.
+          for arch in amd64 arm64; do
+            cp source/Packages source/Packages.gz source/Release source/InRelease source/Release.gpg source/*_"$arch".deb "apt-test-$arch/source/"
+          done
+      # The jobs below use these within this run, so they are kept for a
+      # day only. The .deb files in them are compressed already.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apt-test-amd64
+          path: apt-test-amd64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apt-test-arm64
+          path: apt-test-arm64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   install:
     name: Install on Ubuntu ${{ matrix.version }} (${{ matrix.arch }})
-    needs: build
+    needs: apt-test-source
     strategy:
       fail-fast: false
       matrix:
         version: ["20.04", "22.04", "24.04", "26.04", "rolling"]
         arch: [amd64, arm64]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     # A fresh Ubuntu of that version. It is privileged because Chromium's
     # sandbox makes namespaces that Docker's defaults forbid, and it has more
     # shared memory than Docker's 64 MB, which Chromium and PostgreSQL both
@@ -171,14 +268,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: schema-studio-${{ matrix.arch }}
-          path: deb
+          name: apt-test-${{ matrix.arch }}
+          path: apt-test
+      # The package's apt source points at this folder, where the job
+      # before put the second copy of the package and its signed index
+      # files. apt reads it as its own _apt user, so everyone may read it.
+      - name: Serve the test apt source
+        run: |
+          mkdir -p /srv
+          cp -R apt-test/source /srv/schema-studio-apt
+          chmod -R a+rX /srv/schema-studio-apt
       - name: Install it
         run: |
           apt-get update
           # Only what the .deb depends on, and nothing it merely recommends,
           # so that a dependency it forgot to name shows up in the next step.
-          apt-get install -y --no-install-recommends ./deb/*.deb
+          apt-get install -y --no-install-recommends ./apt-test/first/*.deb
       - name: Check its libraries
         run: |
           for program in "/opt/Schema Studio/schema-studio" "/opt/Schema Studio/resources/postgres/bin/postgres" "/opt/Schema Studio/resources/postgres/bin/initdb"; do
@@ -278,10 +383,52 @@ jobs:
             echo "There is no $icon picture in /usr/share/icons/hicolor, so the app grid would show a blank icon."
             exit 1
           fi
+      # The way an installed copy finds a new version: apt-get update reads
+      # the source that came with the package, checks the signature with
+      # the key that came with it, and offers the newer version.
+      - name: Update it through apt
+        run: |
+          wanted="$(cat apt-test/newer-version)"
+          apt-get update 2>&1 | tee /tmp/apt-update.txt
+          if grep -E '^(W|E|Err|Warning|Error):.*schema-studio-apt' /tmp/apt-update.txt; then
+            echo "apt warned about the package's own apt source (above), so an installed copy would not update."
+            exit 1
+          fi
+          candidate="$(apt-cache policy schema-studio | sed -n 's/^ *Candidate: //p')"
+          if [ "$candidate" != "$wanted" ]; then
+            echo "apt offers version ${candidate:-none} rather than $wanted from the package's own apt source."
+            exit 1
+          fi
+          apt-get install -y --no-install-recommends --only-upgrade schema-studio
+          installed="$(dpkg-query -W -f '${Version}' schema-studio)"
+          if [ "$installed" != "$wanted" ]; then
+            echo "Updating through apt left version $installed installed rather than $wanted."
+            exit 1
+          fi
+          # The old version's removal script runs before the new version's
+          # install script, so these show that the new one set things up
+          # again.
+          for file in /etc/apt/sources.list.d/schema-studio.sources /usr/share/keyrings/schema-studio-archive-keyring.gpg /usr/bin/schema-studio; do
+            if [ ! -e "$file" ]; then
+              echo "After the update through apt, $file is missing."
+              exit 1
+            fi
+          done
+      # Published versions go to GitHub Releases, and apt asks for them with
+      # a ./ in the address (releases/latest/download/./file), as it does for
+      # any flat repository. This fetches another project's file, published
+      # the same way, with apt's own download tool, so it works before the
+      # first Schema Studio release too. A failure can also mean that GitHub
+      # could not be reached.
+      - name: Check that apt can fetch from GitHub Releases
+        run: |
+          apt-get install -y --no-install-recommends ca-certificates
+          /usr/lib/apt/apt-helper download-file https://github.com/jqlang/jq/releases/latest/download/./jq-linux-amd64 /tmp/github-release-file
+          test -s /tmp/github-release-file
       - name: Remove it
         run: |
           apt-get remove -y schema-studio
-          for leftover in /usr/bin/schema-studio "/opt/Schema Studio/schema-studio" /usr/share/applications/io.github.umernaseer2.SchemaStudio.desktop; do
+          for leftover in /usr/bin/schema-studio "/opt/Schema Studio/schema-studio" /usr/share/applications/io.github.umernaseer2.SchemaStudio.desktop /etc/apt/sources.list.d/schema-studio.sources /usr/share/keyrings/schema-studio-archive-keyring.gpg; do
             if [ -e "$leftover" ] || [ -L "$leftover" ]; then
               echo "Removing the package left $leftover behind."
               exit 1
@@ -290,7 +437,7 @@ jobs:
 
   apparmor:
     name: Run under AppArmor on Ubuntu 24.04 (${{ matrix.arch }})
-    needs: build
+    needs: apt-test-source
     strategy:
       fail-fast: false
       matrix:
@@ -300,15 +447,15 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: schema-studio-${{ matrix.arch }}
-          path: deb
+          name: apt-test-${{ matrix.arch }}
+          path: apt-test
       - name: Restrict namespaces as Ubuntu does
         run: |
           # From 24.04 on, Ubuntu lets an ordinary user make the namespaces
@@ -321,10 +468,16 @@ jobs:
           else
             echo "::warning::This runner's kernel does not restrict namespaces, so this job does not show that the AppArmor profile works."
           fi
+      # The package's apt source points at this folder (see the install job).
+      - name: Serve the test apt source
+        run: |
+          sudo mkdir -p /srv
+          sudo cp -R apt-test/source /srv/schema-studio-apt
+          sudo chmod -R a+rX /srv/schema-studio-apt
       - name: Install it
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ./deb/*.deb xvfb xauth
+          sudo apt-get install -y --no-install-recommends ./apt-test/first/*.deb xvfb xauth
       - name: Check that its AppArmor profile is loaded
         run: |
           if ! sudo grep -q "^schema-studio (" /sys/kernel/security/apparmor/profiles; then
@@ -333,11 +486,35 @@ jobs:
           fi
       - name: Run the self-test as an ordinary user
         run: xvfb-run --auto-servernum schema-studio --self-test
+      # The old version's removal script takes the AppArmor profile away,
+      # and the new version's install script brings it back.
+      - name: Update it through apt
+        run: |
+          wanted="$(cat apt-test/newer-version)"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends --only-upgrade schema-studio
+          installed="$(dpkg-query -W -f '${Version}' schema-studio)"
+          if [ "$installed" != "$wanted" ]; then
+            echo "Updating through apt left version $installed installed rather than $wanted."
+            exit 1
+          fi
+      - name: Check that the update kept its AppArmor profile
+        run: |
+          if [ ! -e /etc/apparmor.d/schema-studio ] || ! sudo grep -q "^schema-studio (" /sys/kernel/security/apparmor/profiles; then
+            echo "Updating the package through apt lost its AppArmor profile, so its window could not start on Ubuntu 24.04 and newer."
+            exit 1
+          fi
+      - name: Run the self-test again after the update
+        run: xvfb-run --auto-servernum schema-studio --self-test
       - name: Remove it
         run: |
           sudo apt-get remove -y schema-studio
           if [ -e /etc/apparmor.d/schema-studio ] || sudo grep -q "^schema-studio (" /sys/kernel/security/apparmor/profiles; then
             echo "Removing the package left its AppArmor profile behind."
+            exit 1
+          fi
+          if [ -e /etc/apt/sources.list.d/schema-studio.sources ] || [ -e /usr/share/keyrings/schema-studio-archive-keyring.gpg ]; then
+            echo "Removing the package left its apt source behind."
             exit 1
           fi
 

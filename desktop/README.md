@@ -78,14 +78,16 @@ from a `.deb` package.
 
 Ubuntu 20.04, 22.04, 24.04 and 26.04, and the newest Ubuntu release that is
 not an LTS, on amd64 (most PCs) and on arm64. Each processor has its own
-`.deb`. The desktop workflow installs each one on every one of these versions
-and runs its self-test there.
+`.deb`. The desktop workflow installs each one on every one of these versions,
+runs its self-test there and updates it through a signed apt source, the way
+a published version arrives.
 
 ## Installing and removing
 
-Each run of the desktop workflow on GitHub keeps the two `.deb` files it
-built, under Artifacts on the run's page. Each one downloads as a zip file
-with the `.deb` inside. To make one by hand, see Building the .deb below.
+Each published version is a GitHub release, under Releases on the
+repository's page, with two `.deb` files: one for amd64 and one for arm64.
+Publishing a new version below says how one is made. Download the one for
+the computer's processor, then install it from the folder it went to:
 
 ```bash
 sudo apt install ./schema-studio_2.0.0_amd64.deb
@@ -94,7 +96,16 @@ sudo apt install ./schema-studio_2.0.0_amd64.deb
 On an arm64 computer the file is `schema-studio_2.0.0_arm64.deb`. The `./`
 matters: it tells apt to install that file rather than look for a package
 online. Schema Studio is then in the app grid, and `schema-studio` starts it
-from a terminal.
+from a terminal. From then on it gets each new version with the rest of the
+computer's updates (see Updates through apt below).
+
+Each run of the desktop workflow on GitHub also keeps the two `.deb` files
+it built, under Artifacts on the run's page. Each one downloads as a zip
+file with the `.deb` inside. They install the same way but carry no update
+source, so a copy installed from one never updates itself. To make one by
+hand, see Building the .deb below.
+
+To remove it:
 
 ```bash
 sudo apt remove schema-studio
@@ -102,6 +113,39 @@ sudo apt remove schema-studio
 
 Removing it leaves the data where it is (see below), so installing it again
 carries on where it left off.
+
+## Updates through apt
+
+Each published `.deb` brings two files along with the app:
+
+- `/etc/apt/sources.list.d/schema-studio.sources` tells apt to look for new
+  versions in this project's latest GitHub release.
+- `/usr/share/keyrings/schema-studio-archive-keyring.gpg` is the public half
+  of the key that signs those releases. apt uses it for this source alone,
+  never for Ubuntu's own packages.
+
+So a new version shows up in Software Updater, or with
+
+```bash
+sudo apt update && sudo apt upgrade
+```
+
+apt checks the signature and the hash of every file, and stops if anything
+changed on the way. Automatic security updates (unattended-upgrades) leave
+Schema Studio alone, so a new version waits until someone accepts it. To
+stay on the installed version, hold it:
+
+```bash
+sudo apt-mark hold schema-studio
+```
+
+and `sudo apt-mark unhold schema-studio` lets it update again. Removing
+Schema Studio removes both files, and each new version replaces them, so
+changes made to them do not last.
+
+If `apt update` or `apt upgrade` reports an error for the Schema Studio
+source, such as a 404 or a hash mismatch, a new version was most likely
+being published at that moment. Run both commands again a minute later.
 
 ## Where it keeps things
 
@@ -190,6 +234,84 @@ asks desktop apps to, with PKCE: a one-time secret it makes for each sign-in.
 A build without the IDs still starts, but signing in then says that sign-in
 is not set up in that copy.
 
+## Publishing a new version
+
+`.github/workflows/desktop-release.yml` adds the apt source to both `.deb`
+files, signs the apt index files and puts them all in a new GitHub release,
+which every installed copy then updates from. Pushing a tag starts it.
+
+### Making the signing key (once)
+
+apt only installs what a key it trusts has signed, so publishing needs a
+signing key. Make one on any computer with gpg, in a folder of its own:
+
+```bash
+export GNUPGHOME="$(mktemp -d)"
+gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key "Schema Studio releases" ed25519 sign never
+gpg --armor --export-secret-keys > apt-signing-key.asc
+```
+
+In GitHub, open the repository's Settings, then Environments, and add an
+environment named `desktop-release`. Give it a secret named
+`APT_SIGNING_KEY` that holds the whole of `apt-signing-key.asc`. Keep a copy
+of that file, and of the `openpgp-revocs.d` folder in `$GNUPGHOME`, offline,
+for example on a USB stick. Then remove them from the computer:
+
+```bash
+gpgconf --kill all
+rm -rf "$GNUPGHOME" apt-signing-key.asc
+```
+
+The key has no passphrase, since nobody is there to type one when the
+workflow signs, and it never expires, since every installed copy carries it
+and an expired key would stop them all updating. The environment's Required
+reviewers and Deployment branches and tags settings can also limit who
+publishes, and from which tags.
+
+### Publishing
+
+1. Raise `version` in `desktop/package.json` (the first release can keep
+   2.0.0). It must be three plain numbers like 2.1.0, and newer than the
+   latest release.
+2. Commit and push it, and wait for the desktop workflow to pass.
+3. Tag that commit with `desktop-v` and the version, and push the tag:
+
+   ```bash
+   git tag desktop-v2.1.0
+   git push origin desktop-v2.1.0
+   ```
+
+The tag starts Publish the desktop app, under Actions. It runs every check
+of the desktop workflow again, then makes the tag's release as a draft, adds
+all its files, and only then makes it the latest release, so an installed
+copy never sees half a release. Last, it checks that apt finds the new
+version there and fetches the very file it published. Installed copies
+always look in the latest release, so only desktop releases may be marked as
+latest on the Releases page.
+
+### If something goes wrong
+
+If the workflow stops before it makes the release, for example because
+`APT_SIGNING_KEY` is missing, fix that and choose Re-run all jobs on the
+run's page. If the code or the version has to change instead, delete the
+tag and start again from step 1:
+
+```bash
+git push --delete origin desktop-v2.1.0
+git tag -d desktop-v2.1.0
+```
+
+If it stops after it made the release, delete that release on the Releases
+page, check that the previous desktop release shows as the latest again,
+then read the run's log before trying again.
+
+If the signing key is lost or leaks, make a new one as above, replace
+`APT_SIGNING_KEY` with it and publish a new version. Copies installed
+before still trust only the old key, so install the new `.deb` by hand once
+on each computer (Installing and removing above). Someone with the old key
+would also need write access to this repository's releases to publish
+anything.
+
 ## Trying it while developing
 
 This works on Ubuntu and on a Mac:
@@ -227,6 +349,9 @@ and off in its own folders. It prints a JSON report and exits with 0 only
 when every step worked. It leaves the keyring alone. On a computer without a
 screen, run it under `xvfb-run`.
 
+The desktop workflow also checks the shell scripts in `scripts` with
+shellcheck, and fails on any finding.
+
 ## The icon
 
 `assets/icon.svg` is the picture. `assets/icon.png`, which Ubuntu shows, is
@@ -248,7 +373,8 @@ both.
   the web app talks to the desktop app, and a test fails if the two differ.
 - `src/preload`, `src/renderer` and `renderer` are the splash and Settings
   windows.
-- `scripts` holds the build steps above.
+- `scripts` holds the build steps above, and `add-apt-source.sh` and
+  `make-apt-repo.sh`, which publishing uses (Publishing a new version).
 
 The installed app is locked down as well: the server listens on `127.0.0.1`
 only, and the app cannot be made to run code other than its own (as a plain
