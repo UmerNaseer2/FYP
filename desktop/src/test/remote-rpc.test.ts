@@ -18,12 +18,15 @@ import {
   writeError,
   writeRequest,
   writeResult,
+  type ApprovalSummary,
   type ChangeLine,
   type ColumnOverview,
   type CompareSummary,
+  type DecideParams,
   type ErrorCode,
   type ForeignKeyOverview,
   type Method,
+  type NewPasskeyParams,
   type PushSubscriptionParams,
   type Request,
   type Results,
@@ -47,7 +50,22 @@ function json(bytes: Bytes): unknown {
 }
 
 /** Every kind of request, in the order rpc.ts lists them. */
-const METHODS: Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe"];
+const METHODS: Method[] = [
+  "hello",
+  "connections.list",
+  "schemas.list",
+  "schema.read",
+  "compare.run",
+  "push.status",
+  "push.subscribe",
+  "push.unsubscribe",
+  "approvals.list",
+  "approvals.read",
+  "passkey.begin",
+  "passkey.finish",
+  "approvals.begin",
+  "approvals.decide",
+];
 
 /** A schema in one of the computer's saved connections. */
 const REF: SchemaRef = { connectionId: 7, schema: "public" };
@@ -57,6 +75,23 @@ const SUBSCRIPTION: PushSubscriptionParams = { endpoint: "https://push.example.c
 
 /** The computer's public push key: a P-256 point written out whole, which starts with the byte 4. */
 const PUSH_KEY = toBase64Url(Uint8Array.from({ length: 65 }, (_, index) => (index === 0 ? 4 : index)));
+
+/** `size` bytes written as base64url, as each part of a passkey's answer is. */
+function base64Url(size: number): string {
+  return toBase64Url(Uint8Array.from({ length: size }, (_, index) => index % 251));
+}
+
+/** A fingerprint of a request's SQL: 64 lowercase hex characters (approval.ts). */
+const FINGERPRINT = "0f".repeat(32);
+
+/** A new passkey, as the phone's browser made it. */
+const NEW_PASSKEY: NewPasskeyParams = { clientDataJSON: base64Url(130), attestationObject: base64Url(160) };
+
+/** What a phone's passkey signed a decision with. */
+const ASSERTION = { credentialId: base64Url(16), authenticatorData: base64Url(37), clientDataJSON: base64Url(120), signature: base64Url(71) };
+
+/** A decision on a request, signed with the phone's passkey. */
+const DECIDE: DecideParams = { approvalId: 12, decision: "approve", fingerprint: FINGERPRINT, assertion: ASSERTION };
 
 /** One of each request a phone may send. */
 const REQUESTS: Request[] = [
@@ -69,6 +104,12 @@ const REQUESTS: Request[] = [
   { id: 5, method: "push.status" },
   { id: 6, method: "push.subscribe", params: SUBSCRIPTION },
   { id: 7, method: "push.unsubscribe" },
+  { id: 8, method: "approvals.list" },
+  { id: 9, method: "approvals.read", params: { approvalId: 12 } },
+  { id: 10, method: "passkey.begin" },
+  { id: 11, method: "passkey.finish", params: NEW_PASSKEY },
+  { id: 12, method: "approvals.begin" },
+  { id: 13, method: "approvals.decide", params: DECIDE },
 ];
 
 /** A column, as the computer describes it. */
@@ -135,6 +176,24 @@ const SUMMARY: CompareSummary = {
   ],
 };
 
+/** A deploy request waiting for a decision. */
+const APPROVAL: ApprovalSummary = {
+  id: 12,
+  connectionId: 7,
+  schemaName: "public",
+  scriptName: "add_order_note",
+  targetVersion: "1.1.0",
+  action: "deploy",
+  migrationCount: 2,
+  breakingCount: 1,
+  requestedBy: "someone@example.com",
+  requestedAt: "2026-10-24T09:30:00.000Z",
+  note: "Before the sale starts.",
+  fingerprint: FINGERPRINT,
+  sql: "kept",
+  ownRequest: false,
+};
+
 /** A successful answer to each request, as the computer sends it. */
 const RESULTS: { [M in Method]: Results[M] } = {
   hello: { signedIn: true, role: "Viewer", canCompare: false, canReadSchemas: true, appVersion: "1.0.0" },
@@ -150,6 +209,17 @@ const RESULTS: { [M in Method]: Results[M] } = {
   "push.status": { key: PUSH_KEY, subscribed: false },
   "push.subscribe": { key: PUSH_KEY, subscribed: true },
   "push.unsubscribe": { key: PUSH_KEY, subscribed: false },
+  "approvals.list": {
+    // A rollback asked for by the person signed in, whose SQL the app no longer has.
+    approvals: [APPROVAL, { ...APPROVAL, id: 13, action: "revert", note: null, sql: "missing", ownRequest: true }],
+    passkey: "ready",
+    canApprove: true,
+  },
+  "approvals.read": { id: 12, action: "deploy", fingerprint: FINGERPRINT, scripts: [{ name: "add_order_note", version: "1.1.0", sql: "ALTER TABLE orders ADD COLUMN note text;" }] },
+  "passkey.begin": { challenge: base64Url(32), userId: base64Url(16) },
+  "passkey.finish": { passkey: "ready" },
+  "approvals.begin": { nonce: base64Url(32), credentialId: base64Url(16) },
+  "approvals.decide": { status: "approved" },
 };
 
 /** OVERVIEW with its table changed. */
@@ -177,6 +247,16 @@ test("writes only a request's own fields", () => {
   // A subscription with more than the computer needs, such as when it ends.
   const fromBrowser = { ...SUBSCRIPTION, expirationTime: null };
   assert.deepEqual(json(writeRequest({ id: 3, method: "push.subscribe", params: fromBrowser })), { id: 3, method: "push.subscribe", params: SUBSCRIPTION });
+  // A passkey's answers with the more a browser gives, such as how the passkey can be reached and who it is for.
+  const created = { ...NEW_PASSKEY, transports: ["internal"] };
+  assert.deepEqual(json(writeRequest({ id: 4, method: "passkey.finish", params: created })), { id: 4, method: "passkey.finish", params: NEW_PASSKEY });
+  const signed = { ...DECIDE, note: "Fine by me.", assertion: { ...ASSERTION, userHandle: base64Url(16) } };
+  assert.deepEqual(json(writeRequest({ id: 5, method: "approvals.decide", params: signed })), { id: 5, method: "approvals.decide", params: DECIDE });
+  assert.deepEqual(json(writeRequest({ id: 6, method: "approvals.read", params: { approvalId: 12, fingerprint: FINGERPRINT } as { approvalId: number } })), {
+    id: 6,
+    method: "approvals.read",
+    params: { approvalId: 12 },
+  });
 });
 
 test("cannot answer a message that does not say which request it is", () => {
@@ -248,6 +328,38 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "push.subscribe", params: { ...SUBSCRIPTION, endpoint: "a".repeat(MAX_PUSH_FIELD_LENGTH + 1) } },
     // How a browser writes a whole subscription, with the phone's two keys inside another object.
     { id: 5, method: "push.subscribe", params: { endpoint: SUBSCRIPTION.endpoint, expirationTime: null, keys: { p256dh: SUBSCRIPTION.p256dh, auth: SUBSCRIPTION.auth } } },
+    { id: 5, method: "approvals.list", params: {} },
+    { id: 5, method: "passkey.begin", x: 1 },
+    { id: 5, method: "approvals.begin", params: null },
+    { id: 5, method: "approvals.read" },
+    { id: 5, method: "approvals.read", params: { approvalId: 0 } },
+    { id: 5, method: "approvals.read", params: { approvalId: "12" } },
+    { id: 5, method: "approvals.read", params: { approvalId: 12, fingerprint: FINGERPRINT } },
+    { id: 5, method: "passkey.finish", params: { clientDataJSON: NEW_PASSKEY.clientDataJSON } },
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, transports: ["internal"] } },
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, clientDataJSON: "" } },
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, clientDataJSON: 7 } },
+    // Written with padding, and in base64 that is not base64url.
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, attestationObject: `${base64Url(31)}=` } },
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, attestationObject: "ab+/cd" } },
+    // A byte more than a request takes.
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, clientDataJSON: base64Url(2049) } },
+    { id: 5, method: "passkey.finish", params: { ...NEW_PASSKEY, attestationObject: base64Url(6145) } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, approvalId: 0 } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, decision: "maybe" } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, fingerprint: FINGERPRINT.toUpperCase() } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, fingerprint: FINGERPRINT.slice(1) } },
+    // A phone may not add a note to its decision.
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, note: "Fine by me." } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: null } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, userHandle: base64Url(16) } } },
+    { id: 5, method: "approvals.decide", params: { approvalId: 12, decision: "approve", fingerprint: FINGERPRINT, assertion: { ...ASSERTION, signature: undefined } } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, signature: 7 } } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, credentialId: "not base64url!" } } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, credentialId: base64Url(1024) } } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, authenticatorData: base64Url(1025) } } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, clientDataJSON: base64Url(2049) } } },
+    { id: 5, method: "approvals.decide", params: { ...DECIDE, assertion: { ...ASSERTION, signature: base64Url(257) } } },
   ]) {
     assert.deepEqual(readRequest(message(value)), { ok: false, id: 5, code: "bad-request" }, JSON.stringify(value));
   }
@@ -280,6 +392,27 @@ test("reads a push subscription whose fields are as long as a request takes", ()
   assert.deepEqual(readRequest(writeRequest(request)), { ok: true, request });
 });
 
+test("reads a passkey's answers with each part as big as a request takes, and each still fits in a message", () => {
+  const requests: Request[] = [
+    { id: Number.MAX_SAFE_INTEGER, method: "passkey.finish", params: { clientDataJSON: base64Url(2048), attestationObject: base64Url(6144) } },
+    {
+      id: Number.MAX_SAFE_INTEGER,
+      method: "approvals.decide",
+      params: {
+        approvalId: Number.MAX_SAFE_INTEGER,
+        decision: "reject",
+        fingerprint: FINGERPRINT,
+        assertion: { credentialId: base64Url(1023), authenticatorData: base64Url(1024), clientDataJSON: base64Url(2048), signature: base64Url(256) },
+      },
+    },
+  ];
+  for (const request of requests) {
+    const written = writeRequest(request);
+    assert.ok(written.length <= MAX_REQUEST_BYTES, `${request.method} takes ${written.length} bytes`);
+    assert.deepEqual(readRequest(written), { ok: true, request }, request.method);
+  }
+});
+
 test("takes a schema name the app reads exactly as it is written", () => {
   for (const name of ["public", "Public", "my schema", "a".repeat(MAX_SCHEMA_NAME_LENGTH)]) {
     assert.equal(isSchemaName(name), true, name);
@@ -300,10 +433,34 @@ test("writes each kind of result and reads it back the same", () => {
   // Nobody signed in, so there is no role.
   const signedOut = { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: "1.0.0" };
   assert.deepEqual(readResult("hello", signedOut), signedOut);
+  // A request whose SQL the computer could not show exactly, which a phone may only reject.
+  const unshown = { ...RESULTS["approvals.read"], scripts: null };
+  assert.deepEqual(readResult("approvals.read", unshown), unshown);
+  assert.deepEqual(readResult("approvals.list", { approvals: [], passkey: "allowed", canApprove: false }), { approvals: [], passkey: "allowed", canApprove: false });
+  assert.deepEqual(readResult("approvals.decide", { status: "rejected" }), { status: "rejected" });
 });
 
 test("writes each error and reads it back", () => {
-  const codes: ErrorCode[] = ["signed-out", "forbidden", "not-shared", "not-found", "unreachable", "too-big", "busy", "bad-request", "unknown-method", "failed"];
+  const codes: ErrorCode[] = [
+    "signed-out",
+    "forbidden",
+    "not-shared",
+    "not-found",
+    "unreachable",
+    "too-big",
+    "busy",
+    "bad-request",
+    "unknown-method",
+    "not-allowed",
+    "no-passkey",
+    "passkey-refused",
+    "other-person",
+    "changed",
+    "already-decided",
+    "own-request",
+    "expired",
+    "failed",
+  ];
   for (const code of codes) {
     const error = { code, message: "The computer could not do this." };
     assert.deepEqual(readAnswer(writeError(4, code, error.message)), { id: 4, ok: false, error }, code);
@@ -404,6 +561,28 @@ test("refuses a result whose fields are the wrong kind", () => {
     ["push.subscribe", { key: toBase64Url(new Uint8Array(64)), subscribed: true }],
     ["push.unsubscribe", { key: `${PUSH_KEY}=`, subscribed: false }],
     ["push.unsubscribe", null],
+    ["approvals.list", { approvals: [], passkey: "maybe", canApprove: true }],
+    ["approvals.list", { approvals: [], passkey: "ready", canApprove: "yes" }],
+    ["approvals.list", { approvals: null, passkey: "ready", canApprove: true }],
+    // One request the phone could not read is enough to refuse the list, rather than leave it out.
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [APPROVAL, { ...APPROVAL, id: 0 }] }],
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [{ ...APPROVAL, action: "drop" }] }],
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [{ ...APPROVAL, fingerprint: FINGERPRINT.toUpperCase() }] }],
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [{ ...APPROVAL, sql: "gone" }] }],
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [{ ...APPROVAL, note: 7 }] }],
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [{ ...APPROVAL, migrationCount: -1 }] }],
+    ["approvals.list", { ...RESULTS["approvals.list"], approvals: [{ ...APPROVAL, ownRequest: "no" }] }],
+    ["approvals.read", { ...RESULTS["approvals.read"], scripts: "ALTER TABLE orders ADD COLUMN note text;" }],
+    ["approvals.read", { ...RESULTS["approvals.read"], scripts: [{ name: "add_order_note", version: "1.1.0" }] }],
+    ["approvals.read", { ...RESULTS["approvals.read"], fingerprint: "" }],
+    ["approvals.read", { ...RESULTS["approvals.read"], action: "rollback" }],
+    ["passkey.begin", { challenge: base64Url(65), userId: base64Url(16) }],
+    ["passkey.begin", { challenge: base64Url(32) }],
+    ["passkey.finish", { passkey: "done" }],
+    ["approvals.begin", { nonce: base64Url(32), credentialId: base64Url(1024) }],
+    ["approvals.begin", { nonce: "", credentialId: base64Url(16) }],
+    ["approvals.decide", { status: "pending" }],
+    ["approvals.decide", null],
   ];
   for (const [method, value] of cases) {
     assert.equal(readResult(method, value), null, `${method}: ${JSON.stringify(value)}`);

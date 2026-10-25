@@ -3,7 +3,9 @@
  * (src/main/phone-requests.ts). A fake plays the server, so these tests check
  * which routes are asked, that only shared connections are asked about, that
  * an answer carries nothing the phone was not meant to see, and that every
- * refusal is one of the fixed sentences.
+ * refusal is one of the fixed sentences. The approval requests are passed on
+ * to src/main/phone-approvals.ts, which src/test/phone-approvals.test.ts
+ * tests on its own, so a fake stands in for it here.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -15,12 +17,15 @@ import type { PushSubscriptionFields } from "../core/web-push";
 import { initLog, logFilePaths } from "../main/log";
 import {
   REFUSALS,
+  Refused,
   answerRequest,
+  ask,
   driftAlertsAllowed,
   writeRefusal,
   type AppAnswer,
   type AppCaller,
   type PhoneAlerts,
+  type PhoneApprovalRequests,
   type Refusal,
 } from "../main/phone-requests";
 import { readAnswer, type Answer, type CompareSummary, type Request } from "../shared/remote/rpc.js";
@@ -95,17 +100,54 @@ function fakeAlerts(subscription: PushSubscriptionFields | null = null): PhoneAl
   };
 }
 
+/** A fingerprint of a request's SQL, as the app's server writes one. */
+const FINGERPRINT = "ab".repeat(32);
+
+/** A phone's approval requests, answering each with a fixed result and noting what it was asked with. */
+function fakeApprovals(overrides: Partial<PhoneApprovalRequests> = {}): PhoneApprovalRequests & { asked: unknown[][] } {
+  const asked: unknown[][] = [];
+  return {
+    list: async (signal) => {
+      asked.push(["list", signal]);
+      return { approvals: [], passkey: "none", canApprove: false };
+    },
+    read: async (approvalId, signal) => {
+      asked.push(["read", approvalId, signal]);
+      return { id: approvalId, action: "deploy", fingerprint: FINGERPRINT, scripts: [{ name: "orders", version: "1.1.0", sql: "SELECT 1;" }] };
+    },
+    beginPasskey: () => {
+      asked.push(["beginPasskey"]);
+      return { challenge: "Y2hhbGxlbmdl", userId: "dXNlcg" };
+    },
+    finishPasskey: async (params, signal) => {
+      asked.push(["finishPasskey", params, signal]);
+      return { passkey: "ready" };
+    },
+    beginDecision: () => {
+      asked.push(["beginDecision"]);
+      return { nonce: "bm9uY2U", credentialId: "Y3JlZA" };
+    },
+    decide: async (params, signal) => {
+      asked.push(["decide", params, signal]);
+      return { status: "rejected" };
+    },
+    ...overrides,
+    asked,
+  };
+}
+
 /**
  * Answers `request` as the computer would, with these connections shared and
- * these drift alerts for the phone, and reads the answer as a phone would.
+ * these drift alerts and approvals for the phone, and reads the answer as a
+ * phone would.
  */
 async function answer(
   request: Request,
   call: AppCaller,
-  options: { shared?: readonly number[]; alerts?: PhoneAlerts; signal?: AbortSignal } = {},
+  options: { shared?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; signal?: AbortSignal } = {},
 ): Promise<Answer> {
   const shared = options.shared ?? [1, 2, 3];
-  const requestOptions = { call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts() };
+  const requestOptions = { call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
   const sent = await answerRequest(request, requestOptions, options.signal ?? new AbortController().signal);
   const read = readAnswer(sent);
   assert.ok(read, "a phone can read the answer");
@@ -574,7 +616,7 @@ test("fails a request when the app answers with something unexpected, and logs i
 test("reads which connections are shared at every request, so a change in Settings counts at once", async () => {
   let shared: number[] = [1];
   const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": ok({ schemas: ["public"] }) });
-  const options = { call: app.call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: fakeAlerts() };
+  const options = { call: app.call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
   const ask = async (id: number) => readAnswer(await answerRequest({ id, method: "schemas.list", params: { connectionId: 1 } }, options, new AbortController().signal));
   assert.deepEqual(await ask(1), { id: 1, ok: true, result: { schemas: ["public"] } });
   shared = [];
@@ -589,7 +631,97 @@ test("refuses only with short plain sentences, each one a code every phone knows
     assert.match(message, /^[ -~]+\.$/, refusal);
     assert.deepEqual(readAnswer(writeRefusal(7, refusal as Refusal)), { id: 7, ok: false, error: { code, message } }, refusal);
   }
-  // The computer's own four reasons go out with a code every phone knows, and a sentence that says more.
+  // The computer's own five reasons go out with a code every phone knows, and a sentence that says more.
   for (const refusal of ["access-unknown", "no-answer", "too-slow"] as const) assert.equal(REFUSALS[refusal].code, "failed");
   assert.equal(REFUSALS["bad-subscription"].code, "bad-request");
+  assert.equal(REFUSALS["sql-missing"].code, "forbidden");
+});
+
+test("passes each approval request on to the phone's approvals, with what the phone sent", async () => {
+  const approvals = fakeApprovals();
+  // The approvals ask the app themselves, so the request handler asks it nothing.
+  const app = fakeApp({});
+  const signal = new AbortController().signal;
+  const finish = { clientDataJSON: "Y2xpZW50", attestationObject: "YXR0ZXN0" };
+  const decide = {
+    approvalId: 4,
+    decision: "reject" as const,
+    fingerprint: FINGERPRINT,
+    assertion: { credentialId: "Y3JlZA", authenticatorData: "YXV0aA", clientDataJSON: "Y2xpZW50", signature: "c2ln" },
+  };
+  const results = [
+    [{ id: 1, method: "approvals.list" }, { approvals: [], passkey: "none", canApprove: false }],
+    [{ id: 2, method: "approvals.read", params: { approvalId: 4 } }, { id: 4, action: "deploy", fingerprint: FINGERPRINT, scripts: [{ name: "orders", version: "1.1.0", sql: "SELECT 1;" }] }],
+    [{ id: 3, method: "passkey.begin" }, { challenge: "Y2hhbGxlbmdl", userId: "dXNlcg" }],
+    [{ id: 4, method: "passkey.finish", params: finish }, { passkey: "ready" }],
+    [{ id: 5, method: "approvals.begin" }, { nonce: "bm9uY2U", credentialId: "Y3JlZA" }],
+    [{ id: 6, method: "approvals.decide", params: decide }, { status: "rejected" }],
+  ] as const;
+  for (const [request, result] of results) {
+    assert.deepEqual(await answer(request, app.call, { approvals, signal }), { id: request.id, ok: true, result }, request.method);
+  }
+  assert.deepEqual(approvals.asked, [["list", signal], ["read", 4, signal], ["beginPasskey"], ["finishPasskey", finish, signal], ["beginDecision"], ["decide", decide, signal]]);
+  assert.equal(app.calls.length, 0);
+});
+
+test("answers an approval request the approvals refuse with that refusal, and fails one they cannot answer", async () => {
+  const app = fakeApp({});
+  newLogLines();
+  const refusing = fakeApprovals({
+    list: async () => {
+      throw new Refused("other-person");
+    },
+    beginDecision: () => {
+      throw new Refused("no-passkey");
+    },
+  });
+  assert.deepEqual(await answer({ id: 7, method: "approvals.list" }, app.call, { approvals: refusing }), refused(7, "other-person"));
+  assert.deepEqual(await answer({ id: 8, method: "approvals.begin" }, app.call, { approvals: refusing }), refused(8, "no-passkey"));
+  assert.equal(newLogLines(), "", "a refusal is an answer, not something gone wrong");
+
+  // Anything else is logged, with what went wrong, and the phone hears only that it failed.
+  const broken = fakeApprovals({
+    read: async () => {
+      throw new Error(`The test approvals could not reach ${HOST}.`);
+    },
+    beginPasskey: () => {
+      throw new Error("The test approvals could not make a challenge.");
+    },
+  });
+  const read = await answer({ id: 9, method: "approvals.read", params: { approvalId: 1 } }, app.call, { approvals: broken });
+  assert.deepEqual(read, refused(9, "failed"));
+  assert.ok(!JSON.stringify(read).includes(HOST));
+  assert.match(newLogLines(), /could not answer a phone's approvals\.read\.\n.*could not reach/);
+  assert.deepEqual(await answer({ id: 10, method: "passkey.begin" }, app.call, { approvals: broken }), refused(10, "failed"));
+  assert.match(newLogLines(), /could not answer a phone's passkey\.begin\.\n.*could not make a challenge/);
+
+  const stopped = new AbortController();
+  stopped.abort();
+  assert.deepEqual(await answer({ id: 11, method: "approvals.read", params: { approvalId: 1 } }, app.call, { approvals: broken, signal: stopped.signal }), refused(11, "failed"));
+  assert.equal(newLogLines(), "");
+});
+
+test("asks the app with the refusals a route gives its own meaning to, and the usual ones for the rest", async () => {
+  const app = fakeApp({
+    "POST /api/deploy/approvals/3": { status: 409, json: { error: "This request has already been decided." } },
+    "POST /api/deploy/approvals/4": { status: 404, json: { error: "Not found." } },
+    "POST /api/deploy/approvals/5": { status: 403, json: { error: "Not allowed." } },
+    "GET /api/deploy/approvals/phone": ok({ approvals: [] }),
+  });
+  const signal = new AbortController().signal;
+  const special = { 404: "already-decided", 409: "already-decided", 412: "changed" } as const;
+  const refusalOf = async (path: string): Promise<Refusal | null> => {
+    try {
+      await ask({ call: app.call }, "POST", path, { decision: "reject" }, signal, special);
+      return null;
+    } catch (error) {
+      assert.ok(error instanceof Refused);
+      return error.refusal;
+    }
+  };
+  assert.equal(await refusalOf("/api/deploy/approvals/3"), "already-decided");
+  assert.equal(await refusalOf("/api/deploy/approvals/4"), "already-decided");
+  assert.equal(await refusalOf("/api/deploy/approvals/5"), "forbidden");
+  assert.deepEqual(await ask({ call: app.call }, "GET", "/api/deploy/approvals/phone", undefined, signal), { approvals: [] });
+  assert.deepEqual(app.calls[0], { method: "POST", path: "/api/deploy/approvals/3", body: { decision: "reject" } });
 });

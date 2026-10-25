@@ -243,6 +243,11 @@ export function withPhonePasskey(phones: readonly PairedPhone[], key: string, pa
   });
 }
 
+/** The phones with no passkey left on any of them, for when every passkey stops working at once. Their drift alerts stay. */
+export function withoutPasskeys(phones: readonly PairedPhone[]): PairedPhone[] {
+  return phones.map(withoutPasskey);
+}
+
 /** The phones with this one's drift alerts turned on with `subscription`, or turned off when it is null. */
 export function withPhoneSubscription(phones: readonly PairedPhone[], key: string, subscription: PhoneSubscription | null): PairedPhone[] {
   return phones.map((phone) => {

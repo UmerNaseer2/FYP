@@ -1,6 +1,7 @@
 /**
  * The Phone section of the Settings window (renderer/settings.html), where
- * phones are paired and given the saved connections they may see.
+ * phones are paired, given the saved connections they may see, and allowed
+ * to approve requests.
  *
  * It shows what the main process sends when the page loads and again after
  * each change, whether the change came from this page, from the relay or
@@ -14,6 +15,13 @@
  * A code pairs one phone and runs out after a few minutes, and the phone
  * link stops it sooner when Cancel is pressed, when the window closes, when
  * the link is turned off and when the relay changes.
+ *
+ * Allow approvals gives a phone 5 minutes to set up a passkey, which it then
+ * approves or rejects deploy and rollback requests with. The page only ever
+ * learns whether a phone has a passkey and until when it may set one up: the
+ * passkey itself stays in the main process. Allow is offered only while the
+ * link is on, since a phone could not reach this computer to set one up
+ * otherwise, and the main process ends the time given when the link goes off.
  *
  * A phone chooses its own name, so the names of phones, like those of the
  * connections, go into the page as text only, never as markup. The page is
@@ -148,7 +156,13 @@
     setText(statusParts.connectNow, status.state === "replaced" ? "Connect again" : "Try now");
   }
 
-  /** Moves the countdowns on: to the next try at the relay, and to the end of the code on show. */
+  /** How long a phone has left to set up approvals, as its row says it. */
+  function setupLeft(until: number): string {
+    const left = until - Date.now();
+    return left > 0 ? `Set up approvals on the phone within ${duration(left)}.` : "The time to set up approvals has run out.";
+  }
+
+  /** Moves the countdowns on: to the next try at the relay, to the end of the code on show, and to the end of each phone's time to set up approvals. */
   function tick(): void {
     const status = current?.status;
     if (status?.state === "waiting") {
@@ -160,6 +174,7 @@
       if (left > 0) setText(codeParts.expiry, `This code runs out in ${duration(left)}.`);
       else codeRunOut();
     }
+    for (const setup of Array.from(phoneList.querySelectorAll<HTMLElement>("[data-until]"))) setText(setup, setupLeft(Number(setup.dataset.until)));
   }
 
   /** Takes away a code that has run out, and offers a new one in its place. */
@@ -396,33 +411,48 @@
     }
   }
 
-  /** When a phone was last seen, or that it is connected now, when it paired, and whether it gets drift alerts. */
+  /** When a phone was last seen, or that it is connected now, when it paired, whether it gets drift alerts, and whether it may approve requests. */
   function phoneDetail(phone: PhoneSummary): string {
     const pairedOn = new Date(phone.pairedAt).toLocaleDateString(undefined, { dateStyle: "medium" });
     const alerts = phone.alerts ? " Gets drift alerts." : "";
-    if (phone.connected) return `Connected now. Paired on ${pairedOn}.${alerts}`;
+    const approvals = phone.approvals ? " Can approve deploys and rollbacks." : "";
+    if (phone.connected) return `Connected now. Paired on ${pairedOn}.${alerts}${approvals}`;
     const lastSeen = new Date(phone.lastSeenAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    return `Last seen ${lastSeen}. Paired on ${pairedOn}.${alerts}`;
+    return `Last seen ${lastSeen}. Paired on ${pairedOn}.${alerts}${approvals}`;
   }
 
-  /** One of the buttons in a phone's row. Every row has the same buttons, so Remove's name says which phone it is for. */
-  function phoneRowButton(phone: PhoneSummary, action: "remove" | "confirm" | "keep", detailId: string): HTMLButtonElement {
+  /** One of the buttons in a phone's row. Every row has the same buttons, so each one's name says which phone it is for. */
+  function phoneRowButton(phone: PhoneSummary, action: "allow" | "turn-off" | "remove" | "confirm" | "keep", describedBy: string): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = action === "keep" ? "button" : "button button-bad";
+    button.className = action === "remove" || action === "confirm" ? "button button-bad" : "button";
     button.dataset.key = phone.key;
     button.dataset.action = action;
     if (action === "keep") {
       button.textContent = "Keep it";
+    } else if (action === "allow") {
+      button.textContent = "Allow approvals";
+      button.setAttribute("aria-label", `Allow approvals on ${phone.name}`);
+    } else if (action === "turn-off" && phone.approvals) {
+      button.textContent = "Turn off approvals";
+      button.setAttribute("aria-label", `Turn off approvals on ${phone.name}`);
+    } else if (action === "turn-off") {
+      // The phone has no passkey yet, only time to set one up, so this ends that time.
+      button.textContent = "Cancel setup";
+      button.setAttribute("aria-label", `Cancel setting up approvals on ${phone.name}`);
     } else {
       button.textContent = "Remove";
       button.setAttribute("aria-label", `Remove ${phone.name}`);
     }
-    button.setAttribute("aria-describedby", detailId);
+    button.setAttribute("aria-describedby", describedBy);
     return button;
   }
 
-  /** A paired phone's row: its name, when it was last seen, and Remove, which asks to be sure first. */
+  /**
+   * A paired phone's row: its name, when it was last seen, the time it has
+   * left to set up approvals while that runs, and its buttons. Remove asks to
+   * be sure first, and while it asks, the row offers nothing else.
+   */
   function phoneRow(phone: PhoneSummary, index: number): HTMLDivElement {
     const asking = confirming === phone.key;
     const row = document.createElement("div");
@@ -440,8 +470,24 @@
     text.append(name, detail);
     const actions = document.createElement("span");
     actions.className = "token-actions";
-    if (asking) actions.append(phoneRowButton(phone, "confirm", detail.id), phoneRowButton(phone, "keep", detail.id));
-    else actions.append(phoneRowButton(phone, "remove", detail.id));
+    if (asking) {
+      actions.append(phoneRowButton(phone, "confirm", detail.id), phoneRowButton(phone, "keep", detail.id));
+    } else {
+      let describedBy = detail.id;
+      if (phone.approvalsAllowedUntil !== null) {
+        // tick() moves this countdown on, so that the row is not built again every second.
+        const setup = document.createElement("span");
+        setup.className = "hint";
+        setup.id = `phone-setup-${index}`;
+        setup.dataset.until = String(phone.approvalsAllowedUntil);
+        setup.textContent = setupLeft(phone.approvalsAllowedUntil);
+        text.append(setup);
+        describedBy = `${detail.id} ${setup.id}`;
+      }
+      if (phone.approvals || phone.approvalsAllowedUntil !== null) actions.append(phoneRowButton(phone, "turn-off", describedBy));
+      else if (current?.enabled === true) actions.append(phoneRowButton(phone, "allow", describedBy));
+      actions.append(phoneRowButton(phone, "remove", detail.id));
+    }
     row.append(text, actions);
     return row;
   }
@@ -455,7 +501,12 @@
 
   function phoneButton(target: PhoneButton): HTMLButtonElement | null {
     const buttons = Array.from(phoneList.querySelectorAll<HTMLButtonElement>("button"));
-    return buttons.find((button) => button.dataset.key === target.key && button.dataset.action === target.action) ?? null;
+    return (
+      buttons.find((button) => button.dataset.key === target.key && button.dataset.action === target.action) ??
+      // A button that has gone, such as Allow approvals once the phone may set them up, hands focus to the first one left in its row.
+      buttons.find((button) => button.dataset.key === target.key) ??
+      null
+    );
   }
 
   /**
@@ -466,7 +517,11 @@
    */
   function showPhones(phones: PhoneSummary[], focusOn: PhoneButton | null = null): void {
     if (confirming !== null && !phones.some((phone) => phone.key === confirming)) confirming = null;
-    const shown = JSON.stringify([confirming, phones.map((phone) => [phone.key, phone.name, phoneDetail(phone)])]);
+    const shown = JSON.stringify([
+      confirming,
+      current?.enabled,
+      phones.map((phone) => [phone.key, phone.name, phoneDetail(phone), phone.approvals, phone.approvalsAllowedUntil]),
+    ]);
     let target = focusOn;
     if (shown !== phonesShown) {
       phonesShown = shown;
@@ -553,6 +608,10 @@
         showPhones(current.phones, { key, action: "remove" });
       } else if (button.dataset.action === "confirm") {
         api.forget(key);
+      } else if (button.dataset.action === "allow") {
+        api.allowApprovals(key);
+      } else if (button.dataset.action === "turn-off") {
+        api.turnOffApprovals(key);
       }
     });
     window.addEventListener("pagehide", () => {

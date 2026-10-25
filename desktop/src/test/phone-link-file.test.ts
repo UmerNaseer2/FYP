@@ -15,6 +15,7 @@ import {
   withPhonePasskey,
   withPhoneSeen,
   withPhoneSubscription,
+  withoutPasskeys,
   withoutPhone,
   type PairedPhone,
   type PhoneLinkState,
@@ -297,6 +298,13 @@ test("sets up and takes away a phone's passkey, keeping its drift alerts and the
   // Taken away, the phone is as it was before, with no passkey field left behind.
   assert.deepEqual(withPhonePasskey(set, PHONE.key, null), phones);
   assert.deepEqual(withPhonePasskey(phones, keyOf(99), PASSKEY), phones);
+});
+
+test("takes every phone's passkey away at once, keeping their drift alerts", () => {
+  const other: PairedPhone = { ...PHONE, key: keyOf(8) };
+  const plain: PairedPhone = { ...PHONE, key: keyOf(9) };
+  const phones = [{ ...PHONE, push: PUSH, passkey: PASSKEY }, { ...other, passkey: PASSKEY }, plain];
+  assert.deepEqual(withoutPasskeys(phones), [{ ...PHONE, push: PUSH }, other, plain]);
 });
 
 test("reads a saved passkey back, and leaves out one that cannot be used", () => {

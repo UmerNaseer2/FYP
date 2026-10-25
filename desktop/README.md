@@ -55,6 +55,16 @@ from a `.deb` package.
   person signed in here may see drift. Each phone turns its own alerts on
   and off from the page the phones open, so the Notifications setting is
   for this computer alone.
+- Lets a paired phone approve or reject the deploy and rollback requests
+  waiting on the connections chosen for phones, after reading their exact
+  SQL on the phone. Each decision is signed by a passkey on the phone (Face
+  ID, a fingerprint or the phone's code), and this computer checks the
+  signature and the SQL before passing the decision on. A phone may set up
+  its passkey only in the 5 minutes after Allow approvals is pressed for it
+  (File, then Settings, then Phone), and it then decides as the person
+  signed in here at that time, and as nobody else. Turn off approvals stops
+  it, and so does moving the phone link to another relay, since a passkey
+  only signs for the relay it was made at.
 - Saves everything Schema Studio keeps (the saved connections and the key
   that unlocks their passwords, the comparison and drift history, the
   people and their roles, and the GitHub registry and its token) into one

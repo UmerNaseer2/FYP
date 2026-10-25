@@ -83,6 +83,8 @@ export type IpcHandlers = {
     setRelay(origin: unknown): SetRelayResult;
     setShared(ids: unknown): void;
     forget(key: string): void;
+    allowApprovals(key: string): void;
+    turnOffApprovals(key: string): void;
     pair(): PhonePairing;
     cancelPairing(): void;
     connectNow(): void;
@@ -196,6 +198,12 @@ export function registerIpc(handlers: IpcHandlers): void {
   on(settings, PHONE.setShared, (ids) => handlers.phone.setShared(ids));
   on(settings, PHONE.forget, (key) => {
     if (typeof key === "string") handlers.phone.forget(key);
+  });
+  on(settings, PHONE.allowApprovals, (key) => {
+    if (typeof key === "string") handlers.phone.allowApprovals(key);
+  });
+  on(settings, PHONE.turnOffApprovals, (key) => {
+    if (typeof key === "string") handlers.phone.turnOffApprovals(key);
   });
   handle(settings, PHONE.pair, () => handlers.phone.pair());
   on(settings, PHONE.cancelPairing, () => handlers.phone.cancelPairing());

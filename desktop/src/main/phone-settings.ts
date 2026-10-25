@@ -51,6 +51,8 @@ export function phoneView(link: PhoneSettingsLink | null, problem: string | null
       lastSeenAt: phone.lastSeenAt,
       connected: phone.connected,
       alerts: phone.alerts,
+      approvals: phone.approvals,
+      approvalsAllowedUntil: phone.approvalsAllowedUntil,
     })),
     cannotPair: pairingProblem(view),
   };

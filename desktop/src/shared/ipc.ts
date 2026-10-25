@@ -85,6 +85,8 @@ export const PHONE = {
   setRelay: "phone:set-relay",
   setShared: "phone:set-shared",
   forget: "phone:forget",
+  allowApprovals: "phone:allow-approvals",
+  turnOffApprovals: "phone:turn-off-approvals",
   pair: "phone:pair",
   cancelPairing: "phone:cancel-pairing",
   connectNow: "phone:connect-now",
@@ -188,8 +190,20 @@ export type PhoneStatus =
 /**
  * A paired phone, as the Phone section lists it. The name came from the phone,
  * and `alerts` says whether it gets drift alerts (where they go stays in main).
+ * `approvals` says whether it has a passkey to approve requests with (the
+ * passkey stays in main too), and `approvalsAllowedUntil` until when it may
+ * set one up, or null when it may not.
  */
-export type PhoneSummary = { key: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean; alerts: boolean };
+export type PhoneSummary = {
+  key: string;
+  name: string;
+  pairedAt: number;
+  lastSeenAt: number;
+  connected: boolean;
+  alerts: boolean;
+  approvals: boolean;
+  approvalsAllowedUntil: number | null;
+};
 
 /** What the Phone section shows, or why there is nothing to show yet. */
 export type PhoneView =
@@ -236,6 +250,10 @@ export interface PhoneSettingsApi {
   setShared(ids: number[]): void;
   /** Unpairs a phone, by its key. */
   forget(key: string): void;
+  /** Lets a phone, by its key, set up a passkey to approve requests with, within the next 5 minutes. */
+  allowApprovals(key: string): void;
+  /** Takes a phone's passkey away, by the phone's key, or ends the time it was given to set one up. */
+  turnOffApprovals(key: string): void;
   pair(): Promise<PhonePairing>;
   /** Makes the code on show pair nothing. */
   cancelPairing(): void;

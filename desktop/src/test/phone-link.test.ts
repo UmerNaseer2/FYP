@@ -1,7 +1,8 @@
 /**
  * The phone link as a whole (src/main/phone-link.ts). A fake store plays
  * phone-link.json, a fake socket plays the relay, a real handshake plays a
- * phone, and a clock the tests move on by hand drives the timers.
+ * phone, a passkey made in software (software-passkey.ts) plays its passkey,
+ * and a clock the tests move on by hand drives the timers.
  */
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -11,10 +12,11 @@ import path from "node:path";
 import test, { after } from "node:test";
 
 import { driftNotification, type DriftAlert } from "../core/drift-alerts";
-import { newPhoneLinkState, type PairedPhone, type PhoneLinkState } from "../core/phone-link-file";
+import { newPhoneLinkState, type PairedPhone, type PhoneLinkState, type PhonePasskey } from "../core/phone-link-file";
 import { isPushKey, readPushKey, type PushRequest, type PushResponse, type PushTransport } from "../core/web-push";
 import type { Clock } from "../main/clock";
 import { initLog, logFilePaths, logWarn } from "../main/log";
+import { ALLOW_MS } from "../main/phone-approvals";
 import {
   openPhoneLink,
   type PhoneLink,
@@ -26,6 +28,7 @@ import {
 import { FIRST_WAIT_MS, type OpenSocket, type RelaySocket, type SocketEvents } from "../main/phone-relay";
 import { writeRefusal, type AppAnswer, type AppCaller } from "../main/phone-requests";
 import type { LoadResult, Protection } from "../main/secrets";
+import { approvalChallenge, approvalFingerprint, type ApprovalScript } from "../shared/remote/approval.js";
 import { fromBase64Url, randomBytes, toBase64Url, type Bytes } from "../shared/remote/bytes.js";
 import { generateKeyPair, importKeyPair, type KeyPair } from "../shared/remote/keys.js";
 import { Link } from "../shared/remote/link.js";
@@ -41,8 +44,9 @@ import {
 } from "../shared/remote/pairing.js";
 import { CHALLENGE_BYTES, desktopIdFor } from "../shared/remote/relay-auth.js";
 import { CLOSE_REPLACED, addChannel, readChannel, readControl, relaySocketUrl, writeControl } from "../shared/remote/relay-protocol.js";
-import { readAnswer, writeRequest, type Answer, type Request } from "../shared/remote/rpc.js";
+import { readAnswer, readResult, writeRequest, type Answer, type Request } from "../shared/remote/rpc.js";
 import { decrypt, newPhone, subscriptionOf, type Phone } from "./push-phone";
+import { assertion, newSoftwarePasskey, registration } from "./software-passkey";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ss-phone-link-"));
 initLog(path.join(root, "logs"), { echo: false });
@@ -532,8 +536,8 @@ test("makes a push key for a file with none, saved once, and turns every phone's
     1,
   );
   assert.deepEqual(link.view().phones, [
-    { ...alerted, connected: false, alerts: false },
-    { ...quiet, connected: false, alerts: false },
+    { ...alerted, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...quiet, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
   ]);
 
   logWarn(`A message with every key in it: ${keysIn(saved).join(" ")}`);
@@ -574,8 +578,8 @@ test("shows which phones get drift alerts, and never where the alerts go", async
   assert.deepEqual(store.saved, []);
   const view = link.view();
   assert.deepEqual(view.phones, [
-    { ...alerted, connected: false, alerts: true },
-    { ...quiet, connected: false, alerts: false },
+    { ...alerted, connected: false, alerts: true, approvals: false, approvalsAllowedUntil: null },
+    { ...quiet, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
   ]);
   const shown = JSON.stringify(view);
   assert.ok([push.endpoint, push.p256dh, push.auth].every((part) => !shown.includes(part)), "the view holds nothing of the subscription");
@@ -747,7 +751,7 @@ test("removes a paired phone by its key, and ignores anything else", async () =>
   assert.equal(store.saved.length, 0);
   link.forgetPhone(old.key);
   assert.deepEqual(store.last.phones, [other]);
-  assert.deepEqual(link.view().phones, [{ ...other, connected: false, alerts: false }]);
+  assert.deepEqual(link.view().phones, [{ ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
   assert.equal(countLines(newLogLines(), /Removed the phone "Old phone" from the paired phones\./), 1);
 });
 
@@ -855,8 +859,8 @@ test("pairs a phone through the relay, answers it, and sends it away once it is 
   assert.deepEqual(paired, [saved]);
   assert.deepEqual(store.last.phones, [saved]);
   // It shows as connected once a message from it opens.
-  assert.deepEqual(link.view().phones, [{ ...saved, connected: false, alerts: false }]);
-  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: false, alerts: false }]);
+  assert.deepEqual(link.view().phones, [{ ...saved, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
+  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
 
   // A phone sees only the connections shared with it, and the app is not asked about any other.
   const refused = await ask(phone, socket, 1, { id: 1, method: "schemas.list", params: { connectionId: 3 } });
@@ -864,8 +868,8 @@ test("pairs a phone through the relay, answers it, and sends it away once it is 
   assert.deepEqual(caller.calls, []);
   await settle();
   assert.deepEqual(store.last.phones, [saved]);
-  assert.deepEqual(link.view().phones, [{ ...saved, connected: true, alerts: false }]);
-  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: true, alerts: false }]);
+  assert.deepEqual(link.view().phones, [{ ...saved, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
+  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
 
   link.setSharedConnections([3]);
   caller.answers.set("GET /api/lineage/schemas?connectionId=3", { status: 200, json: { schemas: ["public"] } });
@@ -921,8 +925,8 @@ test("lets a phone paired before back in, notes when it was last seen, and shows
   assert.ok(phone);
   // Seen, and connected, only once a message from it opens.
   assert.deepEqual(link.view().phones, [
-    { ...before, connected: false, alerts: false },
-    { ...other, connected: false, alerts: false },
+    { ...before, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
   ]);
   const refused = await ask(phone, socket, 5, { id: 1, method: "schemas.list", params: { connectionId: 3 } });
   assert.deepEqual(refused, readAnswer(writeRefusal(1, "not-shared")));
@@ -930,8 +934,8 @@ test("lets a phone paired before back in, notes when it was last seen, and shows
   assert.deepEqual(store.last.phones, [seen, other]);
   await settle();
   assert.deepEqual(views.at(-1)?.phones, [
-    { ...seen, connected: true, alerts: false },
-    { ...other, connected: false, alerts: false },
+    { ...seen, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
   ]);
 });
 
@@ -1315,6 +1319,330 @@ test("gives up on the app's server when it does not say in time whether drift al
   assert.equal(countLines(lines, /could not say whether the signed-in role may see drift/), 1);
   // The phone link gave up itself, so the app is not said to have failed to answer.
   assert.equal(countLines(lines, /could not reach the app/), 0);
+});
+
+/** A passkey kept for a phone, made of random bytes: the phone link only keeps it, and phone-approvals.test.ts checks real ones. */
+function keptPasskey(): PhonePasskey {
+  return {
+    credentialId: toBase64Url(randomBytes(16)),
+    publicKey: { x: toBase64Url(randomBytes(32)), y: toBase64Url(randomBytes(32)) },
+    signCount: 0,
+    approver: "ab".repeat(32),
+    addedAt: 1_640_000_000_000,
+  };
+}
+
+/** When each phone's time to set up approvals ends, as Settings is shown it. */
+function allowedUntil(view: PhoneLinkView | undefined): Array<number | null> | undefined {
+  return view?.phones.map((phone) => phone.approvalsAllowedUntil);
+}
+
+test("lets a paired phone set up approvals for 5 minutes once Settings allows it, and ignores anything else", async () => {
+  const phone = pairedPhone("Test phone");
+  const other = pairedPhone("Other phone");
+  const { link, store, clock, views } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [phone, other] }));
+  await settle();
+  const shown = views.length;
+  for (const key of ["not a key", 42, undefined]) link.allowApprovals(key);
+  await settle();
+  assert.equal(views.length, shown);
+  assert.equal(countLines(newLogLines(), /Approvals may be set up/), 0);
+
+  link.allowApprovals(phone.key);
+  const endsAt = clock.now() + ALLOW_MS;
+  assert.deepEqual(allowedUntil(link.view()), [endsAt, null]);
+  assert.equal(countLines(newLogLines(), /Approvals may be set up on the phone "Test phone" for the next 5 minutes\./), 1);
+  await settle();
+  assert.deepEqual(allowedUntil(views.at(-1)), [endsAt, null]);
+  // Kept in memory only: the time to set up approvals ends with the app.
+  assert.deepEqual(store.saved, []);
+
+  clock.advance(ALLOW_MS - 1);
+  assert.deepEqual(allowedUntil(link.view()), [endsAt, null]);
+  clock.advance(1);
+  assert.deepEqual(allowedUntil(link.view()), [null, null]);
+  await settle();
+  assert.deepEqual(allowedUntil(views.at(-1)), [null, null]);
+
+  // A phone cannot reach the computer while the link is off, so it is given no time then.
+  link.setEnabled(false);
+  newLogLines();
+  link.allowApprovals(phone.key);
+  assert.deepEqual(allowedUntil(link.view()), [null, null]);
+  assert.equal(countLines(newLogLines(), /Approvals may be set up/), 0);
+});
+
+test("ends a phone's time to set up approvals when the link is turned off, moves to another relay or stops", async () => {
+  const endings: Array<[string, (link: PhoneLink) => void]> = [
+    [
+      "turned off and on again",
+      (link) => {
+        link.setEnabled(false);
+        link.setEnabled(true);
+      },
+    ],
+    ["moved to another relay", (link) => assert.equal(link.setRelayOrigin("https://other.example.com"), true)],
+    ["stopped", (link) => link.stop()],
+  ];
+  for (const [what, end] of endings) {
+    const phone = pairedPhone("Test phone");
+    const { link } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [phone] }));
+    link.allowApprovals(phone.key);
+    assert.notDeepEqual(allowedUntil(link.view()), [null], what);
+    end(link);
+    assert.deepEqual(allowedUntil(link.view()), [null], what);
+  }
+});
+
+test("ends a phone's time to set up approvals when the phone is removed", async () => {
+  const phone = pairedPhone("Test phone");
+  const { link, clock, views } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [phone] }));
+  link.allowApprovals(phone.key);
+  link.forgetPhone(phone.key);
+  await settle();
+  const shown = views.length;
+  // Were the time kept, the same phone pairing again within it could set up a passkey with no new Allow
+  // approvals. Its timer, left behind, would then run out here and tell Settings.
+  clock.advance(ALLOW_MS);
+  await settle();
+  assert.equal(views.length, shown);
+});
+
+test("turns approvals off on a phone from Settings, and shows only whether a phone has them, never its passkey", async () => {
+  const paired = pairedPhone("Test phone");
+  const passkey = keptPasskey();
+  const other = pairedPhone("Other phone");
+  const { link, store, views } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [{ ...paired, passkey }, other] }));
+  const view = link.view();
+  assert.deepEqual(
+    view.phones.map((shown) => [shown.approvals, shown.approvalsAllowedUntil]),
+    [
+      [true, null],
+      [false, null],
+    ],
+  );
+  assert.ok(
+    view.phones.every((shown) => !("passkey" in shown)),
+    "no phone is shown with its passkey",
+  );
+  const json = JSON.stringify(view);
+  assert.ok(
+    [passkey.credentialId, passkey.publicKey.x, passkey.publicKey.y, passkey.approver].every((part) => !json.includes(part)),
+    "the view holds nothing of the passkey",
+  );
+
+  newLogLines();
+  for (const key of ["not a key", 42]) link.turnOffApprovals(key);
+  assert.deepEqual(store.saved, []);
+  assert.equal(newLogLines(), "");
+
+  link.allowApprovals(paired.key);
+  link.turnOffApprovals(paired.key);
+  // Saved as the phone was before approvals were set up on it, with no passkey field at all.
+  assert.equal(store.saved.length, 1);
+  assert.deepEqual(store.last.phones, [paired, other]);
+  assert.deepEqual(
+    link.view().phones.map((shown) => [shown.approvals, shown.approvalsAllowedUntil]),
+    [
+      [false, null],
+      [false, null],
+    ],
+  );
+  assert.equal(countLines(newLogLines(), /Approvals were turned off on the phone "Test phone"\./), 1);
+
+  // A phone with no passkey yet only loses its time to set one up: nothing is saved, and Settings is told all the same.
+  link.allowApprovals(other.key);
+  await settle();
+  const before = views.length;
+  link.turnOffApprovals(other.key);
+  await settle();
+  assert.equal(store.saved.length, 1);
+  assert.equal(views.length, before + 1);
+  assert.deepEqual(allowedUntil(views.at(-1)), [null, null]);
+  assert.equal(countLines(newLogLines(), /The phone "Other phone" may no longer set up approvals\./), 1);
+});
+
+test("turns approvals off on every phone when the relay moves, as a passkey signs for one relay only", async () => {
+  const first = pairedPhone("First phone");
+  const second: PairedPhone = { ...pairedPhone("Second phone"), push: alertsAt("https://fcm.googleapis.com/fcm/send/kept") };
+  const third = pairedPhone("Third phone");
+  const { link, store } = await openLink(
+    stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [{ ...first, passkey: keptPasskey() }, { ...second, passkey: keptPasskey() }, third] }),
+  );
+  assert.equal(link.setRelayOrigin(RELAY_ORIGIN), true);
+  assert.deepEqual(store.saved, []);
+
+  assert.equal(link.setRelayOrigin("https://other.example.com"), true);
+  // Drift alerts come through the phones' push services, not the relay, so they stay on.
+  assert.deepEqual(store.last.phones, [first, second, third]);
+  assert.deepEqual(
+    link.view().phones.map((shown) => [shown.approvals, shown.alerts]),
+    [
+      [false, false],
+      [false, true],
+      [false, false],
+    ],
+  );
+  assert.equal(countLines(newLogLines(), /Approvals were turned off on 2 phones, since their passkeys were made for the old relay\./), 1);
+
+  const only = pairedPhone("Only phone");
+  const { link: moved } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [{ ...only, passkey: keptPasskey() }] }));
+  assert.equal(moved.setRelayOrigin("https://other.example.com"), true);
+  assert.equal(countLines(newLogLines(), /Approvals were turned off on 1 phone, since its passkey was made for the old relay\./), 1);
+  assert.equal(moved.setRelayOrigin("https://third.example.com"), true);
+  assert.equal(countLines(newLogLines(), /Approvals were turned off/), 0);
+});
+
+/** The SQL of the deploy request the phone decides on below. */
+const APPROVAL_SCRIPTS: ApprovalScript[] = [{ name: "add_order_note", version: "1.1.0", sql: "ALTER TABLE orders ADD COLUMN note text;" }];
+
+/** A deploy request of APPROVAL_SCRIPTS waiting on this connection, as the app's server lists it for phones. */
+function approvalRequest(id: number, connectionId: number, fingerprint: string) {
+  return {
+    id,
+    connectionId,
+    schemaName: "public",
+    scriptName: "add_order_note",
+    targetVersion: "1.1.0",
+    action: "deploy",
+    migrationCount: 1,
+    breakingCount: 0,
+    requestedBy: "someone@example.com",
+    requestedAt: "2026-10-20T09:30:00.000Z",
+    note: null,
+    fingerprint,
+    sql: "kept",
+    ownRequest: false,
+  };
+}
+
+test("lets only the phone Settings allowed set up a passkey through the relay, then approve with it", async () => {
+  const phoneKey = await generateKeyPair("X25519", false);
+  const otherKey = await generateKeyPair("X25519", false);
+  const phone: PairedPhone = { key: toBase64Url(phoneKey.publicKey), name: "Test phone", pairedAt: 1_600_000_000_000, lastSeenAt: 1_600_000_000_000 };
+  const other: PairedPhone = { key: toBase64Url(otherKey.publicKey), name: "Other phone", pairedAt: 1_600_000_000_000, lastSeenAt: 1_600_000_000_000 };
+  const state = stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [5], phones: [phone, other] });
+  const { link, opener, store, caller, clock } = await openLink(state);
+  const approver = "ab".repeat(32);
+  const fingerprint = await approvalFingerprint(APPROVAL_SCRIPTS, "deploy");
+  caller.answers.set("GET /api/deploy/approvals/phone", {
+    status: 200,
+    json: { approver, canApprove: true, approvals: [approvalRequest(12, 5, fingerprint), approvalRequest(13, 9, fingerprint)] },
+  });
+  const kept = APPROVAL_SCRIPTS.map((script) => ({ scriptName: script.name, version: script.version, sqlContent: script.sql }));
+  caller.answers.set("GET /api/deploy/approvals/12/phone", { status: 200, json: { id: 12, action: "deploy", fingerprint, scripts: kept } });
+  caller.answers.set("POST /api/deploy/approvals/12", { status: 200, json: { approval: { id: 12, status: "approved" } } });
+  link.start();
+  const socket = await signIn(opener, link);
+  const computerKey = await publicKeyOf("X25519", state.staticKey);
+  const { link: first } = await connectPhone(socket, 5, phoneKey, computerKey, { kind: "session" });
+  const { link: second } = await connectPhone(socket, 6, otherKey, computerKey, { kind: "session" });
+  assert.ok(first && second);
+
+  assert.deepEqual(await ask(first, socket, 5, { id: 1, method: "passkey.begin" }), readAnswer(writeRefusal(1, "not-allowed")));
+  link.allowApprovals(phone.key);
+  // Only the phone Settings named may set one up.
+  assert.deepEqual(await ask(second, socket, 6, { id: 2, method: "passkey.begin" }), readAnswer(writeRefusal(2, "not-allowed")));
+  const begun = await ask(first, socket, 5, { id: 3, method: "passkey.begin" });
+  const challenge = begun?.ok === true ? readResult("passkey.begin", begun.result) : null;
+  assert.ok(challenge, "the phone Settings allowed is given a challenge");
+  const challengeBytes = fromBase64Url(challenge.challenge);
+  assert.ok(challengeBytes);
+  assert.equal(challengeBytes.length, 32);
+  assert.equal(fromBase64Url(challenge.userId)?.length, 16);
+
+  // Each phone sees the requests on the shared connections, and what it can do about them.
+  assert.deepEqual(await ask(first, socket, 5, { id: 4, method: "approvals.list" }), {
+    id: 4,
+    ok: true,
+    result: { approvals: [approvalRequest(12, 5, fingerprint)], passkey: "allowed", canApprove: true },
+  });
+  assert.deepEqual(await ask(second, socket, 6, { id: 5, method: "approvals.list" }), {
+    id: 5,
+    ok: true,
+    result: { approvals: [approvalRequest(12, 5, fingerprint)], passkey: "none", canApprove: true },
+  });
+
+  // The passkey is made for the relay, which the phone app is served from.
+  const onRelay = { origin: RELAY_ORIGIN, rpId: new URL(RELAY_ORIGIN).hostname };
+  const passkey = newSoftwarePasskey(5);
+  const made = registration(passkey, challengeBytes, onRelay);
+  const finished = await ask(first, socket, 5, {
+    id: 6,
+    method: "passkey.finish",
+    params: { clientDataJSON: made.clientDataJSON.toString("base64url"), attestationObject: made.attestationObject.toString("base64url") },
+  });
+  assert.deepEqual(finished, { id: 6, ok: true, result: { passkey: "ready" } });
+  const now = clock.now();
+  const setUp: PhonePasskey = {
+    credentialId: passkey.credentialId.toString("base64url"),
+    publicKey: { x: passkey.x.toString("base64url"), y: passkey.y.toString("base64url") },
+    signCount: 5,
+    approver,
+    addedAt: now,
+  };
+  assert.deepEqual(store.last.phones, [
+    { ...phone, lastSeenAt: now, passkey: setUp },
+    { ...other, lastSeenAt: now },
+  ]);
+  assert.deepEqual(
+    link.view().phones.map((shown) => [shown.approvals, shown.approvalsAllowedUntil]),
+    [
+      [true, null],
+      [false, null],
+    ],
+  );
+
+  // The phone reads the exact SQL, then signs its decision on it.
+  assert.deepEqual(await ask(first, socket, 5, { id: 7, method: "approvals.read", params: { approvalId: 12 } }), {
+    id: 7,
+    ok: true,
+    result: { id: 12, action: "deploy", fingerprint, scripts: APPROVAL_SCRIPTS },
+  });
+  const numbered = await ask(first, socket, 5, { id: 8, method: "approvals.begin" });
+  const decision = numbered?.ok === true ? readResult("approvals.begin", numbered.result) : null;
+  assert.ok(decision, "the phone with a passkey is given a one-time number");
+  assert.equal(decision.credentialId, setUp.credentialId);
+  const nonce = fromBase64Url(decision.nonce);
+  assert.ok(nonce);
+  const signed = assertion(passkey, await approvalChallenge(nonce, 12, "approve", fingerprint), onRelay);
+  const signature = signed.signature.toString("base64url");
+  const decided = await ask(first, socket, 5, {
+    id: 9,
+    method: "approvals.decide",
+    params: {
+      approvalId: 12,
+      decision: "approve",
+      fingerprint,
+      assertion: {
+        credentialId: setUp.credentialId,
+        authenticatorData: signed.authenticatorData.toString("base64url"),
+        clientDataJSON: signed.clientDataJSON.toString("base64url"),
+        signature,
+      },
+    },
+  });
+  assert.deepEqual(decided, { id: 9, ok: true, result: { status: "approved" } });
+  // The app is told what the phone signed, and who for, with no note.
+  assert.deepEqual(
+    caller.calls.filter((call) => call.method === "POST"),
+    [{ method: "POST", path: "/api/deploy/approvals/12", body: { decision: "approve", expectedFingerprint: fingerprint, expectedApprover: approver } }],
+  );
+  // The passkey's counter went up, and is kept, so that a copy of the passkey would show.
+  assert.deepEqual(store.last.phones[0]?.passkey, { ...setUp, signCount: 6 });
+
+  // The other phone has no passkey to decide with.
+  assert.deepEqual(await ask(second, socket, 6, { id: 10, method: "approvals.begin" }), readAnswer(writeRefusal(10, "no-passkey")));
+
+  const lines = newLogLines();
+  assert.equal(countLines(lines, /Approvals may be set up on the phone "Test phone" for the next 5 minutes\./), 1);
+  assert.equal(countLines(lines, /The phone "Test phone" set up approvals\./), 1);
+  assert.equal(countLines(lines, /The phone "Test phone" approved approval request 12\./), 1);
+  // Nothing the phone was given to sign, nothing it signed, and nothing about whose passkey it is reaches the log.
+  assert.ok(
+    [challenge.challenge, challenge.userId, decision.nonce, setUp.credentialId, signature, approver].every((part) => !lines.includes(part)),
+    "the log holds nothing of the passkey or the person",
+  );
 });
 
 /** Each way a pairing link shown before is put away, so that it pairs nothing. */

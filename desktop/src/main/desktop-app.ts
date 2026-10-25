@@ -451,6 +451,8 @@ export class DesktopApp {
         setRelay: (origin) => setRelay(this.phoneLink, origin, this.phoneLinkProblem),
         setShared: (ids) => this.phoneLink?.setSharedConnections(ids),
         forget: (key) => this.phoneLink?.forgetPhone(key),
+        allowApprovals: (key) => this.phoneLink?.allowApprovals(key),
+        turnOffApprovals: (key) => this.phoneLink?.turnOffApprovals(key),
         pair: () => makePairing(this.phoneLink, this.phoneLinkProblem),
         cancelPairing: () => this.phoneLink?.cancelPairing(),
         connectNow: () => this.phoneLink?.connectNow(),

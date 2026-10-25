@@ -6,9 +6,11 @@
  * the same number, so answers may come back in any order: a comparison can
  * take a while, and a list asked for after it need not wait for it.
  *
- * A phone can only look, never change anything in the app. The one thing it
- * may change is whether it gets drift alerts itself (push.subscribe and
- * push.unsubscribe). The computer answers every request through its own copy
+ * A phone can look, and change only two things. It may turn its own drift
+ * alerts on and off (push.subscribe and push.unsubscribe), and it may approve
+ * or reject a deploy or rollback request waiting in the app
+ * (approvals.decide), signed with a passkey set up on that phone. The
+ * computer answers every request through its own copy
  * of the app, which checks it as it checks anything asked from the app's
  * window, so a phone may do only what the person signed in on the computer
  * may do, and only with the connections chosen for phones in Settings.
@@ -25,10 +27,11 @@
  * phone that this file does not list, however much more the app's server
  * said.
  */
-import { fromBase64UrlOfLength, utf8, type Bytes } from "./bytes.js";
+import { isFingerprint, type ApprovalAction, type ApprovalDecision, type ApprovalScript } from "./approval.js";
+import { fromBase64Url, fromBase64UrlOfLength, utf8, type Bytes } from "./bytes.js";
 import { hasExactly, objectFields, readJsonObject } from "./json.js";
 
-/** The biggest request a phone may send. The biggest real one, a comparison with every target, is a few kilobytes. */
+/** The biggest request a phone may send. The biggest the limits below allow, setting up a passkey (passkey.finish), is under 12 KB. */
 export const MAX_REQUEST_BYTES = 16 * 1024;
 /** How many of one phone's requests the computer works on at once. It answers any more with "busy". */
 export const MAX_PENDING_REQUESTS = 4;
@@ -88,6 +91,15 @@ export type PushSubscriptionParams = { endpoint: string; p256dh: string; auth: s
  *    push subscription its browser made with that key. Only someone who may
  *    see drift in the app may turn them on.
  *  - push.unsubscribe: turns this phone's drift alerts off.
+ *  - approvals.list: the deploy and rollback requests waiting for a decision
+ *    on connections shared with phones, and whether this phone can decide.
+ *  - approvals.read: one request's exact SQL, for the phone to show and hash.
+ *  - passkey.begin and passkey.finish: set up the passkey this phone decides
+ *    with, only within 5 minutes of Allow approvals in Settings on the computer.
+ *  - approvals.begin: a one-time number for the phone's next decision.
+ *  - approvals.decide: approves or rejects one request, signed with the
+ *    passkey over that number, the request, the decision and the fingerprint
+ *    of the SQL the phone showed.
  */
 export type Request =
   | { id: number; method: "hello" }
@@ -97,7 +109,13 @@ export type Request =
   | { id: number; method: "compare.run"; params: { source: SchemaRef; targets: SchemaRef[] } }
   | { id: number; method: "push.status" }
   | { id: number; method: "push.subscribe"; params: PushSubscriptionParams }
-  | { id: number; method: "push.unsubscribe" };
+  | { id: number; method: "push.unsubscribe" }
+  | { id: number; method: "approvals.list" }
+  | { id: number; method: "approvals.read"; params: { approvalId: number } }
+  | { id: number; method: "passkey.begin" }
+  | { id: number; method: "passkey.finish"; params: NewPasskeyParams }
+  | { id: number; method: "approvals.begin" }
+  | { id: number; method: "approvals.decide"; params: DecideParams };
 
 export type Method = Request["method"];
 
@@ -239,6 +257,47 @@ export type CompareSummary = { source: SourceSummary; targets: TargetSummary[] }
  */
 export type PushStatus = { key: string; subscribed: boolean };
 
+/** A deploy or rollback request waiting for a decision, as approvals.list gives it. */
+export type ApprovalSummary = {
+  id: number;
+  connectionId: number;
+  schemaName: string;
+  scriptName: string;
+  targetVersion: string;
+  action: ApprovalAction;
+  migrationCount: number;
+  breakingCount: number;
+  requestedBy: string;
+  /** When it was asked for, as an ISO 8601 time. */
+  requestedAt: string;
+  note: string | null;
+  /** The fingerprint of the SQL it runs (approval.ts). */
+  fingerprint: string;
+  /** Whether the app still has the SQL it was asked for with. Without it, a phone may only reject the request, never approve it. */
+  sql: "kept" | "missing";
+  /** Whether the person signed in on the computer asked for it, so someone else has to decide it. */
+  ownRequest: boolean;
+};
+/**
+ * Whether this phone can decide requests: "none" until approvals are set up
+ * on it, "allowed" while Settings on the computer lets it set up a passkey,
+ * "ready" once it has one, and "other-person" when the person signed in on
+ * the computer is not the one who set it up.
+ */
+export type PasskeyState = "none" | "allowed" | "ready" | "other-person";
+export type ApprovalList = { approvals: ApprovalSummary[]; passkey: PasskeyState; canApprove: boolean };
+/** One request's SQL, or null in place of it when the computer could not show exactly the SQL it would run. */
+export type ApprovalRead = { id: number; action: ApprovalAction; fingerprint: string; scripts: ApprovalScript[] | null };
+/** What the phone's browser needs to make a passkey: the challenge it signs and the user ID it stores, both base64url. */
+export type PasskeyChallenge = { challenge: string; userId: string };
+/** What navigator.credentials.create gave the phone app, base64url. */
+export type NewPasskeyParams = { clientDataJSON: string; attestationObject: string };
+/** The one-time number the next decision signs, and the passkey that has to sign it, both base64url. */
+export type DecisionChallenge = { nonce: string; credentialId: string };
+/** What navigator.credentials.get gave the phone app, base64url. */
+export type PasskeySignature = { credentialId: string; authenticatorData: string; clientDataJSON: string; signature: string };
+export type DecideParams = { approvalId: number; decision: ApprovalDecision; fingerprint: string; assertion: PasskeySignature };
+
 /** What the answer to each request holds when it succeeds. */
 export type Results = {
   hello: HelloResult;
@@ -249,6 +308,12 @@ export type Results = {
   "push.status": PushStatus;
   "push.subscribe": PushStatus;
   "push.unsubscribe": PushStatus;
+  "approvals.list": ApprovalList;
+  "approvals.read": ApprovalRead;
+  "passkey.begin": PasskeyChallenge;
+  "passkey.finish": { passkey: PasskeyState };
+  "approvals.begin": DecisionChallenge;
+  "approvals.decide": { status: "approved" | "rejected" };
 };
 
 /**
@@ -264,6 +329,14 @@ export type Results = {
  *  - busy: the phone has MAX_PENDING_REQUESTS requests waiting already.
  *  - bad-request: not a request the computer understands.
  *  - unknown-method: a request this version of the computer's app does not know.
+ *  - not-allowed: approvals cannot be set up on this phone until Settings on the computer allows it.
+ *  - no-passkey: approvals are not set up on this phone.
+ *  - passkey-refused: the passkey's answer did not check out.
+ *  - other-person: someone else is signed in on the computer than set approvals up on this phone.
+ *  - changed: the request changed while the phone was deciding.
+ *  - already-decided: the request is no longer waiting for a decision.
+ *  - own-request: the person signed in on the computer asked for it.
+ *  - expired: the one-time number for the decision ran out, or the computer restarted.
  *  - failed: anything else.
  */
 export type ErrorCode =
@@ -276,6 +349,14 @@ export type ErrorCode =
   | "busy"
   | "bad-request"
   | "unknown-method"
+  | "not-allowed"
+  | "no-passkey"
+  | "passkey-refused"
+  | "other-person"
+  | "changed"
+  | "already-decided"
+  | "own-request"
+  | "expired"
   | "failed";
 const ERROR_CODES: readonly ErrorCode[] = [
   "signed-out",
@@ -287,6 +368,14 @@ const ERROR_CODES: readonly ErrorCode[] = [
   "busy",
   "bad-request",
   "unknown-method",
+  "not-allowed",
+  "no-passkey",
+  "passkey-refused",
+  "other-person",
+  "changed",
+  "already-decided",
+  "own-request",
+  "expired",
   "failed",
 ];
 
@@ -301,7 +390,7 @@ export type Answer = { id: number; ok: true; result: unknown } | { id: number; o
  */
 export type RequestReading = { ok: true; request: Request } | { ok: false; id: number | null; code: "bad-request" | "unknown-method" };
 
-const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe"];
+const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide"];
 
 /** Writes a request. Only its own fields are written, so a SchemaRef that carries more, such as a connection's name, goes out without it. */
 export function writeRequest(request: Request): Bytes {
@@ -319,6 +408,21 @@ export function writeRequest(request: Request): Bytes {
     case "compare.run": {
       const { source, targets } = request.params;
       return writeJson({ id, method: request.method, params: { source: copySchemaRef(source), targets: targets.map(copySchemaRef) } });
+    }
+    case "approvals.list":
+    case "passkey.begin":
+    case "approvals.begin":
+      return writeJson({ id, method: request.method });
+    case "approvals.read":
+      return writeJson({ id, method: request.method, params: { approvalId: request.params.approvalId } });
+    case "passkey.finish": {
+      const { clientDataJSON, attestationObject } = request.params;
+      return writeJson({ id, method: request.method, params: { clientDataJSON, attestationObject } });
+    }
+    case "approvals.decide": {
+      const { approvalId, decision, fingerprint, assertion } = request.params;
+      const { credentialId, authenticatorData, clientDataJSON, signature } = assertion;
+      return writeJson({ id, method: request.method, params: { approvalId, decision, fingerprint, assertion: { credentialId, authenticatorData, clientDataJSON, signature } } });
     }
     case "push.subscribe": {
       const { endpoint, p256dh, auth } = request.params;
@@ -341,7 +445,7 @@ export function readRequest(message: Bytes): RequestReading {
 /** The request in a message whose id is good, or null when it is not exactly one of the requests above. */
 function readKnownRequest(id: number, fields: Record<string, unknown>): Request | null {
   const method = fields.method;
-  if (method === "hello" || method === "connections.list" || method === "push.status" || method === "push.unsubscribe") {
+  if (method === "hello" || method === "connections.list" || method === "push.status" || method === "push.unsubscribe" || method === "approvals.list" || method === "passkey.begin" || method === "approvals.begin") {
     return hasExactly(fields, "id", "method") ? { id, method } : null;
   }
   const params = objectFields(fields.params);
@@ -360,6 +464,27 @@ function readKnownRequest(id: number, fields: Record<string, unknown>): Request 
       const targets = readEach(params.targets, readSchemaRef);
       if (!hasExactly(params, "source", "targets") || source === null || targets === null) return null;
       return targets.length >= 1 && targets.length <= MAX_COMPARE_TARGETS ? { id, method, params: { source, targets } } : null;
+    }
+    case "approvals.read": {
+      const { approvalId } = params;
+      return hasExactly(params, "approvalId") && isPositiveInteger(approvalId) ? { id, method, params: { approvalId } } : null;
+    }
+    case "passkey.finish": {
+      const { clientDataJSON, attestationObject } = params;
+      if (!hasExactly(params, "clientDataJSON", "attestationObject")) return null;
+      if (!isBase64UrlUpTo(clientDataJSON, MAX_CLIENT_DATA_BYTES) || !isBase64UrlUpTo(attestationObject, MAX_ATTESTATION_BYTES)) return null;
+      return { id, method, params: { clientDataJSON, attestationObject } };
+    }
+    case "approvals.decide": {
+      const { approvalId, decision, fingerprint } = params;
+      const assertion = objectFields(params.assertion);
+      if (!hasExactly(params, "approvalId", "decision", "fingerprint", "assertion") || assertion === null) return null;
+      if (!isPositiveInteger(approvalId) || (decision !== "approve" && decision !== "reject") || !isFingerprint(fingerprint)) return null;
+      const { credentialId, authenticatorData, clientDataJSON, signature } = assertion;
+      if (!hasExactly(assertion, "credentialId", "authenticatorData", "clientDataJSON", "signature")) return null;
+      if (!isBase64UrlUpTo(credentialId, MAX_CREDENTIAL_ID_BYTES) || !isBase64UrlUpTo(authenticatorData, MAX_AUTHENTICATOR_DATA_BYTES)) return null;
+      if (!isBase64UrlUpTo(clientDataJSON, MAX_CLIENT_DATA_BYTES) || !isBase64UrlUpTo(signature, MAX_SIGNATURE_BYTES)) return null;
+      return { id, method, params: { approvalId, decision, fingerprint, assertion: { credentialId, authenticatorData, clientDataJSON, signature } } };
     }
     case "push.subscribe": {
       const { endpoint, p256dh, auth } = params;
@@ -412,6 +537,12 @@ const RESULT_READERS: { [M in Method]: (value: unknown) => Results[M] | null } =
   "push.status": readPushStatus,
   "push.subscribe": readPushStatus,
   "push.unsubscribe": readPushStatus,
+  "approvals.list": readApprovalList,
+  "approvals.read": readApprovalRead,
+  "passkey.begin": readPasskeyChallenge,
+  "passkey.finish": readPasskeyResult,
+  "approvals.begin": readDecisionChallenge,
+  "approvals.decide": readDecided,
 };
 
 /** Reads what a successful answer to this kind of request holds, or gives null when it is not that. */
@@ -562,6 +693,86 @@ function readPushStatus(value: unknown): PushStatus | null {
   return { key, subscribed };
 }
 
+// The most bytes each part of a passkey's answer may have. Real ones are far
+// smaller; these keep any request under MAX_REQUEST_BYTES.
+const MAX_CREDENTIAL_ID_BYTES = 1023;
+const MAX_CLIENT_DATA_BYTES = 2048;
+const MAX_AUTHENTICATOR_DATA_BYTES = 1024;
+const MAX_SIGNATURE_BYTES = 256;
+const MAX_ATTESTATION_BYTES = 6144;
+/** The most bytes of a challenge, user ID or one-time number the computer makes. */
+const MAX_CHALLENGE_BYTES = 64;
+
+/** Whether a value is base64url of 1 to `most` bytes. */
+function isBase64UrlUpTo(value: unknown, most: number): value is string {
+  if (typeof value !== "string" || value.length > Math.ceil((most * 4) / 3)) return false;
+  const bytes = fromBase64Url(value);
+  return bytes !== null && bytes.length >= 1 && bytes.length <= most;
+}
+
+function readApprovalList(value: unknown): ApprovalList | null {
+  const fields = objectFields(value);
+  if (fields === null || !Array.isArray(fields.approvals) || !isPasskeyState(fields.passkey) || typeof fields.canApprove !== "boolean") return null;
+  const approvals = fields.approvals.map(readApprovalSummary).filter((item): item is ApprovalSummary => item !== null);
+  return approvals.length === fields.approvals.length ? { approvals, passkey: fields.passkey, canApprove: fields.canApprove } : null;
+}
+
+function readApprovalSummary(value: unknown): ApprovalSummary | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { id, connectionId, schemaName, scriptName, targetVersion, action, migrationCount, breakingCount, requestedBy, requestedAt, note, fingerprint, sql, ownRequest } = fields;
+  if (!isPositiveInteger(id) || !isPositiveInteger(connectionId) || typeof schemaName !== "string" || typeof scriptName !== "string" || typeof targetVersion !== "string") return null;
+  if (!isApprovalAction(action) || !isCount(migrationCount) || !isCount(breakingCount) || typeof requestedBy !== "string" || typeof requestedAt !== "string") return null;
+  if ((note !== null && typeof note !== "string") || !isFingerprint(fingerprint) || (sql !== "kept" && sql !== "missing") || typeof ownRequest !== "boolean") return null;
+  return { id, connectionId, schemaName, scriptName, targetVersion, action, migrationCount, breakingCount, requestedBy, requestedAt, note, fingerprint, sql, ownRequest };
+}
+
+function readApprovalRead(value: unknown): ApprovalRead | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { id, action, fingerprint, scripts } = fields;
+  if (!isPositiveInteger(id) || !isApprovalAction(action) || !isFingerprint(fingerprint)) return null;
+  if (scripts === null) return { id, action, fingerprint, scripts };
+  if (!Array.isArray(scripts)) return null;
+  const read = scripts.map(readApprovalScript).filter((item): item is ApprovalScript => item !== null);
+  return read.length === scripts.length ? { id, action, fingerprint, scripts: read } : null;
+}
+
+function readApprovalScript(value: unknown): ApprovalScript | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { name, version, sql } = fields;
+  return typeof name === "string" && typeof version === "string" && typeof sql === "string" ? { name, version, sql } : null;
+}
+
+function readPasskeyChallenge(value: unknown): PasskeyChallenge | null {
+  const fields = objectFields(value);
+  const challenge = fields?.challenge;
+  const userId = fields?.userId;
+  return isBase64UrlUpTo(challenge, MAX_CHALLENGE_BYTES) && isBase64UrlUpTo(userId, MAX_CHALLENGE_BYTES) ? { challenge, userId } : null;
+}
+
+function readPasskeyResult(value: unknown): { passkey: PasskeyState } | null {
+  const passkey = objectFields(value)?.passkey;
+  return isPasskeyState(passkey) ? { passkey } : null;
+}
+
+function readDecisionChallenge(value: unknown): DecisionChallenge | null {
+  const fields = objectFields(value);
+  const nonce = fields?.nonce;
+  const credentialId = fields?.credentialId;
+  return isBase64UrlUpTo(nonce, MAX_CHALLENGE_BYTES) && isBase64UrlUpTo(credentialId, MAX_CREDENTIAL_ID_BYTES) ? { nonce, credentialId } : null;
+}
+
+function readDecided(value: unknown): { status: "approved" | "rejected" } | null {
+  const status = objectFields(value)?.status;
+  return status === "approved" || status === "rejected" ? { status } : null;
+}
+
+function isApprovalAction(value: unknown): value is ApprovalAction {
+  return value === "deploy" || value === "revert";
+}
+
 /** A strict copy of a SchemaRef in a request: exactly its two fields, each of the right kind. */
 function readSchemaRef(value: unknown): SchemaRef | null {
   const fields = objectFields(value);
@@ -639,3 +850,5 @@ const isTargetStatus = oneOf(TARGET_STATUSES);
 const isChangeKind = oneOf(CHANGE_KINDS);
 const isSeverity = oneOf(SEVERITIES);
 const isErrorCode = oneOf(ERROR_CODES);
+const PASSKEY_STATES: readonly PasskeyState[] = ["none", "allowed", "ready", "other-person"];
+const isPasskeyState = oneOf(PASSKEY_STATES);

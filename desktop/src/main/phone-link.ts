@@ -25,6 +25,14 @@
  * server is asked each time. Alerts that come while others are still being
  * sent wait, and then go together in one message.
  *
+ * A phone may also approve or reject the deploy and rollback requests waiting
+ * in the app (src/main/phone-approvals.ts), but only once Allow approvals in
+ * Settings has let it set up a passkey, and only as the person who was signed
+ * in when it did. Turning the link off, or moving it to another relay, ends
+ * any time a phone was given to set one up. Moving it to another relay also
+ * takes every passkey away, since a passkey only ever signs for the relay it
+ * was made at.
+ *
  * Apart from the log, everything it touches is passed in: the file, the app's
  * server, the socket, the push services, the clock and chance, so the tests
  * can play each.
@@ -36,7 +44,9 @@ import {
   newPhoneLinkState,
   readConnectionIds,
   withNewPushKey,
+  withPhonePasskey,
   withPhoneSubscription,
+  withoutPasskeys,
   type PairedPhone,
   type PhoneLinkState,
 } from "../core/phone-link-file";
@@ -48,6 +58,7 @@ import { desktopIdFor } from "../shared/remote/relay-auth";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { SYSTEM_CLOCK, type Clock } from "./clock";
 import { addLogSecret, logError, logInfo, logWarn } from "./log";
+import { PhoneApprovals } from "./phone-approvals";
 import { PhoneHost } from "./phone-host";
 import { PushSender } from "./phone-push";
 import { PhoneRelay, type OpenSocket, type RelayStatus } from "./phone-relay";
@@ -102,10 +113,11 @@ export type PhoneLinkView = {
   relayOrigin: string | null;
   sharedConnectionIds: number[];
   /**
-   * The paired phones, whether each is connected now, and whether it gets
-   * drift alerts. Where a phone's alerts go never leaves main.
+   * The paired phones, whether each is connected now, whether it gets drift
+   * alerts, whether it may approve requests, and, while it may set that up,
+   * until when. Where a phone's alerts go, and its passkey, never leave main.
    */
-  phones: Array<Omit<PairedPhone, "push"> & { connected: boolean; alerts: boolean }>;
+  phones: Array<Omit<PairedPhone, "push" | "passkey"> & { connected: boolean; alerts: boolean; approvals: boolean; approvalsAllowedUntil: number | null }>;
 };
 
 /** A phone link ready to start, or why there is none, written for a person. */
@@ -257,6 +269,8 @@ export class PhoneLink {
   private waiting: { alerts: DriftAlert[]; sent: Promise<void> } | null = null;
   /** Why drift alerts last did not go to phones, so that the log says so once, not with every alert. */
   private pushRefusal: Refusal | null = null;
+  /** Lets paired phones approve or reject the app's deploy and rollback requests. */
+  private readonly approvals: PhoneApprovals;
 
   /** Made by openPhoneLink. */
   constructor(
@@ -289,6 +303,18 @@ export class PhoneLink {
       forget: (phoneKey, endpoint) => this.forgetSubscription(phoneKey, endpoint),
       clock: options.clock,
     });
+    this.approvals = new PhoneApprovals({
+      call: options.call,
+      sharedConnectionIds: () => this.state.sharedConnectionIds,
+      relayOrigin: () => this.state.relayOrigin,
+      phone: (phoneKey) => this.state.phones.find((phone) => phone.key === phoneKey),
+      savePasskey: (phoneKey, passkey) => {
+        this.state = { ...this.state, phones: withPhonePasskey(this.state.phones, phoneKey, passkey) };
+        this.saveState();
+      },
+      onChange: () => this.changed(),
+      clock: options.clock,
+    });
   }
 
   /** Connects to the relay if the link is turned on and has one. Only the first call counts. */
@@ -305,6 +331,7 @@ export class PhoneLink {
   stop(): void {
     this.phase = "stopped";
     this.host.cancelPairing();
+    this.approvals.forgetAll();
     this.refreshRelay();
   }
 
@@ -321,14 +348,16 @@ export class PhoneLink {
       enabled: this.state.enabled,
       relayOrigin: this.state.relayOrigin,
       sharedConnectionIds: [...this.state.sharedConnectionIds],
-      // Named one by one, so that where a phone's alerts go is never passed on.
-      phones: this.state.phones.map(({ key, name, pairedAt, lastSeenAt, push }) => ({
+      // Named one by one, so that where a phone's alerts go, and its passkey, are never passed on.
+      phones: this.state.phones.map(({ key, name, pairedAt, lastSeenAt, push, passkey }) => ({
         key,
         name,
         pairedAt,
         lastSeenAt,
         connected: connected.has(key),
         alerts: push !== undefined,
+        approvals: passkey !== undefined,
+        approvalsAllowedUntil: this.approvals.allowedUntil(key),
       })),
     };
   }
@@ -352,8 +381,11 @@ export class PhoneLink {
   /** Turns the link on or off. Anything but true or false is ignored. */
   setEnabled(enabled: unknown): void {
     if (typeof enabled !== "boolean" || enabled === this.state.enabled) return;
-    // A pairing link shown before must not pair a phone once the link is back on.
-    if (!enabled) this.host.cancelPairing();
+    // A pairing link shown before must not pair a phone once the link is back on, nor a phone set up approvals then.
+    if (!enabled) {
+      this.host.cancelPairing();
+      this.approvals.forgetAll();
+    }
     logInfo(enabled ? "The phone link was turned on." : "The phone link was turned off.");
     this.state = { ...this.state, enabled };
     this.refreshRelay();
@@ -363,7 +395,8 @@ export class PhoneLink {
   /**
    * Sets the relay's address, and gives false, changing nothing, when the
    * text is not one. Phones paired through another relay keep using that
-   * one, so they need pairing again.
+   * one, so they need pairing again. Approvals are turned off on every phone,
+   * since a passkey only ever signs for the relay it was made at.
    */
   setRelayOrigin(text: unknown): boolean {
     const origin = typeof text === "string" ? readRelayOrigin(text) : null;
@@ -371,8 +404,14 @@ export class PhoneLink {
     if (origin === this.state.relayOrigin) return true;
     // A pairing link names the relay, so one made for the old relay would lead nowhere.
     this.host.cancelPairing();
+    this.approvals.forgetAll();
     logInfo(`The phone link's relay is now ${origin}.`);
-    this.state = { ...this.state, relayOrigin: origin };
+    const withPasskeys = this.state.phones.filter((phone) => phone.passkey !== undefined).length;
+    if (withPasskeys > 0) {
+      const which = withPasskeys === 1 ? "1 phone, since its passkey was" : `${withPasskeys} phones, since their passkeys were`;
+      logInfo(`Approvals were turned off on ${which} made for the old relay.`);
+    }
+    this.state = { ...this.state, relayOrigin: origin, phones: withoutPasskeys(this.state.phones) };
     this.refreshRelay();
     this.saveState();
     return true;
@@ -393,7 +432,40 @@ export class PhoneLink {
     const phone = this.state.phones.find((known) => known.key === key);
     if (phone === undefined) return;
     logInfo(`Removed the phone "${phone.name}" from the paired phones.`);
+    this.approvals.forget(phone.key);
     this.host.forgetPhone(phone.key);
+  }
+
+  /**
+   * For Settings' "Allow approvals": lets a paired phone, by its key, set up
+   * its passkey within the next 5 minutes. Anything that is not a paired
+   * phone's key is ignored, and so is everything while the link is off, as
+   * a phone could not reach this computer to set one up then.
+   */
+  allowApprovals(key: unknown): void {
+    const phone = this.state.phones.find((known) => known.key === key);
+    if (phone === undefined || !this.state.enabled) return;
+    logInfo(`Approvals may be set up on the phone "${phone.name}" for the next 5 minutes.`);
+    this.approvals.allow(phone.key);
+  }
+
+  /**
+   * For Settings' "Turn off approvals": the phone with this key decides
+   * nothing from now on, until approvals are set up on it again. Any time it
+   * was given to set them up ends too.
+   */
+  turnOffApprovals(key: unknown): void {
+    const phone = this.state.phones.find((known) => known.key === key);
+    if (phone === undefined) return;
+    this.approvals.forget(phone.key);
+    if (phone.passkey === undefined) {
+      logInfo(`The phone "${phone.name}" may no longer set up approvals.`);
+      this.changed();
+      return;
+    }
+    logInfo(`Approvals were turned off on the phone "${phone.name}".`);
+    this.state = { ...this.state, phones: withPhonePasskey(this.state.phones, phone.key, null) };
+    this.saveState();
   }
 
   /**
@@ -435,7 +507,8 @@ export class PhoneLink {
 
   /**
    * What answers the requests of the phone with this key. Its drift alerts
-   * are bound to it here, so a phone can only ever turn its own on or off.
+   * and its approvals are bound to it here, so a phone can only ever turn its
+   * own alerts on or off, and only ever decide with its own passkey.
    */
   private requestOptions(phoneKey: string): RequestOptions {
     return {
@@ -447,6 +520,7 @@ export class PhoneLink {
         on: () => this.state.phones.some((phone) => phone.key === phoneKey && phone.push !== undefined),
         set: (subscription) => this.setDriftAlerts(phoneKey, subscription),
       },
+      approvals: this.approvals.forPhone(phoneKey),
     };
   }
 

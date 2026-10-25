@@ -9,12 +9,14 @@
  * Settings. That is checked here, before the server is asked anything, so a
  * request about any other connection never reaches it.
  *
- * The one thing a phone may change is whether it gets drift alerts itself.
- * push.subscribe turns them on only while the role signed in on the computer
- * may see drift in the app (drift:read), since drift is what they show, and
- * src/main/phone-link.ts checks that again before each alert it sends.
- * push.unsubscribe needs no permission at all: turning alerts off shows a
- * phone nothing.
+ * A phone may change only two things. It may turn its own drift alerts on
+ * and off: push.subscribe turns them on only while the role signed in on the
+ * computer may see drift in the app (drift:read), since drift is what they
+ * show, and src/main/phone-link.ts checks that again before each alert it
+ * sends. push.unsubscribe needs no permission at all: turning alerts off
+ * shows a phone nothing. And it may approve or reject a deploy or rollback
+ * request, which src/main/phone-approvals.ts answers: only with a passkey
+ * set up on that phone, and only as the person who set it up.
  *
  * Nothing the server says in words reaches a phone. Its error messages can
  * name a database's host or repeat what the database said, so a refusal is
@@ -36,8 +38,15 @@ import {
   writeResult,
   type CompareSummary,
   type ConnectionList,
+  type ApprovalList,
+  type ApprovalRead,
+  type DecideParams,
+  type DecisionChallenge,
   type ErrorCode,
   type HelloResult,
+  type NewPasskeyParams,
+  type PasskeyChallenge,
+  type PasskeyState,
   type PushStatus,
   type PushSubscriptionParams,
   type Request,
@@ -66,6 +75,19 @@ export type PhoneAlerts = {
   set: (subscription: PushSubscriptionFields | null) => void;
 };
 
+/**
+ * The approval requests of one paired phone, which src/main/phone-approvals.ts
+ * answers. Each throws a Refused for a refusal.
+ */
+export type PhoneApprovalRequests = {
+  list: (signal: AbortSignal) => Promise<ApprovalList>;
+  read: (approvalId: number, signal: AbortSignal) => Promise<ApprovalRead>;
+  beginPasskey: () => PasskeyChallenge;
+  finishPasskey: (params: NewPasskeyParams, signal: AbortSignal) => Promise<{ passkey: PasskeyState }>;
+  beginDecision: () => DecisionChallenge;
+  decide: (params: DecideParams, signal: AbortSignal) => Promise<{ status: "approved" | "rejected" }>;
+};
+
 export type RequestOptions = {
   call: AppCaller;
   /** The connections shared with phones. Read for every request, so a change in Settings counts at once. */
@@ -74,13 +96,16 @@ export type RequestOptions = {
   appVersion: string;
   /** The drift alerts of the phone that asked, which push.status, push.subscribe and push.unsubscribe answer about. */
   alerts: PhoneAlerts;
+  /** The approval requests of the phone that asked. */
+  approvals: PhoneApprovalRequests;
 };
 
 /**
  * Why the computer answers with an error: the codes rpc.ts gives a phone, and
- * four more that tell the person more than "failed" or "bad-request" alone would.
+ * five more that tell the person more than "failed", "bad-request" or
+ * "forbidden" alone would.
  */
-export type Refusal = ErrorCode | "access-unknown" | "bad-subscription" | "no-answer" | "too-slow";
+export type Refusal = ErrorCode | "access-unknown" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing";
 
 /** The code and the sentence each refusal sends: words for the person holding the phone, with nothing from the server in them. */
 export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: string }>> = {
@@ -93,6 +118,23 @@ export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: stri
   busy: { code: "busy", message: "The phone has too many requests waiting. Try again in a moment." },
   "bad-request": { code: "bad-request", message: "The computer could not read that request. Reload the phone app, then try again." },
   "unknown-method": { code: "unknown-method", message: "Schema Studio on the computer is too old for that. Update it, then try again." },
+  "not-allowed": {
+    code: "not-allowed",
+    message: "Approvals are not allowed for this phone right now. Choose Allow approvals for it in Schema Studio's Settings on the computer, then try again within 5 minutes.",
+  },
+  "no-passkey": {
+    code: "no-passkey",
+    message: "Approvals are not set up on this phone yet. Allow them in Schema Studio's Settings on the computer, then set them up here.",
+  },
+  "passkey-refused": { code: "passkey-refused", message: "The computer could not check the passkey's signature, so nothing changed. Try again." },
+  "other-person": {
+    code: "other-person",
+    message: "The person signed in on the computer is not the one who set up approvals on this phone. Set them up again to decide as whoever is signed in now.",
+  },
+  changed: { code: "changed", message: "Something changed on the computer while you were deciding. Look at the request again, then try again." },
+  "already-decided": { code: "already-decided", message: "That request is no longer waiting for a decision." },
+  "own-request": { code: "own-request", message: "The person signed in on the computer asked for this request, so someone else has to decide it." },
+  expired: { code: "expired", message: "Nothing was decided, because that took too long or the computer restarted. Try again." },
   failed: { code: "failed", message: "The computer could not do that. Its log has the details." },
   "access-unknown": { code: "failed", message: "The computer could not check what the signed-in role may do. Try again in a moment." },
   "bad-subscription": {
@@ -101,6 +143,10 @@ export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: stri
   },
   "no-answer": { code: "failed", message: "Schema Studio on the computer did not answer. Try again in a moment." },
   "too-slow": { code: "failed", message: "The computer took too long to answer." },
+  "sql-missing": {
+    code: "forbidden",
+    message: "The computer cannot show the SQL this request runs, so it cannot be approved from a phone. Reject it here, or decide it in Schema Studio on the computer.",
+  },
 };
 
 /** The longest piece of the server's error message that goes in the log, in characters. */
@@ -128,8 +174,8 @@ export async function answerRequest(request: Request, options: RequestOptions, s
   }
 }
 
-/** Thrown in this file to answer with a refusal instead of a result. */
-class Refused extends Error {
+/** Thrown in this file, and in src/main/phone-approvals.ts, to answer with a refusal instead of a result. */
+export class Refused extends Error {
   readonly refusal: Refusal;
 
   constructor(refusal: Refusal) {
@@ -158,6 +204,18 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
     case "push.unsubscribe":
       options.alerts.set(null);
       return writeResult(id, "push.unsubscribe", pushStatus(options.alerts));
+    case "approvals.list":
+      return writeResult(id, "approvals.list", await options.approvals.list(signal));
+    case "approvals.read":
+      return writeResult(id, "approvals.read", await options.approvals.read(request.params.approvalId, signal));
+    case "passkey.begin":
+      return writeResult(id, "passkey.begin", options.approvals.beginPasskey());
+    case "passkey.finish":
+      return writeResult(id, "passkey.finish", await options.approvals.finishPasskey(request.params, signal));
+    case "approvals.begin":
+      return writeResult(id, "approvals.begin", options.approvals.beginDecision());
+    case "approvals.decide":
+      return writeResult(id, "approvals.decide", await options.approvals.decide(request.params, signal));
   }
 }
 
@@ -356,11 +414,20 @@ function checkShared(connectionIds: readonly number[], options: RequestOptions):
 
 /**
  * Asks the app's server, and gives the body of a 200 answer. Any other status
- * is thrown as the refusal it stands for. The server's words are logged only
- * with a refusal that does not explain itself; the others, such as a database
- * that is down, are expected, and the server logs them in its own log anyway.
+ * is thrown as the refusal it stands for: the one in `special` when the route
+ * gives that status a meaning of its own, or else refusalFor's. The server's
+ * words are logged only with a refusal that does not explain itself; the
+ * others, such as a database that is down, are expected, and the server logs
+ * them in its own log anyway.
  */
-async function ask(options: Pick<RequestOptions, "call">, method: "GET" | "POST", path: string, body: unknown, signal: AbortSignal): Promise<unknown> {
+export async function ask(
+  options: Pick<RequestOptions, "call">,
+  method: "GET" | "POST",
+  path: string,
+  body: unknown,
+  signal: AbortSignal,
+  special: Readonly<Partial<Record<number, Refusal>>> = {},
+): Promise<unknown> {
   // The route without its query: which connection and schema a phone asked about does not belong in the log.
   const route = `${method} ${path.split("?")[0]}`;
   let answer: AppAnswer;
@@ -371,7 +438,7 @@ async function ask(options: Pick<RequestOptions, "call">, method: "GET" | "POST"
     throw new Refused("no-answer");
   }
   if (answer.status === 200) return answer.json;
-  const refusal = refusalFor(answer.status);
+  const refusal = special[answer.status] ?? refusalFor(answer.status);
   if (refusal === "failed" || refusal === "access-unknown") {
     logWarn(`The app answered the phone link's ${route} with ${answer.status}: ${serverWords(answer.json)}`);
   }

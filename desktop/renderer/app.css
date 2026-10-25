@@ -642,6 +642,12 @@ input {
   overflow-wrap: anywhere;
 }
 
+/* A phone's buttons go onto two lines before its name is squeezed. */
+.phone-row .token-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 /* In a narrow window the code goes above its text. */
 @media (max-width: 520px) {
   .pairing {

@@ -169,6 +169,8 @@ test("the Settings page's Phone section gets the phone link's messages, and cann
   await phone.setRelay("https://relay.example.com", "extra");
   phone.setShared([1, 2], "extra");
   phone.forget("key", "extra");
+  phone.allowApprovals("key", "extra");
+  phone.turnOffApprovals("key", "extra");
   await phone.pair("extra");
   phone.cancelPairing("extra");
   phone.connectNow("extra");
@@ -182,6 +184,8 @@ test("the Settings page's Phone section gets the phone link's messages, and cann
     { kind: "invoke", channel: PHONE.setRelay, args: ["https://relay.example.com"] },
     { kind: "send", channel: PHONE.setShared, args: [[1, 2]] },
     { kind: "send", channel: PHONE.forget, args: ["key"] },
+    { kind: "send", channel: PHONE.allowApprovals, args: ["key"] },
+    { kind: "send", channel: PHONE.turnOffApprovals, args: ["key"] },
     { kind: "invoke", channel: PHONE.pair, args: [] },
     { kind: "send", channel: PHONE.cancelPairing, args: [] },
     { kind: "send", channel: PHONE.connectNow, args: [] },
