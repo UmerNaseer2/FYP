@@ -194,9 +194,10 @@ describe("changes that have not been applied yet", () => {
 
     // The report says "Untick Allow data loss to hold it back", so a reader who
     // did exactly that watched the page go on insisting the drop was armed.
-    expect(screen.queryByText(/Not applied yet/)).not.toBeInTheDocument();
+    // The line keeps its room while hidden, so the Compare button never moves.
+    expect(screen.getByText(/Not applied yet/)).not.toBeVisible();
     fireEvent.click(screen.getByRole("checkbox", { name: /Allow data loss/ }));
-    expect(screen.getByText(/Not applied yet — press Compare/)).toBeInTheDocument();
+    expect(screen.getByText(/Not applied yet/)).toBeVisible();
   });
 
   it("says the same about a changed picker", async () => {
@@ -207,7 +208,7 @@ describe("changes that have not been applied yet", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "Target · updated schema" }));
     fireEvent.click(screen.getByRole("option", { name: "public" }));
 
-    expect(screen.getByText(/Not applied yet — press Compare/)).toBeInTheDocument();
+    expect(screen.getByText(/Not applied yet/)).toBeVisible();
   });
 
   it("goes quiet again when a picker is put back the way it was", async () => {
@@ -225,7 +226,7 @@ describe("changes that have not been applied yet", () => {
     fireEvent.click(schemaBox);
     fireEvent.click(screen.getByRole("option", { name: "shop_dev" }));
 
-    expect(screen.queryByText(/Not applied yet/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Not applied yet/)).not.toBeVisible();
   });
 });
 

@@ -435,6 +435,8 @@ body {
 /* quiet footer link */
 .flink { color:var(--text-3); text-decoration:none; }
 .flink:hover { color:var(--text-2); text-decoration:underline; }
+/* the same look on a button, such as Login's "Trouble signing in?" */
+button.flink { background:none; border:0; padding:0; font:inherit; }
 
 /* fade-swap when the SSO region changes state */
 @keyframes pop { from { opacity:0; transform: translateY(2px); } to { opacity:1; transform:none; } }
@@ -455,13 +457,24 @@ body {
 .conns tbody tr:last-child td { border-bottom:none; }
 .conns tbody tr { transition: background .12s ease; }
 .conns tbody tr:hover { background:var(--surface-2); }
-.conns tbody tr:hover .row-actions { opacity:1; transform: translateX(0); }
 /* "Group by environment" header row. Not a data row, so it must not pick up the
    hover highlight or the card treatment the phone layout gives real rows. */
 .conns tbody tr.group-head:hover { background:var(--surface-3); }
 .conns tbody tr.group-head td { background:var(--surface-3); padding:8px 16px;
                                 border-bottom:1px solid var(--border); }
-.row-actions { opacity:0; transform: translateX(4px); transition: opacity .14s ease, transform .14s ease; }
+/* Test, Edit and Delete are what a row is for, so they stay on show rather
+   than appearing on hover: a touch screen has no hover, and someone moving
+   through the page with Tab would land on buttons they cannot see. The column
+   is also pinned to the right edge, because the table is wider than its card
+   on a laptop screen and the buttons would otherwise sit past the edge. Its
+   solid background covers the columns that scroll under it. Phones get the
+   card layout further down instead. */
+@media (min-width: 641px) {
+  .conns thead th:last-child,
+  .conns tbody td.cell-actions { position:sticky; right:0; box-shadow:-1px 0 0 var(--border); }
+  .conns tbody td.cell-actions { background:var(--surface); transition: background .12s ease; }
+  .conns tbody tr:hover td.cell-actions { background:var(--surface-2); }
+}
 
 /* status indicator dot (left of name) */
 .ind { width:8px; height:8px; border-radius:999px; flex:none; position:relative; }
@@ -582,6 +595,8 @@ body {
 .source-bar__slot > .picker { flex:1; }
 .source-bar__actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
 .source-bar__spacer { flex:1 1 auto; }
+/* The Compare button, with its "Not applied yet" line underneath. */
+.source-bar__run { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
 .picker { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--border-strong);
           border-radius:10px; background:var(--surface-2); min-width:0; }
 .picker .kind { font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--text-3);
@@ -621,6 +636,13 @@ body {
 .ds-select__tick { display:inline-flex; align-items:center; justify-content:center; width:14px; flex:none; color:var(--brand); }
 .ds-select__option-label { overflow:hidden; text-overflow:ellipsis; }
 .ds-select__empty { padding:8px; font-size:12.5px; color:var(--text-3); }
+/* The Drift page's schema picker is as wide as its label, up to 520px. The
+   label carries status, environment, schema and source, and a fixed 360px cut
+   off the source, which is what tells two schemas called "public" apart. At
+   full width instead, the picker pushed the Production badge onto a line of
+   its own. The list gets the same room, and still fits on a phone. */
+.drift-picker { width:auto; max-width:520px; }
+.drift-picker .ds-select__list { max-width:min(520px, calc(100vw - 24px)); }
 
 /* ——— Segmented version-bump control (Script Editor) ——— */
 /* Own class (.ver-seg, NOT .seg) so it never collides with the legacy
@@ -767,8 +789,11 @@ summary.obj-header::-webkit-details-marker { display:none; }
    which is the only question it exists to answer. */
 .matrix-wrap { overflow-x:auto; }
 .matrix { width:100%; border-collapse:collapse; font-size:12.5px; }
+/* Column headings may wrap. Kept on one line, they made the board wider than
+   its half of the Compare page at 1280 wide, so it scrolled sideways and cut
+   off the Changed column. The row headings below still keep to one line. */
 .matrix th { padding:4px 10px 6px; font-size:10.5px; font-weight:600; letter-spacing:.06em;
-             text-transform:uppercase; color:var(--text-3); white-space:nowrap; text-align:right;
+             text-transform:uppercase; color:var(--text-3); text-align:right;
              border-bottom:1px solid var(--border); }
 .matrix thead th:first-child { text-align:left; }
 .matrix th .sub { display:block; margin-top:1px; font-size:10px; font-weight:400; letter-spacing:0;
@@ -1153,7 +1178,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
                  padding:12px 16px; border-bottom:1px solid var(--border); background:var(--surface-2); }
 .viz-pane__field { display:flex; flex-direction:column; }
 .viz-pane__field--conn { flex:1; min-width:170px; }
-.viz-pane__field--schema { width:172px; }
+.viz-pane__field--schema { flex:0 1 230px; min-width:172px; }
 .viz-pane__stage { flex:1; min-height:0; position:relative; }
 
 /* Draggable divider between the two panes */
@@ -1309,7 +1334,9 @@ summary.obj-header::-webkit-details-marker { display:none; }
   .source-bar__grid { grid-template-columns:1fr; }
   .source-bar .picker { min-width:0; }
   .source-bar__spacer { display:none; }
-  .source-bar__actions > button[type="submit"]:not(.btn-icon) { width:100%; justify-content:center; }
+  .source-bar__actions > button[type="submit"]:not(.btn-icon),
+  .source-bar__run > button { width:100%; justify-content:center; }
+  .source-bar__run { width:100%; align-items:center; }
   .compare-header { flex-direction:column; align-items:flex-start; gap:8px; }
   .compare-header .ml-auto { margin-left:0; }
 

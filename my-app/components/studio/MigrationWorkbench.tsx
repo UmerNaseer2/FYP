@@ -1021,7 +1021,7 @@ export function MigrationWorkbench({
                           {floor === null
                             ? // The push preview below already says "First version of this
                               // family"; this line says why, in the same shape as the one below.
-                              `${appliedKnown ? `Applied to ${targetLabel}: none · ` : ""}In GitHub: none · a new family starts at ${vLabel(nextVersion)}; the level you pick is still recorded`
+                              `${appliedKnown ? `Applied to ${targetLabel}: none · ` : ""}In GitHub: none · a new script group starts at ${vLabel(nextVersion)}; the level you pick is still recorded`
                             : `${
                                 appliedKnown
                                   ? `Applied to ${targetLabel}: ${appliedVersion ? displayVersion(appliedVersion, true) : "none"} · `

@@ -425,7 +425,7 @@ describe("describePush", () => {
     expect(describePush({ floor: null, version: "1.0.0", withRollback: true })).toEqual({
       files: ["v1.0.0.sql", "v1.0.0.down.sql"],
       noRollbackLine: null,
-      stepLine: "First version of this family: v1.0.0",
+      stepLine: "First version of this script group: v1.0.0",
       bump: null,
       isFirstVersion: true,
     });

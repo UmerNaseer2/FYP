@@ -12,7 +12,7 @@ import {
   TimelineNode,
   type PillTone,
 } from "@/components/ui";
-import { ENVIRONMENT_META, isProduction } from "@/lib/environments";
+import { isProduction } from "@/lib/environments";
 import { countOf } from "@/lib/plural";
 import { displayVersion } from "@/lib/version-timeline";
 import {
@@ -301,9 +301,9 @@ export default function SchemaDetailPage({
                 <AlertTriangleIcon size={14} />
               </span>
               <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                <b>Production schema.</b> {ENVIRONMENT_META.prod.help} Compare and Deploy
-                repeat this warning before they generate or run anything against it, and
-                re-baselining here accepts whatever changed outside this app as correct.
+                <b>Production schema.</b> Re-baselining it on the Drift page accepts
+                whatever changed outside this app as correct, so look at what changed
+                before you do.
               </div>
             </div>
           ) : (

@@ -610,7 +610,7 @@ export default function ScriptEditorPage() {
     if (saveRefusal) return saveRefusal;
     if (githubUnconfigured) return "The GitHub registry is not configured, so nothing can be saved.";
     if (!databaseName || !schema) return "Pick a connection and a schema above.";
-    if (!scriptName) return "Pick a script family above.";
+    if (!scriptName) return "Pick a script group above.";
     if (nameProblem) return nameProblem;
     if (!hasExecutableSql(sql)) {
       return sql.trim() === "" ? "Write the SQL for this version above." : MIGRATION_NO_STATEMENTS;
@@ -1020,9 +1020,9 @@ export default function ScriptEditorPage() {
         <div className="section-title mb-2">Script Editor</div>
         <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Write a migration script.</h1>
         <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-          Hand-author SQL, give it a schema and a script family, and save it to the GitHub registry.
-          The version is suggested from your SQL and is always kept above what is already applied or
-          saved, in semver order.
+          Write SQL by hand, pick the schema and script group it belongs to, and save it to GitHub.
+          The version number is suggested from your SQL, and always stays above the versions
+          already applied or saved.
         </p>
       </div>
 
@@ -1065,9 +1065,12 @@ export default function ScriptEditorPage() {
               folder and lets us read which versions it has already applied, so the new
               version lands above them. Running the script is done on Deploy.
             </p>
+            {/* The labels are block, like the Script group one that shares its
+                row with a button: an inline label takes the page's taller line
+                height and set its picker 6px lower than that one. */}
             <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
               <div>
-                <label className="label" htmlFor="se-conn">Connection</label>
+                <label className="label block" htmlFor="se-conn">Connection</label>
                 <Select
                   variant="input"
                   id="se-conn"
@@ -1090,7 +1093,7 @@ export default function ScriptEditorPage() {
               </div>
 
               <div>
-                <label className="label" htmlFor="se-schema">Schema</label>
+                <label className="label block" htmlFor="se-schema">Schema</label>
                 <Select
                   variant="input"
                   id="se-schema"
@@ -1120,7 +1123,7 @@ export default function ScriptEditorPage() {
 
               <div>
                 <div className="flex items-center justify-between">
-                  <label className="label" htmlFor="se-family">Script family</label>
+                  <label className="label" htmlFor="se-family">Script group</label>
                   <button
                     type="button"
                     className="family-toggle text-[11px]"
@@ -1130,7 +1133,7 @@ export default function ScriptEditorPage() {
                       setSaveResult(null);
                     }}
                   >
-                    {familyMode === "existing" ? "+ New family" : "Pick existing"}
+                    {familyMode === "existing" ? "+ New group" : "Pick existing"}
                   </button>
                 </div>
                 {familyMode === "existing" ? (
@@ -1139,17 +1142,17 @@ export default function ScriptEditorPage() {
                     id="se-family"
                     className="mt-1"
                     mono
-                    ariaLabel="Script family"
+                    ariaLabel="Script group"
                     value={existingFamily}
                     disabled={!schema}
                     placeholder={
                       !schema
                         ? "Select a schema first"
                         : githubLoading
-                          ? "Loading families…"
+                          ? "Loading script groups…"
                           : existingFamilies.length === 0
-                            ? "No families yet — use + New family"
-                            : "Select a family…"
+                            ? "No script groups yet. Use + New group"
+                            : "Select a script group…"
                     }
                     options={existingFamilies.map((name) => ({ value: name, label: name }))}
                     onChange={(value) => {
@@ -1169,7 +1172,7 @@ export default function ScriptEditorPage() {
                         setNewFamily(e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_"));
                         setSaveResult(null);
                       }}
-                      aria-label="New script family name"
+                      aria-label="New script group name"
                     />
                     {newFamily.trim() && nameProblem && (
                       <p className="help mt-1" style={{ color: "var(--break)" }}>
@@ -1178,7 +1181,7 @@ export default function ScriptEditorPage() {
                     )}
                     {caseClash && (
                       <p className="help mt-1" style={{ color: "var(--drift)" }}>
-                        {`A family "${caseClash}" already exists — use that exact name to add to it.`}
+                        {`A script group "${caseClash}" already exists. Use that exact name to add to it.`}
                       </p>
                     )}
                   </>
@@ -1329,7 +1332,7 @@ export default function ScriptEditorPage() {
             {scriptName ? (
               <>
                 {nameProblem ? (
-                  <p className="help">The version is worked out once the family name can be used.</p>
+                  <p className="help">The version is worked out once the script group name can be used.</p>
                 ) : githubUnconfigured ? (
                   <p className="help">
                     {"The next version can't be worked out until the GitHub registry is configured (see above)."}
@@ -1349,7 +1352,7 @@ export default function ScriptEditorPage() {
                           {familyLoading || appliedLoading
                             ? "Checking versions…"
                             : floor === null
-                              ? "First version of this family"
+                              ? "First version of this script group"
                               : `Applied to ${targetLabel}: ${
                                   appliedUnreadable ? "unknown" : appliedVersion ? displayVersion(appliedVersion, true) : "none"
                                 } · In GitHub: ${githubHighest ? vLabel(githubHighest) : "none"}`}
@@ -1526,7 +1529,7 @@ export default function ScriptEditorPage() {
               // picked the page has no visible way to finish — say where it
               // will appear rather than leaving the reader hunting for it.
               <p className="help">
-                Pick a schema and a script family above. The version and the Save button
+                Pick a schema and a script group above. The version and the Save button
                 appear here once they are set.
               </p>
             )}

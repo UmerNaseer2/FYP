@@ -494,14 +494,19 @@ function DetailTab({
     <div className="space-y-6">
       {/* Selector row */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
+        {/* min-w-0 lets this column narrow on a phone. Without it, the column
+            is never narrower than the picker's whole label, which ran past the
+            right edge and made the page scroll sideways. */}
+        <div className="min-w-0">
           <div className="section-title mb-1.5">Tracked schema</div>
           <div className="flex items-center gap-2 flex-wrap">
             <DriftSchemaPicker items={pickerItems} selectedId={selectedId} />
             <EnvironmentPill environment={view.environment} />
           </div>
         </div>
-        <div className="text-[12px] text-right" style={{ color: "var(--text-3)" }}>
+        {/* Right-aligned only beside the picker. On a phone it wraps below,
+            where ragged-left lines read as a mistake. */}
+        <div className="text-[12px] sm:text-right" style={{ color: "var(--text-3)" }}>
           {view.connection ? (
             <span className="mono">
               {view.connection.host}:{view.connection.port}/{view.connection.database}

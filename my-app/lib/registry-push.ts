@@ -589,7 +589,7 @@ export function describePush(input: { floor: string | null; version: string; wit
     return {
       files,
       noRollbackLine,
-      stepLine: `First version of this family: v${version}`,
+      stepLine: `First version of this script group: v${version}`,
       bump: null,
       isFirstVersion: true,
     };
@@ -599,7 +599,7 @@ export function describePush(input: { floor: string | null; version: string; wit
     return {
       files,
       noRollbackLine,
-      stepLine: `v${version} is not above v${floor.trim()}, the newest version of this family, so it can't be pushed.`,
+      stepLine: `v${version} is not above v${floor.trim()}, the newest version of this script group, so it can't be pushed.`,
       bump: null,
       isFirstVersion: false,
     };

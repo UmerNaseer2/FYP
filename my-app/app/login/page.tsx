@@ -75,6 +75,8 @@ export default function LoginPage() {
   const desktop = useDesktopBridge();
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /** Whether "Trouble signing in?" is showing its help. */
+  const [helpOpen, setHelpOpen] = useState(false);
   /** null while we are still asking the server which providers it has. */
   const [ssoReady, setSsoReady] = useState<boolean | null>(null);
 
@@ -422,30 +424,34 @@ export default function LoginPage() {
               <span className="inline-flex items-center gap-2">
                 <LockIcon size={13} /> Encrypted in transit · enterprise SSO
               </span>
-              <a href="#" className="flink">
+              <button
+                type="button"
+                className="flink cursor-pointer"
+                aria-expanded={helpOpen}
+                aria-controls="signin-help"
+                onClick={() => setHelpOpen((open) => !open)}
+              >
                 Trouble signing in?
-              </a>
+              </button>
             </div>
+            <p
+              id="signin-help"
+              hidden={!helpOpen}
+              className="mt-3 text-[12px] leading-relaxed"
+              style={{ color: "var(--text-2)" }}
+            >
+              Sign in with your work Microsoft account. If Microsoft turns you away, ask your
+              administrator whether your account may use Schema Studio. Once you are in, an
+              admin chooses what you can do here. New people start as Viewers, who can look
+              around but not change anything.
+            </p>
           </article>
 
           {/* under-card meta */}
           <div
-            className="mt-5 flex items-center justify-between gap-4 text-[12px]"
+            className="mt-5 flex items-center justify-end gap-4 text-[12px]"
             style={{ color: "var(--text-3)" }}
           >
-            <div className="flex items-center gap-3">
-              <a href="#" className="flink">
-                Terms
-              </a>
-              <span style={{ opacity: 0.5 }}>·</span>
-              <a href="#" className="flink">
-                Privacy
-              </a>
-              <span style={{ opacity: 0.5 }}>·</span>
-              <a href="#" className="flink">
-                Status
-              </a>
-            </div>
             <div className="inline-flex items-center gap-2 mono">
               <span
                 className="inline-block w-1.5 h-1.5 rounded-full"

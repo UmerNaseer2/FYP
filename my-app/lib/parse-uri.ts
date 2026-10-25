@@ -36,3 +36,41 @@ export function parsePostgresUri(raw: string): ParsedUri | null {
     return null;
   }
 }
+
+/** Everything a `postgres://` URI carries, with "" for a part it leaves out. */
+export type UriFields = {
+  host: string;
+  port: string;
+  database: string;
+  user: string;
+  password: string;
+};
+
+/**
+ * Split a `postgres://` URI into the Connections drawer's separate fields, for
+ * when someone types a connection string and then switches to "Fields".
+ * Returns `null` when the string is empty, has another scheme, or is not a
+ * valid URL. Never throws.
+ *
+ * Unlike `parsePostgresUri`, this includes the password. It must only ever go
+ * into the drawer's masked password field: never shown, logged or put back
+ * into a visible connection string.
+ */
+export function uriToFields(raw: string): UriFields | null {
+  const value = (raw ?? "").trim();
+  if (!/^postgres(ql)?:\/\//i.test(value)) return null;
+
+  try {
+    const url = new URL(value.replace(/^postgres(ql)?:/i, "http:"));
+    return {
+      // A URI needs brackets around an IPv6 address; the Host field doesn't.
+      host: url.hostname.replace(/^\[(.*)\]$/, "$1"),
+      port: url.port,
+      database: decodeURIComponent(url.pathname.replace(/^\//, "")),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+    };
+  } catch {
+    return null;
+  }
+}

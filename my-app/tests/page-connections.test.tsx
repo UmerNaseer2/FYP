@@ -398,6 +398,58 @@ describe("the add drawer", () => {
       .toBeInTheDocument();
     expect(fetchCalls.filter((c) => c.method === "POST")).toHaveLength(0);
   });
+
+  /** Opens the add drawer and returns queries kept inside it. */
+  async function openAdd() {
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+    return within(document.querySelector(".drawer") as HTMLElement);
+  }
+
+  // Built here rather than written out, as the repository is public.
+  const fakePassword = ["fake", "password"].join("-");
+  const URI_PLACEHOLDER = "postgres://user:pass@host:5432/database?sslmode=require";
+
+  it("carries a typed connection string into Fields, the password only into its hidden box", async () => {
+    const drawer = await openAdd();
+    fireEvent.change(drawer.getByPlaceholderText(URI_PLACEHOLDER), {
+      target: { value: `postgres://shop:${fakePassword}@db.shop.test:5433/shop_dev` },
+    });
+    fireEvent.click(drawer.getByRole("button", { name: "Fields" }));
+
+    // Database and User share a placeholder, Database first.
+    const [database, user] = drawer.getAllByPlaceholderText("postgres");
+    expect(drawer.getByPlaceholderText("db.example.com")).toHaveValue("db.shop.test");
+    expect(drawer.getByPlaceholderText("5432")).toHaveValue(5433);
+    expect(database).toHaveValue("shop_dev");
+    expect(user).toHaveValue("shop");
+    const password = drawer.getByPlaceholderText("••••••••");
+    expect(password).toHaveValue(fakePassword);
+    expect(password).toHaveAttribute("type", "password");
+  });
+
+  it("keeps edits made under Fields when switching back and forth", async () => {
+    const drawer = await openAdd();
+    const uriBox = () => drawer.getByPlaceholderText(URI_PLACEHOLDER);
+    const hostBox = () => drawer.getByPlaceholderText("db.example.com");
+    fireEvent.change(uriBox(), { target: { value: "postgres://shop@db.shop.test/shop_dev" } });
+    fireEvent.click(drawer.getByRole("button", { name: "Fields" }));
+    fireEvent.change(hostBox(), { target: { value: "replica.shop.test" } });
+
+    // The string has not changed since it filled the fields, so it must not
+    // put its older host back.
+    fireEvent.click(drawer.getByRole("button", { name: "Connection string" }));
+    fireEvent.click(drawer.getByRole("button", { name: "Fields" }));
+    expect(hostBox()).toHaveValue("replica.shop.test");
+
+    // A changed string is newer than the edits, so it fills them in again.
+    fireEvent.click(drawer.getByRole("button", { name: "Connection string" }));
+    fireEvent.change(uriBox(), { target: { value: "postgres://shop@other.shop.test/shop_dev" } });
+    fireEvent.click(drawer.getByRole("button", { name: "Fields" }));
+    expect(hostBox()).toHaveValue("other.shop.test");
+  });
 });
 
 describe("for a role that may not add, change or delete connections", () => {

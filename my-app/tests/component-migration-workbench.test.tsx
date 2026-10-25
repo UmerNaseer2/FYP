@@ -409,8 +409,8 @@ describe("the number the push will use", () => {
 
     await versionReady();
     expect(pushButton()).toHaveTextContent("Push v1.0.0 to GitHub");
-    expect(screen.getByText(/First version of this family/)).toHaveTextContent(
-      "First version of this family: v1.0.0"
+    expect(screen.getByText(/First version of this script group/)).toHaveTextContent(
+      "First version of this script group: v1.0.0"
     );
   });
 

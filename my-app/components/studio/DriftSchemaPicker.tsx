@@ -51,7 +51,9 @@ export function DriftSchemaPicker({
       variant="input"
       mono
       ariaLabel="Select a tracked schema"
-      style={{ maxWidth: 360 }}
+      // Sized to its label (globals.css, .drift-picker), so the source that
+      // tells two schemas called "public" apart is not the part cut off.
+      className="drift-picker"
       value={selectedId != null ? String(selectedId) : ""}
       placeholder="Select a tracked schema…"
       options={items.map((it) => {

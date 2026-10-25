@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useUser } from "@/hooks/useUser";
-import { parsePostgresUri } from "@/lib/parse-uri";
+import { parsePostgresUri, uriToFields } from "@/lib/parse-uri";
 import { APPLIES_TO_HEADER_KEY } from "@/lib/application-targeting";
 import {
   DEFAULT_SSL_MODE,
@@ -228,6 +228,10 @@ export default function ConnectionsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [fieldMode, setFieldMode] = useState<FieldMode>("uri");
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  // The connection string that last filled in the Fields view, so switching
+  // back and forth doesn't overwrite edits made under Fields with that same
+  // older string. Only a new or changed string fills them in again.
+  const fieldsFilledFrom = useRef("");
   const [showPassword, setShowPassword] = useState(false);
   const [drawerTest, setDrawerTest] = useState<DrawerTest>({ kind: "idle" });
   const [saving, setSaving] = useState(false);
@@ -322,6 +326,7 @@ export default function ConnectionsPage() {
     if (createRefusal !== null) return;
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    fieldsFilledFrom.current = "";
     setFormErrors({});
     setFieldMode("uri");
     setShowPassword(false);
@@ -336,6 +341,7 @@ export default function ConnectionsPage() {
     if (updateRefusal !== null) return;
     const hasUri = Boolean(conn.has_connection_string);
     setEditingId(conn.id);
+    fieldsFilledFrom.current = "";
     setForm({
       name: conn.name ?? "",
       uri: "", // never prefilled (it embeds the password); blank keeps the stored one
@@ -829,7 +835,8 @@ export default function ConnectionsPage() {
             </p>
           </div>
 
-          <div className="flex flex-col items-end gap-3">
+          {/* ml-auto keeps this on the right when it wraps under the title. */}
+          <div className="ml-auto flex flex-col items-end gap-3">
             <button
               className="btn btn-primary btn-sm"
               onClick={openAdd}
@@ -1408,6 +1415,25 @@ export default function ConnectionsPage() {
               <button
                 className={fieldMode === "fields" ? "active" : ""}
                 onClick={() => {
+                  // Carry a typed connection string across, so Fields shows
+                  // the same connection rather than the defaults. Its
+                  // password goes only into the masked password box, and a
+                  // string without one leaves a password typed there alone.
+                  const parts =
+                    fieldMode === "uri" && form.uri !== fieldsFilledFrom.current
+                      ? uriToFields(form.uri)
+                      : null;
+                  if (parts) {
+                    fieldsFilledFrom.current = form.uri;
+                    setForm((f) => ({
+                      ...f,
+                      host: parts.host || EMPTY_FORM.host,
+                      port: parts.port || EMPTY_FORM.port,
+                      database: parts.database || EMPTY_FORM.database,
+                      user: parts.user || EMPTY_FORM.user,
+                      password: parts.password || f.password,
+                    }));
+                  }
                   setFieldMode("fields");
                   setFormErrors({});
                   setDrawerTest({ kind: "idle" });

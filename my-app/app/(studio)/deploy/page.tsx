@@ -913,8 +913,14 @@ export default function DeployPage() {
   // to know whether to offer Request and Approve at all (each is a box an
   // admin ticks for a role on the Admin screen), and whether this is the same
   // person who asked for the run (nobody clears their own).
-  const { user, roleLabel, isAdmin, bypass, can } = useUser();
+  const { user, roleLabel, isAdmin, bypass, can, loading: sessionLoading } = useUser();
   const mayReadApprovals = can("approvals:read");
+  // Said at the top of the page, as Dashboard and Connections do, so a role
+  // that may only look finds out before picking a target rather than after.
+  // A rehearsal runs through the same route as a real run, so it needs the
+  // same permission.
+  const runRefusal =
+    sessionLoading || can("deploy:run") ? null : refusalMessage(roleLabel, "deploy:run");
   const mayRequestApproval = can("approvals:create");
   const mayApprove = can("approvals:approve");
 
@@ -927,6 +933,9 @@ export default function DeployPage() {
   const [schemasLoading, setSchemasLoading] = useState(false);
   const [schemasError, setSchemasError] = useState<string | null>(null);
   const [schema, setSchema] = useState<string>("");
+  // The connection whose schemas were asked for last, so an answer for a
+  // connection the reader has already moved away from is ignored.
+  const schemasFor = useRef("");
   const [scriptGroup, setScriptGroup] = useState<string>("");
 
   // ── GitHub script source ─────────────────────────────────────────────────
@@ -2064,21 +2073,27 @@ export default function DeployPage() {
   }
 
   async function fetchSchemas(id: string) {
+    schemasFor.current = id;
     setSchemasLoading(true);
     setSchemasError(null);
     setSchemas([]);
     try {
       const res = await fetch(`/api/scripts/schemas?connectionId=${id}`);
       const data = (await res.json()) as { schemas?: string[]; error?: string };
+      if (schemasFor.current !== id) return;
       if (!res.ok || !data.schemas) {
         setSchemasError(data.error ?? "Could not load schemas from this connection.");
       } else {
-        setSchemas(data.schemas);
+        const list = data.schemas;
+        setSchemas(list);
+        // One schema leaves nothing to choose, so it is picked, as Compare
+        // and Performance do.
+        if (list.length === 1) setSchema((current) => (current === "" ? list[0] : current));
       }
     } catch {
-      setSchemasError("Network error loading schemas.");
+      if (schemasFor.current === id) setSchemasError("Network error loading schemas.");
     } finally {
-      setSchemasLoading(false);
+      if (schemasFor.current === id) setSchemasLoading(false);
     }
   }
 
@@ -2915,6 +2930,15 @@ export default function DeployPage() {
           pending migrations: all of them, or up to the version whose Run button you pick.
           Each run goes in one transaction — all of its migrations or none.
         </p>
+        {runRefusal && (
+          <div className="role-note mt-4 max-w-[80ch]">
+            <InfoIcon size={15} className="ico" />
+            <div className="body space-y-0.5">
+              <p>{runRefusal}</p>
+              <p>You can still see what is pending on each target and what has run before.</p>
+            </div>
+          </div>
+        )}
         {pullError && (
           <div className="banner mt-3">
             <span className="ico">
@@ -3126,10 +3150,16 @@ export default function DeployPage() {
                 {githubScripts && schema && schemaScriptNames.length === 0 && (
                   <p className="help mt-1">
                     No scripts saved for <span className="mono">{schema}</span>{" "}
-                    yet. A script group is one named family of migrations — one
-                    name, many versions — that a schema is carried forward by.
-                    Author one on Compare &amp; Author, or write it by hand in
-                    the Script Editor; it shows up here once it is saved.
+                    yet. A script group is one named set of migrations that
+                    carries a schema forward, one version at a time. Make one on{" "}
+                    <Link href="/compare" className="underline">
+                      Compare &amp; Author
+                    </Link>
+                    , or write one by hand in the{" "}
+                    <Link href="/script-editor" className="underline">
+                      Script Editor
+                    </Link>
+                    . It shows up here once it is saved.
                   </p>
                 )}
               </div>
@@ -4768,10 +4798,6 @@ export default function DeployPage() {
           </div>
         </section>
       )}
-
-      <footer className="px-4 sm:px-8 pb-8 text-[12px]" style={{ color: "var(--text-3)" }}>
-        Schema Studio · Deploy (S5)
-      </footer>
 
       {/* Toast */}
       {toast && (

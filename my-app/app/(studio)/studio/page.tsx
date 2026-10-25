@@ -777,8 +777,8 @@ export default function DashboardPage() {
             onChange={(e) => setTrackLabel(e.target.value)}
           />
           <p className="help mt-1">
-            A human name for this schema. The environment above is the typed
-            field — don&apos;t write &quot;prod&quot; in here and expect a warning.
+            A friendly name to show on its card. Production warnings come from the
+            Environment setting above, not from this label.
           </p>
         </div>
 
@@ -940,11 +940,11 @@ function SchemaCard({
   const meta = driftMeta(item.driftStatus);
   const environment = toEnvironment(item.environment);
   const connectionGone = item.connectionName === null;
-  const source =
-    item.label ??
-    (item.connectionName
-      ? `${item.connectionName} — ${item.connectionDatabase ?? "?"}`
-      : "Connection removed");
+  // Where the schema lives. Shown under the label rather than replaced by it,
+  // because a label says nothing about which database the card is about.
+  const source = item.connectionName
+    ? `${item.connectionName} · ${item.connectionDatabase ?? "?"}`
+    : "Connection removed";
 
   // The drifted card is the hero: louder border + a subtle top-tint gradient.
   const heroStyle = meta.hero
@@ -976,7 +976,12 @@ function SchemaCard({
 
       <div className="mt-1">
         <div className="mono text-[18px] font-semibold tracking-tight">{item.schemaName}</div>
-        <div className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
+        {item.label && (
+          <div className="text-[13px] break-words" style={{ color: "var(--text-2)" }}>
+            {item.label}
+          </div>
+        )}
+        <div className="mono text-[12px] break-words" style={{ color: "var(--text-3)" }}>
           {source}
         </div>
       </div>
@@ -986,14 +991,14 @@ function SchemaCard({
           the script version Deploy shows as "Applied to target". The title
           sits on the row so it shows over the number and the seq alike. */}
       <div
-        className="mt-4 flex items-baseline gap-2"
+        className="mt-4 flex flex-wrap items-baseline gap-x-2"
         title="Schema Studio's lineage number for this tracked schema. It moves when a deploy or re-baseline changes the structure, and is separate from the script versions in GitHub."
       >
-        <span className="mono text-[18px] font-semibold">
+        <span className="mono text-[18px] font-semibold whitespace-nowrap">
           {item.headVersion ? `lineage ${displayVersion(item.headVersion, true)}` : "—"}
         </span>
         {item.headSeq !== null && (
-          <span className="mono text-[12px]" style={{ color: "var(--text-3)" }}>
+          <span className="mono text-[12px] whitespace-nowrap" style={{ color: "var(--text-3)" }}>
             · seq {String(item.headSeq).padStart(4, "0")} — latest
           </span>
         )}

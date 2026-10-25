@@ -102,12 +102,12 @@ async function pickTarget(family: string, useExisting = false) {
   fireEvent.click(screen.getByRole("option", { name: "public" }));
 
   if (useExisting) {
-    fireEvent.click(screen.getByRole("combobox", { name: "Script family" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Script group" }));
     fireEvent.click(screen.getByRole("option", { name: family }));
     return;
   }
-  fireEvent.click(screen.getByRole("button", { name: "+ New family" }));
-  fireEvent.change(screen.getByLabelText("New script family name"), {
+  fireEvent.click(screen.getByRole("button", { name: "+ New group" }));
+  fireEvent.change(screen.getByLabelText("New script group name"), {
     target: { value: family },
   });
 }
@@ -320,7 +320,7 @@ describe("the number the next version gets", () => {
     writeSql("SQL", ADDS_A_COLUMN);
 
     expect(
-      await screen.findByText("First version of this family", undefined, { timeout: 3000 })
+      await screen.findByText("First version of this script group", undefined, { timeout: 3000 })
     ).toBeInTheDocument();
     // 1.0.0 at every level, so the level recorded with the file is the only
     // thing that can carry how big the change is.
@@ -354,7 +354,7 @@ describe("the number the next version gets", () => {
     // Hold the next family's read, so the window under test stays open for
     // the length of the assertions rather than closing on its own.
     const releaseQuick = holdNext("script=quick_family");
-    fireEvent.change(screen.getByLabelText("New script family name"), {
+    fireEvent.change(screen.getByLabelText("New script group name"), {
       target: { value: "quick_family" },
     });
 
@@ -399,7 +399,7 @@ describe("the number the next version gets", () => {
     expect(await saveButton("5.1.0")).toBeInTheDocument();
 
     const releaseApplied = holdNext("/api/scripts/preflight", "POST");
-    fireEvent.change(screen.getByLabelText("New script family name"), {
+    fireEvent.change(screen.getByLabelText("New script group name"), {
       target: { value: "new_family" },
     });
 

@@ -4,7 +4,11 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SchemaMapIcon, ConnectionsIcon, CompareIcon } from "@/components/ui/icons";
-import { VisualizerPane, type VizConnection } from "@/components/studio/visualizer/VisualizerPane";
+import {
+  VisualizerPane,
+  type VizConnection,
+  type VizPick,
+} from "@/components/studio/visualizer/VisualizerPane";
 
 // The Schema Visualizer. "Single" draws one schema; "Side by side" draws two
 // independent panes (e.g. dev vs prod) with a draggable divider between them.
@@ -18,6 +22,8 @@ type Mode = "single" | "split";
 
 const MIN_PCT = 26;
 const MAX_PCT = 74;
+
+const NO_PICK: VizPick = { connectionId: "", schema: "" };
 
 function PanelSingleIcon() {
   return (
@@ -64,6 +70,9 @@ export default function VisualizerPage() {
   const [connectionsFailed, setConnectionsFailed] = useState(false);
   const [mode, setMode] = useState<Mode>("single");
   const [splitPct, setSplitPct] = useState(50);
+  // What each pane draws, reported by the pane, for the "Open in Compare" link.
+  const [leftPick, setLeftPick] = useState<VizPick>(NO_PICK);
+  const [rightPick, setRightPick] = useState<VizPick>(NO_PICK);
 
   // A draggable side-by-side split is unusable on a phone, so force single-pane
   // (and hide the mode toggle) under the tablet breakpoint.
@@ -133,6 +142,26 @@ export default function VisualizerPage() {
 
   const noConnections = connectionsLoaded && connections.length === 0;
 
+  // "Open in Compare" takes along what the panes show. The first pane with a
+  // connection picked becomes the source and a second one the target, which
+  // keeps left and right in the order Compare lays them out. Only the pickers
+  // are filled, with no run=1: left and right never said which schema should
+  // change to match the other, so the reader checks the order and presses
+  // Compare themselves. Nothing picked leaves the link bare, and Compare uses
+  // its own defaults. An empty value is never sent either, because Compare
+  // reads an empty sourceConnection as "no source", not as "pick one for me".
+  const picked = [leftPick, ...(effectiveMode === "split" ? [rightPick] : [])].filter(
+    (pick) => pick.connectionId !== ""
+  );
+  const compareQuery = new URLSearchParams();
+  picked.forEach((pick, index) => {
+    const side = index === 0 ? "source" : "target";
+    compareQuery.set(`${side}Connection`, pick.connectionId);
+    if (pick.schema !== "") compareQuery.set(`${side}Schema`, pick.schema);
+  });
+  const query = compareQuery.toString();
+  const compareHref = query ? `/compare?${query}` : "/compare";
+
   return (
     <div className="viz-page">
       <div className="px-8 pt-8 pb-4 flex items-start justify-between gap-4 flex-wrap">
@@ -162,9 +191,9 @@ export default function VisualizerPage() {
                 Ghost rather than a primary button: reading the diagram is a
                 legitimate reason to be here and most visits end here on
                 purpose. */}
-            <Link href="/compare" className="btn btn-ghost btn-sm">
+            <Link href={compareHref} className="btn btn-ghost btn-sm">
               <CompareIcon size={14} />
-              Compare them properly
+              Open in Compare
             </Link>
           </div>
         )}
@@ -199,7 +228,7 @@ export default function VisualizerPage() {
             className="viz-split__pane"
             style={effectiveMode === "split" ? { flex: `0 0 ${splitPct}%` } : undefined}
           >
-            <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} />
+            <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} onPick={setLeftPick} />
           </div>
 
           {effectiveMode === "split" && (
@@ -233,7 +262,7 @@ export default function VisualizerPage() {
                 <span className="viz-divider__grip" />
               </div>
               <div className="viz-split__pane" style={{ flex: 1 }}>
-                <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} />
+                <VisualizerPane connections={connections} connectionsLoaded={connectionsLoaded} onPick={setRightPick} />
               </div>
             </>
           )}

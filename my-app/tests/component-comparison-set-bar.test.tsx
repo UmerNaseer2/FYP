@@ -265,6 +265,11 @@ describe("when Save is off", () => {
 
     expect(saveButton()).toBeDisabled();
     expect(saveButton()).toHaveAttribute("title", "Press Compare first");
+    // Nobody is saving yet, and the page says so under Compare already.
+    expect(screen.queryByText(/latest changes are not in it yet/)).not.toBeInTheDocument();
+
+    // Typing a name is the moment someone means to save, so now it says why not.
+    fireEvent.change(nameBox(), { target: { value: "Nightly check" } });
     expect(
       screen.getByText(
         "Press Compare first — Save stores the selection as the page last loaded it, and your latest changes are not in it yet."

@@ -305,6 +305,11 @@ export function ComparisonSetBar({
           (mayCreate ? " Or save it under a new name." : "")
         : refusalMessage(roleLabel, "comparison_sets:create");
 
+  // A set is open or a name is being typed: someone means to save. Until then
+  // the line under Compare already says the changes are not applied, and a
+  // second warning here for every picker change was only noise.
+  const workingOnASet = activeSet !== null || name.trim() !== "";
+
   // One sentence under the bar, the one that matters most right now.
   let note: { text: string; tone: "error" | "warn" | "quiet" } | null = null;
   if (error) {
@@ -318,7 +323,7 @@ export function ComparisonSetBar({
           : "A connection this set used has been deleted. Someone whose role may update comparison sets can pick a replacement and update the set.",
       tone: "warn",
     };
-  } else if (mayWrite && hasUnappliedChanges) {
+  } else if (mayWrite && hasUnappliedChanges && workingOnASet) {
     note = {
       text: "Press Compare first — Save stores the selection as the page last loaded it, and your latest changes are not in it yet.",
       tone: "warn",

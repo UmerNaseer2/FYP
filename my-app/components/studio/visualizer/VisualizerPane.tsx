@@ -26,6 +26,9 @@ export type VizConnection = {
   database_name: string;
 };
 
+/** What a pane draws: a connection id and a schema, each empty until picked. */
+export type VizPick = { connectionId: string; schema: string };
+
 function CanvasLoading({ label }: { label: string }) {
   return (
     <div className="viz-stage-fill grid place-items-center">
@@ -41,9 +44,12 @@ function CanvasLoading({ label }: { label: string }) {
 export function VisualizerPane({
   connections,
   connectionsLoaded,
+  onPick,
 }: {
   connections: VizConnection[];
   connectionsLoaded: boolean;
+  /** Told what the pane draws, each time the pick changes. */
+  onPick?: (pick: VizPick) => void;
 }) {
   // Unique ids so two panes' labels never collide (htmlFor / aria).
   const uid = useId();
@@ -73,8 +79,14 @@ export function VisualizerPane({
         const res = await fetch(`/api/scripts/schemas?connectionId=${connectionId}`, { cache: "no-store" });
         const data = await res.json();
         if (!active) return;
-        if (Array.isArray(data?.schemas)) setSchemas(data.schemas);
-        else setSchemasError(data?.error ?? "Could not load schemas.");
+        if (Array.isArray(data?.schemas)) {
+          const list: string[] = data.schemas;
+          setSchemas(list);
+          // One schema leaves nothing to choose, so it is drawn straight away.
+          if (list.length === 1) setSchema((current) => (current === "" ? list[0] : current));
+        } else {
+          setSchemasError(data?.error ?? "Could not load schemas.");
+        }
       } catch {
         if (active) setSchemasError("Could not load schemas. Is the database reachable?");
       } finally {
@@ -85,6 +97,13 @@ export function VisualizerPane({
       active = false;
     };
   }, [connectionId]);
+
+  // The page builds its "Open in Compare" link from what each pane draws, so
+  // the schemas somebody was looking at arrive in Compare already picked
+  // instead of on whatever Compare would default to.
+  useEffect(() => {
+    onPick?.({ connectionId, schema });
+  }, [connectionId, schema, onPick]);
 
   // ── Snapshot for the chosen schema ─────────────────────────────────────---
   useEffect(() => {

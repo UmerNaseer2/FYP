@@ -8,7 +8,7 @@ import {
   summariseErrors,
   DEFAULT_SSL_MODE,
 } from "@/lib/connection-validate";
-import { parsePostgresUri } from "@/lib/parse-uri";
+import { parsePostgresUri, uriToFields } from "@/lib/parse-uri";
 import { checkConnectableHost, runConnectionTest } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import {
@@ -281,6 +281,45 @@ describe("parsePostgresUri", () => {
   it("returns null rather than throwing on junk", () => {
     expect(parsePostgresUri("")).toBeNull();
     expect(parsePostgresUri("not a uri at all")).toBeNull();
+  });
+});
+
+describe("uriToFields", () => {
+  // Built here rather than written out, as the repository is public.
+  const fakePassword = ["fake", "pass@word"].join("-");
+
+  it("splits a URI into the drawer's fields, password included", () => {
+    const fields = uriToFields(
+      `postgresql://a%40b:${encodeURIComponent(fakePassword)}@db.example.com:5433/my%20db?sslmode=require`,
+    );
+    expect(fields).toEqual({
+      host: "db.example.com",
+      port: "5433",
+      database: "my db",
+      user: "a@b",
+      password: fakePassword,
+    });
+  });
+
+  it("gives an empty string for each part the URI leaves out", () => {
+    expect(uriToFields("postgres://db.example.com")).toEqual({
+      host: "db.example.com",
+      port: "",
+      database: "",
+      user: "",
+      password: "",
+    });
+  });
+
+  it("drops the brackets a URI puts around an IPv6 address", () => {
+    expect(uriToFields("postgres://app@[::1]:5432/shop")!.host).toBe("::1");
+  });
+
+  it("returns null for anything that isn't a postgres URI", () => {
+    expect(uriToFields("")).toBeNull();
+    expect(uriToFields("db.example.com:5432/shop")).toBeNull();
+    expect(uriToFields("mysql://app@db.example.com/shop")).toBeNull();
+    expect(uriToFields("postgres://app@db.example.com/%E0%A4%A")).toBeNull();
   });
 });
 

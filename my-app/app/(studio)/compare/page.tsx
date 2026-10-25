@@ -729,21 +729,24 @@ function CompareScreenView({ query }: { query: string }) {
             </span>
           </label>
           <span className="source-bar__spacer" />
-          {/* Said beside the button that applies it, because this is the moment
-              the reader is deciding whether anything more is needed. */}
-          {unapplied && (
+          {/* Said right by the button that applies it, because this is the moment
+              the reader is deciding whether anything more is needed. The line
+              sits under the button and keeps its room while hidden: next to
+              it, the line's arrival pushed the button onto a row of its own at
+              laptop widths, away from where the reader was about to press. */}
+          <div className="source-bar__run">
+            <button type="submit" name="run" value="1" className="btn btn-primary">
+              <CompareIcon size={14} />
+              Compare
+            </button>
             <span
               className="text-[12px] flex items-center gap-1.5"
-              style={{ color: "var(--drift)" }}
+              style={{ color: "var(--drift)", visibility: unapplied ? "visible" : "hidden" }}
             >
               <AlertTriangleIcon size={13} />
               Not applied yet — press Compare.
             </span>
-          )}
-          <button type="submit" name="run" value="1" className="btn btn-primary">
-            <CompareIcon size={14} />
-            Compare
-          </button>
+          </div>
         </div>
       </form>
 
