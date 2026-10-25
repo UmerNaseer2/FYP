@@ -192,6 +192,13 @@ body {
   --shadow-sm:    0 1px 2px rgba(16,16,20,0.04), 0 0 0 1px rgba(16,16,20,0.04);
   --shadow-md:    0 6px 24px -8px rgba(16,16,20,0.10), 0 2px 6px rgba(16,16,20,0.04);
   --shadow-lg:    0 24px 60px -20px rgba(16,16,20,0.18), 0 4px 12px rgba(16,16,20,0.05);
+
+  /* The sign-in and landing backdrop (.bg-grid, .bg-wash-a, .bg-wash-b).
+     These were used from the start but never defined, so the browser threw
+     each background away and the sign-in page sat on a flat --bg. */
+  --grid:         rgba(16,16,20,0.05);
+  --wash-1:       rgba(99,102,241,0.16);
+  --wash-2:       rgba(37,99,235,0.10);
 }
 :root[data-theme="dark"] {
   --bg:           #0a0a0c;
@@ -230,6 +237,11 @@ body {
   --shadow-sm:    0 1px 2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04);
   --shadow-md:    0 6px 24px -8px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4);
   --shadow-lg:    0 24px 60px -20px rgba(0,0,0,0.7), 0 4px 12px rgba(0,0,0,0.4);
+
+  /* The sign-in and landing backdrop; see the light block above. */
+  --grid:         rgba(255,255,255,0.04);
+  --wash-1:       rgba(124,127,255,0.18);
+  --wash-2:       rgba(96,165,250,0.10);
 }
 
 /* Studio surface wrapper — the dark-first base appearance. Legacy <body>
@@ -441,6 +453,79 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
 /* fade-swap when the SSO region changes state */
 @keyframes pop { from { opacity:0; transform: translateY(2px); } to { opacity:1; transform:none; } }
 .swap > * { animation: pop .25s ease both; }
+
+/* ===========================================================================
+   Landing page: the public front page at "/" (components/landing/)
+   Lives outside the Studio shell like Login above, and borrows its backdrop
+   (.bg-grid, .bg-wash-a, .bg-wash-b) so the two pages read as one place.
+   Reuses .btn, .pill, .diff-row and .section-title. Nothing here animates.
+   =========================================================================== */
+.landing { position:relative; min-height:100vh; display:flex; flex-direction:column;
+           font-family:var(--font-geist-sans),ui-sans-serif,system-ui; color:var(--text); background:var(--bg); }
+/* covers the top of the page only and fades out, so the grid and washes sit behind the hero */
+.landing-backdrop { position:absolute; inset:0 0 auto 0; height:880px; overflow:hidden; pointer-events:none; z-index:0;
+                    -webkit-mask-image:linear-gradient(to bottom, #000 70%, transparent);
+                    mask-image:linear-gradient(to bottom, #000 70%, transparent); }
+.landing-header, .landing-main, .landing-footer { position:relative; z-index:1; }
+.landing-main { flex:1; }
+/* padding-inline only, so a section's own padding-block never cancels it */
+.landing-wrap { width:100%; max-width:1120px; margin:0 auto; padding-inline:32px; }
+.landing-header__inner { display:flex; align-items:center; justify-content:space-between; height:56px; }
+
+/* hero: the pitch and the two buttons, beside an example of what the studio shows */
+.landing-hero { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,0.95fr); gap:56px; align-items:center; padding-block:72px 88px; }
+.landing-title { margin:16px 0 0; font-size:clamp(34px, 5vw, 54px); font-weight:600; letter-spacing:-0.03em; line-height:1.06; text-wrap:balance; }
+.landing-lede { margin:18px 0 0; max-width:34rem; font-size:16.5px; line-height:1.6; color:var(--text-2); }
+.landing-ctas { display:flex; flex-wrap:wrap; gap:10px; margin-top:28px; }
+.landing-note { margin:14px 0 0; font-size:12.5px; color:var(--text-3); }
+
+.landing-preview { margin:0; background:var(--surface); border:1px solid var(--border); border-radius:16px; box-shadow:var(--shadow-lg); overflow:hidden; }
+.landing-preview__head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); }
+.landing-preview__schema { font-family:var(--font-geist-mono),ui-monospace; font-size:13px; font-weight:600; }
+.landing-envs { margin:0; padding:6px 0; list-style:none; }
+.landing-env { display:grid; grid-template-columns:72px minmax(0,1fr) auto; gap:12px; align-items:center; padding:9px 18px; font-size:13px; }
+.landing-env__name { font-weight:500; }
+.landing-env__version { font-family:var(--font-geist-mono),ui-monospace; font-size:12px; color:var(--text-2); }
+.landing-diff { border-top:1px solid var(--border); padding:8px 18px 10px; }
+.landing-diff__body { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+/* a long column type breaks onto a second line rather than pushing the card wider */
+.landing-diff__code { overflow-wrap:anywhere; }
+.landing-diff__where { font-family:var(--font-geist-sans),ui-sans-serif,system-ui; font-size:11.5px; color:var(--text-3); }
+.landing-preview__foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 12px; padding:12px 18px;
+                         border-top:1px solid var(--border); background:var(--surface-2); font-size:12.5px; color:var(--text-2); }
+.landing-preview__lock { display:inline-flex; align-items:center; gap:8px; }
+
+/* features and the storage note */
+.landing-section { padding-bottom:72px; }
+.landing-section__title { margin:0 0 16px; }
+/* 1px gaps over a border-colored ground draw the lines between the tiles */
+.landing-features { margin:0; padding:0; list-style:none; display:grid; grid-template-columns:repeat(3, minmax(0,1fr));
+                    gap:1px; background:var(--border); border:1px solid var(--border); border-radius:14px; overflow:hidden; }
+.landing-feature { display:flex; flex-direction:column; gap:10px; padding:22px; background:var(--surface); }
+.landing-feature__icon { display:grid; place-items:center; width:34px; height:34px; border-radius:9px; background:var(--brand-soft); color:var(--brand); }
+.landing-feature__title { margin:4px 0 0; font-size:15px; font-weight:600; color:var(--text); }
+.landing-feature__body { margin:0; font-size:13.5px; line-height:1.6; color:var(--text-2); }
+.landing-store { display:flex; align-items:flex-start; gap:14px; padding:18px 20px; background:var(--surface); border:1px solid var(--border); border-radius:14px; }
+.landing-store__icon { display:grid; place-items:center; flex:none; width:32px; height:32px; border-radius:8px; background:var(--surface-3); color:var(--text-2); }
+.landing-store__title { margin:0; font-size:14px; font-weight:600; }
+.landing-store__body { margin:4px 0 0; max-width:44rem; font-size:13.5px; line-height:1.6; color:var(--text-2); }
+
+.landing-footer { border-top:1px solid var(--border); }
+.landing-footer__inner { display:flex; align-items:center; justify-content:space-between; padding-block:18px; font-size:12px; color:var(--text-3); }
+
+/* one column for the hero below 980px, then one column for everything on a phone */
+@media (max-width: 980px) {
+  .landing-hero { grid-template-columns:minmax(0,1fr); gap:40px; padding-block:48px 64px; }
+  /* full width would spread three short rows across the whole page */
+  .landing-preview { max-width:560px; }
+  .landing-features { grid-template-columns:repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 640px) {
+  .landing-wrap { padding-inline:16px; }
+  .landing-features { grid-template-columns:minmax(0,1fr); }
+  .landing-env { grid-template-columns:60px minmax(0,1fr) auto; gap:10px; padding:9px 14px; }
+  .landing-preview__head, .landing-preview__foot, .landing-diff { padding-inline:14px; }
+}
 
 /* ===========================================================================
    Connections (S1) — table, add/edit drawer, delete modal, toast

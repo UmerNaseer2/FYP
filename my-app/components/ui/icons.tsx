@@ -307,6 +307,16 @@ export function PlayIcon(props: IconProps) {
   );
 }
 
+/** The desktop app: a screen on its stand. */
+export function MonitorIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </Svg>
+  );
+}
+
 /** A measurement over time: axes with a line climbing across them. */
 export function TrendIcon(props: IconProps) {
   return (

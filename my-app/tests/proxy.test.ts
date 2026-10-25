@@ -8,6 +8,7 @@
 // flag and whether sign-in is configured at all — are captured at import time.
 
 import { NextRequest } from "next/server";
+import { isPublicPath } from "../lib/public-paths";
 
 // next-auth and its provider ship as ESM, which Jest's CommonJS runtime cannot
 // require, so both are stand-ins. The stand-in `auth()` does what the real one
@@ -46,6 +47,7 @@ async function loadProxy(env: Record<string, string | undefined>): Promise<{
 
 const page = () => new NextRequest("http://localhost:3000/studio");
 const api = () => new NextRequest("http://localhost:3000/api/lineage");
+const home = () => new NextRequest("http://localhost:3000/");
 
 describe("edge proxy", () => {
   it("lets everything through while the bypass is on", async () => {
@@ -88,6 +90,22 @@ describe("edge proxy", () => {
     });
   });
 
+  it("opens the landing page even where sign-in is not set up", async () => {
+    const { proxy } = await loadProxy({
+      NEXT_PUBLIC_AUTH_BYPASS: "false",
+      AZURE_AD_CLIENT_ID: "",
+      AZURE_AD_CLIENT_SECRET: "",
+      AZURE_AD_TENANT_ID: "",
+      NEXTAUTH_SECRET: "",
+    });
+    // The landing page tells a visitor what Schema Studio is before anyone
+    // signs in, so it cannot wait for sign-in to be set up. Its "Log in"
+    // button goes to /login, which says what is missing.
+    expect((await proxy(home())).status).toBe(200);
+    // Only "/": every other page still goes to /login.
+    expect((await proxy(page())).status).toBe(307);
+  });
+
   describe("with sign-in configured", () => {
     const signInOn = {
       NEXT_PUBLIC_AUTH_BYPASS: "false",
@@ -124,6 +142,16 @@ describe("edge proxy", () => {
     it("refuses a request with no session at all", async () => {
       mockSession = null;
       const { proxy } = await loadProxy(signInOn);
+      expect((await proxy(api())).status).toBe(401);
+    });
+
+    it("lets a signed-out visitor open the landing page and nothing else", async () => {
+      mockSession = null;
+      const { proxy } = await loadProxy(signInOn);
+      expect((await proxy(home())).status).toBe(200);
+      // The pathname decides, so a query string changes nothing.
+      expect((await proxy(new NextRequest("http://localhost:3000/?from=email"))).status).toBe(200);
+      expect((await proxy(page())).status).toBe(307);
       expect((await proxy(api())).status).toBe(401);
     });
   });
@@ -175,6 +203,13 @@ describe("edge proxy", () => {
       const location = new URL(response.headers.get("location") ?? "");
       expect(location.searchParams.get("error")).toBe("Configuration");
     });
+
+    it("lets the landing page through, which forwards to /studio itself", async () => {
+      // app/page.tsx sends the desktop app on to /studio, and /studio is
+      // guarded like every other page, so letting "/" through opens nothing.
+      const { proxy } = await loadProxy(desktop);
+      expect((await proxy(home())).status).toBe(200);
+    });
   });
 
   it("guards the pages that need it and leaves sign-in reachable", async () => {
@@ -183,6 +218,8 @@ describe("edge proxy", () => {
     // match "/api/auth/session" starting at the second slash and report the
     // sign-in endpoint as guarded.
     const pattern = new RegExp(`^${config.matcher[0]}$`);
+    // "/" is matched too. The proxy still runs for the landing page, and lets
+    // it through itself (isPublicPath, below).
     for (const guarded of ["/", "/studio", "/compare", "/api/lineage"]) {
       expect(pattern.test(guarded)).toBe(true);
     }
@@ -190,6 +227,17 @@ describe("edge proxy", () => {
     // one thing a signed-out visitor cannot do.
     for (const open of ["/login", "/api/auth/session", "/favicon.ico"]) {
       expect(pattern.test(open)).toBe(false);
+    }
+  });
+});
+
+describe("isPublicPath", () => {
+  // No reload needed: the list is fixed and no switch reads it.
+  it("opens the landing page and nothing else", () => {
+    expect(isPublicPath("/")).toBe(true);
+    // Exact paths only. A prefix match on "/" would open every page there is.
+    for (const guarded of ["/studio", "/login", "/api/me", "//", "", "/index"]) {
+      expect(isPublicPath(guarded)).toBe(false);
     }
   });
 });

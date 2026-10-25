@@ -2,6 +2,7 @@ import NextAuth from "next-auth";
 import { NextResponse, type NextRequest } from "next/server";
 import { authConfig, authUsable } from "./auth.config";
 import { BYPASS_AUTH } from "./lib/auth-mode";
+import { isPublicPath } from "./lib/public-paths";
 
 /**
  * The edge proxy: the first line of defence for both pages and API routes.
@@ -20,6 +21,9 @@ import { BYPASS_AUTH } from "./lib/auth-mode";
  * the role may do. The permission check on each API route lives in
  * lib/auth-guard.ts, which runs in the node runtime. Both read the same
  * BYPASS_AUTH switch.
+ *
+ * The one page that opens without a session is the landing page at "/" (see
+ * lib/public-paths.ts). It still passes through here, and is let through.
  */
 
 type EdgeHandler = (request: NextRequest) => Response | Promise<Response>;
@@ -81,6 +85,10 @@ function notConfigured(request: NextRequest): Response {
 
 export default function proxy(request: NextRequest) {
   if (BYPASS_AUTH) return NextResponse.next();
+  // Before the configuration check on purpose: the landing page opens whether
+  // or not anyone is signed in, and even where sign-in is not set up yet.
+  // app/page.tsx decides where its buttons go.
+  if (isPublicPath(request.nextUrl.pathname)) return NextResponse.next();
   if (!authUsable) return notConfigured(request);
   return getEnforcer()(request);
 }

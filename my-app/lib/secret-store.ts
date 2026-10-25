@@ -94,6 +94,18 @@ function resolveKey(): ResolvedKey {
   return cached;
 }
 
+/**
+ * Where this server's encryption key comes from, or "none" when it has no key
+ * and saves database passwords exactly as they were typed.
+ *
+ * The landing page tells visitors how their passwords are stored, and it asks
+ * here rather than assuming, so the sentence stays true on a server that was
+ * started without a key.
+ */
+export function encryptionKeySource(): KeySource {
+  return resolveKey().source;
+}
+
 /** True when a stored value is in the encrypted envelope format. */
 export function isEncrypted(value: string | null | undefined): boolean {
   return typeof value === "string" && value.startsWith(PREFIX);
