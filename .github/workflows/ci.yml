@@ -22,6 +22,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The checks only read the code, so the run's token may only read it too.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Lint, type-check, test, build
