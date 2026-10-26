@@ -52,7 +52,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
@@ -61,6 +61,7 @@ import { FixScriptBuilder, type FixScriptTarget } from "@/components/studio/FixS
 import { readMigrationDraftRaw, type MigrationDraft } from "@/lib/migration-draft";
 import type { FixScriptItem } from "@/lib/perf-sql";
 import {
+  render,
   resetPageState,
   routerCalls,
   setCustomRole,
@@ -538,7 +539,7 @@ describe("what Save hands to the Script Editor", () => {
     // created an index in sales would be deployed as a change to public.
     expect(draft?.sql).not.toContain("leads_owner_id_idx");
     expect(draft?.sql).not.toContain("VACUUM");
-    expect(routerCalls.push).toEqual(["/script-editor"]);
+    expect(routerCalls.push).toEqual(["/test-org/script-editor"]);
   });
 
   it("carries the connection and schema the findings came from", () => {

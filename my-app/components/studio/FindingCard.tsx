@@ -6,6 +6,7 @@ import { Card, Pill, type PillTone } from "@/components/ui";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 // Type-only: erased at build time, so nothing from lib/ reaches the browser.
 import type { FixKind } from "@/lib/perf-sql";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * One piece of performance advice, however it was arrived at.
@@ -87,6 +88,7 @@ export function FindingCard({
    */
   step?: number | null;
 }) {
+  const orgPath = useOrgHref();
   const meta = SEVERITY_META[severity];
   return (
     <Card className="p-0 overflow-hidden">
@@ -119,7 +121,9 @@ export function FindingCard({
 
           {action && (
             <div>
-              <Link href={action.href} className="btn btn-secondary btn-sm">
+              {/* action.href is built on the server, which does not know the
+                  organization the page is open in, so it goes on here. */}
+              <Link href={orgPath(action.href)} className="btn btn-secondary btn-sm">
                 {action.label}
               </Link>
             </div>

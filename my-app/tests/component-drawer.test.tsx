@@ -41,6 +41,7 @@
 
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import Link from "next/link";
 import { useState } from "react";
 
 import { Drawer } from "@/components/ui";
@@ -301,7 +302,7 @@ describe("bare mode, for the mobile nav", () => {
     render(
       <Drawer open onClose={() => {}} bare label="Menu">
         <nav>
-          <a href="/studio">Studio</a>
+          <Link href="/acme/studio">Studio</Link>
         </nav>
       </Drawer>
     );
@@ -316,7 +317,7 @@ describe("bare mode, for the mobile nav", () => {
     render(
       <Drawer open onClose={() => {}} bare label="Menu">
         <nav>
-          <a href="/studio">Studio</a>
+          <Link href="/acme/studio">Studio</Link>
         </nav>
       </Drawer>
     );

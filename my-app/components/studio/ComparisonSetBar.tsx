@@ -14,6 +14,8 @@ import {
   setOptionLabel,
 } from "@/lib/comparison-set-rules";
 import { selectionToQuery, type CurrentSelection } from "@/lib/compare-selection";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * The saved-set bar above the Compare pickers: open a saved comparison, save
@@ -116,6 +118,7 @@ export function ComparisonSetBar({
   onDone,
 }: Props) {
   const router = useRouter();
+  const orgPath = useOrgHref();
   const currentQuery = useSearchParams().toString();
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
 
@@ -173,7 +176,7 @@ export function ComparisonSetBar({
       return;
     }
     noticeForNextBar = notice === null ? null : { setId: setIdIn(query), text: notice };
-    router.push(`/compare?${query}`);
+    router.push(orgPath(`/compare?${query}`));
   }
 
   function open(value: string) {
@@ -183,7 +186,7 @@ export function ComparisonSetBar({
   }
 
   async function postSet(trimmed: string, overwrite: boolean) {
-    const res = await fetch("/api/comparison-sets", {
+    const res = await apiFetch("/api/comparison-sets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -248,7 +251,7 @@ export function ComparisonSetBar({
     setError(null);
     setDone(null);
     try {
-      const res = await fetch("/api/comparison-sets", {
+      const res = await apiFetch("/api/comparison-sets", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: activeSet.id }),

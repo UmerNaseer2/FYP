@@ -12,6 +12,7 @@ import type { ThresholdBreach } from "@/lib/perf-thresholds";
 import type { DbHealth, HealthLevel } from "@/lib/db-health";
 import { ThresholdBanner } from "./ThresholdBanner";
 import type { PerfTarget } from "./PerfTargetPicker";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Spec feature 10 — "Long-Running Query Detection", as a screen.
@@ -84,7 +85,7 @@ export function LiveActivity({ target }: { target: PerfTarget | null }) {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/performance/activity?connectionId=${encodeURIComponent(connectionId)}` +
             `&schema=${encodeURIComponent(schema)}`,
           { cache: "no-store" }

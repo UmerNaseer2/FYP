@@ -41,7 +41,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
@@ -53,6 +53,7 @@ import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   routerCalls,
   setRoutes,
@@ -214,7 +215,7 @@ describe("when nothing has been analysed here", () => {
     expect(screen.getByText(/Nothing is collected in the background/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Analyse a query/ })).toHaveAttribute(
       "href",
-      "/performance?tab=analyse"
+      "/test-org/performance?tab=analyse"
     );
   });
 
@@ -310,7 +311,7 @@ describe("the two modes", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Every run" })[0]);
 
     expect(routerCalls.push).toEqual([
-      "/performance?tab=history&connectionId=7&schema=public&fingerprint=zzz999",
+      "/test-org/performance?tab=history&connectionId=7&schema=public&fingerprint=zzz999",
     ]);
   });
 
@@ -340,7 +341,7 @@ describe("the two modes", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show the whole schema" }));
 
     expect(routerCalls.push).toEqual([
-      "/performance?tab=history&connectionId=7&schema=public",
+      "/test-org/performance?tab=history&connectionId=7&schema=public",
     ]);
   });
 });

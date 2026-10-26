@@ -9,6 +9,8 @@ import { bandFor } from "@/lib/query-score";
 import type { QueryComparison, QueryHistoryRow } from "@/lib/query-history";
 import { ScoreBadge } from "./ScoreBadge";
 import type { PerfTarget } from "./PerfTargetPicker";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * Spec feature 8 — "store query history for comparison" — and feature 10's
@@ -70,6 +72,7 @@ export function QueryHistoryPanel({
   fingerprint: string | null;
 }) {
   const router = useRouter();
+  const orgPath = useOrgHref();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [days, setDays] = useState(30);
   // Which run the newest one is measured against. The fingerprint is stored
@@ -89,7 +92,7 @@ export function QueryHistoryPanel({
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/performance/history?connectionId=${encodeURIComponent(connectionId)}` +
             `&schema=${encodeURIComponent(schema)}&days=${days}` +
             (fingerprint ? `&fingerprint=${encodeURIComponent(fingerprint)}` : "") +
@@ -120,7 +123,7 @@ export function QueryHistoryPanel({
   function show(next: string | null) {
     const params = new URLSearchParams({ tab: "history", connectionId, schema });
     if (next) params.set("fingerprint", next);
-    router.push(`/performance?${params.toString()}`);
+    router.push(orgPath(`/performance?${params.toString()}`));
   }
 
   if (!connectionId || !schema) {
@@ -175,7 +178,7 @@ export function QueryHistoryPanel({
                   "asks a question of this schema."
             }
             actions={
-              <Link href="/performance?tab=analyse" className="btn btn-primary btn-sm">
+              <Link href={orgPath("/performance?tab=analyse")} className="btn btn-primary btn-sm">
                 <PlayIcon size={13} /> Analyse a query
               </Link>
             }

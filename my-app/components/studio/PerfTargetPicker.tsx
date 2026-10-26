@@ -6,6 +6,8 @@ import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui";
 import { AlertCircleIcon } from "@/components/ui/icons";
 import { toEnvironment } from "@/lib/environments";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * "Which database, which schema" — the two questions every Performance tab has
@@ -65,6 +67,7 @@ export function PerfTargetPicker({
   initialConnectionId?: string | null;
   initialSchema?: string | null;
 }) {
+  const orgPath = useOrgHref();
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [connPhase, setConnPhase] = useState<Phase>("loading");
   const [connectionId, setConnectionId] = useState(initialConnectionId ?? "");
@@ -86,7 +89,7 @@ export function PerfTargetPicker({
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch("/api/connections", { cache: "no-store" });
+        const res = await apiFetch("/api/connections", { cache: "no-store" });
         const data = res.ok ? await res.json() : null;
         if (cancelled) return;
         if (!Array.isArray(data)) {
@@ -127,7 +130,7 @@ export function PerfTargetPicker({
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/lineage/schemas?connectionId=${encodeURIComponent(connectionId)}`,
           { cache: "no-store" }
         );
@@ -269,7 +272,7 @@ export function PerfTargetPicker({
               to read yet.{" "}
               {/* "then come back" is an instruction with no way to follow it.
                   The link is the come-back. */}
-              <Link href="/connections" className="underline">
+              <Link href={orgPath("/connections")} className="underline">
                 Save a PostgreSQL connection
               </Link>{" "}
               and this picker will find it.

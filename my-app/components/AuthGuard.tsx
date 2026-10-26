@@ -74,19 +74,21 @@ export default function AuthGuard({
   // a frame first would flash content they are not signed in to see.
   if (!user) return null;
 
-  // Not a member of the organization, so the server answers every request
-  // behind every page with 404, the open pages' included, and there is nothing
-  // here to show. With real sign-in an admin removed them after they signed
-  // in. With the bypass on there is nobody to remove: the database has no
-  // default organization, and signing out would change nothing.
+  // Not a member of the organization the page is open in, so the server
+  // answers every request behind every page with 404, the open pages'
+  // included, and there is nothing here to show. With real sign-in an admin
+  // removed them while the page was open, or they belong to no organization at
+  // all (app/[org]/layout.tsx shows everyone else the 404 page). With the
+  // bypass on there is nobody to remove: no organization has this address any
+  // more, and signing out would change nothing.
   if (notMember) {
     return (
       <div className="loading-state">
         <div className="title">{"You are not a member of this organization."}</div>
         <div className="hint">
           {bypass
-            ? "Authentication is off, and the app's database has no default organization to act in."
-            : "An admin may have removed you. Check with an admin, or sign out."}
+            ? "Authentication is off, and the app's database has no organization at this address."
+            : "An admin may have removed you, or you were never added. Check with an admin, or sign out."}
         </div>
         {!bypass && (
           <div className="actions">

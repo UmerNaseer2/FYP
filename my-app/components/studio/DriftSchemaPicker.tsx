@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { Select } from "@/components/ui/Select";
 import { ENVIRONMENT_META, type Environment } from "@/lib/environments";
+import { useOrgHref } from "@/hooks/useOrg";
 
 type DriftStatus = "in_sync" | "drifted" | "unreachable";
 
@@ -45,6 +46,7 @@ export function DriftSchemaPicker({
   selectedId: number | null;
 }) {
   const router = useRouter();
+  const orgPath = useOrgHref();
 
   return (
     <Select
@@ -67,7 +69,7 @@ export function DriftSchemaPicker({
         };
       })}
       onChange={(id) => {
-        if (id) router.push(`/drift?tab=detail&schema=${id}`);
+        if (id) router.push(orgPath(`/drift?tab=detail&schema=${id}`));
       }}
     />
   );

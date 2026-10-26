@@ -11,7 +11,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
@@ -25,6 +25,7 @@ import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setRoutes,
   setUser,

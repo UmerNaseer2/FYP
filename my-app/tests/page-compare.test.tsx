@@ -18,14 +18,14 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import ComparePage from "@/app/(studio)/compare/page";
+import ComparePage from "@/app/[org]/(studio)/compare/page";
 import type { CompareScreen } from "@/lib/compare-run";
-import { flushAsync, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
+import { flushAsync, holdNext, render, resetPageState, setRoutes } from "./helpers/render-page";
 
 const CONNECTIONS = [
   { id: 1, name: "Local Postgres", database_name: "shop", environment: "dev" },
@@ -108,7 +108,7 @@ describe("a screen with nothing to compare on", () => {
     expect(screen.queryByText(/at least two connections/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Go to Connections/ })).toHaveAttribute(
       "href",
-      "/connections"
+      "/test-org/connections"
     );
   });
 

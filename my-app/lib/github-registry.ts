@@ -1,8 +1,8 @@
 // SERVER-ONLY: import this file from API routes and other server code only.
 // It reads GITHUB_PAT, and a token in a browser bundle is a leaked token. (The
 // project has no `server-only` package, so this comment is the guard: nothing
-// under app/(studio) or components/ may import it. The pure rules the screens
-// need are in lib/registry-push.ts.)
+// under app/[org]/(studio) or components/ may import it. The pure rules the
+// screens need are in lib/registry-push.ts.)
 //
 // The GitHub reads the registry rules need: which files one script family
 // already has in the registry repository.

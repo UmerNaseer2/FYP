@@ -16,6 +16,8 @@ import { useNow } from "@/hooks/useNow";
 import { useUser } from "@/hooks/useUser";
 import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift-schedule";
 import { refusalMessage } from "@/lib/permissions";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /** One row of the cadence table (mirrors ScheduleRow on the server). */
 export type ScheduleRow = {
@@ -84,6 +86,7 @@ function until(iso: string | null, now: number | null): string {
  * freezing at whatever it said when it loaded.
  */
 export function ScheduleTable() {
+  const orgPath = useOrgHref();
   const [view, setView] = useState<ScheduleView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<number | null>(null);
@@ -104,7 +107,7 @@ export function ScheduleTable() {
   const load = useCallback(async () => {
     const request = ++latestLoad.current;
     try {
-      const res = await fetch("/api/lineage/schedule");
+      const res = await apiFetch("/api/lineage/schedule");
       const data = await res.json();
       // Every exit below is guarded, not just the success one: a stale error
       // would report a healthy scheduler as unreachable just as wrongly as
@@ -136,7 +139,7 @@ export function ScheduleTable() {
     setSaving(row.trackedSchemaId);
     setSaveError(null);
     try {
-      const res = await fetch("/api/lineage/schedule", {
+      const res = await apiFetch("/api/lineage/schedule", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trackedSchemaId: row.trackedSchemaId, intervalMinutes: minutes }),
@@ -288,7 +291,7 @@ export function ScheduleTable() {
               title="No schemas are being tracked"
               description="The cadence is set per schema, so there is nothing to schedule until one is tracked. Tracking starts on the Dashboard: pick a connection and a schema, and the first snapshot becomes its baseline."
               actions={
-                <Link href="/studio" className="btn btn-primary btn-sm">
+                <Link href={orgPath("/studio")} className="btn btn-primary btn-sm">
                   Go to the Dashboard
                 </Link>
               }
@@ -317,7 +320,7 @@ export function ScheduleTable() {
                 <tr key={r.trackedSchemaId} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td className="px-3 py-2.5" data-label="Schema">
                     <Link
-                      href={`/drift?tab=detail&schema=${r.trackedSchemaId}`}
+                      href={orgPath(`/drift?tab=detail&schema=${r.trackedSchemaId}`)}
                       className="mono"
                       style={{ color: "var(--text)" }}
                     >

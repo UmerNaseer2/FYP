@@ -11,6 +11,7 @@ import {
   isProduction,
   type Environment,
 } from "@/lib/environments";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Client island on the schema-detail page: relabel this schema's environment.
@@ -55,7 +56,7 @@ export function SchemaEnvironmentPicker({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/lineage", {
+      const res = await apiFetch("/api/lineage", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: trackedSchemaId, environment: next }),

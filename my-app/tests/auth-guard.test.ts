@@ -3,11 +3,14 @@
 // The route suites put a stand-in in place of these gates, so a route can be
 // tested without a session or a metadata database. This file is the other
 // half: the real gates, with only what they ask stood in for (the session, the
-// View as cookie, the organization and membership lookups, and the roles
-// table). What it holds them to:
+// header naming the organization, the View as cookie, the organization and
+// membership lookups, and the roles table). What it holds them to:
 //
 //   - No session is 401, and so is a session lookup that throws: never a 500
 //     that says why.
+//   - The organization is the one the request's header names. A request that
+//     names none is 404 on the web and the default organization on the
+//     desktop, which has only the one.
 //   - Someone signed in who is not a member is 404, the same answer as an
 //     organization that does not exist, and nothing about a role is read.
 //   - A membership or a role the database could not read is 503 for every
@@ -18,12 +21,16 @@
 //   - A role without the permission is 403, in the words refusalMessage uses
 //     for the first key asked for. Any one of several keys lets a request in.
 //   - With real sign-in the View as cookie is never read.
-//   - With the bypass on, the caller acts in the default organization. With no
-//     cookie they are its full admin. A cookie naming a role gives exactly that
-//     role's permissions, under the bypass's own email. A role deleted since,
-//     or a cookie naming admin, is the full admin again, and a role that could
-//     not be read is a 503, never the full admin.
+//   - With the bypass on, the caller acts in the organization the request
+//     names, and one nobody has is 404. With no cookie they are its full
+//     admin. A cookie naming a role gives exactly that role's permissions,
+//     under the bypass's own email. A role deleted since, or a cookie naming
+//     admin, is the full admin again, and a role that could not be read is a
+//     503, never the full admin.
+//   - resolveOrganization, the pages' lookup, reads the slug it is handed
+//     rather than the header, and says who was turned away.
 import { VIEW_AS_COOKIE } from "@/lib/auth-mode";
+import { ORG_HEADER } from "@/lib/org-slug";
 import { ALL_PERMISSIONS, presetFor, refusalMessage } from "@/lib/permissions";
 import { TEST_ORG, bypassAdminPrincipal } from "./helpers/principals";
 
@@ -42,7 +49,9 @@ jest.mock("../auth", () => ({ auth: () => mockAuth() }));
 
 /** The cookies the request carries, by name. */
 let mockJar: Record<string, string> = {};
-/** True to make cookies() throw, the way it does outside a request. */
+/** The headers the request carries, by lowercase name. */
+let mockHeaders: Record<string, string> = {};
+/** True to make cookies() and headers() throw, the way they do outside a request. */
 let mockOutsideRequest = false;
 const mockCookieReads = jest.fn();
 jest.mock("next/headers", () => ({
@@ -53,13 +62,21 @@ jest.mock("next/headers", () => ({
       get: (name: string) => (name in mockJar ? { name, value: mockJar[name] } : undefined),
     };
   },
+  headers: async () => {
+    if (mockOutsideRequest) throw new Error("`headers` was called outside a request scope.");
+    return { get: (name: string) => mockHeaders[name.toLowerCase()] ?? null };
+  },
 }));
 
+const mockFindOrganization = jest.fn();
 const mockFindDefault = jest.fn();
 const mockFindMembership = jest.fn();
+const mockFindDefaultMembership = jest.fn();
 jest.mock("../lib/orgs-db", () => ({
+  findOrganization: (...args: unknown[]) => mockFindOrganization(...args),
   findDefaultOrganization: (...args: unknown[]) => mockFindDefault(...args),
   findMembership: (...args: unknown[]) => mockFindMembership(...args),
+  findDefaultMembership: (...args: unknown[]) => mockFindDefaultMembership(...args),
 }));
 
 const mockGetRoleAccess = jest.fn();
@@ -67,7 +84,7 @@ jest.mock("../lib/roles-db", () => ({
   getRoleAccess: (...args: unknown[]) => mockGetRoleAccess(...args),
 }));
 
-import { requireMember, requirePermission, type Gate } from "@/lib/auth-guard";
+import { requireMember, requirePermission, resolveOrganization, type Gate } from "@/lib/auth-guard";
 
 const SIGN_IN_FIRST = { error: "Sign in to continue." };
 const NOT_A_MEMBER = { error: "This organization does not exist, or you are not a member." };
@@ -85,21 +102,42 @@ const QA_LEAD = {
   permissions: ["dashboard:read", "connections:create", "connections:read"],
 };
 const DATABASE_DOWN = new Error("connect ECONNREFUSED 127.0.0.1:5433");
+/** A second organization, for the tests that need the request to name another one. */
+const ACME = { id: 12, slug: "acme", name: "Acme", isDefault: false };
+
+const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
 
 beforeEach(() => {
   mockBypass = false;
   mockJar = {};
+  // Every call a screen makes names the organization its page is open in.
+  mockHeaders = { [ORG_HEADER]: TEST_ORG.slug };
   mockOutsideRequest = false;
+  delete process.env.SCHEMA_STUDIO_DESKTOP;
   mockAuth.mockReset();
   mockCookieReads.mockReset();
+  mockFindOrganization.mockReset();
   mockFindDefault.mockReset();
   mockFindMembership.mockReset();
+  mockFindDefaultMembership.mockReset();
   mockGetRoleAccess.mockReset();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
+  if (DESKTOP === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
+  else process.env.SCHEMA_STUDIO_DESKTOP = DESKTOP;
 });
+
+/** Answer the way the server the desktop app starts does. */
+function onTheDesktop() {
+  process.env.SCHEMA_STUDIO_DESKTOP = "1";
+}
+
+/** A request that names no organization. */
+function noHeader() {
+  mockHeaders = {};
+}
 
 /** What auth() hands back for a signed-in person: who they are, and nothing about what they may do. */
 function session(user: Record<string, unknown> = {}) {
@@ -109,16 +147,21 @@ function session(user: Record<string, unknown> = {}) {
   };
 }
 
-/** Ed, signed in and a member of TEST_ORG in this role, which may do what `access` says. */
-function signedInAs(access: { role: string; roleLabel: string; permissions: string[] }) {
-  mockAuth.mockResolvedValue(session());
-  mockFindMembership.mockResolvedValue({
+/** The membership row the lookups hand back for Ed in TEST_ORG. */
+function membership(role: string) {
+  return {
     orgId: TEST_ORG.id,
     slug: TEST_ORG.slug,
     name: TEST_ORG.name,
     isDefault: TEST_ORG.isDefault,
-    role: access.role,
-  });
+    role,
+  };
+}
+
+/** Ed, signed in and a member of TEST_ORG in this role, which may do what `access` says. */
+function signedInAs(access: { role: string; roleLabel: string; permissions: string[] }) {
+  mockAuth.mockResolvedValue(session());
+  mockFindMembership.mockResolvedValue(membership(access.role));
   mockGetRoleAccess.mockResolvedValue(access);
 }
 
@@ -180,7 +223,7 @@ describe("with real sign-in", () => {
       orgName: TEST_ORG.name,
       orgIsDefault: true,
     });
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com");
+    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
     // In the member's own organization: the same key can mean another role,
     // with other boxes ticked, somewhere else.
     expect(mockGetRoleAccess).toHaveBeenCalledWith(TEST_ORG.id, "editor");
@@ -190,14 +233,80 @@ describe("with real sign-in", () => {
     // Where the organization's scripts live in GitHub hangs on this flag, so
     // it has to come from the membership row, never be assumed.
     signedInAs(EDITOR);
+    mockHeaders = { [ORG_HEADER]: ACME.slug };
     mockFindMembership.mockResolvedValue({
-      orgId: 12,
-      slug: "acme",
-      name: "Acme",
+      orgId: ACME.id,
+      slug: ACME.slug,
+      name: ACME.name,
       isDefault: false,
       role: "editor",
     });
-    expect(principalOf(await requireMember())).toMatchObject({ orgId: 12, orgIsDefault: false });
+    expect(principalOf(await requireMember())).toMatchObject({
+      orgId: ACME.id,
+      orgSlug: ACME.slug,
+      orgIsDefault: false,
+    });
+    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", ACME.slug);
+    expect(mockGetRoleAccess).toHaveBeenCalledWith(ACME.id, "editor");
+  });
+
+  test("reads the organization from the request's header, with the spaces around it dropped", async () => {
+    signedInAs(VIEWER);
+    mockHeaders = { [ORG_HEADER]: `  ${TEST_ORG.slug} ` };
+    expect((await requireMember()).ok).toBe(true);
+    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+  });
+
+  test.each([
+    ["no header", () => noHeader()],
+    ["a blank header", () => (mockHeaders = { [ORG_HEADER]: "   " })],
+  ])("%s on the web is 404 for both gates, and no membership is looked up", async (_name, arrange) => {
+    // A screen that forgot to say where it acts must not quietly act in the
+    // caller's first organization, or any other.
+    signedInAs(EDITOR);
+    arrange();
+    expect(await bothRefusals()).toEqual([
+      [404, NOT_A_MEMBER],
+      [404, NOT_A_MEMBER],
+    ]);
+    expect(mockFindMembership).not.toHaveBeenCalled();
+    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
+    expect(mockGetRoleAccess).not.toHaveBeenCalled();
+  });
+
+  test("no header on the desktop acts in its default organization", async () => {
+    onTheDesktop();
+    noHeader();
+    mockAuth.mockResolvedValue(session());
+    mockFindDefaultMembership.mockResolvedValue(membership("editor"));
+    mockGetRoleAccess.mockResolvedValue(EDITOR);
+    expect(principalOf(await requirePermission("connections:create"))).toMatchObject({
+      role: "editor",
+      orgId: TEST_ORG.id,
+      orgSlug: TEST_ORG.slug,
+    });
+    expect(mockFindDefaultMembership).toHaveBeenCalledWith("ed@example.com");
+    expect(mockFindMembership).not.toHaveBeenCalled();
+  });
+
+  test("on the desktop a header still names the organization", async () => {
+    onTheDesktop();
+    signedInAs(EDITOR);
+    expect((await requireMember()).ok).toBe(true);
+    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
+  });
+
+  test("on the desktop, someone with no membership in the default organization is 404", async () => {
+    onTheDesktop();
+    noHeader();
+    mockAuth.mockResolvedValue(session());
+    mockFindDefaultMembership.mockResolvedValue(null);
+    expect(await bothRefusals()).toEqual([
+      [404, NOT_A_MEMBER],
+      [404, NOT_A_MEMBER],
+    ]);
+    expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
   test("a member whose session has no name goes by their email", async () => {
@@ -240,12 +349,16 @@ describe("with real sign-in", () => {
   });
 
   test("someone signed in who is not a member is 404 for both gates, and no role is looked up", async () => {
+    // The lookup answers null for an organization that does not exist and
+    // for one the caller is not in alike, so the two cannot be told apart.
     mockAuth.mockResolvedValue(session());
+    mockHeaders = { [ORG_HEADER]: ACME.slug };
     mockFindMembership.mockResolvedValue(null);
     expect(await bothRefusals()).toEqual([
       [404, NOT_A_MEMBER],
       [404, NOT_A_MEMBER],
     ]);
+    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", ACME.slug);
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
@@ -297,6 +410,7 @@ describe("with real sign-in", () => {
     });
     expect(mockCookieReads).not.toHaveBeenCalled();
     expect(mockGetRoleAccess.mock.calls).toEqual([[TEST_ORG.id, "viewer"]]);
+    expect(mockFindOrganization).not.toHaveBeenCalled();
     expect(mockFindDefault).not.toHaveBeenCalled();
   });
 });
@@ -304,23 +418,77 @@ describe("with real sign-in", () => {
 describe("with the bypass on", () => {
   beforeEach(() => {
     mockBypass = true;
-    mockFindDefault.mockResolvedValue({
-      id: TEST_ORG.id,
-      slug: TEST_ORG.slug,
-      name: TEST_ORG.name,
-      isDefault: true,
-    });
+    const org = { id: TEST_ORG.id, slug: TEST_ORG.slug, name: TEST_ORG.name, isDefault: true };
+    mockFindOrganization.mockImplementation(async (slug: string) => (slug === org.slug ? org : null));
+    mockFindDefault.mockResolvedValue(org);
   });
 
   test.each([
     ["no cookie", undefined],
     ["an empty cookie", ""],
-  ])("%s is the full admin of the default organization, and looks up no role", async (_name, value) => {
+  ])("%s is the full admin of the organization the request names, and looks up no role", async (_name, value) => {
     if (value !== undefined) mockJar = { [VIEW_AS_COOKIE]: value };
     expect(principalOf(await requirePermission("roles:delete"))).toEqual(bypassAdminPrincipal());
+    expect(mockFindOrganization).toHaveBeenCalledWith(TEST_ORG.slug);
+    expect(mockFindDefault).not.toHaveBeenCalled();
     expect(mockAuth).not.toHaveBeenCalled();
     expect(mockFindMembership).not.toHaveBeenCalled();
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
+  });
+
+  test("acts in whichever organization the request names, View as included", async () => {
+    mockHeaders = { [ORG_HEADER]: ACME.slug };
+    mockFindOrganization.mockResolvedValue(ACME);
+    expect(principalOf(await requireMember())).toEqual({
+      ...bypassAdminPrincipal(),
+      orgId: ACME.id,
+      orgSlug: ACME.slug,
+      orgName: ACME.name,
+      orgIsDefault: false,
+    });
+    // A role picked in View as is that organization's role of that name.
+    mockJar = { [VIEW_AS_COOKIE]: "qa-lead" };
+    mockGetRoleAccess.mockResolvedValue(QA_LEAD);
+    expect(principalOf(await requireMember())).toMatchObject({ orgId: ACME.id, viewingAs: "qa-lead" });
+    expect(mockGetRoleAccess).toHaveBeenCalledWith(ACME.id, "qa-lead");
+  });
+
+  test("an organization nobody has is 404 for both gates", async () => {
+    mockHeaders = { [ORG_HEADER]: "nobody-has-this" };
+    expect(await bothRefusals()).toEqual([
+      [404, NOT_A_MEMBER],
+      [404, NOT_A_MEMBER],
+    ]);
+    expect(mockCookieReads).not.toHaveBeenCalled();
+  });
+
+  test("no header on the web is 404 for both gates, and no organization is looked up", async () => {
+    noHeader();
+    expect(await bothRefusals()).toEqual([
+      [404, NOT_A_MEMBER],
+      [404, NOT_A_MEMBER],
+    ]);
+    expect(mockFindOrganization).not.toHaveBeenCalled();
+    expect(mockFindDefault).not.toHaveBeenCalled();
+  });
+
+  test("no header on the desktop is the full admin of its default organization", async () => {
+    onTheDesktop();
+    noHeader();
+    expect(principalOf(await requireMember())).toEqual(bypassAdminPrincipal());
+    expect(mockFindDefault).toHaveBeenCalled();
+    expect(mockFindOrganization).not.toHaveBeenCalled();
+  });
+
+  test("on the desktop, no default organization at all is 404 for both gates", async () => {
+    onTheDesktop();
+    noHeader();
+    mockFindDefault.mockResolvedValue(null);
+    expect(await bothRefusals()).toEqual([
+      [404, NOT_A_MEMBER],
+      [404, NOT_A_MEMBER],
+    ]);
+    expect(mockCookieReads).not.toHaveBeenCalled();
   });
 
   test("a cookie naming a role gives exactly that role's permissions, under the bypass's own name", async () => {
@@ -376,16 +544,28 @@ describe("with the bypass on", () => {
     expect(errors).toHaveBeenCalledWith("Could not read the role picked in View as:", DATABASE_DOWN);
   });
 
-  test("outside a request, where there is no cookie to read, is the full admin", async () => {
+  test("outside a request, where there is nothing to read, only the desktop answers, as the full admin", async () => {
     mockOutsideRequest = true;
+    expect(await refusal(await requireMember())).toEqual([404, NOT_A_MEMBER]);
+    onTheDesktop();
     expect(principalOf(await requireMember())).toEqual(bypassAdminPrincipal());
     expect(mockCookieReads).toHaveBeenCalled();
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
-  test("a default organization that could not be read is 503 for both gates, whatever the cookie says", async () => {
+  test.each([
+    ["named in the request", () => mockFindOrganization.mockRejectedValue(DATABASE_DOWN)],
+    [
+      "the desktop's default",
+      () => {
+        onTheDesktop();
+        noHeader();
+        mockFindDefault.mockRejectedValue(DATABASE_DOWN);
+      },
+    ],
+  ])("an organization (%s) that could not be read is 503 for both gates, whatever the cookie says", async (_name, arrange) => {
     const errors = quietErrors();
-    mockFindDefault.mockRejectedValue(DATABASE_DOWN);
+    arrange();
     const jars: Record<string, string>[] = [{}, { [VIEW_AS_COOKIE]: "qa-lead" }];
     for (const jar of jars) {
       mockJar = jar;
@@ -394,17 +574,54 @@ describe("with the bypass on", () => {
         [503, ACCESS_UNAVAILABLE],
       ]);
     }
-    expect(errors).toHaveBeenCalledWith("Could not read the default organization:", DATABASE_DOWN);
+    expect(errors).toHaveBeenCalledWith("Could not read the organization:", DATABASE_DOWN);
     expect(mockCookieReads).not.toHaveBeenCalled();
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
+});
 
-  test("no default organization at all is 404 for both gates", async () => {
-    mockFindDefault.mockResolvedValue(null);
-    expect(await bothRefusals()).toEqual([
-      [404, NOT_A_MEMBER],
-      [404, NOT_A_MEMBER],
-    ]);
-    expect(mockCookieReads).not.toHaveBeenCalled();
+describe("resolveOrganization, the pages' lookup", () => {
+  test("looks in the organization it is handed, never the one in the header", async () => {
+    signedInAs(EDITOR);
+    mockHeaders = { [ORG_HEADER]: ACME.slug };
+    const found = await resolveOrganization(TEST_ORG.slug);
+    expect(found).toMatchObject({ kind: "ok", principal: { role: "editor", orgId: TEST_ORG.id } });
+    expect(mockFindMembership.mock.calls).toEqual([["ed@example.com", TEST_ORG.slug]]);
+  });
+
+  test("says who was turned away: the signed-in email, or null for the bypass", async () => {
+    // The organization's layout tells someone in no organization at all from
+    // someone who typed the address of one they are not in by this email.
+    mockAuth.mockResolvedValue(session());
+    mockFindMembership.mockResolvedValue(null);
+    expect(await resolveOrganization(ACME.slug)).toEqual({ kind: "not-member", email: "ed@example.com" });
+
+    mockBypass = true;
+    mockFindOrganization.mockResolvedValue(null);
+    expect(await resolveOrganization(ACME.slug)).toEqual({ kind: "not-member", email: null });
+  });
+
+  test.each([
+    ["nobody is signed in", () => mockAuth.mockResolvedValue(null), { kind: "signed-out" }],
+    [
+      "the membership could not be read",
+      () => {
+        quietErrors();
+        mockAuth.mockResolvedValue(session());
+        mockFindMembership.mockRejectedValue(DATABASE_DOWN);
+      },
+      { kind: "unavailable" },
+    ],
+  ])("answers in kind when %s", async (_name, arrange, expected) => {
+    arrange();
+    expect(await resolveOrganization(TEST_ORG.slug)).toEqual(expected);
+  });
+
+  test("on the desktop it still looks in the organization it is handed", async () => {
+    onTheDesktop();
+    signedInAs(VIEWER);
+    await resolveOrganization(TEST_ORG.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
   });
 });

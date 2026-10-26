@@ -3,11 +3,14 @@
  * (src/core/drift-alerts.ts).
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import {
   driftAlert,
   driftNotification,
+  ORG_SLUG_PATTERN,
   readCounts,
   readDriftRow,
   type DriftAlert,
@@ -35,6 +38,7 @@ function rowWith(changes: Partial<DriftRow>): DriftRow {
     connectionName: "Production",
     previousStatus: "in_sync",
     lastFingerprint: null,
+    orgSlug: "acme",
     ...changes,
   };
 }
@@ -108,6 +112,7 @@ test("reads a row of the watcher's query by its column names, but never the summ
       connection_name: "Production",
       previous_status: "in_sync",
       last_fingerprint: null,
+      org_slug: "acme",
     }),
     {
       id: 12,
@@ -122,6 +127,7 @@ test("reads a row of the watcher's query by its column names, but never the summ
       connectionName: "Production",
       previousStatus: "in_sync",
       lastFingerprint: null,
+      orgSlug: "acme",
     },
   );
 });
@@ -198,6 +204,7 @@ test("an alert carries the row's number, schema, connection, counts and whether 
     connectionName: "Production",
     counts: { ...NONE, tablesAdded: 2 },
     drifted: true,
+    orgSlug: "acme",
   });
   const back = alertFor({ status: "in_sync", previousStatus: "unreachable", counts: NONE });
   assert.equal(back.kind, "reachable");
@@ -233,7 +240,7 @@ test("says what changed when a schema drifts, and opens that schema on the Drift
   assert.deepEqual(notificationFor([alertFor({ counts: { ...NONE, tablesAdded: 2, constraintsChanged: 1 } })]), {
     title: "Drift found",
     body: "Orders on Production no longer matches its baseline: 2 tables added and 1 constraint changed.",
-    page: "/drift?tab=detail&schema=3",
+    page: "/acme/drift?tab=detail&schema=3",
   });
   assert.equal(
     notificationFor([alertFor({ connectionName: null })]).body,
@@ -323,7 +330,7 @@ test("lists the news about several schemas, the most pressing first", () => {
       `${BULLET} B on Production cannot be reached`,
       `${BULLET} A on Production is back in sync`,
     ].join("\n"),
-    page: "/drift",
+    page: "/acme/drift",
   });
   const back = alertFor({ id: 5, trackedSchemaId: 5, label: "E", status: "in_sync", previousStatus: "unreachable" });
   assert.equal(notificationFor([alerts[0], back]).body, `${BULLET} E on Production can be reached again\n${BULLET} A on Production is back in sync`);
@@ -382,4 +389,42 @@ test("never says what the database answered", () => {
 test("makes no notification from no alerts", () => {
   assert.equal(driftNotification([], { markup: false }), null);
   assert.equal(driftNotification([], { markup: true }), null);
+});
+
+test("reads an organization's address only when it has the shape of one", () => {
+  const good = { id: 12, tracked_schema_id: 4, status: "drifted", source: "scheduled", schema_name: "public" };
+  for (const slug of ["acme", "abc", "team-2", "a".repeat(40)]) {
+    assert.equal(readDriftRow({ ...good, org_slug: slug })?.orgSlug, slug);
+  }
+  // It goes into the page a click opens, so nothing that could make that page
+  // something else gets through: no slash, no query, no dots, no capitals.
+  for (const slug of ["Acme", "//example.com", "acme/drift", "acme?x=1", "..", "ab", "-acme", "acme-", "a".repeat(41), "", 5, null]) {
+    assert.equal(readDriftRow({ ...good, org_slug: slug })?.orgSlug, null, String(slug));
+  }
+  assert.equal(readDriftRow(good)?.orgSlug, null);
+});
+
+test("opens the Drift page in the schema's organization, or in the one opened last when it is not known", () => {
+  assert.equal(notificationFor([alertFor({ orgSlug: "beta-team" })]).page, "/beta-team/drift?tab=detail&schema=3");
+  // The app sends an address without an organization on to the one opened last.
+  assert.equal(notificationFor([alertFor({ orgSlug: null })]).page, "/drift?tab=detail&schema=3");
+
+  const inAcme = [alertFor({ id: 1, trackedSchemaId: 1 }), alertFor({ id: 2, trackedSchemaId: 2 })];
+  assert.equal(notificationFor(inAcme).page, "/acme/drift");
+  // The Drift page shows one organization at a time, so schemas in two open it in neither.
+  const elsewhere = alertFor({ id: 3, trackedSchemaId: 3, orgSlug: "beta-team" });
+  assert.equal(notificationFor([...inAcme, elsewhere]).page, "/drift");
+  const unknown = alertFor({ id: 4, trackedSchemaId: 4, orgSlug: null });
+  assert.equal(notificationFor([...inAcme, unknown]).page, "/drift");
+  // Only the newest alert about a schema counts, and so only its organization.
+  const moved = alertFor({ id: 9, trackedSchemaId: 1, orgSlug: "beta-team" });
+  assert.equal(notificationFor([alertFor({ id: 1, trackedSchemaId: 1 }), moved]).page, "/beta-team/drift?tab=detail&schema=1");
+});
+
+test("reads an organization's address by the web app's own rule", () => {
+  // This file runs from out/test, two folders below desktop/.
+  const source = fs.readFileSync(path.resolve(__dirname, "../../../my-app/lib/org-slug.ts"), "utf8");
+  const match = /export const ORG_SLUG_PATTERN = "([^"]+)";/.exec(source);
+  assert.ok(match, "my-app/lib/org-slug.ts still sets ORG_SLUG_PATTERN on one line");
+  assert.equal(ORG_SLUG_PATTERN, match[1], "Copy ORG_SLUG_PATTERN from my-app/lib/org-slug.ts into src/core/drift-alerts.ts.");
 });

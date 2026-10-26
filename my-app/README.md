@@ -32,7 +32,7 @@ and keeps the data; `docker compose down -v` deletes the data as well.
 
 ```bash
 npm install
-npm run dev          # http://localhost:3000 → redirects to /studio
+npm run dev          # http://localhost:3000 opens the landing page
 ```
 
 ```bash
@@ -129,20 +129,26 @@ screen that leads nowhere, which is correct for it.
 ```
 my-app/
   app/
-    page.tsx                  redirect → /studio
+    page.tsx                  the landing page at "/": Create account and Log in
     login/                    Microsoft Entra sign-in button
-    (studio)/                 the app shell; every page below shares it
-      studio/                 dashboard: tracked schemas and their drift status
-      connections/            connection CRUD + test
-      compare/                live-vs-live schema comparison
-      script-editor/          review, edit, semver-classify, push to GitHub
-      deploy/                 pre-flight → select → transactional apply → ledger
-      drift/                  snapshot-vs-live drift, acknowledge / re-baseline
-      schemas/[id]/           lineage detail for one tracked schema
-      versionsync/            registry vs ledger vs lineage reconciliation
-      visualizer/             React Flow ERD
-      admin/                  users and roles: who has which role, what each role can do
-      performance/            suggestions, query analysis, trends
+    [org]/                    one organization's pages: /acme/studio, /acme/compare, and so on
+      layout.tsx              checks the visitor is a member, tells the pages which organization
+      page.tsx                /acme opens /acme/studio
+      (studio)/               the app shell; every page below shares it
+        studio/               dashboard: tracked schemas and their drift status
+        connections/          connection CRUD + test
+        compare/              live-vs-live schema comparison
+        script-editor/        review, edit, semver-classify, push to GitHub
+        deploy/               pre-flight → select → transactional apply → ledger
+        drift/                snapshot-vs-live drift, acknowledge / re-baseline
+        schemas/[id]/         lineage detail for one tracked schema
+        versionsync/          registry vs ledger vs lineage reconciliation
+        visualizer/           React Flow ERD
+        admin/                users and roles: who has which role, what each role can do
+        performance/          suggestions, query analysis, trends
+    studio/, compare/, …      the addresses from before organizations, one per page above:
+                              each [[...rest]]/page.tsx sends /compare?left=1 on to the
+                              organization opened last (lib/org-redirect.ts)
     api/                      the route handlers, listed in full below
     globals.css               all styling (see §6)
   components/
@@ -502,7 +508,7 @@ and not in a footnote.
 | fetch / axios with UI ↔ API separation | met — every page fetches its data from a route handler |
 | Tailwind or standard CSS | met — hand-written `globals.css` |
 | Docker | met — multi-stage `my-app/Dockerfile` on the Next.js standalone output, plus `.dockerignore`, and a root `docker-compose.yml` that brings up Postgres 17 and the app together |
-| Jest unit tests | met — 3,776 tests in 137 suites. The sheet asks for "unit testing for all the webpages": 12 of the 13 pages are rendered and driven by a suite of their own (`tests/page-*.test.tsx`), alongside 37 component suites, with `lib/` and the route handlers covered as before. The thirteenth is `app/page.tsx`, four lines that redirect to `/studio`. jsdom is asked for per file — `/** @jest-environment jsdom */` on the first line — rather than switched on globally, so the logic suites keep a node environment and their start-up time |
+| Jest unit tests | met — 4,215 tests in 154 suites. The sheet asks for "unit testing for all the webpages": 12 of the 13 pages are rendered and driven by a suite of their own (`tests/page-*.test.tsx`), alongside 38 component suites, with `lib/` and the route handlers covered as before. The thirteenth is the landing page at `app/page.tsx`, which has two: `tests/page-root.test.ts` for whom it shows the page to and whom it sends on, and `tests/component-landing-page.test.tsx` for what the page says and where its buttons go. The organization addresses that only redirect, `/acme` and the addresses from before organizations, are covered by `tests/org-redirect.test.ts`. jsdom is asked for per file — `/** @jest-environment jsdom */` on the first line — rather than switched on globally, so the logic suites keep a node environment and their start-up time |
 
 ---
 

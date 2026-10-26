@@ -7,6 +7,7 @@ import { CompareIcon, CheckIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { RecheckDriftButton, useDriftCheckRefusal } from "./RecheckDriftButton";
+import { apiFetch } from "@/lib/api-fetch";
 
 type DriftState = "drifted" | "in_sync" | "unreachable" | "no_baseline";
 
@@ -65,7 +66,7 @@ export function DriftResolutionBar({
     setBusy(kind);
     setError(null);
     try {
-      const res = await fetch(path, {
+      const res = await apiFetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trackedSchemaId }),

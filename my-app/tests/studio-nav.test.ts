@@ -92,10 +92,12 @@ describe("the list of screens", () => {
 
   test("points every row at a page that exists", () => {
     // A row in the rail is the main way into a screen, so an href with no page
-    // behind it is a 404 that looks like a working button. The routes live in
-    // the (studio) group, which is a layout folder and not part of the URL.
+    // behind it is a 404 that looks like a working button. The routes live
+    // under app/[org]/(studio): the organization's slug goes in front of the
+    // href when the rail draws it, and the (studio) group is a layout folder
+    // that is not part of the URL.
     for (const item of NAV_ITEMS) {
-      const page = path.join(ROOT, "app", "(studio)", item.href, "page.tsx");
+      const page = path.join(ROOT, "app", "[org]", "(studio)", item.href, "page.tsx");
       expect({ href: item.href, hasPage: existsSync(page) }).toEqual({
         href: item.href,
         hasPage: true,
@@ -188,6 +190,20 @@ describe("deciding which screen you are on", () => {
 
   test("still answers when the path is empty, so the breadcrumb is never blank", () => {
     expect(activeNavItem("").screen).toBe("Dashboard");
+  });
+
+  test("reads past the organization at the front of the address", () => {
+    expect(activeNavItem("/acme/drift").screen).toBe("Drift");
+    expect(activeNavItem("/acme/compare/142").screen).toBe("Compare & Author");
+    // The organization's own address forwards to its dashboard, so for the
+    // moment before it does, Dashboard is the right row.
+    expect(activeNavItem("/acme").screen).toBe("Dashboard");
+  });
+
+  test("never takes a screen's name for an organization", () => {
+    // The screens' names are kept back from organizations (lib/org-slug.ts),
+    // so "/drift/..." is the drift screen and not an organization named drift.
+    expect(activeNavItem("/drift/acme").screen).toBe("Drift");
   });
 
   test("answers with a row out of the list, not a copy of one", () => {

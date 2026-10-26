@@ -27,6 +27,7 @@ import {
 import { announceRolesChanged } from "@/components/studio/ViewAsSwitcher";
 import { PermissionGrid } from "./PermissionGrid";
 import { RoleChangeLog } from "./RoleChangeLog";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * The Roles & permissions tab on the Admin screen: every role, what each one
@@ -163,7 +164,7 @@ export function RolesTab({ active }: { active: boolean }) {
       }
     };
     try {
-      const res = await fetch("/api/admin/roles", { cache: "no-store" });
+      const res = await apiFetch("/api/admin/roles", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (mine !== latest.current) return;
       if (!res.ok) {
@@ -272,7 +273,7 @@ export function RolesTab({ active }: { active: boolean }) {
     start("save");
     try {
       // The whole set, not the boxes that changed: see PUT /api/admin/roles.
-      const res = await fetch("/api/admin/roles", {
+      const res = await apiFetch("/api/admin/roles", {
         method: "PUT",
         headers: JSON_HEADERS,
         body: JSON.stringify({ role: role.name, permissions: pending }),
@@ -310,7 +311,7 @@ export function RolesTab({ active }: { active: boolean }) {
     if (busy !== null) return;
     start("reset");
     try {
-      const res = await fetch("/api/admin/roles", {
+      const res = await apiFetch("/api/admin/roles", {
         method: "PUT",
         headers: JSON_HEADERS,
         body: JSON.stringify({ role: role.name, reset: true }),
@@ -345,7 +346,7 @@ export function RolesTab({ active }: { active: boolean }) {
     if (busy !== null) return;
     start("delete");
     try {
-      const res = await fetch("/api/admin/roles", {
+      const res = await apiFetch("/api/admin/roles", {
         method: "DELETE",
         headers: JSON_HEADERS,
         body: JSON.stringify({ role: role.name }),
@@ -382,7 +383,7 @@ export function RolesTab({ active }: { active: boolean }) {
     start("create");
     setFormError(null);
     try {
-      const res = await fetch("/api/admin/roles", {
+      const res = await apiFetch("/api/admin/roles", {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify({

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
+import { useOrgHref } from "@/hooks/useOrg";
 import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
@@ -43,6 +44,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
   const { user: authUser, role, roleLabel, bypass, loading, can, accessError, notMember } =
     useUser();
   const { theme, toggleTheme } = useTheme();
+  const orgPath = useOrgHref();
   const [collapsed, setCollapsed] = useState(false);
 
   // Mobile: the sidebar leaves the grid and becomes an off-canvas drawer.
@@ -79,6 +81,9 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // Someone who is not a member gets an empty rail, on purpose: every screen
   // would only repeat the guard's "not a member", and the way out (Sign out)
   // is in the rail's footer, not among its rows.
+  //
+  // Each row then gets the organization on the front of its address, so the
+  // rail never takes someone out of the organization they are working in.
   const navItems = useMemo(
     () =>
       NAV_ITEMS.filter((item) => {
@@ -89,8 +94,8 @@ export function StudioShell({ children, user }: StudioShellProps) {
           return ![first, ...rest].every(isAdminOnly);
         }
         return can(first, ...rest);
-      }),
-    [notMember, loading, accessError, authUser, can],
+      }).map((item) => ({ ...item, href: orgPath(item.href) })),
+    [notMember, loading, accessError, authUser, can, orgPath],
   );
 
   // Whether the rail may name the role. See the badge below.
@@ -101,7 +106,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
   const sidebar = (
     <StudioSidebar
       items={navItems}
-      activeHref={active.href}
+      activeHref={orgPath(active.href)}
       // In the mobile drawer the sidebar is always expanded; its collapse chevron
       // closes the drawer instead (chevron-left = "tuck the panel away").
       collapsed={isMobile ? false : collapsed}

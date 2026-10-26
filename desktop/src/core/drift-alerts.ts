@@ -47,6 +47,11 @@ export type DriftRow = {
   previousStatus: string | null;
   /** The newest earlier fingerprint for the same schema and the same baseline. */
   lastFingerprint: string | null;
+  /**
+   * The address of the organization the schema belongs to ("acme"), or null
+   * when the row did not say, or said something that is not one.
+   */
+  orgSlug: string | null;
 };
 
 /**
@@ -72,12 +77,24 @@ export type DriftAlert = {
   counts: DriftCounts | null;
   /** Whether the check found drift, which "reachable" says too. */
   drifted: boolean;
+  /**
+   * The organization the schema belongs to, by its address, so that the page
+   * a click opens is in it: the web app finds a schema only inside the
+   * organization the page is for. Null opens the page without one, and the
+   * app sends that on to the organization opened last
+   * (my-app/lib/org-redirect.ts).
+   */
+  orgSlug: string | null;
 };
 
 export type DriftNotification = {
   title: string;
   body: string;
-  /** The page of the app a click on the notification opens. */
+  /**
+   * The page of the app a click on the notification opens, such as
+   * "/acme/drift?tab=detail&schema=3", or "/drift" when the alerts did not
+   * say which organization.
+   */
   page: string;
 };
 
@@ -139,6 +156,24 @@ function readText(value: unknown): string | null {
 }
 
 /**
+ * The shape of an organization's address, the same as ORG_SLUG_PATTERN in
+ * my-app/lib/org-slug.ts, which the app cannot import from here.
+ * src/test/drift-alerts.test.ts fails when the two differ.
+ */
+export const ORG_SLUG_PATTERN = "^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$";
+
+const ORG_SLUG = new RegExp(ORG_SLUG_PATTERN);
+
+/**
+ * An organization's address, or null for anything else. It goes into the
+ * page a click opens, so a value of any other shape is left out rather than
+ * trusted to keep that page one of the app's.
+ */
+function readSlug(value: unknown): string | null {
+  return typeof value === "string" && ORG_SLUG.test(value) ? value : null;
+}
+
+/**
  * Reads one row of the watcher's query (src/main/drift-watcher.ts), or gives
  * null for a row the alerts cannot use. The summary the server saved is never
  * read, as it can hold the database's own error.
@@ -163,6 +198,7 @@ export function readDriftRow(raw: Record<string, unknown>): DriftRow | null {
     connectionName: readText(raw.connection_name),
     previousStatus: readText(raw.previous_status),
     lastFingerprint: readText(raw.last_fingerprint),
+    orgSlug: readSlug(raw.org_slug),
   };
 }
 
@@ -220,6 +256,7 @@ export function driftAlert(row: DriftRow): DriftAlert | null {
     connectionName: cleanName(row.connectionName),
     counts: row.counts,
     drifted: row.status === "drifted",
+    orgSlug: row.orgSlug,
   };
 }
 
@@ -270,6 +307,11 @@ function singleBody(alert: DriftAlert): string {
   }
 }
 
+/** A page of the app inside an organization, or as it is when there is none to put it in. */
+function inOrganization(slug: string | null, page: string): string {
+  return slug === null ? page : `/${slug}${page}`;
+}
+
 /**
  * The notification body with the characters of markup written out. On Linux
  * the notification shows its body as simple markup, so a name such as
@@ -296,15 +338,27 @@ export function driftNotification(alerts: readonly DriftAlert[], options: { mark
   let text: DriftNotification;
   if (chosen.length === 1) {
     const only = chosen[0];
-    text = { title: TITLE[only.kind], body: singleBody(only), page: `/drift?tab=detail&schema=${only.trackedSchemaId}` };
+    text = {
+      title: TITLE[only.kind],
+      body: singleBody(only),
+      page: inOrganization(only.orgSlug, `/drift?tab=detail&schema=${only.trackedSchemaId}`),
+    };
   } else {
     chosen.sort((a, b) => RANK[a.kind] - RANK[b.kind] || a.eventId - b.eventId);
     // A notification shows only a few lines, so past that the rest are counted.
     const shown = chosen.length <= MAX_LINES ? chosen : chosen.slice(0, MAX_LINES - 1);
     const lines = shown.map((alert) => `\u{2022} ${SHORT[alert.kind](subjectOf(alert))}`);
     if (shown.length < chosen.length) lines.push(`And ${chosen.length - shown.length} more.`);
-    // The Drift page on its own opens on the schema with the worst drift.
-    text = { title: `Drift alerts for ${chosen.length} schemas`, body: lines.join("\n"), page: "/drift" };
+    // The Drift page on its own opens on the schema with the worst drift. It
+    // shows one organization at a time, so when the schemas are in more than
+    // one, it opens in none and the app picks the one opened last.
+    const slugs = new Set(chosen.map((alert) => alert.orgSlug));
+    const slug = slugs.size === 1 ? chosen[0].orgSlug : null;
+    text = {
+      title: `Drift alerts for ${chosen.length} schemas`,
+      body: lines.join("\n"),
+      page: inOrganization(slug, "/drift"),
+    };
   }
   return options.markup ? { ...text, body: escapeMarkup(text.body) } : text;
 }

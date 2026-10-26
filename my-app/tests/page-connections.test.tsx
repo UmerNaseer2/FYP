@@ -23,14 +23,15 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import ConnectionsPage from "@/app/(studio)/connections/page";
+import ConnectionsPage from "@/app/[org]/(studio)/connections/page";
 import {
   fetchCalls,
   flushAsync,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,

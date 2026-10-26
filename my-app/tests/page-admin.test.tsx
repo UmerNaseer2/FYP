@@ -18,7 +18,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 // Hoisted above the page import below, which is the point of writing them here
 // rather than in the helper: the page's own `next/navigation` and
@@ -38,7 +38,7 @@ jest.mock("../lib/auth-mode", () => ({
   },
 }));
 
-import AdminPage from "@/app/(studio)/admin/page";
+import AdminPage from "@/app/[org]/(studio)/admin/page";
 import { ROLES_CHANGED_EVENT } from "@/components/studio/ViewAsSwitcher";
 import { resetUserCache } from "@/hooks/useUser";
 import {
@@ -55,6 +55,7 @@ import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setRoutes,
   setUser,
@@ -247,7 +248,7 @@ describe("the Users tab", () => {
     // be recorded; this only flushes anything React chose to defer.
     await act(async () => {});
 
-    // The visible refusal is app/(studio)/admin/layout.tsx's AuthGuard, not
+    // The visible refusal is app/[org]/(studio)/admin/layout.tsx's AuthGuard, not
     // this page — what the page owes is not calling an admin-only endpoint
     // for somebody who has no business calling it.
     expect(fetchCalls).toEqual([]);

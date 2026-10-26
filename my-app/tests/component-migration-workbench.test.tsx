@@ -44,12 +44,13 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import {
   fetchCalls,
   holdNext,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,
@@ -694,7 +695,7 @@ describe("a push that would move the target back", () => {
 
     expect(screen.getByRole("link", { name: "Compare the other way instead" })).toHaveAttribute(
       "href",
-      "/compare?a=prod&b=dev"
+      "/test-org/compare?a=prod&b=dev"
     );
   });
 
@@ -849,7 +850,7 @@ describe("what the push sends", () => {
     fireEvent.click(pushButton());
 
     const done = await screen.findByText("Nothing has run yet — deploy it");
-    expect(done).toHaveAttribute("href", "/deploy");
+    expect(done).toHaveAttribute("href", "/test-org/deploy");
     expect(screen.getByRole("link", { name: "View on GitHub" })).toHaveAttribute(
       "href",
       "https://github.com/x/y/blob/main/v1.1.0.sql"

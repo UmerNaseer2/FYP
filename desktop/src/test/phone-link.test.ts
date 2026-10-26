@@ -312,6 +312,7 @@ function alert(changes: Partial<DriftAlert> = {}): DriftAlert {
     connectionName: "Production",
     counts: { tablesAdded: 1, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 0, objectsChanged: 0 },
     drifted: true,
+    orgSlug: "acme",
     ...changes,
   };
 }

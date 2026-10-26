@@ -5,6 +5,7 @@ import { Button } from "@/components/ui";
 import { RefreshIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Re-runs the drift check via POST /api/lineage/drift, then tells the screen
@@ -65,7 +66,7 @@ export function RecheckDriftButton({
     onBusyChange?.(true);
     setError(null);
     try {
-      const res = await fetch("/api/lineage/drift", {
+      const res = await apiFetch("/api/lineage/drift", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trackedSchemaId }),

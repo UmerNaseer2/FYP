@@ -13,15 +13,16 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import PerformancePage from "@/app/(studio)/performance/page";
+import PerformancePage from "@/app/[org]/(studio)/performance/page";
 import { THRESHOLDS } from "@/lib/perf-thresholds";
 import {
   fetchCalls,
+  render,
   resetPageState,
   setRoutes,
   setSearchParams,

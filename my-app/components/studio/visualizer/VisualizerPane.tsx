@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui";
 import { SchemaMapIcon, AlertTriangleIcon, RefreshIcon } from "@/components/ui/icons";
 import type { SchemaSnapshot } from "@/lib/postgres";
+import { apiFetch } from "@/lib/api-fetch";
 
 // One self-contained visualizer pane: its own connection + schema pickers, its
 // own on-demand introspection, and its own React Flow canvas. The page renders
@@ -76,7 +77,7 @@ export function VisualizerPane({
     setSchemasError("");
     (async () => {
       try {
-        const res = await fetch(`/api/scripts/schemas?connectionId=${connectionId}`, { cache: "no-store" });
+        const res = await apiFetch(`/api/scripts/schemas?connectionId=${connectionId}`, { cache: "no-store" });
         const data = await res.json();
         if (!active) return;
         if (Array.isArray(data?.schemas)) {
@@ -117,7 +118,7 @@ export function VisualizerPane({
     setSnapPhase("loading");
     (async () => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/schema/snapshot?connectionId=${encodeURIComponent(connectionId)}&schema=${encodeURIComponent(schema)}`,
           { cache: "no-store" },
         );

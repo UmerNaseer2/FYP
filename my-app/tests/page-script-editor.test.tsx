@@ -29,13 +29,14 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
-import ScriptEditorPage from "@/app/(studio)/script-editor/page";
+import ScriptEditorPage from "@/app/[org]/(studio)/script-editor/page";
 import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,
@@ -168,7 +169,7 @@ describe("when the editor cannot do its job", () => {
     expect(await screen.findByText("Add a connection first")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Go to Connections/ })).toHaveAttribute(
       "href",
-      "/connections"
+      "/test-org/connections"
     );
   });
 
@@ -536,7 +537,7 @@ describe("after a save", () => {
     // the page that applies it was only reachable through the sidebar.
     expect(
       screen.getByRole("link", { name: /Nothing has run yet — deploy it on the Deploy page/ })
-    ).toHaveAttribute("href", "/deploy");
+    ).toHaveAttribute("href", "/test-org/deploy");
   });
 
   it("says a version saved without its rollback cannot be undone", async () => {

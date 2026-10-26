@@ -16,11 +16,10 @@
  * nothing to watch, and that is not a problem.
  *
  * It reads the rows of every organization in the database, on purpose: this
- * is one person's computer, and today it holds a single organization, their
- * personal one. Once a desktop can hold more than one, the page a
- * notification opens (src/core/drift-alerts.ts) has to name the organization
- * the schema belongs to, since the web app finds a schema only inside the
- * organization the page is for.
+ * is one person's computer, and what it holds is theirs. Each row says which
+ * organization its schema belongs to, so that the page a notification opens
+ * (src/core/drift-alerts.ts) is in that organization, since the web app finds
+ * a schema only inside the organization the page is for.
  *
  * Pure apart from the log: the database is asked through `query`, so the
  * tests can play its part, or use a real PostgreSQL.
@@ -61,13 +60,16 @@ const NEWEST_SQL = "SELECT COALESCE(max(id), 0) AS newest FROM public.drift_even
 // check against the same baseline that had a fingerprint, which says whether
 // the drift itself changed. Rows a person's action wrote have no fingerprint,
 // so they are skipped there. "Before" is in the order the server shows the
-// log in: by time, then by number.
+// log in: by time, then by number. The organization is the schema's own. Every
+// schema has one, but a row is never lost for want of it: without it, the
+// page a notification opens goes to the organization opened last.
 const ROWS_SQL = `SELECT e.id, e.tracked_schema_id, e.status, e.source, e.fingerprint, e.detail,
-  t.schema_name, t.label, t.connection_id, c.name AS connection_name,
+  t.schema_name, t.label, t.connection_id, c.name AS connection_name, o.slug AS org_slug,
   prev.status AS previous_status, lastfp.fingerprint AS last_fingerprint
 FROM public.drift_events e
 JOIN public.tracked_schemas t ON t.id = e.tracked_schema_id
 LEFT JOIN public.connections c ON c.id = t.connection_id
+LEFT JOIN public.organizations o ON o.id = t.org_id
 LEFT JOIN LATERAL (
   SELECT p.status FROM public.drift_events p
   WHERE p.tracked_schema_id = e.tracked_schema_id AND (p.detected_at, p.id) < (e.detected_at, e.id)

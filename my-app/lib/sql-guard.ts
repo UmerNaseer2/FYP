@@ -1,8 +1,8 @@
 // Shared, dependency-free SQL guard used by BOTH the server apply route
 // (app/api/scripts/apply/route.ts) and the client deploy page
-// (app/(studio)/deploy/page.tsx), so the two always agree on what counts as a
-// transaction-control statement. Keeping one implementation here removes the
-// drift that existed when each screen had its own slightly different regex.
+// (app/[org]/(studio)/deploy/page.tsx), so the two always agree on what counts
+// as a transaction-control statement. Keeping one implementation here removes
+// the drift that existed when each screen had its own slightly different regex.
 
 /**
  * Blank out every part of a script that is not executable SQL, keeping the

@@ -52,7 +52,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
@@ -60,7 +60,14 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 import { PerfAdviceList } from "@/components/studio/PerfAdviceList";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
 import type { AdviceItem, AdviceView } from "@/lib/perf-advice";
-import { fetchCalls, flushAsync, resetPageState, setRoutes, setUser } from "./helpers/render-page";
+import {
+  fetchCalls,
+  flushAsync,
+  render,
+  resetPageState,
+  setRoutes,
+  setUser,
+} from "./helpers/render-page";
 
 const SHOP: PerfTarget = { connectionId: "1", connectionName: "Local Postgres", schema: "public" };
 const WAREHOUSE: PerfTarget = { connectionId: "2", connectionName: "Warehouse", schema: "public" };

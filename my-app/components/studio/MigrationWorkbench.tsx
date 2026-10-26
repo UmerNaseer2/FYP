@@ -31,6 +31,8 @@ import { refusalMessage } from "@/lib/permissions";
 import type { DetectedVersion } from "@/lib/compare-run";
 import type { NewerSchemaVerdict } from "@/lib/version-detection";
 import { backwardsWarning } from "@/lib/compare-timeline";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 // The change level a migration is published as. compare-run imports this name.
 export type ChangeKind = "breaking" | "additive" | "patch";
@@ -141,7 +143,10 @@ type Props = {
   /** "connection.schema" for each side: the same names the version bar above uses. */
   sourceName: string;
   targetName: string;
-  /** The same comparison the other way round (buildSwapHref), or null. */
+  /**
+   * The same comparison the other way round (buildSwapHref), or null. Built on
+   * the server without the organization; the link puts it on the front.
+   */
   swapHref: string | null;
 };
 
@@ -229,6 +234,7 @@ export function MigrationWorkbench({
   targetName,
   swapHref,
 }: Props) {
+  const orgPath = useOrgHref();
   // Compare can show one workbench per target, so a hard-coded field id would
   // repeat down the page: duplicate ids are invalid HTML and every <label
   // htmlFor> would focus the first workbench's field instead of its own.
@@ -523,7 +529,7 @@ export function MigrationWorkbench({
     let res: Response;
     let data: PushAnswer | null;
     try {
-      res = await fetch("/api/github/push", {
+      res = await apiFetch("/api/github/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -639,7 +645,7 @@ export function MigrationWorkbench({
 
     let outcome: { kind: "ok" | "err"; message: string; hasRollback: boolean };
     try {
-      const res = await fetch("/api/github/push", {
+      const res = await apiFetch("/api/github/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1063,7 +1069,7 @@ export function MigrationWorkbench({
                     {swapHref && backwards.offerSwap && (
                       <div className="mt-2">
                         <Link
-                          href={swapHref}
+                          href={orgPath(swapHref)}
                           className="btn btn-ghost btn-sm"
                           title={`Compare with ${targetName} as the source and ${sourceName} as the target`}
                         >
@@ -1199,7 +1205,7 @@ export function MigrationWorkbench({
                           while something better is one button away. */}
                       {!push.rollbackFailed && (
                         <div className="mt-1">
-                          <Link href="/deploy" style={{ color: "var(--brand)", textDecoration: "underline" }}>
+                          <Link href={orgPath("/deploy")} style={{ color: "var(--brand)", textDecoration: "underline" }}>
                             Nothing has run yet — deploy it
                           </Link>
                           {" "}on the Deploy page.

@@ -16,7 +16,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
@@ -27,6 +27,7 @@ import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,
@@ -213,7 +214,7 @@ describe("schedule table", () => {
     expect(await screen.findByText("No schemas are being tracked")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Go to the Dashboard" })).toHaveAttribute(
       "href",
-      "/studio"
+      "/test-org/studio"
     );
   });
 });

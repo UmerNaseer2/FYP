@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { useUser } from "@/hooks/useUser";
 import { ADMIN_ROLE } from "@/lib/permissions";
+import { apiFetch } from "@/lib/api-fetch";
 
 type RoleOption = { name: string; label: string };
 
@@ -76,7 +77,7 @@ export function ViewAsSwitcher() {
     async function load() {
       const ticket = ++newest;
       try {
-        const response = await fetch("/api/me/view-as", { cache: "no-store" });
+        const response = await apiFetch("/api/me/view-as", { cache: "no-store" });
         const body = await response.json().catch(() => null);
         if (cancelled || ticket !== newest) return;
         if (response.ok && body && Array.isArray(body.roles)) {
@@ -102,7 +103,7 @@ export function ViewAsSwitcher() {
     setPicked(role);
     setSwitchProblem(null);
     try {
-      const response = await fetch("/api/me/view-as", {
+      const response = await apiFetch("/api/me/view-as", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role }),

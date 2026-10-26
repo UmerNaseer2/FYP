@@ -5,9 +5,11 @@
 //   floor = highestVersion([applied, ...versions in GitHub])
 //   next  = bumpVersion(floor, level)            (lib/script-status.ts)
 //
-// Both are plain fetches of this app's own routes, so this file is safe to
-// import from a client component: the GitHub token never leaves the server.
+// Both are calls to this app's own routes (through apiFetch, which names the
+// organization the page is open in), so this file is safe to import from a
+// client component: the GitHub token never leaves the server.
 import { looksLikeVersion } from "@/lib/script-status";
+import { apiFetch } from "@/lib/api-fetch";
 
 /** What GitHub holds for one script family, or why it could not be read. */
 export type FamilyVersionsRead = { ok: true; versions: string[] } | { ok: false; error: string };
@@ -29,7 +31,7 @@ export async function readFamilyVersions(
 ): Promise<FamilyVersionsRead> {
   const query = new URLSearchParams({ database, schema, script });
   try {
-    const res = await fetch(`/api/github/family?${query.toString()}`, { cache: "no-store" });
+    const res = await apiFetch(`/api/github/family?${query.toString()}`, { cache: "no-store" });
     const data = (await res.json().catch(() => null)) as
       | { ok?: unknown; versions?: unknown; error?: unknown }
       | null;
@@ -66,7 +68,7 @@ export async function readAppliedVersion(
   scriptName: string,
 ): Promise<AppliedVersionRead> {
   try {
-    const res = await fetch("/api/scripts/preflight", {
+    const res = await apiFetch("/api/scripts/preflight", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ connectionId, schemaName, scriptName }),

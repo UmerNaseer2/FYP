@@ -7,6 +7,7 @@ import { Pill, type PillTone } from "@/components/ui";
 import { CheckIcon, SearchIcon } from "@/components/ui/icons";
 import { timeAgo } from "@/lib/time-ago";
 import { driftSourceLabel, type DriftSource } from "@/lib/drift-source";
+import { useOrgHref } from "@/hooks/useOrg";
 
 type DriftStatus = "in_sync" | "drifted" | "unreachable";
 
@@ -59,6 +60,7 @@ function statusMeta(status: DriftStatus): { tone: PillTone; label: string } {
  */
 export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
   const router = useRouter();
+  const orgPath = useOrgHref();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [query, setQuery] = useState("");
 
@@ -174,7 +176,7 @@ export function AuditLogTable({ rows }: { rows: AuditRow[] }) {
             <tbody>
               {filtered.map((r) => {
                 const meta = statusMeta(r.status);
-                const href = `/drift?tab=detail&schema=${r.trackedSchemaId}`;
+                const href = orgPath(`/drift?tab=detail&schema=${r.trackedSchemaId}`);
                 return (
                   <tr
                     key={r.id}

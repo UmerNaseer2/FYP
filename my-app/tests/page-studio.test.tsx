@@ -18,16 +18,17 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import StudioPage from "@/app/(studio)/studio/page";
+import StudioPage from "@/app/[org]/(studio)/studio/page";
 import type { TrackedSchemaListItem } from "@/lib/lineage-db";
 import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,

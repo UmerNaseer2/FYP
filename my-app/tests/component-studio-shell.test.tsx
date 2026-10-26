@@ -52,6 +52,7 @@
 import "@testing-library/jest-dom";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
+import { OrgProvider } from "@/components/OrgProvider";
 import { StudioShell } from "@/components/studio/StudioShell";
 import { type StudioUser } from "@/components/studio/StudioSidebar";
 import { resetUserCache, seedUserAccess } from "@/hooks/useUser";
@@ -183,13 +184,15 @@ function setViewport(mobile: boolean) {
 
 const PAGE = <p>The page itself</p>;
 
-function renderShell(props: { user?: StudioUser } = {}) {
+function renderShell(props: { user?: StudioUser } = {}, org?: string) {
   // What a page learns from /api/me as it opens, handed over before it is
   // drawn, so the rail is right on the first frame. useUser keeps what it
   // learned between tests, hence the reset. Nobody signed in asks nothing.
   resetUserCache();
   if (mockSession) seedUserAccess(me.status, me.body);
-  return render(<StudioShell {...props}>{PAGE}</StudioShell>);
+  const shell = <StudioShell {...props}>{PAGE}</StudioShell>;
+  // app/[org]/layout.tsx provides the organization around every real page.
+  return render(org ? <OrgProvider slug={org} name={org}>{shell}</OrgProvider> : shell);
 }
 
 const rail = () => screen.getByRole("complementary");
@@ -224,6 +227,18 @@ describe("a window with room for the rail", () => {
     renderShell();
     expect(screen.getByRole("link", { name: "Drift" }).className).toContain("active");
     expect(screen.getByRole("link", { name: "Deploy" }).className).not.toContain("active");
+  });
+
+  test("keeps every row inside the organization the page is open in", () => {
+    // A row that dropped the organization would still work, through the old
+    // address's redirect, but it would land in whichever organization was
+    // opened last, which is not always this one.
+    setPathname("/acme/drift");
+    renderShell({}, "acme");
+    expect(screen.getByRole("link", { name: "Drift" })).toHaveAttribute("href", "/acme/drift");
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/acme/studio");
+    expect(screen.getByRole("link", { name: "Drift" }).className).toContain("active");
+    expect(screen.getByRole("navigation")).toHaveTextContent("Drift");
   });
 
   test("gives the rail its own column, and a narrow one once collapsed", () => {

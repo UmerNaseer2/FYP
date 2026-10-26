@@ -18,6 +18,7 @@ import {
   type FixScriptItem,
 } from "@/lib/perf-sql";
 import { downloadText } from "./ExportBar";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * "Put these fixes in one script", under the findings on both Performance
@@ -70,6 +71,7 @@ export function FixScriptBuilder({
   target: FixScriptTarget;
 }) {
   const router = useRouter();
+  const orgPath = useOrgHref();
   const { roleLabel, loading, can } = useUser();
   const canSave = !loading && can("scripts:create");
 
@@ -169,7 +171,7 @@ export function FixScriptBuilder({
       schema: target.schema,
       createdAt: date.toISOString(),
     });
-    if (saved) router.push("/script-editor");
+    if (saved) router.push(orgPath("/script-editor"));
     else setNotice({ items, kind: "save-failed" });
   }
 

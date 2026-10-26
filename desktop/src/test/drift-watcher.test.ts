@@ -157,6 +157,7 @@ function checkRow(id: number, changes: Record<string, unknown> = {}): Record<str
     label: "Orders",
     connection_id: 5,
     connection_name: "Production",
+    org_slug: "acme",
     previous_status: "in_sync",
     last_fingerprint: null,
     ...changes,
@@ -440,18 +441,21 @@ async function rows<T extends Record<string, unknown>>(sql: string, values: unkn
 const realQuery: DriftQuery = (sql, values) =>
   withClient(socketDir(), DB_NAME, (client) => client.query(sql, values)).then((answer) => answer.rows);
 
-const DRIFT_TABLES = "public.drift_events, public.tracked_schemas, public.connections";
+const DRIFT_TABLES = "public.drift_events, public.tracked_schemas, public.connections, public.organizations";
 
 /**
  * The tables the watcher reads, with the columns my-app/lib/db/models.ts
  * gives them that it reads or that a row needs; the server's own have more.
- * There is no foreign key from connection_id, so that a test can leave a
- * schema without a connection, which the watcher copes with.
+ * There is no foreign key from connection_id or org_id, so that a test can
+ * leave a schema without a connection or an organization, which the watcher
+ * copes with.
  */
 const TABLES = `DROP TABLE IF EXISTS ${DRIFT_TABLES};
+CREATE TABLE public.organizations (id serial PRIMARY KEY, slug text NOT NULL UNIQUE);
 CREATE TABLE public.connections (id serial PRIMARY KEY, name text NOT NULL);
 CREATE TABLE public.tracked_schemas (
   id serial PRIMARY KEY,
+  org_id integer NOT NULL,
   connection_id integer NOT NULL,
   schema_name text NOT NULL,
   label text,
@@ -475,8 +479,25 @@ CREATE TABLE public.drift_events (
 );
 CREATE INDEX ON public.drift_events (tracked_schema_id, detected_at)`;
 
-/** Tracks a schema, on a new connection with that name, or on none. Gives its number. */
-async function addSchema(schema: { name: string; label: string | null; connection: string | null }): Promise<number> {
+/**
+ * Tracks a schema in the organization with that address, or in none, on a new
+ * connection with that name, or on none. Gives its number.
+ */
+async function addSchema(schema: {
+  name: string;
+  label: string | null;
+  org: string | null;
+  connection: string | null;
+}): Promise<number> {
+  let orgId = 999;
+  if (schema.org !== null) {
+    // The same organization can hold several schemas, so an address already there is used again.
+    const [org] = await rows<{ id: number }>(
+      "INSERT INTO public.organizations (slug) VALUES ($1) ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug RETURNING id",
+      [schema.org],
+    );
+    orgId = org.id;
+  }
   let connectionId = 999;
   if (schema.connection !== null) {
     const [connection] = await rows<{ id: number }>("INSERT INTO public.connections (name) VALUES ($1) RETURNING id", [
@@ -486,9 +507,9 @@ async function addSchema(schema: { name: string; label: string | null; connectio
   }
   // Checked by hand only, so that the server's scheduler would never try to reach it.
   const [tracked] = await rows<{ id: number }>(
-    `INSERT INTO public.tracked_schemas (connection_id, schema_name, label, environment, drift_check_interval_minutes)
-     VALUES ($1, $2, $3, 'production', 0) RETURNING id`,
-    [connectionId, schema.name, schema.label],
+    `INSERT INTO public.tracked_schemas (org_id, connection_id, schema_name, label, environment, drift_check_interval_minutes)
+     VALUES ($1, $2, $3, $4, 'production', 0) RETURNING id`,
+    [orgId, connectionId, schema.name, schema.label],
   );
   return tracked.id;
 }
@@ -534,7 +555,7 @@ test("waits quietly for the server to make the drift log, with a real PostgreSQL
   assert.equal(countLines(newLogLines(), /drift log/), 0);
 
   await run(TABLES);
-  const orders = await addSchema({ name: "sales", label: "Orders", connection: "Production" });
+  const orders = await addSchema({ name: "sales", label: "Orders", org: "acme", connection: "Production" });
   const id = await addEvent({ schema: orders, source: "scheduled", status: "drifted", fingerprint: "a", baseline: 1, second: 0 });
   await watcher.poll();
   assert.deepEqual(eventIds(told), [[id]]);
@@ -544,8 +565,8 @@ test("waits quietly for the server to make the drift log, with a real PostgreSQL
 test("judges each new scheduled check against the rows before it, with a real PostgreSQL", async (t) => {
   if (skipped(t)) return;
   await run(TABLES);
-  const orders = await addSchema({ name: "sales", label: "Orders", connection: "Production" });
-  const billing = await addSchema({ name: "billing", label: null, connection: null });
+  const orders = await addSchema({ name: "sales", label: "Orders", org: "acme", connection: "Production" });
+  const billing = await addSchema({ name: "billing", label: null, org: null, connection: null });
   // Saved before the app started, so old news.
   await addEvent({ schema: orders, source: "scheduled", status: "in_sync", fingerprint: "a", baseline: 1, second: 0 });
   await addEvent({ schema: orders, source: "scheduled", status: "drifted", fingerprint: "b", baseline: 1, second: 1 });
@@ -609,11 +630,14 @@ test("judges each new scheduled check against the rows before it, with a real Po
     [orders],
   );
   assert.equal(first.connectionId, production);
+  assert.equal(first.orgSlug, "acme");
   assert.equal(second.trackedSchemaId, orders);
   assert.equal(third.name, "billing");
   assert.equal(third.connectionName, null);
   // Its connection has no row, but the schema still says which number it was on.
   assert.equal(third.connectionId, 999);
+  // Nor has its organization, and the alert comes all the same, naming none.
+  assert.equal(third.orgSlug, null);
   assert.equal(fourth.drifted, false);
   // The database's own error, which names its host, never reaches an alert.
   assert.doesNotMatch(JSON.stringify(told), /internal|10\.1\.2\.3|same again/);

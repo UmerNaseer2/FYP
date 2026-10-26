@@ -32,10 +32,13 @@ import path from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import StudioError from "@/app/(studio)/error";
+import StudioError from "@/app/[org]/(studio)/error";
 import AppError from "@/app/error";
 import NotFound from "@/app/not-found";
 import GlobalError from "@/app/global-error";
+// The studio boundary sits inside app/[org]/layout.tsx, so it is drawn in an
+// organization; the other three are outside every organization.
+import { render as renderInOrg } from "./helpers/render-page";
 
 // Every boundary logs the error it caught. That is deliberate — a boundary
 // swallowing the error is exactly what makes these hard to chase — so the
@@ -71,40 +74,40 @@ describe("a studio screen that stopped working", () => {
     // The sidebar is still on screen next to this, because the boundary sits
     // inside the (studio) group. Wording that said "the app crashed" would
     // contradict what the reader can see and click.
-    render(<StudioError error={boom()} reset={jest.fn()} />);
+    renderInOrg(<StudioError error={boom()} reset={jest.fn()} />);
     expect(screen.getByText("This screen stopped working")).toBeInTheDocument();
   });
 
   test("offers to draw it again", () => {
     const reset = jest.fn();
-    render(<StudioError error={boom()} reset={reset} />);
+    renderInOrg(<StudioError error={boom()} reset={reset} />);
     fireEvent.click(screen.getByRole("button", { name: /Try again/ }));
     expect(reset).toHaveBeenCalledTimes(1);
   });
 
   test("and a way off the screen if that does not help", () => {
-    render(<StudioError error={boom()} reset={jest.fn()} />);
+    renderInOrg(<StudioError error={boom()} reset={jest.fn()} />);
     expect(screen.getByRole("link", { name: /Go to dashboard/ })).toHaveAttribute(
       "href",
-      "/studio"
+      "/test-org/studio"
     );
   });
 
   test("prints the reference a developer can grep the server log for", () => {
-    render(<StudioError error={boom("a1b2c3d4")} reset={jest.fn()} />);
+    renderInOrg(<StudioError error={boom("a1b2c3d4")} reset={jest.fn()} />);
     expect(screen.getByText(/a1b2c3d4/)).toBeInTheDocument();
   });
 
   test("and prints nothing where there is no reference to print", () => {
     // A client-side throw has no digest. "Reference:" followed by nothing
     // reads as a missing value rather than as an error that never had one.
-    render(<StudioError error={boom()} reset={jest.fn()} />);
+    renderInOrg(<StudioError error={boom()} reset={jest.fn()} />);
     expect(screen.queryByText(/Reference:/)).not.toBeInTheDocument();
   });
 
   test("puts the error itself in the console, where it would otherwise vanish", () => {
     const error = boom();
-    render(<StudioError error={error} reset={jest.fn()} />);
+    renderInOrg(<StudioError error={error} reset={jest.fn()} />);
     const [args] = loggedBy("Studio screen failed");
     expect(args).toBeDefined();
     // The error object, not a message built from it: the stack is the point.
@@ -115,7 +118,7 @@ describe("a studio screen that stopped working", () => {
     // This boundary only catches rendering. Whatever the screen had already
     // sent has been sent. Saying so is the difference between a reader
     // reloading and a reader wondering whether they half-ran a migration.
-    render(<StudioError error={boom()} reset={jest.fn()} />);
+    renderInOrg(<StudioError error={boom()} reset={jest.fn()} />);
     expect(screen.getByText(/Nothing was\s+changed in any database/)).toBeInTheDocument();
   });
 });
@@ -127,8 +130,9 @@ describe("a page outside the studio that stopped working", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Try again/ }));
     expect(reset).toHaveBeenCalledTimes(1);
-    // There is no sidebar around this one — sign-in and the root redirect are
-    // what reach it — so the link into the app is the only way out.
+    // There is no sidebar around this one, since the landing page, sign-in and
+    // the old addresses' redirects are what reach it, so the link into the app
+    // is the only way out.
     expect(screen.getByRole("link", { name: /Go to Schema Studio/ })).toHaveAttribute(
       "href",
       "/studio"

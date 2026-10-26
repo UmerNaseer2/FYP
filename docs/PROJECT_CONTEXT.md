@@ -60,7 +60,13 @@ docs/                      the coursework documents (see docs/README.md)
 docker-compose.yml         Postgres 17 + the app, two containers
 my-app/
   app/
-    (studio)/              11 pages, the whole product
+    page.tsx               the landing page at "/"
+    [org]/                 one organization's pages: /acme/studio and so on
+      layout.tsx           checks membership, tells the pages which organization
+      page.tsx             /acme opens /acme/studio
+      (studio)/            11 pages, the whole product
+    studio/, compare/, …   the old addresses: each [[...rest]]/page.tsx sends
+                           /compare?left=1 on to the organization opened last
     api/                   36 route handlers
     login/                 the sign-in page
     layout.tsx             root layout, dark theme, fonts
@@ -71,7 +77,7 @@ my-app/
     ui/                    17 files — the shared kit (EmptyState, Skeleton, dialogs, …)
   lib/                     83 modules — all the logic
     db/                    Sequelize: models, bootstrap, the instance (3 more)
-  tests/                   137 Jest suites, 3,776 tests
+  tests/                   154 Jest suites, 4,215 tests
   proxy.ts                 Next 16's renamed middleware — the page auth gate
   auth.ts, auth.config.ts  NextAuth v5 (Microsoft Entra ID)
   instrumentation.ts       starts the drift scheduler on boot
@@ -241,8 +247,8 @@ older copy of this document will come looking for them:
 |---|---|---|
 | 28 | Migration execution history and audit log | The ledger row already held the SQL, the rollback, the change type and the timestamp; it now holds the actor too (`applied_by`, added to older ledgers on the next apply), and the Deploy screen's timeline reads "Applied *date* by *who*". The *Audit log* tab on the Drift screen is a different log and always was — drift checks, not deployments. |
 | 30 | Save comparison history and templates | Templates are `lib/comparison-sets.ts`. History is `lib/comparison-history.ts` and `-db.ts`: every run stores the finding set it saw, and the next comparison of the same pair opens with what appeared and what was resolved in between. What is stored is the finding set rather than the whole report, so a past run is compared against, not re-opened. |
-| 31 | Jest testing for the main webpages | 137 suites, 3,776 tests. 12 of the 13 pages are rendered and driven by a suite of their own, alongside 37 component suites; the thirteenth is the four-line redirect at `app/page.tsx`. jsdom is asked for per file, so the logic suites keep a node environment. |
-| 32 | UI polish and error handling | The polish was already there. The error handling is `app/(studio)/error.tsx`, `app/error.tsx`, `app/not-found.tsx` and `app/global-error.tsx` — see §11. |
+| 31 | Jest testing for the main webpages | 154 suites, 4,215 tests. 12 of the 13 pages are rendered and driven by a suite of their own, alongside 38 component suites; the thirteenth, the landing page at `app/page.tsx`, has one suite for whom it sends where and one for what it shows. The addresses that only redirect (`/acme` and the ones from before organizations) are in `tests/org-redirect.test.ts`. jsdom is asked for per file, so the logic suites keep a node environment. |
+| 32 | UI polish and error handling | The polish was already there. The error handling is `app/[org]/(studio)/error.tsx`, `app/error.tsx`, `app/not-found.tsx` and `app/global-error.tsx` — see §11. |
 
 ### Where the code exceeds the backlog
 
@@ -291,10 +297,10 @@ routes, 13 page routes plus the 404, one proxy.
   about 1,800 lines. It is the most dangerous route in the codebase — it runs
   arbitrary DDL against a customer database — and repays careful reading.
 - **A render error is now caught at the depth it happened.**
-  `app/(studio)/error.tsx` sits inside the route group, so a screen that throws
+  `app/[org]/(studio)/error.tsx` sits inside the route group, so a screen that throws
   is replaced while the sidebar stays up and every other screen is one click
-  away. `app/error.tsx` covers sign-in and the root redirect, which have no
-  sidebar to keep. `app/global-error.tsx` catches a throw in the root layout
+  away. `app/error.tsx` covers the landing page, sign-in and the old
+  addresses' redirects, which have no sidebar to keep. `app/global-error.tsx` catches a throw in the root layout
   itself, and therefore ships its own `<html>`, `<body>` and stylesheet and
   imports nothing — the layout that loads `globals.css` is the thing that has
   just failed. `app/not-found.tsx` is the 404. Each prints `error.digest` when

@@ -21,6 +21,7 @@ import {
   AlertCircleIcon,
   InfoIcon,
 } from "@/components/ui/icons";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * The Users tab on the Admin screen: everyone who has signed in, the role each
@@ -105,7 +106,7 @@ export function UsersTab({ active }: { active: boolean }) {
       }
     };
     try {
-      const res = await fetch("/api/admin/users", { cache: "no-store" });
+      const res = await apiFetch("/api/admin/users", { cache: "no-store" });
       // A reply that is not JSON (a proxy's error page) still gets its status
       // read below, rather than reading as a network error.
       const data = await res.json().catch(() => ({}));
@@ -146,7 +147,7 @@ export function UsersTab({ active }: { active: boolean }) {
       setUsers((list) => list.map((u) => (u.id === userId ? { ...u, role } : u)));
     setRoleOf(newRole);
     try {
-      const res = await fetch("/api/admin/users", {
+      const res = await apiFetch("/api/admin/users", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, role: newRole }),
@@ -173,7 +174,7 @@ export function UsersTab({ active }: { active: boolean }) {
     setDeleting(target.id);
     setActionError(null);
     try {
-      const res = await fetch("/api/admin/users", {
+      const res = await apiFetch("/api/admin/users", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: target.id }),

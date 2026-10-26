@@ -37,7 +37,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
@@ -46,7 +46,14 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 import { SchemaTrends } from "@/components/studio/SchemaTrends";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
 import type { MetricSample } from "@/lib/metrics-series";
-import { fetchCalls, flushAsync, holdNext, resetPageState, setRoutes } from "./helpers/render-page";
+import {
+  fetchCalls,
+  flushAsync,
+  holdNext,
+  render,
+  resetPageState,
+  setRoutes,
+} from "./helpers/render-page";
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -148,7 +155,7 @@ describe("when nothing is watching the schema", () => {
     show();
 
     expect(await screen.findByText("Nothing is watching this schema yet")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Go to Drift/ })).toHaveAttribute("href", "/drift");
+    expect(screen.getByRole("link", { name: /Go to Drift/ })).toHaveAttribute("href", "/test-org/drift");
     expect(screen.queryByText("Tables")).not.toBeInTheDocument();
   });
 });

@@ -206,7 +206,9 @@ describe("someone who is not a member of the organization", () => {
 
     expect(screen.getByText("You are not a member of this organization.")).toBeInTheDocument();
     expect(
-      screen.getByText("An admin may have removed you. Check with an admin, or sign out.")
+      screen.getByText(
+        "An admin may have removed you, or you were never added. Check with an admin, or sign out."
+      )
     ).toBeInTheDocument();
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
   });
@@ -303,7 +305,7 @@ describe('with the bypass on and "View as" picking a role', () => {
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
   });
 
-  it("says when the database has no organization to act in, with nobody to sign out", async () => {
+  it("says when no organization has the address, with nobody to sign out", async () => {
     setRoutes([
       {
         match: "/api/me",
@@ -318,7 +320,7 @@ describe('with the bypass on and "View as" picking a role', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Authentication is off, and the app's database has no default organization to act in."
+        "Authentication is off, and the app's database has no organization at this address."
       )
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();

@@ -51,7 +51,8 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { render } from "./helpers/render-page";
 import type { ComponentProps } from "react";
 
 import {
@@ -162,7 +163,7 @@ describe("where it sends the reader next", () => {
     card({ action: { label: "Analyse a query on this table", href: "/performance?tab=analyse" } });
     expect(screen.getByRole("link", { name: "Analyse a query on this table" })).toHaveAttribute(
       "href",
-      "/performance?tab=analyse"
+      "/test-org/performance?tab=analyse"
     );
   });
 

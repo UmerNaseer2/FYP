@@ -36,7 +36,7 @@
  *  - Both endpoints. tests/versionsync-ledger-route.test.ts and
  *    tests/compare-version-history-route.test.ts cover those.
  *  - Resetting the panel between comparisons. Nothing here watches the props;
- *    app/(studio)/compare/page.tsx keys this component on its run counter, so
+ *    app/[org]/(studio)/compare/page.tsx keys this component on its run counter, so
  *    a new comparison gets a new panel. That key belongs to the page, and
  *    tests/page-compare.test.tsx is where it would be checked.
  *
@@ -593,7 +593,7 @@ describe("when the comparison underneath it changes", () => {
     );
     await flushAsync();
 
-    // Nothing here watches the sides. app/(studio)/compare/page.tsx keys this
+    // Nothing here watches the sides. app/[org]/(studio)/compare/page.tsx keys this
     // component on its run counter, so a fresh comparison gets a fresh panel
     // rather than the history the last one loaded. Reacting to the props here
     // as well would read the new schema before anybody opened the panel,

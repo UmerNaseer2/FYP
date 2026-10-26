@@ -47,12 +47,12 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
-import { resetPageState, routerCalls } from "./helpers/render-page";
+import { render, resetPageState, routerCalls } from "./helpers/render-page";
 
 /** A fixed clock, so the "When" column reads the same on every run. */
 const NOW = new Date("2026-06-09T14:00:00.000Z");
@@ -232,7 +232,7 @@ describe("opening a check", () => {
     mount([DRIFTED]);
     expect(screen.getByRole("link", { name: /^public/ })).toHaveAttribute(
       "href",
-      "/drift?tab=detail&schema=11"
+      "/test-org/drift?tab=detail&schema=11"
     );
   });
 
@@ -250,7 +250,7 @@ describe("opening a check", () => {
   it("opens the same page when the row itself is clicked", () => {
     mount([DRIFTED]);
     fireEvent.click(cell("public", "Summary"));
-    expect(routerCalls.push).toEqual(["/drift?tab=detail&schema=11"]);
+    expect(routerCalls.push).toEqual(["/test-org/drift?tab=detail&schema=11"]);
   });
 
   it("does not also ask the router when the link is the thing clicked", () => {

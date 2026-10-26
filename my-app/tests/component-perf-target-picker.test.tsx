@@ -48,17 +48,18 @@
  *  - Remembering the pair. The picker reports upward and nothing more; it does
  *    not write the choice back into the address bar, so a reload returns to the
  *    link's target or to the first saved server. That belongs to
- *    app/(studio)/performance/page.tsx.
+ *    app/[org]/(studio)/performance/page.tsx.
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { PerfTargetPicker, type PerfTarget } from "@/components/studio/PerfTargetPicker";
 import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setRoutes,
   type FetchRoute,

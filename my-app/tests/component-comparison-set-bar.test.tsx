@@ -34,7 +34,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 import {
   ComparisonSetBar,
@@ -44,6 +44,7 @@ import type { CurrentSelection } from "@/lib/compare-selection";
 import {
   fetchCalls,
   flushAsync,
+  render,
   resetPageState,
   routerCalls,
   setCustomRole,
@@ -199,7 +200,7 @@ describe("opening a saved set", () => {
     fireEvent.click(screen.getByLabelText("Open a saved comparison set"));
     fireEvent.click(screen.getByRole("option", { name: /Nightly check/ }));
 
-    expect(routerCalls.push).toEqual(["/compare?set=12&run=1"]);
+    expect(routerCalls.push).toEqual(["/test-org/compare?set=12&run=1"]);
   });
 });
 
@@ -349,7 +350,7 @@ describe("saving", () => {
     fireEvent.click(saveButton());
     await flushAsync();
 
-    expect(routerCalls.push).toEqual(["/compare?set=21&run=1"]);
+    expect(routerCalls.push).toEqual(["/test-org/compare?set=21&run=1"]);
     expect(screen.getByRole("status")).toHaveTextContent('Saved "Nightly check".');
   });
 
@@ -361,7 +362,7 @@ describe("saving", () => {
     fireEvent.click(saveButton());
     await flushAsync();
 
-    expect(routerCalls.push).toEqual(["/compare?set=21"]);
+    expect(routerCalls.push).toEqual(["/test-org/compare?set=21"]);
   });
 
   it("reloads instead of pushing the URL it is already on", async () => {
@@ -500,7 +501,7 @@ describe("a name that belongs to another set", () => {
     expect(posts()).toHaveLength(2);
     expect(sent(0).overwrite).toBe(false);
     expect(sent(1).overwrite).toBe(true);
-    expect(routerCalls.push).toEqual(["/compare?set=30&run=1"]);
+    expect(routerCalls.push).toEqual(["/test-org/compare?set=30&run=1"]);
   });
 
   it("does not ask when the refusal was about something else", async () => {
@@ -579,7 +580,7 @@ describe("deleting", () => {
 
     expect(fetchCalls[0].method).toBe("DELETE");
     expect(JSON.parse(fetchCalls[0].body ?? "{}")).toEqual({ id: 7 });
-    expect(routerCalls.push).toEqual([`/compare?${SELECTION_QUERY}&run=1`]);
+    expect(routerCalls.push).toEqual([`/test-org/compare?${SELECTION_QUERY}&run=1`]);
   });
 
   it("does not re-run a comparison that was never run", async () => {
@@ -589,7 +590,7 @@ describe("deleting", () => {
     fireEvent.click(deleteButton());
     await flushAsync();
 
-    expect(routerCalls.push).toEqual([`/compare?${SELECTION_QUERY}`]);
+    expect(routerCalls.push).toEqual([`/test-org/compare?${SELECTION_QUERY}`]);
   });
 
   it("says what the server said when it refuses", async () => {

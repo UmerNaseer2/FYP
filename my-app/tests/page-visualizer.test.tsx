@@ -14,12 +14,12 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
-import VisualizerPage from "@/app/(studio)/visualizer/page";
-import { resetPageState, setRoutes } from "./helpers/render-page";
+import VisualizerPage from "@/app/[org]/(studio)/visualizer/page";
+import { render, resetPageState, setRoutes } from "./helpers/render-page";
 
 const CONNECTIONS = [
   { id: 1, name: "Local Postgres", host: "localhost", database_name: "shop" },
@@ -62,7 +62,7 @@ describe("the visualizer with nothing to draw", () => {
     expect(await screen.findByText("Add a connection first")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Go to Connections/ })).toHaveAttribute(
       "href",
-      "/connections"
+      "/test-org/connections"
     );
     // Nothing to view, so neither the mode toggle nor the way onward is offered.
     expect(screen.queryByRole("group", { name: "View mode" })).not.toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("the visualizer with connections", () => {
     render(<VisualizerPage />);
     expect(await screen.findByRole("link", { name: /Open in Compare/ })).toHaveAttribute(
       "href",
-      "/compare"
+      "/test-org/compare"
     );
   });
 
@@ -129,7 +129,7 @@ describe("the visualizer with connections", () => {
       await waitFor(() =>
         expect(compareLink()).toHaveAttribute(
           "href",
-          "/compare?sourceConnection=1&sourceSchema=public"
+          "/test-org/compare?sourceConnection=1&sourceSchema=public"
         )
       );
     });
@@ -143,7 +143,7 @@ describe("the visualizer with connections", () => {
       await waitFor(() =>
         expect(compareLink()).toHaveAttribute(
           "href",
-          "/compare?sourceConnection=1&sourceSchema=public&targetConnection=2&targetSchema=public"
+          "/test-org/compare?sourceConnection=1&sourceSchema=public&targetConnection=2&targetSchema=public"
         )
       );
       // Never run=1. Left and right do not say which schema should change to
@@ -154,7 +154,7 @@ describe("the visualizer with connections", () => {
       fireEvent.click(screen.getByRole("button", { name: /Single/ }));
       expect(compareLink()).toHaveAttribute(
         "href",
-        "/compare?sourceConnection=1&sourceSchema=public"
+        "/test-org/compare?sourceConnection=1&sourceSchema=public"
       );
     });
 
@@ -168,7 +168,7 @@ describe("the visualizer with connections", () => {
       await waitFor(() =>
         expect(compareLink()).toHaveAttribute(
           "href",
-          "/compare?sourceConnection=2&sourceSchema=public"
+          "/test-org/compare?sourceConnection=2&sourceSchema=public"
         )
       );
     });

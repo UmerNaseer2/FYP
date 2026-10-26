@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { auth } from "@/auth";
 import { BYPASS_AUTH, BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "./auth-mode";
 import {
@@ -10,7 +10,15 @@ import {
   refusalMessage,
   type PermissionKey,
 } from "./permissions";
-import { findDefaultOrganization, findMembership, type Organization } from "./orgs-db";
+import { ORG_HEADER } from "./org-slug";
+import {
+  findDefaultMembership,
+  findDefaultOrganization,
+  findMembership,
+  findOrganization,
+  type Membership,
+  type Organization,
+} from "./orgs-db";
 import { getRoleAccess } from "./roles-db";
 
 /**
@@ -30,13 +38,21 @@ import { getRoleAccess } from "./roles-db";
  * a route method that opens without a gate.
  *
  * Every request also acts in one organization, and the gate is where it is
- * found. For now that is always the default organization (see lib/orgs-db.ts).
- * With real sign-in the caller has to hold a membership there, and their role
- * is the one that membership names. Both are read on every request, the same
- * as the role's permissions, so an admin who removes someone or changes their
+ * found. The request names it: a screen's API calls carry the slug of the
+ * organization the page is open in, in ORG_HEADER (lib/api-fetch.ts). With
+ * real sign-in the caller has to hold a membership there, and their role is
+ * the one that membership names. Both are read on every request, the same as
+ * the role's permissions, so an admin who removes someone or changes their
  * role does not have to wait for that person's sign-in to run out: it holds
  * from their next click. Every query a route makes is then filtered by the
  * principal's orgId.
+ *
+ * A request that names no organization is answered on the desktop only, in
+ * its default organization. The desktop has just the one, and its own calls
+ * from outside any page (the phone link, the drift watcher) have no page to
+ * take a slug from. Anywhere else it is a 404, the same as naming an
+ * organization the caller is not in: a request that forgets to say where it
+ * acts must not quietly act somewhere.
  *
  * The gates answer in the same order:
  *
@@ -51,9 +67,13 @@ import { getRoleAccess } from "./roles-db";
  * organization should not learn from the answer that it is there.
  *
  * The gates honour the same BYPASS_AUTH switch as the UI (lib/auth-mode). With
- * the bypass on, the caller is a full admin of the default organization,
- * unless "View as" on the studio rail has picked a role to try the app as (see
- * bypassPrincipal below).
+ * the bypass on, the caller is a full admin of the organization the request
+ * names, unless "View as" on the studio rail has picked a role to try the app
+ * as (see bypassPrincipal below).
+ *
+ * The pages use the same lookup. app/[org]/layout.tsx asks resolveOrganization
+ * about the slug in the address before it shows anything, so a page and its
+ * API calls always agree about who may see what.
  */
 
 export type Principal = {
@@ -97,12 +117,38 @@ export type Gate =
  * What looking up the caller found. The three that are not a principal are
  * kept apart, rather than all being "nobody", because each needs a different
  * answer: sign in, you do not belong here, or try again in a moment.
+ *
+ * "not-member" carries the email of the person who is signed in, or null for
+ * the bypass, which has no membership anywhere. The gates never use it. The
+ * organization's layout does, to tell someone who belongs to no organization
+ * at all (who gets a page saying so, with a way to sign out) from someone who
+ * typed the address of one they are not in (who gets "not found").
  */
-type Resolution =
+export type Resolution =
   | { kind: "ok"; principal: Principal }
   | { kind: "signed-out" }
-  | { kind: "not-member" }
+  | { kind: "not-member"; email: string | null }
   | { kind: "unavailable" };
+
+/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
+function onDesktop(): boolean {
+  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
+}
+
+/**
+ * The organization the request names in ORG_HEADER, or null when it names
+ * none. Whether the slug is well formed is left to the lookups, which answer
+ * a slug no organization could have the same way as one nobody has.
+ */
+async function requestedSlug(): Promise<string | null> {
+  try {
+    return (await headers()).get(ORG_HEADER)?.trim() || null;
+  } catch {
+    // headers() only works while a request is being answered. Outside one
+    // there is no request to name an organization.
+    return null;
+  }
+}
 
 const SIGN_IN_FIRST = "Sign in to continue.";
 const NOT_A_MEMBER = "This organization does not exist, or you are not a member.";
@@ -110,7 +156,7 @@ const ACCESS_UNAVAILABLE =
   "Could not check what your role can do, because the app's database did not answer. " +
   "Try again in a moment.";
 
-/** The bypass's normal self: everything, as the Admin of the default organization. */
+/** The bypass's normal self: everything, as the Admin of `org`. */
 function bypassAdmin(org: Organization): Principal {
   return {
     ...BYPASS_PRINCIPAL,
@@ -138,22 +184,25 @@ function bypassAdmin(org: Organization): Principal {
  * The email and name stay the bypass's own, so an audit row written while
  * viewing as a role still says authentication was off (see actorFor).
  *
- * The bypass acts in the default organization. With nobody signed in there is
- * no membership to read, and the default organization is the one everything
- * from before organizations existed was moved into, so this is the app as it
- * always was.
+ * The bypass acts in whichever organization the request names. With nobody
+ * signed in there is no membership to read, so it is an admin of every
+ * organization there is, which is what "no sign-in" has always meant here. A
+ * slug no organization has is "not a member", the same answer real sign-in
+ * gives for it.
  */
-async function bypassPrincipal(): Promise<Resolution> {
+async function bypassPrincipal(slug: string | null): Promise<Resolution> {
   let org: Organization | null;
   try {
-    org = await findDefaultOrganization();
+    if (slug !== null) org = await findOrganization(slug);
+    else if (onDesktop()) org = await findDefaultOrganization();
+    else return { kind: "not-member", email: null };
   } catch (error) {
-    console.error("Could not read the default organization:", error);
+    console.error("Could not read the organization:", error);
     return { kind: "unavailable" };
   }
-  // Only when somebody has deleted its row by hand. There is nothing left to
-  // act in, and "not a member" is the answer that says so without guessing.
-  if (!org) return { kind: "not-member" };
+  // No organization by that name, or (asking for the default) somebody has
+  // deleted its row by hand. Either way there is nothing to act in.
+  if (!org) return { kind: "not-member", email: null };
 
   let picked: string | undefined;
   try {
@@ -192,12 +241,13 @@ async function bypassPrincipal(): Promise<Resolution> {
 }
 
 /**
- * Who is signed in, the membership they hold, and what its role may do.
+ * Who is signed in, the membership they hold in the organization `slug`
+ * names, and what its role may do there.
  *
  * The session says who someone is and nothing more (see auth.ts). Everything
  * about what they may do is read here, on every request.
  */
-async function signedInPrincipal(): Promise<Resolution> {
+async function signedInPrincipal(slug: string | null): Promise<Resolution> {
   let email: string | null | undefined;
   let name: string | null | undefined;
   try {
@@ -212,9 +262,12 @@ async function signedInPrincipal(): Promise<Resolution> {
   }
   if (!email) return { kind: "signed-out" };
 
+  if (slug === null && !onDesktop()) return { kind: "not-member", email };
+
   try {
-    const membership = await findMembership(email);
-    if (!membership) return { kind: "not-member" };
+    const membership: Membership | null =
+      slug === null ? await findDefaultMembership(email) : await findMembership(email, slug);
+    if (!membership) return { kind: "not-member", email };
     const access = await getRoleAccess(membership.orgId, membership.role);
     // The foreign key from a membership to its role will not let a role that
     // somebody holds be deleted, so for a member it is always there. Missing
@@ -249,9 +302,25 @@ async function signedInPrincipal(): Promise<Resolution> {
   }
 }
 
-/** Who is calling, in which organization, and what they may do there. Never throws. */
-function resolve(): Promise<Resolution> {
-  return BYPASS_AUTH ? bypassPrincipal() : signedInPrincipal();
+/** Who is calling, in the organization `slug` names, and what they may do there. Never throws. */
+function resolveIn(slug: string | null): Promise<Resolution> {
+  return BYPASS_AUTH ? bypassPrincipal(slug) : signedInPrincipal(slug);
+}
+
+/** Who is calling, in the organization the request names, and what they may do there. Never throws. */
+async function resolve(): Promise<Resolution> {
+  return resolveIn(await requestedSlug());
+}
+
+/**
+ * The same lookup the gates make, for a page: who is looking, in the
+ * organization `slug` names, and what they may do there. Never throws.
+ *
+ * The page's address names the organization, so the slug comes from there
+ * rather than from ORG_HEADER, which only the screens' API calls carry.
+ */
+export function resolveOrganization(slug: string): Promise<Resolution> {
+  return resolveIn(slug);
 }
 
 function refuse(status: number, error: string): Gate {

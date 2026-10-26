@@ -37,7 +37,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { AlertThresholds } from "@/components/studio/AlertThresholds";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
@@ -52,6 +52,7 @@ import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,

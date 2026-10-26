@@ -33,6 +33,7 @@ import {
 } from "@/lib/version-timeline";
 import { NO_STORED_SCRIPT, VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChevronDownIcon } from "@/components/ui/icons";
+import { apiFetch } from "@/lib/api-fetch";
 
 /** One side of the comparison, as the timeline needs it. */
 export type CompareTimelineSide = {
@@ -80,7 +81,7 @@ async function fetchSide(side: CompareTimelineSide): Promise<SideLoad> {
     `&schema=${encodeURIComponent(side.schema)}`;
   const url = ledger ? `/api/versionsync/ledger${query}` : `/api/compare/version-history${query}`;
   try {
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await apiFetch(url, { cache: "no-store" });
     const data = await response.json().catch(() => null);
     if (response.ok && data) {
       if (ledger && Array.isArray(data.entries)) {

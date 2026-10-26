@@ -45,6 +45,8 @@ import {
   stepFigures,
   subqueryCaption,
 } from "@/lib/query-analysis";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * Spec feature 08 — query execution analysis, as a screen.
@@ -151,7 +153,7 @@ export function QueryAnalyzer({
     // the key and is dropped here rather than left to match again later.
     setLoaded(current ? { ...current, error: null } : null);
     try {
-      const res = await fetch("/api/performance/analyze", {
+      const res = await apiFetch("/api/performance/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -313,6 +315,7 @@ function Result({
   filter: FilterKey;
   onFilter: (next: FilterKey) => void;
 }) {
+  const orgPath = useOrgHref();
   const active = activeFilter(filter, view.counts);
   const shown =
     active === "all" ? view.findings : view.findings.filter((f) => f.severity === active);
@@ -354,9 +357,11 @@ function Result({
         {view.historyId !== null && (
           <div className="text-[11.5px] pt-0.5" style={{ color: "var(--text-3)" }}>
             <Link
-              href={`/performance?tab=history&connectionId=${encodeURIComponent(
-                connectionId
-              )}&schema=${encodeURIComponent(view.schema)}&fingerprint=${view.fingerprint}`}
+              href={orgPath(
+                `/performance?tab=history&connectionId=${encodeURIComponent(
+                  connectionId
+                )}&schema=${encodeURIComponent(view.schema)}&fingerprint=${view.fingerprint}`
+              )}
               className="underline"
             >
               See every run of this query

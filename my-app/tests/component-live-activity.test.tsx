@@ -32,7 +32,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 import { LiveActivity } from "@/components/studio/LiveActivity";
 import type { PerfTarget } from "@/components/studio/PerfTargetPicker";
@@ -43,6 +43,7 @@ import {
   fetchCalls,
   flushAsync,
   holdNext,
+  render,
   resetPageState,
   setRoutes,
   setUser,
@@ -595,7 +596,7 @@ describe("a reading that broke somebody's rule", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Change them" })).toHaveAttribute(
       "href",
-      "/performance?tab=alerts&connectionId=7&schema=public"
+      "/test-org/performance?tab=alerts&connectionId=7&schema=public"
     );
   });
 

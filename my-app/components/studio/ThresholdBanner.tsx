@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { AlertCircleIcon } from "@/components/ui/icons";
 import type { ThresholdBreach } from "@/lib/perf-thresholds";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * The banner shown when a reading broke an alert rule somebody set.
@@ -30,13 +31,16 @@ export function ThresholdBanner({
   connectionId?: string | number;
   schema?: string;
 }) {
+  // Above the early return: React needs the same hooks on every render.
+  const orgPath = useOrgHref();
   if (breaches.length === 0) return null;
 
-  const rulesHref =
+  const rulesHref = orgPath(
     connectionId && schema
       ? `/performance?tab=alerts&connectionId=${encodeURIComponent(String(connectionId))}` +
-        `&schema=${encodeURIComponent(schema)}`
-      : "/performance?tab=alerts";
+          `&schema=${encodeURIComponent(schema)}`
+      : "/performance?tab=alerts"
+  );
 
   return (
     // A breach is a status change the reader did not ask for, so it is

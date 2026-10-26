@@ -8,10 +8,10 @@ import { AlertCircleIcon, RefreshIcon } from "@/components/ui/icons";
 // ---------------------------------------------------------------------------
 // The outer error boundary: everything that is NOT a studio screen.
 //
-// In practice that is the sign-in page and the root redirect, because every
-// other route lives under (studio) and is caught by the boundary there, which
-// keeps the sidebar. This one has no sidebar to keep, so it draws a plain
-// centered page inside the root layout.
+// In practice that is the landing page, sign-in and the redirects from old
+// addresses, because every other route lives under [org]/(studio) and is
+// caught by the boundary there, which keeps the sidebar. This one has no
+// sidebar to keep, so it draws a plain centered page inside the root layout.
 //
 // It is also the fallback if the studio boundary itself throws while rendering,
 // which is the reason to have both rather than only the inner one.
@@ -21,7 +21,7 @@ export default function AppError({
   error,
   reset,
 }: {
-  /** `digest` is present for errors thrown on the server — see (studio)/error. */
+  /** `digest` is present for errors thrown on the server — see [org]/(studio)/error. */
   error: Error & { digest?: string };
   reset: () => void;
 }) {

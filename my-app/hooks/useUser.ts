@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
 import { useSession } from "next-auth/react";
+import { OrgContext } from "@/hooks/useOrg";
 import { BYPASS_AUTH, BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import {
   ADMIN_ROLE,
@@ -11,6 +19,7 @@ import {
   isPermissionKey,
   type PermissionKey,
 } from "@/lib/permissions";
+import { apiFetch } from "@/lib/api-fetch";
 
 export type CurrentUser = {
   email: string;
@@ -45,9 +54,11 @@ export type UserAccess = {
   accessError: boolean;
   /**
    * True when the person is signed in but is not a member of the organization
-   * the app acts in, which is what /api/me answers 404 for. With real sign-in
-   * that means an admin removed them after they signed in. With the bypass on
-   * it means the database has no default organization to act in.
+   * the page is open in, which is what /api/me answers 404 for. With real
+   * sign-in that means an admin removed them while the page was open, or they
+   * belong to no organization at all (app/[org]/layout.tsx shows everyone else
+   * the 404 page instead). With the bypass on it means no organization has the
+   * page's address any more.
    */
   notMember: boolean;
 };
@@ -74,6 +85,11 @@ const BYPASS_USER: CurrentUser = {
 // admin unless the View as switcher on the studio rail has left a cookie
 // naming a role (bypassPrincipal in lib/auth-guard.ts). With no cookie there
 // is nothing to ask: the answer is the full admin, straight away.
+//
+// The answer is about one organization: the one the page is open in, which
+// /api/me learns from the header apiFetch adds. A person can hold a different
+// role in each, so when the page moves to another organization the answer in
+// hand is about the wrong one, and the lookup starts again (see `about`).
 //
 // Every component on the page shares the one answer, which is what this small
 // store is for. Without it each screen would fetch the same thing, and for a
@@ -138,6 +154,10 @@ const SIGNED_OUT: AccessState = {
 
 let state: AccessState = PENDING;
 let started = false;
+// The organization `state` is about: the slug of the page that asked, or null
+// on a page outside every organization. A page in another organization reads
+// "not known yet" rather than this answer (useUser).
+let about: string | null = null;
 // Bumped by every fresh start and by resetUserCache, so an answer to a
 // question asked before one cannot overwrite the answer to a question asked
 // after it.
@@ -189,7 +209,7 @@ function readViewAsCookie(): string | null {
  */
 async function askMe(): Promise<AccessState | null> {
   try {
-    const response = await fetch("/api/me", { cache: "no-store" });
+    const response = await apiFetch("/api/me", { cache: "no-store" });
     const body: unknown = response.ok ? await response.json().catch(() => null) : null;
     return readAnswer(response.status, body);
   } catch {
@@ -254,11 +274,20 @@ async function lookUp(picked: string | null, mine: number) {
 }
 
 /**
- * Find out what the person may do. Once per page load, and again only after
- * resetUserCache, or when the View as cookie changed under the page.
+ * Find out what the person may do in `org`. Once per page load, and again only
+ * after resetUserCache, when the View as cookie changed under the page, or when
+ * the page moved to another organization.
  */
-function start() {
+function start(org: string | null) {
   started = true;
+  about = org;
+  // What was known answered another question: another organization's, or one
+  // asked before a reset or with a different View as cookie.
+  state = PENDING;
+  // The new generation below drops the answer to any quiet refresh still out,
+  // which was a question about the answer this one replaces. Nothing is in
+  // flight any more as far as refresh() is concerned.
+  refreshing = false;
   const mine = ++generation;
   watchForReturn();
   if (!BYPASS_AUTH) {
@@ -310,8 +339,7 @@ function refresh() {
     if (picked !== question) {
       // The answer on screen is about a different role. Showing it until the
       // new one arrives would show the wrong role's screens, so start over.
-      state = PENDING;
-      start();
+      start(about);
       emit();
       return;
     }
@@ -346,19 +374,9 @@ function watchForReturn() {
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
-  // With the bypass on there is no session to wait for, so the first
-  // component that wants the answer starts the lookup, and a page that never
-  // asks never fetches. With real sign-in the lookup waits for the session to
-  // say someone is signed in (the effect in useUser), because asking for
-  // nobody would only get a 401.
-  if (BYPASS_AUTH && !started) start();
   return () => {
     listeners.delete(listener);
   };
-}
-
-function getSnapshot() {
-  return state;
 }
 
 /**
@@ -377,8 +395,7 @@ export const ViewAsCookieSeen = createContext<boolean | undefined>(undefined);
  * as is a different question.
  *
  * For the page tests (tests/helpers/render-page.tsx), so the screen under test
- * knows its role as soon as it is drawn, which is how a page will start once
- * the server hands the answer down with the page itself.
+ * knows its role as soon as it is drawn.
  */
 export function seedUserAccess(status: number, body: unknown) {
   if (started) return;
@@ -405,7 +422,7 @@ export function resetUserCache() {
   // wait on PENDING forever. Ask again for them: always with the bypass on,
   // and with real sign-in only if the lookup had started, which means the
   // session had already said someone is signed in.
-  if (listeners.size > 0 && (BYPASS_AUTH || wasStarted)) start();
+  if (listeners.size > 0 && (BYPASS_AUTH || wasStarted)) start(about);
   emit();
 }
 
@@ -414,11 +431,11 @@ export function resetUserCache() {
  *
  * Who comes from the sign-in session, or from the bypass's stand-in. What they
  * may do comes from /api/me in both cases, which is the same principal
- * lib/auth-guard.ts hands the API routes: their role in the organization, or
- * with the bypass on the full admin or the role picked in View as. Without
- * that, a screen could offer a button whose request the server then refuses,
- * the client and the server disagreeing about the one thing meant to control
- * both.
+ * lib/auth-guard.ts hands the API routes: their role in the organization the
+ * page is open in, or with the bypass on the full admin or the role picked in
+ * View as. Without that, a screen could offer a button whose request the
+ * server then refuses, the client and the server disagreeing about the one
+ * thing meant to control both.
  *
  * Screens ask `can(...)` rather than comparing role names, so a role an admin
  * made yesterday works on every screen without any screen knowing it exists.
@@ -427,7 +444,12 @@ export function resetUserCache() {
 export function useUser(): UserAccess {
   const { data: session, status } = useSession();
   const cookieSeen = useContext(ViewAsCookieSeen);
-  const access = useSyncExternalStore(subscribe, getSnapshot, () =>
+  const org = useContext(OrgContext)?.slug ?? null;
+  // An answer about another organization is no answer here, so a page that
+  // has just moved reads "not known yet" until its own is in, never the last
+  // organization's role for a moment.
+  const read = useCallback(() => (about === org ? state : PENDING), [org]);
+  const access = useSyncExternalStore(subscribe, read, () =>
     // The server's own reading of the View as cookie, so with the bypass on
     // the first frame already matches: no cookie means the full admin
     // straight away, and a cookie means "Checking your access…" until /api/me
@@ -437,8 +459,13 @@ export function useUser(): UserAccess {
   );
 
   useEffect(() => {
-    if (!BYPASS_AUTH && status === "authenticated" && !started) start();
-  }, [status]);
+    // With the bypass on there is no session to wait for, so the first
+    // component that wants the answer starts the lookup, and a page that never
+    // asks never fetches. With real sign-in the lookup waits for the session to
+    // say someone is signed in, because asking for nobody would only get a 401.
+    if (!BYPASS_AUTH && status !== "authenticated") return;
+    if (!started || about !== org) start(org);
+  }, [status, org]);
 
   // With real sign-in the store only speaks for someone the session says is
   // signed in. While the session is still loading nothing is known yet, and

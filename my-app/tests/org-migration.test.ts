@@ -282,17 +282,16 @@ async function bootCountingClients(url: string): Promise<number> {
 // after load() has reset the modules, so they all share its pool.
 type RequestApp = App & {
   upsertProfile: typeof import("@/lib/version-db").upsertProfile;
-  findMembership: typeof import("@/lib/orgs-db").findMembership;
-  findDefaultOrganization: typeof import("@/lib/orgs-db").findDefaultOrganization;
+  orgs: typeof import("@/lib/orgs-db");
   roles: typeof import("@/lib/roles-db");
 };
 
 async function loadRequestApp(url: string): Promise<RequestApp> {
   const app = await load(url);
   const { upsertProfile } = await import("@/lib/version-db");
-  const { findMembership, findDefaultOrganization } = await import("@/lib/orgs-db");
+  const orgs = await import("@/lib/orgs-db");
   const roles = await import("@/lib/roles-db");
-  return { ...app, upsertProfile, findMembership, findDefaultOrganization, roles };
+  return { ...app, upsertProfile, orgs, roles };
 }
 
 // Runs work in a transaction that is always rolled back, so a check can break
@@ -934,14 +933,17 @@ describeWithDatabase("org-migration", () => {
           WHERE contype = 'f' AND confrelid = 'organizations'::regclass
           GROUP BY conrelid`
       );
-      expect(Object.fromEntries(keys.map((row) => [row.name, row.keys]))).toEqual(
-        Object.fromEntries(
+      expect(Object.fromEntries(keys.map((row) => [row.name, row.keys]))).toEqual({
+        ...Object.fromEntries(
           ORG_SCOPED.map((table) => [
             table,
             ["FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE"],
           ])
-        )
-      );
+        ),
+        // The organization each person used last, for the old addresses that
+        // name none. Forgotten, not followed, when the organization goes.
+        profiles: ["FOREIGN KEY (last_org_id) REFERENCES organizations(id) ON DELETE SET NULL"],
+      });
     }, SLOW);
 
     test("refuse to delete a role somebody holds", async () => {
@@ -1308,8 +1310,9 @@ describeWithDatabase("org-migration", () => {
   // Signing in is how people join. upsertProfile, which auth.ts calls when
   // someone signs in, makes the first person in the default organization its
   // admin and everyone after them a viewer, and findMembership is how every
-  // request after that finds them again. The tests in this block run in
-  // order, each starting from where the last one left the database.
+  // request after that finds them again, in the organization the request
+  // names. The tests in this block run in order, each starting from where the
+  // last one left the database.
   describe("signing in", () => {
     let url = "";
     let app: RequestApp;
@@ -1358,14 +1361,17 @@ describeWithDatabase("org-migration", () => {
         "second@example.invalid": "viewer",
       });
       // The lookup every request makes, with the address in whatever case the
-      // provider hands back this time.
-      expect(await app.findMembership("FIRST@example.invalid")).toEqual({
+      // provider hands back this time, and the one the desktop makes for a
+      // request that names no organization.
+      const first = {
         orgId: defaultId,
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
         role: "admin",
-      });
+      };
+      expect(await app.orgs.findMembership("FIRST@example.invalid", "swinburne-fyp")).toEqual(first);
+      expect(await app.orgs.findDefaultMembership("FIRST@example.invalid")).toEqual(first);
     }, SLOW);
 
     test("finds a returning person whatever the case of their address", async () => {
@@ -1424,7 +1430,9 @@ describeWithDatabase("org-migration", () => {
         email: "Mixed.Case@Example.invalid",
         name: null,
       });
-      expect(await app.findMembership("MIXED.case@example.INVALID")).toMatchObject({
+      expect(
+        await app.orgs.findMembership("MIXED.case@example.INVALID", "swinburne-fyp")
+      ).toMatchObject({
         orgId: defaultId,
         role: "viewer",
       });
@@ -1457,9 +1465,84 @@ describeWithDatabase("org-migration", () => {
       expect(await membershipsOf(client, elsewhere)).toEqual({
         "elsewhere@example.invalid": "viewer",
       });
-      // Requests only act in the default organization for now, so to the
-      // gates this person belongs nowhere yet.
-      expect(await app.findMembership("elsewhere@example.invalid")).toBeNull();
+      // The gates find them in their own organization, and in no other.
+      expect(await app.orgs.findMembership("elsewhere@example.invalid", "elsewhere")).toEqual({
+        orgId: elsewhere,
+        slug: "elsewhere",
+        name: "Elsewhere",
+        isDefault: false,
+        role: "viewer",
+      });
+      expect(await app.orgs.findMembership("elsewhere@example.invalid", "swinburne-fyp")).toBeNull();
+      expect(await app.orgs.findDefaultMembership("elsewhere@example.invalid")).toBeNull();
+      // Nor does anyone else turn up there.
+      expect(await app.orgs.findMembership("first@example.invalid", "elsewhere")).toBeNull();
+    }, SLOW);
+
+    test("finds an organization by its slug, and nothing for a slug no organization could have", async () => {
+      expect(await app.orgs.findOrganization("swinburne-fyp")).toEqual({
+        id: defaultId,
+        slug: "swinburne-fyp",
+        name: "Swinburne FYP",
+        isDefault: true,
+      });
+      expect(await app.orgs.findOrganization("elsewhere")).toMatchObject({
+        slug: "elsewhere",
+        isDefault: false,
+      });
+      expect(await app.orgs.findOrganization("nobody-has-this")).toBeNull();
+      // Answered without asking the database, but the same answer it would give.
+      for (const slug of ["Swinburne-FYP", "x", "studio", "swinburne-fyp/", ""]) {
+        expect(await app.orgs.findOrganization(slug)).toBeNull();
+        expect(await app.orgs.findMembership("first@example.invalid", slug)).toBeNull();
+      }
+    }, SLOW);
+
+    test("remembers the organization someone used last, for addresses that name none", async () => {
+      const elsewhere = (await app.orgs.findOrganization("elsewhere"))?.id ?? 0;
+      // Nothing remembered yet: the default organization when they are in it,
+      // or else the one they joined first.
+      expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("swinburne-fyp");
+      expect(await app.orgs.findLastOrganization("ELSEWHERE@example.invalid")).toBe("elsewhere");
+      // Someone in no organization has nowhere to go.
+      expect(await app.orgs.findLastOrganization("nobody@example.invalid")).toBeNull();
+
+      const profile = await insertId(
+        client,
+        `SELECT id FROM profiles WHERE email = 'first@example.invalid'`
+      );
+      await client.query(
+        `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
+        [elsewhere, profile]
+      );
+      try {
+        // Joining another organization does not move them out of the default.
+        expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("swinburne-fyp");
+        await app.orgs.rememberLastOrganization("First@Example.invalid", elsewhere);
+        expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("elsewhere");
+
+        // Remembered, but no longer a member: back to the default, never into
+        // an organization they have left.
+        await client.query(
+          `DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`,
+          [elsewhere, profile]
+        );
+        expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("swinburne-fyp");
+      } finally {
+        await client.query(
+          `DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`,
+          [elsewhere, profile]
+        );
+        await client.query(`UPDATE profiles SET last_org_id = NULL WHERE id = $1`, [profile]);
+      }
+
+      // An organization that goes takes the memory of it with it.
+      await rolledBack(client, async () => {
+        await client.query(`UPDATE profiles SET last_org_id = $1 WHERE id = $2`, [elsewhere, profile]);
+        await client.query(`DELETE FROM organizations WHERE id = $1`, [elsewhere]);
+        const { rows } = await client.query(`SELECT last_org_id FROM profiles WHERE id = $1`, [profile]);
+        expect(rows).toEqual([{ last_org_id: null }]);
+      });
     }, SLOW);
 
     test("records someone when there is no default, and adds them once there is", async () => {
@@ -1468,7 +1551,7 @@ describeWithDatabase("org-migration", () => {
       // stop instead, as the "booting" tests show.
       await client.query(`UPDATE organizations SET is_default = false WHERE id = $1`, [defaultId]);
       try {
-        expect(await app.findDefaultOrganization()).toBeNull();
+        expect(await app.orgs.findDefaultOrganization()).toBeNull();
         expect(await app.upsertProfile("orphan@example.invalid", null)).toMatchObject({
           email: "orphan@example.invalid",
         });
@@ -1478,8 +1561,8 @@ describeWithDatabase("org-migration", () => {
             WHERE p.email = 'orphan@example.invalid'`
         );
         expect(rows).toEqual([{ n: 0 }]);
-        // Nor can anyone else be found in an organization a request may act in.
-        expect(await app.findMembership("first@example.invalid")).toBeNull();
+        // The desktop, which asks for the default, finds nobody either.
+        expect(await app.orgs.findDefaultMembership("first@example.invalid")).toBeNull();
       } finally {
         await client.query(`UPDATE organizations SET is_default = true WHERE id = $1`, [defaultId]);
       }

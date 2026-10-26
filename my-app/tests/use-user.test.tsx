@@ -38,6 +38,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, render, waitFor } from "@testing-library/react";
 
 import { useUser, resetUserCache, ViewAsCookieSeen, type UserAccess } from "@/hooks/useUser";
+import { OrgContext } from "@/hooks/useOrg";
 import { BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import { ALL_PERMISSIONS, presetFor, type PermissionKey } from "@/lib/permissions";
 
@@ -588,5 +589,97 @@ describe("resetUserCache", () => {
     act(() => resetUserCache());
     expect(seen?.role).toBe("admin");
     expect(seen?.viewingAs).toBeNull();
+  });
+});
+
+describe("moving to another organization", () => {
+  // A person can hold a different role in each organization, and /api/me
+  // answers for the one the page is open in. The last organization's answer
+  // must never stand in for the new one's, not even for a moment.
+  function InOrg({ slug }: { slug: string }) {
+    return (
+      <OrgContext.Provider value={{ slug, name: slug }}>
+        <Probe />
+      </OrgContext.Provider>
+    );
+  }
+
+  /** A fetch whose one answer waits for release(). */
+  function holdMe() {
+    let release: (body: unknown) => void = () => {};
+    const answer = new Promise((resolve) => {
+      release = (body) => resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    });
+    const fetchMock = jest.fn().mockReturnValue(answer);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return { fetchMock, release };
+  }
+
+  beforeEach(() => {
+    signIn({ email: "a@example.com" });
+  });
+
+  test("asks again, and knows nothing until the new organization answers", async () => {
+    const first = answerMe(memberAnswer("admin", "Admin", ALL_PERMISSIONS));
+    const view = render(<InOrg slug="acme" />);
+    expect((await settled()).isAdmin).toBe(true);
+
+    const { fetchMock, release } = holdMe();
+    view.rerender(<InOrg slug="beta-team" />);
+    expect([seen?.loading, seen?.isAdmin]).toEqual([true, false]);
+    // Drawn again before the answer is in, which anything else on the page
+    // can cause, it still knows nothing.
+    view.rerender(<InOrg slug="beta-team" />);
+    expect([seen?.loading, seen?.isAdmin]).toEqual([true, false]);
+
+    await act(async () => release(memberAnswer("viewer", "Viewer", VIEWER)));
+    const result = await settled();
+    expect([result.role, result.isAdmin]).toEqual(["viewer", false]);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("drops a late answer about the organization the page has left", async () => {
+    const { release } = holdMe();
+    const view = render(<InOrg slug="acme" />);
+    expect(seen?.loading).toBe(true);
+
+    answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    view.rerender(<InOrg slug="beta-team" />);
+    expect((await settled()).role).toBe("viewer");
+
+    await act(async () => {
+      release(memberAnswer("admin", "Admin", ALL_PERMISSIONS));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(seen?.role).toBe("viewer");
+  });
+
+  test("still asks again on focus after a look in the old organization never came back", async () => {
+    // The look still out belonged to the answer the move threw away. Waiting
+    // for it would mean never asking again in the new organization.
+    answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    const view = render(<InOrg slug="acme" />);
+    await settled();
+    globalThis.fetch = jest.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+    comeBack("focus");
+
+    answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    view.rerender(<InOrg slug="beta-team" />);
+    await settled();
+    const later = answerMe(memberAnswer("admin", "Admin", ALL_PERMISSIONS));
+    comeBack("focus");
+    await waitFor(() => expect(seen?.isAdmin).toBe(true));
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  test("with the bypass on and nothing picked, is the full admin in each, and asks nobody", () => {
+    mockBypass = true;
+    const fetchMock = answerMe(VIEWER_ANSWER);
+    const view = render(<InOrg slug="acme" />);
+    expect([seen?.loading, seen?.isAdmin]).toEqual([false, true]);
+    view.rerender(<InOrg slug="beta-team" />);
+    expect([seen?.loading, seen?.isAdmin]).toEqual([false, true]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -26,13 +26,19 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import SchemaDetailPage from "@/app/(studio)/schemas/[id]/page";
-import { fetchCalls, resetPageState, setRoutes, type FetchRoute } from "./helpers/render-page";
+import SchemaDetailPage from "@/app/[org]/(studio)/schemas/[id]/page";
+import {
+  fetchCalls,
+  render,
+  resetPageState,
+  setRoutes,
+  type FetchRoute,
+} from "./helpers/render-page";
 
 const CONNECTION = {
   id: 3,
@@ -129,7 +135,7 @@ describe("a schema page with nothing to show", () => {
     expect(fetchCalls).toHaveLength(0);
     expect(screen.getByRole("link", { name: /Back to dashboard/ })).toHaveAttribute(
       "href",
-      "/studio"
+      "/test-org/studio"
     );
   });
 

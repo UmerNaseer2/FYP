@@ -106,10 +106,10 @@ describe("the screens that show a change level", () => {
   // jest's node environment, so this reads their source: each one takes the
   // level's colour from the one table rather than a map of its own.
   it.each([
-    "app/(studio)/versionsync/page.tsx",
-    "app/(studio)/deploy/page.tsx",
-    "app/(studio)/schemas/[id]/page.tsx",
-    "app/(studio)/script-editor/page.tsx",
+    "app/[org]/(studio)/versionsync/page.tsx",
+    "app/[org]/(studio)/deploy/page.tsx",
+    "app/[org]/(studio)/schemas/[id]/page.tsx",
+    "app/[org]/(studio)/script-editor/page.tsx",
     "components/studio/DiffReport.tsx",
   ])("%s draws levels from CHANGE_LEVEL_PILL", (file) => {
     const source = readFileSync(path.join(ROOT, file), "utf8");

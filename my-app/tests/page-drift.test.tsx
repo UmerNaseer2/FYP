@@ -19,15 +19,21 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import DriftPage from "@/app/(studio)/drift/page";
+import DriftPage from "@/app/[org]/(studio)/drift/page";
 import type { CompareReport } from "@/lib/compare-types";
 import type { DriftDetailView, TrackedSchemaListItem } from "@/lib/lineage-db";
-import { fetchCalls, resetPageState, setRoutes, setSearchParams } from "./helpers/render-page";
+import {
+  fetchCalls,
+  render,
+  resetPageState,
+  setRoutes,
+  setSearchParams,
+} from "./helpers/render-page";
 import { schema } from "./helpers/snapshots";
 
 /** A tracked row, with only the fields a test cares about spelled out. */
@@ -185,11 +191,11 @@ describe("which schema the drift screen shows", () => {
 
     expect(screen.getByRole("link", { name: "Audit log" })).toHaveAttribute(
       "href",
-      "/drift?tab=audit&schema=2"
+      "/test-org/drift?tab=audit&schema=2"
     );
     expect(screen.getByRole("link", { name: "Schedule" })).toHaveAttribute(
       "href",
-      "/drift?tab=schedule&schema=2"
+      "/test-org/drift?tab=schedule&schema=2"
     );
     // Styling alone said which tab was open, which a screen reader could not
     // hear at all: two identical links and no way to tell them apart.
@@ -227,7 +233,7 @@ describe("when the screen cannot find out", () => {
     expect(await screen.findByText("Nothing tracked yet")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Go to dashboard/ })).toHaveAttribute(
       "href",
-      "/studio"
+      "/test-org/studio"
     );
     expect(screen.queryByText("Could not load your tracked schemas")).not.toBeInTheDocument();
   });
@@ -294,7 +300,7 @@ describe("where the report on screen came from", () => {
     expect(screen.getByText(/Automatic checking off/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "turn on" })).toHaveAttribute(
       "href",
-      "/drift?tab=schedule"
+      "/test-org/drift?tab=schedule"
     );
   });
 
@@ -321,8 +327,27 @@ describe("where the report on screen came from", () => {
     expect(screen.getByText(/Checked automatically every 1h/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "change" })).toHaveAttribute(
       "href",
-      "/drift?tab=schedule"
+      "/test-org/drift?tab=schedule"
     );
+  });
+
+  it("opens the schema in Compare, in this organization, from both of its links", async () => {
+    setRoutes(
+      routesFor(
+        [tracked({ id: 1 })],
+        detail({ trackedSchemaId: 1, state: "drifted", report: emptyReport() })
+      )
+    );
+    render(<DriftPage />);
+
+    // The page builds this address once and hands it to the resolution bar,
+    // which draws it as given, so the organization has to be in it already.
+    const href = "/test-org/compare?rightConnection=1&rightSchema=schema_1&run=1";
+    expect(await screen.findByRole("link", { name: /Open in Compare/ })).toHaveAttribute(
+      "href",
+      href
+    );
+    expect(screen.getByRole("link", { name: /Author a migration/ })).toHaveAttribute("href", href);
   });
 
   it("says the connection is gone instead of printing a host it no longer has", async () => {

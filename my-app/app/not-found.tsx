@@ -13,7 +13,14 @@ import { CompareIcon, DashboardIcon, SearchIcon } from "@/components/ui/icons";
 //
 // A tracked schema that has been deleted does NOT come through here: the
 // dashboard's detail screen loads it over the API and says so in place, which
-// keeps the sidebar. See app/(studio)/schemas/[id]/page.tsx.
+// keeps the sidebar. See app/[org]/(studio)/schemas/[id]/page.tsx.
+//
+// An organization's address that the person opening it does not belong to
+// DOES come through here (app/[org]/layout.tsx), and looks exactly like an
+// address nobody has. Saying "you are not a member" would tell a stranger
+// which organizations exist. The two buttons go to addresses with no
+// organization in them, which take a signed-in person on to the last
+// organization they opened (lib/org-redirect.ts).
 // ---------------------------------------------------------------------------
 
 export default function NotFound() {
@@ -22,7 +29,7 @@ export default function NotFound() {
       <EmptyState
         icon={<SearchIcon size={22} />}
         title="There is no page here"
-        description="The address you opened doesn't match any screen in Schema Studio. It may have been a link from an older version."
+        description="The address you opened doesn't match any screen in Schema Studio. It may be a link from an older version, or to an organization you are not a member of."
         actions={
           <div className="flex items-center gap-2">
             <Link href="/studio" className="btn btn-primary btn-sm">

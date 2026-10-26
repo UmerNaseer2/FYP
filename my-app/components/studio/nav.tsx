@@ -12,12 +12,17 @@ import {
   UsersIcon,
 } from "@/components/ui/icons";
 import type { FeatureKey } from "@/lib/permissions";
+import { orgSlugFromPath } from "@/lib/org-slug";
 
 export type NavItem = {
   /** Short name shown in the breadcrumb. */
   screen: string;
   /** Sidebar label (may differ subtly from `screen`). */
   label: string;
+  /**
+   * The screen's address without the organization ("/drift"). The shell puts
+   * the organization the page is open in on the front ("/acme/drift").
+   */
   href: string;
   icon: ReactNode;
   /**
@@ -113,10 +118,16 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-/** Pick the nav item whose route matches the current path (falls back to Dashboard). */
+/**
+ * Pick the nav item whose route matches the current path (falls back to
+ * Dashboard). The organization at the front of the path is set aside first,
+ * so "/acme/drift" is Drift, the same as the old address "/drift".
+ */
 export function activeNavItem(pathname: string): NavItem {
+  const slug = orgSlugFromPath(pathname);
+  const route = slug === null ? pathname : pathname.slice(slug.length + 1);
   const match = NAV_ITEMS.find(
-    (item) => pathname === item.href || pathname.startsWith(item.href + "/")
+    (item) => route === item.href || route.startsWith(item.href + "/")
   );
   return match ?? NAV_ITEMS[0];
 }

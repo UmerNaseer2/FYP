@@ -16,17 +16,18 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
-import VersionSyncPage from "@/app/(studio)/versionsync/page";
+import VersionSyncPage from "@/app/[org]/(studio)/versionsync/page";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import {
   type FetchRoute,
   fetchCalls,
   holdNext,
+  render,
   resetPageState,
   setCustomRole,
   setRoutes,

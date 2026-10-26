@@ -275,6 +275,14 @@ export class Profile extends Model<
   declare role: CreationOptional<string | null>;
   declare created_at: CreationOptional<Date>;
   declare last_seen_at: CreationOptional<Date | null>;
+  /**
+   * The organization this person last opened, so an address that names none
+   * (an old bookmark, the way back from signing in) takes them there again.
+   * Only a hint: lib/orgs-db.ts ignores it once they no longer belong there,
+   * and deleting the organization empties it (the key is added by
+   * lib/db/bootstrap.ts, with the other keys to `organizations`).
+   */
+  declare last_org_id: CreationOptional<number | null>;
 }
 
 Profile.init(
@@ -287,6 +295,7 @@ Profile.init(
     role: { type: DataTypes.TEXT, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     last_seen_at: { type: DataTypes.DATE, allowNull: true },
+    last_org_id: { type: DataTypes.INTEGER, allowNull: true },
   },
   { sequelize, tableName: "profiles" }
 );
@@ -1364,13 +1373,13 @@ DeployAttempt.init(
 //
 // The keys that involve organizations are not declared here at all: every
 // `org_id` key to `organizations`, the memberships keys to `organizations` and
-// `profiles`, and the (org_id, role) keys from `role_permissions` and
-// `memberships` to `roles`. lib/db/bootstrap.ts adds them by hand. sync() never
-// changes a table that already exists, and a database from before
-// organizations already has nearly every one of these tables, so a key
-// declared here would reach new installs only. Adding them in one place means
-// a fresh install and an upgraded one get the same keys from the same
-// statements.
+// `profiles`, `profiles.last_org_id`, and the (org_id, role) keys from
+// `role_permissions` and `memberships` to `roles`. lib/db/bootstrap.ts adds
+// them by hand. sync() never changes a table that already exists, and a
+// database from before organizations already has nearly every one of these
+// tables, so a key declared here would reach new installs only. Adding them in
+// one place means a fresh install and an upgraded one get the same keys from
+// the same statements.
 // ---------------------------------------------------------------------------
 
 TrackedSchema.hasMany(Snapshot, { foreignKey: "tracked_schema_id", onDelete: "CASCADE" });

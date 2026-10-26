@@ -11,9 +11,18 @@
 //     from a test would be a test that passes or fails depending on whether a
 //     database happens to be up.
 //
+// And one thing every real studio page has around it: the organization it is
+// open in, which `render` below provides.
+//
 // This file is not a test itself: Jest only runs tests/**/*.test.ts(x).
 
-import { act } from "react";
+import { act, type ReactElement, type ReactNode } from "react";
+import {
+  render as renderWithoutOrg,
+  type RenderOptions,
+  type RenderResult,
+} from "@testing-library/react";
+import { OrgProvider } from "../../components/OrgProvider";
 import {
   ALL_PERMISSIONS,
   BUILT_IN_ROLE_INFO,
@@ -66,6 +75,44 @@ export const navigationStubs = {
   usePathname: () => pathname,
 };
 
+/* ------------------------------------------------------------- organization */
+
+/** The organization every screen drawn by `render` is open in. */
+export const TEST_ORG = { slug: "test-org", name: "Test Org" };
+
+function InTestOrg({ children }: { children: ReactNode }) {
+  return (
+    <OrgProvider slug={TEST_ORG.slug} name={TEST_ORG.name}>
+      {children}
+    </OrgProvider>
+  );
+}
+
+/**
+ * Testing Library's render, with the screen inside TEST_ORG, the way
+ * app/[org]/layout.tsx puts every studio page inside its organization. Suites
+ * of studio pages, and of the components that link or navigate into the app,
+ * import this one instead.
+ *
+ * Without it, every link and every router.push a screen makes would come out
+ * with no organization in it (useOrgHref in hooks/useOrg.ts returns the path
+ * as given), which no real studio page ever does. A link that forgot its
+ * organization would then look exactly like one that kept it, and a test that
+ * expects "/test-org/drift" is what tells them apart.
+ *
+ * The organization is set for the whole render, rerender included, so a suite
+ * cannot pass its own wrapper. The sign-in page and the landing page are drawn
+ * outside every organization, so their suites use Testing Library's own, and
+ * so do suites of components that go nowhere or are handed their links ready
+ * made (DriftResolutionBar), and of StudioShell, which sets its own.
+ */
+export function render(
+  ui: ReactElement,
+  options?: Omit<RenderOptions, "queries" | "wrapper">
+): RenderResult {
+  return renderWithoutOrg(ui, { ...options, wrapper: InTestOrg });
+}
+
 /* ------------------------------------------------------------------ session */
 
 export type TestRole = "viewer" | "editor" | "admin";
@@ -102,7 +149,7 @@ function memberOf(role: string, roleLabel: string, permissions: readonly string[
       permissions,
       bypass: false,
       viewingAs: null,
-      org: { slug: "test-org", name: "Test Org" },
+      org: TEST_ORG,
     },
   };
 }

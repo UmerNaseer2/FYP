@@ -16,6 +16,7 @@ import { FixScriptBuilder } from "./FixScriptBuilder";
 // lib/perf-advice.ts reaches the browser. One definition, shared with the route
 // that produces the response, means the two can never silently disagree.
 import type { AdviceItem, AdviceView } from "@/lib/perf-advice";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Spec feature 09 — performance suggestions, as a screen.
@@ -74,7 +75,7 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/performance/advice?connectionId=${encodeURIComponent(connectionId)}` +
             `&schema=${encodeURIComponent(schema)}`,
           { cache: "no-store" }

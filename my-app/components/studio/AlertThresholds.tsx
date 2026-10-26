@@ -14,6 +14,7 @@ import {
   type ThresholdSetting,
 } from "@/lib/perf-thresholds";
 import type { PerfTarget } from "./PerfTargetPicker";
+import { apiFetch } from "@/lib/api-fetch";
 
 /**
  * Spec feature 10 — "Allow custom alert thresholds for performance issues."
@@ -69,7 +70,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/performance/thresholds?connectionId=${encodeURIComponent(connectionId)}` +
             `&schema=${encodeURIComponent(schema)}`,
           { cache: "no-store" }
@@ -174,7 +175,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
     setSaved(false);
     setSaveError(null);
     try {
-      const res = await fetch("/api/performance/thresholds", {
+      const res = await apiFetch("/api/performance/thresholds", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -16,6 +16,8 @@ import {
   type SeriesBox,
 } from "@/lib/metrics-series";
 import type { PerfTarget } from "./PerfTargetPicker";
+import { apiFetch } from "@/lib/api-fetch";
+import { useOrgHref } from "@/hooks/useOrg";
 
 /**
  * Spec feature 10 — monitoring, as a screen.
@@ -91,6 +93,7 @@ const SIZE_KEYS: MetricKey[] = ["totalBytes", "indexBytes", "estimatedRows"];
 type Loaded = { key: string; view: MetricsView | null; error: string | null };
 
 export function SchemaTrends({ target }: { target: PerfTarget | null }) {
+  const orgPath = useOrgHref();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [days, setDays] = useState(7);
   // Bumped by "Refresh". Part of the request key, so asking again is asking a
@@ -106,7 +109,7 @@ export function SchemaTrends({ target }: { target: PerfTarget | null }) {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/performance/metrics?connectionId=${encodeURIComponent(connectionId)}` +
             `&schema=${encodeURIComponent(schema)}&days=${days}`,
           { cache: "no-store" }
@@ -193,7 +196,7 @@ export function SchemaTrends({ target }: { target: PerfTarget | null }) {
               </>
             }
             actions={
-              <Link href="/drift" className="btn btn-primary btn-sm">
+              <Link href={orgPath("/drift")} className="btn btn-primary btn-sm">
                 <DriftIcon size={13} /> Go to Drift
               </Link>
             }

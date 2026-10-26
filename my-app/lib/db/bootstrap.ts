@@ -619,6 +619,14 @@ async function backfillOlderTables(): Promise<void> {
     `ALTER TABLE deploy_approvals ADD COLUMN IF NOT EXISTS scripts JSONB`
   );
 
+  // The organization each person last opened (see the Profile model). Empty
+  // for everyone at first, which sends them to the default organization, the
+  // only one an older install has. Its key comes with the other keys to
+  // `organizations`, in addOrganizationKeys.
+  await metadataPool.query(
+    `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS last_org_id INTEGER`
+  );
+
   await alterTimestampColumns();
 }
 
@@ -806,10 +814,11 @@ async function rekey(
 /**
  * The foreign keys that hold organizations together.
  *
- * Deleting an organization deletes everything in it. The two keys to `roles`
- * point at (org_id, name), so a role is only ever found in its own
- * organization: a role somebody holds cannot be deleted (RESTRICT), while a
- * role's permissions go with it (CASCADE).
+ * Deleting an organization deletes everything in it, and empties the
+ * last_org_id of anyone who last opened it. The two keys to `roles` point at
+ * (org_id, name), so a role is only ever found in its own organization: a
+ * role somebody holds cannot be deleted (RESTRICT), while a role's
+ * permissions go with it (CASCADE).
  *
  * The keys already there are read from the catalog rather than tried and
  * caught: these run inside moveToOrganizations' transaction, where an error
@@ -842,11 +851,16 @@ async function addOrganizationKeys(client: MetadataClient): Promise<void> {
       "memberships_org_id_role_fkey",
       "FOREIGN KEY (org_id, role) REFERENCES roles (org_id, name) ON UPDATE CASCADE ON DELETE RESTRICT",
     ],
+    [
+      "profiles",
+      "profiles_last_org_id_fkey",
+      "FOREIGN KEY (last_org_id) REFERENCES organizations (id) ON DELETE SET NULL",
+    ],
   ];
   const existing = await client.query<{ table_name: string; conname: string }>(
     `SELECT conrelid::regclass::text AS table_name, conname
        FROM pg_constraint WHERE contype = 'f' AND conrelid = ANY($1::regclass[])`,
-    [[...ORG_TABLES, "memberships"]]
+    [[...ORG_TABLES, "memberships", "profiles"]]
   );
   const have = new Set(existing.rows.map((row) => `${row.table_name}.${row.conname}`));
   for (const [table, name, definition] of keys) {
