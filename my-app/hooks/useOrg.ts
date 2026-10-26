@@ -1,8 +1,12 @@
 import { createContext, useCallback, useContext } from "react";
 import { orgHref } from "@/lib/org-slug";
 
-/** The organization a page is open in: its slug (the address) and its name. */
-export type Org = { slug: string; name: string };
+/**
+ * The organization a page is open in: its slug (the address), its name, and
+ * whether a production run needs a second person to approve it
+ * (Organization.twoPersonRule in lib/orgs-db.ts).
+ */
+export type Org = { slug: string; name: string; twoPersonRule: boolean };
 
 /**
  * The organization the page is open in, from app/[org]/layout.tsx through

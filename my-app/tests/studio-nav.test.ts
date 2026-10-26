@@ -133,13 +133,19 @@ describe("the list of screens", () => {
     }
   });
 
-  test("keeps Admin the only row behind features no box can give away", () => {
-    // Users and Roles & permissions are admin-only: the grid offers no box for
-    // them, so this row stays off every other role's rail whatever is ticked.
-    const adminOnly = NAV_ITEMS.filter((item) =>
-      featuresOf(item).every((feature) => isAdminOnly(readKeyOf(feature)))
+  test("keeps Admin the only row with anything admin-only on it", () => {
+    // Roles & permissions and Organization are admin-only, and both live on
+    // the Admin screen. Another role reaches that screen only through a
+    // Users box an Admin ticked for it.
+    const withAdminOnly = NAV_ITEMS.filter((item) =>
+      featuresOf(item).some((feature) => isAdminOnly(readKeyOf(feature)))
     );
-    expect(adminOnly.map((item) => item.screen)).toEqual(["Admin"]);
+    expect(withAdminOnly.map((item) => item.screen)).toEqual(["Admin"]);
+    expect(featuresOf(NAV_ITEMS.find((item) => item.screen === "Admin")!)).toEqual([
+      "users",
+      "roles",
+      "organization",
+    ]);
   });
 
   test("shows a new install's viewer every row except Admin", () => {

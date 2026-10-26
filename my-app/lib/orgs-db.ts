@@ -3,6 +3,7 @@ import type { MetadataClient } from "./db/sequelize";
 import { seedBuiltInRoles } from "./db/bootstrap";
 import { ORG_SLUG_PATTERN, isOrgSlug } from "./org-slug";
 import { ADMIN_ROLE } from "./permissions";
+import { logRoleChanges } from "./roles-db";
 
 /**
  * Organizations, and who belongs to which.
@@ -48,6 +49,13 @@ export type Organization = {
    * of the registry would then belong to a different organization.
    */
   isDefault: boolean;
+  /**
+   * Whether a production deploy or rollback needs a second person to approve
+   * it. On by default. An Admin can switch it off for an organization of one
+   * (the Organization tab), and then whoever asked may clear their own
+   * request, which the approval row records as a self-approval.
+   */
+  twoPersonRule: boolean;
 };
 
 /** One person's place in an organization: which one, and their role there. */
@@ -57,6 +65,8 @@ export type Membership = {
   name: string;
   /** Whether that organization is the default one (see Organization.isDefault). */
   isDefault: boolean;
+  /** That organization's two-person rule (see Organization.twoPersonRule). */
+  twoPersonRule: boolean;
   role: string;
 };
 
@@ -82,7 +92,7 @@ export type Member = Membership & {
 export async function findDefaultOrganization(): Promise<Organization | null> {
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault" FROM organizations WHERE is_default`
+    `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule" FROM organizations WHERE is_default`
   );
   return rows[0] ?? null;
 }
@@ -100,7 +110,7 @@ export async function findOrganization(slug: string): Promise<Organization | nul
   if (!SLUG.test(slug)) return null;
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault" FROM organizations WHERE slug = $1`,
+    `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule" FROM organizations WHERE slug = $1`,
     [slug]
   );
   return rows[0] ?? null;
@@ -111,13 +121,14 @@ type MemberRow = {
   slug: string;
   name: string;
   is_default: boolean;
+  two_person_rule: boolean;
   role: string;
   email: string;
   person_name: string | null;
 };
 
 /** The columns every membership lookup reads, joined the same way. */
-const MEMBERSHIP_SELECT = `SELECT o.id AS org_id, o.slug, o.name, o.is_default, m.role,
+const MEMBERSHIP_SELECT = `SELECT o.id AS org_id, o.slug, o.name, o.is_default, o.two_person_rule, m.role,
             p.email, p.name AS person_name
        FROM profiles p
        JOIN memberships m ON m.profile_id = p.id
@@ -129,6 +140,7 @@ function toMembership(row: MemberRow): Membership {
     slug: row.slug,
     name: row.name,
     isDefault: row.is_default,
+    twoPersonRule: row.two_person_rule,
     role: row.role,
   };
 }
@@ -241,7 +253,7 @@ export async function rememberLastOrganization(profileId: number, orgId: number)
 export async function listOrganizations(): Promise<Organization[]> {
   await syncMetadataTables();
   const { rows } = await pool.query<Organization>(
-    `SELECT id, slug, name, is_default AS "isDefault"
+    `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule"
        FROM organizations
       ORDER BY lower(name), id`
   );
@@ -318,7 +330,7 @@ async function createIn(
   const inserted = await client.query<Organization>(
     `INSERT INTO organizations (slug, name) VALUES ($1, $2)
      ON CONFLICT (slug) DO NOTHING
-     RETURNING id, slug, name, is_default AS "isDefault"`,
+     RETURNING id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule"`,
     [slug, name]
   );
   const created = inserted.rows[0];
@@ -336,4 +348,157 @@ async function createIn(
     created.id,
   ]);
   return { kind: "ok", organization: created };
+}
+
+/** What updateOrganization did. */
+export type Updated =
+  | { kind: "ok"; organization: Organization }
+  /** The organization is gone: someone deleted it a moment ago. */
+  | { kind: "not-found" };
+
+/**
+ * Rename an organization, switch its two-person rule, or both, from the
+ * Organization tab. Only what is given changes, and each change that really
+ * changes something gets its own line in the change log, written in the same
+ * transaction, so the log never shows a change that did not happen or misses
+ * one that did.
+ *
+ * The slug stays as it is. It is in every address and bookmark anyone has for
+ * the organization, and in the API calls of every page open on it right now,
+ * so changing it would break all of those at once for a cosmetic gain.
+ *
+ * The log rows name the admin role because every row names a role, and the
+ * Organization tab is the admin role's alone. The new name is the subject and
+ * the old one the detail, so the line can say both.
+ */
+export async function updateOrganization(
+  orgId: number,
+  changes: { name?: string; twoPersonRule?: boolean },
+  actor: string
+): Promise<Updated> {
+  await syncMetadataTables();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Locked, so two Admins saving at once are lined up and each log line
+    // says what the name or the rule really was before that save.
+    const found = await client.query<Organization>(
+      `SELECT id, slug, name, is_default AS "isDefault", two_person_rule AS "twoPersonRule"
+         FROM organizations WHERE id = $1 FOR NO KEY UPDATE`,
+      [orgId]
+    );
+    const before = found.rows[0];
+    if (!before) {
+      await client.query("ROLLBACK");
+      return { kind: "not-found" };
+    }
+    const after: Organization = {
+      ...before,
+      name: changes.name ?? before.name,
+      twoPersonRule: changes.twoPersonRule ?? before.twoPersonRule,
+    };
+    await client.query(
+      `UPDATE organizations SET name = $2, two_person_rule = $3 WHERE id = $1`,
+      [orgId, after.name, after.twoPersonRule]
+    );
+    await logRoleChanges(client, orgId, [
+      ...(after.name !== before.name
+        ? [
+            {
+              role: ADMIN_ROLE,
+              kind: "rename-organization" as const,
+              subject: after.name,
+              detail: before.name,
+              actor,
+            },
+          ]
+        : []),
+      ...(after.twoPersonRule !== before.twoPersonRule
+        ? [
+            {
+              role: ADMIN_ROLE,
+              kind: "two-person-rule" as const,
+              detail: after.twoPersonRule ? "on" : "off",
+              actor,
+            },
+          ]
+        : []),
+    ]);
+    await client.query("COMMIT");
+    return { kind: "ok", organization: after };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** What deleteOrganization did. Every refusal left everything as it was. */
+export type Deleted =
+  | { kind: "deleted" }
+  | { kind: "not-found" }
+  /** The name typed to confirm is not the organization's. */
+  | { kind: "mismatch" }
+  /** The default organization, which this install cannot do without. */
+  | { kind: "default" };
+
+/**
+ * Delete an organization and everything it owns, once the Admin has typed its
+ * name to confirm.
+ *
+ * Every table that belongs to an organization points at it with ON DELETE
+ * CASCADE (lib/db/bootstrap.ts), so one DELETE takes its memberships, roles,
+ * saved connections (with their stored database passwords), tracked schemas,
+ * history, approvals, invitations and change log with it, all in the one
+ * statement. Anyone who last opened it has their last_org_id emptied by its
+ * own foreign key, and lands on their other organizations, or on making one,
+ * next time. Their profiles stay: they may belong elsewhere, or be invited
+ * again.
+ *
+ * Nothing about the deletion can go in the organization's own change log,
+ * because that log goes with it. The server's log says who did it.
+ *
+ * The scripts it kept in the GitHub registry stay there (under orgs/<id>):
+ * they are in the repository's history whatever happens here, and removing
+ * files from a repository is for whoever owns it.
+ *
+ * The default organization cannot be deleted. The desktop app and the demo
+ * act in it, and its scripts sit at the top of the registry, where no other
+ * organization's may (see Organization.isDefault).
+ *
+ * The name is compared inside the transaction, against the row as it is now,
+ * so a rename that lands between opening the dialog and confirming it makes
+ * the confirmation fail rather than delete something under another name.
+ */
+export async function deleteOrganization(orgId: number, confirmName: string): Promise<Deleted> {
+  await syncMetadataTables();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query<{ name: string; is_default: boolean }>(
+      `SELECT name, is_default FROM organizations WHERE id = $1 FOR UPDATE`,
+      [orgId]
+    );
+    const row = found.rows[0];
+    const refusal: Deleted | null = !row
+      ? { kind: "not-found" }
+      : row.is_default
+        ? { kind: "default" }
+        : row.name !== confirmName
+          ? { kind: "mismatch" }
+          : null;
+    if (refusal) {
+      await client.query("ROLLBACK");
+      return refusal;
+    }
+    await client.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
+    await client.query("COMMIT");
+    return { kind: "deleted" };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }

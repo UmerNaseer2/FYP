@@ -78,8 +78,9 @@ export type RoleChange = {
   /**
    * The person a row is about, by email address: who was given a role
    * (`assign`), who was invited or whose invitation was cancelled (`invite`,
-   * `cancel-invite`; null for an invitation link, which names nobody), and who
-   * joined (`join`).
+   * `cancel-invite`; null for an invitation link, which names nobody), who
+   * joined (`join`), and who was removed (`remove`). Null for the rows about
+   * the organization itself.
    */
   subject: string | null;
   /**
@@ -89,6 +90,9 @@ export type RoleChange = {
    *   assign       the name of the role the person had before
    *   invite       for an invitation link, how many days it was made to last
    *   join         "email" or "link": which kind of invitation they joined with
+   *   remove       null: the row's role is the one they held
+   *   rename-organization  the name the organization had before
+   *   two-person-rule      "on" or "off": what the rule was switched to
    */
   detail: string | null;
   actor: string;
@@ -167,6 +171,41 @@ export async function getRoleAccess(orgId: number, role: string): Promise<RoleAc
     roleLabel: found.label,
     permissions: effectivePermissions(role, found.granted),
   };
+}
+
+/**
+ * These roles of the organization, each with its name as people read it and
+ * what it may do, locked against being deleted until the caller's transaction
+ * ends. A name the organization has no role for is left out of the map.
+ *
+ * The users and invites routes read the roles a change touches through this,
+ * so the rank rule (canHandOut in lib/permissions.ts) is checked against the
+ * roles as they stand inside the transaction that makes the change.
+ *
+ * The permissions come from a subquery rather than the join readRole uses,
+ * because a row lock cannot be taken on grouped rows.
+ */
+export async function lockRoles(
+  client: Queryable,
+  orgId: number,
+  names: readonly string[]
+): Promise<Map<string, { label: string; permissions: PermissionKey[] }>> {
+  const result = await client.query<{ name: string; label: string; granted: string[] }>(
+    `SELECT r.name, r.label,
+            ARRAY(SELECT p.feature || ':' || p.action
+                    FROM role_permissions p
+                   WHERE p.org_id = r.org_id AND p.role = r.name) AS granted
+       FROM roles r
+      WHERE r.org_id = $1 AND r.name = ANY($2::text[])
+        FOR KEY SHARE OF r`,
+    [orgId, [...names]]
+  );
+  return new Map(
+    result.rows.map((row) => [
+      row.name,
+      { label: row.label, permissions: effectivePermissions(row.name, row.granted) },
+    ])
+  );
 }
 
 /**

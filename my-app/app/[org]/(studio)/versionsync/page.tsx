@@ -19,7 +19,7 @@ import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { useUser } from "@/hooks/useUser";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { refusalMessage } from "@/lib/permissions";
 import {
   cutForwardOnly,
@@ -1209,6 +1209,8 @@ function ReplayBody({
 }: Omit<ReplayDialogProps, "entries"> & { entries: LedgerEntry[]; titleId: string }) {
   const { user, roleLabel, bypass, can } = useUser();
   const orgPath = useOrgHref();
+  // Whether production runs here wait for a second person (the Organization tab).
+  const twoPersonRule = useOrg()?.twoPersonRule ?? true;
   // Each of these is a box an admin ticks for a role on the Admin screen.
   // Without "Approvals: Read" the list is not even asked for: the route would
   // refuse, and the panel says why instead of reporting a 403.
@@ -1792,6 +1794,7 @@ function ReplayBody({
               mayRequest={mayRequestApproval}
               mayApprove={mayApprove}
               bypass={bypass}
+              twoPersonRule={twoPersonRule}
               note={approvalNote}
               onNoteChange={setApprovalNote}
               onRequest={() => void requestApproval()}

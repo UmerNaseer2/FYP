@@ -16,7 +16,9 @@ import { cleanInviteEmail, inviteEmailProblem, isLinkInviteDays } from "@/lib/in
  * Reading needs Users: Read, like the member list beside it. Making and
  * cancelling both need Users: Create, because cancelling is part of deciding
  * who gets in, and a role that could cancel but not invite could only ever
- * shut people out.
+ * shut people out. The rank rule holds for both kinds of invitation: nobody
+ * can offer a role that can do something theirs can't (canHandOut in
+ * lib/permissions.ts).
  *
  * Nobody can be invited in two places, and GET says so with `canInvite`, so
  * the Users tab draws no form that could only be refused:
@@ -96,6 +98,7 @@ export async function POST(request: NextRequest) {
         role,
         invitedBy: who.profileId,
         actor,
+        holder: gate.principal,
       });
       switch (made.kind) {
         case "no-role":
@@ -108,6 +111,8 @@ export async function POST(request: NextRequest) {
             },
             { status: 400 }
           );
+        case "out-of-reach":
+          return outOfReach(made.label, gate.principal);
         case "member":
           return NextResponse.json(
             { error: "Someone with that address is a member here already.", field: "email" },
@@ -144,7 +149,9 @@ export async function POST(request: NextRequest) {
         days: fields.days,
         invitedBy: who.profileId,
         actor,
+        holder: gate.principal,
       });
+      if (made.kind === "out-of-reach") return outOfReach(made.label, gate.principal);
       return NextResponse.json({ invite: made.invite, token: made.token }, { status: 201 });
     } catch (error) {
       console.error("Failed to make an invitation link:", error);
@@ -212,6 +219,17 @@ function inviter(
     return { ok: false, response: NextResponse.json({ error: DEMO }, { status: 403 }) };
   }
   return { ok: true, profileId: principal.profileId };
+}
+
+/** The rank rule's refusal, under the role picker. */
+function outOfReach(label: string, principal: Principal): NextResponse {
+  return NextResponse.json(
+    {
+      error: `You can't invite someone as ${label}. That role can do things yours (${principal.roleLabel}) can't.`,
+      field: "role",
+    },
+    { status: 403 }
+  );
 }
 
 /** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */

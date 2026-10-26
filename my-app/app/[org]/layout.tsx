@@ -68,7 +68,11 @@ export default async function OrganizationLayout({
         }
       }
       return (
-        <OrgProvider slug={principal.orgSlug} name={principal.orgName}>
+        <OrgProvider
+          slug={principal.orgSlug}
+          name={principal.orgName}
+          twoPersonRule={principal.orgTwoPersonRule}
+        >
           {children}
         </OrgProvider>
       );

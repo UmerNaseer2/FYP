@@ -78,6 +78,21 @@ function sentenceFor(change: RoleChange): string {
       return change.detail === "link"
         ? `joined as ${role} with an invitation link`
         : `joined as ${role} by invitation`;
+    case "remove":
+      // The role they had when they were removed, so the line still says what
+      // was taken away once their row is gone from the Users tab.
+      return `removed ${change.subject ?? "someone"} (${role})`;
+    // The two below are about the organization, not a role. Their rows name
+    // the admin role only because every row names one.
+    case "rename-organization":
+      // subject is the new name and detail the old one.
+      return change.detail
+        ? `renamed the organization from ${change.detail} to ${change.subject ?? "a new name"}`
+        : `renamed the organization to ${change.subject ?? "a new name"}`;
+    case "two-person-rule":
+      return change.detail === "off"
+        ? "switched the two-person rule off, so people can approve their own production deploys"
+        : "switched the two-person rule on, so production deploys wait for a second person";
     default:
       // "assign": a role given to someone, by an Admin on the Users tab.
       return (

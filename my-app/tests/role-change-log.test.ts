@@ -13,7 +13,9 @@
 //   - a deleted role and a box this build no longer has still read;
 //   - making, deleting and giving out a role each read as a sentence;
 //   - so do inviting someone, cancelling an invitation and joining by one,
-//     for an address and for a link alike.
+//     for an address and for a link alike;
+//   - and removing someone, renaming the organization and switching its
+//     two-person rule.
 //
 // The lines as the Admin page draws them: tests/page-admin.test.tsx.
 import { describeRoleChanges, type LogEntry } from "@/components/admin/RoleChangeLog";
@@ -259,5 +261,29 @@ describe("an invitation made, cancelled or taken", () => {
       line({ id: 3, text: "invited grace@example.com as Editor" }),
       line({ id: 2, text: EDITOR, tookAway: ["Drift tracking: Create"] }),
     ]);
+  });
+});
+
+describe("someone removed, and the organization changed", () => {
+  const admin = { role: "admin", roleLabel: "Admin" };
+  test.each<[string, Partial<RoleChange> & Pick<RoleChange, "kind">, string]>([
+    ["someone removed", { kind: "remove", subject: "grace@example.com" }, "removed grace@example.com (Editor)"],
+    [
+      "the organization renamed",
+      { kind: "rename-organization", subject: "Acme Labs", detail: "Acme", ...admin },
+      "renamed the organization from Acme to Acme Labs",
+    ],
+    [
+      "the two-person rule switched off",
+      { kind: "two-person-rule", detail: "off", ...admin },
+      "switched the two-person rule off, so people can approve their own production deploys",
+    ],
+    [
+      "the two-person rule switched on",
+      { kind: "two-person-rule", detail: "on", ...admin },
+      "switched the two-person rule on, so production deploys wait for a second person",
+    ],
+  ])("%s", (_name, over, text) => {
+    expect(describeRoleChanges([row({ id: 7, ...over })])).toEqual([line({ id: 7, text })]);
   });
 });

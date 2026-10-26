@@ -7,12 +7,16 @@ import { useOrgHref } from "@/hooks/useOrg";
 import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
-import { isAdminOnly, readKeyOf } from "@/lib/permissions";
+import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { StudioTopbar } from "./StudioTopbar";
 import { OrgSwitcher } from "./OrgSwitcher";
 import { ViewAsSwitcher } from "./ViewAsSwitcher";
 import { NAV_ITEMS, activeNavItem } from "./nav";
+
+// What the rail offers while it cannot ask what the role may do: what a new
+// Viewer can read.
+const VIEWER_READS: readonly string[] = presetFor(DEFAULT_ROLE) ?? [];
 
 // Shown when no one is signed in.
 const SIGNED_OUT_USER: StudioUser = {
@@ -75,9 +79,9 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // presentation, not the security line.
   //
   // Until that is known (still loading, nobody signed in, or the database did
-  // not answer) the rail shows every screen except the admin-only ones, as it
-  // always did. An empty rail would look broken, and each screen still says
-  // for itself whether it will open.
+  // not answer) the rail shows the screens a new Viewer gets, which is every
+  // screen but Admin, as it always did. An empty rail would look broken, and
+  // each screen still says for itself whether it will open.
   //
   // Someone who is not a member gets an empty rail, on purpose: every screen
   // would only repeat the guard's "not a member", and the way out (Sign out)
@@ -92,7 +96,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
         const features = Array.isArray(item.feature) ? item.feature : [item.feature];
         const [first, ...rest] = features.map(readKeyOf);
         if (loading || accessError || !authUser) {
-          return ![first, ...rest].every(isAdminOnly);
+          return [first, ...rest].some((key) => VIEWER_READS.includes(key));
         }
         return can(first, ...rest);
       }).map((item) => ({ ...item, href: orgPath(item.href) })),

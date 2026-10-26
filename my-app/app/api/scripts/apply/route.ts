@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
 import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
-import { claimApproval, releaseApproval } from "@/lib/approvals-db";
+import { claimApproval, mayDecideOwn, releaseApproval } from "@/lib/approvals-db";
 import type { AttemptContext, AttemptResponseBody } from "@/lib/deploy-attempts";
 import { recordDeployAttempt } from "@/lib/deploy-attempts-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
@@ -957,10 +957,11 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         action: "deploy",
       });
       if (!claimed) {
-        // Under the auth bypass there is one principal, and it may clear its
-        // own request (decisionBlockReason in lib/approvals-db), so "someone
-        // other than you" would send the reader looking for nobody.
-        const approver = gate.principal.bypass ? "" : " from someone other than you";
+        // Under the auth bypass there is one principal, and with the
+        // two-person rule off people may clear their own requests (mayDecideOwn
+        // in lib/approvals-db), so "someone other than you" would send the
+        // reader looking for nobody.
+        const approver = mayDecideOwn(gate.principal) ? "" : " from someone other than you";
         // One migration or several, so the sentence reads as English either
         // way ("these exact 1 migration" did not).
         const one = queue.length === 1;

@@ -41,6 +41,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import DeployPage from "@/app/[org]/(studio)/deploy/page";
+import { OrgProvider } from "@/components/OrgProvider";
 import { sha256Hex } from "@/components/studio/ApprovalPanel";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import {
@@ -52,6 +53,7 @@ import {
   setCustomRole,
   setRoutes,
   setUser,
+  TEST_ORG,
   type FetchRoute,
 } from "./helpers/render-page";
 
@@ -489,6 +491,23 @@ describe("the two-person rule", () => {
     const dryRun = await dryRunButton();
     await waitFor(() => expect(dryRun).toBeEnabled());
     expect(await deployButton(" to production")).toBeDisabled();
+  });
+
+  it("tells the panel when this organization has switched the rule off", async () => {
+    // The page reads the rule from the organization it is open in and hands it
+    // to the panel. If it stopped, the panel would keep asking for a second
+    // person that this organization no longer requires.
+    setRoutes(baseRoutes());
+    render(
+      <OrgProvider slug={TEST_ORG.slug} name={TEST_ORG.name} twoPersonRule={false}>
+        <DeployPage />
+      </OrgProvider>
+    );
+    await selectBothVersions(/Prod box/);
+
+    const panel = (await screen.findByText("Needs an approval")).closest(".appr") as HTMLElement;
+    expect(panel).toHaveTextContent("The two-person rule is off in this organization");
+    expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
   });
 
   it("clears the deploy when the approval covers exactly the SQL on screen", async () => {

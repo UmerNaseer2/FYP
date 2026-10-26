@@ -4,6 +4,7 @@ import {
   approverKey,
   decideApproval,
   decisionBlockReason,
+  mayDecideOwn,
   getApproval,
 } from "@/lib/approvals-db";
 
@@ -21,9 +22,11 @@ import {
  *     AND as a CHECK constraint on the table, because a rule enforced only in
  *     application code is one refactor away from not being enforced at all.
  *
- * The bypass is the single documented exception. With NEXT_PUBLIC_AUTH_BYPASS
- * on there is exactly one principal, so "a second person" cannot exist and the
- * whole path would be untestable. The row records that it happened, in
+ * There are two documented exceptions (mayDecideOwn in lib/approvals-db). With
+ * NEXT_PUBLIC_AUTH_BYPASS on there is exactly one principal, so "a second
+ * person" cannot exist and the whole path would be untestable. And an Admin
+ * may switch their organization's two-person rule off on the Organization tab,
+ * for a team of one. Either way the row records that it happened, in
  * `self_approved`, rather than quietly looking like a real two-person approval.
  *
  * A paired phone decides through here too, by way of the desktop app's phone
@@ -117,7 +120,8 @@ export async function POST(
       );
     }
 
-    const blocked = decisionBlockReason(approval, gate.principal.email, gate.principal.bypass);
+    const selfAllowed = mayDecideOwn(gate.principal);
+    const blocked = decisionBlockReason(approval, gate.principal.email, selfAllowed);
     if (blocked) {
       return NextResponse.json({ error: blocked }, { status: 403 });
     }
@@ -127,11 +131,11 @@ export async function POST(
       id,
       approve: decision === "approve",
       decidedBy: gate.principal.email,
-      // Only ever true under the bypass — see the note above. Outside it, the
-      // requester is refused before reaching this line, and the table's CHECK
-      // constraint would refuse the write anyway.
+      // Only ever true under one of the two exceptions in the note above.
+      // Outside them, the requester is refused before reaching this line, and
+      // the table's CHECK constraint would refuse the write anyway.
       selfApproved:
-        gate.principal.bypass &&
+        selfAllowed &&
         approval.requested_by.toLowerCase() === gate.principal.email.toLowerCase(),
       note: (body.note ?? "").trim().slice(0, 500) || null,
     });

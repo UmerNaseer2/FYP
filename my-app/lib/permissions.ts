@@ -200,11 +200,14 @@ export const FEATURES = [
       read: { does: "open the schema visualizer", from: "viewer" },
     },
   },
+  // Not admin-only: an Admin can let another role invite people, change their
+  // roles or remove them. What keeps that from becoming a way up is the rank
+  // rule (canHandOut below, applied by the users and invites routes): nobody
+  // can give, change or take away a role that can do something theirs can't.
   {
     key: "users",
     label: "Users",
     description: "Who belongs to this organization, who has been invited, and which role each person has.",
-    adminOnly: true,
     actions: {
       create: { does: "invite someone", from: "admin" },
       read: { does: "see the user list", from: "admin" },
@@ -222,6 +225,17 @@ export const FEATURES = [
       read: { does: "see roles and permissions", from: "admin" },
       update: { does: "change what a role can do", from: "admin" },
       delete: { does: "delete a role", from: "admin" },
+    },
+  },
+  {
+    key: "organization",
+    label: "Organization",
+    description: "The organization's name, its two-person rule for production, and deleting it.",
+    adminOnly: true,
+    actions: {
+      read: { does: "see the organization's settings", from: "admin" },
+      update: { does: "rename the organization or change its two-person rule", from: "admin" },
+      delete: { does: "delete the organization", from: "admin" },
     },
   },
 ] as const satisfies readonly FeatureSpec[];
@@ -406,6 +420,28 @@ export function hasPermission(
 }
 
 /**
+ * The rank rule: true when the holder may hand out a role that can do
+ * `permissions`, which is when they can do every one of those things
+ * themselves. A holder with no list at all may hand out nothing.
+ *
+ * The users and invites routes ask it before anyone is given a role, moved
+ * out of one, or removed while holding one, so being allowed to manage people
+ * never becomes a way to give someone (yourself included, by way of a second
+ * account) more than you have. It also settles who may touch an Admin. The
+ * admin role holds everything, and no other role can hold the admin-only
+ * keys, so only an Admin can give the admin role, take it away, or remove
+ * someone who has it.
+ *
+ * Equal is allowed: a role can be handed out by someone whose role can do
+ * the same things, the way an Editor allowed to invite may invite an Editor.
+ */
+export function canHandOut(holder: PermissionHolder, permissions: readonly string[]): boolean {
+  const held = holder?.permissions;
+  if (!Array.isArray(held)) return false;
+  return permissions.every((key) => held.includes(key));
+}
+
+/**
  * Why a request was refused, addressed to the person who made it.
  *
  * It names the permission in the words the admin grid uses, so whoever reads
@@ -456,10 +492,16 @@ export function withToggled(
  * ticked or unticked, so the log reads as a list of decisions rather than a
  * before-and-after blob nobody can diff by eye.
  *
- * The last three are about people rather than permissions: an Admin inviting
- * someone into a role (or making a link that does), an Admin cancelling an
- * invitation, and someone joining by one. They sit in the same log because
+ * Some are about people rather than permissions: someone inviting a person
+ * into a role (or making a link that does), cancelling an invitation, someone
+ * joining by one, and someone being removed. They sit in the same log because
  * each one decides who holds a role, which is what the log is for.
+ *
+ * The last two are about the organization itself: renaming it, and switching
+ * its two-person rule. They sit here because this log is the one record of
+ * who changed what in an organization, and both change what its members see
+ * and may do. Their rows name the admin role, since only an Admin can do
+ * either and the column needs a role.
  *
  * The database holds this list as a CHECK (lib/db/bootstrap.ts), which every
  * start widens to match, so a kind can be added here and nowhere else. Taking
@@ -475,6 +517,9 @@ export const ROLE_CHANGE_KINDS = [
   "invite",
   "cancel-invite",
   "join",
+  "remove",
+  "rename-organization",
+  "two-person-rule",
 ] as const;
 export type RoleChangeKind = (typeof ROLE_CHANGE_KINDS)[number];
 

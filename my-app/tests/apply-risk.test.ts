@@ -16,19 +16,24 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // statements only, so jest.mock("@/...") would not resolve.
 // The caller: an editor on a new install, whose role may run deployments. A
 // test sets mockBypass to play the auth bypass's one principal instead, the
-// full admin that answers for everyone while sign-in is off.
+// full admin that answers for everyone while sign-in is off, and mockRuleOff
+// an editor in an organization whose two-person rule is switched off.
 let mockBypass = false;
+let mockRuleOff = false;
 jest.mock("../lib/auth-guard", () => {
   const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
   return {
     requirePermission: async () => ({
       ok: true,
-      principal: mockBypass ? bypassAdminPrincipal() : principalFor("editor", { email: "a@test" }),
+      principal: mockBypass
+        ? bypassAdminPrincipal()
+        : principalFor("editor", { email: "a@test", orgTwoPersonRule: !mockRuleOff }),
     }),
   };
 });
 afterEach(() => {
   mockBypass = false;
+  mockRuleOff = false;
 });
 
 // The metadata database: only the saved-connection lookup reaches it.
@@ -78,6 +83,7 @@ jest.mock("../lib/registry-archive", () => ({
 const mockClaim = jest.fn<Promise<unknown>, unknown[]>(async () => null);
 jest.mock("../lib/approvals-db", () => ({
   claimApproval: (...args: unknown[]) => mockClaim(...args),
+  mayDecideOwn: jest.requireActual("../lib/approvals-db").mayDecideOwn,
   releaseApproval: async () => undefined,
 }));
 
@@ -284,6 +290,14 @@ describe("production approval", () => {
         "these exact 2 migrations, so nothing ran. Request approval for them on the screen you " +
         "are running them from, or request a new approval if their SQL has changed since the last one."
     );
+    expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
+  });
+
+  it("asks for an approval, not a second person, with the two-person rule off", async () => {
+    mockRuleOff = true;
+    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/^This target is labelled production, so the run needs an approval\. No approval/);
     expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
   });
 

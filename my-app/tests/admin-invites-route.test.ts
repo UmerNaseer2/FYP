@@ -297,7 +297,14 @@ describe("POST: an invitation to an address", () => {
     expect(mockInvitesDb.createEmailInvite.mock.calls).toEqual([
       [
         TEST_ORG.id,
-        { email: "ann@example.com", role: "editor", invitedBy: ADMIN.profileId, actor: ADMIN.email },
+        {
+          email: "ann@example.com",
+          role: "editor",
+          invitedBy: ADMIN.profileId,
+          actor: ADMIN.email,
+          // The caller's own boxes, for the rank rule. Never anything the body says.
+          holder: ADMIN,
+        },
       ],
     ]);
   });
@@ -348,6 +355,26 @@ describe("POST: an invitation to an address", () => {
     ).toEqual([status, expected]);
   });
 
+  test("a role the caller's own can't hand out is a 403 under the role, naming both roles", async () => {
+    const lead = principalFor("editor", { roleLabel: "Team lead" });
+    mockGate = { ok: true, principal: lead };
+    mockInvitesDb.createEmailInvite.mockResolvedValue({ kind: "out-of-reach", label: "Admin" });
+
+    expect(
+      await answer(
+        await POST(json("POST", { kind: "email", email: "ann@example.com", role: "admin" }))
+      )
+    ).toEqual([
+      403,
+      {
+        error:
+          "You can't invite someone as Admin. That role can do things yours (Team lead) can't.",
+        field: "role",
+      },
+    ]);
+    expect(mockInvitesDb.createEmailInvite.mock.calls[0][1]).toMatchObject({ holder: lead });
+  });
+
   test("says the database may be down when the invitation cannot be made", async () => {
     const logged = quietErrors();
     mockInvitesDb.createEmailInvite.mockRejectedValue(new Error("connect ECONNREFUSED"));
@@ -380,7 +407,11 @@ describe("POST: an invitation link", () => {
   test.each([1, 7, 30])(
     "is made for %i days in the gate's organization, credited to the caller, and answered with its token",
     async (days) => {
-      mockInvitesDb.createLinkInvite.mockResolvedValue({ invite: LINK_INVITE, token: TOKEN });
+      mockInvitesDb.createLinkInvite.mockResolvedValue({
+        kind: "made",
+        invite: LINK_INVITE,
+        token: TOKEN,
+      });
 
       expect(
         await answer(
@@ -392,11 +423,26 @@ describe("POST: an invitation link", () => {
         )
       ).toEqual([201, { invite: LINK_INVITE, token: TOKEN }]);
       expect(mockInvitesDb.createLinkInvite.mock.calls).toEqual([
-        [TEST_ORG.id, { days, invitedBy: ADMIN.profileId, actor: ADMIN.email }],
+        [TEST_ORG.id, { days, invitedBy: ADMIN.profileId, actor: ADMIN.email, holder: ADMIN }],
       ]);
       expect(mockInvitesDb.createEmailInvite).not.toHaveBeenCalled();
     }
   );
+
+  test("one the caller's role can't hand out is a 403 that names both roles", async () => {
+    const lead = principalFor("viewer", { roleLabel: "Guest", permissions: [] });
+    mockGate = { ok: true, principal: lead };
+    mockInvitesDb.createLinkInvite.mockResolvedValue({ kind: "out-of-reach", label: "Viewer" });
+
+    expect(await answer(await POST(json("POST", { kind: "link", days: 7 })))).toEqual([
+      403,
+      {
+        error: "You can't invite someone as Viewer. That role can do things yours (Guest) can't.",
+        field: "role",
+      },
+    ]);
+    expect(mockInvitesDb.createLinkInvite.mock.calls[0][1]).toMatchObject({ holder: lead });
+  });
 
   test("says the database may be down when the link cannot be made", async () => {
     const logged = quietErrors();

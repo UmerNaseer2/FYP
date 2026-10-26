@@ -97,6 +97,7 @@ export function ApprovalPanel({
   mayRequest,
   mayApprove,
   bypass,
+  twoPersonRule = true,
   note,
   onNoteChange,
   onRequest,
@@ -140,6 +141,12 @@ export function ApprovalPanel({
   /** The role may clear one ("Approvals: Approve"). Admins always may. */
   mayApprove: boolean;
   bypass: boolean;
+  /**
+   * The organization's two-person rule (the Organization tab). While it is off,
+   * people may clear their own requests and the row records a self-approval.
+   * On unless said otherwise, the way every new organization starts.
+   */
+  twoPersonRule?: boolean;
   note: string;
   onNoteChange: (value: string) => void;
   onRequest: () => void;
@@ -234,10 +241,11 @@ export function ApprovalPanel({
   // Why this person may not decide this request. The same rule runs server-side
   // and again as a CHECK constraint on the table — this copy exists so the
   // button is not offered in the first place, not to enforce anything.
-  const selfDecision =
-    pending !== null &&
-    !bypass &&
-    pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
+  // The two-person rule only matters outside the bypass, which has its own
+  // wording below.
+  const ruleOff = !bypass && !twoPersonRule;
+  const mine = pending !== null && pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
+  const selfDecision = mine && !bypass && !ruleOff;
 
   // Under the auth bypass everyone is the same principal, so the person who
   // asked is also the only one who can clear it — the server allows that and
@@ -248,16 +256,20 @@ export function ApprovalPanel({
   // Not while View as has them looking at the app as a role that may not
   // approve: then clearing it means switching back, and the lines below say so.
   const soleApprover = bypass && mayApprove;
-  const bypassSelf =
-    pending !== null &&
-    soleApprover &&
-    pending.requested_by.toLowerCase() === viewerEmail.toLowerCase();
+  const bypassSelf = mine && soleApprover;
+  // With the rule off there may well be a second person, but there needn't be,
+  // so the requester who may approve is offered the button too.
+  const ruleOffSelf = mine && ruleOff && mayApprove;
   const pendingWhy = bypassSelf
     ? action === "revert"
       ? " With the auth bypass on there is only one principal, so you clear these " +
         "rollbacks yourself, and the row records it as a self-approval."
       : " With the auth bypass on there is only one principal, so you clear these " +
         "migrations yourself, and the row records it as a self-approval."
+    : ruleOffSelf
+      ? ` The two-person rule is off in this organization, so you can clear these ${
+          action === "revert" ? "rollbacks" : "migrations"
+        } yourself, and the row records it as a self-approval.`
     : action === "revert"
       ? " Someone else has to read these rollbacks and clear them before the " +
         "rollback can run."
@@ -301,19 +313,22 @@ export function ApprovalPanel({
       <div className="appr__head">
         {approved ? <CheckIcon size={15} className="ico" /> : <UsersIcon size={15} className="ico" />}
         <span>
-          {/* A self-approval is only possible under the auth bypass. Calling it
-              "a second person" would contradict the line below that says so.
-              Under the bypass nobody else exists to wait for either, so the
-              waiting and needed states do not name one. */}
+          {/* A self-approval is only possible under the auth bypass or with
+              the two-person rule off. Calling it "a second person" would
+              contradict the line below that says so. Then nobody else needs
+              to be waited for either, so the waiting and needed states do not
+              name one. */}
           {approved
             ? approved.self_approved
-              ? "Self-approved under the auth bypass"
+              ? bypass
+                ? "Self-approved under the auth bypass"
+                : "Self-approved (two-person rule off)"
               : "Approved by a second person"
             : pending
-              ? bypassSelf
+              ? bypassSelf || ruleOffSelf
                 ? "Waiting for your approval"
                 : "Waiting for a second person"
-              : soleApprover
+              : soleApprover || ruleOff
                 ? "Needs an approval"
                 : "Needs a second person"}
         </span>
@@ -351,8 +366,9 @@ export function ApprovalPanel({
           )}
           {approved.self_approved && (
             <p className="appr__meta">
-              Recorded on the row as a self-approval, because with the bypass on
-              there is only one principal to be.
+              {bypass
+                ? "Recorded on the row as a self-approval, because with the bypass on there is only one principal to be."
+                : "Recorded on the row as a self-approval, which this organization allows while its two-person rule is off."}
             </p>
           )}
           {approved.note && <p className="appr__meta">Note: {approved.note}</p>}
@@ -418,7 +434,11 @@ export function ApprovalPanel({
       ) : (
         <>
           <p className="appr__body">
-            {soleApprover
+            {ruleOff && mayApprove
+              ? `This target is labelled production, so the ${
+                  action === "revert" ? "rollback" : "run"
+                } needs an approval. The two-person rule is off in this organization, so you can request it and then clear it yourself.`
+              : soleApprover
               ? action === "revert"
                 ? "This target is labelled production, so the rollback needs an " +
                   "approval. With the auth bypass on there is only one principal, so " +

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
-import { approverKey, listPendingApprovals } from "@/lib/approvals-db";
+import { approverKey, listPendingApprovals, mayDecideOwn } from "@/lib/approvals-db";
 import { hasPermission } from "@/lib/permissions";
 
 /**
@@ -21,7 +21,7 @@ import { hasPermission } from "@/lib/permissions";
  * approverKey of whoever is signed in here, so the desktop app can tell when
  * that person changes. `canApprove` says whether they may decide at all, and
  * each request's `ownRequest` whether they asked for it, which the decision
- * route refuses outside the bypass (decisionBlockReason), so a phone can leave
+ * route refuses unless they may decide their own (mayDecideOwn), so a phone can leave
  * out buttons that would only be refused.
  *
  * The gate is the one the Deploy screen's list has: Approvals: Read. The queue
@@ -54,7 +54,7 @@ export async function GET() {
         note: row.note,
         fingerprint: row.run_fingerprint,
         sql: row.has_sql ? "kept" : "missing",
-        ownRequest: !gate.principal.bypass && row.requested_by.toLowerCase() === email,
+        ownRequest: !mayDecideOwn(gate.principal) && row.requested_by.toLowerCase() === email,
       })),
     });
   } catch (error) {

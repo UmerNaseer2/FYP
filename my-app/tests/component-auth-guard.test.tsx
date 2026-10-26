@@ -171,10 +171,11 @@ describe("signed in", () => {
   });
 
   it("does not offer a box nobody can tick on an admin-only page", () => {
-    // Users and Roles & permissions are admin-only. Telling a viewer to ask for
-    // "Users: Read" would send them after a box that is not on the grid.
+    // Roles & permissions and Organization are admin-only. Telling a viewer
+    // to ask for "Roles & permissions: Read" would send them after a box that
+    // is not on the grid.
     setUser("viewer");
-    show(["users", "roles"]);
+    show(["roles", "organization"]);
 
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
     expect(screen.getByText("Your role (Viewer) can't open this page.")).toBeInTheDocument();
@@ -182,6 +183,17 @@ describe("signed in", () => {
       "Only admins can open it."
     );
     expect(screen.queryByText(/Ask an admin to allow/)).toBeNull();
+  });
+
+  it("on the Admin screen, sends them after the one box the grid offers", () => {
+    // Users is not admin-only, so an Admin can let a role in that way.
+    setUser("viewer");
+    show(["users", "roles", "organization"]);
+
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+    expect(screen.getByText(/You are signed in as/)).toHaveTextContent(
+      'Ask an admin to allow "Users: Read" for your role, then reload.'
+    );
   });
 
   it("opens an admin-only page to an admin", () => {

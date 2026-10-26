@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { InvitePanel } from "@/components/admin/InvitePanel";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
-import { BUILT_IN_ROLES, BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
+import { BUILT_IN_ROLES, BUILT_IN_ROLE_INFO, isBuiltInRole, presetFor } from "@/lib/permissions";
 import {
   Button,
   Card,
@@ -33,6 +33,12 @@ import { apiFetch } from "@/lib/api-fetch";
  *
  * What each role may do is the Roles & permissions tab's business. This tab
  * only says who has which role.
+ *
+ * Managing people is not admin-only, so the rank rule (lib/permissions.ts
+ * canHandOut) decides what each person here may touch: nobody hands out, or
+ * takes away, a role that can do something their own can't. The server
+ * enforces it and says which roles pass (`assignable`), so the pickers offer
+ * only those, and a row whose role is out of reach shows no controls at all.
  */
 
 // Mirrors GET /api/admin/users.
@@ -42,21 +48,21 @@ type Profile = {
   role: string;
 };
 
-/** A role the picker on each row can offer: its key and the name people read. */
-type RoleOption = { name: string; label: string };
+/**
+ * A role the pickers can offer: its key, the name people read, and whether
+ * the signed-in person may hand it out.
+ */
+type RoleOption = { name: string; label: string; assignable: boolean };
 
 function isRoleOption(value: unknown): value is RoleOption {
   if (typeof value !== "object" || value === null) return false;
   const option = value as Record<string, unknown>;
-  return typeof option.name === "string" && typeof option.label === "string";
+  return (
+    typeof option.name === "string" &&
+    typeof option.label === "string" &&
+    typeof option.assignable === "boolean"
+  );
 }
-
-// The three roles every install has, for the moment before the server has
-// said which roles exist. Custom roles come from the server with the list.
-const BUILT_IN_OPTIONS: RoleOption[] = BUILT_IN_ROLES.map((name) => ({
-  name,
-  label: BUILT_IN_ROLE_INFO[name].label,
-}));
 
 function roleTone(role: string): PillTone {
   // The middle role gets its own colour, so it doesn't read as "not an admin".
@@ -69,6 +75,16 @@ function initialsOf(email: string): string {
 
 export function UsersTab({ active }: { active: boolean }) {
   const { user: currentUser, can, bypass } = useUser();
+  // The three roles every install has, for the moment before the server has
+  // said which roles exist and which of them this person may hand out. Custom
+  // roles come from the server with the list. Until then the defaults stand
+  // in for what each role can do, which is only a guess, but the server
+  // checks the real boxes whatever is picked.
+  const builtInOptions: RoleOption[] = BUILT_IN_ROLES.map((name) => ({
+    name,
+    label: BUILT_IN_ROLE_INFO[name].label,
+    assignable: (presetFor(name) ?? []).every((key) => can(key)),
+  }));
   // Removing someone means something different in the desktop app, where
   // signing in is all it takes to join (lib/accounts-db.ts joinOnSignIn).
   const desktop = useDesktopBridge() !== null;
@@ -201,10 +217,15 @@ export function UsersTab({ active }: { active: boolean }) {
     }
   }
 
-  const options = (roles.length > 0 ? roles : BUILT_IN_OPTIONS).map((r) => ({
-    value: r.name,
-    label: r.label,
-  }));
+  const known = roles.length > 0 ? roles : builtInOptions;
+  const options = known
+    .filter((r) => r.assignable)
+    .map((r) => ({ value: r.name, label: r.label }));
+  // A role nobody has told this page about (made a moment ago on the Roles
+  // tab) counts as out of reach until the list is loaded again.
+  function inReach(role: string): boolean {
+    return known.some((r) => r.name === role && r.assignable);
+  }
   function labelOf(role: string): string {
     return (
       roles.find((r) => r.name === role)?.label ??
@@ -336,6 +357,7 @@ export function UsersTab({ active }: { active: boolean }) {
         {phase === "ready" &&
           users.map((u) => {
             const isYou = currentUser?.email === u.email;
+            const reachable = inReach(u.role);
             return (
               <Card key={u.id} className="p-4">
                 <div className="flex items-center gap-3 flex-wrap">
@@ -372,6 +394,12 @@ export function UsersTab({ active }: { active: boolean }) {
                     <span className="text-[12px] w-full sm:w-auto sm:text-right" style={{ color: "var(--text-3)" }}>
                       Your account
                     </span>
+                  ) : !reachable ? (
+                    (canChangeRoles || canRemove) && (
+                      <span className="text-[12px] w-full sm:w-auto sm:text-right" style={{ color: "var(--text-3)" }}>
+                        {`${labelOf(u.role)} can do things your role can't`}
+                      </span>
+                    )
                   ) : (
                     (canChangeRoles || canRemove) && (
                       <div className="flex items-center gap-2 w-full sm:w-auto">

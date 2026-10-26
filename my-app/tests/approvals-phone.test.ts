@@ -313,6 +313,16 @@ describe("GET /api/deploy/approvals/phone", () => {
     expect(body.approver).toBe(approverKey("viewer@test"));
   });
 
+  it("calls no request the requester's own while the two-person rule is off", async () => {
+    mockPrincipal = principalFor("admin", { orgTwoPersonRule: false });
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [{ ...row({ requested_by: "admin@test" }), has_sql: true }],
+    });
+    const { body } = await answerOf(await listRoute());
+    const [approval] = body.approvals as Array<Record<string, unknown>>;
+    expect(approval.ownRequest).toBe(false);
+  });
+
   it("calls no request the bypass's own, since the bypass may decide those", async () => {
     mockPrincipal = bypassAdminPrincipal();
     mockPoolQuery.mockResolvedValueOnce({
@@ -536,6 +546,24 @@ describe("POST /api/deploy/approvals/[id] from a phone", () => {
       });
     }
     expect(mockPoolQuery).not.toHaveBeenCalled();
+  });
+
+  it("refuses the requester's own request while the two-person rule is on", async () => {
+    mockPoolQuery.mockResolvedValueOnce({ rows: [row({ requested_by: "person@example.test" })] });
+    const { status } = await answerOf(await decide({ decision: "approve" }));
+    expect(status).toBe(403);
+    expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the requester decide with the two-person rule off, and records a self-approval", async () => {
+    mockPrincipal = principalFor("admin", { email: "Person@Example.test", orgTwoPersonRule: false });
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [row({ requested_by: "person@example.test" })] })
+      .mockResolvedValueOnce({ rows: [row({ status: "approved", self_approved: true })] });
+    const { status } = await answerOf(await decide({ decision: "approve" }));
+    expect(status).toBe(200);
+    // [id, status, decided_by, self_approved, ...]
+    expect(call(1).values.slice(0, 4)).toEqual([12, "approved", "Person@Example.test", true]);
   });
 
   it("works as before for the Deploy screen, which sends neither field", async () => {

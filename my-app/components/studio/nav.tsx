@@ -114,7 +114,7 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Admin",
     href: "/admin",
     icon: <UsersIcon className="ico" />,
-    feature: ["users", "roles"],
+    feature: ["users", "roles", "organization"],
   },
 ];
 

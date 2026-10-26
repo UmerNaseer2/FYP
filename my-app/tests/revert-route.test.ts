@@ -22,19 +22,24 @@ import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 // statements only, so jest.mock("@/...") would not resolve.
 // The caller: an editor on a new install, whose role may run deployments. A
 // test sets mockBypass to play the auth bypass's one principal instead, the
-// full admin that answers for everyone while sign-in is off.
+// full admin that answers for everyone while sign-in is off, and mockRuleOff
+// an editor in an organization whose two-person rule is switched off.
 let mockBypass = false;
+let mockRuleOff = false;
 jest.mock("../lib/auth-guard", () => {
   const { bypassAdminPrincipal, principalFor } = require("./helpers/principals");
   return {
     requirePermission: async () => ({
       ok: true,
-      principal: mockBypass ? bypassAdminPrincipal() : principalFor("editor", { email: "a@test" }),
+      principal: mockBypass
+        ? bypassAdminPrincipal()
+        : principalFor("editor", { email: "a@test", orgTwoPersonRule: !mockRuleOff }),
     }),
   };
 });
 afterEach(() => {
   mockBypass = false;
+  mockRuleOff = false;
 });
 
 // The metadata database: only the saved-connection lookup reaches it.
@@ -307,6 +312,19 @@ describe("production", () => {
       "Rolling back on production needs an approval. Request it in the Approvals " +
         "panel and approve it there yourself (the auth bypass is on), then press " +
         "Roll back again."
+    );
+    expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
+  });
+
+  it("says the requester may approve it themselves with the two-person rule off", async () => {
+    mockRuleOff = true;
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    const res = await revert({ ...BASE, versions: ["3.0.0"], acknowledgeProduction: true });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe(
+      "Rolling back on production needs an approval. Request it in the Approvals " +
+        "panel and approve it there (this organization's two-person rule is off, so " +
+        "you may approve it yourself), then press Roll back again."
     );
     expect(ran(mockClient, "DROP TABLE t3;")).toBe(false);
   });

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import pool, { syncMetadataTables } from "./version-db";
 import type { MetadataClient } from "./db/sequelize";
-import { logRoleChanges } from "./roles-db";
+import { canHandOut, type PermissionHolder } from "./permissions";
+import { lockRoles, logRoleChanges } from "./roles-db";
 import {
   EMAIL_INVITE_DAYS,
   LINK_INVITE_ROLE,
@@ -110,6 +111,11 @@ export type InviteMade =
   | { kind: "made"; invite: PendingInvite; token: string }
   /** No role by that name here. It may have just been deleted. */
   | { kind: "no-role" }
+  /**
+   * The role can do something the inviter's own can't, so the rank rule
+   * (canHandOut in lib/permissions.ts) keeps them from handing it out.
+   */
+  | { kind: "out-of-reach"; label: string }
   /** Someone with that address belongs to this organization already. */
   | { kind: "member" }
   /** Another Admin invited the same address at the same moment, and theirs went in first. */
@@ -144,8 +150,10 @@ async function inTransaction<T>(
  *
  * The address must already be cleaned and checked (lib/invites.ts), and
  * `role` is a role's name, which is looked up here because Admins add and
- * delete roles. FOR KEY SHARE keeps that role from being deleted until this
- * commits, the same way a role change on the Users tab does.
+ * delete roles. lockRoles keeps that role from being deleted until this
+ * commits, the same way a role change on the Users tab does, and reads what
+ * it can do, for the rank rule: `holder` (the inviter) can only offer a role
+ * that can do nothing theirs can't.
  *
  * An earlier invitation to the same address that nobody took is cancelled
  * first, so there is only ever one way in for one address: the newest, with
@@ -156,15 +164,15 @@ async function inTransaction<T>(
  */
 export async function createEmailInvite(
   orgId: number,
-  input: { email: string; role: string; invitedBy: number; actor: string }
+  input: { email: string; role: string; invitedBy: number; actor: string; holder: PermissionHolder }
 ): Promise<InviteMade> {
   try {
     return await inTransaction<InviteMade>(async (client) => {
-      const role = await client.query(
-        `SELECT label FROM roles WHERE org_id = $1 AND name = $2 FOR KEY SHARE`,
-        [orgId, input.role]
-      );
-      if (role.rows.length === 0) return { commit: false, result: { kind: "no-role" } };
+      const role = (await lockRoles(client, orgId, [input.role])).get(input.role);
+      if (!role) return { commit: false, result: { kind: "no-role" } };
+      if (!canHandOut(input.holder, role.permissions)) {
+        return { commit: false, result: { kind: "out-of-reach", label: role.label } };
+      }
 
       // A member already, under the address their profile was made with or
       // under one a provider vouched for when they signed in since.
@@ -220,12 +228,22 @@ function isUniqueViolation(error: unknown, constraint: string): boolean {
  * There is no address to check and no earlier link to cancel: an Admin may
  * keep several links going at once, say one per class, and cancel each on its
  * own. The change log's detail says how many days it was made for.
+ *
+ * The rank rule holds here too. Viewer is usually as little as a role can
+ * be, but an Admin can tick more boxes for it than someone else's role has,
+ * and then that person can't hand it out by link either. Viewer is built in
+ * and can't be deleted, so it is always found; were the row gone, the
+ * insert's foreign key would refuse.
  */
 export async function createLinkInvite(
   orgId: number,
-  input: { days: LinkInviteDays; invitedBy: number; actor: string }
-): Promise<Extract<InviteMade, { kind: "made" }>> {
-  return inTransaction(async (client) => {
+  input: { days: LinkInviteDays; invitedBy: number; actor: string; holder: PermissionHolder }
+): Promise<Extract<InviteMade, { kind: "made" | "out-of-reach" }>> {
+  return inTransaction<Extract<InviteMade, { kind: "made" | "out-of-reach" }>>(async (client) => {
+    const viewer = (await lockRoles(client, orgId, [LINK_INVITE_ROLE])).get(LINK_INVITE_ROLE);
+    if (viewer && !canHandOut(input.holder, viewer.permissions)) {
+      return { commit: false, result: { kind: "out-of-reach", label: viewer.label } };
+    }
     const token = newToken();
     const inserted = await client.query<{ id: number }>(
       `INSERT INTO invites (org_id, token_hash, kind, email, role, invited_by, expires_at)

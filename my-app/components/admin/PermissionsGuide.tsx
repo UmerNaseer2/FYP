@@ -29,10 +29,12 @@ const WHAT_EACH_BOX_MEANS: Record<Action, string> = {
   update: "Change something that is already there, such as a saved connection or an alert threshold.",
   delete: "Remove something, such as a connection or a tracked schema.",
   run: "Do real work on a database: apply or revert a migration, run a drift check, or measure a query.",
-  // Only with real sign-in: while it is off for testing there is one person,
-  // who clears their own request (lib/approvals-db.ts, decisionBlockReason).
+  // Two exceptions let someone clear their own request: sign-in switched off
+  // for testing, where there is only one person, and an organization whose
+  // two-person rule is off (lib/approvals-db.ts, mayDecideOwn).
   approve:
-    "Approve a production run. With real sign-in, nobody can approve a request they made themselves.",
+    "Approve a production run. Nobody can approve a request they made themselves, unless the " +
+    "organization has switched its two-person rule off on the Organization tab.",
 };
 
 type PermissionsGuideProps = {

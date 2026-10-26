@@ -23,7 +23,8 @@ recorded. So the tool exists to answer four questions:
    rollback, from that diff.
 3. **What has actually been applied where?** A versioned script registry in
    GitHub, a ledger table written into each target database, and a deploy
-   pipeline with pre-flight, dry run, and a two-person rule on production.
+   pipeline with pre-flight, dry run, and a two-person rule on production
+   (on by default; an organization's admin can switch it off).
 4. **Has anything changed behind my back?** Snapshot a schema as a baseline,
    then re-check it on a schedule and report drift.
 

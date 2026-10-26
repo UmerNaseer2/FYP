@@ -703,12 +703,17 @@ export async function POST(request: NextRequest) {
         return await refuse(403, {
           needsApproval: true,
           // Under the auth bypass there is one principal, and it may clear its
-          // own request (decisionBlockReason in lib/approvals-db), so there is
-          // no second person to ask.
+          // own request (mayDecideOwn in lib/approvals-db), so there is no
+          // second person to ask. With the two-person rule off there may be,
+          // but there needn't be.
           error: gate.principal.bypass
             ? "Rolling back on production needs an approval. Request it in the Approvals " +
               "panel and approve it there yourself (the auth bypass is on), then press " +
               "Roll back again."
+            : !gate.principal.orgTwoPersonRule
+            ? "Rolling back on production needs an approval. Request it in the Approvals " +
+              "panel and approve it there (this organization's two-person rule is off, so " +
+              "you may approve it yourself), then press Roll back again."
             : "Rolling back on production needs a second person's approval. Ask for it in the " +
               "Approvals panel, then press Roll back again.",
         });

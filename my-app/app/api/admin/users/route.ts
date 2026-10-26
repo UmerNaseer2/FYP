@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
-import { ADMIN_ROLE } from "@/lib/permissions";
-import { listRoles, logRoleChanges } from "@/lib/roles-db";
+import { ADMIN_ROLE, canHandOut } from "@/lib/permissions";
+import { listRoles, lockRoles, logRoleChanges } from "@/lib/roles-db";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { MetadataClient } from "@/lib/db/sequelize";
 
@@ -15,9 +15,11 @@ import type { MetadataClient } from "@/lib/db/sequelize";
  * failed at connect time. It now shares the one pool in lib/version-db, which
  * is also the pool that creates the `profiles` table.
  *
- * Each method has its own permission under Users (Read, Update, Delete).
- * They are admin-only boxes: the Roles tab never offers them to another role,
- * so nobody but an admin can hand out roles, their own included.
+ * Each method has its own permission under Users (Read, Update, Delete),
+ * which an Admin can give to other roles. The rank rule (canHandOut in
+ * lib/permissions.ts) keeps that from being a way up: nobody can give a role
+ * that can do something theirs can't, move someone out of one, or remove
+ * someone who holds one. So only an Admin can touch an Admin.
  *
  * A user here is a member of the caller's organization (gate.principal.orgId).
  * The list is that organization's memberships, a role change changes one
@@ -37,6 +39,14 @@ type UserRow = {
   last_seen_at: string | null;
 };
 
+/** The rank rule's refusal: `doing` the role `label`, which outranks the caller's. */
+function outOfReach(doing: string, label: string, roleLabel: string): NextResponse {
+  return NextResponse.json(
+    { error: `You can't ${doing} the ${label} role. It can do things your role (${roleLabel}) can't.` },
+    { status: 403 }
+  );
+}
+
 /**
  * The role asked for, if it is worth looking up. Whether a role by that name
  * exists is for the roles table to say (see PUT): an admin can add and delete
@@ -44,6 +54,21 @@ type UserRow = {
  */
 function parseRole(value: unknown): string | null {
   return typeof value === "string" && value !== "" && value.length <= 64 ? value : null;
+}
+
+/**
+ * The answer when the person was changed or removed by somebody else between
+ * this request's first read and its write. Nothing was written.
+ */
+function changedMeanwhile(): NextResponse {
+  return NextResponse.json(
+    {
+      error:
+        "Someone else changed this person's role or removed them a moment ago. " +
+        "Reload the page to see them as they are now.",
+    },
+    { status: 409 }
+  );
 }
 
 /**
@@ -111,8 +136,9 @@ export async function GET() {
 
   try {
     await syncMetadataTables();
-    // The roles come along for the role picker on each row: names and labels
-    // only, since what each role may do is the Roles tab's business.
+    // The roles come along for the role picker on each row: names and labels,
+    // and whether the caller may hand each one out (the rank rule). What each
+    // role may do is the Roles tab's business, so that is not sent.
     const { orgId } = gate.principal;
     const [result, roles] = await Promise.all([
       pool.query<UserRow>(
@@ -127,7 +153,11 @@ export async function GET() {
     ]);
     return NextResponse.json({
       users: result.rows,
-      roles: roles.map((role) => ({ name: role.name, label: role.label })),
+      roles: roles.map((role) => ({
+        name: role.name,
+        label: role.label,
+        assignable: canHandOut(gate.principal, role.permissions),
+      })),
     });
   } catch (error) {
     console.error("Failed to list users:", error);
@@ -188,18 +218,14 @@ export async function PUT(request: NextRequest) {
     const previousRole = current.rows[0].role;
 
     // The role asked for is looked up, because the Roles tab can add and
-    // delete roles. FOR KEY SHARE keeps it from being deleted until this
-    // commits: deleting a role waits for this transaction, then finds the role
-    // in use and refuses. The person's current role is read alongside it, so
-    // the change log can say what they had before.
-    const named = await client.query<{ name: string; label: string }>(
-      `SELECT name, label FROM roles
-        WHERE org_id = $1 AND name = ANY($2::text[])
-        FOR KEY SHARE`,
-      [orgId, [role, previousRole]]
-    );
-    const labelOf = (name: string) => named.rows.find((row) => row.name === name)?.label;
-    if (labelOf(role) === undefined) {
+    // delete roles. lockRoles keeps it from being deleted until this commits:
+    // deleting a role waits for this transaction, then finds the role in use
+    // and refuses. The person's current role is read alongside it, for the
+    // rank rule and so the change log can say what they had before.
+    const named = await lockRoles(client, orgId, [role, previousRole]);
+    const asked = named.get(role);
+    const had = named.get(previousRole);
+    if (!asked) {
       await client.query("ROLLBACK");
       return NextResponse.json(
         {
@@ -209,6 +235,21 @@ export async function PUT(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // The rank rule, both ways round: moving someone out of a role that can
+    // do more than yours would be taking it from someone above you, and
+    // giving one would be handing out more than you have. A membership's role
+    // always exists (a foreign key says so), so `had` is only missing if the
+    // rows were edited by hand, and then nobody but an Admin should touch it.
+    const { roleLabel } = gate.principal;
+    if (!had || !canHandOut(gate.principal, had.permissions)) {
+      await client.query("ROLLBACK");
+      return outOfReach("change the role of someone who has", had?.label ?? previousRole, roleLabel);
+    }
+    if (!canHandOut(gate.principal, asked.permissions)) {
+      await client.query("ROLLBACK");
+      return outOfReach("give someone", asked.label, roleLabel);
     }
 
     if (
@@ -225,23 +266,25 @@ export async function PUT(request: NextRequest) {
 
     // The role lives on the membership and the rest on the profile, so the
     // reply is put together from both, in the same statement as the change.
+    // Only while they still hold the role every check above was about: no
+    // lock is taken on a promotion, so somebody else can change or remove
+    // them in between, and the rank rule was checked against the old role.
     const result = await client.query<UserRow>(
       `WITH changed AS (
          UPDATE memberships SET role = $1
-          WHERE org_id = $2 AND profile_id = $3
+          WHERE org_id = $2 AND profile_id = $3 AND role = $4
          RETURNING profile_id, role
        )
        SELECT p.id, p.email, p.name, changed.role, p.created_at, p.last_seen_at
          FROM changed
          JOIN profiles p ON p.id = changed.profile_id`,
-      [role, orgId, userId]
+      [role, orgId, userId, previousRole]
     );
-    // Checked again rather than trusted from the SELECT above. On a promotion
-    // no lock is taken, so somebody else's DELETE can land in between, and
-    // this is what stops the reply being `user: undefined` with success: true.
+    // This is also what stops the reply being `user: undefined` with
+    // success: true.
     if (result.rows.length === 0) {
       await client.query("ROLLBACK");
-      return NextResponse.json({ error: "No such user." }, { status: 404 });
+      return changedMeanwhile();
     }
 
     // Written in the same transaction, so the log never shows a change that
@@ -253,7 +296,7 @@ export async function PUT(request: NextRequest) {
           role,
           kind: "assign",
           subject: result.rows[0].email,
-          detail: labelOf(previousRole) ?? previousRole,
+          detail: had.label,
           actor: actorFor(gate.principal),
         },
       ]);
@@ -309,10 +352,19 @@ export async function DELETE(request: NextRequest) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "No such user." }, { status: 404 });
     }
+    const targetRole = target.rows[0].role;
+
+    // The rank rule, as for a role change: nobody can remove someone whose
+    // role can do more than theirs.
+    const held = (await lockRoles(client, orgId, [targetRole])).get(targetRole);
+    if (!held || !canHandOut(gate.principal, held.permissions)) {
+      await client.query("ROLLBACK");
+      return outOfReach("remove someone who has", held?.label ?? targetRole, gate.principal.roleLabel);
+    }
 
     // Same reasoning as the demotion guard above.
     if (
-      target.rows[0].role === ADMIN_ROLE &&
+      targetRole === ADMIN_ROLE &&
       (await otherAdminCount(client, orgId, userId)) === 0
     ) {
       await client.query("ROLLBACK");
@@ -331,9 +383,28 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await client.query(`DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`, [
-      orgId,
-      userId,
+    // Only while they still hold the role checked above, for the same reason
+    // as the role change. Their address comes back for the change log.
+    const removed = await client.query<{ email: string }>(
+      `WITH gone AS (
+         DELETE FROM memberships
+          WHERE org_id = $1 AND profile_id = $2 AND role = $3
+         RETURNING profile_id
+       )
+       SELECT p.email FROM gone JOIN profiles p ON p.id = gone.profile_id`,
+      [orgId, userId, targetRole]
+    );
+    if (removed.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return changedMeanwhile();
+    }
+    await logRoleChanges(client, orgId, [
+      {
+        role: targetRole,
+        kind: "remove",
+        subject: removed.rows[0].email,
+        actor: actorFor(gate.principal),
+      },
     ]);
     // The profile goes too once nothing else needs it: a person who belongs to
     // no organization has nothing left to sign in to. Checked in the same

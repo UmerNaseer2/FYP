@@ -85,7 +85,7 @@ export function PermissionGrid({
                   <td
                     colSpan={ACTIONS.length}
                     className="admins-only"
-                    title="Only the admin role can manage people and roles, so no role can make itself an admin."
+                    title="Only the admin role can change roles and the organization, so no role can make itself an admin."
                   >
                     Admins only
                   </td>

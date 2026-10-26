@@ -8,5 +8,5 @@ import AuthGuard from "@/components/AuthGuard";
  * the first line.
  */
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGuard feature={["users", "roles"]}>{children}</AuthGuard>;
+  return <AuthGuard feature={["users", "roles", "organization"]}>{children}</AuthGuard>;
 }

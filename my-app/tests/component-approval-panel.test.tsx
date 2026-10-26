@@ -381,16 +381,43 @@ describe("what an approval says it covers", () => {
   });
 
   it("does not call a self-approval a second person", () => {
-    // A self-approval is only possible under the bypass, and the row records it
-    // as one. Reading it back as "Approved by a second person" would state the
+    // A self-approval is only possible under the bypass or with the
+    // organization's two-person rule off, and the row records it as one.
+    // Reading it back as "Approved by a second person" would state the
     // opposite of what the audit log holds.
-    const panel = show({
-      approved: row({ status: "approved", self_approved: true, decided_by: "me@example.com" }),
-    });
+    const approved = row({ status: "approved", self_approved: true, decided_by: "me@example.com" });
+    const panel = show({ bypass: true, approved });
 
     expect(screen.getByText("Self-approved under the auth bypass")).toBeInTheDocument();
     expect(screen.queryByText("Approved by a second person")).not.toBeInTheDocument();
-    expect(panel).toHaveTextContent("Recorded on the row as a self-approval");
+    expect(panel).toHaveTextContent("because with the bypass on there is only one principal");
+  });
+
+  it("says a self-approval came from the two-person rule being off", () => {
+    const panel = show({
+      twoPersonRule: false,
+      approved: row({ status: "approved", self_approved: true, decided_by: "me@example.com" }),
+    });
+
+    expect(screen.getByText("Self-approved (two-person rule off)")).toBeInTheDocument();
+    expect(panel).toHaveTextContent("which this organization allows while its two-person rule is off");
+  });
+
+  it("lets the requester clear their own request while the two-person rule is off", () => {
+    const panel = show({ twoPersonRule: false, pending: row({ requested_by: "me@example.com" }) });
+
+    expect(screen.getByText("Waiting for your approval")).toBeInTheDocument();
+    expect(panel).toHaveTextContent("The two-person rule is off in this organization, so you can clear these migrations yourself");
+    expect(screen.getByRole("button", { name: "Approve this run" })).toBeEnabled();
+  });
+
+  it("still waits for a second person while the rule is on, or for someone who may approve", () => {
+    show({ pending: row({ requested_by: "me@example.com" }) });
+    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
+    cleanup();
+
+    show({ twoPersonRule: false, mayApprove: false, pending: row({ requested_by: "me@example.com" }) });
+    expect(screen.getByText("Waiting for a second person")).toBeInTheDocument();
   });
 
   it("says when the approval stops covering the run", () => {
@@ -530,6 +557,15 @@ describe("what the reader is told about earlier attempts", () => {
     expect(screen.getByText("Needs an approval")).toBeInTheDocument();
     expect(screen.queryByText("Needs a second person")).not.toBeInTheDocument();
     expect(panel).toHaveTextContent("you request it and then clear it yourself");
+  });
+
+  it("speaks for the bypass, not the organization's rule, when both apply", () => {
+    // In the demo the bypass is the reason anyone may clear their own run, so
+    // the panel names it even if the organization's rule is off as well.
+    const panel = show({ bypass: true, twoPersonRule: false });
+
+    expect(panel).toHaveTextContent("With the auth bypass on there is only one principal");
+    expect(panel).not.toHaveTextContent("The two-person rule is off");
   });
 });
 

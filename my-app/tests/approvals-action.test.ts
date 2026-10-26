@@ -16,6 +16,7 @@ import {
   createApprovalRequest,
   decideApproval,
   decisionBlockReason,
+  mayDecideOwn,
   releaseApproval,
   runFingerprint,
   type DeployApproval,
@@ -102,6 +103,18 @@ describe("decisionBlockReason", () => {
   it("lets a second person decide either kind", () => {
     expect(decisionBlockReason(approval("revert"), "b@test", false)).toBeNull();
     expect(decisionBlockReason(approval("deploy"), "b@test", false)).toBeNull();
+  });
+
+  it("lets the requester decide when self-approval is allowed", () => {
+    expect(decisionBlockReason(approval("deploy"), "a@test", true)).toBeNull();
+  });
+});
+
+describe("mayDecideOwn", () => {
+  it("allows a self-approval only under the bypass or with the two-person rule off", () => {
+    expect(mayDecideOwn({ bypass: false, orgTwoPersonRule: true })).toBe(false);
+    expect(mayDecideOwn({ bypass: true, orgTwoPersonRule: true })).toBe(true);
+    expect(mayDecideOwn({ bypass: false, orgTwoPersonRule: false })).toBe(true);
   });
 });
 

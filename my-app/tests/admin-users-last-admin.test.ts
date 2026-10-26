@@ -22,6 +22,10 @@
 // asked for is looked up in the roles table (an admin can add and delete
 // roles), and the change is logged in the same transaction that makes it.
 //
+// The "the rank rule" block is for a role other than Admin that has been
+// given the Users boxes: it can hand out, move people out of and remove
+// only roles that can do nothing its own can't.
+//
 // Everything here happens inside one organization, the caller's. The users are
 // its members, the lock covers its admin memberships and no other
 // organization's, and removing someone deletes their membership there, then
@@ -52,6 +56,18 @@ type Answers = {
   throwOn?: RegExp;
   /** The roles table, as name to label. Defaults to the three built-in roles. */
   roles?: Record<string, string>;
+  /**
+   * The boxes ticked for each role, as the roles lookup reads them. A role
+   * left out has none. Admin can do everything whatever is ticked.
+   */
+  granted?: Record<string, string[]>;
+  /**
+   * Rows the removal, `WITH gone AS (DELETE FROM memberships ...)`, gives
+   * back. Defaults to one row.
+   */
+  removed?: unknown[];
+  /** The rows GET's roles query reads, before effectivePermissions. */
+  listedRoles?: unknown[];
 };
 
 const BUILT_IN_ROLES = { viewer: "Viewer", editor: "Editor", admin: "Admin" };
@@ -62,7 +78,8 @@ let released = 0;
 /** Statements sent on the pool itself rather than on a borrowed connection: GET's. */
 const mockQuery = async (text: string, values?: unknown[]) => {
   statements.push({ text, values: values ?? [] });
-  return { rows: [], rowCount: 0 };
+  const rows = /FROM roles r/.test(text) ? (answers.listedRoles ?? []) : [];
+  return { rows, rowCount: rows.length };
 };
 
 const mockConnect = async () => {
@@ -85,19 +102,23 @@ const mockConnect = async () => {
         const row = answers.target === undefined ? { role: "admin" } : answers.target;
         return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       }
+      if (/DELETE FROM memberships/.test(text)) {
+        const rows = answers.removed ?? [{ email: "mei@x" }];
+        return { rows, rowCount: rows.length };
+      }
       if (/UPDATE memberships/.test(text)) {
         const rows = answers.updated ?? [{ id: 2, email: "mei@x", role: "viewer" }];
         return { rows, rowCount: rows.length };
       }
       if (/FROM roles/.test(text)) {
-        // The lookup PUT makes before it changes anything: the role asked for
-        // and the person's current one, each once, if the table has it. The
-        // names are the second value; the first is the organization.
+        // The lookup PUT and DELETE make before they change anything: the
+        // roles named, each once, if the table has it. The names are the
+        // second value; the first is the organization.
         const table = new Map(Object.entries(answers.roles ?? BUILT_IN_ROLES));
         const asked = Array.from(new Set((values?.[1] as string[] | undefined) ?? []));
         const rows = asked
           .filter((name) => table.has(name))
-          .map((name) => ({ name, label: table.get(name) }));
+          .map((name) => ({ name, label: table.get(name), granted: answers.granted?.[name] ?? [] }));
         return { rows, rowCount: rows.length };
       }
       return { rows: [], rowCount: 0 };
@@ -120,8 +141,9 @@ jest.mock("../lib/version-db", () => ({
 }));
 
 // A real admin, not the bypass, so the "you can't delete yourself" rule is live.
-// The last block moves them into another organization with mockPrincipalOver.
-let mockPrincipalOver: { orgId?: number; orgSlug?: string; orgName?: string } = {};
+// The last block moves them into another organization with mockPrincipalOver,
+// and the rank rule's block gives them another role with it.
+let mockPrincipalOver: Partial<Principal> = {};
 jest.mock("../lib/auth-guard", () => ({
   requirePermission: async () => ({
     ok: true,
@@ -135,6 +157,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 import { GET, PUT, DELETE } from "@/app/api/admin/users/route";
+import type { Principal } from "@/lib/auth-guard";
 import { TEST_ORG } from "./helpers/principals";
 
 /** Just the statement texts, collapsed to one line each. */
@@ -169,6 +192,8 @@ const LOCK = /FOR UPDATE/;
 const COUNT = /count\(\*\)/;
 /** The role change: the UPDATE of the membership, in the statement that returns the row. */
 const UPDATE = /^WITH changed AS \( UPDATE memberships/;
+/** The removal: the DELETE of the membership, in the statement that returns their address. */
+const REMOVE = /^WITH gone AS \( DELETE FROM memberships/;
 
 beforeEach(() => {
   statements = [];
@@ -286,16 +311,20 @@ describe("demoting an admin", () => {
     expect(at(LOCK)).toBe(-1);
   });
 
-  it("answers 404 when the row disappears between the check and the write", async () => {
+  it("answers 409 when the person is changed or removed between the check and the write", async () => {
     // Only reachable on a promotion, which holds no lock: somebody else's
-    // DELETE lands in the gap. Without the second check the reply would be
-    // `{ success: true, user: undefined }`.
+    // change or DELETE lands in the gap. The UPDATE names the role every
+    // check was about, so it changes nothing then. Without the second check
+    // the reply would be `{ success: true, user: undefined }`.
     answers.target = { role: "viewer" };
     answers.updated = [];
 
     const response = await PUT(request({ userId: 2, role: "admin" }));
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/^Someone else changed this person's role/);
+    expect(statements[at(UPDATE)].values).toEqual(["admin", TEST_ORG.id, 2, "viewer"]);
+    expect(texts()[at(UPDATE)]).toMatch(/WHERE org_id = \$2 AND profile_id = \$3 AND role = \$4 /);
     expect(texts()).toContain("ROLLBACK");
     expect(texts()).not.toContain("COMMIT");
   });
@@ -350,20 +379,21 @@ describe("choosing a role", () => {
     const response = await PUT(request({ userId: 2, role: "qa-lead" }));
 
     expect(response.status).toBe(200);
-    expect(statements[at(UPDATE)].values).toEqual(["qa-lead", TEST_ORG.id, 2]);
+    expect(statements[at(UPDATE)].values).toEqual(["qa-lead", TEST_ORG.id, 2, "viewer"]);
   });
 
   it("holds the role it looked up until the change commits", async () => {
     // FOR KEY SHARE is what makes deleting that role wait for this
-    // transaction, and then find the role in use and refuse.
+    // transaction, and then find the role in use and refuse. OF r, because
+    // the boxes come along in a subquery and are not what is held.
     answers.target = { role: "viewer" };
     answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
 
     await PUT(request({ userId: 2, role: "editor" }));
 
     const lookup = at(/FROM roles/);
-    expect(texts()[lookup]).toMatch(/WHERE org_id = \$1 AND name = ANY\(\$2::text\[\]\)/);
-    expect(texts()[lookup]).toMatch(/FOR KEY SHARE$/);
+    expect(texts()[lookup]).toMatch(/WHERE r\.org_id = \$1 AND r\.name = ANY\(\$2::text\[\]\)/);
+    expect(texts()[lookup]).toMatch(/FOR KEY SHARE OF r$/);
     expect(statements[lookup].values).toEqual([TEST_ORG.id, ["editor", "viewer"]]);
     expect(lookup).toBeGreaterThan(at(/^BEGIN/));
     expect(lookup).toBeLessThan(at(UPDATE));
@@ -429,8 +459,8 @@ describe("deleting an admin", () => {
     expect(response.status).toBe(200);
     expect(at(/^BEGIN/)).toBe(0);
     expect(at(LOCK)).toBeLessThan(at(COUNT));
-    expect(at(COUNT)).toBeLessThan(at(/^DELETE FROM memberships/));
-    expect(at(/^DELETE FROM memberships/)).toBeLessThan(at(/^COMMIT/));
+    expect(at(COUNT)).toBeLessThan(at(REMOVE));
+    expect(at(REMOVE)).toBeLessThan(at(/^COMMIT/));
   });
 
   it("removes the membership, then the profile only once no membership is left", async () => {
@@ -444,12 +474,14 @@ describe("deleting an admin", () => {
     const response = await DELETE(request({ userId: 2 }));
 
     expect(response.status).toBe(200);
-    const membership = at(/^DELETE FROM memberships/);
+    const membership = at(REMOVE);
     const profile = at(/^DELETE FROM profiles/);
     expect(texts()[membership]).toBe(
-      "DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2"
+      "WITH gone AS ( DELETE FROM memberships " +
+        "WHERE org_id = $1 AND profile_id = $2 AND role = $3 RETURNING profile_id ) " +
+        "SELECT p.email FROM gone JOIN profiles p ON p.id = gone.profile_id"
     );
-    expect(statements[membership].values).toEqual([TEST_ORG.id, 2]);
+    expect(statements[membership].values).toEqual([TEST_ORG.id, 2, "viewer"]);
     expect(texts()[profile]).toBe(
       "DELETE FROM profiles WHERE id = $1 " +
         "AND NOT EXISTS (SELECT 1 FROM memberships WHERE profile_id = $1)"
@@ -457,6 +489,40 @@ describe("deleting an admin", () => {
     expect(statements[profile].values).toEqual([2]);
     expect(membership).toBeLessThan(profile);
     expect(profile).toBeLessThan(at(/^COMMIT/));
+  });
+
+  it("logs the removal in the same transaction, with the role they held", async () => {
+    answers.target = { role: "editor" };
+
+    const response = await DELETE(request({ userId: 2 }));
+
+    expect(response.status).toBe(200);
+    const log = at(/^INSERT INTO role_changes/);
+    expect(log).toBeGreaterThan(at(REMOVE));
+    expect(log).toBeLessThan(at(/^COMMIT/));
+    expect(statements[log].values).toEqual([
+      TEST_ORG.id,
+      ["editor"],
+      ["remove"],
+      [null],
+      [null],
+      ["mei@x"],
+      [null],
+      ["umer@x"],
+    ]);
+  });
+
+  it("answers 409 and logs nothing when the person is changed or removed meanwhile", async () => {
+    answers.target = { role: "viewer" };
+    answers.removed = [];
+
+    const response = await DELETE(request({ userId: 2 }));
+
+    expect(response.status).toBe(409);
+    expect(at(/^INSERT INTO role_changes/)).toBe(-1);
+    expect(at(/^DELETE FROM profiles/)).toBe(-1);
+    expect(texts()).toContain("ROLLBACK");
+    expect(texts()).not.toContain("COMMIT");
   });
 
   it("does not take the lock to delete someone who is not an admin", async () => {
@@ -566,6 +632,147 @@ describe("which organization the statements act in", () => {
     expect(response.status).toBe(200);
     expectEveryStatementInAcme();
     expect(at(LOCK)).toBeGreaterThan(-1);
-    expect(at(/^DELETE FROM memberships/)).toBeGreaterThan(-1);
+    expect(at(/FROM roles r/)).toBeGreaterThan(-1);
+    expect(at(REMOVE)).toBeGreaterThan(-1);
+    expect(at(/^INSERT INTO role_changes/)).toBeGreaterThan(-1);
+  });
+});
+
+describe("the rank rule", () => {
+  // A team lead who was given the Users boxes and can look at connections.
+  // A Viewer here can only look at connections too, so the lead can hand it
+  // out; an Editor can also add them, which the lead can't, so it is out of
+  // reach. Equal is enough: nothing in the rule asks for more.
+  const LEAD: Partial<Principal> = {
+    role: "lead",
+    roleLabel: "Team lead",
+    permissions: ["users:read", "users:update", "users:delete", "connections:read"],
+  };
+
+  beforeEach(() => {
+    mockPrincipalOver = LEAD;
+    answers.roles = { ...BUILT_IN_ROLES, lead: "Team lead" };
+    answers.granted = {
+      viewer: ["connections:read"],
+      editor: ["connections:read", "connections:create"],
+      lead: LEAD.permissions as string[],
+    };
+  });
+
+  /** The statements that would change something. */
+  function writes(): string[] {
+    return texts().filter((text) => /UPDATE memberships|DELETE FROM|INSERT INTO/.test(text));
+  }
+
+  it("lets them hand out a role that can do no more than theirs", async () => {
+    answers.target = { role: "viewer" };
+    answers.updated = [{ id: 2, email: "mei@x", role: "lead" }];
+
+    const response = await PUT(request({ userId: 2, role: "lead" }));
+
+    expect(response.status).toBe(200);
+    expect(texts()).toContain("COMMIT");
+  });
+
+  it.each([
+    ["a role that can do more than theirs", "viewer", "editor", "You can't give someone the Editor role."],
+    ["Admin", "viewer", "admin", "You can't give someone the Admin role."],
+    [
+      "anything to someone whose role can do more than theirs",
+      "editor",
+      "viewer",
+      "You can't change the role of someone who has the Editor role.",
+    ],
+    [
+      "anything to an Admin, before the last-admin lock",
+      "admin",
+      "viewer",
+      "You can't change the role of someone who has the Admin role.",
+    ],
+  ])("refuses to give %s, and changes nothing", async (_, had, role, sentence) => {
+    answers.target = { role: had };
+    answers.otherAdmins = 1;
+
+    const response = await PUT(request({ userId: 2, role }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: `${sentence} It can do things your role (Team lead) can't.`,
+    });
+    expect(writes()).toEqual([]);
+    expect(at(LOCK)).toBe(-1);
+    expect(texts()).toContain("ROLLBACK");
+    expect(texts()).not.toContain("COMMIT");
+    expect(released).toBe(1);
+  });
+
+  it.each([
+    ["an Admin", "admin", "Admin"],
+    ["someone whose role can do more than theirs", "editor", "Editor"],
+  ])("refuses to remove %s, and deletes nothing", async (_, had, label) => {
+    answers.target = { role: had };
+    answers.otherAdmins = 1;
+
+    const response = await DELETE(request({ userId: 2 }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: `You can't remove someone who has the ${label} role. It can do things your role (Team lead) can't.`,
+    });
+    expect(writes()).toEqual([]);
+    expect(at(LOCK)).toBe(-1);
+    expect(texts()).toContain("ROLLBACK");
+  });
+
+  it("lets them remove someone whose role is within reach", async () => {
+    answers.target = { role: "viewer" };
+
+    const response = await DELETE(request({ userId: 2 }));
+
+    expect(response.status).toBe(200);
+    expect(at(REMOVE)).toBeGreaterThan(-1);
+  });
+
+  it("refuses a membership whose role is not in the roles table, as out of reach", async () => {
+    // Only possible if the rows were edited by hand: a foreign key keeps a
+    // membership's role in the table. Nobody but an Admin should touch it.
+    answers.target = { role: "ghost" };
+
+    const response = await DELETE(request({ userId: 2 }));
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toMatch(/^You can't remove someone who has the ghost role\./);
+    expect(writes()).toEqual([]);
+  });
+
+  it("marks which roles they may hand out when listing", async () => {
+    answers.listedRoles = [
+      { name: "admin", label: "Admin", description: "", built_in: true, user_count: 1, granted: [] },
+      {
+        name: "editor",
+        label: "Editor",
+        description: "",
+        built_in: true,
+        user_count: 0,
+        granted: ["connections:read", "connections:create"],
+      },
+      {
+        name: "viewer",
+        label: "Viewer",
+        description: "",
+        built_in: true,
+        user_count: 0,
+        granted: ["connections:read"],
+      },
+    ];
+
+    const response = await GET();
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).roles).toEqual([
+      { name: "viewer", label: "Viewer", assignable: true },
+      { name: "editor", label: "Editor", assignable: false },
+      { name: "admin", label: "Admin", assignable: false },
+    ]);
   });
 });

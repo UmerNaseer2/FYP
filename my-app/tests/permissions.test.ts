@@ -22,6 +22,7 @@ import {
   BUILT_IN_ROLES,
   FEATURES,
   PERMISSIONS,
+  canHandOut,
   effectivePermissions,
   hasPermission,
   isAdminOnly,
@@ -82,6 +83,9 @@ const AGREED_GRID: Record<string, "viewer" | "editor" | "admin"> = {
   "roles:read": "admin",
   "roles:update": "admin",
   "roles:delete": "admin",
+  "organization:read": "admin",
+  "organization:update": "admin",
+  "organization:delete": "admin",
 };
 
 describe("the catalogue", () => {
@@ -115,12 +119,13 @@ describe("the catalogue", () => {
     }
   });
 
-  test("makes only Users and Roles & permissions admin-only", () => {
-    // These two are the ones that decide who may do what. A role allowed to
-    // change roles could tick its own way to admin, so nothing else may hold
-    // them, and every one of their boxes starts at admin.
+  test("makes only Roles & permissions and Organization admin-only", () => {
+    // A role allowed to change roles could tick its own way to admin, and the
+    // organization's settings include deleting it, so nothing else may hold
+    // these, and every one of their boxes starts at admin. Users is not one:
+    // the rank rule keeps managing people from being a way up.
     const adminOnly = FEATURES.filter((f) => "adminOnly" in f && f.adminOnly).map((f) => f.key);
-    expect(adminOnly).toEqual(["users", "roles"]);
+    expect(adminOnly).toEqual(["roles", "organization"]);
     for (const permission of PERMISSIONS) {
       expect([permission.key, permission.adminOnly, isAdminOnly(permission.key)]).toEqual([
         permission.key,
@@ -144,11 +149,14 @@ describe("the catalogue", () => {
 });
 
 describe("presetFor", () => {
-  test("starts Viewer able to read every feature an admin does not keep to itself", () => {
-    const expected = FEATURES.filter((f) => !("adminOnly" in f && f.adminOnly)).map((f) =>
-      readKeyOf(f.key)
-    );
+  test("starts Viewer able to read every feature but the people in it and the admin-only ones", () => {
+    // Users is open to any role an Admin ticks it for, but a new Viewer is
+    // not shown who else belongs and under which address.
+    const expected = FEATURES.filter((f) => !("adminOnly" in f && f.adminOnly))
+      .filter((f) => f.key !== "users")
+      .map((f) => readKeyOf(f.key));
     expect(presetFor("viewer")).toEqual(expected);
+    expect(presetFor("editor")).not.toContain("users:read");
   });
 
   test("starts Editor with everything the old editor rank had and nothing it did not", () => {
@@ -191,8 +199,10 @@ describe("effectivePermissions", () => {
 
   test("drops an admin-only permission held by any other role", () => {
     expect(
-      effectivePermissions("editor", ["users:read", "users:update", "roles:update"])
+      effectivePermissions("editor", ["organization:delete", "roles:update", "roles:read"])
     ).toEqual([]);
+    // Users is not one of them.
+    expect(effectivePermissions("lead", ["users:update"])).toEqual(["users:read", "users:update"]);
     expect(effectivePermissions("qa-lead", ["roles:delete", "deploy:run"])).toEqual([
       "deploy:read",
       "deploy:run",
@@ -254,6 +264,32 @@ describe("hasPermission", () => {
   });
 });
 
+describe("canHandOut", () => {
+  const lead = { permissions: ["users:read", "users:create", "connections:read"] };
+
+  test("lets someone hand out a role that can do no more than theirs, equal included", () => {
+    expect(canHandOut(lead, [])).toBe(true);
+    expect(canHandOut(lead, ["connections:read"])).toBe(true);
+    expect(canHandOut(lead, lead.permissions)).toBe(true);
+  });
+
+  test("refuses a role that can do even one thing theirs can't", () => {
+    expect(canHandOut(lead, ["connections:read", "connections:create"])).toBe(false);
+  });
+
+  test("keeps the admin role for Admins, since nobody else can hold its admin-only boxes", () => {
+    const admin = presetFor("admin") ?? [];
+    expect(canHandOut({ permissions: admin }, admin)).toBe(true);
+    expect(canHandOut({ permissions: presetFor("editor") ?? [] }, admin)).toBe(false);
+  });
+
+  test("lets a holder with no list at all hand out nothing", () => {
+    expect(canHandOut(null, [])).toBe(false);
+    expect(canHandOut(undefined, [])).toBe(false);
+    expect(canHandOut({}, [])).toBe(false);
+  });
+});
+
 describe("refusalMessage", () => {
   test("names the box an admin has to tick", () => {
     expect(refusalMessage("Viewer", "connections:create")).toBe(
@@ -264,10 +300,16 @@ describe("refusalMessage", () => {
     );
   });
 
+  test("sends someone to ask for a Users box, which any role can be given", () => {
+    expect(refusalMessage("Editor", "users:read")).toBe(
+      'Your role (Editor) can\'t see the user list. Ask an admin to allow "Users: Read" for this role.'
+    );
+  });
+
   test("does not send anyone to ask for an admin-only box", () => {
     // It cannot be ticked for any role, so asking for it would be pointless.
-    expect(refusalMessage("Editor", "users:read")).toBe(
-      "Your role (Editor) can't see the user list. Only admins can."
+    expect(refusalMessage("Editor", "organization:delete")).toBe(
+      "Your role (Editor) can't delete the organization. Only admins can."
     );
     expect(refusalMessage("Editor", "roles:update")).toBe(
       "Your role (Editor) can't change what a role can do. Only admins can."

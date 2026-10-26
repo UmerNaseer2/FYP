@@ -28,6 +28,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { testDatabaseUrl } from "./helpers/test-database";
+import { ALL_PERMISSIONS, presetFor } from "@/lib/permissions";
+
+/**
+ * Whoever makes the invitations in most tests: an Admin, who holds every box
+ * and so may hand out any role. The rank rule has tests of its own below.
+ */
+const ADMIN_HOLDER = { permissions: ALL_PERMISSIONS };
 
 type Org = { id: number; slug: string; name: string };
 type Person = { id: number; email: string };
@@ -157,13 +164,21 @@ describeWithDatabase("invitations in a real metadata database", () => {
       role,
       invitedBy: ada.id,
       actor: ada.email,
+      holder: ADMIN_HOLDER,
     });
     if (made.kind !== "made") throw new Error(`Expected an invitation, got "${made.kind}".`);
     return made;
   }
 
-  function linkInvite(org: Org, days: 1 | 7 | 30 = 7) {
-    return invites.createLinkInvite(org.id, { days, invitedBy: ada.id, actor: ada.email });
+  async function linkInvite(org: Org, days: 1 | 7 | 30 = 7) {
+    const made = await invites.createLinkInvite(org.id, {
+      days,
+      invitedBy: ada.id,
+      actor: ada.email,
+      holder: ADMIN_HOLDER,
+    });
+    if (made.kind !== "made") throw new Error(`Expected a link, got "${made.kind}".`);
+    return made;
   }
 
   async function expire(inviteId: number): Promise<void> {
@@ -369,6 +384,7 @@ describeWithDatabase("invitations in a real metadata database", () => {
           role: "editor",
           invitedBy: ada.id,
           actor: ada.email,
+          holder: ADMIN_HOLDER,
         })
       ).resolves.toEqual({ kind: "member" });
       expect(await count(`SELECT count(*)::int AS n FROM invites`)).toBe(before);
@@ -397,11 +413,53 @@ describeWithDatabase("invitations in a real metadata database", () => {
           role: "editor",
           invitedBy: ada.id,
           actor: ada.email,
+          holder: ADMIN_HOLDER,
         })
       ).resolves.toEqual({ kind: "member" });
       // Anyone can put an address on an account without proving it, so an
       // unproven one is no sign that its owner is in already.
       await expect(emailInvite(orgA, unvouched)).resolves.toMatchObject({ kind: "made" });
+    }, SLOW);
+
+    test("is refused for a role that can do what the inviter's own can't, and nothing is written", async () => {
+      // A role of its own, so what it holds is exactly what this test says.
+      const role = `lead-${randomUUID().slice(0, 8)}`;
+      await db.query(`INSERT INTO roles (org_id, name, label) VALUES ($1, $2, 'Team lead')`, [
+        orgA.id,
+        role,
+      ]);
+      await db.query(
+        `INSERT INTO role_permissions (org_id, role, feature, action)
+         VALUES ($1, $2, 'connections', 'create')`,
+        [orgA.id, role]
+      );
+      const email = freshEmail("lead");
+      const mark = await logMark();
+      const before = await count(`SELECT count(*)::int AS n FROM invites`);
+
+      // Reading connections is not enough to hand out adding them.
+      await expect(
+        invites.createEmailInvite(orgA.id, {
+          email,
+          role,
+          invitedBy: ada.id,
+          actor: ada.email,
+          holder: { permissions: ["connections:read"] },
+        })
+      ).resolves.toEqual({ kind: "out-of-reach", label: "Team lead" });
+      expect(await count(`SELECT count(*)::int AS n FROM invites`)).toBe(before);
+      expect(await logAfter(mark)).toEqual([]);
+
+      // Holding the same boxes is enough: equal is not above.
+      await expect(
+        invites.createEmailInvite(orgA.id, {
+          email,
+          role,
+          invitedBy: ada.id,
+          actor: ada.email,
+          holder: { permissions: ["connections:read", "connections:create"] },
+        })
+      ).resolves.toMatchObject({ kind: "made", invite: { role } });
     }, SLOW);
 
     test("is refused for a role this organization does not have, even one another organization has", async () => {
@@ -417,6 +475,7 @@ describeWithDatabase("invitations in a real metadata database", () => {
             role,
             invitedBy: ada.id,
             actor: ada.email,
+            holder: ADMIN_HOLDER,
           })
         ).resolves.toEqual({ kind: "no-role" });
       }
@@ -443,6 +502,7 @@ describeWithDatabase("invitations in a real metadata database", () => {
           role: "editor",
           invitedBy: ada.id,
           actor: ada.email,
+          holder: ADMIN_HOLDER,
         });
         await waitForLock();
         await holder.query("COMMIT");
@@ -506,6 +566,32 @@ describeWithDatabase("invitations in a real metadata database", () => {
           actor: ada.email,
         }))
       );
+    }, SLOW);
+
+    test("is refused to someone whose role can't do all a Viewer can, and nothing is written", async () => {
+      const mark = await logMark();
+      const before = await count(`SELECT count(*)::int AS n FROM invites`);
+
+      await expect(
+        invites.createLinkInvite(orgB.id, {
+          days: 7,
+          invitedBy: ada.id,
+          actor: ada.email,
+          holder: { permissions: [] },
+        })
+      ).resolves.toEqual({ kind: "out-of-reach", label: "Viewer" });
+      expect(await count(`SELECT count(*)::int AS n FROM invites`)).toBe(before);
+      expect(await logAfter(mark)).toEqual([]);
+
+      // A Viewer may pass on a link that makes others Viewers.
+      await expect(
+        invites.createLinkInvite(orgB.id, {
+          days: 7,
+          invitedBy: ada.id,
+          actor: ada.email,
+          holder: { permissions: presetFor("viewer") ?? [] },
+        })
+      ).resolves.toMatchObject({ kind: "made" });
     }, SLOW);
 
     test("the database itself refuses a link for more than a Viewer", async () => {

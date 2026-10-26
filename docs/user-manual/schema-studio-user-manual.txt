@@ -582,9 +582,13 @@ run, from a second person. Asking for one needs "Approvals: Create" (out of the
 box, Editor and Admin), and giving one needs "Approvals: Approve" (out of the
 box, Admin only, but an admin can give it to another role). Nobody can approve
 their own request. An approval covers one run of the SQL it was given, for up
-to 7 days: change the SQL, or wait longer, and it needs approving again. While
-sign-in is switched off for testing there is only one person, so that person
-may approve their own request.
+to 7 days: change the SQL, or wait longer, and it needs approving again.
+
+Two exceptions let you approve your own request, and the approval is then
+recorded as a self-approval:
+  • While sign-in is switched off for testing there is only one person.
+  • An admin has switched the organization's two-person rule off on the
+    Organization tab (section 11). You still need "Approvals: Approve".
 
 BEST PRACTICES
 --------------
@@ -699,7 +703,8 @@ A few boxes need a word more:
   • Deploy: Run covers applying, reverting and replaying migrations. The Target
     connection's own setting still applies on top (section 3).
   • Approvals: Approve can be given to another role. Even then, nobody may
-    approve a request they made themselves.
+    approve a request they made themselves while the organization's
+    two-person rule is on.
   • Drift tracking: Update covers changing schedules, environments and
     baselines, and acknowledging drift. A drift check can be run with either
     Drift tracking: Run or Deploy: Run.
@@ -745,6 +750,23 @@ check. It sits under your name in the sidebar while the sidebar is expanded.
   2. Pick "Admin (everything)" to go back.
 The choice lasts for this browser session. With real sign-in View as is not
 there, and the server ignores it.
+
+THE ORGANIZATION TAB
+--------------------
+Only the Admin role sees this tab. It has three parts:
+  • Name: rename the organization. Its address (the part after the site name)
+    stays the same, so saved links keep working.
+  • Two-person rule: on for every new organization. While it is on, a
+    production deploy or rollback waits for someone other than the person who
+    asked. Switching it off asks you to confirm first; people can then approve
+    their own requests, and each one is recorded as a self-approval. Both
+    switches are listed under Recent changes.
+  • Delete this organization: type its name to confirm. It deletes the
+    organization's connections, scripts, approvals, invitations and change
+    log, and takes everyone out of it. Their accounts stay, and so do scripts
+    already in the GitHub registry. The first organization on an install
+    cannot be deleted, and nothing can be deleted on the desktop app or while
+    sign-in is switched off for testing.
 
 ================================================================================
 12. KEYBOARD SHORTCUTS & TIPS

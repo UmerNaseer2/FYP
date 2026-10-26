@@ -1584,6 +1584,7 @@ describeWithDatabase("org-migration", () => {
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
+        twoPersonRule: true,
         role,
       };
     }
@@ -1808,6 +1809,7 @@ describeWithDatabase("org-migration", () => {
         slug: "elsewhere",
         name: "Elsewhere",
         isDefault: false,
+        twoPersonRule: true,
         role: "viewer",
       };
 
@@ -1847,6 +1849,7 @@ describeWithDatabase("org-migration", () => {
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
+        twoPersonRule: true,
       });
       expect(await app.orgs.findOrganization("elsewhere")).toMatchObject({
         slug: "elsewhere",
@@ -2047,7 +2050,14 @@ describeWithDatabase("org-migration", () => {
         profileId
       );
       expect(await app.orgs.listMemberships(profileId)).toEqual([
-        { orgId: elsewhere, slug: "elsewhere", name: "Elsewhere", isDefault: false, role: "viewer" },
+        {
+          orgId: elsewhere,
+          slug: "elsewhere",
+          name: "Elsewhere",
+          isDefault: false,
+          twoPersonRule: true,
+          role: "viewer",
+        },
       ]);
     }, SLOW);
 
@@ -2310,7 +2320,14 @@ describeWithDatabase("org-migration", () => {
       });
       expect(created).toEqual({
         kind: "ok",
-        organization: { id: expect.any(Number), slug: "acme-data", name: "Acme Data", isDefault: false },
+        organization: {
+          id: expect.any(Number),
+          slug: "acme-data",
+          name: "Acme Data",
+          isDefault: false,
+          // On by default: a new organization asks for a second person before production.
+          twoPersonRule: true,
+        },
       });
       acmeId = created.kind === "ok" ? created.organization.id : 0;
 
@@ -2401,6 +2418,101 @@ describeWithDatabase("org-migration", () => {
       );
       expect(names).toContain("Swinburne FYP");
       expect((await app.orgs.listMemberships(edId)).map((m) => m.name)[0]).toBe("aardvark labs");
+    }, SLOW);
+  });
+
+  describe("changing and deleting an organization", () => {
+    let app: RequestApp;
+    let client: Client;
+    let edId = 0;
+
+    beforeAll(async () => {
+      const url = await freshDatabase("changing");
+      app = await loadRequestApp(url);
+      await app.syncMetadataTables();
+      client = await connectTo(url);
+      edId = await signedIn(app, github(201, "ed@example.invalid"));
+    }, SLOW);
+
+    afterAll(async () => {
+      await client?.end();
+      await app?.close();
+    }, SLOW);
+
+    /** A new organization of Ed's, with the given slug, and its id. */
+    async function made(slug: string, name = "Ed's"): Promise<number> {
+      const created = await app.orgs.createOrganization(edId, { slug, name });
+      if (created.kind !== "ok") throw new Error(`Could not make ${slug}: ${created.kind}`);
+      return created.organization.id;
+    }
+
+    async function logOf(orgId: number) {
+      const { rows } = await client.query(
+        `SELECT role, kind, subject, detail, actor FROM role_changes
+          WHERE org_id = $1 AND kind IN ('rename-organization', 'two-person-rule') ORDER BY id`,
+        [orgId]
+      );
+      return rows;
+    }
+
+    test("renames it and switches its rule, keeps the address, and logs only what changed", async () => {
+      const id = await made("change-me", "Before");
+
+      const both = await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: false }, "ed@example.invalid");
+      expect(both).toEqual({
+        kind: "ok",
+        organization: expect.objectContaining({ id, slug: "change-me", name: "After", twoPersonRule: false }),
+      });
+      // The same values again change nothing, so they log nothing.
+      await app.orgs.updateOrganization(id, { name: "After", twoPersonRule: false }, "ed@example.invalid");
+      await app.orgs.updateOrganization(id, { twoPersonRule: true }, "ed@example.invalid");
+
+      expect(await logOf(id)).toEqual([
+        { role: ADMIN_ROLE, kind: "rename-organization", subject: "After", detail: "Before", actor: "ed@example.invalid" },
+        { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "off", actor: "ed@example.invalid" },
+        { role: ADMIN_ROLE, kind: "two-person-rule", subject: null, detail: "on", actor: "ed@example.invalid" },
+      ]);
+      expect((await app.orgs.findOrganization("change-me"))?.name).toBe("After");
+    }, SLOW);
+
+    test("answers not-found for an organization that is gone", async () => {
+      expect(await app.orgs.updateOrganization(999_999, { name: "Ghost" }, "ed@example.invalid")).toEqual({
+        kind: "not-found",
+      });
+    }, SLOW);
+
+    test("deletes only on the exact name, takes everything it owns, and keeps the people", async () => {
+      const id = await made("delete-me", "Delete Me");
+      const owned = async () => {
+        const { rows } = await client.query(
+          `SELECT (SELECT count(*) FROM roles WHERE org_id = $1)::int AS roles,
+                  (SELECT count(*) FROM memberships WHERE org_id = $1)::int AS memberships,
+                  (SELECT count(*) FROM role_changes WHERE org_id = $1)::int AS log`,
+          [id]
+        );
+        return rows[0];
+      };
+      const before = await owned();
+      expect(before.roles).toBeGreaterThan(0);
+      expect(before.memberships).toBe(1);
+
+      expect(await app.orgs.deleteOrganization(id, "delete me")).toEqual({ kind: "mismatch" });
+      expect(await app.orgs.deleteOrganization(id, " Delete Me")).toEqual({ kind: "mismatch" });
+      expect(await owned()).toEqual(before);
+
+      expect(await app.orgs.deleteOrganization(id, "Delete Me")).toEqual({ kind: "deleted" });
+      expect(await owned()).toEqual({ roles: 0, memberships: 0, log: 0 });
+      expect(await app.orgs.findOrganization("delete-me")).toBeNull();
+      const { rows } = await client.query(`SELECT count(*)::int AS n FROM profiles WHERE id = $1`, [edId]);
+      expect(rows[0].n).toBe(1);
+      expect(await app.orgs.deleteOrganization(id, "Delete Me")).toEqual({ kind: "not-found" });
+    }, SLOW);
+
+    test("never deletes the default organization, even with its name typed", async () => {
+      const fallback = await app.orgs.findDefaultOrganization();
+      if (!fallback) throw new Error("No default organization.");
+      expect(await app.orgs.deleteOrganization(fallback.id, fallback.name)).toEqual({ kind: "default" });
+      expect(await app.orgs.findDefaultOrganization()).toEqual(fallback);
     }, SLOW);
   });
 });

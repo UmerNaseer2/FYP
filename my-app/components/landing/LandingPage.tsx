@@ -67,8 +67,8 @@ const FEATURES: Feature[] = [
     title: "Deploy and roll back",
     body:
       "Check a migration for risks and rehearse it with a dry run before it runs, then roll back " +
-      "to an earlier version if you need to. Production deploys wait for a second person to " +
-      "approve them.",
+      "to an earlier version if you need to. By default, production deploys wait for a second " +
+      "person to approve them.",
   },
   {
     icon: <UsersIcon size={18} />,
@@ -138,8 +138,8 @@ export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, d
             </h1>
             <p className="landing-lede">
               Schema Studio compares your database schemas across environments, tells you when one
-              changes behind your back, and deploys the fix with a second person signing off on
-              production.
+              changes behind your back, and by default deploys the fix to production only after a
+              second person signs off.
             </p>
             <div className="landing-ctas">
               <Link href={createAccountHref} className="btn btn-primary btn-lg">
@@ -192,7 +192,7 @@ export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, d
             <figcaption className="landing-preview__foot">
               <span className="landing-preview__lock">
                 <LockIcon size={14} />
-                Production deploys wait for a second person.
+                Production deploys wait for a second person by default.
               </span>
               <span className="pill pill-pending">1 approval needed</span>
             </figcaption>

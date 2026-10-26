@@ -82,7 +82,7 @@ import {
   type TimelineStatus,
 } from "@/lib/version-timeline";
 import { useUser } from "@/hooks/useUser";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
@@ -917,6 +917,8 @@ export default function DeployPage() {
   // person who asked for the run (nobody clears their own).
   const { user, roleLabel, isAdmin, bypass, can, loading: sessionLoading } = useUser();
   const orgPath = useOrgHref();
+  // Whether production runs here wait for a second person (the Organization tab).
+  const twoPersonRule = useOrg()?.twoPersonRule ?? true;
   const mayReadApprovals = can("approvals:read");
   // Said at the top of the page, as Dashboard and Connections do, so a role
   // that may only look finds out before picking a target rather than after.
@@ -3509,6 +3511,7 @@ export default function DeployPage() {
                           mayRequest={mayRequestApproval}
                           mayApprove={mayApprove}
                           bypass={bypass}
+                          twoPersonRule={twoPersonRule}
                           note={rollbackApprovalNote}
                           onNoteChange={setRollbackApprovalNote}
                           onRequest={handleRequestRollbackApproval}
@@ -4045,6 +4048,7 @@ export default function DeployPage() {
                             mayRequest={mayRequestApproval}
                             mayApprove={mayApprove}
                             bypass={bypass}
+                            twoPersonRule={twoPersonRule}
                             note={approvalNote}
                             onNoteChange={setApprovalNote}
                             onRequest={handleRequestApproval}

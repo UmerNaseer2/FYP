@@ -82,6 +82,14 @@ describe("LandingPage", () => {
     ]);
   });
 
+  it("calls the second approver a default, since an organization can switch it off", () => {
+    render(<LandingPage {...SIGN_IN} />);
+    const features = screen.getByRole("region", { name: "What it does" });
+    expect(features).toHaveTextContent("By default, production deploys wait for a second person");
+    expect(screen.getByText("Production deploys wait for a second person by default.")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/with a second person signing off/);
+  });
+
   it("labels the made-up schema in the hero as an example", () => {
     // It shows drift and a waiting deploy, and nobody should read it as the
     // state of a real database.

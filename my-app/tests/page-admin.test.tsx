@@ -59,6 +59,7 @@ import {
   holdNext,
   render,
   resetPageState,
+  routerCalls,
   setRoutes,
   setUser,
   type FetchRoute,
@@ -75,11 +76,12 @@ const USERS: Profile[] = [
   { id: 3, email: "linus@example.com", role: "viewer" },
 ];
 
-// The roles each row's picker offers, as GET /api/admin/users sends them.
+// The roles each row's picker offers, as GET /api/admin/users sends them to
+// an admin, who may hand out every one.
 const ROLE_OPTIONS = [
-  { name: "viewer", label: "Viewer" },
-  { name: "editor", label: "Editor" },
-  { name: "admin", label: "Admin" },
+  { name: "viewer", label: "Viewer", assignable: true },
+  { name: "editor", label: "Editor", assignable: true },
+  { name: "admin", label: "Admin", assignable: true },
 ];
 
 const listRoute = (users: Profile[] = USERS, roles = ROLE_OPTIONS): FetchRoute => ({
@@ -422,7 +424,7 @@ describe("the Users tab", () => {
       invitesRoute(),
       listRoute(
         [USERS[0], USERS[1], { ...USERS[2], role: "qa-lead" }],
-        [...ROLE_OPTIONS, { name: "qa-lead", label: "QA Lead" }]
+        [...ROLE_OPTIONS, { name: "qa-lead", label: "QA Lead", assignable: true }]
       ),
       { match: "/api/admin/users", method: "PUT", body: { success: true } },
     ]);
@@ -458,6 +460,43 @@ describe("the Users tab", () => {
     expect(
       fetchCalls.some((c) => c.method === "GET" && c.url.includes("/api/admin/invites"))
     ).toBe(true);
+  });
+
+  it("offers someone who manages people only the roles theirs can hand out", async () => {
+    // An Editor given every Users box: they can do less than an Admin, so
+    // Admin is out of reach, and so is everyone who has it.
+    setUser("editor", [...(presetFor("editor") ?? []), "users:read", "users:create", "users:update", "users:delete"]);
+    setRoutes([
+      invitesRoute(),
+      listRoute(USERS, [
+        { name: "viewer", label: "Viewer", assignable: true },
+        { name: "editor", label: "Editor", assignable: true },
+        { name: "admin", label: "Admin", assignable: false },
+      ]),
+    ]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+
+    const adaRow = screen.getByText("ada@example.com").closest(".card") as HTMLElement;
+    expect(adaRow).toHaveTextContent("Admin can do things your role can't");
+    expect(screen.queryByRole("combobox", { name: "Role for ada@example.com" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove ada@example.com" })).not.toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "Remove grace@example.com" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("combobox", { name: "Role for grace@example.com" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Viewer", "Editor"]);
+    await flushAsync();
+  });
+
+  it("draws no invitations for someone who may see people but not invite them", async () => {
+    setUser("editor", [...(presetFor("editor") ?? []), "users:read"]);
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    await flushAsync();
+
+    expect(screen.queryByRole("heading", { name: "Invite people" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove grace@example.com" })).not.toBeInTheDocument();
   });
 
   it("draws no invitations where the server says nobody can be invited", async () => {
@@ -675,17 +714,21 @@ describe("the Roles & permissions tab", () => {
     expect(screen.queryByRole("button", { name: "Delete role" })).not.toBeInTheDocument();
   });
 
-  it("offers no boxes for managing people and roles on any other role", async () => {
+  it("offers no boxes for roles or the organization on any other role, but does for Users", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
 
-    // Users and Roles & permissions: one cell each saying why, instead of
-    // boxes the server would refuse to save.
+    // Roles & permissions and Organization: one cell each saying why, instead
+    // of boxes the server would refuse to save.
     expect(screen.getAllByText("Admins only")).toHaveLength(2);
-    expect(screen.queryByRole("checkbox", { name: "Users: Read" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("checkbox", { name: "Roles & permissions: Read" })
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Organization: Read" })).not.toBeInTheDocument();
+    // Managing people can be handed to any role. The rank rule on the server
+    // keeps them from handing out more than their own role can do.
+    expect(screen.getByRole("checkbox", { name: "Users: Read" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Users: Create" })).toBeInTheDocument();
   });
 
   it("puts a built-in role back to its defaults once confirmed", async () => {
@@ -986,5 +1029,133 @@ describe("the guide above the tabs", () => {
     } finally {
       spies.forEach((spy) => spy.mockRestore());
     }
+  });
+});
+
+describe("the Organization tab", () => {
+  const ORG = { name: "Test Org", slug: "test-org", twoPersonRule: true, canDelete: true };
+  const orgGet = (org = ORG): FetchRoute => ({ match: "/api/admin/organization", method: "GET", body: org });
+
+  /** Open the page as an admin, then the Organization tab, and wait for it to load. */
+  async function openOrganizationTab(org = ORG, ...more: FetchRoute[]) {
+    setRoutes([invitesRoute(), listRoute(), orgGet(org), ...more]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    fireEvent.click(screen.getByRole("tab", { name: "Organization" }));
+    await screen.findByDisplayValue(org.name);
+  }
+
+  it("renames the organization, keeps its address, and refreshes the page", async () => {
+    await openOrganizationTab(ORG, {
+      match: "/api/admin/organization",
+      method: "PATCH",
+      body: { name: "Acme", slug: "test-org", twoPersonRule: true },
+    });
+    expect(screen.getByText(/The address stays \/test-org/)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save name" });
+    // Nothing to save until the name differs from the saved one.
+    expect(save).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "Acme" } });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(routerCalls.refresh).toBe(1));
+    expect(JSON.parse(lastCall("PATCH")?.body ?? "null")).toEqual({ name: "Acme" });
+    expect(screen.getByDisplayValue("Acme")).toBeInTheDocument();
+  });
+
+  it("shows a refused name under the field, and refreshes nothing", async () => {
+    await openOrganizationTab(ORG, {
+      match: "/api/admin/organization",
+      method: "PATCH",
+      status: 400,
+      body: { error: "Give the organization a name.", field: "name" },
+    });
+    fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: " " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+
+    expect(await screen.findByText("Give the organization a name.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Organization name")).toHaveAttribute("aria-invalid", "true");
+    expect(routerCalls.refresh).toBe(0);
+  });
+
+  it("asks before switching the two-person rule off, but not before switching it on", async () => {
+    await openOrganizationTab(ORG, {
+      match: "/api/admin/organization",
+      method: "PATCH",
+      body: (_url: string, init?: RequestInit) => ({ ...ORG, ...JSON.parse(String(init?.body)) }),
+    });
+    const rule = screen.getByRole("switch");
+    expect(rule).toBeChecked();
+
+    fireEvent.click(rule);
+    // Cancelling changes nothing and sends nothing.
+    confirmIn("Switch the two-person rule off?", "Cancel");
+    expect(lastCall("PATCH")).toBeUndefined();
+    expect(rule).toBeChecked();
+
+    fireEvent.click(rule);
+    confirmIn("Switch the two-person rule off?", "Switch off");
+    await waitFor(() => expect(rule).not.toBeChecked());
+    expect(JSON.parse(lastCall("PATCH")?.body ?? "null")).toEqual({ twoPersonRule: false });
+    expect(screen.getByText(/recorded as a self-approval/)).toBeInTheDocument();
+
+    fireEvent.click(rule);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(rule).toBeChecked());
+    expect(JSON.parse(lastCall("PATCH")?.body ?? "null")).toEqual({ twoPersonRule: true });
+  });
+
+  it("deletes only once the name is typed exactly, then leaves for /studio", async () => {
+    await openOrganizationTab(ORG, {
+      match: "/api/admin/organization",
+      method: "DELETE",
+      body: { deleted: true },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete organization" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete this organization" });
+    const confirm = within(dialog).getByRole("button", { name: "Delete organization" });
+    expect(confirm).toBeDisabled();
+
+    // Close enough is not enough.
+    fireEvent.change(within(dialog).getByLabelText("Organization name"), { target: { value: "test org" } });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(within(dialog).getByLabelText("Organization name"), { target: { value: "Test Org" } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(routerCalls.replace).toEqual(["/studio"]));
+    expect(JSON.parse(lastCall("DELETE")?.body ?? "null")).toEqual({ confirm: "Test Org" });
+  });
+
+  it("shows why a delete was refused, and stays", async () => {
+    await openOrganizationTab(ORG, {
+      match: "/api/admin/organization",
+      method: "DELETE",
+      status: 400,
+      body: { error: "That is not the organization's name.", field: "confirm" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete organization" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete this organization" });
+    fireEvent.change(within(dialog).getByLabelText("Organization name"), { target: { value: "Test Org" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete organization" }));
+
+    expect(await within(dialog).findByText("That is not the organization's name.")).toBeInTheDocument();
+    expect(routerCalls.replace).toEqual([]);
+  });
+
+  it("draws no Delete for an organization that can't be deleted", async () => {
+    await openOrganizationTab({ ...ORG, canDelete: false });
+    expect(screen.getByRole("switch")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete organization" })).not.toBeInTheDocument();
+  });
+
+  it("is not a tab for someone who may manage people but not the organization", async () => {
+    setUser("editor", [...(presetFor("editor") ?? []), "users:read"]);
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    expect(screen.queryByRole("tab", { name: "Organization" })).not.toBeInTheDocument();
+    expect(fetchCalls.some((c) => c.url.includes("/api/admin/organization"))).toBe(false);
   });
 });

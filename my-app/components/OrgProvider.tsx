@@ -13,14 +13,21 @@ import { OrgContext } from "@/hooks/useOrg";
 export function OrgProvider({
   slug,
   name,
+  twoPersonRule = true,
   children,
 }: {
   slug: string;
   name: string;
+  /**
+   * Left out where the layout could not read the organization. On then, the
+   * rule's default: the screens ask for a second person, and the server, which
+   * reads the real setting on every request, is the one that decides.
+   */
+  twoPersonRule?: boolean;
   children: ReactNode;
 }) {
   // One object for as long as the organization stays the same, so a component
   // that memoises on it does not redo its work on every render.
-  const org = useMemo(() => ({ slug, name }), [slug, name]);
+  const org = useMemo(() => ({ slug, name, twoPersonRule }), [slug, name, twoPersonRule]);
   return <OrgContext.Provider value={org}>{children}</OrgContext.Provider>;
 }

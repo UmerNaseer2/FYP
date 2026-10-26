@@ -115,7 +115,9 @@ const QA_LEAD = {
 };
 const DATABASE_DOWN = new Error("connect ECONNREFUSED 127.0.0.1:5433");
 /** A second organization, for the tests that need the request to name another one. */
-const ACME = { id: 12, slug: "acme", name: "Acme", isDefault: false };
+// Acme has the two-person rule off, so a test that lands there shows the
+// principal's rule came from the organization, not a default.
+const ACME = { id: 12, slug: "acme", name: "Acme", isDefault: false, twoPersonRule: false };
 /** Ed's profile ID, which their session names and every lookup about them is keyed by. */
 const ED = 31;
 
@@ -172,6 +174,7 @@ function membership(role: string) {
     slug: TEST_ORG.slug,
     name: TEST_ORG.name,
     isDefault: TEST_ORG.isDefault,
+    twoPersonRule: TEST_ORG.twoPersonRule,
     role,
     email: "ed@example.com",
     personName: "Ed",
@@ -252,6 +255,7 @@ describe("with real sign-in", () => {
       orgSlug: TEST_ORG.slug,
       orgName: TEST_ORG.name,
       orgIsDefault: true,
+      orgTwoPersonRule: true,
     });
     expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
     // In the member's own organization: the same key can mean another role,
@@ -259,7 +263,7 @@ describe("with real sign-in", () => {
     expect(mockGetRoleAccess).toHaveBeenCalledWith(TEST_ORG.id, "editor");
   });
 
-  test("says whether the member's organization is the default one", async () => {
+  test("says whether the member's organization is the default one, and whether its two-person rule is on", async () => {
     // Where the organization's scripts live in GitHub hangs on this flag, so
     // it has to come from the membership row, never be assumed.
     signedInAs(EDITOR);
@@ -269,6 +273,7 @@ describe("with real sign-in", () => {
       slug: ACME.slug,
       name: ACME.name,
       isDefault: false,
+      twoPersonRule: false,
       role: "editor",
       email: "ed@example.com",
       personName: "Ed",
@@ -277,6 +282,7 @@ describe("with real sign-in", () => {
       orgId: ACME.id,
       orgSlug: ACME.slug,
       orgIsDefault: false,
+      orgTwoPersonRule: false,
     });
     expect(mockFindMembership).toHaveBeenCalledWith(ED, ACME.slug);
     expect(mockGetRoleAccess).toHaveBeenCalledWith(ACME.id, "editor");
@@ -462,7 +468,7 @@ describe("with real sign-in", () => {
 describe("with the bypass on", () => {
   beforeEach(() => {
     mockBypass = true;
-    const org = { id: TEST_ORG.id, slug: TEST_ORG.slug, name: TEST_ORG.name, isDefault: true };
+    const org = { ...TEST_ORG };
     mockFindOrganization.mockImplementation(async (slug: string) => (slug === org.slug ? org : null));
     mockFindDefault.mockResolvedValue(org);
   });
@@ -489,6 +495,7 @@ describe("with the bypass on", () => {
       orgSlug: ACME.slug,
       orgName: ACME.name,
       orgIsDefault: false,
+      orgTwoPersonRule: false,
     });
     // A role picked in View as is that organization's role of that name.
     mockJar = { [VIEW_AS_COOKIE]: "qa-lead" };

@@ -54,6 +54,7 @@ import {
   getRoleAccess,
   listRoleChanges,
   listRoles,
+  lockRoles,
   logRoleChanges,
   resetRolePermissions,
   setRolePermissions,
@@ -308,7 +309,10 @@ describe("createRole", () => {
     expect(result.ok && result.role.permissions).toEqual(expected);
     // Approving production runs is not admin-only, so a deputy can be given it.
     expect(expected).toContain("approvals:approve");
-    expect(expected.filter((key) => /^(users|roles):/.test(key))).toEqual([]);
+    expect(expected.filter((key) => /^(roles|organization):/.test(key))).toEqual([]);
+    // Managing people comes along. The rank rule still keeps a deputy from
+    // touching anyone who holds the admin role.
+    expect(expected).toContain("users:update");
     expect(valuesOf(client, /INSERT INTO role_permissions/)).toEqual([
       ORG,
       "deputy",
@@ -324,7 +328,7 @@ describe("createRole", () => {
     const client = connectsTo([
       {
         match: /FROM roles r\s+LEFT JOIN role_permissions/,
-        rows: [{ label: "QA Lead", granted: ["deploy:run", "users:read", "reports:read"] }],
+        rows: [{ label: "QA Lead", granted: ["deploy:run", "roles:read", "reports:read"] }],
       },
     ]);
     const result = await createRole(
@@ -766,6 +770,38 @@ describe("logRoleChanges", () => {
         actor: ACTOR,
       },
     ]);
+  });
+});
+
+describe("lockRoles", () => {
+  test("locks this organization's roles of those names and says what each can do", async () => {
+    const client = createFakeClient([
+      {
+        match: /FROM roles r/,
+        rows: [
+          { name: "admin", label: "Admin", granted: [] },
+          { name: "qa-lead", label: "QA Lead", granted: ["deploy:run", "roles:update"] },
+        ],
+      },
+    ]);
+
+    // The stand-in answers only the fields the code reads.
+    const roles = await lockRoles(client as unknown as Parameters<typeof lockRoles>[0], ORG, [
+      "admin",
+      "qa-lead",
+      "ghost",
+    ]);
+    // The admin role holds everything whatever its rows say, and another role
+    // never holds an admin-only box. A name it does not have is simply missing.
+    expect(Object.fromEntries(roles)).toEqual({
+      admin: { label: "Admin", permissions: [...ALL_PERMISSIONS] },
+      "qa-lead": { label: "QA Lead", permissions: ["deploy:read", "deploy:run"] },
+    });
+    expect(client.queries[0].values).toEqual([ORG, ["admin", "qa-lead", "ghost"]]);
+    // A key-share lock: a role cannot be deleted or renamed between this read
+    // and the write that relies on it.
+    expect(client.queries[0].text).toMatch(/FOR KEY SHARE OF r$/);
+    expectKeptToOrg(client);
   });
 });
 

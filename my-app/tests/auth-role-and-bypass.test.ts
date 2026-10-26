@@ -120,7 +120,7 @@ describe("the role a member holds", () => {
   it("does not take a differently written admin for the admin", async () => {
     // "Admin" is not "admin". Only the real key gets everything; any other role
     // holds what was granted, and never an admin-only permission.
-    expect(effectivePermissions("Admin", ["deploy:run", "users:read"])).toEqual([
+    expect(effectivePermissions("Admin", ["deploy:run", "roles:read"])).toEqual([
       "deploy:read",
       "deploy:run",
     ]);

@@ -294,16 +294,21 @@ export async function listApprovals(
   return result.rows;
 }
 
-/** Why this person may not decide this request, or null when they may. */
+/**
+ * Why this person may not decide this request, or null when they may.
+ *
+ * `selfAllowed` is true when the person may decide their own request, which
+ * is mayDecideOwn below.
+ */
 export function decisionBlockReason(
   approval: DeployApproval,
   deciderEmail: string,
-  bypass: boolean
+  selfAllowed: boolean
 ): string | null {
   if (approval.status !== "pending") {
     return `This request is already ${approval.status}.`;
   }
-  if (bypass) return null;
+  if (selfAllowed) return null;
   if (approval.requested_by.toLowerCase() === deciderEmail.toLowerCase()) {
     return approval.action === "revert"
       ? "You asked for this rollback, so you cannot approve it. " +
@@ -485,4 +490,19 @@ export async function releaseApproval(orgId: number, id: number): Promise<void> 
       WHERE id = $1 AND org_id = $2 AND status = 'used'`,
     [id, orgId]
   );
+}
+
+/**
+ * Whether this person may decide a request they made themselves. Two cases:
+ *
+ * - The demo, with sign-in switched off, has exactly one principal, so a
+ *   second person cannot exist.
+ * - An organization whose Admin switched its two-person rule off (the
+ *   Organization tab). The rule is on for every new organization.
+ *
+ * Either way the row records it, in `self_approved`, rather than looking like
+ * a two-person approval, and deciding still needs Approvals: Approve.
+ */
+export function mayDecideOwn(principal: { bypass: boolean; orgTwoPersonRule: boolean }): boolean {
+  return principal.bypass || !principal.orgTwoPersonRule;
 }
