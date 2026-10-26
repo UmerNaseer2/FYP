@@ -19,8 +19,10 @@ import { encryptionKeySource } from "@/lib/secret-store";
  *   - Signed in, it forwards to /studio, the same place a sign-in lands.
  *   - Otherwise it shows the landing page with both buttons going to /login.
  *     The first sign-in is what creates an account, so "Create account" has
- *     nowhere else to go. When sign-in is not set up on this server, /login
- *     says so itself.
+ *     nowhere else to go. It asks /login to carry on to /onboarding ("Your
+ *     organizations") rather than /studio, so someone new lands where they
+ *     make their first organization; "Log in" carries on to /studio as usual.
+ *     When sign-in is not set up on this server, /login says so itself.
  *
  * The proxy lets "/" through without a session (lib/public-paths.ts), so all
  * of the deciding happens here.
@@ -40,6 +42,12 @@ import { encryptionKeySource } from "@/lib/secret-store";
  * route (/api/auth/callback/[provider]), and nothing on this page takes part.
  */
 export const dynamic = "force-dynamic";
+
+/**
+ * Sign in, then "Your organizations". /login checks a callbackUrl before
+ * following it (lib/callback-url.ts), and a path on this site passes.
+ */
+const CREATE_ACCOUNT_HREF = "/login?callbackUrl=/onboarding";
 
 export default async function RootPage() {
   if (desktopMode) redirect("/studio");
@@ -61,7 +69,13 @@ export default async function RootPage() {
   // around it would swallow the redirect and show the landing page instead.
   if (authUsable && (await isSignedIn())) redirect("/studio");
 
-  return <LandingPage createAccountHref="/login" logInHref="/login" encryptsPasswords={encryptsPasswords} />;
+  return (
+    <LandingPage
+      createAccountHref={CREATE_ACCOUNT_HREF}
+      logInHref="/login"
+      encryptsPasswords={encryptsPasswords}
+    />
+  );
 }
 
 /**

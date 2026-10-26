@@ -551,6 +551,16 @@ describe("what Save hands to the Script Editor", () => {
     expect(savedDraft()?.description).toContain("Add an index for the customer filter");
   });
 
+  it("names the organization it was saved in", () => {
+    // The tab keeps one draft for every organization opened in it, so this is
+    // what lets only this organization's Script Editor offer it.
+    show([anIndex]);
+
+    fireEvent.click(saveButton());
+
+    expect(savedDraft()?.org).toBe("test-org");
+  });
+
   it("fills the rollback in, last change first", () => {
     show([anIndex, aSecondIndex]);
 

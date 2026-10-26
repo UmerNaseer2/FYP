@@ -241,6 +241,42 @@ describe("a window with room for the rail", () => {
     expect(screen.getByRole("navigation")).toHaveTextContent("Drift");
   });
 
+  test("hands the rail the organization picker, which reads the list for itself", async () => {
+    // The picker's own choices are tests/component-org-switcher.test.tsx. What
+    // is checked here is that the shell gives it to the rail at all, on a
+    // server with real sign-in, and that it is drawn from what the server
+    // lists. Anything but the list stays unanswered, so nothing else this
+    // shell might ask for changes what is drawn while the test runs.
+    const realFetch = globalThis.fetch;
+    const asked: string[] = [];
+    globalThis.fetch = ((input: unknown) => {
+      asked.push(String(input));
+      if (String(input) !== "/api/organizations") return new Promise(() => {});
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            organizations: [
+              { slug: "acme", name: "acme" },
+              { slug: "beta-ops", name: "Beta Ops" },
+            ],
+            canCreate: true,
+          }),
+      });
+    }) as typeof fetch;
+    try {
+      setPathname("/acme/drift");
+      renderShell({}, "acme");
+      const picker = await screen.findByRole("combobox", { name: "Organization" });
+      expect(rail()).toContainElement(picker);
+      expect(picker).toHaveTextContent("acme");
+      expect(asked).toContain("/api/organizations");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test("gives the rail its own column, and a narrow one once collapsed", () => {
     renderShell();
     expect(grid().getAttribute("style")).toContain("240px 1fr");

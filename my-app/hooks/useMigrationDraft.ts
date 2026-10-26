@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useSyncExternalStore } from "react";
+import { useOrg } from "@/hooks/useOrg";
 import {
   parseMigrationDraft,
   readMigrationDraftRaw,
@@ -30,8 +31,18 @@ const serverSnapshot = () => null;
  *
  * The store hands back the raw text (see readMigrationDraftRaw for why), and
  * it is parsed here only when that text changes.
+ *
+ * Only a draft saved in the organization this page is open in. The tab keeps
+ * one draft for every organization opened in it (see lib/migration-draft.ts),
+ * so a draft from another one is left where it is, for that organization's
+ * Script Editor, rather than offered here. Outside every organization nothing
+ * is offered.
  */
 export function useMigrationDraft(): MigrationDraft | null {
+  const slug = useOrg()?.slug ?? null;
   const raw = useSyncExternalStore(subscribe, readMigrationDraftRaw, serverSnapshot);
-  return useMemo(() => parseMigrationDraft(raw), [raw]);
+  return useMemo(() => {
+    const draft = parseMigrationDraft(raw);
+    return draft !== null && draft.org === slug ? draft : null;
+  }, [raw, slug]);
 }

@@ -10,6 +10,14 @@
 // script can be long. sessionStorage belongs to this one tab and is emptied
 // when the tab closes.
 //
+// One key holds the tab's one draft, and a tab can move between
+// organizations (the picker on the studio's rail). So the draft names the
+// organization it was saved in, and only that organization's Script Editor
+// offers it (hooks/useMigrationDraft.ts). Its connection, its schema and the
+// findings behind it all belong to that organization; in another one the
+// script would arrive with no connection to point at, and land on whatever
+// the editor there was already open on.
+//
 // This is the first place the app uses browser storage, and a browser can
 // refuse it (a privacy setting, a policy that blocks site data, a sandboxed
 // frame). Then even looking up window.sessionStorage throws. So every touch
@@ -41,6 +49,8 @@ export type MigrationDraft = {
   schema: string;
   /** When it was saved, as an ISO date. */
   createdAt: string;
+  /** The address (slug) of the organization it was saved in. Only that one's Script Editor offers it. */
+  org: string;
 };
 
 /** This tab's sessionStorage, or null on the server or when the browser refuses it. */
@@ -101,7 +111,9 @@ export function clearMigrationDraft(): void {
  *
  * What is in storage may be from an older version of the app, or edited by
  * hand (it is the person's own browser), so every field is checked for its
- * type. A draft with no statement to run, or no schema, is no draft.
+ * type. A draft with no statement to run, or no schema, is no draft. Nor is
+ * one saved before drafts named their organization: there is no telling
+ * which organization's connection it was made on.
  */
 export function parseMigrationDraft(raw: string | null): MigrationDraft | null {
   if (raw === null) return null;
@@ -112,7 +124,7 @@ export function parseMigrationDraft(raw: string | null): MigrationDraft | null {
     return null;
   }
   if (typeof data !== "object" || data === null) return null;
-  const { sql, rollbackSql, description, connectionId, schema, createdAt } = data as Record<
+  const { sql, rollbackSql, description, connectionId, schema, createdAt, org } = data as Record<
     string,
     unknown
   >;
@@ -122,12 +134,13 @@ export function parseMigrationDraft(raw: string | null): MigrationDraft | null {
     typeof description !== "string" ||
     typeof connectionId !== "string" ||
     typeof schema !== "string" ||
-    typeof createdAt !== "string"
+    typeof createdAt !== "string" ||
+    typeof org !== "string"
   ) {
     return null;
   }
   if (!hasExecutableSql(sql) || schema.trim() === "") return null;
-  return { sql, rollbackSql, description, connectionId, schema, createdAt };
+  return { sql, rollbackSql, description, connectionId, schema, createdAt, org };
 }
 
 /**

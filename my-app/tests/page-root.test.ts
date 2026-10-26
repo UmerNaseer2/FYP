@@ -6,7 +6,7 @@
  * to /studio; on a demo server with sign-in switched off it shows the landing
  * page with both buttons opening the studio; signed in, it forwards to
  * /studio; otherwise it shows the landing page with both buttons going to
- * /login.
+ * /login, "Create account" asking it to carry on to "Your organizations".
  *
  * Node, not jsdom. An earlier version of this page called signIn() from
  * "next-auth/react" when the browser came back to "/?code=…", a helper that
@@ -110,12 +110,14 @@ describe("the front door", () => {
 
   it("shows a signed-out visitor the landing page with both buttons going to /login", async () => {
     // The first sign-in is what creates an account, so "Create account" has
-    // nowhere else to go.
+    // nowhere else to go. After it, a new person carries on to "Your
+    // organizations" to make their first one, not to a studio they have no
+    // organization in yet.
     mockAuth.mockResolvedValue(null);
     const page = await landing();
     expect(page.type).toBe(LandingPage);
     expect(page.props).toEqual({
-      createAccountHref: "/login",
+      createAccountHref: "/login?callbackUrl=/onboarding",
       logInHref: "/login",
       encryptsPasswords: true,
     });

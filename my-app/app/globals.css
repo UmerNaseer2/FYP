@@ -431,6 +431,8 @@ body {
 .ms-mark .b { background:#7FBA00; }
 .ms-mark .c { background:#00A4EF; }
 .ms-mark .d { background:#FFB900; }
+/* GitHub mark, the same size; its color is the button's text color */
+.gh-mark { width:18px; height:18px; flex:none; }
 
 /* spinner */
 .spin { width:16px; height:16px; border-radius:999px; border:2px solid color-mix(in oklab, var(--brand) 25%, transparent);
@@ -458,6 +460,47 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
 /* fade-swap when the SSO region changes state */
 @keyframes pop { from { opacity:0; transform: translateY(2px); } to { opacity:1; transform:none; } }
 .swap > * { animation: pop .25s ease both; }
+
+/* ===========================================================================
+   Onboarding: "Your organizations" at /onboarding (components/onboarding/).
+   It stands on the sign-in page's stage and card (.auth-stage, .auth-card),
+   so only what that page has no use for is here.
+   =========================================================================== */
+.onb-loading { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text-2); }
+
+/* The organizations someone belongs to, one link into each studio */
+.onb-orgs { display:flex; flex-direction:column; gap:8px; }
+.onb-org { display:flex; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--border);
+           border-radius:10px; background:var(--surface); color:var(--text); text-decoration:none;
+           transition:background .15s ease, border-color .15s ease; }
+.onb-org:hover { background:var(--surface-2); border-color:color-mix(in oklab, var(--brand) 40%, var(--border-strong)); }
+.onb-org:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+.onb-org .mark { flex:none; width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+                 background:var(--brand-soft); color:var(--brand); font-size:13px; font-weight:600; }
+.onb-org .text { flex:1; min-width:0; display:flex; flex-direction:column; }
+/* A long name wraps rather than being cut off; names stop at 60 characters */
+.onb-org .name { font-size:13.5px; font-weight:500; overflow-wrap:anywhere; }
+.onb-org .slug { font-family:var(--font-geist-mono),ui-monospace; font-size:11.5px; color:var(--text-3); overflow-wrap:anywhere; }
+.onb-org .chev { flex:none; color:var(--text-3); }
+
+/* The new-organization form */
+.onb-form { display:flex; flex-direction:column; gap:16px; }
+.onb-field { display:flex; flex-direction:column; gap:6px; }
+
+/* A rule a box's value breaks, under the box, and the box itself in the same red */
+.field-problem { font-size:12px; line-height:1.45; color:var(--break); }
+.input[aria-invalid="true"] { border-color:var(--break); }
+.input[aria-invalid="true"]:focus { outline-color:var(--break); }
+
+/* The spinner on a brand-colored button, where the brand-colored ring would vanish */
+.btn-primary .spin { width:14px; height:14px; border-color:color-mix(in oklab, #fff 35%, transparent); border-top-color:#fff; }
+
+/* With Sign out beside the theme switch, the header needs the room on a phone.
+   The card's own title still says where the person is. */
+@media (max-width: 420px) {
+  .onb-header { padding-inline:16px; }
+  .onb-header .onb-brand-name { display:none; }
+}
 
 /* ===========================================================================
    Landing page: the public front page at "/" (components/landing/)
@@ -733,6 +776,12 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
    its own. The list gets the same room, and still fits on a phone. */
 .drift-picker { width:auto; max-width:520px; }
 .drift-picker .ds-select__list { max-width:min(520px, calc(100vw - 24px)); }
+/* The organization picker on the studio rail (components/studio/OrgSwitcher.tsx).
+   It sits at the foot of the rail, so a list opening downward would run off
+   the bottom of the window; it opens upward instead. The trigger is the
+   View as picker's size, the other small control in the same footer. */
+.org-switcher .ds-select__list { top:auto; bottom:calc(100% + 6px); }
+.org-switcher .ds-select__trigger--input { padding:4px 8px; font-size:12px; }
 
 /* ——— Segmented version-bump control (Script Editor) ——— */
 /* Own class (.ver-seg, NOT .seg) so it never collides with the legacy

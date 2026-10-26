@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { signOutEverywhere } from "@/lib/sign-out";
 import {
@@ -48,6 +50,7 @@ export default function AuthGuard({
   const { user, roleLabel, loading, viewingAs, can, accessError, notMember, bypass } =
     useUser();
   const router = useRouter();
+  const desktop = useDesktopBridge() !== null;
 
   const features =
     feature === undefined ? [] : Array.isArray(feature) ? feature : [feature];
@@ -77,10 +80,14 @@ export default function AuthGuard({
   // Not a member of the organization the page is open in, so the server
   // answers every request behind every page with 404, the open pages'
   // included, and there is nothing here to show. With real sign-in an admin
-  // removed them while the page was open, or they belong to no organization at
-  // all (app/[org]/layout.tsx shows everyone else the 404 page). With the
-  // bypass on there is nobody to remove: no organization has this address any
-  // more, and signing out would change nothing.
+  // removed them while the page was open, or, in the desktop app, they belong
+  // to no organization at all (app/[org]/layout.tsx shows everyone else the
+  // 404 page, and sends the browser's to /onboarding). In the browser they can
+  // go to the organizations they are still in, or make one, which is what
+  // /onboarding is for. The desktop app has no such page: it only ever has
+  // the one organization. With the bypass on there is nobody to remove: no
+  // organization has this address any more, and signing out would change
+  // nothing.
   if (notMember) {
     return (
       <div className="loading-state">
@@ -88,10 +95,18 @@ export default function AuthGuard({
         <div className="hint">
           {bypass
             ? "Authentication is off, and the app's database has no organization at this address."
-            : "An admin may have removed you, or you were never added. Check with an admin, or sign out."}
+            : desktop
+              ? "An admin may have removed you, or you were never added. Check with an admin, or sign out."
+              : "An admin may have removed you, or you were never added. Check with an admin, " +
+                "open another of your organizations, or sign out."}
         </div>
         {!bypass && (
           <div className="actions">
+            {!desktop && (
+              <Link className="btn btn-primary btn-sm" href="/onboarding">
+                Your organizations
+              </Link>
+            )}
             <button
               type="button"
               className="btn btn-secondary btn-sm"

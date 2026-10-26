@@ -33,8 +33,16 @@ export const TEST_ORG = {
   isDefault: true,
 } as const;
 
+/**
+ * The profile ID of each role's principal. A different one for each, so a
+ * test with two principals can tell them apart, and none of them 1, for the
+ * same reason as TEST_ORG's id.
+ */
+const PROFILE_IDS: Record<BuiltInRole, number> = { viewer: 21, editor: 22, admin: 23 };
+
 export function principalFor(role: BuiltInRole, over: Partial<Principal> = {}): Principal {
   return {
+    profileId: PROFILE_IDS[role],
     email: `${role}@test`,
     name: `A ${role}`,
     role,
@@ -56,6 +64,7 @@ export function principalFor(role: BuiltInRole, over: Partial<Principal> = {}): 
  */
 export function bypassAdminPrincipal(): Principal {
   return principalFor("admin", {
+    profileId: null,
     email: BYPASS_PRINCIPAL.email,
     name: BYPASS_PRINCIPAL.name,
     bypass: true,

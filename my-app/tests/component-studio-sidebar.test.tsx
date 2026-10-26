@@ -23,8 +23,9 @@
  *
  * What is NOT here:
  *  - Who decides `collapsed`, `theme`, `activeHref`, `role`, `roleLabel`,
- *    `bypass`, `viewAs`, or what sign out actually does. All of them are the
- *    shell's: tests/component-studio-shell.test.tsx. In particular, that the
+ *    `bypass`, `viewAs`, `orgSwitcher`, or what sign out actually does. All of
+ *    them are the shell's: tests/component-studio-shell.test.tsx. What the
+ *    organization picker offers is tests/component-org-switcher.test.tsx. In particular, that the
  *    role comes from the session and is withheld when there isn't one is
  *    asserted there; below it is only that whatever arrives is what gets drawn.
  *  - The real list of screens, which route counts as active, and which rows a
@@ -365,6 +366,43 @@ describe('the "View as" slot', () => {
   test("leaves it off the narrow rail, which has no room for a picker", () => {
     renderRail({ viewAs: <p>the switcher</p>, collapsed: true });
     expect(screen.queryByText("the switcher")).toBeNull();
+  });
+});
+
+describe("the organization slot", () => {
+  // The picker is the shell's to build. The rail puts it first in the footer,
+  // so drawing it grows the footer upward and moves nothing under it.
+  test("draws whatever it was handed, above the theme switch", () => {
+    renderRail({ orgSwitcher: <p>the organizations</p> });
+    const picker = screen.getByText("the organizations");
+    const theme = button("Switch to light theme");
+    expect(picker.compareDocumentPosition(theme) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("leaves it off the narrow rail, which has no room for a picker", () => {
+    renderRail({ orgSwitcher: <p>the organizations</p>, collapsed: true });
+    expect(screen.queryByText("the organizations")).toBeNull();
+  });
+
+  // The picker draws nothing when there is nothing to pick. Its box stays in
+  // the page, and the class is what lets a browser drop it, gap and all.
+  // jsdom applies no stylesheet, so the class and the emptiness are what can
+  // be checked here; the preview is where the missing gap was seen.
+  test("puts a picker that draws nothing in a box that hides itself", () => {
+    function NothingToPick() {
+      return null;
+    }
+    renderRail({ orgSwitcher: <NothingToPick /> });
+    const footer = button("Switch to light theme").parentElement!;
+    const box = footer.firstElementChild!;
+    expect(box).toHaveClass("empty:hidden");
+    expect(box).toBeEmptyDOMElement();
+  });
+
+  test("draws no box at all when handed no picker", () => {
+    renderRail();
+    const footer = button("Switch to light theme").parentElement!;
+    expect(footer.firstElementChild).toBe(button("Switch to light theme"));
   });
 });
 

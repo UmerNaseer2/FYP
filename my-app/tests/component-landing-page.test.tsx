@@ -21,7 +21,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { LandingPage, type LandingPageProps } from "@/components/landing/LandingPage";
 
 const SIGN_IN: LandingPageProps = {
-  createAccountHref: "/login",
+  createAccountHref: "/login?callbackUrl=/onboarding",
   logInHref: "/login",
   encryptsPasswords: true,
 };
@@ -44,7 +44,7 @@ describe("LandingPage", () => {
     // would only lead back here.
     render(<LandingPage {...SIGN_IN} />);
     expect(links()).toEqual([
-      ["Create account", "/login"],
+      ["Create account", "/login?callbackUrl=/onboarding"],
       ["Log in", "/login"],
     ]);
   });

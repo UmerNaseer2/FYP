@@ -37,10 +37,10 @@ let statements: Statement[] = [];
 /** What the fake answers, keyed by the shape of the query. */
 type Answers = {
   /**
-   * The target's membership, as PUT's `SELECT role FROM memberships` and
-   * DELETE's `SELECT p.email, m.role` find it. Null when there is none.
+   * The target's membership, as PUT's and DELETE's `SELECT role FROM
+   * memberships` find it. Null when there is none.
    */
-  target?: { email: string; role: string } | null;
+  target?: { role: string } | null;
   /** How many OTHER admins the count query reports. */
   otherAdmins?: number;
   /**
@@ -81,8 +81,8 @@ const mockConnect = async () => {
           rowCount: 1,
         };
       }
-      if (/^\s*SELECT (role FROM memberships|p\.email, m\.role)/.test(text)) {
-        const row = answers.target === undefined ? { email: "mei@x", role: "admin" } : answers.target;
+      if (/^\s*SELECT role FROM memberships/.test(text)) {
+        const row = answers.target === undefined ? { role: "admin" } : answers.target;
         return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       }
       if (/UPDATE memberships/.test(text)) {
@@ -126,6 +126,7 @@ jest.mock("../lib/auth-guard", () => ({
   requirePermission: async () => ({
     ok: true,
     principal: require("./helpers/principals").principalFor("admin", {
+      profileId: 1,
       email: "umer@x",
       name: "Umer",
       ...mockPrincipalOver,
@@ -178,7 +179,7 @@ beforeEach(() => {
 
 describe("demoting an admin", () => {
   it("refuses to demote the last admin, and writes nothing", async () => {
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 0;
 
     const response = await PUT(request({ userId: 2, role: "viewer" }));
@@ -194,7 +195,7 @@ describe("demoting an admin", () => {
     // The connection goes back to the pool at the end either way. Handing back
     // one that is still inside BEGIN gives the next borrower somebody else's
     // half-finished transaction.
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 0;
 
     await PUT(request({ userId: 2, role: "viewer" }));
@@ -205,7 +206,7 @@ describe("demoting an admin", () => {
   });
 
   it("allows the demotion when somebody else is still an admin", async () => {
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 1;
 
     const response = await PUT(request({ userId: 2, role: "viewer" }));
@@ -218,7 +219,7 @@ describe("demoting an admin", () => {
   it("takes the lock before it counts, and is still holding it at the write", async () => {
     // The whole fix in one assertion. A count taken before the lock is the old
     // bug; a write after COMMIT is outside the lock and just as racy.
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 1;
 
     await PUT(request({ userId: 2, role: "viewer" }));
@@ -240,7 +241,7 @@ describe("demoting an admin", () => {
     // The detail that decides whether the lock works at all. With admins
     // {Umer, Mei}, an "except me" lock gives Umer's request Mei's row and Mei's
     // request Umer's row — disjoint, so neither waits and both go through.
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 1;
 
     await PUT(request({ userId: 2, role: "viewer" }));
@@ -266,7 +267,7 @@ describe("demoting an admin", () => {
   it("does not take the lock when nothing is being taken away", async () => {
     // A promotion cannot remove the last admin, so making every role change
     // queue behind every other one would cost something for nothing.
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
     answers.otherAdmins = 0;
 
     await PUT(request({ userId: 2, role: "admin" }));
@@ -276,7 +277,7 @@ describe("demoting an admin", () => {
   });
 
   it("does not take the lock when the person was never an admin", async () => {
-    answers.target = { email: "mei@x", role: "editor" };
+    answers.target = { role: "editor" };
     answers.otherAdmins = 0;
 
     const response = await PUT(request({ userId: 2, role: "viewer" }));
@@ -289,7 +290,7 @@ describe("demoting an admin", () => {
     // Only reachable on a promotion, which holds no lock: somebody else's
     // DELETE lands in the gap. Without the second check the reply would be
     // `{ success: true, user: undefined }`.
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
     answers.updated = [];
 
     const response = await PUT(request({ userId: 2, role: "admin" }));
@@ -310,7 +311,7 @@ describe("demoting an admin", () => {
   });
 
   it("gives the connection back even when a statement throws", async () => {
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.throwOn = /UPDATE memberships/;
     answers.otherAdmins = 1;
 
@@ -327,7 +328,7 @@ describe("choosing a role", () => {
   it("refuses a role the roles table does not have, and changes nothing", async () => {
     // How it happens: one admin deletes a role while another still has the
     // Users tab open with that role in the picker.
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
 
     const response = await PUT(request({ userId: 2, role: "qa-lead" }));
 
@@ -342,7 +343,7 @@ describe("choosing a role", () => {
   });
 
   it("accepts a role an admin added", async () => {
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
     answers.roles = { ...BUILT_IN_ROLES, "qa-lead": "QA lead" };
     answers.updated = [{ id: 2, email: "mei@x", role: "qa-lead" }];
 
@@ -355,7 +356,7 @@ describe("choosing a role", () => {
   it("holds the role it looked up until the change commits", async () => {
     // FOR KEY SHARE is what makes deleting that role wait for this
     // transaction, and then find the role in use and refuse.
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
     answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
 
     await PUT(request({ userId: 2, role: "editor" }));
@@ -369,7 +370,7 @@ describe("choosing a role", () => {
   });
 
   it("logs the change in the same transaction, with the role they had before", async () => {
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
     answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
 
     const response = await PUT(request({ userId: 2, role: "editor" }));
@@ -393,7 +394,7 @@ describe("choosing a role", () => {
   });
 
   it("logs nothing when the person already had that role", async () => {
-    answers.target = { email: "mei@x", role: "editor" };
+    answers.target = { role: "editor" };
     answers.updated = [{ id: 2, email: "mei@x", role: "editor" }];
 
     const response = await PUT(request({ userId: 2, role: "editor" }));
@@ -408,7 +409,7 @@ describe("deleting an admin", () => {
   it("refuses to delete the last admin, and deletes nothing", async () => {
     // A delete removes an admin exactly as surely as a demotion does, so it
     // needs the same lock — the two races are the same race.
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 0;
 
     const response = await DELETE(request({ userId: 2 }));
@@ -420,7 +421,7 @@ describe("deleting an admin", () => {
   });
 
   it("takes the same lock before counting, and still holds it at the delete", async () => {
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 1;
 
     const response = await DELETE(request({ userId: 2 }));
@@ -438,7 +439,7 @@ describe("deleting an admin", () => {
     // belong, goes only when this was their last membership. The check is
     // inside the DELETE itself, so a membership somewhere else that was added
     // a moment ago still keeps the profile.
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
 
     const response = await DELETE(request({ userId: 2 }));
 
@@ -459,7 +460,7 @@ describe("deleting an admin", () => {
   });
 
   it("does not take the lock to delete someone who is not an admin", async () => {
-    answers.target = { email: "mei@x", role: "viewer" };
+    answers.target = { role: "viewer" };
     answers.otherAdmins = 0;
 
     const response = await DELETE(request({ userId: 2 }));
@@ -469,9 +470,9 @@ describe("deleting an admin", () => {
   });
 
   it("rolls back when it refuses to let you delete yourself", async () => {
-    // Matched case-insensitively, so the principal's own row is found whichever
-    // way the sign-in provider capitalised the address.
-    answers.target = { email: "Umer@X", role: "editor" };
+    // Matched by profile ID, which is the principal's own row however many
+    // ways they sign in and whatever address each one gives.
+    answers.target = { role: "editor" };
 
     const response = await DELETE(request({ userId: 1 }));
 
@@ -543,7 +544,7 @@ describe("which organization the statements act in", () => {
   });
 
   it("keeps a demotion in the caller's organization", async () => {
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 1;
 
     const response = await PUT(request({ userId: 2, role: "viewer", ...NAMES_TEST_ORG }));
@@ -557,7 +558,7 @@ describe("which organization the statements act in", () => {
   });
 
   it("keeps a removal in the caller's organization", async () => {
-    answers.target = { email: "mei@x", role: "admin" };
+    answers.target = { role: "admin" };
     answers.otherAdmins = 1;
 
     const response = await DELETE(request({ userId: 2, ...NAMES_TEST_ORG }));

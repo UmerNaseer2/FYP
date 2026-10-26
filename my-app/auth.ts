@@ -1,22 +1,18 @@
 import NextAuth from "next-auth";
 import { authConfig, entraConfigured } from "./auth.config";
-import { upsertProfile } from "@/lib/version-db";
+import { identityFrom, resolveIdentity } from "@/lib/accounts-db";
 
 export { entraConfigured };
 
 /**
  * The full NextAuth setup: the edge-safe config plus the database-backed bits.
  *
- * Two things were broken here before and are fixed:
- *   1. It opened its own `new Pool({ connectionString: process.env.DATABASE_URL })`,
- *      and DATABASE_URL is never set — .env.local defines DATABASE_URL_A. Every
- *      role lookup therefore failed and silently fell back to "viewer". It now
- *      uses the app's existing metadata pool (lib/version-db), so there is one
- *      pool and one connection string.
- *   2. Nothing ever created the `profiles` table that role lookups read, so
- *      even a correctly configured sign-in could not resolve a role. The tables
- *      are now created on demand, and a profile and a membership are
- *      provisioned on first sign-in (see upsertProfile).
+ * Signing in decides which person in this app someone is (lib/accounts-db.ts)
+ * and puts that person's profile ID in the session. Everything after that
+ * keys on the ID: the gates in lib/auth-guard.ts find the person's membership
+ * by it on every request, and nothing reads the address a provider sent
+ * again. The address is only how someone is first found, and only for the
+ * accounts lib/accounts-db.ts trusts with it.
  */
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
@@ -24,32 +20,49 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     ...authConfig.callbacks,
 
     /**
-     * Runs on sign-in and on every token refresh. Provisioning happens here (not
-     * in `session`) because it should happen once per sign-in, not on every
-     * session read.
+     * Runs once per sign-in, after the provider has vouched for the account
+     * and before any session exists. It is the one place that asks the
+     * database who this is, so a sign-in that cannot be settled never becomes
+     * a session at all.
      *
-     * When it fails (the database did not answer), nothing is handed out in
-     * its place. No profile means no membership, and every gate refuses. It is
-     * tried again on later requests until it works, which is what
-     * token.profileId is for: a token that has one was provisioned. Once it is
-     * there it is never tried again, so somebody an admin removes stays
-     * removed until they sign in again, rather than rejoining on their next
-     * click.
+     * A string sends the person back to the sign-in page with a reason it
+     * explains (app/login/page.tsx). The reason is never "AccessDenied",
+     * which is what Auth.js makes of a throw: that would tell somebody whose
+     * database was down that they are not allowed in.
+     *
+     * Auth.js builds the session from this same `user` object once this
+     * returns, so setting its ID here is what puts the profile ID in the token
+     * (see jwt below). Its address is set to the one the app knows the person
+     * by, which can differ from what the provider sent this time.
      */
-    async jwt({ token, user }) {
-      // At sign-in `user` is the person the provider has just vouched for.
-      // After that only the token is left, and its email is the one from that
-      // same sign-in.
-      const email =
-        user?.email ?? (typeof token.profileId !== "number" ? token.email : undefined);
-      if (email) {
-        try {
-          const profile = await upsertProfile(email, user?.name ?? token.name ?? null);
-          token.profileId = profile.id;
-        } catch (error) {
-          console.error("Failed to provision profile on sign-in:", error);
-        }
+    async signIn({ user, account, profile }) {
+      const who = identityFrom({ user, account, profile });
+      if (!who) return "/login?error=NoEmail";
+      try {
+        const resolved = await resolveIdentity(who);
+        if (resolved.kind === "taken") return "/login?error=AccountExists";
+        if (resolved.kind === "unverified") return "/login?error=EmailUnverified";
+        user.id = String(resolved.profileId);
+        user.email = resolved.email;
+        return true;
+      } catch (error) {
+        console.error("Could not settle the account for a sign-in:", error);
+        return "/login?error=AccountUnavailable";
       }
+    },
+
+    /**
+     * Copies the profile ID from the sign-in into the token, and does nothing
+     * else. At sign-in `user` is the object signIn above filled in; on every
+     * later request there is no `user`, only the token, which already has it.
+     * No database work happens here, so reading a session never waits on one.
+     *
+     * A token with no profile ID (one from before this, or from a sign-in that
+     * never finished) reads as signed out everywhere, and its owner signs in
+     * again.
+     */
+    jwt({ token, user }) {
+      if (user?.id && /^\d+$/.test(user.id)) token.profileId = Number(user.id);
       return token;
     },
 

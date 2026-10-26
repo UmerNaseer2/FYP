@@ -30,6 +30,10 @@ jest.mock("next-auth/providers/microsoft-entra-id", () => ({
   __esModule: true,
   default: () => ({ id: "microsoft-entra-id" }),
 }));
+jest.mock("next-auth/providers/github", () => ({
+  __esModule: true,
+  default: () => ({ id: "github" }),
+}));
 
 type Proxy = (request: NextRequest) => Response | Promise<Response>;
 
@@ -152,6 +156,26 @@ describe("edge proxy", () => {
       // The pathname decides, so a query string changes nothing.
       expect((await proxy(new NextRequest("http://localhost:3000/?from=email"))).status).toBe(200);
       expect((await proxy(page())).status).toBe(307);
+      expect((await proxy(api())).status).toBe(401);
+    });
+
+    it("counts GitHub on its own as sign-in being set up", async () => {
+      // Read as unconfigured, a signed-out visitor would be told sign-in is
+      // not set up, on a server where the GitHub button works.
+      mockSession = null;
+      const { proxy } = await loadProxy({
+        ...signInOn,
+        AZURE_AD_CLIENT_ID: "",
+        AZURE_AD_CLIENT_SECRET: "",
+        AZURE_AD_TENANT_ID: "",
+        GITHUB_CLIENT_ID: "github-client",
+        GITHUB_CLIENT_SECRET: "github-secret",
+      });
+      const response = await proxy(page());
+      expect(response.status).toBe(307);
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.searchParams.get("error")).toBeNull();
+      expect(location.searchParams.get("callbackUrl")).toBe("/studio");
       expect((await proxy(api())).status).toBe(401);
     });
   });

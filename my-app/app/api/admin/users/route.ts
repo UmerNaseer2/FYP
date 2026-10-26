@@ -301,11 +301,8 @@ export async function DELETE(request: NextRequest) {
     client = await pool.connect();
     await client.query("BEGIN");
 
-    const target = await client.query<{ email: string; role: string }>(
-      `SELECT p.email, m.role
-         FROM memberships m
-         JOIN profiles p ON p.id = m.profile_id
-        WHERE m.org_id = $1 AND m.profile_id = $2`,
+    const target = await client.query<{ role: string }>(
+      `SELECT role FROM memberships WHERE org_id = $1 AND profile_id = $2`,
       [orgId, userId]
     );
     if (target.rows.length === 0) {
@@ -326,10 +323,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Deleting yourself signs you out of an app you can no longer administer.
-    if (
-      !gate.principal.bypass &&
-      target.rows[0].email.toLowerCase() === gate.principal.email.toLowerCase()
-    ) {
+    if (userId === gate.principal.profileId) {
       await client.query("ROLLBACK");
       return NextResponse.json(
         { error: "You can't delete your own account here." },

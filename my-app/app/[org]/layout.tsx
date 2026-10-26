@@ -5,6 +5,11 @@ import { resolveOrganization } from "@/lib/auth-guard";
 import { isOrgSlug } from "@/lib/org-slug";
 import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs-db";
 
+/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
+function onDesktop(): boolean {
+  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
+}
+
 /**
  * Every page of an organization sits under its address: /acme/studio,
  * /acme/compare and so on. This layout checks the address names an
@@ -22,10 +27,12 @@ import { findLastOrganization, rememberLastOrganization } from "@/lib/orgs-db";
  *   - Not a member: the 404 page, the same answer the API gives for another
  *     organization's rows, so an address cannot be used to find out whether an
  *     organization exists. Except for someone signed in who belongs to no
- *     organization at all: a 404 would leave them nowhere to go, so the pages'
- *     own guard (components/AuthGuard.tsx) says they are not a member and
- *     offers to sign out. It learns that from /api/me, which answers 404 too.
- *     They see the slug they typed, never the organization's name.
+ *     organization at all, whom a 404 would leave nowhere to go. In the
+ *     browser they are sent to make one (/onboarding). In the desktop app,
+ *     which has no such page, the pages' own guard (components/AuthGuard.tsx)
+ *     says they are not a member and offers to sign out. It learns that from
+ *     /api/me, which answers 404 too. They see the slug they typed, never the
+ *     organization's name.
  *
  *   - The database did not answer: the pages are drawn with the slug for a
  *     name, and their guard says "Could not check your access", as it does
@@ -54,7 +61,8 @@ export default async function OrganizationLayout({
         // Only a hint for the old addresses, so a failure to write it is
         // logged and the page is drawn anyway.
         try {
-          await rememberLastOrganization(principal.email, principal.orgId);
+          // Never null here: only the bypass has no profile ID.
+          await rememberLastOrganization(principal.profileId!, principal.orgId);
         } catch (error) {
           console.error("Could not remember the organization:", error);
         }
@@ -69,17 +77,19 @@ export default async function OrganizationLayout({
     case "not-member": {
       // The bypass is everyone's stand-in, so for it this only means that no
       // organization has this address.
-      if (resolution.email === null) notFound();
-      let elsewhere: string | null;
+      if (resolution.profileId === null) notFound();
+      let elsewhere: string | null | undefined;
       try {
-        elsewhere = await findLastOrganization(resolution.email);
+        elsewhere = await findLastOrganization(resolution.profileId);
       } catch (error) {
         // Not knowing, draw the pages: their guard asks /api/me, which says
         // either "not a member" or "try again in a moment".
         console.error("Could not read the caller's organizations:", error);
-        elsewhere = null;
+        elsewhere = undefined;
       }
-      if (elsewhere !== null) notFound();
+      if (typeof elsewhere === "string") notFound();
+      // Outside the try above, because redirect() works by throwing.
+      if (elsewhere === null && !onDesktop()) redirect("/onboarding");
       return (
         <OrgProvider slug={slug} name={slug}>
           {children}
@@ -95,7 +105,7 @@ export default async function OrganizationLayout({
       );
 
     case "signed-out":
-      // A session with no email in it: the gates treat that as nobody.
+      // A session with no profile ID in it: the gates treat that as nobody.
       redirect("/login");
   }
 }

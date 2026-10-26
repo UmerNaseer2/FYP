@@ -33,14 +33,20 @@ type Token = {
   profileId?: number;
   [claim: string]: unknown;
 };
-type Person = { email?: string | null; name?: string | null };
+type Person = { id?: string | null; email?: string | null; name?: string | null };
 type SessionShape = { user: { id?: string; email?: string; name?: string }; expires: string };
+type SignInParams = {
+  user: Person;
+  account?: { provider: string } | null;
+  profile?: Record<string, unknown>;
+};
 type Callbacks = {
-  jwt(params: { token: Token; user?: Person }): Promise<Token>;
+  signIn(params: SignInParams): Promise<string | boolean>;
+  jwt(params: { token: Token; user?: Person }): Token;
   session(params: { session: SessionShape; token: Token }): SessionShape;
 };
 
-// next-auth and the Entra provider ship as ESM, which Jest's CommonJS runtime
+// next-auth and its providers ship as ESM, which Jest's CommonJS runtime
 // cannot require, so both are stand-ins, as in tests/proxy.test.ts. This
 // NextAuth keeps the configuration auth.ts hands it, which the real one never
 // gives back, and that is how the tests below reach the callbacks to call them.
@@ -56,14 +62,21 @@ jest.mock("next-auth/providers/microsoft-entra-id", () => ({
   __esModule: true,
   default: () => ({ id: "microsoft-entra-id" }),
 }));
-// The database half of signing in. What it does with a profile and a
-// membership is tested against a real database in tests/org-migration.test.ts;
-// here it is only whether the callbacks call it, when, and with what. Relative
-// paths on purpose: next/jest rewrites the @/ alias inside import statements
-// only, so jest.mock("@/...") would not resolve.
-const mockUpsertProfile = jest.fn();
-jest.mock("../lib/version-db", () => ({
-  upsertProfile: (...args: unknown[]) => mockUpsertProfile(...args),
+jest.mock("next-auth/providers/github", () => ({
+  __esModule: true,
+  default: () => ({ id: "github" }),
+}));
+// The database half of signing in. Which account a sign-in reaches is tested
+// against a real database in tests/org-migration.test.ts, and reading the
+// provider's answer in tests/accounts-identity.test.ts; here it is only what
+// the callbacks do with each answer. Relative paths on purpose: next/jest
+// rewrites the @/ alias inside import statements only, so jest.mock("@/...")
+// would not resolve.
+const mockIdentityFrom = jest.fn();
+const mockResolveIdentity = jest.fn();
+jest.mock("../lib/accounts-db", () => ({
+  identityFrom: (...args: unknown[]) => mockIdentityFrom(...args),
+  resolveIdentity: (...args: unknown[]) => mockResolveIdentity(...args),
 }));
 
 /** The callbacks auth.ts gave NextAuth. */
@@ -76,15 +89,24 @@ async function loadCallbacks(): Promise<Callbacks> {
 }
 
 const UMER = { email: "umer@x", name: "Umer" };
+/** What lib/accounts-db.ts reads out of a sign-in for Umer. */
+const UMER_IDENTITY = {
+  provider: "microsoft",
+  subject: "t:o",
+  email: "umer@x",
+  emailVerified: true,
+  name: "Umer",
+  homeTenant: true,
+};
 const EXPIRES = "2026-11-25T00:00:00.000Z";
 /** A session as NextAuth hands it to the callback, before anything is added. */
 const freshSession = (): SessionShape => ({ user: { ...UMER }, expires: EXPIRES });
 
 describe("the role a member holds", () => {
   it("starts a person nobody has given a role as a viewer", async () => {
-    // Everyone who joins an organization that already has members starts with
-    // this role (upsertProfile in lib/version-db.ts), and an admin decides from
-    // there. Viewer is the least the app gives anyone.
+    // Everyone the desktop app adds to an organization that already has
+    // members starts with this role (lib/accounts-db.ts), and an admin decides
+    // from there. Viewer is the least the app gives anyone.
     expect(DEFAULT_ROLE).toBe("viewer");
   });
 
@@ -114,55 +136,88 @@ describe("the sign-in callbacks in auth.ts", () => {
     callbacks = await loadCallbacks();
   });
   beforeEach(() => {
-    mockUpsertProfile.mockReset();
+    mockIdentityFrom.mockReset().mockReturnValue(UMER_IDENTITY);
+    mockResolveIdentity.mockReset();
   });
   afterEach(() => {
     jest.restoreAllMocks();
   });
 
-  it("provisions the person at sign-in, as the provider named them", async () => {
-    // At sign-in NextAuth builds a fresh token from what the provider sent,
-    // and hands the same person over as `user`.
-    mockUpsertProfile.mockResolvedValue({ id: 41, ...UMER });
-    const token = await callbacks.jwt({ token: { ...UMER }, user: { ...UMER } });
-
-    expect(mockUpsertProfile.mock.calls).toEqual([[UMER.email, UMER.name]]);
-    expect(token).toEqual({ ...UMER, profileId: 41 });
+  /** A Microsoft sign-in as NextAuth hands it to signIn. */
+  const signingIn = (): SignInParams => ({
+    user: { id: "a-random-id-from-auth-js", ...UMER },
+    account: { provider: "microsoft-entra-id" },
+    profile: { tid: "t", oid: "o", email: UMER.email },
   });
 
-  it("leaves a provisioned token alone, so a removed member stays removed", async () => {
-    // The callback runs again on every request that reads the session, long
-    // after sign-in. Provisioning there would make somebody an admin has just
-    // removed a member again on their very next click.
-    const provisioned = { ...UMER, profileId: 41 };
-    const token = await callbacks.jwt({ token: { ...provisioned } });
+  it("files the sign-in under the person's account, and nothing else", async () => {
+    mockResolveIdentity.mockResolvedValue({ kind: "ok", profileId: 41, email: "umer@x" });
+    const params = signingIn();
+    expect(await callbacks.signIn(params)).toBe(true);
 
-    expect(mockUpsertProfile).not.toHaveBeenCalled();
-    expect(token).toEqual(provisioned);
+    expect(mockIdentityFrom).toHaveBeenCalledWith(params);
+    expect(mockResolveIdentity.mock.calls).toEqual([[UMER_IDENTITY]]);
+    // NextAuth builds the token from this same object once signIn returns, so
+    // this is what puts the profile id in it.
+    expect(params.user.id).toBe("41");
   });
 
-  it("tries again on a later request when sign-in could not provision", async () => {
-    // A token with no profile id was never provisioned, so there is nothing
-    // yet that an admin could have taken away.
-    mockUpsertProfile.mockResolvedValue({ id: 41, ...UMER });
-    const token = await callbacks.jwt({ token: { ...UMER } });
-
-    expect(mockUpsertProfile.mock.calls).toEqual([[UMER.email, UMER.name]]);
-    expect(token).toEqual({ ...UMER, profileId: 41 });
+  it("uses the address the account has, not the one the provider sent this time", async () => {
+    // The gates match a second approver by address, so it must be the same
+    // one however the person signed in.
+    mockResolveIdentity.mockResolvedValue({ kind: "ok", profileId: 41, email: "umer@first.example" });
+    const params = signingIn();
+    await callbacks.signIn(params);
+    expect(params.user.email).toBe("umer@first.example");
   });
 
-  it("hands out nothing in its place when the database does not answer", async () => {
-    // No profile means no membership, and every gate refuses. The token stays
-    // without a profile id, so the next request tries again.
-    mockUpsertProfile.mockRejectedValue(new Error("connect ECONNREFUSED"));
+  it.each([
+    ["an address another account already has", { kind: "taken" }, "/login?error=AccountExists"],
+    ["an address nobody has checked", { kind: "unverified" }, "/login?error=EmailUnverified"],
+  ])("sends someone with %s back to sign in, saying why", async (_, resolved, to) => {
+    mockResolveIdentity.mockResolvedValue(resolved);
+    const params = signingIn();
+    expect(await callbacks.signIn(params)).toBe(to);
+    expect(params.user.id).toBe("a-random-id-from-auth-js");
+  });
+
+  it("sends a sign-in that names nobody it can use back, without asking the database", async () => {
+    mockIdentityFrom.mockReturnValue(null);
+    expect(await callbacks.signIn(signingIn())).toBe("/login?error=NoEmail");
+    expect(mockResolveIdentity).not.toHaveBeenCalled();
+  });
+
+  it("says the database is the trouble when it does not answer, not that the person is barred", async () => {
+    // A throw would reach the page as AccessDenied, which tells someone they
+    // are not allowed in when the app could not look.
+    mockResolveIdentity.mockRejectedValue(new Error("connect ECONNREFUSED"));
     const errors = jest.spyOn(console, "error").mockImplementation(() => {});
-    const token = await callbacks.jwt({ token: { ...UMER }, user: { ...UMER } });
+    const params = signingIn();
+    expect(await callbacks.signIn(params)).toBe("/login?error=AccountUnavailable");
+    expect(params.user.id).toBe("a-random-id-from-auth-js");
+    expect(errors).toHaveBeenCalledWith("Could not settle the account for a sign-in:", expect.any(Error));
+  });
 
+  it("copies the profile id into the token at sign-in, and touches no database", () => {
+    const token = callbacks.jwt({ token: { ...UMER }, user: { id: "41", ...UMER } });
+    // A plain answer, not a promise: there is nothing to wait for.
+    expect(token).not.toBeInstanceOf(Promise);
+    expect(token).toEqual({ ...UMER, profileId: 41 });
+    expect(mockResolveIdentity).not.toHaveBeenCalled();
+  });
+
+  it("leaves the token alone on every later request, so a removed member stays removed", () => {
+    // The callback runs again on every request that reads the session, long
+    // after sign-in, with no `user`. Nothing there may add the person back.
+    const signedIn = { ...UMER, profileId: 41 };
+    expect(callbacks.jwt({ token: { ...signedIn } })).toEqual(signedIn);
+  });
+
+  it("never takes an id Auth.js made up for one of the app's own", () => {
+    // signIn replaces it, so seeing one here means signIn never finished. A
+    // token without a profile id reads as signed out everywhere.
+    const token = callbacks.jwt({ token: { ...UMER }, user: { id: "a-random-id-from-auth-js", ...UMER } });
     expect(token).toEqual(UMER);
-    expect(errors).toHaveBeenCalledWith(
-      "Failed to provision profile on sign-in:",
-      expect.any(Error)
-    );
   });
 
   it("puts who the person is in the session, and nothing about what they may do", () => {
@@ -179,7 +234,7 @@ describe("the sign-in callbacks in auth.ts", () => {
     expect(session).toEqual({ user: { ...UMER, id: "41" }, expires: EXPIRES });
   });
 
-  it("has no id to put in the session before the person is provisioned", () => {
+  it("has no id to put in the session for a token from an unfinished sign-in", () => {
     const session = callbacks.session({ session: freshSession(), token: { ...UMER } });
     expect(session).toEqual({ user: UMER, expires: EXPIRES });
   });

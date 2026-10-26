@@ -40,6 +40,14 @@ const EXEMPT: Record<string, string> = {
  */
 const ANY_MEMBER = ["me", "me/view-as"];
 
+/**
+ * Routes anyone signed in may call, before they belong to any organization.
+ * Listing a person's organizations and making a new one have to answer people
+ * who belong to none yet, since that is everybody who has just signed up. A
+ * route here is outside every organization, so it gets the strictest look.
+ */
+const SIGNED_IN = ["organizations"];
+
 const handlers = allHandlers();
 
 function named(handler: RouteHandler): string {
@@ -82,6 +90,12 @@ describe("the route reader", () => {
        if (!gate.ok) return gate.response;`,
       { kind: "member" },
     ],
+    [
+      "a signed-in check",
+      `const gate = await requireSignedIn();
+       if (!gate.ok) return gate.response;`,
+      { kind: "signed-in" },
+    ],
   ])("accepts %s", (_name, body, gate) => {
     expect(gateOf(body)).toEqual(gate);
   });
@@ -99,6 +113,12 @@ describe("the route reader", () => {
       "a gate nobody acts on",
       `const gate = await requirePermission("deploy:run");
        return Response.json({ ran: true });`,
+      "is not followed by `if (!gate.ok) return gate.response;`",
+    ],
+    [
+      "a signed-in check nobody acts on",
+      `const gate = await requireSignedIn();
+       return Response.json({ organizations: [] });`,
       "is not followed by `if (!gate.ok) return gate.response;`",
     ],
     [
@@ -237,10 +257,17 @@ describe("every API route", () => {
     expect(expected.length).toBeGreaterThan(0);
   });
 
+  test("lets in anyone signed in only where that is the point", () => {
+    const anySignedIn = handlers.filter((h) => h.gate.kind === "signed-in").map(named);
+    const expected = handlers.filter((h) => SIGNED_IN.includes(h.route)).map(named);
+    expect(anySignedIn).toEqual(expected);
+    expect(expected.length).toBeGreaterThan(0);
+  });
+
   test("keeps the exemptions to routes that still exist", () => {
     // A stale entry would quietly exempt whatever is later written at that path.
     const routes = new Set(handlers.map((h) => h.route));
-    for (const route of [...Object.keys(EXEMPT), ...ANY_MEMBER]) {
+    for (const route of [...Object.keys(EXEMPT), ...ANY_MEMBER, ...SIGNED_IN]) {
       expect([route, routes.has(route)]).toEqual([route, true]);
     }
   });

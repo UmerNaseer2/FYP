@@ -65,9 +65,17 @@ async function whereTo(call: Promise<unknown>): Promise<string> {
   return mockRedirect.mock.calls[0][0];
 }
 
+const realDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
+afterAll(() => {
+  if (realDesktop === undefined) delete process.env.SCHEMA_STUDIO_DESKTOP;
+  else process.env.SCHEMA_STUDIO_DESKTOP = realDesktop;
+});
+
 beforeEach(() => {
   mockBypass = false;
-  mockAuth.mockReset().mockResolvedValue({ user: { email: "sam@example.com" } });
+  delete process.env.SCHEMA_STUDIO_DESKTOP;
+  // auth.ts puts the profile ID in the session, as a string.
+  mockAuth.mockReset().mockResolvedValue({ user: { id: "7", email: "sam@example.com" } });
   mockFindLast.mockReset().mockResolvedValue("acme");
   mockFindDefault.mockReset().mockResolvedValue(DEFAULT_ORG);
   mockRedirect.mockClear();
@@ -78,7 +86,8 @@ describe("redirectToLastOrg", () => {
   test("sends someone signed in to the organization they opened last, with the page and query", async () => {
     const to = await whereTo(redirectToLastOrg("compare", props(undefined, { left: "1", right: "2" })));
     expect(to).toBe("/acme/compare?left=1&right=2");
-    expect(mockFindLast).toHaveBeenCalledWith("sam@example.com");
+    // Looked up by the profile ID, never the address.
+    expect(mockFindLast).toHaveBeenCalledWith(7);
   });
 
   test("keeps the rest of the path, each part encoded again", async () => {
@@ -98,8 +107,16 @@ describe("redirectToLastOrg", () => {
     expect(to).toBe("/acme/drift?tag=a&tag=b&schema=4&empty=");
   });
 
-  test("sends someone in no organization to the default one", async () => {
-    // Its pages tell them they are not a member and offer to sign out.
+  test("sends someone in no organization to make one", async () => {
+    mockFindLast.mockResolvedValue(null);
+    expect(await whereTo(redirectToLastOrg("studio", props()))).toBe("/onboarding");
+    expect(mockFindDefault).not.toHaveBeenCalled();
+  });
+
+  test("in the desktop app, sends someone in no organization to the default one", async () => {
+    // The desktop app has no way to make one. Its pages tell them they are not
+    // a member and offer to sign out.
+    process.env.SCHEMA_STUDIO_DESKTOP = "1";
     mockFindLast.mockResolvedValue(null);
     expect(await whereTo(redirectToLastOrg("studio", props()))).toBe("/swinburne-fyp/studio");
   });
@@ -112,11 +129,14 @@ describe("redirectToLastOrg", () => {
     expect(mockFindLast).not.toHaveBeenCalled();
   });
 
-  test("sends a session with no email to sign in, and back to the same old address", async () => {
+  test("sends a session with no profile ID to sign in, and back to the same old address", async () => {
     const quiet = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
       const sessions = [
         () => mockAuth.mockResolvedValue({ user: {} }),
+        // Signed before profile IDs went into sessions: an address is not enough.
+        () => mockAuth.mockResolvedValue({ user: { email: "sam@example.com" } }),
+        () => mockAuth.mockResolvedValue({ user: { id: "not-a-number" } }),
         () => mockAuth.mockResolvedValue(null),
         () => mockAuth.mockRejectedValue(new Error("auth backend down")),
       ];

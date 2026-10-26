@@ -21,7 +21,10 @@
  *
  * The draft really is read out of this tab's sessionStorage below, through the
  * hook the component uses, rather than passed in as a prop: the reading is the
- * only part of the hand-over the banner owns.
+ * only part of the hand-over the banner owns. Which includes reading it only
+ * in the organization it was saved in: the tab keeps one draft for every
+ * organization opened in it, so the banner is drawn inside TEST_ORG and the
+ * drafts below are saved there, except the one that is not.
  *
  * What is NOT here:
  *  - The storage itself: saving, reading, forgetting, a browser that refuses
@@ -39,10 +42,11 @@
  */
 
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render as renderWithoutOrg, screen } from "@testing-library/react";
 
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { MIGRATION_DRAFT_KEY, type MigrationDraft } from "@/lib/migration-draft";
+import { TEST_ORG, render } from "./helpers/render-page";
 
 // A draft in the shape a Performance tab saves: a header comment, then each
 // change under the finding it fixes.
@@ -56,6 +60,7 @@ const ONE_STATEMENT: MigrationDraft = {
   connectionId: "3",
   schema: "public",
   createdAt: "2026-09-14T10:32:45.000Z",
+  org: TEST_ORG.slug,
 };
 
 // Two changes, and no rollback because one of them has no statement that undoes
@@ -126,6 +131,25 @@ describe("when there is nothing waiting", () => {
     // unusable one leaves no empty offer on the screen.
     window.sessionStorage.setItem(MIGRATION_DRAFT_KEY, "half a draft {");
     const view = banner();
+    expect(view.container).toBeEmptyDOMElement();
+  });
+
+  test("and nothing for a draft saved in another organization, which is left for that one", () => {
+    // Saved on Performance in another organization earlier in this tab. Its
+    // connection is that organization's, so here it would land on whatever
+    // the editor is open on. It stays stored, for when that organization's
+    // Script Editor opens.
+    saved({ ...ONE_STATEMENT, org: "acme" });
+    const view = banner();
+    expect(view.container).toBeEmptyDOMElement();
+    expect(stored()).toBe(JSON.stringify({ ...ONE_STATEMENT, org: "acme" }));
+  });
+
+  test("and nothing outside every organization", () => {
+    saved();
+    const view = renderWithoutOrg(
+      <MigrationDraftBanner connections={CONNECTIONS} connectionsLoaded editorHasContent={false} onLoad={onLoad} />
+    );
     expect(view.container).toBeEmptyDOMElement();
   });
 });

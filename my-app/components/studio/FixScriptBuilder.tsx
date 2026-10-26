@@ -18,7 +18,7 @@ import {
   type FixScriptItem,
 } from "@/lib/perf-sql";
 import { downloadText } from "./ExportBar";
-import { useOrgHref } from "@/hooks/useOrg";
+import { useOrg, useOrgHref } from "@/hooks/useOrg";
 
 /**
  * "Put these fixes in one script", under the findings on both Performance
@@ -71,6 +71,7 @@ export function FixScriptBuilder({
   target: FixScriptTarget;
 }) {
   const router = useRouter();
+  const org = useOrg();
   const orgPath = useOrgHref();
   const { roleLabel, loading, can } = useUser();
   const canSave = !loading && can("scripts:create");
@@ -170,6 +171,9 @@ export function FixScriptBuilder({
       connectionId: target.connectionId,
       schema: target.schema,
       createdAt: date.toISOString(),
+      // So only this organization's Script Editor offers it. The studio's
+      // pages are always inside one; outside, "" names none and nothing does.
+      org: org?.slug ?? "",
     });
     if (saved) router.push(orgPath("/script-editor"));
     else setNotice({ items, kind: "save-failed" });

@@ -16,14 +16,17 @@
  * the claims jose hands back, which is where a mistake of ours would let
  * somebody in.
  *
- * The second half checks auth.config.ts in desktop mode: that the desktop app
- * offers this sign-in and only this one, and that the provider really goes
- * through the check rather than around it.
+ * The second half checks auth.config.ts: that the desktop app offers this
+ * sign-in and only this one, that the provider really goes through the check
+ * rather than around it, and that the browser offers Microsoft and GitHub only
+ * once each is set up, with Microsoft accounts from other organizations only
+ * when AZURE_AD_ANY_ACCOUNT says so.
  *
  * What is NOT here:
  *  - The login screen's side of it (waiting, cancelling, the messages):
  *    tests/page-login.test.tsx.
  *  - The proxy guarding pages once somebody is signed in: tests/proxy.test.ts.
+ *  - What GitHub's sign-in reads from GitHub: tests/auth-config-github.test.ts.
  *  - The Microsoft sign-in in the system browser, which happens in the
  *    desktop app itself (desktop/ at the root of this repository).
  */
@@ -43,15 +46,27 @@ jest.mock("jose", () => ({
   createRemoteJWKSet: (url: URL) => mockCreateRemoteJWKSet(url),
   jwtVerify: (...args: unknown[]) => mockJwtVerify(...args),
 }));
+// Both helpers are ES modules too. The stand-ins keep the options that matter
+// here, so a case can see which Microsoft issuer the server would use and that
+// GitHub reads accounts the app's own way.
 jest.mock("next-auth/providers/microsoft-entra-id", () => ({
   __esModule: true,
-  default: () => ({ id: "microsoft-entra-id" }),
+  default: (options: { issuer?: string }) => ({ id: "microsoft-entra-id", issuer: options.issuer }),
+}));
+jest.mock("next-auth/providers/github", () => ({
+  __esModule: true,
+  default: (options: { userinfo?: unknown }) => ({ id: "github", userinfo: options.userinfo }),
 }));
 
 // The shapes of real IDs from the Azure portal. Made up, and not secret even
 // when real: both are printed on the app registration's overview page.
 const CLIENT = "11111111-2222-3333-4444-555555555555";
 const TENANT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+// An account's object ID, in capitals the way the Azure portal shows them. A
+// token carries it in lowercase, but the key must not depend on that.
+const OBJECT_ID = "BBBBBBBB-1111-2222-3333-444444444444";
+/** The key the browser sign-in files the same person under. */
+const ADA = `${TENANT}:${OBJECT_ID.toLowerCase()}`;
 const TOKEN = "header.payload.signature";
 const SESSION_SECRET = "a-test-secret-that-is-long-enough";
 
@@ -59,6 +74,7 @@ const SESSION_SECRET = "a-test-secret-that-is-long-enough";
 function claims(over: Record<string, unknown> = {}) {
   return {
     tid: TENANT,
+    oid: OBJECT_ID,
     sub: "a-subject-for-ada",
     email: "ada@contoso.example",
     preferred_username: "ada@contoso.example",
@@ -77,6 +93,9 @@ const ENV_KEYS = [
   "AZURE_AD_CLIENT_ID",
   "AZURE_AD_CLIENT_SECRET",
   "AZURE_AD_TENANT_ID",
+  "AZURE_AD_ANY_ACCOUNT",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
   "NEXTAUTH_SECRET",
 ] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
@@ -237,16 +256,16 @@ describe("checking the token the desktop app hands over", () => {
     it.each([
       ["missing", undefined],
       ["blank", "   "],
-    ])("refuses a token whose subject is %s", async (_, sub) => {
-      verifiesAs(claims({ sub }));
+    ])("refuses a token whose object ID is %s", async (_, oid) => {
+      verifiesAs(claims({ oid }));
       expect(await verifyDesktopIdToken(TOKEN)).toBeNull();
-      expect(logged()).toContain("does not say who signed in");
+      expect(logged()).toContain("does not say which account signed in");
     });
 
     it("signs in the person the token names, with their name tidied", async () => {
       verifiesAs(claims({ name: "  Ada Lovelace  " }));
       expect(await verifyDesktopIdToken(TOKEN)).toEqual({
-        id: "a-subject-for-ada",
+        id: ADA,
         email: "ada@contoso.example",
         name: "Ada Lovelace",
       });
@@ -256,10 +275,17 @@ describe("checking the token the desktop app hands over", () => {
     it("signs in an account with no display name, as nobody in particular", async () => {
       verifiesAs(claims({ name: undefined }));
       expect(await verifyDesktopIdToken(TOKEN)).toEqual({
-        id: "a-subject-for-ada",
+        id: ADA,
         email: "ada@contoso.example",
         name: null,
       });
+    });
+
+    it("keys the person by tenant and object ID, whatever the subject says", async () => {
+      // `sub` differs between app registrations for the same person. The
+      // object ID does not, so the browser sign-in and this one meet.
+      verifiesAs(claims({ sub: "a-subject-another-app-would-see" }));
+      expect((await verifyDesktopIdToken(TOKEN))?.id).toBe(ADA);
     });
 
     it("prefers the mailbox address when the account has one", async () => {
@@ -270,8 +296,8 @@ describe("checking the token the desktop app hands over", () => {
     });
 
     it("falls back to the sign-in name for an account with no mailbox", async () => {
-      // The browser sign-in keys people by email address too, so the same
-      // person gets the same profile from either.
+      // The same rule as the browser sign-in (lib/accounts-db.ts), so the same
+      // person shows up under the same address from either.
       verifiesAs(claims({ email: undefined, preferred_username: "ada@contoso.example" }));
       expect((await verifyDesktopIdToken(TOKEN))?.email).toBe("ada@contoso.example");
     });
@@ -356,6 +382,75 @@ describe("the sign-in the server offers", () => {
     expect(ids(config.authConfig.providers)).toEqual(["microsoft-entra-id"]);
     expect(config.desktopMode).toBe(false);
     expect(config.desktopConfigured).toBe(false);
+    expect(config.githubConfigured).toBe(false);
+    // Only the home tenant's accounts, until the switch below is set.
+    expect(config.authConfig.providers[0]).toMatchObject({
+      issuer: `https://login.microsoftonline.com/${TENANT}/v2.0`,
+    });
+  });
+
+  it("takes any Microsoft account only when told to, and only with exactly true", async () => {
+    const entra = {
+      AZURE_AD_CLIENT_ID: CLIENT,
+      AZURE_AD_CLIENT_SECRET: "a-client-secret-for-the-browser",
+      AZURE_AD_TENANT_ID: TENANT,
+      NEXTAUTH_SECRET: SESSION_SECRET,
+    };
+    setEnv({ ...entra, AZURE_AD_ANY_ACCOUNT: "true" });
+    let config = await loadAuthConfig();
+    expect(config.authConfig.providers[0]).toMatchObject({
+      issuer: "https://login.microsoftonline.com/common/v2.0",
+    });
+
+    // A registration that takes only its own tenant refuses the common
+    // sign-in page outright, so a loose value must not switch to it.
+    setEnv({ ...entra, AZURE_AD_ANY_ACCOUNT: "yes" });
+    config = await loadAuthConfig();
+    expect(config.authConfig.providers[0]).toMatchObject({
+      issuer: `https://login.microsoftonline.com/${TENANT}/v2.0`,
+    });
+  });
+
+  it("offers GitHub once its two keys are set, after Microsoft", async () => {
+    const github = { GITHUB_CLIENT_ID: "a-github-client", GITHUB_CLIENT_SECRET: "a-github-secret" };
+    setEnv({ ...github, NEXTAUTH_SECRET: SESSION_SECRET });
+    let config = await loadAuthConfig();
+    expect(ids(config.authConfig.providers)).toEqual(["github"]);
+    expect(config.authUsable).toBe(true);
+    // Accounts are read the app's way, which records whether the address was
+    // checked (tests/auth-config-github.test.ts).
+    expect(config.authConfig.providers[0]).toMatchObject({
+      userinfo: { request: config.readGitHubAccount },
+    });
+
+    setEnv({
+      ...github,
+      AZURE_AD_CLIENT_ID: CLIENT,
+      AZURE_AD_CLIENT_SECRET: "a-client-secret-for-the-browser",
+      AZURE_AD_TENANT_ID: TENANT,
+      NEXTAUTH_SECRET: SESSION_SECRET,
+    });
+    config = await loadAuthConfig();
+    expect(ids(config.authConfig.providers)).toEqual(["microsoft-entra-id", "github"]);
+
+    setEnv({ GITHUB_CLIENT_ID: "a-github-client", NEXTAUTH_SECRET: SESSION_SECRET });
+    config = await loadAuthConfig();
+    expect(config.authConfig.providers).toEqual([]);
+    expect(config.authUsable).toBe(false);
+  });
+
+  it("never offers GitHub inside the desktop app", async () => {
+    setEnv({
+      SCHEMA_STUDIO_DESKTOP: "1",
+      AZURE_AD_CLIENT_ID: CLIENT,
+      AZURE_AD_TENANT_ID: TENANT,
+      GITHUB_CLIENT_ID: "a-github-client",
+      GITHUB_CLIENT_SECRET: "a-github-secret",
+      NEXTAUTH_SECRET: SESSION_SECRET,
+    });
+    const config = await loadAuthConfig();
+    expect(ids(config.authConfig.providers)).toEqual(["desktop"]);
+    expect(config.githubConfigured).toBe(false);
   });
 
   it("takes only the exact switch the desktop app sets", async () => {
@@ -386,7 +481,7 @@ describe("the sign-in the server offers", () => {
 
     verifiesAs(claims());
     await expect(desktop.authorize({ idToken: TOKEN })).resolves.toEqual({
-      id: "a-subject-for-ada",
+      id: ADA,
       email: "ada@contoso.example",
       name: "Ada Lovelace",
     });

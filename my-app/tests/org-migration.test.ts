@@ -25,12 +25,20 @@
 //     tables on the bootstrap's list fill in org_id with it by default.
 //
 // It also runs the code that signs people in and looks up their roles
-// (lib/version-db.ts, lib/orgs-db.ts, lib/roles-db.ts) on a booted database:
+// (lib/accounts-db.ts, lib/orgs-db.ts, lib/roles-db.ts) on a booted database:
 //
-//   - Signing in makes the first person an admin of the default organization
-//     and everyone after them a viewer, once each, even when several sign in
-//     at the same moment. Someone who already belongs to another organization
-//     is left out of it.
+//   - Signing in finds a person by the account they signed in with, never by
+//     the address it reports. A person from before accounts were recorded is
+//     linked to their home-tenant Microsoft account on its first sign-in; any
+//     other account reporting an address somebody here already has is turned
+//     away, and nobody new gets an account for an address no provider vouches
+//     for.
+//   - On the web, the first person from the home tenant to sign in to a new
+//     deployment becomes its admin, and nobody else joins anything by signing
+//     in. On the desktop the first person becomes the admin and everyone after
+//     them a viewer. Either way once each, even when several sign in at the
+//     same moment, and someone who already belongs to another organization is
+//     left out of the default one.
 //   - The lookups the gates make on every request, and the changes the Roles
 //     tab makes, only ever see and touch the organization they are asked about.
 //
@@ -64,6 +72,7 @@ import {
   readKeyOf,
   type BuiltInRole,
 } from "@/lib/permissions";
+import type { Resolved, SignInIdentity } from "@/lib/accounts-db";
 import { testDatabaseUrl } from "./helpers/test-database";
 
 const testUrl = testDatabaseUrl();
@@ -108,7 +117,9 @@ const ORG_TABLES = [
 // organizations, so they are not on the bootstrap's list of older tables to
 // move.
 const ORG_SCOPED = [...ORG_TABLES, "memberships"];
-const NOT_ORG_SCOPED = ["organizations", "profiles"];
+// A person, and the accounts they sign in with, belong to no organization:
+// one person can be in several.
+const NOT_ORG_SCOPED = ["organizations", "profiles", "identities"];
 
 const VIEWER_PRESET = presetFor("viewer") ?? [];
 const EDITOR_PRESET = presetFor("editor") ?? [];
@@ -281,17 +292,157 @@ async function bootCountingClients(url: string): Promise<number> {
 // people in, find their membership and say what their role may do. Loaded
 // after load() has reset the modules, so they all share its pool.
 type RequestApp = App & {
-  upsertProfile: typeof import("@/lib/version-db").upsertProfile;
+  resolveIdentity: typeof import("@/lib/accounts-db").resolveIdentity;
   orgs: typeof import("@/lib/orgs-db");
   roles: typeof import("@/lib/roles-db");
 };
 
-async function loadRequestApp(url: string): Promise<RequestApp> {
-  const app = await load(url);
-  const { upsertProfile } = await import("@/lib/version-db");
+async function loadRequestApp(
+  url: string,
+  options?: { desktop?: boolean }
+): Promise<RequestApp> {
+  const app = await load(url, options);
+  const { resolveIdentity } = await import("@/lib/accounts-db");
   const orgs = await import("@/lib/orgs-db");
   const roles = await import("@/lib/roles-db");
-  return { ...app, upsertProfile, orgs, roles };
+  return { ...app, resolveIdentity, orgs, roles };
+}
+
+// The client's Microsoft tenant, and somebody else's. resolveIdentity is
+// handed what identityFrom made of a sign-in (tests/accounts-identity.test.ts
+// covers that half), so here a tenant is only ever part of an account's ID.
+const HOME_TENANT = "11111111-2222-3333-4444-555555555555";
+const OTHER_TENANT = "99999999-8888-7777-6666-555555555555";
+
+// A Microsoft sign-in from the home tenant, which is trusted with its
+// address. `oid` stands in for the account's object ID.
+function microsoft(
+  email: string,
+  oid: string,
+  name: string | null = null
+): SignInIdentity {
+  return {
+    provider: "microsoft",
+    subject: `${HOME_TENANT}:${oid}`,
+    email,
+    emailVerified: true,
+    name,
+    homeTenant: true,
+  };
+}
+
+// A Microsoft sign-in from another organization's tenant, whose address is
+// trusted only when Microsoft says its domain is verified.
+function guest(
+  email: string,
+  oid: string,
+  emailVerified: boolean
+): SignInIdentity {
+  return {
+    provider: "microsoft",
+    subject: `${OTHER_TENANT}:${oid}`,
+    email,
+    emailVerified,
+    name: null,
+    homeTenant: false,
+  };
+}
+
+function github(
+  id: number,
+  email: string,
+  emailVerified = true
+): SignInIdentity {
+  return {
+    provider: "github",
+    subject: String(id),
+    email,
+    emailVerified,
+    name: null,
+    homeTenant: false,
+  };
+}
+
+// Signs `who` in and returns the profile ID they were given, failing the test
+// if they were turned away.
+async function signedIn(app: RequestApp, who: SignInIdentity): Promise<number> {
+  const result = await app.resolveIdentity(who);
+  if (result.kind !== "ok") {
+    throw new Error(`Signing in ${who.email} was refused: ${result.kind}.`);
+  }
+  return result.profileId;
+}
+
+// The accounts linked to a person, oldest first.
+async function identitiesOf(client: Client, profileId: number) {
+  const { rows } = await client.query(
+    `SELECT provider, subject, email, email_verified
+       FROM identities WHERE profile_id = $1 ORDER BY id`,
+    [profileId]
+  );
+  return rows;
+}
+
+// Waits until `count` sign-ins in the watcher's database are waiting for a
+// lock, and fails after 10 seconds. pg_stat_activity is read once per
+// transaction and kept until it ends, so the watcher has to be a client of its
+// own that asks one statement (and so one transaction) at a time, and never
+// the one holding the lock.
+async function waitForLockWaits(watcher: Client, count: number): Promise<void> {
+  let waiting = 0;
+  for (let tries = 0; tries < 400 && waiting < count; tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const { rows } = await watcher.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'`
+    );
+    waiting = rows[0].n;
+  }
+  if (waiting < count) {
+    throw new Error(
+      `Only ${waiting} of the ${count} sign-ins were waiting after 10 seconds.`
+    );
+  }
+}
+
+// Five new people from the home tenant signing in to a new install at the
+// same moment, and the roles they end up with in its default organization,
+// sorted.
+//
+// A lock on memberships lines them all up at the membership. The first takes
+// the default organization's row and then waits for the table; the other four
+// wait for that row. Without the row lock all five would wait for the table,
+// find nobody there once it was free, and each become an admin. Five, because
+// the pool hands out at most five connections, so a sixth would wait for a
+// connection rather than a lock.
+async function rolesAfterFiveSignIns(options: {
+  desktop: boolean;
+}): Promise<string[]> {
+  const url = await freshDatabase(
+    options.desktop ? "signin_race_desktop" : "signin_race"
+  );
+  const race = await loadRequestApp(url, options);
+  await race.syncMetadataTables();
+  const holder = await connectTo(url);
+  const watcher = await connectTo(url);
+  let signIns: Promise<number>[] = [];
+  try {
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE memberships IN SHARE MODE");
+    signIns = ["a", "b", "c", "d", "e"].map((name) =>
+      signedIn(race, microsoft(`${name}@example.invalid`, `oid-${name}`))
+    );
+    await waitForLockWaits(watcher, 5);
+    await holder.query("COMMIT");
+    await Promise.all(signIns);
+    const roles = await membershipsOf(watcher, await defaultOrgId(watcher));
+    return Object.values(roles).sort();
+  } finally {
+    await holder.end();
+    await Promise.allSettled(signIns);
+    await watcher.end();
+    await race.close();
+  }
 }
 
 // Runs work in a transaction that is always rolled back, so a check can break
@@ -1307,17 +1458,22 @@ describeWithDatabase("org-migration", () => {
     }, SLOW);
   });
 
-  // Signing in is how people join. upsertProfile, which auth.ts calls when
-  // someone signs in, makes the first person in the default organization its
-  // admin and everyone after them a viewer, and findMembership is how every
-  // request after that finds them again, in the organization the request
-  // names. The tests in this block run in order, each starting from where the
-  // last one left the database.
+  // Signing in is how people get an account. resolveIdentity, which auth.ts
+  // calls when someone signs in, finds the person by the account they signed
+  // in with, and findMembership is how every request after that finds them
+  // again, by their profile ID, in the organization the request names. On the
+  // web nobody joins an organization just by signing in, except the first
+  // person from the home tenant on a new deployment. The tests in this block
+  // run in order, each starting from where the last one left the database.
   describe("signing in", () => {
     let url = "";
     let app: RequestApp;
     let client: Client;
     let defaultId = 0;
+    let firstId = 0;
+    let secondId = 0;
+    let octoId = 0;
+    let guestId = 0;
 
     beforeAll(async () => {
       url = await freshDatabase("signin");
@@ -1345,138 +1501,268 @@ describeWithDatabase("org-migration", () => {
       return rows;
     }
 
-    test("makes the first person an admin, and everyone after them a viewer", async () => {
-      expect(await app.upsertProfile("First@Example.invalid", "First Person")).toEqual({
-        id: expect.any(Number),
-        email: "first@example.invalid",
-        name: "First Person",
-      });
-      expect(await app.upsertProfile("second@example.invalid", null)).toEqual({
-        id: expect.any(Number),
-        email: "second@example.invalid",
-        name: null,
-      });
-      expect(await membershipsOf(client, defaultId)).toEqual({
-        "first@example.invalid": "admin",
-        "second@example.invalid": "viewer",
-      });
-      // The lookup every request makes, with the address in whatever case the
-      // provider hands back this time, and the one the desktop makes for a
-      // request that names no organization.
-      const first = {
+    // A membership in the default organization, as the lookups return it.
+    function inDefault(role: string) {
+      return {
         orgId: defaultId,
         slug: "swinburne-fyp",
         name: "Swinburne FYP",
         isDefault: true,
-        role: "admin",
+        role,
       };
-      expect(await app.orgs.findMembership("FIRST@example.invalid", "swinburne-fyp")).toEqual(first);
-      expect(await app.orgs.findDefaultMembership("FIRST@example.invalid")).toEqual(first);
+    }
+
+    test("gives a new deployment to the first person from the home tenant, and to nobody from anywhere else", async () => {
+      // Anyone at all can sign in with GitHub or a Microsoft account from
+      // another organization, so neither is handed the default organization,
+      // even while it has nobody in it.
+      octoId = await signedIn(app, github(583231, "octo@example.invalid"));
+      guestId = await signedIn(app, guest("guest@other.invalid", "oid-guest", true));
+      expect(await membershipsOf(client, defaultId)).toEqual({});
+
+      const first = await app.resolveIdentity(
+        microsoft("First@Example.invalid", "oid-first", "First Person")
+      );
+      expect(first).toEqual({
+        kind: "ok",
+        profileId: expect.any(Number),
+        email: "first@example.invalid",
+      });
+      firstId = first.kind === "ok" ? first.profileId : 0;
+      expect(await identitiesOf(client, firstId)).toEqual([
+        {
+          provider: "microsoft",
+          subject: `${HOME_TENANT}:oid-first`,
+          email: "first@example.invalid",
+          email_verified: true,
+        },
+      ]);
+      expect(await membershipsOf(client, defaultId)).toEqual({
+        "first@example.invalid": "admin",
+      });
+      // The lookup every request makes, and the one the desktop makes for a
+      // request that names no organization.
+      const member = {
+        ...inDefault("admin"),
+        email: "first@example.invalid",
+        personName: "First Person",
+      };
+      expect(await app.orgs.findMembership(firstId, "swinburne-fyp")).toEqual(member);
+      expect(await app.orgs.findDefaultMembership(firstId)).toEqual(member);
+      expect(await app.orgs.listMemberships(firstId)).toEqual([inDefault("admin")]);
     }, SLOW);
 
-    test("finds a returning person whatever the case of their address", async () => {
-      const [before] = await profilesFor("first@example.invalid");
+    test("lets nobody else in just by signing in", async () => {
+      secondId = await signedIn(app, microsoft("second@example.invalid", "oid-second"));
+      expect(await signedIn(app, github(583231, "octo@example.invalid"))).toBe(octoId);
+      expect(await membershipsOf(client, defaultId)).toEqual({
+        "first@example.invalid": "admin",
+      });
+      // They are signed in and belong nowhere, which is what sends them to
+      // /onboarding to make an organization or open an invitation.
+      for (const profileId of [secondId, octoId, guestId]) {
+        expect(await app.orgs.listMemberships(profileId)).toEqual([]);
+        expect(await app.orgs.findLastOrganization(profileId)).toBeNull();
+        expect(await app.orgs.findDefaultMembership(profileId)).toBeNull();
+      }
+      expect(await identitiesOf(client, octoId)).toEqual([
+        {
+          provider: "github",
+          subject: "583231",
+          email: "octo@example.invalid",
+          email_verified: true,
+        },
+      ]);
+    }, SLOW);
+
+    test("finds a returning account by its ID, whatever address it reports today", async () => {
       await client.query(
         `UPDATE profiles SET last_seen_at = '2000-01-01T00:00:00Z' WHERE id = $1`,
-        [before.id]
+        [firstId]
       );
-      // No name this time: a provider that leaves it out must not wipe the one
+      // A new address and no name. The person keeps the address the app knows
+      // them by, and a provider that leaves the name out must not wipe the one
       // already stored.
-      expect(await app.upsertProfile(" FIRST@EXAMPLE.INVALID ", null)).toEqual({
-        id: before.id,
-        email: "first@example.invalid",
-        name: "First Person",
-      });
-      const after = await profilesFor("first@example.invalid");
-      expect(after).toHaveLength(1);
-      expect(after[0].last_seen_at?.getTime()).toBeGreaterThan(
+      expect(
+        await app.resolveIdentity(microsoft("first.renamed@example.invalid", "oid-first"))
+      ).toEqual({ kind: "ok", profileId: firstId, email: "first@example.invalid" });
+      const [after] = await profilesFor("first@example.invalid");
+      expect(after).toMatchObject({ id: firstId, name: "First Person" });
+      expect(after.last_seen_at?.getTime()).toBeGreaterThan(
         Date.parse("2000-01-02T00:00:00Z")
       );
+      expect(await profilesFor("first.renamed@example.invalid")).toEqual([]);
+      // The account's own row does follow the address, for whoever reads it.
+      expect(await identitiesOf(client, firstId)).toMatchObject([
+        { email: "first.renamed@example.invalid" },
+      ]);
+
       // A name it does send replaces the stored one.
-      expect(await app.upsertProfile("first@example.invalid", "First P. Person")).toMatchObject({
-        id: before.id,
-        name: "First P. Person",
+      await signedIn(app, microsoft("first@example.invalid", "oid-first", "First P. Person"));
+      expect((await profilesFor("first@example.invalid"))[0].name).toBe("First P. Person");
+
+      // An account seen before is that person even when its provider no longer
+      // vouches for the address it reports: the account is what was checked,
+      // when it was first linked.
+      expect(await app.resolveIdentity(github(583231, "octo@new.invalid", false))).toEqual({
+        kind: "ok",
+        profileId: octoId,
+        email: "octo@example.invalid",
       });
       expect(await membershipsOf(client, defaultId)).toEqual({
         "first@example.invalid": "admin",
-        "second@example.invalid": "viewer",
       });
     }, SLOW);
 
-    test("keeps the role an admin gave someone since their first sign-in", async () => {
+    test("keeps the role somebody was given since, whoever signs in", async () => {
+      // As an invitation will.
       await client.query(
-        `UPDATE memberships SET role = 'editor'
-          WHERE org_id = $1
-            AND profile_id = (SELECT id FROM profiles WHERE email = 'second@example.invalid')`,
-        [defaultId]
+        `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'editor')`,
+        [defaultId, secondId]
       );
-      await app.upsertProfile("second@example.invalid", null);
+      await signedIn(app, microsoft("second@example.invalid", "oid-second"));
+      await signedIn(app, microsoft("first@example.invalid", "oid-first"));
       expect(await membershipsOf(client, defaultId)).toEqual({
         "first@example.invalid": "admin",
         "second@example.invalid": "editor",
       });
     }, SLOW);
 
-    test("matches a profile stored with capitals, as a row written by hand may be", async () => {
-      // Sign-in stores addresses in lower case, but a row written by hand need
-      // not be. The unique index on lower(email) makes it the same person all
-      // the same, so signing in has to find it rather than trip over that index.
-      const id = await insertId(
+    test("links a person from before accounts to their home-tenant account, and to no other", async () => {
+      // As a database from before accounts were recorded holds them: a person
+      // and their role, signed in by address, with no account linked, and an
+      // address in whatever case it was written.
+      const legacyId = await insertId(
         client,
-        `INSERT INTO profiles (email) VALUES ('Mixed.Case@Example.invalid') RETURNING id`
+        `INSERT INTO profiles (email) VALUES ('Legacy.Person@Example.invalid') RETURNING id`
       );
-      expect(await app.upsertProfile("mixed.case@example.invalid", null)).toEqual({
-        id,
-        email: "Mixed.Case@Example.invalid",
-        name: null,
-      });
+      await client.query(
+        `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
+        [defaultId, legacyId]
+      );
+
       expect(
-        await app.orgs.findMembership("MIXED.case@example.INVALID", "swinburne-fyp")
-      ).toMatchObject({
-        orgId: defaultId,
-        role: "viewer",
+        await app.resolveIdentity(
+          microsoft("legacy.person@example.invalid", "oid-legacy", "Legacy Person")
+        )
+      ).toEqual({ kind: "ok", profileId: legacyId, email: "Legacy.Person@Example.invalid" });
+      expect(await identitiesOf(client, legacyId)).toEqual([
+        {
+          provider: "microsoft",
+          subject: `${HOME_TENANT}:oid-legacy`,
+          email: "legacy.person@example.invalid",
+          email_verified: true,
+        },
+      ]);
+      expect(await app.orgs.findMembership(legacyId, "swinburne-fyp")).toEqual({
+        ...inDefault("viewer"),
+        email: "Legacy.Person@Example.invalid",
+        personName: "Legacy Person",
       });
+
+      // Once linked, nothing else gets in on that address: not a second
+      // account in the home tenant, and not an account elsewhere.
+      expect(
+        await app.resolveIdentity(microsoft("LEGACY.person@example.invalid", "oid-impostor"))
+      ).toEqual({ kind: "taken" });
+      expect(
+        await app.resolveIdentity(github(1, "legacy.person@example.invalid"))
+      ).toEqual({ kind: "taken" });
+      expect(await identitiesOf(client, legacyId)).toHaveLength(1);
     }, SLOW);
 
-    test("leaves someone who belongs to another organization out of the default", async () => {
+    test("turns away any other account that reports an address somebody here has", async () => {
+      const count = async () => {
+        const { rows } = await client.query(
+          `SELECT (SELECT count(*)::int FROM profiles) AS profiles,
+                  (SELECT count(*)::int FROM identities) AS identities`
+        );
+        return rows[0];
+      };
+      const before = await count();
+      // Each would be someone signing in as first@ or octo@ because they put
+      // that address on an account of their own: a GitHub account, an account
+      // in another organization's tenant whose admin vouches for it, and a
+      // second account in the home tenant for somebody who already has one.
+      for (const who of [
+        github(2, "first@example.invalid"),
+        guest("first@example.invalid", "oid-guest-2", true),
+        microsoft("octo@example.invalid", "oid-octo"),
+      ]) {
+        expect(await app.resolveIdentity(who)).toEqual({ kind: "taken" });
+      }
+      expect(await count()).toEqual(before);
+    }, SLOW);
+
+    test("makes no account for an address nobody vouches for, taken or not", async () => {
+      // The same answer whether or not the address is somebody's here, so
+      // trying addresses never shows which ones are.
+      for (const who of [
+        github(4, "unchecked@example.invalid", false),
+        guest("unchecked@example.invalid", "oid-unchecked", false),
+        github(5, "first@example.invalid", false),
+      ]) {
+        expect(await app.resolveIdentity(who)).toEqual({ kind: "unverified" });
+      }
+      expect(await profilesFor("unchecked@example.invalid")).toEqual([]);
+      const { rows } = await client.query(
+        `SELECT subject FROM identities WHERE subject IN ('4', '5', $1)`,
+        [`${OTHER_TENANT}:oid-unchecked`]
+      );
+      expect(rows).toEqual([]);
+    }, SLOW);
+
+    test("finds people only in the organizations they belong to", async () => {
       const elsewhere = await insertId(
         client,
         `INSERT INTO organizations (slug, name) VALUES ('elsewhere', 'Elsewhere') RETURNING id`
       );
-      // No boot runs before the sign-in below to give the new organization its
-      // built-in roles, and a membership has to name one of its roles.
+      // No boot runs after this to give the new organization its built-in
+      // roles, and a membership has to name one of its roles.
       await client.query(
         `INSERT INTO roles (org_id, name, label) VALUES ($1, 'viewer', 'Viewer')`,
         [elsewhere]
       );
-      const profileId = await insertId(
-        client,
-        `INSERT INTO profiles (email) VALUES ('elsewhere@example.invalid') RETURNING id`
-      );
       await client.query(
         `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
-        [elsewhere, profileId]
+        [elsewhere, octoId]
       );
-
-      await app.upsertProfile("elsewhere@example.invalid", "Elsewhere Person");
-      expect(Object.keys(await membershipsOf(client, defaultId))).not.toContain(
-        "elsewhere@example.invalid"
-      );
-      expect(await membershipsOf(client, elsewhere)).toEqual({
-        "elsewhere@example.invalid": "viewer",
-      });
-      // The gates find them in their own organization, and in no other.
-      expect(await app.orgs.findMembership("elsewhere@example.invalid", "elsewhere")).toEqual({
+      const inElsewhere = {
         orgId: elsewhere,
         slug: "elsewhere",
         name: "Elsewhere",
         isDefault: false,
         role: "viewer",
+      };
+
+      // The gates find them in their own organization, and in no other.
+      expect(await app.orgs.findMembership(octoId, "elsewhere")).toEqual({
+        ...inElsewhere,
+        email: "octo@example.invalid",
+        personName: null,
       });
-      expect(await app.orgs.findMembership("elsewhere@example.invalid", "swinburne-fyp")).toBeNull();
-      expect(await app.orgs.findDefaultMembership("elsewhere@example.invalid")).toBeNull();
+      expect(await app.orgs.findMembership(octoId, "swinburne-fyp")).toBeNull();
+      expect(await app.orgs.findDefaultMembership(octoId)).toBeNull();
+      expect(await app.orgs.listMemberships(octoId)).toEqual([inElsewhere]);
       // Nor does anyone else turn up there.
-      expect(await app.orgs.findMembership("first@example.invalid", "elsewhere")).toBeNull();
+      expect(await app.orgs.findMembership(firstId, "elsewhere")).toBeNull();
+
+      // Someone in two is listed in both, by name, for the switcher.
+      await client.query(
+        `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
+        [elsewhere, firstId]
+      );
+      try {
+        expect(await app.orgs.listMemberships(firstId)).toEqual([
+          inElsewhere,
+          inDefault("admin"),
+        ]);
+      } finally {
+        await client.query(
+          `DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`,
+          [elsewhere, firstId]
+        );
+      }
     }, SLOW);
 
     test("finds an organization by its slug, and nothing for a slug no organization could have", async () => {
@@ -1494,7 +1780,7 @@ describeWithDatabase("org-migration", () => {
       // Answered without asking the database, but the same answer it would give.
       for (const slug of ["Swinburne-FYP", "x", "studio", "swinburne-fyp/", ""]) {
         expect(await app.orgs.findOrganization(slug)).toBeNull();
-        expect(await app.orgs.findMembership("first@example.invalid", slug)).toBeNull();
+        expect(await app.orgs.findMembership(firstId, slug)).toBeNull();
       }
     }, SLOW);
 
@@ -1502,123 +1788,224 @@ describeWithDatabase("org-migration", () => {
       const elsewhere = (await app.orgs.findOrganization("elsewhere"))?.id ?? 0;
       // Nothing remembered yet: the default organization when they are in it,
       // or else the one they joined first.
-      expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("swinburne-fyp");
-      expect(await app.orgs.findLastOrganization("ELSEWHERE@example.invalid")).toBe("elsewhere");
+      expect(await app.orgs.findLastOrganization(firstId)).toBe("swinburne-fyp");
+      expect(await app.orgs.findLastOrganization(octoId)).toBe("elsewhere");
       // Someone in no organization has nowhere to go.
-      expect(await app.orgs.findLastOrganization("nobody@example.invalid")).toBeNull();
+      expect(await app.orgs.findLastOrganization(guestId)).toBeNull();
 
-      const profile = await insertId(
-        client,
-        `SELECT id FROM profiles WHERE email = 'first@example.invalid'`
-      );
       await client.query(
         `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
-        [elsewhere, profile]
+        [elsewhere, firstId]
       );
       try {
         // Joining another organization does not move them out of the default.
-        expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("swinburne-fyp");
-        await app.orgs.rememberLastOrganization("First@Example.invalid", elsewhere);
-        expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("elsewhere");
+        expect(await app.orgs.findLastOrganization(firstId)).toBe("swinburne-fyp");
+        await app.orgs.rememberLastOrganization(firstId, elsewhere);
+        expect(await app.orgs.findLastOrganization(firstId)).toBe("elsewhere");
 
         // Remembered, but no longer a member: back to the default, never into
         // an organization they have left.
         await client.query(
           `DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`,
-          [elsewhere, profile]
+          [elsewhere, firstId]
         );
-        expect(await app.orgs.findLastOrganization("first@example.invalid")).toBe("swinburne-fyp");
+        expect(await app.orgs.findLastOrganization(firstId)).toBe("swinburne-fyp");
       } finally {
         await client.query(
           `DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`,
-          [elsewhere, profile]
+          [elsewhere, firstId]
         );
-        await client.query(`UPDATE profiles SET last_org_id = NULL WHERE id = $1`, [profile]);
+        await client.query(`UPDATE profiles SET last_org_id = NULL WHERE id = $1`, [firstId]);
       }
 
       // An organization that goes takes the memory of it with it.
       await rolledBack(client, async () => {
-        await client.query(`UPDATE profiles SET last_org_id = $1 WHERE id = $2`, [elsewhere, profile]);
+        await client.query(`UPDATE profiles SET last_org_id = $1 WHERE id = $2`, [elsewhere, firstId]);
         await client.query(`DELETE FROM organizations WHERE id = $1`, [elsewhere]);
-        const { rows } = await client.query(`SELECT last_org_id FROM profiles WHERE id = $1`, [profile]);
+        const { rows } = await client.query(`SELECT last_org_id FROM profiles WHERE id = $1`, [firstId]);
         expect(rows).toEqual([{ last_org_id: null }]);
       });
     }, SLOW);
 
-    test("records someone when there is no default, and adds them once there is", async () => {
+    test("settles two sign-ins of one new account at the same moment as one person", async () => {
+      // The lock lines the two up where they meet. The first makes the person
+      // and then waits for the table to link its account; the second waits on
+      // the first's person, since it has the same address. Once the lock goes
+      // the first finishes, and the second finds the person it made and starts
+      // over, finding the account this time.
+      const holder = await connectTo(url);
+      let signIns: Promise<Resolved>[] = [];
+      try {
+        await holder.query("BEGIN");
+        await holder.query("LOCK TABLE identities IN SHARE MODE");
+        signIns = [1, 2].map(() => app.resolveIdentity(github(777, "twin@example.invalid")));
+        await waitForLockWaits(client, 2);
+        await holder.query("COMMIT");
+        const [one, two] = await Promise.all(signIns);
+        expect(one).toEqual({
+          kind: "ok",
+          profileId: expect.any(Number),
+          email: "twin@example.invalid",
+        });
+        expect(two).toEqual(one);
+      } finally {
+        await holder.end();
+        await Promise.allSettled(signIns);
+      }
+      expect(await profilesFor("twin@example.invalid")).toHaveLength(1);
+      const { rows } = await client.query(
+        `SELECT count(*)::int AS n FROM identities WHERE provider = 'github' AND subject = '777'`
+      );
+      expect(rows).toEqual([{ n: 1 }]);
+    }, SLOW);
+
+    test("links only one of two accounts that claim one person at the same moment", async () => {
+      // Two home-tenant accounts with one person's address, as two accounts
+      // for one person, or one made to look like them, would have. The first
+      // holds the person and waits for the table to link its account; the
+      // second waits for the person, and finds them taken once it has them.
+      const contestedId = await insertId(
+        client,
+        `INSERT INTO profiles (email) VALUES ('contested@example.invalid') RETURNING id`
+      );
+      const holder = await connectTo(url);
+      let signIns: Promise<Resolved>[] = [];
+      try {
+        await holder.query("BEGIN");
+        await holder.query("LOCK TABLE identities IN SHARE MODE");
+        signIns = ["oid-claim-a", "oid-claim-b"].map((oid) =>
+          app.resolveIdentity(microsoft("contested@example.invalid", oid))
+        );
+        await waitForLockWaits(client, 2);
+        await holder.query("COMMIT");
+        const results = await Promise.all(signIns);
+        expect(results.map((result) => result.kind).sort()).toEqual(["ok", "taken"]);
+        expect(results).toContainEqual({
+          kind: "ok",
+          profileId: contestedId,
+          email: "contested@example.invalid",
+        });
+      } finally {
+        await holder.end();
+        await Promise.allSettled(signIns);
+      }
+      expect(await identitiesOf(client, contestedId)).toHaveLength(1);
+    }, SLOW);
+
+    test("makes exactly one admin when five people from the home tenant sign in to a new deployment at once", async () => {
+      expect(await rolesAfterFiveSignIns({ desktop: false })).toEqual(["admin"]);
+    }, SLOW);
+  });
+
+  // The desktop app signs in only accounts from the home tenant, and its
+  // default organization is the one person's own (the personal one). The
+  // first to sign in becomes its admin, and anyone after them a viewer: a
+  // restored backup already has its admin. The tests in this block run in
+  // order, each starting from where the last one left the database.
+  describe("signing in on the desktop", () => {
+    let app: RequestApp;
+    let client: Client;
+    let defaultId = 0;
+    let ownerId = 0;
+
+    beforeAll(async () => {
+      const url = await freshDatabase("signin_desktop");
+      app = await loadRequestApp(url, { desktop: true });
+      await app.syncMetadataTables();
+      client = await connectTo(url);
+      defaultId = await defaultOrgId(client);
+    }, SLOW);
+
+    afterAll(async () => {
+      await client?.end();
+      await app?.close();
+      // load() set it, and accounts-db reads it on every sign-in, so it must
+      // not outlive this block.
+      delete process.env.SCHEMA_STUDIO_DESKTOP;
+    }, SLOW);
+
+    test("makes the first person the admin and the next a viewer, and keeps a role given since", async () => {
+      ownerId = await signedIn(app, microsoft("owner@example.invalid", "oid-owner"));
+      const helperId = await signedIn(app, microsoft("helper@example.invalid", "oid-helper"));
+      expect(await membershipsOf(client, defaultId)).toEqual({
+        "owner@example.invalid": "admin",
+        "helper@example.invalid": "viewer",
+      });
+      expect(await app.orgs.findDefaultMembership(ownerId)).toMatchObject({
+        slug: PERSONAL.slug,
+        isDefault: true,
+        role: "admin",
+      });
+
+      await client.query(
+        `UPDATE memberships SET role = 'editor' WHERE org_id = $1 AND profile_id = $2`,
+        [defaultId, helperId]
+      );
+      await signedIn(app, microsoft("helper@example.invalid", "oid-helper"));
+      await signedIn(app, microsoft("owner@example.invalid", "oid-owner"));
+      expect(await membershipsOf(client, defaultId)).toEqual({
+        "owner@example.invalid": "admin",
+        "helper@example.invalid": "editor",
+      });
+    }, SLOW);
+
+    test("leaves someone who belongs to another organization where they are", async () => {
+      const elsewhere = await insertId(
+        client,
+        `INSERT INTO organizations (slug, name) VALUES ('elsewhere', 'Elsewhere') RETURNING id`
+      );
+      await client.query(
+        `INSERT INTO roles (org_id, name, label) VALUES ($1, 'viewer', 'Viewer')`,
+        [elsewhere]
+      );
+      const profileId = await insertId(
+        client,
+        `INSERT INTO profiles (email) VALUES ('elsewhere@example.invalid') RETURNING id`
+      );
+      await client.query(
+        `INSERT INTO memberships (org_id, profile_id, role) VALUES ($1, $2, 'viewer')`,
+        [elsewhere, profileId]
+      );
+
+      expect(await signedIn(app, microsoft("elsewhere@example.invalid", "oid-elsewhere"))).toBe(
+        profileId
+      );
+      expect(await app.orgs.listMemberships(profileId)).toEqual([
+        { orgId: elsewhere, slug: "elsewhere", name: "Elsewhere", isDefault: false, role: "viewer" },
+      ]);
+    }, SLOW);
+
+    test("signs someone in when there is no default, and adds them once there is", async () => {
       // As if somebody cleared the flag by hand. This app booted already and
       // remembers it, so it does not boot again; a server starting now would
       // stop instead, as the "booting" tests show.
       await client.query(`UPDATE organizations SET is_default = false WHERE id = $1`, [defaultId]);
+      let orphanId = 0;
       try {
         expect(await app.orgs.findDefaultOrganization()).toBeNull();
-        expect(await app.upsertProfile("orphan@example.invalid", null)).toMatchObject({
-          email: "orphan@example.invalid",
-        });
-        const { rows } = await client.query(
-          `SELECT count(*)::int AS n
-             FROM memberships m JOIN profiles p ON p.id = m.profile_id
-            WHERE p.email = 'orphan@example.invalid'`
-        );
-        expect(rows).toEqual([{ n: 0 }]);
+        orphanId = await signedIn(app, microsoft("orphan@example.invalid", "oid-orphan"));
+        expect(await app.orgs.listMemberships(orphanId)).toEqual([]);
         // The desktop, which asks for the default, finds nobody either.
-        expect(await app.orgs.findDefaultMembership("first@example.invalid")).toBeNull();
+        expect(await app.orgs.findDefaultMembership(ownerId)).toBeNull();
       } finally {
         await client.query(`UPDATE organizations SET is_default = true WHERE id = $1`, [defaultId]);
       }
 
       // Once the default is back, signing in again adds them like anyone else.
-      await app.upsertProfile("orphan@example.invalid", null);
+      expect(await signedIn(app, microsoft("orphan@example.invalid", "oid-orphan"))).toBe(orphanId);
       expect(await membershipsOf(client, defaultId)).toMatchObject({
         "orphan@example.invalid": "viewer",
       });
     }, SLOW);
 
-    test("makes exactly one admin when five people sign in at the same moment", async () => {
-      const raceUrl = await freshDatabase("signin_race");
-      const race = await loadRequestApp(raceUrl);
-      await race.syncMetadataTables();
-      const holder = await connectTo(raceUrl);
-      // pg_stat_activity is read once per transaction and kept until it ends,
-      // so the counting is done by a client of its own, one statement and so
-      // one transaction at a time, and never by the one holding the lock.
-      const watcher = await connectTo(raceUrl);
-      let signIns: Promise<unknown>[] = [];
-      try {
-        await holder.query("BEGIN");
-        await holder.query("LOCK TABLE memberships IN SHARE MODE");
-        // This lines everyone up at the membership. The first sign-in takes the
-        // default organization's row and then waits for the table; the other
-        // four wait for that row. Without the row lock all five would wait for
-        // the table, find nobody there once it was free, and each become an
-        // admin. Five, because the pool hands out at most five connections, so
-        // a sixth would wait for a connection rather than a lock.
-        signIns = ["a", "b", "c", "d", "e"].map((name) =>
-          race.upsertProfile(`${name}@example.invalid`, null)
-        );
-        let waiting = 0;
-        for (let tries = 0; tries < 400 && waiting < 5; tries++) {
-          await new Promise((resolve) => setTimeout(resolve, 25));
-          const { rows } = await watcher.query<{ n: number }>(
-            `SELECT count(*)::int AS n FROM pg_stat_activity
-              WHERE datname = current_database() AND wait_event_type = 'Lock'`
-          );
-          waiting = rows[0].n;
-        }
-        if (waiting < 5) {
-          throw new Error(`Only ${waiting} of the 5 sign-ins were waiting after 10 seconds.`);
-        }
-        await holder.query("COMMIT");
-        await Promise.all(signIns);
-
-        const roles = Object.values(await membershipsOf(watcher, await defaultOrgId(watcher)));
-        expect(roles.sort()).toEqual(["admin", "viewer", "viewer", "viewer", "viewer"]);
-      } finally {
-        await holder.end();
-        await Promise.allSettled(signIns);
-        await watcher.end();
-        await race.close();
-      }
+    test("makes exactly one admin when five people sign in to a new install at once", async () => {
+      expect(await rolesAfterFiveSignIns({ desktop: true })).toEqual([
+        "admin",
+        "viewer",
+        "viewer",
+        "viewer",
+        "viewer",
+      ]);
     }, SLOW);
   });
 
@@ -1792,6 +2179,152 @@ describeWithDatabase("org-migration", () => {
         status: 404,
         error: "That role no longer exists. Refresh the page.",
       });
+    }, SLOW);
+  });
+
+  describe("making an organization", () => {
+    let app: RequestApp;
+    let client: Client;
+    let edId = 0;
+    let fayId = 0;
+    let acmeId = 0;
+
+    beforeAll(async () => {
+      const url = await freshDatabase("making");
+      app = await loadRequestApp(url);
+      await app.syncMetadataTables();
+      client = await connectTo(url);
+      // Two people from GitHub, which nobody is handed an organization for,
+      // so both start in none, the way someone who has just signed up does.
+      edId = await signedIn(app, github(101, "ed@example.invalid"));
+      fayId = await signedIn(app, github(102, "fay@example.invalid"));
+    }, SLOW);
+
+    afterAll(async () => {
+      await client?.end();
+      await app?.close();
+    }, SLOW);
+
+    // Every row that making an organization writes, counted, to show that a
+    // refusal wrote none of them.
+    async function counts() {
+      const { rows } = await client.query(
+        `SELECT (SELECT count(*) FROM organizations)::int AS organizations,
+                (SELECT count(*) FROM roles)::int AS roles,
+                (SELECT count(*) FROM role_permissions)::int AS role_permissions,
+                (SELECT count(*) FROM memberships)::int AS memberships`
+      );
+      return rows[0];
+    }
+
+    async function lastOrgIdOf(profileId: number): Promise<number | null> {
+      const { rows } = await client.query<{ last_org_id: number | null }>(
+        `SELECT last_org_id FROM profiles WHERE id = $1`,
+        [profileId]
+      );
+      return rows[0].last_org_id;
+    }
+
+    test("gives it the built-in roles every organization gets, with its maker as its Admin", async () => {
+      expect(await app.orgs.listMemberships(edId)).toEqual([]);
+
+      const created = await app.orgs.createOrganization(edId, {
+        slug: "acme-data",
+        name: "Acme Data",
+      });
+      expect(created).toEqual({
+        kind: "ok",
+        organization: { id: expect.any(Number), slug: "acme-data", name: "Acme Data", isDefault: false },
+      });
+      acmeId = created.kind === "ok" ? created.organization.id : 0;
+
+      expect(await rolesOf(client, acmeId)).toEqual(EXPECTED_BUILT_IN_ROLES);
+      expect(await builtInPermissionsOf(client, acmeId)).toEqual(EXPECTED_BUILT_IN_PERMISSIONS);
+      expect(await membershipsOf(client, acmeId)).toEqual({ "ed@example.invalid": "admin" });
+      const row = (await organizationsIn(client)).find((org) => org.id === acmeId);
+      expect(row).toMatchObject({ personal: false, is_default: false });
+    }, SLOW);
+
+    test("takes its maker there next time an address names no organization", async () => {
+      expect(await lastOrgIdOf(edId)).toBe(acmeId);
+      expect(await app.orgs.findLastOrganization(edId)).toBe("acme-data");
+      expect((await app.orgs.listMemberships(edId)).map((m) => [m.slug, m.role])).toEqual([
+        ["acme-data", "admin"],
+      ]);
+    }, SLOW);
+
+    test("turns down a taken address, the default organization's too, and writes nothing", async () => {
+      const before = await counts();
+      for (const slug of ["acme-data", "swinburne-fyp"]) {
+        expect(await app.orgs.createOrganization(fayId, { slug, name: "Fay's" })).toEqual({
+          kind: "taken",
+        });
+      }
+      expect(await counts()).toEqual(before);
+      expect(await lastOrgIdOf(fayId)).toBeNull();
+      expect(await app.orgs.listMemberships(fayId)).toEqual([]);
+      expect(await membershipsOf(client, acmeId)).toEqual({ "ed@example.invalid": "admin" });
+    }, SLOW);
+
+    test("settles two people asking for one address at the same moment: one gets it", async () => {
+      const results = await Promise.all([
+        app.orgs.createOrganization(edId, { slug: "race-org", name: "Ed's race" }),
+        app.orgs.createOrganization(fayId, { slug: "race-org", name: "Fay's race" }),
+      ]);
+      expect(results.map((result) => result.kind).sort()).toEqual(["ok", "taken"]);
+      const winner = results[0].kind === "ok" ? "ed@example.invalid" : "fay@example.invalid";
+      const raceId = await insertId(client, `SELECT id FROM organizations WHERE slug = 'race-org'`);
+      expect(await membershipsOf(client, raceId)).toEqual({ [winner]: "admin" });
+      expect(await rolesOf(client, raceId)).toEqual(EXPECTED_BUILT_IN_ROLES);
+    }, SLOW);
+
+    test("makes one organization from a double click, not two half ones", async () => {
+      const before = await counts();
+      const results = await Promise.all([
+        app.orgs.createOrganization(fayId, { slug: "fay-team", name: "Fay's team" }),
+        app.orgs.createOrganization(fayId, { slug: "fay-team", name: "Fay's team" }),
+      ]);
+      expect(results.map((result) => result.kind).sort()).toEqual(["ok", "taken"]);
+      const after = await counts();
+      expect(after.organizations).toBe(before.organizations + 1);
+      expect(after.memberships).toBe(before.memberships + 1);
+    }, SLOW);
+
+    test("answers no-profile for someone deleted since they signed in, and writes nothing", async () => {
+      const goneId = await insertId(
+        client,
+        `INSERT INTO profiles (email) VALUES ('gone@example.invalid') RETURNING id`
+      );
+      await client.query(`DELETE FROM profiles WHERE id = $1`, [goneId]);
+      const before = await counts();
+      expect(
+        await app.orgs.createOrganization(goneId, { slug: "gone-org", name: "Gone" })
+      ).toEqual({ kind: "no-profile" });
+      expect(await counts()).toEqual(before);
+    }, SLOW);
+
+    test.each([
+      ["a word the app uses itself", "onboarding"],
+      ["a malformed address", "Not An Address"],
+    ])("throws for %s rather than storing it", async (_, slug) => {
+      const before = await counts();
+      await expect(app.orgs.createOrganization(edId, { slug, name: "Nope" })).rejects.toThrow(
+        `"${slug}" is not an address an organization may have.`
+      );
+      expect(await counts()).toEqual(before);
+    }, SLOW);
+
+    test("lists every organization by name, whatever its case, for the bypass", async () => {
+      // "aardvark labs" comes first only when case is ignored: by character
+      // code, every capital comes before every lowercase letter.
+      await app.orgs.createOrganization(edId, { slug: "aardvark", name: "aardvark labs" });
+      const names = (await app.orgs.listOrganizations()).map((org) => org.name);
+      expect(names[0]).toBe("aardvark labs");
+      expect(names).toEqual(
+        [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+      );
+      expect(names).toContain("Swinburne FYP");
+      expect((await app.orgs.listMemberships(edId)).map((m) => m.name)[0]).toBe("aardvark labs");
     }, SLOW);
   });
 });

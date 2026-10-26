@@ -9,6 +9,7 @@ import {
   type DesktopBridge,
   type DesktopSignInResult,
 } from "@/lib/desktop-bridge";
+import { safeCallbackUrl } from "@/lib/callback-url";
 import {
   LogoIcon,
   SunIcon,
@@ -27,11 +28,41 @@ import {
  */
 type Status = "idle" | "redirecting" | "waiting" | "finishing" | "error";
 
+/** The two ways to sign in. Inside the desktop app only Microsoft is offered. */
+type Via = "microsoft" | "github";
+
+/** The ways this server offers, once it has said. */
+type Offered = Record<Via, boolean>;
+
+/** The provider IDs in auth.config.ts that a browser sign-in goes through. */
+const BROWSER_PROVIDER: Record<Via, string> = {
+  microsoft: "microsoft-entra-id",
+  github: "github",
+};
+
+const VIA_NAME: Record<Via, string> = { microsoft: "Microsoft", github: "GitHub" };
+
+/**
+ * What the browser is asked to share, shown while it is on its way. GitHub's
+ * are the scopes Auth.js asks for by default, which auth.config.ts keeps.
+ */
+const VIA_SCOPES: Record<Via, string> = {
+  microsoft: "openid · profile · email",
+  github: "read:user · user:email",
+};
+
 /**
  * NextAuth reports a failed sign-in by bouncing the browser back to
  * /login?error=<code>. The page used to ignore that parameter completely, so a
  * failure looked like a button that did nothing. These are the codes NextAuth
  * can send, written out in plain words.
+ *
+ * The next four are the app's own, sent by the signIn callback in auth.ts when
+ * it turns a sign-in away: the account shared no address (NoEmail), its
+ * address belongs to a person who signs in another way (AccountExists), the
+ * provider has not confirmed the address is theirs (EmailUnverified), or the
+ * database could not be asked (AccountUnavailable). Each says what to do next,
+ * because none of them is fixed by pressing the same button again.
  *
  * The last three only ever come from the desktop app. CredentialsSignin is what
  * NextAuth sends when lib/desktop-sign-in.ts refuses the app's ID token, and
@@ -43,10 +74,17 @@ const ERROR_MESSAGES: Record<string, string> = {
   Configuration: "Sign-in is not set up on this server yet.",
   AccessDenied: "That account is not allowed to use Schema Studio.",
   Verification: "That sign-in link has expired. Start again.",
-  OAuthSignin: "Could not reach Microsoft to start sign-in.",
-  OAuthCallback: "Microsoft rejected the sign-in response.",
+  OAuthSignin: "Could not start the sign-in. Try again in a moment.",
+  OAuthCallback: "The sign-in came back incomplete. Try again.",
   OAuthAccountNotLinked: "That email already signed in a different way.",
   SessionRequired: "Sign in to continue.",
+  NoEmail:
+    "That account did not share an email address, and Schema Studio needs one. Add one to the account, or use another.",
+  AccountExists:
+    "That email address belongs to someone here who signs in another way. Sign in the way you did before.",
+  EmailUnverified:
+    "That account has not confirmed its email address is yours. Confirm it with Microsoft or GitHub, or use another account.",
+  AccountUnavailable: "Schema Studio could not finish signing you in. Try again in a moment.",
   CredentialsSignin: "Schema Studio could not confirm your Microsoft sign-in.",
   SessionRevoked: "Your Microsoft sign-in has ended. Sign in again to carry on.",
   OfflineTooLong:
@@ -69,6 +107,28 @@ function MsMark() {
   );
 }
 
+/** GitHub's mark (Primer's mark-github octicon), in the button's text color. */
+function GitHubMark() {
+  return (
+    <svg className="gh-mark" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+      />
+    </svg>
+  );
+}
+
+function ViaMark({ via }: { via: Via }) {
+  return via === "github" ? <GitHubMark /> : <MsMark />;
+}
+
+/** The ways offered, in the order the page shows them. */
+function offeredVias(offered: Offered | null): Via[] {
+  if (!offered) return [];
+  return (["microsoft", "github"] as const).filter((via) => offered[via]);
+}
+
 export default function LoginPage() {
   const { theme, toggleTheme } = useTheme();
   /** The desktop app's bridge, or null in a browser. Only the wording uses it. */
@@ -78,14 +138,19 @@ export default function LoginPage() {
   /** Whether "Trouble signing in?" is showing its help. */
   const [helpOpen, setHelpOpen] = useState(false);
   /** null while we are still asking the server which providers it has. */
-  const [ssoReady, setSsoReady] = useState<boolean | null>(null);
+  const [offered, setOffered] = useState<Offered | null>(null);
+  /** The way the person picked, for the "on its way" wording. */
+  const [via, setVia] = useState<Via>("microsoft");
+  const vias = offeredVias(offered);
+  const ssoReady = offered === null ? null : vias.length > 0;
 
   // One pass on load: ask NextAuth what it can offer, and pick up the error
   // code a failed sign-in leaves in the URL. Both settle in the same render so
   // the card never flashes one banner and then swaps to another.
   //
-  // With the Entra keys absent the provider list comes back empty, and a button
-  // that can only fail is worse than saying plainly that sign-in is not set up.
+  // Each way to sign in has its button only when the server has its keys, and
+  // with none of them the provider list comes back empty: a button that can
+  // only fail is worse than saying plainly that sign-in is not set up.
   // window.location is read instead of useSearchParams so this page can stay
   // statically rendered.
   useEffect(() => {
@@ -94,19 +159,27 @@ export default function LoginPage() {
     async function loadSignInState() {
       const code = new URLSearchParams(window.location.search).get("error");
 
-      let ready = false;
+      let next: Offered = { microsoft: false, github: false };
       try {
         const res = await fetch("/api/auth/providers");
         const providers: Record<string, unknown> = res.ok ? await res.json() : {};
         // Inside the desktop app the server offers the app's own "desktop"
-        // provider instead of the browser one (see auth.config.ts).
-        ready = Boolean(providers[getDesktopBridge() ? "desktop" : "microsoft-entra-id"]);
+        // provider instead of the browser ones (see auth.config.ts), and the
+        // browser ones would take the app's own window off to Microsoft or
+        // GitHub, which the app is built never to do. So there only that one
+        // counts, and it is a Microsoft sign-in.
+        next = getDesktopBridge()
+          ? { microsoft: Boolean(providers.desktop), github: false }
+          : {
+              microsoft: Boolean(providers[BROWSER_PROVIDER.microsoft]),
+              github: Boolean(providers[BROWSER_PROVIDER.github]),
+            };
       } catch {
-        ready = false;
+        // Unreadable counts as none: see the test of the same name.
       }
 
       if (cancelled) return;
-      setSsoReady(ready);
+      setOffered(next);
       if (code) {
         setErrorMsg(errorMessage(code));
         setStatus("error");
@@ -124,11 +197,12 @@ export default function LoginPage() {
    * page and hands back the ID token Microsoft gave it; this posts that token
    * to the "desktop" provider in auth.config.ts, which checks it.
    *
-   * Like the browser sign-in, the last step navigates by itself: to /studio
-   * when the token is accepted, or back here with ?error=CredentialsSignin when
-   * it is not, which the effect above then puts into words.
+   * Like the browser sign-in, the last step navigates by itself: to
+   * `callbackUrl` when the token is accepted, or back here with
+   * ?error=CredentialsSignin when it is not, which the effect above then puts
+   * into words.
    */
-  async function desktopSignIn(bridge: DesktopBridge) {
+  async function desktopSignIn(bridge: DesktopBridge, callbackUrl: string) {
     setStatus("waiting");
     let result: DesktopSignInResult;
     try {
@@ -158,20 +232,21 @@ export default function LoginPage() {
       return;
     }
     setStatus("finishing");
-    await signIn("desktop", { idToken: result.idToken, callbackUrl: "/studio" });
+    await signIn("desktop", { idToken: result.idToken, callbackUrl });
   }
 
-  async function handleLogin() {
+  async function handleLogin(chosen: Via) {
     setErrorMsg(null);
+    const callbackUrl = safeCallbackUrl(window.location.search, window.location.origin);
     try {
       const bridge = getDesktopBridge();
       if (bridge) {
-        await desktopSignIn(bridge);
+        await desktopSignIn(bridge, callbackUrl);
         return;
       }
+      setVia(chosen);
       setStatus("redirecting");
-      // Phase 2: Azure SSO via NextAuth (microsoft-entra-id)
-      await signIn("microsoft-entra-id", { callbackUrl: "/studio" });
+      await signIn(BROWSER_PROVIDER[chosen], { callbackUrl });
     } catch (error: unknown) {
       console.error(error);
       setErrorMsg(error instanceof Error ? error.message : "Sign-in failed.");
@@ -276,7 +351,7 @@ export default function LoginPage() {
                 className="text-[11px]"
                 style={{ color: "var(--text-3)", letterSpacing: ".06em", textTransform: "uppercase" }}
               >
-                Sign in with your work account
+                {desktop ? "Sign in with your work account" : "Sign in or create an account"}
               </span>
               <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
             </div>
@@ -299,10 +374,12 @@ export default function LoginPage() {
                         </div>
                       ) : (
                         <div style={{ color: "var(--text-2)" }}>
-                          This server has no Microsoft Entra ID credentials, so
-                          there is nothing to sign in against. Whoever runs it
-                          needs to set AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET,
-                          AZURE_AD_TENANT_ID and NEXTAUTH_SECRET, then restart.
+                          This server has no sign-in credentials, so there is
+                          nothing to sign in against. Whoever runs it needs to
+                          set NEXTAUTH_SECRET, plus AZURE_AD_CLIENT_ID,
+                          AZURE_AD_CLIENT_SECRET and AZURE_AD_TENANT_ID for
+                          Microsoft or GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET
+                          for GitHub, then restart.
                         </div>
                       )}
                     </div>
@@ -320,22 +397,39 @@ export default function LoginPage() {
                 </div>
               )}
 
-              {ssoReady !== false && status === "idle" && (
+              {ssoReady === null && status === "idle" && (
                 <div>
-                  <button
-                    type="button"
-                    className="sso-btn"
-                    onClick={handleLogin}
-                    aria-label="Continue with Microsoft"
-                  >
-                    <MsMark />
-                    <span className="label">Continue with Microsoft</span>
+                  {/* Only while the server says which ways it offers, which is
+                      quick; a guessed button could be one it does not have. */}
+                  <button type="button" className="sso-btn" disabled aria-busy="true">
+                    <span className="spin" aria-hidden="true" />
+                    <span className="label">Loading sign-in…</span>
                     <ChevronRightIcon size={14} className="chev" />
                   </button>
+                </div>
+              )}
+
+              {ssoReady === true && status === "idle" && (
+                <div>
+                  <div className="flex flex-col gap-2.5">
+                    {vias.map((way) => (
+                      <button
+                        key={way}
+                        type="button"
+                        className="sso-btn"
+                        onClick={() => handleLogin(way)}
+                        aria-label={`Continue with ${VIA_NAME[way]}`}
+                      >
+                        <ViaMark via={way} />
+                        <span className="label">Continue with {VIA_NAME[way]}</span>
+                        <ChevronRightIcon size={14} className="chev" />
+                      </button>
+                    ))}
+                  </div>
                   <p className="text-[12px] mt-3 text-center" style={{ color: "var(--text-3)" }}>
                     {desktop
                       ? "Opens your web browser for your organization's Microsoft sign-in."
-                      : "You'll be redirected to your organization's Microsoft sign-in."}
+                      : `You'll sign in with ${vias.map((way) => VIA_NAME[way]).join(" or ")}, then come straight back here.`}
                   </p>
                 </div>
               )}
@@ -377,14 +471,14 @@ export default function LoginPage() {
                 <div>
                   <button type="button" className="sso-btn" disabled aria-busy="true">
                     <span className="spin" aria-hidden="true" />
-                    <span className="label">Redirecting to Microsoft…</span>
+                    <span className="label">Redirecting to {VIA_NAME[via]}…</span>
                     <ChevronRightIcon size={14} className="chev" />
                   </button>
                   <div
                     className="mt-3 flex items-center justify-center gap-2 text-[12px]"
                     style={{ color: "var(--text-3)" }}
                   >
-                    <span className="mono">openid · profile · email</span>
+                    <span className="mono">{VIA_SCOPES[via]}</span>
                   </div>
                 </div>
               )}
@@ -402,16 +496,21 @@ export default function LoginPage() {
                       </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className="sso-btn"
-                    onClick={handleLogin}
-                    aria-label="Retry with Microsoft"
-                  >
-                    <MsMark />
-                    <span className="label">Retry with Microsoft</span>
-                    <RefreshIcon size={14} className="chev" />
-                  </button>
+                  <div className="flex flex-col gap-2.5">
+                    {vias.map((way) => (
+                      <button
+                        key={way}
+                        type="button"
+                        className="sso-btn"
+                        onClick={() => handleLogin(way)}
+                        aria-label={`Retry with ${VIA_NAME[way]}`}
+                      >
+                        <ViaMark via={way} />
+                        <span className="label">Retry with {VIA_NAME[way]}</span>
+                        <RefreshIcon size={14} className="chev" />
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -422,7 +521,7 @@ export default function LoginPage() {
               style={{ color: "var(--text-3)", borderTop: "1px solid var(--border)" }}
             >
               <span className="inline-flex items-center gap-2">
-                <LockIcon size={13} /> Encrypted in transit · enterprise SSO
+                <LockIcon size={13} /> Encrypted in transit · single sign-on
               </span>
               <button
                 type="button"
@@ -440,10 +539,16 @@ export default function LoginPage() {
               className="mt-3 text-[12px] leading-relaxed"
               style={{ color: "var(--text-2)" }}
             >
-              Sign in with your work Microsoft account. If Microsoft turns you away, ask your
-              administrator whether your account may use Schema Studio. Once you are in, an
-              admin chooses what you can do here. New people start as Viewers, who can look
-              around but not change anything.
+              {desktop
+                ? "Sign in with your work Microsoft account. If Microsoft turns you away, ask " +
+                  "your administrator whether your account may use Schema Studio. Once you are " +
+                  "in, an admin chooses what you can do here. New people start as Viewers, who " +
+                  "can look around but not change anything."
+                : "If someone invited you, sign in with an account that uses the email address " +
+                  "the invitation went to, then open the invitation link again. Otherwise, sign " +
+                  "in to make an organization of your own. Inside an organization, its admins " +
+                  "choose what you can do. If the sign-in turns you away, ask whoever runs this " +
+                  "server which accounts it accepts."}
             </p>
           </article>
 

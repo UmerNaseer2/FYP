@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { BYPASS_AUTH } from "./auth-mode";
 import { orgHref } from "./org-slug";
 import { findDefaultOrganization, findLastOrganization } from "./orgs-db";
+import { sessionProfileId } from "./session-profile";
 
 /** What Next.js hands a page at app/<segment>/[[...rest]]/page.tsx. */
 export type OldAddressProps = {
@@ -26,13 +27,15 @@ export type OldAddressProps = {
  *   - With sign-in switched off, the default one. The bypass is an admin of
  *     every organization, and the default one holds everything that existed
  *     before there were others.
- *   - Signed in, the one they opened last (findLastOrganization), and failing
- *     that the default one. Someone in no organization at all lands in the
- *     default one, whose pages say they are not a member and offer to sign
- *     out (see app/[org]/layout.tsx).
+ *   - Signed in, the one they opened last (findLastOrganization). Someone in
+ *     no organization at all is sent to make one (/onboarding), since in the
+ *     browser nobody joins an organization without being asked. The desktop
+ *     app has no such page: it signs everyone into the default organization
+ *     (lib/accounts-db.ts), so someone taken out of it lands there, and its
+ *     pages say they are not a member and offer to sign out.
  *   - Signed out, the sign-in page, which comes back to this same old address
  *     and so through here again. With real sign-in proxy.ts has already done
- *     that, so this is for a session with no email in it.
+ *     that, so this is for a session with no profile ID in it.
  *
  * The rest of the path and the query come along unchanged. Next.js hands the
  * parts of the path over decoded, so each is encoded again: a part with a "/"
@@ -60,19 +63,25 @@ export async function redirectToLastOrg(
   redirect(orgHref(await organizationFor(path), path));
 }
 
+/** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
+function onDesktop(): boolean {
+  return process.env.SCHEMA_STUDIO_DESKTOP === "1";
+}
+
 /** The slug of the organization to open `path` in, for whoever is asking. */
 async function organizationFor(path: string): Promise<string> {
   if (!BYPASS_AUTH) {
-    let email: string | null | undefined;
+    let profileId: number | null = null;
     try {
-      email = (await auth())?.user?.email;
+      profileId = sessionProfileId(await auth());
     } catch (error) {
       // Read as signed out, the same as the gates in lib/auth-guard.ts.
       console.error("Session lookup failed:", error);
     }
-    if (!email) redirect(`/login?callbackUrl=${encodeURIComponent(path)}`);
-    const last = await findLastOrganization(email);
+    if (profileId === null) redirect(`/login?callbackUrl=${encodeURIComponent(path)}`);
+    const last = await findLastOrganization(profileId);
     if (last !== null) return last;
+    if (!onDesktop()) redirect("/onboarding");
   }
   const fallback = await findDefaultOrganization();
   // The bootstrap always creates it, so this is a row deleted by hand. The log

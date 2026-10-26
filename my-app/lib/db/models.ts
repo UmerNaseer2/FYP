@@ -335,6 +335,61 @@ Membership.init(
   }
 );
 
+/**
+ * One way of signing in that belongs to a person: a Microsoft account or a
+ * GitHub account.
+ *
+ * A person is found by the account they signed in with, never by the email
+ * address it reports. An address is something a provider lets people change,
+ * and on the multi-tenant Microsoft sign-in any organization's admin can put
+ * any address on their own accounts, so keying on it would let a stranger sign
+ * in as someone else by giving an account their address. `subject` is the
+ * provider's own fixed ID for the account instead: for Microsoft the tenant
+ * and object IDs (`tid:oid`, which together name one account for every app),
+ * for GitHub the numeric user ID.
+ *
+ * `email` and `email_verified` are what the provider said at the latest
+ * sign-in. Only a verified address is trusted for anything, which today means
+ * accepting an invitation sent to it (lib/accounts-db.ts says who counts as
+ * verified). The key to `profiles` is added by lib/db/bootstrap.ts with the
+ * other keys between people and organizations, and deleting a profile removes
+ * its identities.
+ */
+export class Identity extends Model<InferAttributes<Identity>, InferCreationAttributes<Identity>> {
+  declare id: CreationOptional<number>;
+  declare provider: string;
+  declare subject: string;
+  declare profile_id: number;
+  declare email: string;
+  declare email_verified: CreationOptional<boolean>;
+  declare created_at: CreationOptional<Date>;
+  declare last_seen_at: CreationOptional<Date | null>;
+}
+
+Identity.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    // 'microsoft' or 'github'. The check is added by lib/db/bootstrap.ts.
+    provider: { type: DataTypes.TEXT, allowNull: false },
+    subject: { type: DataTypes.TEXT, allowNull: false },
+    profile_id: { type: DataTypes.INTEGER, allowNull: false },
+    email: { type: DataTypes.TEXT, allowNull: false },
+    email_verified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    last_seen_at: { type: DataTypes.DATE, allowNull: true },
+  },
+  {
+    sequelize,
+    tableName: "identities",
+    indexes: [
+      // One account is one person, whichever profile it was first linked to.
+      { name: "identities_provider_subject_key", unique: true, fields: ["provider", "subject"] },
+      // A person's ways of signing in, which the account linking reads.
+      { name: "identities_profile_id_idx", fields: ["profile_id"] },
+    ],
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Roles, and what each one may do.
 //
@@ -1371,15 +1426,16 @@ DeployAttempt.init(
 // was analysed against it. `connection_name` is resolved by a LEFT JOIN at read
 // time, so a history row whose connection is gone still reads.
 //
-// The keys that involve organizations are not declared here at all: every
-// `org_id` key to `organizations`, the memberships keys to `organizations` and
-// `profiles`, `profiles.last_org_id`, and the (org_id, role) keys from
-// `role_permissions` and `memberships` to `roles`. lib/db/bootstrap.ts adds
-// them by hand. sync() never changes a table that already exists, and a
-// database from before organizations already has nearly every one of these
-// tables, so a key declared here would reach new installs only. Adding them in
-// one place means a fresh install and an upgraded one get the same keys from
-// the same statements.
+// The keys that involve organizations or people are not declared here at all:
+// every `org_id` key to `organizations`, the memberships keys to
+// `organizations` and `profiles`, `profiles.last_org_id`,
+// `identities.profile_id`, and the (org_id, role) keys from `role_permissions`
+// and `memberships` to `roles`. lib/db/bootstrap.ts adds them by hand. sync()
+// never changes a table that already exists, and a database from before
+// organizations already has nearly every one of these tables, so a key
+// declared here would reach new installs only. Adding them in one place means
+// a fresh install and an upgraded one get the same keys from the same
+// statements.
 // ---------------------------------------------------------------------------
 
 TrackedSchema.hasMany(Snapshot, { foreignKey: "tracked_schema_id", onDelete: "CASCADE" });

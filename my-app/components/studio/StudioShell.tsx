@@ -10,6 +10,7 @@ import { Drawer } from "@/components/ui";
 import { isAdminOnly, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { StudioTopbar } from "./StudioTopbar";
+import { OrgSwitcher } from "./OrgSwitcher";
 import { ViewAsSwitcher } from "./ViewAsSwitcher";
 import { NAV_ITEMS, activeNavItem } from "./nav";
 
@@ -132,6 +133,9 @@ export function StudioShell({ children, user }: StudioShellProps) {
       // The View as picker, only while the bypass is on. With real sign-in a
       // person is their role and nothing else.
       viewAs={bypass ? <ViewAsSwitcher /> : undefined}
+      // Which organization this is, and the others this person belongs to.
+      // Drawn on every server; it hides itself when there is nothing to pick.
+      orgSwitcher={<OrgSwitcher />}
       onSignOut={() => void signOutEverywhere()}
       className={isMobile ? "h-full" : ""}
     />

@@ -60,7 +60,13 @@ function signingKeys(tenant: string) {
   return keys;
 }
 
-/** The person to sign in: the shape Auth.js expects back from authorize(). */
+/**
+ * The person to sign in: the shape Auth.js expects back from authorize().
+ *
+ * `id` is "<tenant ID>:<object ID>", the same key the browser's Microsoft
+ * sign-in files a person under (lib/accounts-db.ts), so signing in on the
+ * desktop and in a browser reaches the same account.
+ */
 export type DesktopUser = { id: string; email: string; name: string | null };
 
 /** A claim, if it is a string with something in it. */
@@ -110,17 +116,22 @@ export async function verifyDesktopIdToken(token: unknown): Promise<DesktopUser 
     return refuse("the token was issued for a different organization.");
   }
 
-  const subject = text(claims.sub);
-  if (!subject) return refuse("the token does not say who signed in.");
+  // The object ID, not `sub`. Both name the person, but `sub` is different for
+  // every app registration that asks, and the object ID is the account's own
+  // ID within its tenant, the same whichever app reads it. It is what the
+  // browser sign-in keys a person by too.
+  const objectId = text(claims.oid);
+  if (!objectId) return refuse("the token does not say which account signed in.");
 
-  // The browser sign-in keys a person by their email address, so this does
-  // too. Work accounts carry it as `email` when they have a mailbox, and
-  // always as `preferred_username`, their sign-in name, which for an
-  // organization's accounts is an address as well.
+  // The address is how the person shows up to everyone else (and how an
+  // account made before sign-ins were kept apart is found again). Work
+  // accounts carry it as `email` when they have a mailbox, and always as
+  // `preferred_username`, their sign-in name, which for an organization's
+  // accounts is an address as well.
   const email = [text(claims.email), text(claims.preferred_username)].find(
     (value): value is string => value !== null && value.includes("@")
   );
   if (!email) return refuse("the Microsoft account has no email address.");
 
-  return { id: subject, email, name: text(claims.name) };
+  return { id: `${tenant}:${objectId.toLowerCase()}`, email, name: text(claims.name) };
 }

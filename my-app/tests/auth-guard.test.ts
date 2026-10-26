@@ -6,8 +6,8 @@
 // header naming the organization, the View as cookie, the organization and
 // membership lookups, and the roles table). What it holds them to:
 //
-//   - No session is 401, and so is a session lookup that throws: never a 500
-//     that says why.
+//   - No session, or one that names no profile, is 401, and so is a session
+//     lookup that throws: never a 500 that says why.
 //   - The organization is the one the request's header names. A request that
 //     names none is 404 on the web and the default organization on the
 //     desktop, which has only the one.
@@ -16,8 +16,10 @@
 //   - A membership or a role the database could not read is 503 for every
 //     route, so nobody is told their role can't do what nobody could check,
 //     and nobody is let in on a guess.
-//   - A member's role is the one their membership names, read in their own
-//     organization, and the principal says which organization that is.
+//   - A member is looked up by the profile ID their session names. Their role
+//     is the one their membership names, read in their own organization. The
+//     principal says which organization that is, and carries the address and
+//     name from their profile, never the ones the session holds.
 //   - A role without the permission is 403, in the words refusalMessage uses
 //     for the first key asked for. Any one of several keys lets a request in.
 //   - With real sign-in the View as cookie is never read.
@@ -28,7 +30,11 @@
 //     admin, is the full admin again, and a role that could not be read is a
 //     503, never the full admin.
 //   - resolveOrganization, the pages' lookup, reads the slug it is handed
-//     rather than the header, and says who was turned away.
+//     rather than the header, and says who was turned away, by profile ID.
+//   - requireSignedIn, for the one route about a person's organizations as a
+//     whole, asks only who someone is: no organization, no membership, no
+//     role. Signed out is 401, as it is for the other gates, and the bypass is
+//     a caller with no profile.
 import { VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import { ORG_HEADER } from "@/lib/org-slug";
 import { ALL_PERMISSIONS, presetFor, refusalMessage } from "@/lib/permissions";
@@ -84,7 +90,13 @@ jest.mock("../lib/roles-db", () => ({
   getRoleAccess: (...args: unknown[]) => mockGetRoleAccess(...args),
 }));
 
-import { requireMember, requirePermission, resolveOrganization, type Gate } from "@/lib/auth-guard";
+import {
+  requireMember,
+  requirePermission,
+  requireSignedIn,
+  resolveOrganization,
+  type Gate,
+} from "@/lib/auth-guard";
 
 const SIGN_IN_FIRST = { error: "Sign in to continue." };
 const NOT_A_MEMBER = { error: "This organization does not exist, or you are not a member." };
@@ -104,6 +116,8 @@ const QA_LEAD = {
 const DATABASE_DOWN = new Error("connect ECONNREFUSED 127.0.0.1:5433");
 /** A second organization, for the tests that need the request to name another one. */
 const ACME = { id: 12, slug: "acme", name: "Acme", isDefault: false };
+/** Ed's profile ID, which their session names and every lookup about them is keyed by. */
+const ED = 31;
 
 const DESKTOP = process.env.SCHEMA_STUDIO_DESKTOP;
 
@@ -139,10 +153,14 @@ function noHeader() {
   mockHeaders = {};
 }
 
-/** What auth() hands back for a signed-in person: who they are, and nothing about what they may do. */
+/**
+ * What auth() hands back for a signed-in person: who they are, by profile ID,
+ * and nothing about what they may do. The email and name are the ones Auth.js
+ * leaves beside the ID. The gates take nothing from them.
+ */
 function session(user: Record<string, unknown> = {}) {
   return {
-    user: { email: "ed@example.com", name: "Ed", ...user },
+    user: { id: String(ED), email: "ed@example.com", name: "Ed", ...user },
     expires: "2099-01-01T00:00:00.000Z",
   };
 }
@@ -155,6 +173,8 @@ function membership(role: string) {
     name: TEST_ORG.name,
     isDefault: TEST_ORG.isDefault,
     role,
+    email: "ed@example.com",
+    personName: "Ed",
   };
 }
 
@@ -188,8 +208,17 @@ function quietErrors() {
 }
 
 describe("with real sign-in", () => {
-  test("no session, or one with no email, is 401 for both gates, and nothing else is looked up", async () => {
-    for (const answer of [null, { user: {} }, { user: { name: "Ed" } }]) {
+  test("no session, or one that names no profile, is 401 for both gates, and nothing else is looked up", async () => {
+    // A session signed before profile IDs went into sessions has an email and
+    // no ID. It is asked to sign in again, never matched up by its address.
+    for (const answer of [
+      null,
+      { user: {} },
+      { user: { email: "ed@example.com", name: "Ed" } },
+      { user: { id: "ed@example.com" } },
+      { user: { id: "0" } },
+      { user: { id: ED } },
+    ]) {
       mockAuth.mockResolvedValue(answer);
       expect(await bothRefusals()).toEqual([
         [401, SIGN_IN_FIRST],
@@ -211,6 +240,7 @@ describe("with real sign-in", () => {
   test("a member gets the role their membership names, and the route the whole principal", async () => {
     signedInAs(EDITOR);
     expect(principalOf(await requirePermission("connections:create"))).toEqual({
+      profileId: ED,
       email: "ed@example.com",
       name: "Ed",
       role: "editor",
@@ -223,7 +253,7 @@ describe("with real sign-in", () => {
       orgName: TEST_ORG.name,
       orgIsDefault: true,
     });
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
     // In the member's own organization: the same key can mean another role,
     // with other boxes ticked, somewhere else.
     expect(mockGetRoleAccess).toHaveBeenCalledWith(TEST_ORG.id, "editor");
@@ -240,13 +270,15 @@ describe("with real sign-in", () => {
       name: ACME.name,
       isDefault: false,
       role: "editor",
+      email: "ed@example.com",
+      personName: "Ed",
     });
     expect(principalOf(await requireMember())).toMatchObject({
       orgId: ACME.id,
       orgSlug: ACME.slug,
       orgIsDefault: false,
     });
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", ACME.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith(ED, ACME.slug);
     expect(mockGetRoleAccess).toHaveBeenCalledWith(ACME.id, "editor");
   });
 
@@ -254,7 +286,7 @@ describe("with real sign-in", () => {
     signedInAs(VIEWER);
     mockHeaders = { [ORG_HEADER]: `  ${TEST_ORG.slug} ` };
     expect((await requireMember()).ok).toBe(true);
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
   });
 
   test.each([
@@ -285,7 +317,7 @@ describe("with real sign-in", () => {
       orgId: TEST_ORG.id,
       orgSlug: TEST_ORG.slug,
     });
-    expect(mockFindDefaultMembership).toHaveBeenCalledWith("ed@example.com");
+    expect(mockFindDefaultMembership).toHaveBeenCalledWith(ED);
     expect(mockFindMembership).not.toHaveBeenCalled();
   });
 
@@ -293,7 +325,7 @@ describe("with real sign-in", () => {
     onTheDesktop();
     signedInAs(EDITOR);
     expect((await requireMember()).ok).toBe(true);
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
     expect(mockFindDefaultMembership).not.toHaveBeenCalled();
   });
 
@@ -309,9 +341,21 @@ describe("with real sign-in", () => {
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
-  test("a member whose session has no name goes by their email", async () => {
+  test("a member's address and name are their profile's, never the session's", async () => {
+    // Someone who signs in with GitHub one day and Microsoft the next is the
+    // same person, known by the same address, in every screen and audit row.
     signedInAs(VIEWER);
-    mockAuth.mockResolvedValue(session({ name: null }));
+    mockAuth.mockResolvedValue(session({ email: "ed@github.example", name: "ed-on-github" }));
+    expect(principalOf(await requireMember())).toMatchObject({
+      profileId: ED,
+      email: "ed@example.com",
+      name: "Ed",
+    });
+  });
+
+  test("a member whose profile has no name goes by their address", async () => {
+    signedInAs(VIEWER);
+    mockFindMembership.mockResolvedValue({ ...membership("viewer"), personName: null });
     expect(principalOf(await requireMember()).name).toBe("ed@example.com");
   });
 
@@ -358,7 +402,7 @@ describe("with real sign-in", () => {
       [404, NOT_A_MEMBER],
       [404, NOT_A_MEMBER],
     ]);
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", ACME.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith(ED, ACME.slug);
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
@@ -586,19 +630,19 @@ describe("resolveOrganization, the pages' lookup", () => {
     mockHeaders = { [ORG_HEADER]: ACME.slug };
     const found = await resolveOrganization(TEST_ORG.slug);
     expect(found).toMatchObject({ kind: "ok", principal: { role: "editor", orgId: TEST_ORG.id } });
-    expect(mockFindMembership.mock.calls).toEqual([["ed@example.com", TEST_ORG.slug]]);
+    expect(mockFindMembership.mock.calls).toEqual([[ED, TEST_ORG.slug]]);
   });
 
-  test("says who was turned away: the signed-in email, or null for the bypass", async () => {
+  test("says who was turned away: the signed-in profile, or null for the bypass", async () => {
     // The organization's layout tells someone in no organization at all from
-    // someone who typed the address of one they are not in by this email.
+    // someone who typed the address of one they are not in by this ID.
     mockAuth.mockResolvedValue(session());
     mockFindMembership.mockResolvedValue(null);
-    expect(await resolveOrganization(ACME.slug)).toEqual({ kind: "not-member", email: "ed@example.com" });
+    expect(await resolveOrganization(ACME.slug)).toEqual({ kind: "not-member", profileId: ED });
 
     mockBypass = true;
     mockFindOrganization.mockResolvedValue(null);
-    expect(await resolveOrganization(ACME.slug)).toEqual({ kind: "not-member", email: null });
+    expect(await resolveOrganization(ACME.slug)).toEqual({ kind: "not-member", profileId: null });
   });
 
   test.each([
@@ -621,7 +665,63 @@ describe("resolveOrganization, the pages' lookup", () => {
     onTheDesktop();
     signedInAs(VIEWER);
     await resolveOrganization(TEST_ORG.slug);
-    expect(mockFindMembership).toHaveBeenCalledWith("ed@example.com", TEST_ORG.slug);
+    expect(mockFindMembership).toHaveBeenCalledWith(ED, TEST_ORG.slug);
     expect(mockFindDefaultMembership).not.toHaveBeenCalled();
+  });
+});
+
+describe("requireSignedIn, the gate that asks only who someone is", () => {
+  /** Nothing about an organization, a membership or a role was looked up. */
+  function nothingElseRead() {
+    expect(mockFindOrganization).not.toHaveBeenCalled();
+    expect(mockFindDefault).not.toHaveBeenCalled();
+    expect(mockFindMembership).not.toHaveBeenCalled();
+    expect(mockFindDefaultMembership).not.toHaveBeenCalled();
+    expect(mockGetRoleAccess).not.toHaveBeenCalled();
+    expect(mockCookieReads).not.toHaveBeenCalled();
+  }
+
+  test("lets in someone signed in by their profile ID, whatever organization the request names", async () => {
+    // Someone who has just signed up belongs to no organization, and this is
+    // the gate they make their first one through.
+    mockAuth.mockResolvedValue(session());
+    mockHeaders = { [ORG_HEADER]: "nowhere" };
+    expect(await requireSignedIn()).toEqual({ ok: true, caller: { profileId: ED, bypass: false } });
+    nothingElseRead();
+  });
+
+  test("no session, or one that names no profile, is 401 in the other gates' words", async () => {
+    for (const answer of [null, { user: {} }, { user: { email: "ed@example.com" } }, { user: { id: "0" } }]) {
+      mockAuth.mockResolvedValue(answer);
+      const gate = await requireSignedIn();
+      if (gate.ok) throw new Error("requireSignedIn let in a session with no profile.");
+      expect([gate.response.status, await gate.response.json()]).toEqual([401, SIGN_IN_FIRST]);
+    }
+    nothingElseRead();
+  });
+
+  test("a session lookup that throws is 401 too, and the reason stays in the log", async () => {
+    const errors = quietErrors();
+    const broken = new Error("JWTSessionError: no matching decryption secret");
+    mockAuth.mockRejectedValue(broken);
+    const gate = await requireSignedIn();
+    if (gate.ok) throw new Error("requireSignedIn let in a session it could not read.");
+    expect([gate.response.status, await gate.response.json()]).toEqual([401, SIGN_IN_FIRST]);
+    expect(errors).toHaveBeenCalledWith("Session lookup failed:", broken);
+  });
+
+  test("on the desktop it asks the same session", async () => {
+    onTheDesktop();
+    noHeader();
+    mockAuth.mockResolvedValue(session());
+    expect(await requireSignedIn()).toEqual({ ok: true, caller: { profileId: ED, bypass: false } });
+    nothingElseRead();
+  });
+
+  test("with the bypass on, the caller is the bypass, with no profile, and no session is read", async () => {
+    mockBypass = true;
+    expect(await requireSignedIn()).toEqual({ ok: true, caller: { profileId: null, bypass: true } });
+    expect(mockAuth).not.toHaveBeenCalled();
+    nothingElseRead();
   });
 });

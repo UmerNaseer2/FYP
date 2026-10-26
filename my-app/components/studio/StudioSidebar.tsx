@@ -34,6 +34,12 @@ type StudioSidebarProps = {
   bypass?: boolean;
   /** The View as picker. Shown under the identity while the rail is expanded. */
   viewAs?: ReactNode;
+  /**
+   * The organization picker. Shown at the top of the footer while the rail is
+   * expanded. It may render nothing (one organization and no way to make
+   * another), and the rail leaves no gap when it does.
+   */
+  orgSwitcher?: ReactNode;
   onSignOut: () => void;
   /** Extra classes (e.g. h-full when hosted in the mobile nav drawer). */
   className?: string;
@@ -63,6 +69,7 @@ export function StudioSidebar({
   roleLabel,
   bypass = false,
   viewAs,
+  orgSwitcher,
   onSignOut,
   className = "",
 }: StudioSidebarProps) {
@@ -153,6 +160,21 @@ export function StudioSidebar({
 
       {/* Footer: theme toggle + identity */}
       <div className="mt-auto p-3 space-y-2" style={{ borderTop: "1px solid var(--border)" }}>
+        {/*
+          The organization picker, first in the footer. The footer is pinned to
+          the bottom of the rail, so the picker grows it upward and the rows
+          under it (the theme, the identity, Sign out) stay where they were
+          whether it is drawn or not.
+
+          empty:hidden because the picker decides for itself whether there is
+          anything to pick, and renders nothing when there is not. The wrapper
+          would still be here, and space-y would put a gap above the theme row
+          for a box with nothing in it; a hidden box gets no gap.
+
+          Left off the collapsed rail like View as below: there is no room for
+          a picker in 64px, and expanding the rail brings it back.
+        */}
+        {orgSwitcher && !collapsed && <div className="px-2 empty:hidden">{orgSwitcher}</div>}
         <button
           className="nav-item w-full"
           onClick={onToggleTheme}

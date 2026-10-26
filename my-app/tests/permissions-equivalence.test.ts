@@ -87,6 +87,8 @@ const ADDED: Record<string, Gate> = {
   "GET /api/me": { kind: "member" },
   "GET /api/me/view-as": { kind: "member" },
   "POST /api/me/view-as": { kind: "member" },
+  "GET /api/organizations": { kind: "signed-in" },
+  "POST /api/organizations": { kind: "signed-in" },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */

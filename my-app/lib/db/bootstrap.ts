@@ -293,6 +293,14 @@ async function addConstraints(): Promise<void> {
     "organizations_slug_check",
     `slug ~ '${ORG_SLUG_PATTERN}'`
   );
+  // The sign-in providers lib/accounts-db.ts knows. A subject only means
+  // something next to the provider that issued it, so a misspelled provider
+  // would be an account nobody could ever sign in as again.
+  await addCheckConstraint(
+    "identities",
+    "identities_provider_check",
+    "provider IN ('microsoft', 'github')"
+  );
 }
 
 /** Indexes over an expression rather than a column — outside what sync() emits. */
@@ -812,13 +820,14 @@ async function rekey(
 }
 
 /**
- * The foreign keys that hold organizations together.
+ * The foreign keys that hold organizations, and the people in them, together.
  *
  * Deleting an organization deletes everything in it, and empties the
- * last_org_id of anyone who last opened it. The two keys to `roles` point at
- * (org_id, name), so a role is only ever found in its own organization: a
- * role somebody holds cannot be deleted (RESTRICT), while a role's
- * permissions go with it (CASCADE).
+ * last_org_id of anyone who last opened it. Deleting a profile deletes its
+ * memberships and the accounts it signs in with. The two keys to `roles`
+ * point at (org_id, name), so a role is only ever found in its own
+ * organization: a role somebody holds cannot be deleted (RESTRICT), while a
+ * role's permissions go with it (CASCADE).
  *
  * The keys already there are read from the catalog rather than tried and
  * caught: these run inside moveToOrganizations' transaction, where an error
@@ -856,11 +865,16 @@ async function addOrganizationKeys(client: MetadataClient): Promise<void> {
       "profiles_last_org_id_fkey",
       "FOREIGN KEY (last_org_id) REFERENCES organizations (id) ON DELETE SET NULL",
     ],
+    [
+      "identities",
+      "identities_profile_id_fkey",
+      "FOREIGN KEY (profile_id) REFERENCES profiles (id) ON DELETE CASCADE",
+    ],
   ];
   const existing = await client.query<{ table_name: string; conname: string }>(
     `SELECT conrelid::regclass::text AS table_name, conname
        FROM pg_constraint WHERE contype = 'f' AND conrelid = ANY($1::regclass[])`,
-    [[...ORG_TABLES, "memberships", "profiles"]]
+    [[...ORG_TABLES, "memberships", "profiles", "identities"]]
   );
   const have = new Set(existing.rows.map((row) => `${row.table_name}.${row.conname}`));
   for (const [table, name, definition] of keys) {
@@ -977,8 +991,8 @@ async function createEverything(): Promise<void> {
       // organization, so seeding "Viewer" into a second one would fail on it.
       await addFunctionalIndexes();
       // Before backfillMemberships and before the first profile is written:
-      // both give people a role, and upsertProfile waits for this whole
-      // function.
+      // both give people a role, and resolveIdentity (lib/accounts-db.ts)
+      // waits for this whole function.
       await setUpRoles();
       await backfillMemberships(defaultId);
       await addConstraints();

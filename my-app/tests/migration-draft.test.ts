@@ -65,6 +65,7 @@ const draft: MigrationDraft = {
   connectionId: "3",
   schema: "public",
   createdAt: "2026-09-14T10:32:45.000Z",
+  org: "acme",
 };
 
 describe("saving and reading the draft", () => {
@@ -128,9 +129,19 @@ describe("parseMigrationDraft", () => {
     expect(parseMigrationDraft(JSON.stringify({ ...draft, sql: 42 }))).toBeNull();
     expect(parseMigrationDraft(JSON.stringify({ ...draft, rollbackSql: 7 }))).toBeNull();
     expect(parseMigrationDraft(JSON.stringify({ ...draft, connectionId: 3 }))).toBeNull();
+    expect(parseMigrationDraft(JSON.stringify({ ...draft, org: 5 }))).toBeNull();
     const { createdAt: _dropped, ...missing } = draft;
     void _dropped;
     expect(parseMigrationDraft(JSON.stringify(missing))).toBeNull();
+  });
+
+  it("is null for a draft saved before drafts named their organization", () => {
+    // Saved by the version of the app before organizations, in a tab still
+    // open across the update. There is no telling which organization's
+    // connection it was made on, so no organization's Script Editor offers it.
+    const { org: _dropped, ...older } = draft;
+    void _dropped;
+    expect(parseMigrationDraft(JSON.stringify(older))).toBeNull();
   });
 
   it("is null for a draft with nothing to run, or no schema", () => {
