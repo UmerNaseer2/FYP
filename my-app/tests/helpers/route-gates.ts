@@ -24,8 +24,8 @@ export type Method = (typeof METHODS)[number];
 export type Gate =
   /** `await requirePermission("a:b", ...)`, any one of the keys lets the request in. */
   | { kind: "permission"; keys: string[] }
-  /** `await requireSignedIn()`: anyone signed in, whatever their role. */
-  | { kind: "signed-in" }
+  /** `await requireMember()`: any member of the organization, whatever their role. */
+  | { kind: "member" }
   /** Anything else, with a sentence saying what was found instead. */
   | { kind: "none"; why: string };
 
@@ -156,14 +156,14 @@ function gateOf(
     }
 
     const callee = call.expression.text;
-    if (callee === "requirePermission" || callee === "requireSignedIn") {
+    if (callee === "requirePermission" || callee === "requireMember") {
       if (!refusesWhenNotOk(statements[i + 1], name, file)) {
         return {
           gate: none(`\`${shown}\` is not followed by \`if (!${name}.ok) return ${name}.response;\``),
           before,
         };
       }
-      if (callee === "requireSignedIn") return { gate: { kind: "signed-in" }, before };
+      if (callee === "requireMember") return { gate: { kind: "member" }, before };
 
       // Plain strings only: a key worked out at run time cannot be checked
       // against the catalogue here, so it is reported rather than guessed at.

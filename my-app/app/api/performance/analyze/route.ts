@@ -316,9 +316,11 @@ export async function POST(request: NextRequest) {
       `SELECT name, host, port, database_name, type, username, password,
               connection_string, ssl, ssl_mode
          FROM connections
-        WHERE id = $1`,
-      [connectionId]
+        WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     if (result.rows.length === 0) {
       return fail(
         `No saved connection has id ${connectionId}. It may have been deleted. ` +
@@ -497,6 +499,7 @@ export async function POST(request: NextRequest) {
   const searches = planSearches(plan.steps, catalog, schema);
 
   const historyId = await recordQuery({
+    orgId: gate.principal.orgId,
     connectionId,
     schema,
     sql,
@@ -520,7 +523,7 @@ export async function POST(request: NextRequest) {
   }
   const breaches = evaluateThresholds(
     readings,
-    await getThresholdsOrDefaults(connectionId, schema)
+    await getThresholdsOrDefaults(gate.principal.orgId, connectionId, schema)
   );
 
   const view: AnalyzeView = {

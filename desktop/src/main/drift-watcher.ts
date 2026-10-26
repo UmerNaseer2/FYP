@@ -15,6 +15,13 @@
  * The server makes the tables the first time it starts. Until then there is
  * nothing to watch, and that is not a problem.
  *
+ * It reads the rows of every organization in the database, on purpose: this
+ * is one person's computer, and today it holds a single organization, their
+ * personal one. Once a desktop can hold more than one, the page a
+ * notification opens (src/core/drift-alerts.ts) has to name the organization
+ * the schema belongs to, since the web app finds a schema only inside the
+ * organization the page is for.
+ *
  * Pure apart from the log: the database is asked through `query`, so the
  * tests can play its part, or use a real PostgreSQL.
  * Tested in src/test/drift-watcher.test.ts.

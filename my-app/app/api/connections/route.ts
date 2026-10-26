@@ -31,6 +31,13 @@ import {
  *  4. `environment` is a typed dev / staging / prod label, not free text in the
  *     name. It is what lets Compare and Deploy say "this target is production"
  *     before they generate or run anything.
+ *
+ * Every saved connection belongs to one organization, and every statement here
+ * names the caller's organization next to the id. A connection id from another
+ * organization reads as missing, the same 404 a deleted one gets, so the ids
+ * cannot be probed to learn what other organizations have saved. A new
+ * connection is saved into the caller's organization, never one the request
+ * names: the body has no say in where the row lands.
  */
 
 /** Columns safe to return to the browser. */
@@ -51,11 +58,15 @@ export async function GET() {
     // (which embeds the password for URI connections) stay server-side; the UI
     // only needs to know *whether* a connection string is stored, via the
     // has_connection_string flag.
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT ${PUBLIC_COLUMNS}
       FROM connections
+      WHERE org_id = $1
       ORDER BY id DESC
-    `);
+      `,
+      [gate.principal.orgId]
+    );
 
     return NextResponse.json(result.rows);
   } catch (error) {
@@ -123,8 +134,9 @@ export async function POST(request: NextRequest) {
     const result = await pool.query(
       `
       INSERT INTO connections
-      (name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment, application_table, execute_role)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      (name, host, port, database_name, type, username, password, connection_string,
+       ssl, ssl_mode, environment, application_table, execute_role, org_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -141,6 +153,7 @@ export async function POST(request: NextRequest) {
         value.environment,
         value.application_table,
         value.execute_role,
+        gate.principal.orgId,
       ]
     );
 
@@ -212,9 +225,11 @@ export async function PUT(request: NextRequest) {
       ssl_mode: string | null;
     }>(
       `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode
-         FROM connections WHERE id = $1`,
-      [id]
+         FROM connections WHERE id = $1 AND org_id = $2`,
+      [id, gate.principal.orgId]
     );
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     if (existing.rows.length === 0) {
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
     }
@@ -317,8 +332,8 @@ export async function PUT(request: NextRequest) {
                 last_test_version = NULL,
                 last_test_latency_ms = NULL,
                 last_test_error = NULL
-          WHERE id = $1`,
-        [id]
+          WHERE id = $1 AND org_id = $2`,
+        [id, gate.principal.orgId]
       );
     }
 
@@ -342,7 +357,7 @@ export async function PUT(request: NextRequest) {
           environment = $12,
           application_table = $13,
           execute_role = $14
-      WHERE id = $15
+      WHERE id = $15 AND org_id = $16
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -362,6 +377,7 @@ export async function PUT(request: NextRequest) {
         value.application_table,
         value.execute_role,
         id,
+        gate.principal.orgId,
       ]
     );
 
@@ -396,9 +412,11 @@ export async function DELETE(request: NextRequest) {
     await syncMetadataTables();
 
     const existing = await pool.query<{ name: string }>(
-      `SELECT name FROM connections WHERE id = $1`,
-      [id]
+      `SELECT name FROM connections WHERE id = $1 AND org_id = $2`,
+      [id, gate.principal.orgId]
     );
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     if (existing.rows.length === 0) {
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
     }
@@ -410,7 +428,7 @@ export async function DELETE(request: NextRequest) {
     // and keep the label, they just lose the way to reach the database. Either
     // way something the user built stops working, so say what and make them
     // confirm.
-    const dependents = await getConnectionDependents(id);
+    const dependents = await getConnectionDependents(gate.principal.orgId, id);
     const inUse = dependents.trackedSchemas > 0 || dependents.comparisonSets > 0;
     if (inUse && body.confirm !== true) {
       const uses: string[] = [];
@@ -448,7 +466,10 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await pool.query("DELETE FROM connections WHERE id = $1", [id]);
+    await pool.query("DELETE FROM connections WHERE id = $1 AND org_id = $2", [
+      id,
+      gate.principal.orgId,
+    ]);
 
     return NextResponse.json({ success: true, dependents });
   } catch (error) {

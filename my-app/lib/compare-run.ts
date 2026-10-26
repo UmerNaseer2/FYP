@@ -12,6 +12,12 @@
 // That last point is why the return value is a set of *view* types rather than
 // the working types: a CompareTarget carries the host and password it connects
 // with, and a payload the browser receives must not.
+//
+// Everything here happens inside one organization, the caller's. Only its own
+// connections can be picked, so a link naming another organization's
+// connection id finds nothing and is treated like a connection that was
+// deleted. Its sets, its tracked schemas and its run history are the only ones
+// read or written.
 // ---------------------------------------------------------------------------
 
 import {
@@ -310,19 +316,20 @@ type SavedConnection = {
 // something the comparison below can use.
 // ---------------------------------------------------------------------------
 
-async function getSavedConnections(): Promise<SavedConnection[]> {
+async function getSavedConnections(orgId: number): Promise<SavedConnection[]> {
   try {
     // Shared DDL (lib/version-db) guarantees the `ssl` and `environment`
     // columns exist.
     await syncMetadataTables();
 
-    const result = await pool.query(`
-      SELECT id, name, host, port, database_name, type, username, password,
-             connection_string, ssl, ssl_mode, environment
-      FROM connections
-      WHERE type = 'PostgreSQL'
-      ORDER BY name ASC
-    `);
+    const result = await pool.query(
+      `SELECT id, name, host, port, database_name, type, username, password,
+              connection_string, ssl, ssl_mode, environment
+         FROM connections
+        WHERE type = 'PostgreSQL' AND org_id = $1
+        ORDER BY name ASC`,
+      [orgId]
+    );
 
     return result.rows;
   } catch (error) {
@@ -340,9 +347,9 @@ async function getSavedConnections(): Promise<SavedConnection[]> {
  * metadata database that is briefly unhappy should cost you the shortcut, not
  * the ability to compare two schemas.
  */
-async function getComparisonSets(): Promise<ComparisonSet[]> {
+async function getComparisonSets(orgId: number): Promise<ComparisonSet[]> {
   try {
-    return await listComparisonSets();
+    return await listComparisonSets(orgId);
   } catch (error) {
     console.error("Failed to read comparison sets:", error);
     return [];
@@ -889,6 +896,7 @@ async function compareOneTarget(
  * entirely when there is no pair to file a run under.
  */
 async function attachHistory(
+  orgId: number,
   outcomes: TargetOutcome[],
   sourceConnectionId: number | null,
   sourceSchema: string,
@@ -921,7 +929,10 @@ async function attachHistory(
   }
   if (current.size === 0) return outcomes;
 
-  const previous = await readPreviousRuns([...current.values()].map((entry) => entry.pair));
+  const previous = await readPreviousRuns(
+    orgId,
+    [...current.values()].map((entry) => entry.pair),
+  );
 
   const withHistory = outcomes.map((outcome) => {
     if (!outcome.report || !outcome.connection) return outcome;
@@ -957,7 +968,7 @@ async function attachHistory(
       ranBy: record.ranBy,
       findings: entry.findings,
     }));
-    await recordRuns(records);
+    await recordRuns(orgId, records);
   }
 
   return withHistory;
@@ -1008,16 +1019,20 @@ function formatRunTime(stamp: string): string {
  * the saved sets to anyone allowed to compare. The sets are then not read at
  * all, and a `?set=` link shows that sentence instead of opening the set.
  * Required rather than defaulted, so a new caller has to decide.
+ *
+ * `orgId` is the caller's organization (gate.principal.orgId). Nothing outside
+ * it is read or written; see the note at the top of the file.
  */
 export async function runComparison(
+  orgId: number,
   query: URLSearchParams,
   record: { ranBy: string } | null,
   setsRefusal: string | null,
 ): Promise<CompareScreen> {
   const params = toParams(query);
   const [savedConnections, savedSets] = await Promise.all([
-    getSavedConnections(),
-    setsRefusal === null ? getComparisonSets() : Promise.resolve([]),
+    getSavedConnections(orgId),
+    setsRefusal === null ? getComparisonSets(orgId) : Promise.resolve([]),
   ]);
 
   // Nothing to compare with: point at Connections rather than rendering an
@@ -1370,6 +1385,7 @@ export async function runComparison(
       // transaction — correct, but needlessly tangled, and N round trips for
       // what one query answers.
       const heads = await findTrackedSchemas(
+        orgId,
         resolvedTargets.flatMap((slot) =>
           slot.connection
             ? [{ connectionId: slot.connection.id, schemaName: slot.schema }]
@@ -1434,13 +1450,14 @@ export async function runComparison(
   if (record && comparedPairs.length > 0 && activeSet && !setModified) {
     // A set nobody has run for months is usually a set pointing at a database
     // that no longer exists, so the picker shows when each one last ran.
-    justRanAt = await markComparisonSetRun(activeSet.id);
+    justRanAt = await markComparisonSetRun(orgId, activeSet.id);
   }
 
   // What each pair differed by last time, and — when somebody pressed the
   // button — a record of what it differs by now. Both are best-effort: see the
   // note at the top of comparison-history-db.
   outcomes = await attachHistory(
+    orgId,
     outcomes,
     sourceConnection ? sourceConnection.id : null,
     sourceSchema,

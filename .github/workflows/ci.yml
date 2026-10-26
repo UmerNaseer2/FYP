@@ -35,6 +35,28 @@ jobs:
       run:
         working-directory: my-app
 
+    # A throwaway PostgreSQL for the tests that need a real one
+    # (tests/org-migration.test.ts and tests/org-data-db.test.ts), which make
+    # and drop databases of their own in it. Only the Test step is told where
+    # it is. It trusts every connection instead of taking a password: it lives
+    # only as long as this job's machine and holds nothing but test rows, and a
+    # password would just be one more made-up value in the build log.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: schema_studio_test
+        ports:
+          - 55432:5432
+        # The job's steps start once the database answers, not merely once
+        # its container is up.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +82,11 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          # The service above. The tests that use it skip on a laptop without
+          # one; here they fail instead (tests/helpers/test-database.ts).
+          TEST_DATABASE_URL: postgres://postgres@127.0.0.1:55432/schema_studio_test
+          REQUIRE_TEST_DATABASE: "1"
 
       - name: Build
         run: npm run build

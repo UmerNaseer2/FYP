@@ -12,6 +12,12 @@
 // user asked for; the history beside it is a convenience, and a metadata
 // database that is down or a table that has not been created yet must cost
 // them the history, never the answer. Every function catches and degrades.
+//
+// Every run belongs to one organization, the one whose connections it
+// compared. Each function takes that organization first and reads, writes and
+// prunes only its rows. Connection ids are unique across the whole database,
+// so a pair could not name two organizations' rows anyway; the filter is there
+// so that no query on this table depends on that being true.
 // ---------------------------------------------------------------------------
 
 import pool, { syncMetadataTables } from "./version-db";
@@ -66,6 +72,7 @@ export function pairKey(pair: RunPair): string {
  * the read fails — see the note at the top of the file.
  */
 export async function readPreviousRuns(
+  orgId: number,
   pairs: ReadonlyArray<RunPair>,
 ): Promise<Map<string, PreviousRun>> {
   const found = new Map<string, PreviousRun>();
@@ -86,6 +93,7 @@ export async function readPreviousRuns(
       );
       return `($${at + 1}, $${at + 2}, $${at + 3}, $${at + 4})`;
     });
+    values.push(orgId);
 
     // DISTINCT ON keeps the first row of each pair, and the ORDER BY makes
     // "first" mean "most recent". Its leading columns are the pair, which is
@@ -107,6 +115,7 @@ export async function readPreviousRuns(
          FROM comparison_runs
         WHERE (source_connection_id, source_schema, target_connection_id, target_schema)
               IN (${tuples.join(", ")})
+          AND org_id = $${values.length}
         ORDER BY source_connection_id, source_schema, target_connection_id, target_schema,
                  ran_at DESC, id DESC`,
       values,
@@ -149,14 +158,25 @@ export type RunRecord = {
  * Returns nothing: the screen has already been built from what the comparison
  * found, and whether the row was written changes nothing on it. That is also
  * why the whole body is inside one catch — see the note at the top.
+ *
+ * A run is only stored when both of its connections are the organization's
+ * own, which the joins below check in the same statement that writes it. The
+ * caller only ever passes connections it read inside the organization, so a
+ * run that fails the check is one whose connection was deleted while the
+ * comparison ran, and it is dropped quietly like any other history that could
+ * not be kept. A saved set that is not the organization's is not linked: the
+ * run is stored with no set, as if none had been open.
  */
-export async function recordRuns(records: ReadonlyArray<RunRecord>): Promise<void> {
+export async function recordRuns(
+  orgId: number,
+  records: ReadonlyArray<RunRecord>,
+): Promise<void> {
   if (records.length === 0) return;
 
   try {
     await syncMetadataTables();
 
-    const values: Array<number | string | null> = [];
+    const values: Array<number | string | null> = [orgId];
     const rows = records.map((record) => {
       const at = values.length;
       values.push(
@@ -174,22 +194,35 @@ export async function recordRuns(records: ReadonlyArray<RunRecord>): Promise<voi
         JSON.stringify(record.findings),
       );
       const n = (offset: number) => `$${at + offset}`;
+      // Every value cast. Inside a VALUES list in FROM, an untyped parameter
+      // is read as text, and text does not go into an integer column.
       return (
-        `(${n(1)}, ${n(2)}, ${n(3)}, ${n(4)}, ${n(5)}, ${n(6)}, ` +
-        `${n(7)}, ${n(8)}, ${n(9)}, ${n(10)}, ${n(11)}, ${n(12)}::jsonb)`
+        `(${n(1)}::int, ${n(2)}::int, ${n(3)}::text, ${n(4)}::int, ${n(5)}::text, ` +
+        `${n(6)}::text, ${n(7)}::int, ${n(8)}::int, ${n(9)}::int, ${n(10)}::int, ` +
+        `${n(11)}::text, ${n(12)}::jsonb)`
       );
     });
 
     await pool.query(
       `INSERT INTO comparison_runs
-         (set_id, source_connection_id, source_schema, target_connection_id, target_schema,
-          ran_by, total_changes, breaking_changes, safe_changes, info_changes,
-          fingerprint, findings)
-       VALUES ${rows.join(", ")}`,
+         (org_id, set_id, source_connection_id, source_schema, target_connection_id,
+          target_schema, ran_by, total_changes, breaking_changes, safe_changes,
+          info_changes, fingerprint, findings)
+       SELECT src.org_id, own_set.id, run.source_connection_id, run.source_schema,
+              run.target_connection_id, run.target_schema, run.ran_by, run.total_changes,
+              run.breaking_changes, run.safe_changes, run.info_changes, run.fingerprint,
+              run.findings
+         FROM (VALUES ${rows.join(", ")})
+              AS run(set_id, source_connection_id, source_schema, target_connection_id,
+                     target_schema, ran_by, total_changes, breaking_changes, safe_changes,
+                     info_changes, fingerprint, findings)
+         JOIN connections src ON src.id = run.source_connection_id AND src.org_id = $1
+         JOIN connections tgt ON tgt.id = run.target_connection_id AND tgt.org_id = $1
+         LEFT JOIN comparison_sets own_set ON own_set.id = run.set_id AND own_set.org_id = $1`,
       values,
     );
 
-    await prune(records.map((record) => record.pair));
+    await prune(orgId, records.map((record) => record.pair));
   } catch (error) {
     console.error("Failed to record comparison history:", error);
   }
@@ -208,7 +241,7 @@ export async function recordRuns(records: ReadonlyArray<RunRecord>): Promise<voi
  * here means the rows were written and not pruned, which is caught above and
  * costs nothing but a few extra rows until the next run.
  */
-async function prune(pairs: ReadonlyArray<RunPair>): Promise<void> {
+async function prune(orgId: number, pairs: ReadonlyArray<RunPair>): Promise<void> {
   const values: Array<number | string> = [];
   const tuples = pairs.map((pair) => {
     const at = values.length;
@@ -220,7 +253,7 @@ async function prune(pairs: ReadonlyArray<RunPair>): Promise<void> {
     );
     return `($${at + 1}, $${at + 2}, $${at + 3}, $${at + 4})`;
   });
-  values.push(RUN_HISTORY_LIMIT);
+  values.push(orgId, RUN_HISTORY_LIMIT);
 
   await pool.query(
     `DELETE FROM comparison_runs AS doomed
@@ -235,8 +268,10 @@ async function prune(pairs: ReadonlyArray<RunPair>): Promise<void> {
           WHERE (source_connection_id, source_schema,
                  target_connection_id, target_schema)
                 IN (${tuples.join(", ")})
+            AND org_id = $${values.length - 1}
        ) AS ranked
-      WHERE doomed.id = ranked.id AND ranked.place > $${values.length}`,
+      WHERE doomed.id = ranked.id AND ranked.place > $${values.length}
+        AND doomed.org_id = $${values.length - 1}`,
     values,
   );
 }

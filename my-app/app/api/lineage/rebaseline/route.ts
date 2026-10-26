@@ -21,6 +21,10 @@ import {
  *
  * This is honest about what it stores: the new entry has no migration SQL of its
  * own — it was captured from the live DB, exactly like the original baseline.
+ *
+ * Everything happens inside the caller's organization: the schema must be one
+ * of its own, and the snapshot, the lineage row and the drift event all take
+ * their organization from the tracked schema row.
  */
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("drift:update");
@@ -39,6 +43,7 @@ export async function POST(request: NextRequest) {
   if (!trackedSchemaId) {
     return NextResponse.json({ error: "trackedSchemaId is required." }, { status: 400 });
   }
+  const orgId = gate.principal.orgId;
 
   // ── 1. Load the tracked schema + connection (LEFT JOIN: may be removed) ────
   let tracked: {
@@ -57,15 +62,17 @@ export async function POST(request: NextRequest) {
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
+    // Another organization's schema reads as not tracked, the same answer an
+    // untracked one gets, so this cannot be used to learn which ids exist.
     const result = await pool.query(
       `SELECT
          ts.schema_name,
          c.name AS connection_name, c.host, c.port, c.database_name, c.type,
          c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
        FROM tracked_schemas ts
-       LEFT JOIN connections c ON c.id = ts.connection_id
-       WHERE ts.id = $1`,
-      [trackedSchemaId]
+       LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
+       WHERE ts.id = $1 AND ts.org_id = $2`,
+      [trackedSchemaId, orgId]
     );
     if (result.rows.length === 0) {
       return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
@@ -106,10 +113,10 @@ export async function POST(request: NextRequest) {
   try {
     const before = await pool.query<{ seq: number }>(
       `SELECT seq FROM lineage_migrations
-       WHERE tracked_schema_id = $1
+       WHERE tracked_schema_id = $1 AND org_id = $2
        ORDER BY seq DESC
        LIMIT 1`,
-      [trackedSchemaId]
+      [trackedSchemaId, orgId]
     );
     // 0 for a schema with no lineage yet, which is a real starting point and
     // not a missing answer — the check below is an equality either way.
@@ -165,11 +172,11 @@ export async function POST(request: NextRequest) {
     const head = await client.query<{ version: string; seq: number; snapshot: SchemaSnapshot | null }>(
       `SELECT lm.version, lm.seq, s.snapshot
        FROM lineage_migrations lm
-       LEFT JOIN snapshots s ON s.id = lm.snapshot_id
-       WHERE lm.tracked_schema_id = $1
+       LEFT JOIN snapshots s ON s.id = lm.snapshot_id AND s.org_id = lm.org_id
+       WHERE lm.tracked_schema_id = $1 AND lm.org_id = $2
        ORDER BY lm.seq DESC
        LIMIT 1`,
-      [trackedSchemaId]
+      [trackedSchemaId, orgId]
     );
     const headVersion = head.rows[0]?.version ?? null;
     const headSeq = head.rows[0]?.seq ?? 0;
@@ -200,31 +207,45 @@ export async function POST(request: NextRequest) {
     const nextSeq = headSeq + 1;
     const nextVersion = getNextLineageVersion(headVersion, changeLevel);
 
+    // The three rows take their organization from the tracked schema row. If
+    // the schema was untracked while the live structure was being read, the
+    // snapshot finds no row to copy it from and nothing is written, which is
+    // the same "not found" the first read would have given. Once the snapshot
+    // is in, its foreign key holds the tracked schema in place until COMMIT, so
+    // the other two always find it.
     const snapResult = await client.query<{ id: number }>(
-      `INSERT INTO snapshots (tracked_schema_id, snapshot, table_count, label)
-       VALUES ($1, $2::jsonb, $3, 'rebaseline')
+      `INSERT INTO snapshots (org_id, tracked_schema_id, snapshot, table_count, label)
+       SELECT org_id, id, $2::jsonb, $3, 'rebaseline' FROM tracked_schemas
+       WHERE id = $1 AND org_id = $4
        RETURNING id`,
-      [trackedSchemaId, JSON.stringify(live.data), tableCount]
+      [trackedSchemaId, JSON.stringify(live.data), tableCount, orgId]
     );
+    if (snapResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
+    }
     const snapshotId = snapResult.rows[0].id;
 
     await client.query(
       `INSERT INTO lineage_migrations
-         (tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
-       VALUES ($1, $2, 'Re-baseline (captured from live)', $3, $4, NULL, $5)`,
-      [trackedSchemaId, nextSeq, changeLevel, nextVersion, snapshotId]
+         (org_id, tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
+       SELECT org_id, id, $2, 'Re-baseline (captured from live)', $3, $4, NULL, $5
+       FROM tracked_schemas WHERE id = $1 AND org_id = $6`,
+      [trackedSchemaId, nextSeq, changeLevel, nextVersion, snapshotId, orgId]
     );
 
     const counts = { tablesAdded: 0, tablesRemoved: 0, tablesChanged: 0, constraintsChanged: 0 };
     await client.query(
       `INSERT INTO drift_events
-         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
-       VALUES ($1, 'in_sync', $2, $3::jsonb, $4, 'rebaseline')`,
+         (org_id, tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
+       SELECT org_id, id, 'in_sync', $2, $3::jsonb, $4, 'rebaseline'
+       FROM tracked_schemas WHERE id = $1 AND org_id = $5`,
       [
         trackedSchemaId,
         `Re-baselined to live — ${buildDriftSummary(nextVersion, counts)}`,
         JSON.stringify(counts),
         snapshotId,
+        orgId,
       ]
     );
 

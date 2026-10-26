@@ -46,7 +46,12 @@ export async function POST(request: NextRequest) {
   if (!read.ok) return NextResponse.json({ error: read.error }, { status: 400 });
 
   try {
-    const screen = await runComparison(phoneCompareQuery(read.data), null, NO_SETS);
+    const screen = await runComparison(
+      gate.principal.orgId,
+      phoneCompareQuery(read.data),
+      null,
+      NO_SETS
+    );
     if (screen.kind === "no-connections") {
       return NextResponse.json(
         { error: "There are no saved connections on the computer." },

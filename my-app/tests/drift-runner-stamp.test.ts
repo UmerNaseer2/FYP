@@ -15,6 +15,11 @@ import { selectDue, type DriftScheduleEntry } from "@/lib/drift-schedule";
 
 /** What computeDriftDetail should do on the next call. */
 let outcome: { kind: string } | Error = { kind: "not_found" };
+/** The arguments computeDriftDetail was called with, newest last. */
+const mockDetailCalls: unknown[][] = [];
+
+/** The organization every check below runs in. */
+const ORG = 7;
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -33,7 +38,8 @@ jest.mock("../lib/version-db", () => ({
 // like is not silently hidden behind a hand-written stub.
 jest.mock("../lib/lineage-db", () => ({
   ...jest.requireActual("../lib/lineage-db"),
-  computeDriftDetail: async () => {
+  computeDriftDetail: async (...args: unknown[]) => {
+    mockDetailCalls.push(args);
     if (mockOutcome.value instanceof Error) throw mockOutcome.value;
     return mockOutcome.value;
   },
@@ -69,42 +75,56 @@ const subject = {
 
 beforeEach(() => {
   mockPoolQuery.mockClear();
+  mockDetailCalls.length = 0;
 });
 
 describe("a check that could not produce a result", () => {
   it("stamps the check time when the check threw", async () => {
     outcome = new Error("connection terminated unexpectedly");
-    const result = await runDriftCheck(4, "scheduled");
+    const result = await runDriftCheck(ORG, 4, "scheduled");
 
     // The failure is still reported — the stamp is not a way of pretending the
     // check worked, only of recording that it was attempted.
     expect(result.ok).toBe(false);
-    expect(stamps()).toEqual([[4]]);
+    expect(stamps()).toEqual([[4, ORG]]);
   });
 
   it("stamps the check time when the schema has no baseline", async () => {
     // The one that actually stops a schedule: not transient, so without the
     // stamp this schema is the most overdue row forever.
     outcome = { kind: "no_baseline", ...subject };
-    const result = await runDriftCheck(4, "scheduled");
+    const result = await runDriftCheck(ORG, 4, "scheduled");
 
     expect(result.ok).toBe(false);
-    expect(stamps()).toEqual([[4]]);
+    expect(stamps()).toEqual([[4, ORG]]);
   });
 
   it("stamps the check time when the schema is gone", async () => {
     outcome = { kind: "not_found" };
-    const result = await runDriftCheck(4, "scheduled");
+    const result = await runDriftCheck(ORG, 4, "scheduled");
 
     expect(result.ok).toBe(false);
-    expect(stamps()).toEqual([[4]]);
+    expect(stamps()).toEqual([[4, ORG]]);
+  });
+
+  it("reads and stamps only inside the organization it was given", async () => {
+    // The stamp filters on org_id as well as the id, so a check started in one
+    // organization cannot move another organization's schedule.
+    outcome = { kind: "not_found" };
+    await runDriftCheck(ORG, 4, "scheduled");
+
+    expect(mockDetailCalls).toEqual([[ORG, 4]]);
+    const [text] = mockPoolQuery.mock.calls.find(([sql]) =>
+      /UPDATE tracked_schemas SET last_drift_check_at/.test(sql)
+    )!;
+    expect(text).toMatch(/WHERE id = \$1 AND org_id = \$2/);
   });
 
   it("records no drift event for any of them", async () => {
     // Stamping must not turn a failed check into an audit row saying the schema
     // was looked at and found fine.
     outcome = { kind: "no_baseline", ...subject };
-    await runDriftCheck(4, "scheduled");
+    await runDriftCheck(ORG, 4, "scheduled");
 
     expect(
       mockPoolQuery.mock.calls.filter(([text]) => /INSERT INTO drift_events/.test(text))
@@ -116,7 +136,7 @@ describe("a check that could not produce a result", () => {
     // way out would double every UPDATE, which is harmless but says the code
     // has two ideas about where the stamp belongs.
     outcome = new Error("boom");
-    await runDriftCheck(4, "manual");
+    await runDriftCheck(ORG, 4, "manual");
 
     expect(stamps()).toHaveLength(1);
   });

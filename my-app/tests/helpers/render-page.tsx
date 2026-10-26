@@ -70,28 +70,42 @@ export const navigationStubs = {
 
 export type TestRole = "viewer" | "editor" | "admin";
 
-/** What auth.ts puts in a real session: the role, its name, and what it may do. */
-type TestSession = {
-  user: {
-    email: string;
-    name: string;
-    role: string;
-    roleLabel: string;
-    permissions: string[];
-    accessError?: boolean;
-  };
-};
+/**
+ * What auth.ts puts in a real session: who the person is, and nothing about
+ * what they may do. That comes from GET /api/me, which `me` below answers.
+ */
+type TestSession = { user: { email: string; name: string } };
 
-let session: TestSession | null = {
-  user: {
-    email: "tester@example.com",
-    name: "Tester",
-    role: "admin",
-    roleLabel: "Admin",
-    permissions: [...ALL_PERMISSIONS],
-  },
-};
+let session: TestSession | null = { user: { email: "tester@example.com", name: "Tester" } };
 let sessionStatus: "authenticated" | "unauthenticated" | "loading" = "authenticated";
+
+/**
+ * How GET /api/me answers, unless a test routes it itself (the bypass tests
+ * do, to answer for the role picked in View as). hooks/useUser asks it once
+ * someone is signed in, and the screens take their role from the answer, the
+ * way they do from the real route.
+ */
+let me: { status: number; body: unknown } = memberOf("admin", "Admin", [...ALL_PERMISSIONS]);
+
+function signInAs(email: string, name: string) {
+  session = { user: { email, name } };
+  sessionStatus = "authenticated";
+}
+
+/** /api/me's answer for someone holding `role` in the test organization. */
+function memberOf(role: string, roleLabel: string, permissions: readonly string[]) {
+  return {
+    status: 200,
+    body: {
+      role,
+      roleLabel,
+      permissions,
+      bypass: false,
+      viewingAs: null,
+      org: { slug: "test-org", name: "Test Org" },
+    },
+  };
+}
 
 /**
  * Who the page thinks is signed in. Call before render.
@@ -112,7 +126,8 @@ let sessionStatus: "authenticated" | "unauthenticated" | "loading" = "authentica
  * NEXT_PUBLIC_AUTH_BYPASS once, at module load, and next/jest does not load
  * .env.local under NODE_ENV=test — so in here the variable is unset, which
  * since the allow-list landed means BYPASS_AUTH is false. useUser therefore
- * takes the real session path and these roles are the ones the page sees. With
+ * takes the real sign-in path, asks /api/me, and is answered with the role set
+ * here, so these roles are the ones the page sees. With
  * the old default it would have reported an admin bypass whatever this said,
  * and no role gate on any screen could have been tested.
  */
@@ -120,18 +135,17 @@ export function setUser(role: TestRole | null, permissions?: readonly Permission
   if (role === null) {
     session = null;
     sessionStatus = "unauthenticated";
+    me = { status: 401, body: { error: "Sign in to continue." } };
+    syncAccess();
     return;
   }
-  session = {
-    user: {
-      email: `${role}@example.com`,
-      name: `A ${role}`,
-      role,
-      roleLabel: BUILT_IN_ROLE_INFO[role].label,
-      permissions: effectivePermissions(role, permissions ?? presetFor(role) ?? []),
-    },
-  };
-  sessionStatus = "authenticated";
+  signInAs(`${role}@example.com`, `A ${role}`);
+  me = memberOf(
+    role,
+    BUILT_IN_ROLE_INFO[role].label,
+    effectivePermissions(role, permissions ?? presetFor(role) ?? []),
+  );
+  syncAccess();
 }
 
 /**
@@ -139,34 +153,40 @@ export function setUser(role: TestRole | null, permissions?: readonly Permission
  * before render. The boxes go through effectivePermissions, as in setUser.
  */
 export function setCustomRole(role: string, roleLabel: string, permissions: readonly PermissionKey[]) {
-  session = {
-    user: {
-      email: `${role}@example.com`,
-      name: `A ${roleLabel}`,
-      role,
-      roleLabel,
-      permissions: effectivePermissions(role, permissions),
-    },
-  };
-  sessionStatus = "authenticated";
+  signInAs(`${role}@example.com`, `A ${roleLabel}`);
+  me = memberOf(role, roleLabel, effectivePermissions(role, permissions));
+  syncAccess();
 }
 
 /**
- * Signed in, but the database could not say what the role may do (auth.ts
- * sets `accessError` then, and every route answers 503). Call before render.
+ * Signed in, but the app's database could not say what the role may do, so
+ * /api/me answers 503, as every route does then. Call before render.
  */
 export function setAccessError(role: TestRole = "viewer") {
-  session = {
-    user: {
-      email: `${role}@example.com`,
-      name: `A ${role}`,
-      role,
-      roleLabel: BUILT_IN_ROLE_INFO[role].label,
-      permissions: [],
-      accessError: true,
+  signInAs(`${role}@example.com`, `A ${role}`);
+  me = {
+    status: 503,
+    body: {
+      error:
+        "Could not check what your role can do, because the app's database did not " +
+        "answer. Try again in a moment.",
     },
   };
-  sessionStatus = "authenticated";
+  syncAccess();
+}
+
+/**
+ * Signed in, but not a member of the organization (an admin removed them
+ * after they signed in), so /api/me answers 404, as every route does then.
+ * Call before render.
+ */
+export function setNotMember(role: TestRole = "viewer") {
+  signInAs(`${role}@example.com`, `A ${role}`);
+  me = {
+    status: 404,
+    body: { error: "This organization does not exist, or you are not a member." },
+  };
+  syncAccess();
 }
 
 /**
@@ -180,6 +200,7 @@ export function setAccessError(role: TestRole = "viewer") {
 export function setSessionLoading() {
   session = null;
   sessionStatus = "loading";
+  syncAccess();
 }
 
 export const sessionStubs = {
@@ -263,17 +284,28 @@ export function holdNext(token: string, method?: string): () => void {
   return release;
 }
 
-function answerFor(url: string, init?: RequestInit) {
-  const method = (init?.method ?? "GET").toUpperCase();
-  for (const route of routes) {
+function routeFor(url: string, method: string) {
+  return routes.find((route) => {
     const hit =
       typeof route.match === "string" ? url.includes(route.match) : route.match.test(url);
-    if (!hit) continue;
-    if (route.method && route.method.toUpperCase() !== method) continue;
+    return hit && (!route.method || route.method.toUpperCase() === method);
+  });
+}
+
+/** useUser asking what the signed-in person may do, when no test routes it. */
+function isAccessCheck(url: string, method: string) {
+  return method === "GET" && url.split("?")[0] === "/api/me" && !routeFor(url, method);
+}
+
+function answerFor(url: string, init?: RequestInit) {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const route = routeFor(url, method);
+  if (route) {
     if (route.networkError) throw new Error("network");
     const body = typeof route.body === "function" ? route.body(url, init) : route.body;
     return { status: route.status ?? 200, body };
   }
+  if (isAccessCheck(url, method)) return me;
   throw new Error(`No test route answers ${method} ${url}`);
 }
 
@@ -281,11 +313,17 @@ function installFetch() {
   fetchCalls.length = 0;
   (globalThis as { fetch: unknown }).fetch = (input: unknown, init?: RequestInit) => {
     const url = String(input);
-    fetchCalls.push({
-      url,
-      method: init?.method ?? "GET",
-      body: typeof init?.body === "string" ? init.body : null,
-    });
+    const method = (init?.method ?? "GET").toUpperCase();
+    // useUser's own access check is left out: it is not something the page
+    // under test asked for, and counting it would make every "the page sent
+    // nothing" assertion depend on when the hook last asked.
+    if (!isAccessCheck(url, method)) {
+      fetchCalls.push({
+        url,
+        method: init?.method ?? "GET",
+        body: typeof init?.body === "string" ? init.body : null,
+      });
+    }
 
     // Resolved before the gate is awaited, so a route's `body` function sees
     // the state at the time of the REQUEST — which is the whole point of
@@ -298,7 +336,6 @@ function installFetch() {
       return Promise.reject(err);
     }
 
-    const method = (init?.method ?? "GET").toUpperCase();
     const gate = gates.find(
       (g) =>
         !g.claimed && url.includes(g.token) && (!g.method || g.method.toUpperCase() === method)
@@ -353,4 +390,32 @@ export function resetPageState() {
   routes = [];
   gates.length = 0;
   installFetch();
+}
+
+/**
+ * Forget what hooks/useUser learned, and hand it what /api/me would say now,
+ * so the screen under test knows its role as soon as it is drawn (see
+ * seedUserAccess there). Run by every setter above, and so by resetPageState
+ * through its setUser("admin").
+ *
+ * A screen already drawn is not handed anything. Forgetting makes it ask
+ * /api/me again, which installFetch answers from `me` a moment later, the way
+ * a page open in the browser learns that its role changed.
+ */
+function syncAccess() {
+  // Required here, not imported at the top: page suites build their
+  // next-auth/react mock from this file, and hooks/useUser imports
+  // next-auth/react, so a top-level import would ask for that mock while it is
+  // still being made. A suite that draws nothing signed in does not mock
+  // next-auth/react at all, and the real one does not load under Jest (it is
+  // an ES module), so there is no hook in play there and nothing to hand it.
+  let hook: typeof import("../../hooks/useUser");
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    hook = require("../../hooks/useUser");
+  } catch {
+    return;
+  }
+  hook.resetUserCache();
+  if (sessionStatus === "authenticated") hook.seedUserAccess(me.status, me.body);
 }

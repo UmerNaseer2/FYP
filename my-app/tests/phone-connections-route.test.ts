@@ -7,13 +7,15 @@
 // database said.
 import { NextResponse } from "next/server";
 import type { Gate } from "@/lib/auth-guard";
-import { principalFor } from "./helpers/principals";
+import { principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
 let mockAskedFor: string[][] = [];
 /** Every query sent to the metadata database, in order. */
 let mockQueries: string[] = [];
+/** The values sent with each of those queries, in the same order. */
+let mockValues: unknown[][] = [];
 /** The rows the metadata database answers with. */
 let mockRows: unknown[] = [];
 /** What the metadata database says when it fails, or null while it works. */
@@ -29,8 +31,9 @@ jest.mock("../lib/auth-guard", () => ({
 jest.mock("../lib/version-db", () => ({
   __esModule: true,
   default: {
-    query: async (text: string) => {
+    query: async (text: string, values: unknown[] = []) => {
       mockQueries.push(text);
+      mockValues.push(values);
       if (mockFailure !== null) throw new Error(mockFailure);
       return { rows: mockRows, rowCount: mockRows.length };
     },
@@ -68,6 +71,7 @@ beforeEach(() => {
   mockGate = { ok: true, principal: principalFor("viewer") };
   mockAskedFor = [];
   mockQueries = [];
+  mockValues = [];
   mockRows = [];
   mockFailure = null;
 });
@@ -109,6 +113,12 @@ test("asks for PostgreSQL connections only, in Compare's order, and none of thei
   expect(query).toMatch(/WHERE type = 'PostgreSQL'/);
   expect(query).toMatch(/ORDER BY name ASC/);
   expect(query).not.toMatch(/host|username|password|connection_string/);
+});
+
+test("asks for the caller's organization's connections only", async () => {
+  await GET();
+  expect(mockQueries[0]).toMatch(/AND org_id = \$1/);
+  expect(mockValues[0]).toEqual([TEST_ORG.id]);
 });
 
 test("reads each environment the way the app does, and each number as a number", async () => {

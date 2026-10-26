@@ -15,7 +15,8 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
  * the name, the environment and the database's name. Never the host, the user
  * name or the password, which GET /api/connections sends the Connections
  * screen. Only PostgreSQL connections, in the order Compare lists them,
- * because those are the ones a comparison or a schema read can use.
+ * because those are the ones a comparison or a schema read can use. Only the
+ * caller's organization's, the same ones its Connections screen lists.
  *
  * It asks for either box a phone uses the list for: Compare, to compare, and
  * Visualizer, to read a schema. GET /api/connections leaves Compare out on
@@ -28,12 +29,15 @@ export async function GET() {
   try {
     // Shared DDL (lib/version-db) guarantees the `environment` column exists.
     await syncMetadataTables();
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT id, name, database_name, environment
       FROM connections
-      WHERE type = 'PostgreSQL'
+      WHERE type = 'PostgreSQL' AND org_id = $1
       ORDER BY name ASC
-    `);
+      `,
+      [gate.principal.orgId]
+    );
 
     return NextResponse.json({
       connections: result.rows.map((row) => ({

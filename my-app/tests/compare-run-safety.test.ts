@@ -12,6 +12,7 @@
 // the net is exercised where it actually sits rather than through an exported
 // hook that only tests use.
 import { runComparison } from "@/lib/compare-run";
+import { TEST_ORG } from "./helpers/principals";
 
 /** Which target database's snapshot read should throw, by host. Null for none. */
 let explodeOnHost: string | null = null;
@@ -140,7 +141,7 @@ async function compareTwoTargets() {
   query.append("targetSchema", "public");
   query.append("targetConnection", "3");
   query.append("targetSchema", "qa");
-  const screen = await runComparison(query, null, null);
+  const screen = await runComparison(TEST_ORG.id, query, null, null);
   if (screen.kind !== "ready") throw new Error(`expected a ready screen, got ${screen.kind}`);
   return screen;
 }

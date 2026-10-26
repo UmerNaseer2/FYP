@@ -25,6 +25,11 @@ import type { DriftSource } from "./drift-source";
  * request, no session and no idea what URL it is served on, and a background job
  * that depends on the app being reachable from inside itself is a job that
  * silently stops working the first time it is deployed behind a proxy.
+ *
+ * Every check runs inside one organization. A route passes the organization
+ * of the person asking; the scheduler passes the one the tracked schema
+ * belongs to. Everything read or written here filters on it, so a check can
+ * neither see nor stamp another organization's schema.
  */
 
 /** A check that ran, whatever it found. */
@@ -76,8 +81,12 @@ export type DriftRunResult =
  * `source` is written to the row so the audit feed can tell an automatic check
  * from a person pressing the button — which is the whole question a user asks
  * when the app claims to be watching a schema for them.
+ *
+ * A schema that is not in `orgId` comes back as not_found, the same as one
+ * that was never tracked.
  */
 export async function runDriftCheck(
+  orgId: number,
   trackedSchemaId: number,
   source: DriftSource,
   mode: DriftRecordMode = "always"
@@ -93,24 +102,24 @@ export async function runDriftCheck(
   // and got its stamp, which is why the symptom only ever showed up here.)
   let comp;
   try {
-    comp = await computeDriftDetail(trackedSchemaId);
+    comp = await computeDriftDetail(orgId, trackedSchemaId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await stampLastChecked(trackedSchemaId);
+    await stampLastChecked(orgId, trackedSchemaId);
     return { ok: false, problem: { kind: "failed", message } };
   }
 
   if (comp.kind === "not_found") {
     // The row is gone, so the UPDATE matches nothing and does nothing — kept
     // for the next case, which looks identical from here and is not harmless.
-    await stampLastChecked(trackedSchemaId);
+    await stampLastChecked(orgId, trackedSchemaId);
     return { ok: false, problem: { kind: "not_found" } };
   }
   if (comp.kind === "no_baseline") {
     // A tracked schema with no baseline is the one to worry about: it is not a
     // transient failure, so without the stamp it sits at the front of the queue
     // until somebody notices the rest of the schedule has stopped.
-    await stampLastChecked(trackedSchemaId);
+    await stampLastChecked(orgId, trackedSchemaId);
     return { ok: false, problem: { kind: "no_baseline" } };
   }
 
@@ -122,7 +131,7 @@ export async function runDriftCheck(
   // suppressed below still stops looking overdue. If the stamp fails the row is
   // still written — a duplicated event is better than a schema that silently
   // stops being checked.
-  await stampLastChecked(trackedSchemaId);
+  await stampLastChecked(orgId, trackedSchemaId);
 
   // Spec feature 10 — one reading per check, whatever the check found and
   // whether or not the audit row below is suppressed. The audit feed answers
@@ -130,6 +139,7 @@ export async function runDriftCheck(
   // points only on the days something changed is not a series.
   if (comp.kind === "ok") {
     await recordSchemaMetrics({
+      orgId,
       trackedSchemaId,
       live: comp.live,
       drifted: status === "drifted",
@@ -141,9 +151,10 @@ export async function runDriftCheck(
   const fingerprint = report ? driftFingerprint(report) : null;
 
   const worthRecording =
-    mode === "always" || (await outcomeChanged(trackedSchemaId, status, fingerprint));
+    mode === "always" || (await outcomeChanged(orgId, trackedSchemaId, status, fingerprint));
   const recorded = worthRecording
     ? await recordDriftEvent({
+        orgId,
         trackedSchemaId,
         status,
         summary: comp.summary,
@@ -175,11 +186,12 @@ export async function runDriftCheck(
  * Best-effort like the event insert: the user already has their answer, and a
  * missing stamp only costs one early re-check.
  */
-async function stampLastChecked(trackedSchemaId: number): Promise<void> {
+async function stampLastChecked(orgId: number, trackedSchemaId: number): Promise<void> {
   try {
     await pool.query(
-      `UPDATE tracked_schemas SET last_drift_check_at = CURRENT_TIMESTAMP WHERE id = $1`,
-      [trackedSchemaId]
+      `UPDATE tracked_schemas SET last_drift_check_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND org_id = $2`,
+      [trackedSchemaId, orgId]
     );
   } catch (error) {
     console.error("Drift — failed to stamp last_drift_check_at:", error);
@@ -211,6 +223,7 @@ async function stampLastChecked(trackedSchemaId: number): Promise<void> {
  * is written. A duplicated "in sync" is noise; a missed change is a bug.
  */
 async function outcomeChanged(
+  orgId: number,
   trackedSchemaId: number,
   status: DriftStatus,
   fingerprint: string | null
@@ -218,10 +231,10 @@ async function outcomeChanged(
   try {
     const previous = await pool.query<{ status: string; fingerprint: string | null }>(
       `SELECT status, fingerprint FROM drift_events
-        WHERE tracked_schema_id = $1
+        WHERE tracked_schema_id = $1 AND org_id = $2
         ORDER BY detected_at DESC, id DESC
         LIMIT 1`,
-      [trackedSchemaId]
+      [trackedSchemaId, orgId]
     );
     if (previous.rows.length === 0) return true;
     if (previous.rows[0].status !== status) return true;
@@ -240,6 +253,8 @@ async function outcomeChanged(
 
 /** What one audit row needs. Exported so the deploy and re-baseline paths share it. */
 export type DriftEventRecord = {
+  /** The organization the tracked schema is in. */
+  orgId: number;
   trackedSchemaId: number;
   status: DriftStatus;
   summary: string | null;
@@ -260,17 +275,24 @@ export type DriftEventRecord = {
 /**
  * Write one drift_events row. Returns whether it landed rather than throwing.
  *
+ * The row takes its org_id from the tracked schema, and only when that schema
+ * is in `record.orgId`. A schema untracked since the check started (or one in
+ * another organization) gives no row, and this answers false like any other
+ * row that did not land.
+ *
  * Every caller is in the same position: the interesting work already succeeded
  * and the audit row is a side effect. A failure here is worth a server log and
  * nothing more — it must never turn a successful check into an error on screen.
  */
 export async function recordDriftEvent(record: DriftEventRecord): Promise<boolean> {
   try {
-    await pool.query(
+    const result = await pool.query(
       `INSERT INTO drift_events
-         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source,
+         (org_id, tracked_schema_id, status, summary, detail, baseline_snapshot_id, source,
           fingerprint)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
+       SELECT org_id, id, $2, $3, $4::jsonb, $5, $6, $7
+         FROM tracked_schemas
+        WHERE id = $1 AND org_id = $8`,
       [
         record.trackedSchemaId,
         record.status,
@@ -279,9 +301,10 @@ export async function recordDriftEvent(record: DriftEventRecord): Promise<boolea
         record.baselineSnapshotId,
         record.source,
         record.fingerprint ?? null,
+        record.orgId,
       ]
     );
-    return true;
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Drift — failed to record drift_event:", error);
     return false;

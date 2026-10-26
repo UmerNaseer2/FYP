@@ -31,6 +31,12 @@ export {
  *
  * Lives in the same metadata database as `connections` and the lineage tables,
  * and is declared with them as a Sequelize model in `lib/db/models.ts`.
+ *
+ * Every set belongs to one organization. Each function here takes the caller's
+ * organization first and reads or writes only that organization's sets, so
+ * two organizations can each have a set called "Nightly". A set may only name
+ * its own organization's connections, and another organization's set reads as
+ * missing, the same answer a deleted one gets.
  */
 
 // ── Row shapes ────────────────────────────────────────────────────────────
@@ -141,14 +147,14 @@ const SET_SELECT = `
          s.source_schema, s.allow_data_loss, s.compare_data, s.data_tables,
          s.created_at, s.updated_at, s.last_run_at, c.name AS live_source_name
     FROM comparison_sets s
-    LEFT JOIN connections c ON c.id = s.source_connection_id
+    LEFT JOIN connections c ON c.id = s.source_connection_id AND c.org_id = s.org_id
 `;
 
 const TARGET_SELECT = `
   SELECT t.set_id, t.position, t.connection_id, t.connection_label, t.schema_name,
          c.name AS live_name, c.environment AS live_environment
     FROM comparison_set_targets t
-    LEFT JOIN connections c ON c.id = t.connection_id
+    LEFT JOIN connections c ON c.id = t.connection_id AND c.org_id = t.org_id
 `;
 
 function toTarget(row: TargetRow): ComparisonSetTarget {
@@ -171,6 +177,7 @@ function toTarget(row: TargetRow): ComparisonSetTarget {
  * so, and this is what it counts.
  */
 export async function listSetNamesUsingConnection(
+  orgId: number,
   connectionId: number
 ): Promise<string[]> {
   await syncMetadataTables();
@@ -178,24 +185,27 @@ export async function listSetNamesUsingConnection(
   const result = await pool.query<{ name: string }>(
     `SELECT DISTINCT s.name
        FROM comparison_sets s
-       LEFT JOIN comparison_set_targets t ON t.set_id = s.id
-      WHERE s.source_connection_id = $1 OR t.connection_id = $1
+       LEFT JOIN comparison_set_targets t ON t.set_id = s.id AND t.org_id = s.org_id
+      WHERE s.org_id = $2 AND (s.source_connection_id = $1 OR t.connection_id = $1)
       ORDER BY s.name`,
-    [connectionId]
+    [connectionId, orgId]
   );
 
   return result.rows.map((r) => r.name);
 }
 
-/** Every saved set, alphabetically, each with its targets in saved order. */
-export async function listComparisonSets(): Promise<ComparisonSet[]> {
+/** The organization's saved sets, alphabetically, each with its targets in saved order. */
+export async function listComparisonSets(orgId: number): Promise<ComparisonSet[]> {
   await syncMetadataTables();
 
   // Two plain queries stitched in JS rather than one query with a JSON
   // aggregate: there are never many sets, and this stays readable.
   const [sets, targets] = await Promise.all([
-    pool.query<SetRow>(`${SET_SELECT} ORDER BY lower(s.name)`),
-    pool.query<TargetRow>(`${TARGET_SELECT} ORDER BY t.set_id, t.position`),
+    pool.query<SetRow>(`${SET_SELECT} WHERE s.org_id = $1 ORDER BY lower(s.name)`, [orgId]),
+    pool.query<TargetRow>(
+      `${TARGET_SELECT} WHERE t.org_id = $1 ORDER BY t.set_id, t.position`,
+      [orgId]
+    ),
   ]);
 
   const byId = new Map<number, ComparisonSetTarget[]>();
@@ -208,17 +218,26 @@ export async function listComparisonSets(): Promise<ComparisonSet[]> {
   return sets.rows.map((row) => toSet(row, byId.get(row.id) ?? []));
 }
 
-/** One set by id, or null if it has been deleted since the link was made. */
-export async function getComparisonSet(id: number): Promise<ComparisonSet | null> {
+/**
+ * One set by id, or null if it has been deleted since the link was made or
+ * belongs to another organization.
+ */
+export async function getComparisonSet(
+  orgId: number,
+  id: number
+): Promise<ComparisonSet | null> {
   if (!Number.isInteger(id) || id <= 0) return null;
   await syncMetadataTables();
 
-  const sets = await pool.query<SetRow>(`${SET_SELECT} WHERE s.id = $1`, [id]);
+  const sets = await pool.query<SetRow>(`${SET_SELECT} WHERE s.id = $1 AND s.org_id = $2`, [
+    id,
+    orgId,
+  ]);
   if (sets.rows.length === 0) return null;
 
   const targets = await pool.query<TargetRow>(
-    `${TARGET_SELECT} WHERE t.set_id = $1 ORDER BY t.position`,
-    [id]
+    `${TARGET_SELECT} WHERE t.set_id = $1 AND t.org_id = $2 ORDER BY t.position`,
+    [id, orgId]
   );
   return toSet(sets.rows[0], targets.rows.map(toTarget));
 }
@@ -264,6 +283,7 @@ export type SaveAccess = {
  * with fewer targets than it had before the save.
  */
 export async function saveComparisonSet(
+  orgId: number,
   input: SaveComparisonSetInput,
   access: SaveAccess
 ): Promise<SaveResult> {
@@ -282,8 +302,8 @@ export async function saveComparisonSet(
     // earlier. For a list of saved selections that is an acceptable edge — the
     // alternative is a table lock on every save.
     const existing = await client.query<{ id: number }>(
-      `SELECT id FROM comparison_sets WHERE lower(name) = lower($1)`,
-      [name]
+      `SELECT id FROM comparison_sets WHERE lower(name) = lower($1) AND org_id = $2`,
+      [name, orgId]
     );
     const existingId = existing.rows[0]?.id ?? null;
 
@@ -316,17 +336,45 @@ export async function saveComparisonSet(
       };
     }
 
+    // Every connection the set names must be one of this organization's. The
+    // ids come from the request, and the foreign keys only check that a
+    // connection exists, not whose it is. Without this a set could point at
+    // another organization's database, and the label fallback below would copy
+    // that connection's name into it. A connection that was deleted gets the
+    // same answer as another organization's, so this cannot be used to learn
+    // which ids exist. validateSaveInput has already refused a missing id.
+    const wanted = new Set<number>();
+    for (const id of [input.sourceConnectionId, ...input.targets.map((t) => t.connectionId)]) {
+      if (id !== null) wanted.add(id);
+    }
+    const found = await client.query<{ id: number }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id = ANY($2::int[])`,
+      [orgId, [...wanted]]
+    );
+    if (found.rows.length !== wanted.size) {
+      await client.query("ROLLBACK");
+      return {
+        ok: false,
+        error: "One of the connections in this set no longer exists. Pick it again, then save.",
+        conflict: false,
+      };
+    }
+
     const upsert = await client.query<{ id: number; created: boolean }>(
       // The stored label is what names a side after its connection is deleted,
       // so it must never be blank. A caller that does not send one is not asked
       // to guess: the connection's current name is right here.
       `INSERT INTO comparison_sets
-         (name, source_connection_id, source_connection_label, source_schema,
+         (org_id, name, source_connection_id, source_connection_label, source_schema,
           allow_data_loss, compare_data, data_tables)
-       VALUES ($1, $2,
-               COALESCE(NULLIF($3, ''), (SELECT name FROM connections WHERE id = $2), ''),
+       VALUES ($8, $1, $2,
+               COALESCE(
+                 NULLIF($3, ''),
+                 (SELECT name FROM connections WHERE id = $2 AND org_id = $8),
+                 ''
+               ),
                $4, $5, $6, $7::jsonb)
-       ON CONFLICT (lower(name)) DO UPDATE
+       ON CONFLICT (org_id, lower(name)) DO UPDATE
          SET name = EXCLUDED.name,
              source_connection_id = EXCLUDED.source_connection_id,
              source_connection_label = EXCLUDED.source_connection_label,
@@ -346,6 +394,7 @@ export async function saveComparisonSet(
         // Stringified rather than passed as an array: node-postgres would send
         // a JS array as a Postgres array literal, which jsonb will not take.
         JSON.stringify(input.dataTables),
+        orgId,
       ]
     );
 
@@ -355,22 +404,32 @@ export async function saveComparisonSet(
     // Replace rather than reconcile: the target list is short and always sent
     // whole, so working out which rows moved would be more code and more ways
     // to be wrong than deleting three rows and writing three back.
-    await client.query(`DELETE FROM comparison_set_targets WHERE set_id = $1`, [id]);
+    await client.query(`DELETE FROM comparison_set_targets WHERE set_id = $1 AND org_id = $2`, [
+      id,
+      orgId,
+    ]);
 
+    // Each target takes its organization from the set row written above.
     for (const [position, target] of input.targets.entries()) {
       await client.query(
         `INSERT INTO comparison_set_targets
-           (set_id, position, connection_id, connection_label, schema_name)
-         VALUES ($1, $2, $3,
-                 COALESCE(NULLIF($4, ''), (SELECT name FROM connections WHERE id = $3), ''),
-                 $5)`,
-        [id, position, target.connectionId, target.connectionLabel, target.schema.trim()]
+           (org_id, set_id, position, connection_id, connection_label, schema_name)
+         SELECT s.org_id, s.id, $2, $3,
+                COALESCE(
+                  NULLIF($4, ''),
+                  (SELECT name FROM connections c WHERE c.id = $3 AND c.org_id = s.org_id),
+                  ''
+                ),
+                $5
+           FROM comparison_sets s
+          WHERE s.id = $1 AND s.org_id = $6`,
+        [id, position, target.connectionId, target.connectionLabel, target.schema.trim(), orgId]
       );
     }
 
     await client.query("COMMIT");
 
-    const saved = await getComparisonSet(id);
+    const saved = await getComparisonSet(orgId, id);
     return saved
       ? { ok: true, set: saved, created }
       : { ok: false, error: "The set was saved but could not be read back.", conflict: false };
@@ -383,10 +442,13 @@ export async function saveComparisonSet(
 }
 
 /** Delete a set. Its targets go with it through ON DELETE CASCADE. */
-export async function deleteComparisonSet(id: number): Promise<boolean> {
+export async function deleteComparisonSet(orgId: number, id: number): Promise<boolean> {
   if (!Number.isInteger(id) || id <= 0) return false;
   await syncMetadataTables();
-  const result = await pool.query(`DELETE FROM comparison_sets WHERE id = $1`, [id]);
+  const result = await pool.query(`DELETE FROM comparison_sets WHERE id = $1 AND org_id = $2`, [
+    id,
+    orgId,
+  ]);
   return (result.rowCount ?? 0) > 0;
 }
 
@@ -403,14 +465,17 @@ export async function deleteComparisonSet(id: number): Promise<boolean> {
  * Deliberately swallows its own errors and returns null: failing to record a
  * timestamp must never turn a successful comparison into an error page.
  */
-export async function markComparisonSetRun(id: number): Promise<string | null> {
+export async function markComparisonSetRun(
+  orgId: number,
+  id: number
+): Promise<string | null> {
   if (!Number.isInteger(id) || id <= 0) return null;
   try {
     await syncMetadataTables();
     const result = await pool.query<{ last_run_at: string }>(
-      `UPDATE comparison_sets SET last_run_at = now() WHERE id = $1
+      `UPDATE comparison_sets SET last_run_at = now() WHERE id = $1 AND org_id = $2
        RETURNING last_run_at`,
-      [id]
+      [id, orgId]
     );
     return result.rows[0]?.last_run_at ?? null;
   } catch (error) {

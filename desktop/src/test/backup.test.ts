@@ -789,6 +789,83 @@ test("a column added since the backup is filled in by its default, or the backup
   assert.deepEqual(await rows("SELECT count(*)::int AS n FROM empty_one"), [{ n: 0 }]);
 });
 
+test("a table the backup does not have keeps its rows when the backup's rows point to it, as organizations do for a backup from before them", async (t) => {
+  if (skipped(t)) return;
+  await reset();
+  // The shape before organizations: a role is known by its name alone.
+  await run(`
+    CREATE TABLE roles (name text PRIMARY KEY);
+    CREATE TABLE profiles (id serial PRIMARY KEY, email text NOT NULL, role text REFERENCES roles (name));
+    INSERT INTO roles VALUES ('Admin'), ('Viewer');
+    INSERT INTO profiles (email, role) VALUES ('first@example.test', 'Admin'), ('second@example.test', 'Viewer');
+  `);
+  const was = await fingerprint("profiles");
+  const saved = await save(tempDir(t));
+  // The shape after: every role belongs to an organization, which is on a
+  // plan, and a person's role is a membership. The organization deleted here
+  // moves its counter past the rows that are left.
+  await run(`
+    CREATE TABLE plans (id int PRIMARY KEY, name text NOT NULL);
+    INSERT INTO plans VALUES (7, 'free');
+    CREATE TABLE organizations (id serial PRIMARY KEY, slug text NOT NULL UNIQUE, plan_id int REFERENCES plans (id));
+    INSERT INTO organizations (slug, plan_id) VALUES ('personal', 7), ('acme', 7), ('gone', NULL);
+    DELETE FROM organizations WHERE slug = 'gone';
+    ALTER TABLE profiles DROP CONSTRAINT profiles_role_fkey;
+    ALTER TABLE roles ADD COLUMN org_id int NOT NULL DEFAULT 1 REFERENCES organizations (id) ON DELETE CASCADE;
+    ALTER TABLE roles DROP CONSTRAINT roles_pkey;
+    ALTER TABLE roles ADD PRIMARY KEY (org_id, name);
+    INSERT INTO roles (org_id, name) VALUES (2, 'Owner');
+    CREATE TABLE memberships (
+      org_id int REFERENCES organizations (id) ON DELETE CASCADE,
+      profile_id int REFERENCES profiles (id),
+      role text NOT NULL,
+      PRIMARY KEY (org_id, profile_id),
+      FOREIGN KEY (org_id, role) REFERENCES roles (org_id, name)
+    );
+    INSERT INTO memberships VALUES (1, 1, 'Admin'), (2, 2, 'Owner');
+    CREATE TABLE notes (id serial PRIMARY KEY, v text);
+    INSERT INTO notes (v) VALUES ('not in the backup');
+  `);
+  const kept = await fingerprint("organizations", "plans");
+  await restore(await check(saved));
+  // roles points to organizations, which points to plans, so both keep their rows.
+  assert.deepEqual(await fingerprint("organizations", "plans"), kept);
+  // The backup's roles go in under the organization org_id falls back to.
+  assert.deepEqual(await rows("SELECT org_id, name FROM roles ORDER BY name"), [
+    { org_id: 1, name: "Admin" },
+    { org_id: 1, name: "Viewer" },
+  ]);
+  assert.deepEqual(await fingerprint("profiles"), was);
+  // Nothing in the backup points to memberships or notes, so both are emptied.
+  assert.deepEqual(await rows("SELECT (SELECT count(*)::int FROM memberships) AS memberships, (SELECT count(*)::int FROM notes) AS notes"), [
+    { memberships: 0, notes: 0 },
+  ]);
+  // A kept table's counter stays where it stood, past the deleted organization.
+  assert.equal(await nextId("organizations", "(slug) VALUES ('next')"), 4);
+});
+
+test("a table the backup's rows point to is emptied all the same when it points to a table the restore empties, and the backup is refused", async (t) => {
+  if (skipped(t)) return;
+  const dir = tempDir(t);
+  // tag is new since the backup, and child's rows now point to it. tag also
+  // points to parent, which the restore empties, and PostgreSQL empties parent
+  // only together with tag, so the row child points to cannot stay.
+  const tags = [
+    "CREATE TABLE tag (id int PRIMARY KEY, parent_id int REFERENCES parent (id))",
+    // A link that was never checked stops parent being emptied on its own all the same.
+    "CREATE TABLE tag (id int PRIMARY KEY, parent_id int); ALTER TABLE tag ADD FOREIGN KEY (parent_id) REFERENCES parent (id) NOT VALID",
+    // So does a link from one part of a table in parts.
+    "CREATE TABLE tag (id int PRIMARY KEY, parent_id int) PARTITION BY RANGE (id); CREATE TABLE tag_low PARTITION OF tag FOR VALUES FROM (0) TO (10); ALTER TABLE tag_low ADD FOREIGN KEY (parent_id) REFERENCES parent (id)",
+  ];
+  for (const tag of tags) {
+    await reset();
+    await run("CREATE TABLE parent (id int PRIMARY KEY); INSERT INTO parent VALUES (1); CREATE TABLE child (tag_id int); INSERT INTO child VALUES (5)");
+    const saved = await save(dir);
+    await run(`${tag}; INSERT INTO tag VALUES (5, 1); ALTER TABLE child ADD CONSTRAINT child_tag_link FOREIGN KEY (tag_id) REFERENCES tag (id)`);
+    await refused(await check(saved), DOES_NOT_FIT, ["parent", "child", "tag"], { cause: "A row of the child table breaks its child_tag_link link." });
+  }
+});
+
 test("rows that no longer fit their columns or rules are refused with nothing changed", async (t) => {
   if (skipped(t)) return;
   const dir = tempDir(t);

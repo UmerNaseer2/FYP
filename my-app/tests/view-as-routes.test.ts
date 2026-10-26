@@ -8,17 +8,20 @@
 //   - With real sign-in the switcher is not there at all. It answers 404
 //     before it asks who is calling, so being signed in never makes a way to
 //     wear another role appear.
-//   - Going back to Admin needs no database, because a database that is down
-//     is exactly when someone stuck viewing as a role needs to get out.
+//   - Going back to Admin looks no role up. It clears the cookie and answers,
+//     so once the gate has let the caller in, the way out cannot fail.
 //   - The cookie is only ever set to a role that was found, and only cleared
 //     when it has stopped working. A failed lookup leaves it as it was.
 //   - The cookie is what a browser will really receive: this session only,
 //     readable by the page, and Secure over https.
-//   - /api/me says what the caller may do and nothing about who they are.
+//   - /api/me says what the caller may do and in which organization, and
+//     nothing about who they are.
+//   - Every answer is about the organization the gate found, and a refusal
+//     from the gate is passed on as it came.
 import { NextRequest, NextResponse } from "next/server";
 import type { Gate } from "@/lib/auth-guard";
 import { ALL_PERMISSIONS, presetFor } from "@/lib/permissions";
-import { bypassAdminPrincipal, principalFor } from "./helpers/principals";
+import { TEST_ORG, bypassAdminPrincipal, principalFor } from "./helpers/principals";
 
 let mockBypass = true;
 jest.mock("../lib/auth-mode", () => ({
@@ -33,7 +36,7 @@ jest.mock("../lib/auth-mode", () => ({
 let mockGate: Gate;
 let mockGateCalls = 0;
 jest.mock("../lib/auth-guard", () => ({
-  requireSignedIn: async () => {
+  requireMember: async () => {
     mockGateCalls += 1;
     return mockGate;
   },
@@ -56,20 +59,27 @@ const VIEWING_AS_VIEWER = principalFor("viewer", {
   bypass: true,
   viewingAs: "viewer",
 });
-/** The bypass when the role View as picked could not be read. */
-const VIEWING_AS_UNREAD = {
-  ...BYPASS_ADMIN,
-  role: "qa-lead",
-  roleLabel: "qa-lead",
-  permissions: [],
-  viewingAs: "qa-lead",
-  accessUnavailable: true,
-};
 const SIGNED_IN_EDITOR = principalFor("editor");
+
+/** The organization every principal above acts in, as /api/me names it. */
+const IN_TEST_ORG = { slug: TEST_ORG.slug, name: TEST_ORG.name };
 
 const NOT_AVAILABLE = "View as is only available while authentication is off.";
 const CLEARED = "studio-view-as=; Path=/; Max-Age=0";
 const QA_LEAD = { role: "qa-lead", roleLabel: "QA Lead", permissions: ["dashboard:read"] };
+
+// The gate's three refusals, in lib/auth-guard.ts's words. A route hands each
+// one back as it came, so the words are only there to make the cases readable.
+const SIGN_IN_FIRST = "Sign in to continue.";
+const NOT_A_MEMBER = "This organization does not exist, or you are not a member.";
+const ACCESS_UNAVAILABLE =
+  "Could not check what your role can do, because the app's database did not answer. " +
+  "Try again in a moment.";
+const REFUSALS: [string, number, string][] = [
+  ["nobody is signed in", 401, SIGN_IN_FIRST],
+  ["the caller is not a member", 404, NOT_A_MEMBER],
+  ["the app's database did not answer", 503, ACCESS_UNAVAILABLE],
+];
 
 beforeEach(() => {
   mockBypass = true;
@@ -107,7 +117,12 @@ async function answer(response: Response): Promise<[number, unknown]> {
 /** The Set-Cookie header exactly as the browser would receive it, or null. */
 const setCookie = (response: Response) => response.headers.get("set-cookie");
 
-const signInFirst = () => NextResponse.json({ error: "Sign in to continue." }, { status: 401 });
+/** Have the gate refuse with this answer, and hand the answer back to compare against. */
+function gateRefuses(status: number, error: string): NextResponse {
+  const response = NextResponse.json({ error }, { status });
+  mockGate = { ok: false, response };
+  return response;
+}
 
 /** Keep the route's own console.error out of the test output, and count it. */
 function quietErrors() {
@@ -123,9 +138,8 @@ describe("GET /api/me/view-as: the roles to pick from", () => {
     expect(mockRolesDb.listRoles).not.toHaveBeenCalled();
   });
 
-  test("passes on a refusal from the sign-in check as it came", async () => {
-    const refused = signInFirst();
-    mockGate = { ok: false, response: refused };
+  test.each(REFUSALS)("passes on the gate's refusal when %s", async (_name, status, error) => {
+    const refused = gateRefuses(status, error);
 
     expect(await listViewAs()).toBe(refused);
     expect(mockRolesDb.listRoles).not.toHaveBeenCalled();
@@ -175,7 +189,7 @@ describe("GET /api/me/view-as: the roles to pick from", () => {
       {
         error:
           "Could not load the roles, because the app's database did not answer. " +
-          "You can still go back to Admin.",
+          "Try again in a moment.",
       },
     ]);
     // The reason goes to the server's log, not to the screen.
@@ -195,15 +209,17 @@ describe("POST /api/me/view-as: picking a role", () => {
     expect(mockRolesDb.getRoleAccess).not.toHaveBeenCalled();
   });
 
-  test("passes on a refusal from the sign-in check as it came, before reading the body", async () => {
-    const refused = signInFirst();
-    mockGate = { ok: false, response: refused };
-    const request = pickRole("viewer");
+  test.each(REFUSALS)(
+    "passes on the gate's refusal when %s, before reading the body",
+    async (_name, status, error) => {
+      const refused = gateRefuses(status, error);
+      const request = pickRole("viewer");
 
-    expect(await pickViewAs(request)).toBe(refused);
-    expect(request.bodyUsed).toBe(false);
-    expect(mockRolesDb.getRoleAccess).not.toHaveBeenCalled();
-  });
+      expect(await pickViewAs(request)).toBe(refused);
+      expect(request.bodyUsed).toBe(false);
+      expect(mockRolesDb.getRoleAccess).not.toHaveBeenCalled();
+    }
+  );
 
   const CHOOSE = "Choose a role to view the app as.";
 
@@ -232,9 +248,9 @@ describe("POST /api/me/view-as: picking a role", () => {
     ["null", { role: null }],
     ["the empty choice", { role: "" }],
     ["admin", { role: "admin" }],
-  ])("goes back to Admin for %s, without the database", async (_name, body) => {
-    // The database is down. Going back to Admin works anyway.
-    mockRolesDb.getRoleAccess.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:5433"));
+  ])("goes back to Admin for %s, without looking the role up", async (_name, body) => {
+    // Nothing is checked on the way out: the cookie is cleared, so getting
+    // back to Admin works whatever the roles table holds.
     const response = await pickViewAs(pick(JSON.stringify(body)));
 
     expect(await answer(response)).toEqual([200, { viewingAs: null, roleLabel: "Admin" }]);
@@ -247,7 +263,7 @@ describe("POST /api/me/view-as: picking a role", () => {
     const response = await pickViewAs(pickRole("qa-lead"));
 
     expect(await answer(response)).toEqual([200, { viewingAs: "qa-lead", roleLabel: "QA Lead" }]);
-    expect(mockRolesDb.getRoleAccess).toHaveBeenCalledWith("qa-lead");
+    expect(mockRolesDb.getRoleAccess).toHaveBeenCalledWith(TEST_ORG.id, "qa-lead");
     // No Max-Age or Expires, so it goes when the browser closes. No HttpOnly,
     // because hooks/useUser reads it as well.
     expect(setCookie(response)).toBe("studio-view-as=qa-lead; Path=/; SameSite=lax");
@@ -265,7 +281,7 @@ describe("POST /api/me/view-as: picking a role", () => {
     mockRolesDb.getRoleAccess.mockResolvedValue(null);
 
     await pickViewAs(pickRole(longest));
-    expect(mockRolesDb.getRoleAccess).toHaveBeenCalledWith(longest);
+    expect(mockRolesDb.getRoleAccess).toHaveBeenCalledWith(TEST_ORG.id, longest);
   });
 
   test("turns down a role that has gone, and leaves the cookie as it was", async () => {
@@ -301,9 +317,8 @@ describe("POST /api/me/view-as: picking a role", () => {
 });
 
 describe("GET /api/me: what the caller may do", () => {
-  test("passes on a refusal from the sign-in check as it came", async () => {
-    const refused = signInFirst();
-    mockGate = { ok: false, response: refused };
+  test.each(REFUSALS)("passes on the gate's refusal when %s", async (_name, status, error) => {
+    const refused = gateRefuses(status, error);
 
     expect(await getMe(askMe())).toBe(refused);
   });
@@ -319,7 +334,7 @@ describe("GET /api/me: what the caller may do", () => {
         permissions: [...ALL_PERMISSIONS],
         bypass: true,
         viewingAs: null,
-        accessUnavailable: false,
+        org: IN_TEST_ORG,
       },
     ],
     [
@@ -332,22 +347,7 @@ describe("GET /api/me: what the caller may do", () => {
         permissions: presetFor("viewer"),
         bypass: true,
         viewingAs: "viewer",
-        accessUnavailable: false,
-      },
-    ],
-    [
-      // Answered, not refused, so the screen can say "try again" rather than
-      // "your role can't".
-      "the bypass when the role it views as could not be read",
-      true,
-      VIEWING_AS_UNREAD,
-      {
-        role: "qa-lead",
-        roleLabel: "qa-lead",
-        permissions: [],
-        bypass: true,
-        viewingAs: "qa-lead",
-        accessUnavailable: true,
+        org: IN_TEST_ORG,
       },
     ],
     [
@@ -360,7 +360,7 @@ describe("GET /api/me: what the caller may do", () => {
         permissions: presetFor("editor"),
         bypass: false,
         viewingAs: null,
-        accessUnavailable: false,
+        org: IN_TEST_ORG,
       },
     ],
   ])("answers for %s, with nothing about who they are", async (_name, bypass, principal, body) => {
@@ -388,19 +388,52 @@ describe("GET /api/me: what the caller may do", () => {
     ["the cookie is empty", true, "studio-view-as=", BYPASS_ADMIN],
     ["the only cookie is some other one", true, "theme=dark", BYPASS_ADMIN],
     ["the role it names is in use", true, "studio-view-as=viewer", VIEWING_AS_VIEWER],
-    // Today a failed read also keeps viewingAs (see VIEWING_AS_UNREAD), so
-    // this is a second lock. It gets a case of its own so it stays one: the
-    // role may well still be there.
-    [
-      "the role could not be read",
-      true,
-      "studio-view-as=qa-lead",
-      { ...BYPASS_ADMIN, accessUnavailable: true },
-    ],
   ])("leaves the cookie alone when %s", async (_name, bypass, cookie, principal) => {
     mockBypass = bypass;
     mockGate = { ok: true, principal };
 
     expect(setCookie(await getMe(askMe(cookie)))).toBeNull();
+  });
+
+  test("passes on a 503 from the gate, and leaves the cookie alone", async () => {
+    // The role the cookie names could not be read. It may well still be
+    // there, so the cookie stays for when the database answers again.
+    const refused = gateRefuses(503, ACCESS_UNAVAILABLE);
+    const response = await getMe(askMe("studio-view-as=qa-lead"));
+
+    expect(response).toBe(refused);
+    expect(setCookie(response)).toBeNull();
+  });
+});
+
+describe("which organization the answers are about", () => {
+  // The gate says which organization a request acts in, and each route has to
+  // take it from there. Org 12 is not the one the tests above use, so a route
+  // that wrote an id of its own, or found one anywhere but the gate, fails here.
+  const ACME = { orgId: 12, orgSlug: "acme", orgName: "Acme" };
+
+  beforeEach(() => {
+    mockGate = { ok: true, principal: { ...BYPASS_ADMIN, ...ACME } };
+  });
+
+  test("GET /api/me names it", async () => {
+    const [status, body] = await answer(await getMe(askMe()));
+
+    expect(status).toBe(200);
+    expect(body).toHaveProperty("org", { slug: "acme", name: "Acme" });
+  });
+
+  test("GET /api/me/view-as lists its roles", async () => {
+    mockRolesDb.listRoles.mockResolvedValue([]);
+
+    expect((await listViewAs()).status).toBe(200);
+    expect(mockRolesDb.listRoles.mock.calls).toEqual([[ACME.orgId]]);
+  });
+
+  test("POST /api/me/view-as looks the role up there", async () => {
+    mockRolesDb.getRoleAccess.mockResolvedValue(QA_LEAD);
+
+    expect((await pickViewAs(pickRole("qa-lead"))).status).toBe(200);
+    expect(mockRolesDb.getRoleAccess.mock.calls).toEqual([[ACME.orgId, "qa-lead"]]);
   });
 });

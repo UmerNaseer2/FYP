@@ -2,10 +2,9 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { signOut } from "next-auth/react";
-import { useUser, resetUserCache } from "@/hooks/useUser";
+import { useUser } from "@/hooks/useUser";
 import { useTheme } from "@/hooks/useTheme";
-import { getDesktopBridge } from "@/lib/desktop-bridge";
+import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
 import { isAdminOnly, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
@@ -41,7 +40,8 @@ type StudioShellProps = {
  */
 export function StudioShell({ children, user }: StudioShellProps) {
   const pathname = usePathname();
-  const { user: authUser, role, roleLabel, bypass, loading, can, accessError } = useUser();
+  const { user: authUser, role, roleLabel, bypass, loading, can, accessError, notMember } =
+    useUser();
   const { theme, toggleTheme } = useTheme();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -75,9 +75,14 @@ export function StudioShell({ children, user }: StudioShellProps) {
   // not answer) the rail shows every screen except the admin-only ones, as it
   // always did. An empty rail would look broken, and each screen still says
   // for itself whether it will open.
+  //
+  // Someone who is not a member gets an empty rail, on purpose: every screen
+  // would only repeat the guard's "not a member", and the way out (Sign out)
+  // is in the rail's footer, not among its rows.
   const navItems = useMemo(
     () =>
       NAV_ITEMS.filter((item) => {
+        if (notMember) return false;
         const features = Array.isArray(item.feature) ? item.feature : [item.feature];
         const [first, ...rest] = features.map(readKeyOf);
         if (loading || accessError || !authUser) {
@@ -85,22 +90,11 @@ export function StudioShell({ children, user }: StudioShellProps) {
         }
         return can(first, ...rest);
       }),
-    [loading, accessError, authUser, can],
+    [notMember, loading, accessError, authUser, can],
   );
 
-  async function handleSignOut() {
-    resetUserCache();
-    // The desktop app also holds the Microsoft account itself, so that it can
-    // keep checking it in the background. Signing out of the session alone
-    // would leave that behind, so the app signs out of both and then shows the
-    // login screen on its own.
-    const desktop = getDesktopBridge();
-    if (desktop) {
-      await desktop.signOut();
-      return;
-    }
-    await signOut({ callbackUrl: "/login" });
-  }
+  // Whether the rail may name the role. See the badge below.
+  const roleKnown = authUser !== null && !loading && !accessError && !notMember;
 
   const active = activeNavItem(pathname);
 
@@ -121,18 +115,19 @@ export function StudioShell({ children, user }: StudioShellProps) {
       // server will actually allow is not something a display identity gets to
       // change. See StudioSidebarProps.
       //
-      // Withheld while nobody is signed in, and while the role is still being
-      // looked up. useUser reports DEFAULT_ROLE for both. That is a sensible
-      // floor for code asking "may I", and a lie on screen, where a "Viewer"
-      // badge under "Not signed in" would read as a role somebody holds rather
-      // than the absence of one.
-      role={authUser && !loading ? role : undefined}
-      roleLabel={authUser && !loading ? roleLabel : undefined}
+      // Withheld while nobody is signed in, while the role is still being
+      // looked up, when the app could not look it up, and from someone who is
+      // not a member. useUser reports DEFAULT_ROLE for all four. That is a
+      // sensible floor for code asking "may I", and a lie on screen, where a
+      // "Viewer" badge under "Not signed in" would read as a role somebody
+      // holds rather than the absence of one.
+      role={roleKnown ? role : undefined}
+      roleLabel={roleKnown ? roleLabel : undefined}
       bypass={bypass}
       // The View as picker, only while the bypass is on. With real sign-in a
       // person is their role and nothing else.
       viewAs={bypass ? <ViewAsSwitcher /> : undefined}
-      onSignOut={handleSignOut}
+      onSignOut={() => void signOutEverywhere()}
       className={isMobile ? "h-full" : ""}
     />
   );

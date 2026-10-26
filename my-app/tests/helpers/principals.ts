@@ -6,10 +6,10 @@
 // that can never run: the route reads `roleLabel` for a refusal, `permissions`
 // for a second check, or `bypass` for a message, and gets undefined.
 //
-// principalFor("editor") is what the real gate would hand a route for a
-// signed-in editor on a new install: the built-in role, its name as people read
-// it, and exactly the permissions it starts with. Pass `over` for anything a
-// test needs to differ, such as a particular email.
+// principalFor("editor") is what the real gate would hand a route for an
+// editor of TEST_ORG on a new install: the built-in role, its name as people
+// read it, and exactly the permissions it starts with. Pass `over` for anything
+// a test needs to differ, such as a particular email.
 //
 // Inside a jest.mock() factory, load this file with require() rather than an
 // import (eslint.config.mjs says why). The import of lib/auth-guard below is
@@ -20,6 +20,19 @@ import type { Principal } from "@/lib/auth-guard";
 import { BYPASS_PRINCIPAL } from "@/lib/auth-mode";
 import { BUILT_IN_ROLE_INFO, presetFor, type BuiltInRole } from "@/lib/permissions";
 
+/**
+ * The organization every principal here acts in. Its id is not 1 on purpose:
+ * the default organization of a real install usually is, so a route that wrote
+ * a literal 1, rather than passing the principal's orgId on, could pass a test
+ * that expected 1 by luck.
+ */
+export const TEST_ORG = {
+  id: 7,
+  slug: "swinburne-fyp",
+  name: "Swinburne FYP",
+  isDefault: true,
+} as const;
+
 export function principalFor(role: BuiltInRole, over: Partial<Principal> = {}): Principal {
   return {
     email: `${role}@test`,
@@ -29,6 +42,10 @@ export function principalFor(role: BuiltInRole, over: Partial<Principal> = {}): 
     permissions: presetFor(role) ?? [],
     bypass: false,
     viewingAs: null,
+    orgId: TEST_ORG.id,
+    orgSlug: TEST_ORG.slug,
+    orgName: TEST_ORG.name,
+    orgIsDefault: TEST_ORG.isDefault,
     ...over,
   };
 }

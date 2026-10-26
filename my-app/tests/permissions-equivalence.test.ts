@@ -84,9 +84,9 @@ const ADDED: Record<string, Gate> = {
   "GET /api/connections/phone": { kind: "permission", keys: ["compare:read", "visualizer:read"] },
   "GET /api/deploy/approvals/phone": { kind: "permission", keys: ["approvals:read"] },
   "GET /api/deploy/approvals/[id]/phone": { kind: "permission", keys: ["approvals:read"] },
-  "GET /api/me": { kind: "signed-in" },
-  "GET /api/me/view-as": { kind: "signed-in" },
-  "POST /api/me/view-as": { kind: "signed-in" },
+  "GET /api/me": { kind: "member" },
+  "GET /api/me/view-as": { kind: "member" },
+  "POST /api/me/view-as": { kind: "member" },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */

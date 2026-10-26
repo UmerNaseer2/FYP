@@ -19,6 +19,9 @@ import { listDeployAttempts, type DeployAttemptRow } from "@/lib/deploy-attempts
 // somebody who cannot deploy finds out why a deploy did not happen, and an
 // audit trail only the people being audited can read is not much of one. No
 // credentials are involved — this route never opens the target.
+//
+// Only the caller's organization's attempts. Another organization's connection
+// id finds nothing, the same empty history an id nobody has deployed to gets.
 
 export type DeployAttemptsResponse = {
   schema: string;
@@ -45,7 +48,12 @@ export async function GET(request: NextRequest) {
     // A limit that will not parse is left out rather than refused: the reader
     // wants the history, and the query clamps whatever it is given anyway.
     const limit = rawLimit !== null && Number.isFinite(Number(rawLimit)) ? Number(rawLimit) : undefined;
-    const attempts = await listDeployAttempts({ connectionId, schemaName: schema, limit });
+    const attempts = await listDeployAttempts({
+      orgId: gate.principal.orgId,
+      connectionId,
+      schemaName: schema,
+      limit,
+    });
     const body: DeployAttemptsResponse = { schema, attempts };
     return NextResponse.json(body);
   } catch (error) {

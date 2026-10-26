@@ -3,7 +3,9 @@
 // A production rollback needs a second person just like a deploy, and it
 // reuses deploy_approvals with an `action` column. These tests pin the three
 // places the two kinds must never be confused: the fingerprint, the queries
-// that find or spend an approval, and the refusal copy.
+// that find or spend an approval, and the refusal copy. They also pin the
+// organization: every statement names it, and a request can only be written
+// for a connection the caller's organization owns.
 //
 // lib/version-db is replaced with a stand-in pool, so nothing reaches the
 // metadata database (or pulls in Sequelize).
@@ -14,11 +16,13 @@ import {
   createApprovalRequest,
   decideApproval,
   decisionBlockReason,
+  releaseApproval,
   runFingerprint,
   type DeployApproval,
 } from "@/lib/approvals-db";
 import { fingerprintBody, rollbackFingerprintBody, type ApprovalScript } from "@/lib/approval-fingerprint";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
+import { TEST_ORG } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -36,6 +40,7 @@ jest.mock("../lib/auth-guard", () => ({
 }));
 
 type RouteModule = typeof import("../app/api/deploy/approvals/route");
+let GET: RouteModule["GET"];
 let POST: RouteModule["POST"];
 
 const RUN: ApprovalScript[] = [
@@ -52,7 +57,7 @@ function call(n: number): { sql: string; values: unknown[] } {
 let guard: GitHubGuard;
 
 beforeAll(async () => {
-  ({ POST } = await import("../app/api/deploy/approvals/route"));
+  ({ GET, POST } = await import("../app/api/deploy/approvals/route"));
 });
 
 beforeEach(() => {
@@ -102,11 +107,31 @@ describe("decisionBlockReason", () => {
 
 describe("queries", () => {
   it("claimApproval only spends an approval of the same action", async () => {
-    const claimed = await claimApproval({ connectionId: 7, schemaName: "sales", scripts: RUN, action: "revert" });
+    const claimed = await claimApproval({
+      orgId: TEST_ORG.id, connectionId: 3, schemaName: "sales", scripts: RUN, action: "revert",
+    });
     expect(claimed).toBeNull();
     const { sql, values } = call(0);
     expect(sql).toContain("action = $4");
-    expect(values).toEqual([7, "sales", runFingerprint(RUN, "revert"), "revert"]);
+    expect(values).toEqual([3, "sales", runFingerprint(RUN, "revert"), "revert", TEST_ORG.id]);
+  });
+
+  it("claimApproval only spends an approval given in the run's organization", async () => {
+    await claimApproval({
+      orgId: TEST_ORG.id, connectionId: 3, schemaName: "sales", scripts: RUN, action: "deploy",
+    });
+    // In the inner SELECT that picks the row, so a matching approval from
+    // another organization is never the one marked used.
+    const { sql, values } = call(0);
+    expect(sql).toMatch(/SELECT id FROM deploy_approvals[\s\S]*AND org_id = \$5/);
+    expect(values[4]).toBe(TEST_ORG.id);
+  });
+
+  it("releaseApproval only hands back an approval in the organization", async () => {
+    await releaseApproval(TEST_ORG.id, 12);
+    const { sql, values } = call(0);
+    expect(sql).toContain("WHERE id = $1 AND org_id = $2 AND status = 'used'");
+    expect(values).toEqual([12, TEST_ORG.id]);
   });
 
   it("createApprovalRequest matches and stores the action", async () => {
@@ -114,7 +139,8 @@ describe("queries", () => {
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 1, action: "revert" }] });
     await createApprovalRequest({
-      connectionId: 7, schemaName: "sales", scriptName: "orders_fix", targetVersion: "2.0.0",
+      orgId: TEST_ORG.id,
+      connectionId: 3, schemaName: "sales", scriptName: "orders_fix", targetVersion: "2.0.0",
       scripts: RUN, breakingCount: 1, requestedBy: "a@test", note: null, action: "revert",
     });
     const dedupe = call(0);
@@ -124,6 +150,41 @@ describe("queries", () => {
     expect(insert.sql).toMatch(/note, action, scripts\)/);
     expect(insert.values[4]).toBe(runFingerprint(RUN, "revert"));
     expect(insert.values[9]).toBe("revert");
+  });
+
+  it("createApprovalRequest writes into the connection's organization, and only the caller's", async () => {
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 1 }] });
+    await createApprovalRequest({
+      orgId: TEST_ORG.id,
+      connectionId: 3, schemaName: "sales", scriptName: "orders_fix", targetVersion: "2.0.0",
+      scripts: RUN, breakingCount: 1, requestedBy: "a@test", note: null, action: "deploy",
+    });
+    // An open request from another organization is never handed back as this one.
+    const dedupe = call(0);
+    expect(dedupe.sql).toContain("AND org_id = $5");
+    expect(dedupe.values[4]).toBe(TEST_ORG.id);
+    // The organization is read off the connection row, and the row is only
+    // there to read when the caller's organization owns it.
+    const insert = call(1);
+    expect(insert.sql).toContain("(org_id, connection_id,");
+    expect(insert.sql).toContain("SELECT c.org_id, c.id,");
+    expect(insert.sql).toContain("FROM connections c");
+    expect(insert.sql).toContain("WHERE c.id = $1 AND c.org_id = $12");
+    expect(insert.values[0]).toBe(3);
+    expect(insert.values[11]).toBe(TEST_ORG.id);
+  });
+
+  it("createApprovalRequest answers null when no connection of the organization matched", async () => {
+    // What PostgreSQL answers for another organization's connection, or a
+    // deleted one: the SELECT finds nothing, so nothing is inserted.
+    const made = await createApprovalRequest({
+      orgId: TEST_ORG.id,
+      connectionId: 3, schemaName: "sales", scriptName: "orders_fix", targetVersion: "2.0.0",
+      scripts: RUN, breakingCount: 1, requestedBy: "a@test", note: null, action: "deploy",
+    });
+    expect(made).toBeNull();
   });
 });
 
@@ -142,7 +203,7 @@ describe("POST /api/deploy/approvals", () => {
   }
 
   const BODY = {
-    connectionId: 7,
+    connectionId: 3,
     schemaName: "sales",
     scriptName: "orders_fix",
     targetVersion: "2.0.0",
@@ -246,10 +307,32 @@ describe("POST /api/deploy/approvals", () => {
     expect(mockPoolQuery).not.toHaveBeenCalled();
   });
 
+  it("answers not found for a connection the caller's organization does not own", async () => {
+    // The dedupe read and the INSERT both find nothing, as they do for
+    // another organization's connection.
+    const res = await request(BODY);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Connection not found." });
+    expect(call(1).sql).toContain("INSERT INTO deploy_approvals");
+    expect(call(1).values[11]).toBe(TEST_ORG.id);
+  });
+
   it("says 'rollbacks' when a rollback request has nothing in it", async () => {
     const res = await request({ ...BODY, scripts: [], action: "revert" });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("There are no rollbacks in this request to approve.");
+  });
+});
+
+describe("GET /api/deploy/approvals", () => {
+  it("lists only the caller's organization's requests", async () => {
+    const res = await GET(
+      new NextRequest("http://localhost/api/deploy/approvals?connectionId=3&schemaName=sales")
+    );
+    expect(res.status).toBe(200);
+    const { sql, values } = call(0);
+    expect(sql).toContain("AND org_id = $4");
+    expect(values).toEqual([3, "sales", null, TEST_ORG.id]);
   });
 });
 
@@ -267,23 +350,32 @@ describe("expiry", () => {
 
   it("starts the clock when the approval is given, not when it was asked for", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [{ id: 5 }] });
-    await decideApproval({ id: 5, approve: true, decidedBy: "b@test", selfApproved: false, note: null });
+    await decideApproval({
+      orgId: TEST_ORG.id, id: 5, approve: true, decidedBy: "b@test", selfApproved: false, note: null,
+    });
     const { sql, values } = call(0);
     expect(sql).toContain("expires_at = CASE WHEN $6 THEN now() + make_interval(hours => $7) END");
     expect(values[5]).toBe(true);
     expect(values[6]).toBe(APPROVAL_VALID_HOURS);
+    // Only a request in the decider's organization is ever written.
+    expect(sql).toContain("WHERE id = $1 AND org_id = $8 AND status = 'pending'");
+    expect(values[7]).toBe(TEST_ORG.id);
   });
 
   it("gives a rejection no expiry, because there is nothing to expire", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [{ id: 5 }] });
-    await decideApproval({ id: 5, approve: false, decidedBy: "b@test", selfApproved: false, note: null });
+    await decideApproval({
+      orgId: TEST_ORG.id, id: 5, approve: false, decidedBy: "b@test", selfApproved: false, note: null,
+    });
     // The CASE has no ELSE, so a false here writes NULL.
     expect(call(0).values[5]).toBe(false);
   });
 
   it("will not spend an approval that is past its expiry", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [] });
-    await claimApproval({ connectionId: 7, schemaName: "sales", scripts: RUN, action: "deploy" });
+    await claimApproval({
+      orgId: TEST_ORG.id, connectionId: 3, schemaName: "sales", scripts: RUN, action: "deploy",
+    });
     const { sql } = call(0);
     expect(sql).toContain("(expires_at IS NULL OR expires_at > now())");
     // Inside the same UPDATE as the status check, so an approval cannot expire
@@ -295,7 +387,9 @@ describe("expiry", () => {
     // A row whose expires_at is NULL was decided when nobody had been told
     // there was a deadline, so the predicate keeps it claimable.
     mockPoolQuery.mockResolvedValue({ rows: [] });
-    await claimApproval({ connectionId: 7, schemaName: "sales", scripts: RUN, action: "deploy" });
+    await claimApproval({
+      orgId: TEST_ORG.id, connectionId: 3, schemaName: "sales", scripts: RUN, action: "deploy",
+    });
     expect(call(0).sql).toContain("expires_at IS NULL OR");
   });
 
@@ -306,7 +400,8 @@ describe("expiry", () => {
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 1 }] });
     await createApprovalRequest({
-      connectionId: 7, schemaName: "sales", scriptName: "orders_fix", targetVersion: "3.0.0",
+      orgId: TEST_ORG.id,
+      connectionId: 3, schemaName: "sales", scriptName: "orders_fix", targetVersion: "3.0.0",
       scripts: RUN, breakingCount: 0, requestedBy: "a@test", note: null, action: "deploy",
     });
     expect(call(0).sql).toContain("(expires_at IS NULL OR expires_at > now())");

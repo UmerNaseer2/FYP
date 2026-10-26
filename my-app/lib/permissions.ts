@@ -302,9 +302,9 @@ export function permissionLabel(key: PermissionKey): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The three roles every install has. They cannot be deleted, so there is
- * always somewhere to put a person, and the first sign-in always has an admin
- * role to land in.
+ * The three roles every organization has. They cannot be deleted, so there is
+ * always somewhere to put a member, and an organization's first member always
+ * has an admin role to land in.
  */
 export const BUILT_IN_ROLES = ["viewer", "editor", "admin"] as const;
 export type BuiltInRole = (typeof BUILT_IN_ROLES)[number];
@@ -312,7 +312,10 @@ export type BuiltInRole = (typeof BUILT_IN_ROLES)[number];
 /** The role that can do everything. Its permissions are not stored or edited. */
 export const ADMIN_ROLE: BuiltInRole = "admin";
 
-/** The least this app gives anyone: a new sign-in, or a profile that is gone. */
+/**
+ * The least this app gives a member: someone who joins an organization that
+ * already has members, or someone from before organizations whose role is gone.
+ */
 export const DEFAULT_ROLE: BuiltInRole = "viewer";
 
 export const BUILT_IN_ROLE_INFO: Record<BuiltInRole, { label: string; description: string }> = {
@@ -339,9 +342,10 @@ const RANK: Record<StartsWith, number> = { viewer: 0, editor: 1, admin: 2 };
 /**
  * What a built-in role starts with.
  *
- * The database is seeded from this (setUpRoles in lib/db/bootstrap.ts) and is
- * the answer from then on, so changing a `from` above does not take anything
- * away from an install that already exists. It is also what "Reset to default"
+ * Each organization is seeded from this (seedBuiltInRoles in
+ * lib/db/bootstrap.ts) and its rows are the answer from then on, so changing a
+ * `from` above does not take anything away from an organization that already
+ * exists. It is also what "Reset to default"
  * puts back. Null for a custom role, which starts as a copy of another role or
  * with nothing at all.
  */
@@ -469,9 +473,9 @@ export const ROLE_DESCRIPTION_MAX = 200;
  * The key a new role is stored under, made from the name an admin typed:
  * "QA Lead" becomes "qa-lead".
  *
- * The key is what profiles.role holds and what a log line records, so it is
- * kept to lowercase letters, digits and single hyphens, which nothing has to
- * quote. The database holds it to the same rule (roles_name_check).
+ * The key is what a membership's role holds and what a log line records, so
+ * it is kept to lowercase letters, digits and single hyphens, which nothing
+ * has to quote. The database holds it to the same rule (roles_name_check).
  *
  * Accents come off first, so "Équipe QA" becomes "equipe-qa" rather than
  * losing its first letter. NFKD splits "É" into "E" and a separate accent

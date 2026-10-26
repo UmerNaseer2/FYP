@@ -302,9 +302,12 @@ export async function POST(request: NextRequest) {
       `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment, name,
               execute_role
        FROM connections
-       WHERE id = $1`,
-      [connectionId]
+       WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist, and
+    // nothing is ever rolled back on a database another organization saved.
     if (result.rows.length === 0) {
       return fail(404, { error: `No saved connection found with id ${connectionId}.` });
     }
@@ -344,7 +347,7 @@ export async function POST(request: NextRequest) {
   // it drops what the migration added, so on a live database it loses rows.
   let schemaEnvironment = toEnvironment(null);
   try {
-    const tracked = await findTrackedSchema(connectionId, schemaName);
+    const tracked = await findTrackedSchema(gate.principal.orgId, connectionId, schemaName);
     if (tracked) schemaEnvironment = tracked.environment;
   } catch (error) {
     // This used to log and carry on with the default label, "unset" — the
@@ -676,6 +679,9 @@ export async function POST(request: NextRequest) {
       let claimed;
       try {
         claimed = await claimApproval({
+          // Only an approval given in the caller's organization, which is the
+          // one that owns this connection (looked up above inside it).
+          orgId: gate.principal.orgId,
           connectionId,
           schemaName,
           scripts: plan.map((step) => ({
@@ -913,6 +919,7 @@ export async function POST(request: NextRequest) {
     let lineageNote = "";
     try {
       const lineage = await recordAppliedMigrationToLineage({
+        orgId: gate.principal.orgId,
         connectionId,
         schemaName,
         targetConfig,
@@ -997,7 +1004,7 @@ export async function POST(request: NextRequest) {
     // does not know.
     if (claimedApprovalId !== null && !runCommitted && !commitOutcomeUnknown) {
       try {
-        await releaseApproval(claimedApprovalId);
+        await releaseApproval(gate.principal.orgId, claimedApprovalId);
       } catch (releaseError) {
         console.error("Revert — could not return the approval:", releaseError);
       }

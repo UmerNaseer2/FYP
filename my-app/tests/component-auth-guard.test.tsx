@@ -18,6 +18,10 @@
  * account signed in, and the box an admin would have to tick. Without the
  * account, a reader with two of them cannot tell which one they are using.
  *
+ * Someone the server says is not a member of the organization gets none of
+ * it, the pages that name no feature included, because every request behind
+ * every page is answered 404 for them. Signing out is the one way on.
+ *
  * What is NOT here:
  *  - Which permissions a role holds, and what a box brings with it:
  *    tests/permissions.test.ts, against lib/permissions.
@@ -26,10 +30,16 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
+
+// Which way signing out goes (next-auth, or the desktop app) is lib/sign-out's
+// business, and tests/component-studio-shell.test.tsx follows both. Here it
+// only matters that the button asks for it.
+const mockSignOutEverywhere = jest.fn();
+jest.mock("../lib/sign-out", () => ({ signOutEverywhere: () => mockSignOutEverywhere() }));
 
 let mockBypass = false;
 jest.mock("../lib/auth-mode", () => ({
@@ -49,6 +59,7 @@ import {
   routerCalls,
   setAccessError,
   setCustomRole,
+  setNotMember,
   setRoutes,
   setSessionLoading,
   setUser,
@@ -64,7 +75,10 @@ function show(feature?: FeatureKey | FeatureKey[]) {
   );
 }
 
-beforeEach(() => resetPageState());
+beforeEach(() => {
+  resetPageState();
+  mockSignOutEverywhere.mockClear();
+});
 afterEach(() => cleanup());
 
 describe("before next-auth has answered", () => {
@@ -183,6 +197,31 @@ describe("signed in", () => {
   });
 });
 
+describe("someone who is not a member of the organization", () => {
+  it("says so on every page, the open ones too, and shows none of it", () => {
+    // An admin removed them after they signed in. Even a page that names no
+    // feature would only fill up with the server's 404s.
+    setNotMember();
+    show();
+
+    expect(screen.getByText("You are not a member of this organization.")).toBeInTheDocument();
+    expect(
+      screen.getByText("An admin may have removed you. Check with an admin, or sign out.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+  });
+
+  it("offers a way out, and does not loop them through /login", () => {
+    // /login would sign them straight back in to the same organization.
+    setNotMember();
+    show("connections");
+
+    expect(routerCalls.push).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(mockSignOutEverywhere).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("when the database could not say what the role may do", () => {
   it("says the check failed, not that the role can't", () => {
     // Every request behind the page would be answered "try again" (503).
@@ -212,7 +251,7 @@ describe('with the bypass on and "View as" picking a role', () => {
     permissions: presetFor("viewer"),
     bypass: true,
     viewingAs: "viewer",
-    accessUnavailable: false,
+    org: { slug: "default", name: "Default" },
   };
 
   beforeEach(() => {
@@ -252,12 +291,37 @@ describe('with the bypass on and "View as" picking a role', () => {
     expect(await screen.findByText(SECRET)).toBeInTheDocument();
   });
 
-  it("says the check failed when /api/me can't answer, and how to get out of it", async () => {
+  it("says the check failed when /api/me can't answer, and to reload", async () => {
     setRoutes([{ match: "/api/me", status: 500, body: { error: "boom" } }]);
     show("connections");
 
     expect(await screen.findByText("Could not check your access right now.")).toBeInTheDocument();
-    expect(screen.getByText(/Or change "View as" back to Admin\./)).toBeInTheDocument();
+    expect(screen.getByText(/Reload the page in a moment\./)).toBeInTheDocument();
+    // Not "change View as": the server needs its database to act as any role,
+    // Admin included, so switching would not get anybody in.
+    expect(screen.queryByText(/View as/)).not.toBeInTheDocument();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+  });
+
+  it("says when the database has no organization to act in, with nobody to sign out", async () => {
+    setRoutes([
+      {
+        match: "/api/me",
+        status: 404,
+        body: { error: "This organization does not exist, or you are not a member." },
+      },
+    ]);
+    show();
+
+    expect(
+      await screen.findByText("You are not a member of this organization.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Authentication is off, and the app's database has no default organization to act in."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
   });
 });

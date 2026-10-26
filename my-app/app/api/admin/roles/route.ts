@@ -23,6 +23,10 @@ import {
  * for anything the person can fix, and this route passes that straight back.
  * What is checked here is only the shape of what was sent. Anything thrown
  * (the database is down) becomes a 500 with a message a person can act on.
+ *
+ * Every role here is one of the caller's organization's, and so is the log
+ * (gate.principal.orgId). Whatever role name is sent, another organization's
+ * roles are never listed, changed or deleted from here.
  */
 
 /** The longest role key worth looking up. Keys are 32 characters at most. */
@@ -66,7 +70,8 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    const [roles, changes] = await Promise.all([listRoles(), listRoleChanges(50)]);
+    const { orgId } = gate.principal;
+    const [roles, changes] = await Promise.all([listRoles(orgId), listRoleChanges(orgId, 50)]);
     return NextResponse.json({ roles, changes });
   } catch (error) {
     console.error("Failed to list roles:", error);
@@ -98,6 +103,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const result = await createRole(
+      gate.principal.orgId,
       { label: body.label, description, copyFrom },
       actorFor(gate.principal)
     );
@@ -140,10 +146,11 @@ export async function PUT(request: NextRequest) {
   }
 
   try {
+    const { orgId } = gate.principal;
     const actor = actorFor(gate.principal);
     const result = reset
-      ? await resetRolePermissions(role, actor)
-      : await setRolePermissions(role, permissions, actor);
+      ? await resetRolePermissions(orgId, role, actor)
+      : await setRolePermissions(orgId, role, permissions, actor);
     if (!result.ok) return refused(result);
     return NextResponse.json({ permissions: result.permissions, changes: result.changes });
   } catch (error) {
@@ -167,7 +174,7 @@ export async function DELETE(request: NextRequest) {
   if (!role) return badRequest("Say which role to delete.");
 
   try {
-    const result = await deleteRole(role, actorFor(gate.principal));
+    const result = await deleteRole(gate.principal.orgId, role, actorFor(gate.principal));
     if (!result.ok) return refused(result);
     return NextResponse.json({ success: true });
   } catch (error) {

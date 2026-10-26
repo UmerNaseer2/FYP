@@ -18,6 +18,14 @@ import type { MetadataClient } from "@/lib/db/sequelize";
  * Each method has its own permission under Users (Read, Update, Delete).
  * They are admin-only boxes: the Roles tab never offers them to another role,
  * so nobody but an admin can hand out roles, their own included.
+ *
+ * A user here is a member of the caller's organization (gate.principal.orgId).
+ * The list is that organization's memberships, a role change changes one
+ * membership, and removing someone removes their membership. The profile
+ * behind it, which says who the person is wherever they belong, is deleted
+ * only once they belong to no organization at all, so removing someone here
+ * never takes away their place in another organization. Someone who is not a
+ * member here is "No such user", the same answer as someone who never existed.
  */
 
 type UserRow = {
@@ -39,8 +47,11 @@ function parseRole(value: unknown): string | null {
 }
 
 /**
- * Take out the last-admin lock, then answer how many admins remain if
- * `excludingId` is demoted or deleted.
+ * Take out the last-admin lock, then answer how many admins the organization
+ * has left if `excludingId` is demoted or removed.
+ *
+ * Only this organization's admins count. Being an admin somewhere else gives
+ * nobody a way to manage this one, so it cannot keep this one manageable.
  *
  * Must run inside a transaction on `client`, because the lock it takes lasts
  * until that transaction ends — and the whole point is that it is still held
@@ -62,9 +73,9 @@ function parseRole(value: unknown): string | null {
  * three admins as readily as at two. The last admin does survive that, but by
  * accident, and the operator gets a 500 instead of being told which rule they
  * hit. Locking the whole set makes the second request WAIT instead, so it
- * re-counts once the first commits and refuses properly. `ORDER BY id` so two
- * requests always take the rows in the same order and cannot deadlock by
- * grabbing them in opposite directions.
+ * re-counts once the first commits and refuses properly. `ORDER BY profile_id`
+ * so two requests always take the rows in the same order and cannot deadlock
+ * by grabbing them in opposite directions.
  *
  * Why the count is a second statement rather than the length of that result.
  * Under READ COMMITTED each statement gets a fresh view, so this one sees
@@ -77,12 +88,19 @@ function parseRole(value: unknown): string | null {
  */
 async function otherAdminCount(
   client: MetadataClient,
+  orgId: number,
   excludingId: number
 ): Promise<number> {
-  await client.query(`SELECT id FROM profiles WHERE role = 'admin' ORDER BY id FOR UPDATE`);
+  await client.query(
+    `SELECT profile_id FROM memberships
+      WHERE org_id = $1 AND role = 'admin'
+      ORDER BY profile_id FOR UPDATE`,
+    [orgId]
+  );
   const result = await client.query<{ count: string }>(
-    `SELECT count(*)::text AS count FROM profiles WHERE role = 'admin' AND id <> $1`,
-    [excludingId]
+    `SELECT count(*)::text AS count FROM memberships
+      WHERE org_id = $1 AND role = 'admin' AND profile_id <> $2`,
+    [orgId, excludingId]
   );
   return Number(result.rows[0]?.count ?? "0");
 }
@@ -95,13 +113,17 @@ export async function GET() {
     await syncMetadataTables();
     // The roles come along for the role picker on each row: names and labels
     // only, since what each role may do is the Roles tab's business.
+    const { orgId } = gate.principal;
     const [result, roles] = await Promise.all([
       pool.query<UserRow>(
-        `SELECT id, email, name, role, created_at, last_seen_at
-           FROM profiles
-          ORDER BY email`
+        `SELECT p.id, p.email, p.name, m.role, p.created_at, p.last_seen_at
+           FROM memberships m
+           JOIN profiles p ON p.id = m.profile_id
+          WHERE m.org_id = $1
+          ORDER BY p.email`,
+        [orgId]
       ),
-      listRoles(),
+      listRoles(orgId),
     ]);
     return NextResponse.json({
       users: result.rows,
@@ -141,6 +163,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: "Choose a role for this user." }, { status: 400 });
   }
 
+  const { orgId } = gate.principal;
   let client;
   try {
     await syncMetadataTables();
@@ -155,8 +178,8 @@ export async function PUT(request: NextRequest) {
     // promotion cannot remove the last admin, and making every role change
     // queue behind every other one would be a cost for nothing.
     const current = await client.query<{ role: string }>(
-      `SELECT role FROM profiles WHERE id = $1`,
-      [userId]
+      `SELECT role FROM memberships WHERE org_id = $1 AND profile_id = $2`,
+      [orgId, userId]
     );
     if (current.rows.length === 0) {
       await client.query("ROLLBACK");
@@ -170,8 +193,10 @@ export async function PUT(request: NextRequest) {
     // in use and refuses. The person's current role is read alongside it, so
     // the change log can say what they had before.
     const named = await client.query<{ name: string; label: string }>(
-      `SELECT name, label FROM roles WHERE name = ANY($1::text[]) FOR KEY SHARE`,
-      [[role, previousRole]]
+      `SELECT name, label FROM roles
+        WHERE org_id = $1 AND name = ANY($2::text[])
+        FOR KEY SHARE`,
+      [orgId, [role, previousRole]]
     );
     const labelOf = (name: string) => named.rows.find((row) => row.name === name)?.label;
     if (labelOf(role) === undefined) {
@@ -189,7 +214,7 @@ export async function PUT(request: NextRequest) {
     if (
       role !== ADMIN_ROLE &&
       previousRole === ADMIN_ROLE &&
-      (await otherAdminCount(client, userId)) === 0
+      (await otherAdminCount(client, orgId, userId)) === 0
     ) {
       await client.query("ROLLBACK");
       return NextResponse.json(
@@ -198,10 +223,18 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // The role lives on the membership and the rest on the profile, so the
+    // reply is put together from both, in the same statement as the change.
     const result = await client.query<UserRow>(
-      `UPDATE profiles SET role = $1 WHERE id = $2
-       RETURNING id, email, name, role, created_at, last_seen_at`,
-      [role, userId]
+      `WITH changed AS (
+         UPDATE memberships SET role = $1
+          WHERE org_id = $2 AND profile_id = $3
+         RETURNING profile_id, role
+       )
+       SELECT p.id, p.email, p.name, changed.role, p.created_at, p.last_seen_at
+         FROM changed
+         JOIN profiles p ON p.id = changed.profile_id`,
+      [role, orgId, userId]
     );
     // Checked again rather than trusted from the SELECT above. On a promotion
     // no lock is taken, so somebody else's DELETE can land in between, and
@@ -215,7 +248,7 @@ export async function PUT(request: NextRequest) {
     // did not happen, or misses one that did. Picking the role someone
     // already has changes nothing and is not logged.
     if (previousRole !== role) {
-      await logRoleChanges(client, [
+      await logRoleChanges(client, orgId, [
         {
           role,
           kind: "assign",
@@ -257,6 +290,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "A valid userId is required." }, { status: 400 });
   }
 
+  const { orgId } = gate.principal;
   let client;
   try {
     await syncMetadataTables();
@@ -268,8 +302,11 @@ export async function DELETE(request: NextRequest) {
     await client.query("BEGIN");
 
     const target = await client.query<{ email: string; role: string }>(
-      `SELECT email, role FROM profiles WHERE id = $1`,
-      [userId]
+      `SELECT p.email, m.role
+         FROM memberships m
+         JOIN profiles p ON p.id = m.profile_id
+        WHERE m.org_id = $1 AND m.profile_id = $2`,
+      [orgId, userId]
     );
     if (target.rows.length === 0) {
       await client.query("ROLLBACK");
@@ -279,7 +316,7 @@ export async function DELETE(request: NextRequest) {
     // Same reasoning as the demotion guard above.
     if (
       target.rows[0].role === ADMIN_ROLE &&
-      (await otherAdminCount(client, userId)) === 0
+      (await otherAdminCount(client, orgId, userId)) === 0
     ) {
       await client.query("ROLLBACK");
       return NextResponse.json(
@@ -300,7 +337,20 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await client.query(`DELETE FROM profiles WHERE id = $1`, [userId]);
+    await client.query(`DELETE FROM memberships WHERE org_id = $1 AND profile_id = $2`, [
+      orgId,
+      userId,
+    ]);
+    // The profile goes too once nothing else needs it: a person who belongs to
+    // no organization has nothing left to sign in to. Checked in the same
+    // statement, so a membership somewhere else, however new, keeps it.
+    await client.query(
+      `-- every organization: a membership in any of them keeps the profile
+       DELETE FROM profiles
+        WHERE id = $1
+          AND NOT EXISTS (SELECT 1 FROM memberships WHERE profile_id = $1)`,
+      [userId]
+    );
     await client.query("COMMIT");
     return NextResponse.json({ success: true });
   } catch (error) {

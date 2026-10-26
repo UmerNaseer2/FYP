@@ -34,7 +34,10 @@ const metaPool = new Pool({
 
 async function targetPool() {
   const r = await metaPool.query(
-    "SELECT connection_string FROM connections WHERE name = $1 ORDER BY id LIMIT 1",
+    // A hand-run tool, so it looks the connection up by name in whichever
+    // organization saved it first.
+    "-- every organization: a hand-run seeding tool that finds the connection by name\n" +
+      "SELECT connection_string FROM connections WHERE name = $1 ORDER BY id LIMIT 1",
     ["neon DB ecoms"]
   );
   if (!r.rows[0]?.connection_string) throw new Error('No connection_string for "neon DB ecoms"');

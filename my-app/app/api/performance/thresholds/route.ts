@@ -41,12 +41,16 @@ function readTarget(connectionId: unknown, schema: unknown):
   return { ok: true, connectionId: id, schema: name };
 }
 
-/** The connection's name, or null when there is no such connection. */
-async function connectionName(connectionId: number): Promise<string | null> {
+/**
+ * The connection's name, or null when the organization has no such connection.
+ * A connection in another organization reads as missing, so its rules can be
+ * neither read nor saved from here, and the answer does not say it exists.
+ */
+async function connectionName(orgId: number, connectionId: number): Promise<string | null> {
   await syncMetadataTables();
   const result = await pool.query<{ name: string }>(
-    `SELECT name FROM connections WHERE id = $1`,
-    [connectionId]
+    `SELECT name FROM connections WHERE id = $1 AND org_id = $2`,
+    [connectionId, orgId]
   );
   return result.rows[0]?.name ?? null;
 }
@@ -60,7 +64,7 @@ export async function GET(request: NextRequest) {
   if (!target.ok) return NextResponse.json({ ok: false, error: target.error }, { status: 400 });
 
   try {
-    const name = await connectionName(target.connectionId);
+    const name = await connectionName(gate.principal.orgId, target.connectionId);
     if (name === null) {
       return NextResponse.json(
         { ok: false, error: `No saved connection found with id ${target.connectionId}.` },
@@ -70,7 +74,7 @@ export async function GET(request: NextRequest) {
     const view: ThresholdsView = {
       connectionName: name,
       schema: target.schema,
-      settings: await getThresholds(target.connectionId, target.schema),
+      settings: await getThresholds(gate.principal.orgId, target.connectionId, target.schema),
       definitions: THRESHOLDS,
     };
     return NextResponse.json(view);
@@ -109,7 +113,7 @@ export async function PUT(request: NextRequest) {
   }
 
   try {
-    const name = await connectionName(target.connectionId);
+    const name = await connectionName(gate.principal.orgId, target.connectionId);
     if (name === null) {
       return NextResponse.json(
         { ok: false, error: `No saved connection found with id ${target.connectionId}.` },
@@ -120,6 +124,7 @@ export async function PUT(request: NextRequest) {
     // saveThresholds validates every row and writes nothing when any of them is
     // wrong, so a rejected form leaves the stored settings exactly as they were.
     const problems = await saveThresholds(
+      gate.principal.orgId,
       target.connectionId,
       target.schema,
       body.settings as ThresholdSetting[],
@@ -134,7 +139,7 @@ export async function PUT(request: NextRequest) {
     const view: ThresholdsView = {
       connectionName: name,
       schema: target.schema,
-      settings: await getThresholds(target.connectionId, target.schema),
+      settings: await getThresholds(gate.principal.orgId, target.connectionId, target.schema),
       definitions: THRESHOLDS,
     };
     return NextResponse.json(view);

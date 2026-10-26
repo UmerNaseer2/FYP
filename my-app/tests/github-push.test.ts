@@ -702,6 +702,109 @@ describe("POST /api/github/push, adding a rollback to a saved version", () => {
   });
 });
 
+describe("POST /api/github/push, organizations", () => {
+  // Organization 12 is not the default one, so its scripts live under
+  // orgs/12/ (lib/registry-paths.ts). Every test here that acts as it names
+  // only addresses inside that folder, and the stub refuses any other, so a
+  // single request into the default organization's folder fails the test.
+  const ORG_FOLDER = `${REPO}/contents/orgs/12/db/public/orders_fix`;
+  const orgFile = (name: string) => `${ORG_FOLDER}/${name}`;
+
+  function asOrganization12(): void {
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("editor", { orgId: 12, orgSlug: "acme", orgName: "Acme", orgIsDefault: false }),
+    }));
+  }
+
+  function orgListing(...files: Array<[name: string, sha: string]>): () => Response {
+    return () =>
+      json(200, files.map(([name, sha]) => ({ name, sha, type: "file", path: `orgs/12/db/public/orders_fix/${name}` })));
+  }
+
+  it("saves another organization's version under orgs/<id>, and names that path", async () => {
+    asOrganization12();
+    answers[`GET ${ORG_FOLDER}`] = () => json(404, { message: "Not Found" });
+    answers[`GET ${REPO}`] = () => json(200, { full_name: "acme/registry" });
+    answers[`PUT ${orgFile("v1.2.0.sql")}`] = saved("v1.2.0.sql");
+    answers[`PUT ${orgFile("v1.2.0.down.sql")}`] = saved("v1.2.0.down.sql");
+    const { status, body } = await push({ ...BASE, down_sql: DOWN });
+    expect(status).toBe(200);
+    expect(body.paths).toEqual({
+      migration: "orgs/12/db/public/orders_fix/v1.2.0.sql",
+      rollback: "orgs/12/db/public/orders_fix/v1.2.0.down.sql",
+    });
+    expect(writes().map((call) => `${call.method} ${call.url}`)).toEqual([
+      `PUT ${orgFile("v1.2.0.sql")}`,
+      `PUT ${orgFile("v1.2.0.down.sql")}`,
+    ]);
+  });
+
+  it("removes a leftover rollback from that organization's folder", async () => {
+    asOrganization12();
+    answers[`GET ${ORG_FOLDER}`] = orgListing(["v1.0.0.sql", "a"], ["v2.0.0.down.sql", "orphan-sha"]);
+    answers[`DELETE ${orgFile("v2.0.0.down.sql")}`] = () => json(200, { commit: {} });
+    answers[`PUT ${orgFile("v2.0.0.sql")}`] = saved("v2.0.0.sql");
+    const { status } = await push({ ...BASE, version: "2.0.0", change_level: "breaking" });
+    expect(status).toBe(200);
+    expect(writes().map((call) => `${call.method} ${call.url}`)).toEqual([
+      `DELETE ${orgFile("v2.0.0.down.sql")}`,
+      `PUT ${orgFile("v2.0.0.sql")}`,
+    ]);
+  });
+
+  it("adds a missing rollback inside that organization's folder", async () => {
+    asOrganization12();
+    answers[`GET ${ORG_FOLDER}`] = orgListing(["v1.2.0.sql", "u"]);
+    answers[`PUT ${orgFile("v1.2.0.down.sql")}`] = saved("v1.2.0.down.sql");
+    const { status, body } = await push({
+      attach_rollback: true,
+      database_name: "db",
+      schema_name: "public",
+      script_name: "orders_fix",
+      version: "1.2.0",
+      down_sql: DOWN,
+    });
+    expect(status).toBe(200);
+    expect(body.paths).toEqual({
+      migration: "orgs/12/db/public/orders_fix/v1.2.0.sql",
+      rollback: "orgs/12/db/public/orders_fix/v1.2.0.down.sql",
+    });
+    expect(writes().map((call) => call.url)).toEqual([orgFile("v1.2.0.down.sql")]);
+  });
+
+  it("refuses, for the default organization, a database named orgs with an all-digit schema", async () => {
+    // That path is organization 12's folder. Nothing is asked of GitHub.
+    const { status, body } = await push({ ...BASE, database_name: "orgs", schema_name: "12" });
+    expect(status).toBe(400);
+    expect(body.code).toBe("invalid_input");
+    expect(body.error).toContain("other organizations' scripts");
+    expect(body.error).toContain("Nothing was saved to GitHub.");
+    expect(calls).toEqual([]);
+  });
+
+  it("still saves a default-organization database named orgs with an ordinary schema", async () => {
+    const folder = `${REPO}/contents/orgs/public/orders_fix`;
+    answers[`GET ${folder}`] = () => json(404, { message: "Not Found" });
+    answers[`GET ${REPO}`] = () => json(200, { full_name: "acme/registry" });
+    answers[`PUT ${folder}/v1.2.0.sql`] = saved("v1.2.0.sql");
+    const { status, body } = await push({ ...BASE, database_name: "orgs" });
+    expect(status).toBe(200);
+    expect(body.paths).toEqual({ migration: "orgs/public/orders_fix/v1.2.0.sql", rollback: null });
+  });
+
+  it("lets another organization use those names, inside its own folder", async () => {
+    asOrganization12();
+    const folder = `${REPO}/contents/orgs/12/orgs/5/orders_fix`;
+    answers[`GET ${folder}`] = () => json(404, { message: "Not Found" });
+    answers[`GET ${REPO}`] = () => json(200, { full_name: "acme/registry" });
+    answers[`PUT ${folder}/v1.2.0.sql`] = saved("v1.2.0.sql");
+    const { status, body } = await push({ ...BASE, database_name: "orgs", schema_name: "5" });
+    expect(status).toBe(200);
+    expect(body.paths).toEqual({ migration: "orgs/12/orgs/5/orders_fix/v1.2.0.sql", rollback: null });
+  });
+});
+
 describe("POST /api/github/push, setup and access", () => {
   it("says which settings are missing, by name only, and asks GitHub nothing", async () => {
     process.env.GITHUB_REPO_NAME = "";

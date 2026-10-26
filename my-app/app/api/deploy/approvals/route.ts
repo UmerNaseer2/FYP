@@ -33,6 +33,11 @@ import { analyseRunRisk, type RiskScript } from "@/lib/deploy-risk";
  * rows. Each script may carry an optional `change_type`, which can raise its
  * grade but never lower it, so a screen can make a run look riskier to the
  * approver, never safer.
+ *
+ * Both handlers work inside the caller's organization. GET lists only its
+ * requests, and POST can only ask about a connection it owns: another
+ * organization's connection is answered 404, the same as a deleted one, and
+ * no request is written.
  */
 
 /** Narrow one entry of the caller's `scripts` array, or explain what is wrong. */
@@ -70,7 +75,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const approvals = await listApprovals(connectionId, schemaName, scriptName);
+    const approvals = await listApprovals(
+      gate.principal.orgId,
+      connectionId,
+      schemaName,
+      scriptName
+    );
     return NextResponse.json({ approvals });
   } catch (error) {
     console.error("Approvals — list failed:", error);
@@ -180,6 +190,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const approval = await createApprovalRequest({
+      orgId: gate.principal.orgId,
       connectionId,
       schemaName,
       scriptName,
@@ -190,6 +201,11 @@ export async function POST(request: NextRequest) {
       note,
       action,
     });
+    if (!approval) {
+      // Another organization's connection reads as missing, the same answer a
+      // deleted one gets, so this cannot be used to learn which ids exist.
+      return NextResponse.json({ error: "Connection not found." }, { status: 404 });
+    }
     return NextResponse.json({ approval });
   } catch (error) {
     console.error("Approvals — request failed:", error);

@@ -13,6 +13,12 @@ import {
  *
  * What may be set and how a breach is decided is all in lib/perf-thresholds.ts,
  * which has no database in it. This file is only the round trip.
+ *
+ * Every function takes the organization the caller acts in, and every query
+ * filters on it. The routes have already checked that the connection is that
+ * organization's, so the filter changes nothing for them. It is here so that a
+ * caller that forgot to check still cannot read or write another
+ * organization's rules.
  */
 
 /**
@@ -25,6 +31,7 @@ import {
  * an existing installation without anybody running anything.
  */
 export async function getThresholds(
+  orgId: number,
   connectionId: number,
   schema: string
 ): Promise<ThresholdSetting[]> {
@@ -35,8 +42,8 @@ export async function getThresholds(
   }>(
     `SELECT threshold_key, threshold_value, enabled
        FROM perf_thresholds
-      WHERE connection_id = $1 AND schema_name = $2`,
-    [connectionId, schema]
+      WHERE org_id = $1 AND connection_id = $2 AND schema_name = $3`,
+    [orgId, connectionId, schema]
   );
 
   const stored = new Map<string, { value: number; enabled: boolean }>();
@@ -71,8 +78,15 @@ export async function getThresholds(
  * Returns the sentences for anything rejected. An empty array means it saved.
  * Validation happens here as well as in the UI because the UI is not a gate —
  * this route is reachable directly.
+ *
+ * Each row takes its org_id from the connection, and only from a connection in
+ * `orgId`. For a connection in any other organization the SELECT finds nothing
+ * and nothing is written. The conflict target stays (connection_id,
+ * schema_name, threshold_key) without org_id: a connection id belongs to one
+ * organization, so the row a conflict finds is always in the same one.
  */
 export async function saveThresholds(
+  orgId: number,
   connectionId: number,
   schema: string,
   settings: ThresholdSetting[],
@@ -107,14 +121,17 @@ export async function saveThresholds(
     for (const setting of clean) {
       await client.query(
         `INSERT INTO perf_thresholds
-           (connection_id, schema_name, threshold_key, threshold_value, enabled, updated_by, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
+           (org_id, connection_id, schema_name, threshold_key, threshold_value, enabled,
+            updated_by, updated_at)
+         SELECT org_id, id, $2, $3, $4, $5, $6, now()
+           FROM connections
+          WHERE id = $1 AND org_id = $7
          ON CONFLICT (connection_id, schema_name, threshold_key)
          DO UPDATE SET threshold_value = EXCLUDED.threshold_value,
                        enabled         = EXCLUDED.enabled,
                        updated_by      = EXCLUDED.updated_by,
                        updated_at      = now()`,
-        [connectionId, schema, setting.key, setting.value, setting.enabled, updatedBy]
+        [connectionId, schema, setting.key, setting.value, setting.enabled, updatedBy, orgId]
       );
     }
     await client.query("COMMIT");
@@ -138,11 +155,12 @@ export async function saveThresholds(
  * switched off", which fires nothing.
  */
 export async function getThresholdsOrDefaults(
+  orgId: number,
   connectionId: number,
   schema: string
 ): Promise<ThresholdSetting[]> {
   try {
-    return await getThresholds(connectionId, schema);
+    return await getThresholds(orgId, connectionId, schema);
   } catch (error) {
     console.error(
       "Performance thresholds — could not be read:",

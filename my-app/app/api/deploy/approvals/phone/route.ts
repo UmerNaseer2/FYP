@@ -24,14 +24,15 @@ import { hasPermission } from "@/lib/permissions";
  * route refuses outside the bypass (decisionBlockReason), so a phone can leave
  * out buttons that would only be refused.
  *
- * The gate is the one the Deploy screen's list has: Approvals: Read.
+ * The gate is the one the Deploy screen's list has: Approvals: Read. The queue
+ * is the caller's organization's only.
  */
 export async function GET() {
   const gate = await requirePermission("approvals:read");
   if (!gate.ok) return gate.response;
 
   try {
-    const rows = await listPendingApprovals();
+    const rows = await listPendingApprovals(gate.principal.orgId);
     const email = gate.principal.email.toLowerCase();
 
     return NextResponse.json({

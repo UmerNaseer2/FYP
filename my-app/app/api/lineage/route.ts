@@ -10,13 +10,16 @@ import { ENVIRONMENTS, toEnvironment } from "@/lib/environments";
 // Re-export so existing callers can keep importing the list item type from here.
 export type { TrackedSchemaListItem };
 
-/** GET /api/lineage — list every tracked schema with its lineage HEAD + drift. */
+/**
+ * GET /api/lineage — list every tracked schema in the caller's organization
+ * with its lineage HEAD + drift.
+ */
 export async function GET() {
   const gate = await requirePermission("drift:read", "dashboard:read");
   if (!gate.ok) return gate.response;
 
   try {
-    const items = await listTrackedSchemas();
+    const items = await listTrackedSchemas(gate.principal.orgId);
     return NextResponse.json(items);
   } catch (error) {
     // This used to answer `[]` with a 200. A dashboard showing "nothing tracked
@@ -69,10 +72,12 @@ export async function PATCH(request: NextRequest) {
     }
     const environment = toEnvironment(raw);
 
+    // Another organization's schema reads as not tracked, the same answer an
+    // untracked one gets, so this cannot be used to learn which ids exist.
     const result = await pool.query<{ id: number; environment: string }>(
-      `UPDATE tracked_schemas SET environment = $1 WHERE id = $2
+      `UPDATE tracked_schemas SET environment = $1 WHERE id = $2 AND org_id = $3
        RETURNING id, environment`,
-      [environment, id]
+      [environment, id, gate.principal.orgId]
     );
     if (result.rows.length === 0) {
       return NextResponse.json(
@@ -108,7 +113,12 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await pool.query("DELETE FROM tracked_schemas WHERE id = $1", [id]);
+    // Only inside the caller's organization. Another organization's id deletes
+    // nothing and answers the same success an already-untracked one does.
+    await pool.query("DELETE FROM tracked_schemas WHERE id = $1 AND org_id = $2", [
+      id,
+      gate.principal.orgId,
+    ]);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("DELETE lineage error:", error);

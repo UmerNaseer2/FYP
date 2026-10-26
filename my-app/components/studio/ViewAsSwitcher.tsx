@@ -6,7 +6,7 @@ import { ADMIN_ROLE } from "@/lib/permissions";
 
 type RoleOption = { name: string; label: string };
 
-const LOAD_FAILED = "Could not load the roles. You can still go back to Admin.";
+const LOAD_FAILED = "Could not load the roles. Try again in a moment.";
 const SAVE_FAILED = "Could not switch roles. Try again in a moment.";
 
 /**
@@ -119,8 +119,8 @@ export function ViewAsSwitcher() {
     setPicked(null);
   }
 
-  // Admin is always offered first, whatever the list says, so a database that
-  // stops answering can never leave someone stuck viewing the app as a role.
+  // Admin is always offered first, whatever the list says, so a list that
+  // fails to load can never leave someone stuck viewing the app as a role.
   const listed = (roles ?? []).filter((role) => role.name !== ADMIN_ROLE);
   // The role being viewed stays in the list even when the list did not load,
   // so the picker can still say which one it is.

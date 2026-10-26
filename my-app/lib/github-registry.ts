@@ -12,6 +12,7 @@
 // empty because a request failed is exactly how a version below an existing
 // one gets published. (The pull route fails open on purpose, because a page
 // that lists scripts is still useful half-filled; a guard is not.)
+import { familyFolderPath } from "./registry-paths";
 import {
   describeGitHubFailure,
   familyVersions,
@@ -180,24 +181,34 @@ export async function logGitHubAnswer(step: string, res: Response): Promise<void
 }
 
 /**
- * The Contents API address of a family folder, <database>/<schema>/<script>.
- * Every segment is encoded on its own (as the push route always did), so a
- * space becomes %20 and can't change which folder is meant.
+ * The Contents API address of a family folder, [root/]<database>/<schema>/<script>.
+ * `root` is the organization's folder from registryRoot in lib/registry-paths
+ * ("" for the default organization). Every segment is encoded on its own (as
+ * the push route always did), so a space becomes %20 and can't change which
+ * folder is meant.
  */
-export function familyFolderUrl(config: GitHubConfig, database: string, schema: string, scriptName: string): string {
-  const path = [database, schema, scriptName].map(encodeURIComponent).join("/");
+export function familyFolderUrl(
+  config: GitHubConfig,
+  root: string,
+  database: string,
+  schema: string,
+  scriptName: string,
+): string {
+  const rootSegments = root ? root.split("/") : [];
+  const path = [...rootSegments, database, schema, scriptName].map(encodeURIComponent).join("/");
   return `${repoUrl(config)}/contents/${path}`;
 }
 
 /** The Contents API address of one file in a family folder, e.g. v1.2.0.sql. */
 export function contentsFileUrl(
   config: GitHubConfig,
+  root: string,
   database: string,
   schema: string,
   scriptName: string,
   fileName: string,
 ): string {
-  return `${familyFolderUrl(config, database, schema, scriptName)}/${encodeURIComponent(fileName)}`;
+  return `${familyFolderUrl(config, root, database, schema, scriptName)}/${encodeURIComponent(fileName)}`;
 }
 
 /** A family folder's listing, or why it could not be read. `status` 0 means GitHub was not reached. */
@@ -223,7 +234,7 @@ function githubGet(config: GitHubConfig, url: string): Promise<Response | null> 
 }
 
 /**
- * List the files in one family folder, <database>/<schema>/<script>/.
+ * List the files in one family folder, [root/]<database>/<schema>/<script>/.
  *
  * A 404 on the folder is ambiguous: a new family has no folder yet, but GitHub
  * also answers 404 when the repository name is wrong or the token can't see
@@ -233,12 +244,13 @@ function githubGet(config: GitHubConfig, url: string): Promise<Response | null> 
  */
 export async function listFamilyFiles(
   config: GitHubConfig,
+  root: string,
   database: string,
   schema: string,
   scriptName: string,
 ): Promise<FamilyListing> {
   const action = `list the versions of "${scriptName}"`;
-  const res = await githubGet(config, familyFolderUrl(config, database, schema, scriptName));
+  const res = await githubGet(config, familyFolderUrl(config, root, database, schema, scriptName));
   if (!res) return unreachable(action);
 
   if (res.status === 404) {
@@ -262,7 +274,7 @@ export async function listFamilyFiles(
       ok: false,
       status: res.status,
       code: "not_a_folder",
-      error: `In GitHub, ${database}/${schema}/${scriptName} is a file, not a folder of versions, so its versions can't be read. Ask whoever looks after the registry repository to move that file out of the way.`,
+      error: `In GitHub, ${familyFolderPath(root, database, schema, scriptName)} is a file, not a folder of versions, so its versions can't be read. Ask whoever looks after the registry repository to move that file out of the way.`,
     };
   }
 

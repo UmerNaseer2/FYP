@@ -43,8 +43,9 @@ function getEnforcer(): EdgeHandler {
       // session-shaped object with no user in it (the advisory fixed in
       // next-auth 5.0.0-beta.32 was about exactly that), and a check for "is
       // there anything here" would let it through. Same rule as the
-      // `authorized` callback in auth.config.ts. On the server, getPrincipal in
-      // lib/auth-guard.ts asks for a little more: the user's email.
+      // `authorized` callback in auth.config.ts. On the server, the gates in
+      // lib/auth-guard.ts ask for more: the user's email, and a membership in
+      // the organization the request acts in.
       if (request.auth?.user) return NextResponse.next();
 
       // An unauthenticated API call must get a 401 it can act on, not an HTML

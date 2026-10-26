@@ -112,8 +112,8 @@ export async function GET(request: NextRequest) {
     const result = await pool.query<typeof conn>(
       `SELECT name, type, host, port, database_name, username, password,
               connection_string, ssl, ssl_mode
-         FROM connections WHERE id = $1`,
-      [connectionId]
+         FROM connections WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
     if (result.rows.length === 0) {
       return NextResponse.json(
@@ -160,7 +160,7 @@ export async function GET(request: NextRequest) {
   // The threshold is read before the target connection is opened, so a slow or
   // unreachable app database does not hold a connection to somebody else's
   // server open while it is waited on.
-  const settings = await getThresholdsOrDefaults(connectionId, schema);
+  const settings = await getThresholdsOrDefaults(gate.principal.orgId, connectionId, schema);
   const longRunning = settings.find((s) => s.key === "long_running_seconds");
   const longRunningSeconds =
     longRunning && longRunning.enabled ? longRunning.value : FALLBACK_LONG_RUNNING_SECONDS;

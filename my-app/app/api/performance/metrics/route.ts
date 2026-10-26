@@ -90,8 +90,8 @@ export async function GET(request: NextRequest) {
     await syncMetadataTables();
 
     const conn = await pool.query<{ name: string; type: string }>(
-      `SELECT name, type FROM connections WHERE id = $1`,
-      [connectionId]
+      `SELECT name, type FROM connections WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
     if (conn.rows.length === 0) {
       return NextResponse.json(
@@ -115,8 +115,8 @@ export async function GET(request: NextRequest) {
     }>(
       `SELECT id, label, drift_check_interval_minutes, last_drift_check_at
          FROM tracked_schemas
-        WHERE connection_id = $1 AND schema_name = $2`,
-      [connectionId, schema]
+        WHERE connection_id = $1 AND schema_name = $2 AND org_id = $3`,
+      [connectionId, schema, gate.principal.orgId]
     );
     const row = tracked.rows[0];
     tracking = row
@@ -153,7 +153,7 @@ export async function GET(request: NextRequest) {
 
   let samples: MetricSample[];
   try {
-    samples = await readSchemaMetrics(tracking.trackedSchemaId, days);
+    samples = await readSchemaMetrics(gate.principal.orgId, tracking.trackedSchemaId, days);
   } catch (error) {
     console.error("Monitoring — failed to read readings:", error);
     return NextResponse.json(

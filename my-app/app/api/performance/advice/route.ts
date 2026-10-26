@@ -197,9 +197,11 @@ export async function GET(request: NextRequest) {
       `SELECT name, host, port, database_name, type, username, password,
               connection_string, ssl, ssl_mode
          FROM connections
-        WHERE id = $1`,
-      [connectionId]
+        WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     if (result.rows.length === 0) {
       return NextResponse.json(
         { ok: false, error: `No saved connection found with id ${connectionId}.` },
@@ -278,7 +280,7 @@ export async function GET(request: NextRequest) {
   // one is a statement about the tables themselves, so it belongs in the rule
   // rather than in a banner on top of it. A threshold that is off leaves the
   // rule on its own default: disabled means "I have not said", not "zero".
-  const thresholds = await getThresholdsOrDefaults(connectionId, schema);
+  const thresholds = await getThresholdsOrDefaults(gate.principal.orgId, connectionId, schema);
   const deadRowSetting = thresholds.find((t) => t.key === "dead_row_ratio");
   const deadRowRatio =
     deadRowSetting && deadRowSetting.enabled ? deadRowSetting.value : DEAD_ROW_RATIO_DEFAULT;
@@ -613,7 +615,7 @@ export async function GET(request: NextRequest) {
 
     patterns = compositeIndexAdvice(
       schema,
-      aggregateSearches(await listSearches(connectionId, schema)),
+      aggregateSearches(await listSearches(gate.principal.orgId, connectionId, schema)),
       Object.fromEntries(
         snapshot.tables.map((t) => [
           t.name,

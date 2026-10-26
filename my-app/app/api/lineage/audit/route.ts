@@ -6,7 +6,8 @@ import { listDriftEvents } from "@/lib/lineage-db";
 const DEFAULT_LIMIT = 200;
 
 /**
- * GET /api/lineage/audit — drift check history, newest first.
+ * GET /api/lineage/audit — drift check history in the caller's organization,
+ * newest first.
  * Optional ?trackedSchemaId=N to scope to a single tracked schema, and
  * ?limit=N for callers that only want the last few (the drift detail screen
  * shows six). An unreadable or out-of-range limit falls back to the default
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
         ? rawLimit
         : DEFAULT_LIMIT;
 
-    const events = await listDriftEvents(trackedSchemaId, limit);
+    const events = await listDriftEvents(gate.principal.orgId, trackedSchemaId, limit);
     return NextResponse.json(events);
   } catch (error) {
     // An empty audit feed means "no drift check has ever run", which is a

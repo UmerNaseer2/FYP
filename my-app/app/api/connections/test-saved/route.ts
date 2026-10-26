@@ -3,7 +3,13 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
 
-/** Test a saved connection by id (used by the per-row "Test" action). */
+/**
+ * Test a saved connection by id (used by the per-row "Test" action).
+ *
+ * Only a connection in the caller's organization. Both statements name the
+ * organization next to the id, so another organization's connection is never
+ * dialled and never has its test result overwritten.
+ */
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("connections:update");
   if (!gate.ok) return gate.response;
@@ -23,12 +29,14 @@ export async function POST(request: NextRequest) {
     const result = await pool.query(
       `SELECT host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
        FROM connections
-       WHERE id = $1`,
-      [id]
+       WHERE id = $1 AND org_id = $2`,
+      [id, gate.principal.orgId]
     );
 
     const conn = result.rows[0];
 
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     if (!conn) {
       return NextResponse.json(
         { ok: false, error: "Connection not found.", sslRequired: false, detail: "" },
@@ -71,7 +79,7 @@ export async function POST(request: NextRequest) {
                 last_test_version = $3,
                 last_test_latency_ms = $4,
                 last_test_error = $5
-          WHERE id = $6`,
+          WHERE id = $6 AND org_id = $7`,
         [
           testedAt,
           testResult.ok,
@@ -79,6 +87,7 @@ export async function POST(request: NextRequest) {
           testResult.ok ? testResult.latencyMs : null,
           testResult.ok ? null : testResult.error,
           id,
+          gate.principal.orgId,
         ]
       );
     } catch (writeError) {

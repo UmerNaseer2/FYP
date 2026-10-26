@@ -20,6 +20,9 @@ import { hasPermission, refusalMessage } from "@/lib/permissions";
  * screen an approver reads the migrations from the registry, which needs
  * Scripts: Read or Deploy: Read (the same pair as GET /api/github/pull), so
  * this needs one of those as well as Approvals: Read.
+ *
+ * Only a request in the caller's organization. Another organization's request
+ * answers 404, the same as one that was deleted, and its SQL is never read.
  */
 export async function GET(
   _request: NextRequest,
@@ -41,7 +44,7 @@ export async function GET(
   }
 
   try {
-    const found = await getApprovalScripts(id);
+    const found = await getApprovalScripts(gate.principal.orgId, id);
     if (!found) {
       return NextResponse.json({ error: "That approval no longer exists." }, { status: 404 });
     }

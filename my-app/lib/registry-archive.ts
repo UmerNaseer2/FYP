@@ -50,7 +50,12 @@ import {
   logGitHubAnswer,
   type GitHubConfig,
 } from "@/lib/github-registry";
-import { migrationFileName, rollbackFileName } from "@/lib/registry-paths";
+import {
+  familyFolderPath,
+  migrationFileName,
+  reservedFolderProblem,
+  rollbackFileName,
+} from "@/lib/registry-paths";
 import type { ArchivedVersion } from "@/lib/registry-report";
 import {
   describeGitHubFailure,
@@ -78,8 +83,8 @@ export type AppliedVersion = {
 // halves and should not have to know there are two files.
 export type { ArchivedVersion } from "@/lib/registry-report";
 
-function pathOf(database: string, schema: string, scriptName: string, fileName: string): string {
-  return `${database}/${schema}/${scriptName}/${fileName}`;
+function pathOf(root: string, database: string, schema: string, scriptName: string, fileName: string): string {
+  return `${familyFolderPath(root, database, schema, scriptName)}/${fileName}`;
 }
 
 /**
@@ -94,6 +99,7 @@ function pathOf(database: string, schema: string, scriptName: string, fileName: 
  */
 async function writeVersion(
   config: GitHubConfig,
+  root: string,
   database: string,
   schema: string,
   applied: AppliedVersion,
@@ -113,7 +119,7 @@ async function writeVersion(
   const migrationName = migrationFileName(version);
   const upRes = await githubFetch(
     config,
-    contentsFileUrl(config, database, schema, scriptName, migrationName),
+    contentsFileUrl(config, root, database, schema, scriptName, migrationName),
     {
       method: "PUT",
       body: {
@@ -141,7 +147,7 @@ async function writeVersion(
   if (upRes.status === 422) {
     return answer({
       status: "already-saved",
-      path: pathOf(database, schema, scriptName, migrationName),
+      path: pathOf(root, database, schema, scriptName, migrationName),
     });
   }
   if (!upRes.ok) {
@@ -161,7 +167,7 @@ async function writeVersion(
   if (applied.downSql !== null) {
     const downRes = await githubFetch(
       config,
-      contentsFileUrl(config, database, schema, scriptName, rollbackFileName(version)),
+      contentsFileUrl(config, root, database, schema, scriptName, rollbackFileName(version)),
       {
         method: "PUT",
         body: {
@@ -176,7 +182,7 @@ async function writeVersion(
 
   return answer({
     status: "saved",
-    path: pathOf(database, schema, scriptName, migrationName),
+    path: pathOf(root, database, schema, scriptName, migrationName),
     rollback_saved: rollbackSaved,
   });
 }
@@ -188,7 +194,10 @@ function toBase64(text: string): string {
 
 /**
  * Record every version a committed run applied, skipping the ones the registry
- * already has.
+ * already has. `root` is the organization's folder in the registry, from
+ * registryRoot in lib/registry-paths ("" for the default organization): the
+ * run belongs to the organization whose connection it ran on, so its versions
+ * go in that organization's folder.
  *
  * Returns null when GitHub is not configured — there is no registry to fall
  * behind, so nothing was attempted and nothing is worth reporting. Otherwise
@@ -205,6 +214,7 @@ function toBase64(text: string): string {
  * always there.
  */
 export async function archiveAppliedVersions(input: {
+  root: string;
   database: string;
   schema: string;
   versions: ReadonlyArray<AppliedVersion>;
@@ -213,7 +223,27 @@ export async function archiveAppliedVersions(input: {
   if (!config.ok) return null;
   if (input.versions.length === 0) return [];
 
-  const { database, schema } = input;
+  const { root, database, schema } = input;
+
+  // A database named "orgs" with an all-digit schema would write into another
+  // organization's folder, so the push route refuses it and so does this.
+  // Every version is reported as not recorded, with the reason. The reason is
+  // written here rather than taken from reservedFolderProblem, whose words
+  // ask the author to rename and try again: by now the run has committed,
+  // so there is nothing to try again.
+  if (reservedFolderProblem(root, database, schema)) {
+    return input.versions.map(({ scriptName, version }) => ({
+      script_name: scriptName,
+      version,
+      status: "not-saved",
+      path: null,
+      reason:
+        `v${version} of "${scriptName}" was not recorded in the registry: a database named ` +
+        `"${database}" with the schema "${schema}" would land in the folder that holds another ` +
+        `organization's scripts. The migration itself is applied and safe.`,
+      rollback_saved: false,
+    }));
+  }
   // One listing per FAMILY, not per version: a run of five versions of one
   // script is one folder, and re-reading it five times would be five GitHub
   // calls to answer the same question. Read once, then track what this loop
@@ -226,7 +256,7 @@ export async function archiveAppliedVersions(input: {
     const { scriptName, version } = applied;
 
     if (!listings.has(scriptName)) {
-      const listing = await listFamilyFiles(config, database, schema, scriptName);
+      const listing = await listFamilyFiles(config, root, database, schema, scriptName);
       listings.set(scriptName, listing.ok ? [...listing.files] : null);
       if (!listing.ok) {
         console.error(`Registry archive — could not list "${scriptName}": ${listing.error}`);
@@ -255,7 +285,7 @@ export async function archiveAppliedVersions(input: {
         script_name: scriptName,
         version,
         status: "already-saved",
-        path: pathOf(database, schema, scriptName, existing.up.name),
+        path: pathOf(root, database, schema, scriptName, existing.up.name),
         reason: null,
         rollback_saved: existing.down !== null,
       });
@@ -264,7 +294,7 @@ export async function archiveAppliedVersions(input: {
 
     let written: ArchivedVersion;
     try {
-      written = await writeVersion(config, database, schema, applied);
+      written = await writeVersion(config, root, database, schema, applied);
     } catch (error) {
       // githubFetch already turns a network failure into null rather than a
       // throw, so reaching here means something unforeseen. It still may not

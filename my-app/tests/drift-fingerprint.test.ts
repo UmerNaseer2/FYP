@@ -21,6 +21,14 @@ import { column, schema, table } from "./helpers/snapshots";
 let previousEvent: { status: string; fingerprint: string | null } | null = null;
 /** What computeDriftDetail should hand back on the next call. */
 let outcome: unknown = null;
+/**
+ * Whether the drift_events INSERT finds its tracked schema. It copies org_id
+ * from tracked_schemas, so a schema untracked mid-check gives no row.
+ */
+let insertLands = true;
+
+/** The organization every check below runs in. */
+const ORG = 7;
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -31,6 +39,9 @@ const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>(
         rows: mockState.previous ? [mockState.previous] : [],
         rowCount: mockState.previous ? 1 : 0,
       };
+    }
+    if (/INSERT INTO drift_events/.test(text)) {
+      return { rows: [], rowCount: mockState.insertLands ? 1 : 0 };
     }
     return { rows: [], rowCount: 0 };
   }
@@ -61,6 +72,9 @@ const mockState = {
   },
   get outcome() {
     return outcome;
+  },
+  get insertLands() {
+    return insertLands;
   },
 };
 
@@ -131,6 +145,7 @@ beforeEach(() => {
   mockPoolQuery.mockClear();
   previousEvent = null;
   outcome = null;
+  insertLands = true;
 });
 
 describe("a schema that drifts twice", () => {
@@ -143,7 +158,7 @@ describe("a schema that drifts twice", () => {
     };
     outcome = drifted(afterSecondChange);
 
-    const result = await runDriftCheck(4, "scheduled", "on_change");
+    const result = await runDriftCheck(ORG, 4, "scheduled", "on_change");
 
     expect(result.ok).toBe(true);
     expect(inserted()).toHaveLength(1);
@@ -160,7 +175,7 @@ describe("a schema that drifts twice", () => {
     };
     outcome = drifted(afterDifferentChange);
 
-    await runDriftCheck(4, "scheduled", "on_change");
+    await runDriftCheck(ORG, 4, "scheduled", "on_change");
 
     expect(inserted()).toHaveLength(1);
   });
@@ -171,10 +186,25 @@ describe("a schema that drifts twice", () => {
     previousEvent = null;
     outcome = drifted(afterFirstChange);
 
-    await runDriftCheck(4, "scheduled", "on_change");
+    await runDriftCheck(ORG, 4, "scheduled", "on_change");
 
+    // $7 is the fingerprint and $8 the organization the row is filed under.
     const values = inserted()[0];
-    expect(values[values.length - 1]).toBe(driftFingerprint(report(afterFirstChange)));
+    expect(values[6]).toBe(driftFingerprint(report(afterFirstChange)));
+    expect(values[7]).toBe(ORG);
+  });
+
+  it("says nothing was recorded when the schema is no longer tracked", async () => {
+    // The row copies its org_id from the tracked schema, so one untracked while
+    // the check ran (or one in another organization) gives no row, and the
+    // result must not claim one landed.
+    outcome = drifted(afterFirstChange);
+    insertLands = false;
+
+    const result = await runDriftCheck(ORG, 4, "scheduled", "on_change");
+
+    expect(inserted()).toHaveLength(1);
+    expect(result.ok && result.run.recorded).toBe(false);
   });
 });
 
@@ -186,7 +216,7 @@ describe("a check that found nothing new", () => {
     previousEvent = { status: "drifted", fingerprint: driftFingerprint(same) };
     outcome = drifted(afterFirstChange);
 
-    const result = await runDriftCheck(4, "scheduled", "on_change");
+    const result = await runDriftCheck(ORG, 4, "scheduled", "on_change");
 
     expect(inserted()).toHaveLength(0);
     expect(result.ok && result.run.recorded).toBe(false);
@@ -208,7 +238,7 @@ describe("a check that found nothing new", () => {
       driftIntervalMinutes: 15,
     };
 
-    await runDriftCheck(4, "scheduled", "on_change");
+    await runDriftCheck(ORG, 4, "scheduled", "on_change");
 
     expect(inserted()).toHaveLength(0);
   });
@@ -220,7 +250,7 @@ describe("a check that found nothing new", () => {
     previousEvent = { status: "drifted", fingerprint: null };
     outcome = drifted(afterFirstChange);
 
-    await runDriftCheck(4, "scheduled", "on_change");
+    await runDriftCheck(ORG, 4, "scheduled", "on_change");
 
     expect(inserted()).toHaveLength(1);
   });
@@ -232,7 +262,7 @@ describe("a check that found nothing new", () => {
     previousEvent = { status: "drifted", fingerprint: driftFingerprint(same) };
     outcome = drifted(afterFirstChange);
 
-    await runDriftCheck(4, "manual", "always");
+    await runDriftCheck(ORG, 4, "manual", "always");
 
     expect(inserted()).toHaveLength(1);
   });

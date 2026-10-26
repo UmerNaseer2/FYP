@@ -21,6 +21,10 @@ import {
  * next due; PATCH changes one schema's cadence. Kept apart from
  * /api/lineage/drift, which is about the RESULT of a check — this is about
  * whether and when checks happen at all.
+ *
+ * Both work inside the caller's organization: its schemas, and what the loop
+ * did for them. The loop itself serves every organization, and
+ * driftSchedulerStatus keeps what it found for each one apart.
  */
 
 /** One row of the cadence table. */
@@ -70,8 +74,10 @@ export async function GET() {
               ts.drift_check_interval_minutes,
               ts.last_drift_check_at
          FROM tracked_schemas ts
-         JOIN connections c ON c.id = ts.connection_id
-        ORDER BY ts.id`
+         JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
+        WHERE ts.org_id = $1
+        ORDER BY ts.id`,
+      [gate.principal.orgId]
     );
 
     const now = new Date();
@@ -97,7 +103,7 @@ export async function GET() {
     });
 
     const view: ScheduleView = {
-      scheduler: driftSchedulerStatus(),
+      scheduler: driftSchedulerStatus(gate.principal.orgId),
       choices: DRIFT_INTERVAL_CHOICES,
       rows,
     };
@@ -153,12 +159,14 @@ export async function PATCH(request: NextRequest) {
 
   try {
     await syncMetadataTables();
+    // Another organization's schema reads as not tracked, the same answer an
+    // untracked one gets, so this cannot be used to learn which ids exist.
     const updated = await pool.query<{ id: number }>(
       `UPDATE tracked_schemas
           SET drift_check_interval_minutes = $2
-        WHERE id = $1
+        WHERE id = $1 AND org_id = $3
       RETURNING id`,
-      [trackedSchemaId, intervalMinutes]
+      [trackedSchemaId, intervalMinutes, gate.principal.orgId]
     );
     if (updated.rows.length === 0) {
       return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
@@ -176,7 +184,9 @@ export async function PATCH(request: NextRequest) {
   // will start at some point in the next quarter of an hour. Recorded as a
   // scheduled check because that is what it is — the first one — and on_change
   // so that toggling a cadence twice does not put two rows in the audit log.
-  if (intervalMinutes > 0) requestImmediateCheck(trackedSchemaId, "scheduled", "on_change");
+  if (intervalMinutes > 0) {
+    requestImmediateCheck(gate.principal.orgId, trackedSchemaId, "scheduled", "on_change");
+  }
 
   return NextResponse.json({
     trackedSchemaId,

@@ -79,7 +79,7 @@ describe("a save of the grid", () => {
   });
 
   test("that puts a role back to its defaults says so, and lists what that changed", () => {
-    // setRolePermissions writes the boxes first and the reset row last, so
+    // resetRolePermissions writes the boxes first and the reset row last, so
     // the reset row is the newest, and comes first.
     const rows = [
       row({ id: 23, kind: "reset" }),

@@ -160,12 +160,15 @@ export async function GET(request: NextRequest) {
   // deliberately not a foreign key, so history outlives the connection it was
   // captured against, and refusing to show it would throw away the only record
   // that the work was ever done.
+  //
+  // A connection in another organization reads the same as a deleted one, and
+  // shows no history: every read below is filtered on this organization too.
   let connectionName: string;
   try {
     await syncMetadataTables();
     const result = await pool.query<{ name: string }>(
-      `SELECT name FROM connections WHERE id = $1`,
-      [connectionId]
+      `SELECT name FROM connections WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
     connectionName = result.rows[0]?.name ?? "(deleted connection)";
   } catch (error) {
@@ -183,9 +186,9 @@ export async function GET(request: NextRequest) {
     // than return an empty list that reads as "nothing has ever been analysed".
     [rows, trend] = await Promise.all([
       fingerprint
-        ? listRunsOfQuery(connectionId, schema, fingerprint)
-        : listQueryHistory(connectionId, schema),
-      queryTrend(connectionId, schema, days),
+        ? listRunsOfQuery(gate.principal.orgId, connectionId, schema, fingerprint)
+        : listQueryHistory(gate.principal.orgId, connectionId, schema),
+      queryTrend(gate.principal.orgId, connectionId, schema, days),
     ]);
   } catch (error) {
     console.error("Query history — failed to read history:", error);

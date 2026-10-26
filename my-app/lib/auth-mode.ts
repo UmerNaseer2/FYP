@@ -45,8 +45,9 @@
  * and always reads undefined in the browser.
  *
  * Everything the enforced path needs is built: the edge proxy, the permission
- * check on every API route, the `profiles`, `roles` and `role_permissions`
- * tables and their bootstrap. What is still missing is the
+ * check on every API route, the `organizations`, `memberships`, `profiles`,
+ * `roles` and `role_permissions` tables and their bootstrap. What is still
+ * missing is the
  * four secrets (AZURE_AD_CLIENT_ID / _SECRET / _TENANT_ID, NEXTAUTH_SECRET), and
  * until they exist a sign-in cannot COMPLETE — so with this default a checkout
  * that has not set the variable is shut, not merely asked to sign in. That is

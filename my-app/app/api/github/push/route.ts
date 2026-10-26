@@ -1,10 +1,14 @@
 // POST /api/github/push: save one version of a script family to the GitHub
 // script registry.
 //
-// Layout (unchanged): <database>/<schema>/<script_name>/v<version>.sql at the
-// repository root, with its rollback beside it as v<version>.down.sql. Each
-// <script_name>/ folder is the project diagram's "folder of versions"; the
-// database and schema levels exist because Deploy scopes the registry by them.
+// Layout: <database>/<schema>/<script_name>/v<version>.sql, with its rollback
+// beside it as v<version>.down.sql, inside the caller's organization's folder:
+// the repository root for the default organization, orgs/<id>/ for any other
+// (lib/registry-paths.ts says why). Each <script_name>/ folder is the project
+// diagram's "folder of versions"; the database and schema levels exist because
+// Deploy scopes the registry by them. The organization comes from the signed-in
+// session, never from the request, so nobody can write into another
+// organization's folder by naming it.
 //
 // Two modes:
 //   normal  publish a NEW version: the migration file, then its rollback.
@@ -61,7 +65,14 @@ import {
   type FamilyListing,
   type GitHubConfig,
 } from "@/lib/github-registry";
-import { migrationFileName, parseRegistryFileName, rollbackFileName } from "@/lib/registry-paths";
+import {
+  familyFolderPath,
+  migrationFileName,
+  parseRegistryFileName,
+  registryRoot,
+  reservedFolderProblem,
+  rollbackFileName,
+} from "@/lib/registry-paths";
 import {
   attachRollbackKind,
   CHANGE_LEVEL_REQUIRED,
@@ -97,8 +108,11 @@ const MAX_DESCRIPTION_LENGTH = MAX_CHANGE_NOTE_LENGTH;
 // Editor names them.
 const TRANSACTION_WORDS = "COMMIT, ROLLBACK, ABORT, a standalone END or PREPARE TRANSACTION";
 
-/** Which version of which family a request is about. */
-type Family = { database: string; schema: string; scriptName: string; version: string };
+/**
+ * Which version of which family a request is about. `root` is the caller's
+ * organization's folder in the registry ("" for the default organization).
+ */
+type Family = { root: string; database: string; schema: string; scriptName: string; version: string };
 
 type NormalPush = Family & {
   mode: "normal";
@@ -124,9 +138,10 @@ function toBase64(text: string): string {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
-// The path as people read it, e.g. "db/public/orders_fix/v1.2.0.sql".
+// The path as people read it, e.g. "db/public/orders_fix/v1.2.0.sql", or
+// "orgs/12/db/public/orders_fix/v1.2.0.sql" for organization 12.
 function registryPath(family: Family, fileName: string): string {
-  return `${family.database}/${family.schema}/${family.scriptName}/${fileName}`;
+  return `${familyFolderPath(family.root, family.database, family.schema, family.scriptName)}/${fileName}`;
 }
 
 function identityOf(family: Family): PushIdentity {
@@ -147,8 +162,9 @@ async function htmlUrlOf(res: Response): Promise<string | null> {
 /**
  * Check the whole request before GitHub is contacted, so a bad request can
  * never cause a write. Returns the problem in plain words, or the push.
+ * `root` is the caller's organization's registry folder.
  */
-function readInput(raw: unknown): NormalPush | AttachPush | { problem: string } {
+function readInput(raw: unknown, root: string): NormalPush | AttachPush | { problem: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return { problem: "The request must be a JSON object." };
   }
@@ -158,12 +174,16 @@ function readInput(raw: unknown): NormalPush | AttachPush | { problem: string } 
   // "..", invisible characters, stray spaces or over-long names.
   const pathProblem = familyPathProblem(body.database_name, body.schema_name, body.script_name);
   if (pathProblem) return { problem: pathProblem };
+  // And they must not point into another organization's folder.
+  const reserved = reservedFolderProblem(root, body.database_name as string, body.schema_name as string);
+  if (reserved) return { problem: reserved };
 
   // One spelling per version: "v1.2" is stored as 1.2.0, and "1.0.0.down" or
   // "latest" are refused, because they would make a file the registry misreads.
   const normalized = normalizePushVersion(body.version);
   if ("error" in normalized) return { problem: normalized.error };
   const family: Family = {
+    root,
     database: body.database_name as string,
     schema: body.schema_name as string,
     scriptName: body.script_name as string,
@@ -292,7 +312,14 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
   //    that no longer matches means someone else is saving this version.
   const { down: leftover } = findVersionFiles(files, version);
   if (leftover) {
-    const leftoverUrl = contentsFileUrl(config, input.database, input.schema, scriptName, leftover.name);
+    const leftoverUrl = contentsFileUrl(
+      config,
+      input.root,
+      input.database,
+      input.schema,
+      scriptName,
+      leftover.name,
+    );
     const res = await githubFetch(config, leftoverUrl, {
       method: "DELETE",
       body: { message: rollbackCommitMessage("remove_leftover", identity), sha: leftover.sha },
@@ -328,7 +355,14 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
   //    note and Deploy had nothing to record in script_patch.description. In
   //    the file it travels with the script — see lib/change-note.ts.
   const migrationName = migrationFileName(version);
-  const migrationUrl = contentsFileUrl(config, input.database, input.schema, scriptName, migrationName);
+  const migrationUrl = contentsFileUrl(
+    config,
+    input.root,
+    input.database,
+    input.schema,
+    scriptName,
+    migrationName,
+  );
   const upRes = await githubFetch(config, migrationUrl, {
     method: "PUT",
     body: {
@@ -392,7 +426,7 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
   if (input.downSql !== null) {
     const downRes = await githubFetch(
       config,
-      contentsFileUrl(config, input.database, input.schema, scriptName, rollbackName),
+      contentsFileUrl(config, input.root, input.database, input.schema, scriptName, rollbackName),
       { method: "PUT", body: { message: rollbackCommitMessage("rollback", identity), content: toBase64(input.downSql) } },
     );
     if (!downRes) {
@@ -449,7 +483,14 @@ async function attachRollback(config: GitHubConfig, input: AttachPush, files: Re
   // not this version's rollback, and v1.0.down.sql is added instead.
   const upVersion = parseRegistryFileName(up.name)?.version ?? version;
   const rollbackName = down ? down.name : rollbackFileName(upVersion);
-  const rollbackUrl = contentsFileUrl(config, input.database, input.schema, scriptName, rollbackName);
+  const rollbackUrl = contentsFileUrl(
+    config,
+    input.root,
+    input.database,
+    input.schema,
+    scriptName,
+    rollbackName,
+  );
 
   // A rollback file is there: read it, and replace it only if it runs nothing.
   let kind: "add_missing" | "replace_empty" = "add_missing";
@@ -553,13 +594,13 @@ export async function POST(req: NextRequest) {
   } catch {
     return invalid("The request was not valid JSON.");
   }
-  const input = readInput(raw);
+  const input = readInput(raw, registryRoot(gate.principal));
   if ("problem" in input) return invalid(input.problem);
 
   // 4. What the family folder already holds: one listing (it stops at 1000
   //    entries, far more than one family has). When it can't be read, stop:
   //    see "fails closed" at the top.
-  const listing = await listFamilyFiles(config, input.database, input.schema, input.scriptName);
+  const listing = await listFamilyFiles(config, input.root, input.database, input.schema, input.scriptName);
   if (!listing.ok) return listingFailed(listing, input);
 
   return input.mode === "attach"

@@ -269,10 +269,12 @@ export async function POST(request: NextRequest) {
       `SELECT host, port, database_name, username, password, connection_string, ssl, ssl_mode, name,
               application_table
        FROM connections
-       WHERE id = $1`,
-      [connectionId]
+       WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
 
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     if (result.rows.length === 0) {
       return NextResponse.json(
         { error: `No saved connection found with id ${connectionId}.` },

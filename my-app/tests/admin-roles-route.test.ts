@@ -14,10 +14,13 @@
 //     it chose, not as a generic failure.
 //   - Every change is credited to whoever made it. While sign-in is off that
 //     is "(authentication bypassed)", not a made-up email.
+//   - Every call names the caller's organization first, the one the gate
+//     found, so the roles read or changed are always that organization's.
+//     Nothing in the body can point a call at another one.
 //   - A database that is down reads as "try again", never as a stack trace.
 import { NextRequest, NextResponse } from "next/server";
 import type { Gate } from "@/lib/auth-guard";
-import { bypassAdminPrincipal, principalFor } from "./helpers/principals";
+import { bypassAdminPrincipal, principalFor, TEST_ORG } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
@@ -64,6 +67,14 @@ const QA_LEAD = {
   userCount: 0,
   permissions: ["dashboard:read", "compare:read"],
 };
+
+/** One call of each write that succeeds, with what lib/roles-db answers it. */
+const WRITES = [
+  ["POST", { label: "QA Lead" }, "createRole", { ok: true, role: QA_LEAD }],
+  ["PUT", { role: "editor", permissions: [] }, "setRolePermissions", { ok: true, permissions: [], changes: 0 }],
+  ["PUT", { role: "editor", reset: true }, "resetRolePermissions", { ok: true, permissions: [], changes: 0 }],
+  ["DELETE", { role: "qa-lead" }, "deleteRole", { ok: true }],
+] as const;
 
 beforeEach(() => {
   mockGate = { ok: true, principal: ADMIN };
@@ -156,7 +167,8 @@ describe("GET: the roles and the change log", () => {
     mockRolesDb.listRoleChanges.mockResolvedValue(changes);
 
     expect(await answer(await GET())).toEqual([200, { roles: [QA_LEAD], changes }]);
-    expect(mockRolesDb.listRoleChanges).toHaveBeenCalledWith(50);
+    expect(mockRolesDb.listRoles).toHaveBeenCalledWith(TEST_ORG.id);
+    expect(mockRolesDb.listRoleChanges).toHaveBeenCalledWith(TEST_ORG.id, 50);
   });
 
   test.each(["listRoles", "listRoleChanges"] as const)(
@@ -214,6 +226,7 @@ describe("POST: making a role", () => {
     await POST(json("POST", { label: "QA Lead", ...extra }));
     // No description sent means an empty one.
     expect(mockRolesDb.createRole).toHaveBeenCalledWith(
+      TEST_ORG.id,
       { label: "QA Lead", description: "", copyFrom: null },
       "umer@x"
     );
@@ -229,8 +242,12 @@ describe("POST: making a role", () => {
     await POST(json("POST", { label: "QA Lead", copyFrom: longestKey }));
 
     expect(mockRolesDb.createRole.mock.calls).toEqual([
-      [{ label: "  QA Lead ", description: "Runs the test plans", copyFrom: "editor" }, "umer@x"],
-      [{ label: "QA Lead", description: "", copyFrom: longestKey }, "umer@x"],
+      [
+        TEST_ORG.id,
+        { label: "  QA Lead ", description: "Runs the test plans", copyFrom: "editor" },
+        "umer@x",
+      ],
+      [TEST_ORG.id, { label: "QA Lead", description: "", copyFrom: longestKey }, "umer@x"],
     ]);
   });
 
@@ -307,14 +324,24 @@ describe("PUT: changing what a role can do", () => {
       200,
       { permissions: ["deploy:read", "deploy:run"], changes: 2 },
     ]);
-    expect(mockRolesDb.setRolePermissions).toHaveBeenCalledWith("editor", ["deploy:run"], "umer@x");
+    expect(mockRolesDb.setRolePermissions).toHaveBeenCalledWith(
+      TEST_ORG.id,
+      "editor",
+      ["deploy:run"],
+      "umer@x"
+    );
     expect(mockRolesDb.resetRolePermissions).not.toHaveBeenCalled();
   });
 
   test("treats an empty list as a list: the role is left with nothing", async () => {
     mockRolesDb.setRolePermissions.mockResolvedValue({ ok: true, permissions: [], changes: 12 });
     await PUT(json("PUT", { role: "viewer", permissions: [] }));
-    expect(mockRolesDb.setRolePermissions).toHaveBeenCalledWith("viewer", [], "umer@x");
+    expect(mockRolesDb.setRolePermissions).toHaveBeenCalledWith(
+      TEST_ORG.id,
+      "viewer",
+      [],
+      "umer@x"
+    );
   });
 
   test("resets with reset: true, and ignores any list sent with it", async () => {
@@ -328,7 +355,11 @@ describe("PUT: changing what a role can do", () => {
       json("PUT", { role: "viewer", reset: true, permissions: ["users:read"] })
     );
     expect(await answer(response)).toEqual([200, { permissions: ["dashboard:read"], changes: 1 }]);
-    expect(mockRolesDb.resetRolePermissions).toHaveBeenCalledWith("viewer", "umer@x");
+    expect(mockRolesDb.resetRolePermissions).toHaveBeenCalledWith(
+      TEST_ORG.id,
+      "viewer",
+      "umer@x"
+    );
     expect(mockRolesDb.setRolePermissions).not.toHaveBeenCalled();
   });
 
@@ -341,7 +372,12 @@ describe("PUT: changing what a role can do", () => {
     });
 
     await PUT(json("PUT", { role: longestKey, permissions: [] }));
-    expect(mockRolesDb.setRolePermissions).toHaveBeenCalledWith(longestKey, [], "umer@x");
+    expect(mockRolesDb.setRolePermissions).toHaveBeenCalledWith(
+      TEST_ORG.id,
+      longestKey,
+      [],
+      "umer@x"
+    );
   });
 
   test.each([
@@ -389,7 +425,7 @@ describe("DELETE: deleting a role", () => {
       200,
       { success: true },
     ]);
-    expect(mockRolesDb.deleteRole).toHaveBeenCalledWith("qa-lead", "umer@x");
+    expect(mockRolesDb.deleteRole).toHaveBeenCalledWith(TEST_ORG.id, "qa-lead", "umer@x");
   });
 
   test.each([
@@ -420,13 +456,6 @@ describe("who a change is credited to", () => {
   // Every write goes in the role change log under this name, so it has to be
   // the person who made it. With sign-in off there is no person to name, and
   // the log says so rather than inventing an email.
-  const WRITES = [
-    ["POST", { label: "QA Lead" }, "createRole", { ok: true, role: QA_LEAD }],
-    ["PUT", { role: "editor", permissions: [] }, "setRolePermissions", { ok: true, permissions: [], changes: 0 }],
-    ["PUT", { role: "editor", reset: true }, "resetRolePermissions", { ok: true, permissions: [], changes: 0 }],
-    ["DELETE", { role: "qa-lead" }, "deleteRole", { ok: true }],
-  ] as const;
-
   test.each([
     ["the signed-in admin", ADMIN, "umer@x"],
     ["the auth bypass", bypassAdminPrincipal(), "(authentication bypassed)"],
@@ -436,6 +465,37 @@ describe("who a change is credited to", () => {
       mockRolesDb[fn].mockResolvedValue(result);
       await HANDLERS[method](json(method, body));
       expect([fn, mockRolesDb[fn].mock.lastCall?.at(-1)]).toEqual([fn, actor]);
+    }
+  });
+});
+
+describe("which organization a call acts in", () => {
+  // An admin of one organization must never list, change or delete another
+  // organization's roles. The route has one source for the organization, the
+  // principal the gate found, and these give it a caller from an organization
+  // other than TEST_ORG and a body that names TEST_ORG in every way a browser
+  // could, to show which one wins.
+  const ACME = principalFor("admin", {
+    email: "umer@x",
+    orgId: 12,
+    orgSlug: "acme",
+    orgName: "Acme",
+  });
+  const NAMES_TEST_ORG = { orgId: TEST_ORG.id, org: TEST_ORG.slug, orgSlug: TEST_ORG.slug };
+
+  test("every call is made in the caller's organization, whatever the body names", async () => {
+    mockGate = { ok: true, principal: ACME };
+    mockRolesDb.listRoles.mockResolvedValue([]);
+    mockRolesDb.listRoleChanges.mockResolvedValue([]);
+    await GET();
+    for (const [method, body, fn, result] of WRITES) {
+      mockRolesDb[fn].mockResolvedValue(result);
+      await HANDLERS[method](json(method, { ...body, ...NAMES_TEST_ORG }));
+    }
+
+    for (const [name, fn] of Object.entries(mockRolesDb)) {
+      expect([name, fn.mock.calls.length]).toEqual([name, 1]);
+      expect([name, fn.mock.calls[0][0]]).toEqual([name, ACME.orgId]);
     }
   });
 });

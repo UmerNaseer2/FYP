@@ -48,11 +48,13 @@ export async function GET(request: NextRequest) {
   try {
     // The ssl_mode column is added lazily; make sure it exists before selecting it.
     await syncMetadataTables();
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     const result = await pool.query(
       `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode
        FROM connections
-       WHERE id = $1`,
-      [connectionId]
+       WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
     if (result.rows.length === 0) {
       return NextResponse.json(

@@ -20,10 +20,12 @@
  * The session is shaped directly here rather than through the setUser in
  * tests/helpers/render-page.tsx. That helper hands out fixed identities of the
  * form "A admin", and what needs checking is the mapping itself: a session
- * with a name, one with only an address, and one with neither. sessionAs below
- * still fills in the role the way auth.ts does, with the role's name and what
- * it starts out able to do, because the rail only offers a screen the role may
- * open. Routing comes from the helper, because usePathname is all this needs.
+ * with a name, one with only an address, and one with neither. The session
+ * says who is signed in and nothing more, the way auth.ts builds it. The role
+ * comes from /api/me, so renderShell hands useUser what /api/me would answer
+ * before drawing (seedUserAccess), because the rail only offers a screen the
+ * role may open. Routing comes from the helper, because usePathname is all
+ * this needs.
  *
  * What is NOT here:
  *  - The rail's own behaviour — sr-only labels, the collapsed brand cell, the
@@ -36,8 +38,8 @@
  *    tests/component-drawer.test.tsx.
  *  - The two hooks themselves: tests/use-theme.test.tsx and
  *    tests/use-user.test.tsx. What is asserted here is only that the shell is
- *    wired to them — the theme reaching the document, and the session reaching
- *    the rail.
+ *    wired to them: the theme reaching the document, and the session and the
+ *    server's answer reaching the rail.
  *  - The auth-bypass pill. It is driven by BYPASS_AUTH, which lib/auth-mode
  *    reads once at module load, so it cannot be switched per test in this file
  *    without switching it for all of them. Both pills are drawn in
@@ -52,38 +54,64 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import { StudioShell } from "@/components/studio/StudioShell";
 import { type StudioUser } from "@/components/studio/StudioSidebar";
-import { BUILT_IN_ROLE_INFO, presetFor, type BuiltInRole } from "@/lib/permissions";
+import { resetUserCache, seedUserAccess } from "@/hooks/useUser";
+import {
+  BUILT_IN_ROLE_INFO,
+  effectivePermissions,
+  presetFor,
+  type BuiltInRole,
+} from "@/lib/permissions";
 import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 import { setPathname } from "./helpers/render-page";
 
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
-type MockSession = {
-  user: {
-    name?: string | null;
-    email?: string | null;
-    role?: string;
-    roleLabel?: string;
-    permissions?: string[];
-  };
-} | null;
+/** A session as auth.ts builds it: who is signed in, and nothing about access. */
+type MockSession = { user: { name?: string | null; email?: string | null } } | null;
 
-/** A signed-in session as auth.ts builds it for a built-in role on a new install. */
-function sessionAs(
-  role: BuiltInRole,
-  who: { name?: string; email?: string } = { name: "Ada Lovelace", email: "ada@example.com" }
-): MockSession {
+type MeAnswer = { status: number; body: unknown };
+
+/** What /api/me answers a member of the organization who holds this role. */
+function answer(role: string, roleLabel: string, permissions: readonly string[]): MeAnswer {
   return {
-    user: {
-      ...who,
+    status: 200,
+    body: {
       role,
-      roleLabel: BUILT_IN_ROLE_INFO[role].label,
-      permissions: [...(presetFor(role) ?? [])],
+      roleLabel,
+      permissions: effectivePermissions(role, permissions),
+      bypass: false,
+      viewingAs: null,
+      org: { slug: "test-org", name: "Test Org" },
     },
   };
 }
 
+// The same words lib/auth-guard.ts answers with.
+const NOT_A_MEMBER: MeAnswer = {
+  status: 404,
+  body: { error: "This organization does not exist, or you are not a member." },
+};
+const DATABASE_DOWN: MeAnswer = {
+  status: 503,
+  body: {
+    error:
+      "Could not check what your role can do, because the app's database did not answer. " +
+      "Try again in a moment.",
+  },
+};
+
 let mockSession: MockSession = null;
+/** What /api/me says to whoever mockSession is. Unused while nobody is signed in. */
+let me: MeAnswer = answer("admin", BUILT_IN_ROLE_INFO.admin.label, []);
+
+/** Sign somebody in who holds a built-in role, able to do what it starts out with. */
+function signInAs(
+  role: BuiltInRole,
+  who: { name?: string; email?: string } = { name: "Ada Lovelace", email: "ada@example.com" }
+) {
+  mockSession = { user: { ...who } };
+  me = answer(role, BUILT_IN_ROLE_INFO[role].label, presetFor(role) ?? []);
+}
 const mockSignOutCalls: unknown[] = [];
 
 jest.mock("next-auth/react", () => ({
@@ -139,7 +167,7 @@ beforeEach(() => {
   mediaQueries = [];
   mediaListeners.clear();
   mockSignOutCalls.length = 0;
-  mockSession = sessionAs("admin");
+  signInAs("admin");
   setPathname("/studio");
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
@@ -156,6 +184,11 @@ function setViewport(mobile: boolean) {
 const PAGE = <p>The page itself</p>;
 
 function renderShell(props: { user?: StudioUser } = {}) {
+  // What a page learns from /api/me as it opens, handed over before it is
+  // drawn, so the rail is right on the first frame. useUser keeps what it
+  // learned between tests, hence the reset. Nobody signed in asks nothing.
+  resetUserCache();
+  if (mockSession) seedUserAccess(me.status, me.body);
   return render(<StudioShell {...props}>{PAGE}</StudioShell>);
 }
 
@@ -233,7 +266,7 @@ describe("who the rail says you are", () => {
   });
 
   test("falls back to the address when the session carries no name", () => {
-    mockSession = sessionAs("viewer", { email: "ada@example.com" });
+    signInAs("viewer", { email: "ada@example.com" });
     renderShell();
     // Shown twice on purpose: the address stands in for the name as well,
     // which is honest about what is known rather than leaving a blank line.
@@ -252,7 +285,7 @@ describe("who the rail says you are", () => {
   test("still calls a session with neither name nor address signed in", () => {
     // A session this thin should not be possible, but rendering an empty name
     // beside an empty address would look like the app had lost track of you.
-    mockSession = sessionAs("viewer", {});
+    signInAs("viewer", {});
     renderShell();
     expect(screen.getByText("Signed in")).toBeInTheDocument();
     expect(screen.getByText("SI")).toBeInTheDocument();
@@ -275,28 +308,20 @@ describe("what the rail says you are allowed to do", () => {
   // word "Admin" is also the name of a rail row.
   const pill = (role: BuiltInRole) => screen.queryByTitle(BUILT_IN_ROLE_INFO[role].description);
 
-  test("shows the role the session carries, by the name people read", () => {
+  test("shows the role the server answers with, by the name people read", () => {
     renderShell();
     expect(pill("admin")).toHaveTextContent("Admin");
   });
 
-  test("and a different one when the session says so", () => {
-    mockSession = sessionAs("viewer");
+  test("and a different one when the server says so", () => {
+    signInAs("viewer");
     renderShell();
     expect(pill("viewer")).toHaveTextContent("Viewer");
     expect(pill("admin")).toBeNull();
   });
 
   test("names a role an admin made, which has no tooltip of its own words", () => {
-    mockSession = {
-      user: {
-        name: "Ada Lovelace",
-        email: "ada@example.com",
-        role: "qa-lead",
-        roleLabel: "QA Lead",
-        permissions: ["dashboard:read"],
-      },
-    };
+    me = answer("qa-lead", "QA Lead", ["dashboard:read"]);
     renderShell();
     expect(screen.getByText("QA Lead")).toBeInTheDocument();
   });
@@ -312,13 +337,31 @@ describe("what the rail says you are allowed to do", () => {
     expect(screen.queryByText("Viewer")).toBeNull();
   });
 
-  test("keeps the session's role even when a caller names the user itself", () => {
+  test("keeps the server's role even when a caller names the user itself", () => {
     // The `user` override is a display identity. What the server will actually
     // allow is not something it gets to relabel, so the role comes straight
     // from useUser and ignores it.
     renderShell({ user: { name: "Release bot", email: "bot@example.com", initials: "RB" } });
     expect(screen.getByText("Release bot")).toBeInTheDocument();
     expect(pill("admin")).toHaveTextContent("Admin");
+  });
+
+  test("names no role while the app cannot look it up", () => {
+    // useUser reports DEFAULT_ROLE then too, and a "Viewer" badge under a real
+    // name would be a guess presented as a fact.
+    me = DATABASE_DOWN;
+    renderShell();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(pill("viewer")).toBeNull();
+    expect(screen.queryByText("Viewer")).toBeNull();
+  });
+
+  test("names no role for someone who is not a member, who holds none", () => {
+    me = NOT_A_MEMBER;
+    renderShell();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(pill("viewer")).toBeNull();
+    expect(screen.queryByText("Viewer")).toBeNull();
   });
 
   test('offers no "View as" picker with real sign-in, where a person is their role', () => {
@@ -341,7 +384,7 @@ describe("the admin row", () => {
   test("is not offered to anybody else", () => {
     // Presentation only — the screen and its API check the role again. What
     // this saves is somebody walking into a page that will refuse them.
-    mockSession = sessionAs("editor");
+    signInAs("editor");
     renderShell();
     expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
     expect(screen.getByRole("link", { name: "Connections" })).toBeInTheDocument();
@@ -352,15 +395,7 @@ describe("which screens the rail offers", () => {
   test("only the ones the role may open", () => {
     // A role an admin made that can read the dashboard and Drift and nothing
     // else. Every other row would open onto "your role can't open this page".
-    mockSession = {
-      user: {
-        name: "Ada Lovelace",
-        email: "ada@example.com",
-        role: "auditor",
-        roleLabel: "Auditor",
-        permissions: ["dashboard:read", "drift:read"],
-      },
-    };
+    me = answer("auditor", "Auditor", ["dashboard:read", "drift:read"]);
     renderShell();
     expect(screen.getByRole("link", { name: "Drift" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Deploy" })).toBeNull();
@@ -368,13 +403,31 @@ describe("which screens the rail offers", () => {
     expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
   });
 
-  test("none of them while the session cannot say what the role may do", () => {
-    mockSession = {
-      user: { name: "Ada Lovelace", email: "ada@example.com", role: "editor", permissions: [] },
-    };
+  test("none of them for a role that may open none", () => {
+    // An editor whose every permission an admin has switched off.
+    me = answer("editor", BUILT_IN_ROLE_INFO.editor.label, []);
     renderShell();
     expect(screen.queryByRole("link", { name: "Drift" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Connections" })).toBeNull();
+  });
+
+  test("every screen but Admin while the app cannot say what the role may do", () => {
+    // An empty rail would look broken, and each screen says for itself that the
+    // check failed (tests/component-auth-guard.test.tsx).
+    me = DATABASE_DOWN;
+    renderShell();
+    expect(screen.getByRole("link", { name: "Drift" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connections" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
+  });
+
+  test("none at all for someone who is not a member, though Sign out stays", () => {
+    // Every screen would only repeat the guard's "not a member". Signing out is
+    // the one way on, and it sits in the rail's footer, not among the rows.
+    me = NOT_A_MEMBER;
+    renderShell();
+    expect(screen.queryAllByRole("link")).toEqual([]);
+    expect(button("Sign out")).toBeInTheDocument();
   });
 });
 

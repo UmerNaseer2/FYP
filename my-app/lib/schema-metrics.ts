@@ -18,6 +18,11 @@ import { countSnapshot, type MetricSample } from "./metrics-series";
  * a successful drift check into an error — the check is the thing the user
  * asked for, and a missing point on a chart is a gap, which is a state this
  * feature already knows how to draw.
+ *
+ * A reading belongs to the organization of its tracked schema. Writing and
+ * reading take that organization's id and filter on it. Pruning is the one
+ * exception: the drift scheduler runs it for the whole app, outside any
+ * request, and the window is the same for every organization.
  */
 
 /**
@@ -47,6 +52,8 @@ const NO_SIZES: SizeReading = {
 
 /** What one sample needs from the caller. */
 export type MetricSampleInput = {
+  /** The organization the tracked schema is in. */
+  orgId: number;
   trackedSchemaId: number;
   /** The live structure the drift check just read. */
   live: SchemaSnapshot;
@@ -59,16 +66,22 @@ export type MetricSampleInput = {
  *
  * Returns whether it landed rather than throwing, for the same reason
  * `recordDriftEvent` does: the caller has already done the work that mattered.
+ *
+ * The row copies its org_id from the tracked schema, found only inside
+ * `input.orgId`. A tracked schema in another organization writes nothing, and
+ * the answer is false.
  */
 export async function recordSchemaMetrics(input: MetricSampleInput): Promise<boolean> {
   try {
     const counts = countSnapshot(input.live);
-    const sizes = await measureSizes(input.trackedSchemaId, input.live.schema);
-    await pool.query(
+    const sizes = await measureSizes(input.orgId, input.trackedSchemaId, input.live.schema);
+    const result = await pool.query(
       `INSERT INTO schema_metrics
-         (tracked_schema_id, tables, columns, indexes, foreign_keys, views,
+         (org_id, tracked_schema_id, tables, columns, indexes, foreign_keys, views,
           routines, total_bytes, index_bytes, estimated_rows, drifted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       SELECT org_id, id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+         FROM tracked_schemas
+        WHERE id = $1 AND org_id = $12`,
       [
         input.trackedSchemaId,
         counts.tables,
@@ -81,9 +94,10 @@ export async function recordSchemaMetrics(input: MetricSampleInput): Promise<boo
         sizes.indexBytes,
         sizes.estimatedRows,
         input.drifted,
+        input.orgId,
       ]
     );
-    return true;
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Monitoring — failed to record a schema metric:", error);
     return false;
@@ -113,6 +127,7 @@ type MetricConnRow = {
  * record of that is three nulls, not three zeros.
  */
 async function measureSizes(
+  orgId: number,
   trackedSchemaId: number,
   schema: string
 ): Promise<SizeReading> {
@@ -122,9 +137,9 @@ async function measureSizes(
       `SELECT c.type, c.host, c.port, c.database_name, c.username, c.password,
               c.connection_string, c.ssl, c.ssl_mode
          FROM tracked_schemas ts
-         JOIN connections c ON c.id = ts.connection_id
-        WHERE ts.id = $1`,
-      [trackedSchemaId]
+         JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
+        WHERE ts.id = $1 AND ts.org_id = $2`,
+      [trackedSchemaId, orgId]
     );
     row = found.rows[0];
   } catch (error) {
@@ -244,6 +259,7 @@ type MetricRow = {
  * browser after JSON has turned the timestamps into strings.
  */
 export async function readSchemaMetrics(
+  orgId: number,
   trackedSchemaId: number,
   days: number
 ): Promise<MetricSample[]> {
@@ -251,10 +267,11 @@ export async function readSchemaMetrics(
     `SELECT sampled_at, tables, columns, indexes, foreign_keys, views, routines,
             total_bytes, index_bytes, estimated_rows, drifted
        FROM schema_metrics
-      WHERE tracked_schema_id = $1
+      WHERE org_id = $3
+        AND tracked_schema_id = $1
         AND sampled_at >= CURRENT_TIMESTAMP - ($2 || ' days')::interval
       ORDER BY sampled_at ASC, id ASC`,
-    [trackedSchemaId, String(Math.max(1, Math.floor(days)))]
+    [trackedSchemaId, String(Math.max(1, Math.floor(days))), orgId]
   );
   return result.rows.map((row) => ({
     at: new Date(row.sampled_at).toISOString(),
@@ -276,13 +293,19 @@ export async function readSchemaMetrics(
  *
  * Returns how many went, so the scheduler's status line can say what it did
  * rather than claiming a number it never checked.
+ *
+ * Across every organization, on purpose: the scheduler's tick runs it for the
+ * whole app rather than for anyone's request, and a reading past the window is
+ * past it whichever organization it is in. The comment inside the SQL is what
+ * tests/org-scoped-sql.test.ts looks for to let this one through.
  */
 export async function pruneSchemaMetrics(
   days: number = METRIC_RETENTION_DAYS
 ): Promise<number> {
   try {
     const result = await pool.query(
-      `DELETE FROM schema_metrics
+      `-- every organization: retention is the same for all of them
+       DELETE FROM schema_metrics
         WHERE sampled_at < CURRENT_TIMESTAMP - ($1 || ' days')::interval`,
       [String(Math.max(1, Math.floor(days)))]
     );

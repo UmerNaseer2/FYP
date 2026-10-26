@@ -1,6 +1,4 @@
-import { fn, col, where as whereFn } from "sequelize";
 import { metadataPool } from "./db/sequelize";
-import { Profile as ProfileModel } from "./db/models";
 import { syncMetadataTables } from "./db/bootstrap";
 import { ADMIN_ROLE, DEFAULT_ROLE } from "./permissions";
 
@@ -22,62 +20,87 @@ const pool = metadataPool;
 
 export { syncMetadataTables } from "./db/bootstrap";
 
-/** A row from `profiles`, as the session callback and the admin screen see it. */
+/**
+ * A row from `profiles`: who someone is. What they may do is not here. It is
+ * their row in `memberships`, one for each organization they belong to.
+ */
 export type Profile = {
   id: number;
   email: string;
   name: string | null;
-  role: string;
 };
 
-function toProfile(row: ProfileModel): Profile {
-  return { id: row.id, email: row.email, name: row.name ?? null, role: row.role };
-}
-
 /**
- * Match an email case-insensitively, through the `profiles_email_key_idx`
- * functional index. Sign-in providers are not consistent about the case they
- * hand back, and "Umer@x" and "umer@x" are the same person.
- */
-function sameEmail(normalised: string) {
-  return whereFn(fn("lower", col("email")), normalised);
-}
-
-/**
- * Look up (or create) the profile for someone who has just authenticated.
+ * Look up (or create) the profile for someone who has just authenticated, and
+ * make sure they belong to an organization.
  *
- * The FIRST person to sign in becomes `admin` — otherwise a fresh deployment
- * has a profiles table full of viewers and nobody who can promote anyone. Every
- * subsequent sign-in gets `viewer` and has to be promoted from the admin screen.
+ * Someone who belongs to no organization at all joins the default one. The
+ * FIRST person to join it becomes its admin, because otherwise a fresh
+ * deployment has nobody who can promote anyone. Everyone after them joins as a
+ * viewer, and an admin decides from there. Someone who already belongs
+ * somewhere is left exactly where they are: signing in never changes a role.
  *
- * What a role may do is read separately, on every session (getProfileAccess
- * in lib/roles-db.ts), so this only ever decides where a new person starts.
+ * It all happens in one transaction that holds the default organization's row
+ * until it ends. Without that, two people signing in to a brand new deployment
+ * at the same moment could both see an organization with no members yet, and
+ * both become its admin.
+ *
+ * What a role may do is read separately, by the gates on every request (see
+ * lib/auth-guard.ts), so this only ever decides where a new person starts.
  */
 export async function upsertProfile(email: string, name: string | null): Promise<Profile> {
   await syncMetadataTables();
 
-  const normalised = email.trim().toLowerCase();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
 
-  const existing = await ProfileModel.findOne({ where: sameEmail(normalised) });
-  if (existing) {
-    existing.last_seen_at = new Date();
-    // Only overwrite the name when the provider actually sent one, so a
-    // sign-in that omits it does not blank out a name we already had.
-    if (name !== null) existing.name = name;
-    await existing.save();
-    return toProfile(existing);
+    // One statement rather than a read and then a write, so two sign-ins for
+    // the same new person cannot race each other into a unique-violation
+    // error page. The conflict target is the lower(email) index, because
+    // sign-in providers are not consistent about the case they hand back and
+    // "Umer@x" and "umer@x" are the same person. COALESCE keeps the name we
+    // already have when a provider sends none.
+    const { rows } = await client.query<Profile>(
+      `INSERT INTO profiles (email, name, last_seen_at) VALUES ($1, $2, now())
+       ON CONFLICT ((lower(email))) DO UPDATE
+         SET last_seen_at = now(), name = COALESCE(EXCLUDED.name, profiles.name)
+       RETURNING id, email, name`,
+      [email.trim().toLowerCase(), name]
+    );
+    const profile = rows[0];
+
+    // The lock that makes "the first person becomes admin" safe, see above.
+    const org = await client.query<{ id: number }>(
+      `SELECT id FROM organizations WHERE is_default FOR UPDATE`
+    );
+    const defaultId = org.rows[0]?.id;
+    // No default organization means somebody deleted it by hand. The person
+    // still gets their profile, and the gates answer "not a member" until an
+    // organization exists again.
+    if (defaultId !== undefined) {
+      await client.query(
+        `-- every organization: a member of any of them is not added to the default one
+         INSERT INTO memberships (org_id, profile_id, role)
+         SELECT $1::int, $2::int,
+                CASE WHEN EXISTS (SELECT 1 FROM memberships WHERE org_id = $1::int)
+                     THEN $4::text ELSE $3::text END
+          WHERE NOT EXISTS (SELECT 1 FROM memberships WHERE profile_id = $2::int)
+         ON CONFLICT DO NOTHING`,
+        [defaultId, profile.id, ADMIN_ROLE, DEFAULT_ROLE]
+      );
+    }
+
+    await client.query("COMMIT");
+    return profile;
+  } catch (error) {
+    // The ROLLBACK can fail too (the connection may be what broke), and the
+    // error worth reporting is the first one.
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  const role = (await ProfileModel.count()) === 0 ? ADMIN_ROLE : DEFAULT_ROLE;
-
-  // findOrCreate rather than create: two people signing in at the same moment
-  // would otherwise race, and the loser would see a unique-violation error page
-  // instead of their account.
-  const [created] = await ProfileModel.findOrCreate({
-    where: { email: normalised },
-    defaults: { email: normalised, name, role, last_seen_at: new Date() },
-  });
-  return toProfile(created);
 }
 
 export default pool;

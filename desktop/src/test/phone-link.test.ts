@@ -942,7 +942,7 @@ test("lets a phone paired before back in, notes when it was last seen, and shows
 /** What GET /api/me answers with for a role that may see drift. */
 const MAY_SEE_DRIFT: AppAnswer = {
   status: 200,
-  json: { role: "viewer", roleLabel: "Viewer", permissions: ["drift:read"], bypass: false, viewingAs: null, accessUnavailable: false },
+  json: { role: "viewer", roleLabel: "Viewer", permissions: ["drift:read"], bypass: false, viewingAs: null, org: { slug: "personal", name: "Personal" } },
 };
 
 test("turns a phone's own drift alerts on and off at its request, saves only a change, and never logs where they go", async () => {
@@ -1156,7 +1156,7 @@ test("keeps drift alerts from phones while the signed-in role may not see drift,
     // A role without drift:read is refused for the same reason as a 403, so it is not logged again.
     {
       status: 200,
-      json: { role: "viewer", roleLabel: "Viewer", permissions: [], bypass: false, viewingAs: null, accessUnavailable: false },
+      json: { role: "viewer", roleLabel: "Viewer", permissions: [], bypass: false, viewingAs: null, org: { slug: "personal", name: "Personal" } },
     },
     { status: 503, json: { error: "The role could not be read." } },
   ];

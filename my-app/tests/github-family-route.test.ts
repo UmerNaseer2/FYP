@@ -169,6 +169,47 @@ describe("GET /api/github/family", () => {
     expect(body.error).not.toContain("(status");
   });
 
+  it("reads another organization's versions from its own folder", async () => {
+    // Organization 12 is not the default one, so its scripts sit under
+    // orgs/12/. The stub answers only that address: a read of the default
+    // organization's folder would fail the test.
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("viewer", { orgId: 12, orgSlug: "acme", orgName: "Acme", orgIsDefault: false }),
+    }));
+    const orgFolder = `${REPO}/contents/orgs/12/sales%20db/public/orders_fix`;
+    answers[orgFolder] = () =>
+      json(200, [
+        { name: "v1.0.0.sql", sha: "a", type: "file" },
+        { name: "v1.1.0.sql", sha: "b", type: "file" },
+      ]);
+    const { status, body } = await callRoute(QUERY);
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true, versions: ["1.0.0", "1.1.0"], highest: "1.1.0" });
+    expect(calls.map((call) => call.url)).toEqual([orgFolder]);
+  });
+
+  it("names the organization's folder when its path is a file", async () => {
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("viewer", { orgId: 12, orgSlug: "acme", orgName: "Acme", orgIsDefault: false }),
+    }));
+    answers[`${REPO}/contents/orgs/12/sales%20db/public/orders_fix`] = () =>
+      json(200, { name: "orders_fix", sha: "x", type: "file" });
+    const { status, body } = await callRoute(QUERY);
+    expect(status).toBe(502);
+    expect(body.code).toBe("not_a_folder");
+    expect(body.error).toContain("orgs/12/sales db/public/orders_fix");
+  });
+
+  it("refuses, for the default organization, the folder of another organization", async () => {
+    const { status, body } = await callRoute("database=orgs&schema=12&script=orders_fix");
+    expect(status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("other organizations' scripts");
+    expect(calls).toEqual([]);
+  });
+
   it("refuses a missing name without asking GitHub", async () => {
     const { status, body } = await callRoute("database=db&schema=public");
     expect(status).toBe(400);

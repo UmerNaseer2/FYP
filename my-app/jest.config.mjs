@@ -42,15 +42,23 @@ const config = {
   // collision on every run. Nothing under .next is a source file, so keep the
   // crawler out of it.
   modulePathIgnorePatterns: ["<rootDir>/.next/"],
-  // The app's real database modules are never imported by these tests, so
-  // there is no connection to leak — but a stray import would hang the run
-  // rather than fail it, and a short timeout turns that into a visible error.
+  // Almost no test here imports the app's real database modules, so there is
+  // no connection to leak. The two exceptions, tests/org-migration.test.ts and
+  // tests/org-data-db.test.ts, import them only when TEST_DATABASE_URL is set
+  // (tests/helpers/test-database.ts), and set longer timeouts of their own. A
+  // stray import anywhere else would hang the run rather than fail it, and a
+  // short timeout turns that into a visible error.
   testTimeout: 10000,
   collectCoverageFrom: [
     "lib/**/*.ts",
-    // Excluded on purpose: these modules ARE a database client. Covering them
-    // needs a live Postgres, which belongs in the integration harness, not in
-    // the unit suite that has to run on a CI box with no server.
+    // Excluded on purpose: these modules ARE a database client, and covering
+    // them needs a live Postgres. Only two suites use one, and only when
+    // TEST_DATABASE_URL is set: tests/org-migration.test.ts boots
+    // lib/db/bootstrap.ts and runs the sign-in, membership and role code
+    // (lib/version-db.ts, lib/orgs-db.ts, lib/roles-db.ts) on what it made, and
+    // tests/org-data-db.test.ts drives the data code of two organizations side
+    // by side to check that neither can reach the other's rows. Every other
+    // suite runs with no server.
     "!lib/postgres.ts",
     "!lib/version-db.ts",
     "!lib/**/*-db.ts",

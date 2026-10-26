@@ -11,6 +11,9 @@
 //     box, and not every row that happened to move.
 //   - The connection. Every write takes one and gives it back exactly once,
 //     whichever way it ends, or the pool runs dry after a few failed saves.
+//   - The organization. Every function takes the id of the one it acts in,
+//     and every statement it sends names org_id and binds that id first, so
+//     one organization's roles, rows and log never reach another's.
 import {
   createFakeClient,
   queriesMatching,
@@ -48,7 +51,6 @@ import {
 import {
   createRole,
   deleteRole,
-  getProfileAccess,
   getRoleAccess,
   listRoleChanges,
   listRoles,
@@ -56,7 +58,9 @@ import {
   resetRolePermissions,
   setRolePermissions,
 } from "@/lib/roles-db";
+import { TEST_ORG } from "./helpers/principals";
 
+const ORG = TEST_ORG.id;
 const ACTOR = "umer@x";
 const ADMIN_IS_FIXED =
   "The admin role can always do everything, so its permissions can't be changed.";
@@ -76,7 +80,10 @@ function connectsTo(steps: FakeStep[]): FakeClient {
 /** A role that exists and holds these permission rows, for the permission writes. */
 function roleHolding(role: string, stored: string[]): FakeClient {
   return connectsTo([
-    { match: /SELECT name FROM roles WHERE name = \$1 FOR UPDATE/, rows: [{ name: role }] },
+    {
+      match: /SELECT name FROM roles WHERE org_id = \$1 AND name = \$2 FOR UPDATE/,
+      rows: [{ name: role }],
+    },
     { match: /AS key FROM role_permissions/, rows: stored.map((key) => ({ key })) },
   ]);
 }
@@ -99,14 +106,16 @@ type LoggedRow = {
 };
 
 /**
- * The change log rows a write sent, read back out of the seven arrays that
- * logRoleChanges binds (one array per column, one entry per row).
+ * The change log rows a write sent, read back out of what logRoleChanges
+ * binds: the organization first, then seven arrays (one array per column,
+ * one entry per row).
  */
 function loggedRows(client: FakeClient): LoggedRow[] {
   const inserts = queriesMatching(client, /INSERT INTO role_changes/);
   if (inserts.length === 0) return [];
   expect(inserts).toHaveLength(1);
-  const columns = inserts[0].values as (string | null)[][];
+  const [orgId, ...columns] = inserts[0].values as [number, ...(string | null)[][]];
+  expect(orgId).toBe(ORG);
   expect(columns).toHaveLength(7);
   const [roles, kinds, features, actions, subjects, details, actors] = columns;
   for (const column of columns) expect(column).toHaveLength(roles.length);
@@ -126,6 +135,23 @@ function logLines(client: FakeClient): string[] {
   return loggedRows(client).map((row) =>
     row.feature === null ? `${row.kind}` : `${row.kind} ${row.feature}:${row.action}`
   );
+}
+
+/**
+ * Every statement sent, other than the transaction's own, names org_id and
+ * binds the organization as its first value. One that forgot either would
+ * read or change another organization's rows, and the tests that check
+ * single statements would not notice a new one added later.
+ */
+function expectKeptToOrg(client: FakeClient): void {
+  const statements = client.queries.filter(
+    (query) => !/^(BEGIN|COMMIT|ROLLBACK)$/.test(query.text.trim())
+  );
+  expect(statements.length).toBeGreaterThan(0);
+  for (const statement of statements) {
+    expect(statement.text).toMatch(/\borg_id\b/);
+    expect(statement.values?.[0]).toBe(ORG);
+  }
 }
 
 const ROLLBACK_FAILS: FakeStep[] = [
@@ -151,7 +177,7 @@ describe("createRole", () => {
       "Give the role a name with at least one letter from A to Z, or a number.",
     ],
   ])("refuses %s before taking a connection", async (_name, input, error) => {
-    const result = await createRole({ description: "", copyFrom: null, ...input }, ACTOR);
+    const result = await createRole(ORG, { description: "", copyFrom: null, ...input }, ACTOR);
     expect(result).toEqual({ ok: false, status: 400, error });
     expect(mockConnects).toBe(0);
   });
@@ -159,6 +185,7 @@ describe("createRole", () => {
   test("measures the name and description without the spaces around them", async () => {
     connectsTo([]);
     const result = await createRole(
+      ORG,
       {
         label: `  ${"a".repeat(ROLE_LABEL_MAX)}  `,
         description: ` ${"d".repeat(ROLE_DESCRIPTION_MAX)} `,
@@ -172,6 +199,7 @@ describe("createRole", () => {
   test("makes an empty role, and logs that nothing was copied", async () => {
     const client = connectsTo([]);
     const result = await createRole(
+      ORG,
       { label: "  QA Lead ", description: "  Runs the test plan ", copyFrom: null },
       ACTOR
     );
@@ -189,12 +217,14 @@ describe("createRole", () => {
     });
     expect(queryTexts(client)).toEqual([
       "BEGIN",
-      "SELECT label FROM roles WHERE name = $1 OR lower(label) = lower($2) LIMIT 1",
-      "INSERT INTO roles (name, label, description) VALUES ($1, $2, $3)",
+      "SELECT label FROM roles WHERE org_id = $1 AND " +
+        "(name = $2 OR lower(label) = lower($3)) LIMIT 1",
+      "INSERT INTO roles (org_id, name, label, description) VALUES ($1, $2, $3, $4)",
       expect.stringMatching(/^INSERT INTO role_changes/),
       "COMMIT",
     ]);
     expect(valuesOf(client, /INSERT INTO roles \(/)).toEqual([
+      ORG,
       "qa-lead",
       "QA Lead",
       "Runs the test plan",
@@ -210,14 +240,18 @@ describe("createRole", () => {
         actor: ACTOR,
       },
     ]);
+    expectKeptToOrg(client);
     expect(client.releaseCount).toBe(1);
   });
 
   test("refuses a name that is taken, and names the role in the way", async () => {
-    const client = connectsTo([
-      { match: /SELECT label FROM roles WHERE name = \$1 OR/, rows: [{ label: "QA Lead" }] },
-    ]);
-    const result = await createRole({ label: "qa  lead!", description: "", copyFrom: null }, ACTOR);
+    const TAKEN = /SELECT label FROM roles\s+WHERE org_id = \$1 AND \(name = \$2 OR/;
+    const client = connectsTo([{ match: TAKEN, rows: [{ label: "QA Lead" }] }]);
+    const result = await createRole(
+      ORG,
+      { label: "qa  lead!", description: "", copyFrom: null },
+      ACTOR
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -225,11 +259,9 @@ describe("createRole", () => {
       error: 'There is already a role called "QA Lead". Pick a different name.',
     });
     // Looked up by the key the name would be stored under, and by the name as
-    // typed, so "qa  lead!" finds the "QA Lead" that is already there.
-    expect(valuesOf(client, /SELECT label FROM roles WHERE name = \$1 OR/)).toEqual([
-      "qa-lead",
-      "qa  lead!",
-    ]);
+    // typed, so "qa  lead!" finds the "QA Lead" that is already there. Only
+    // in this organization: another one's "QA Lead" is not in the way.
+    expect(valuesOf(client, TAKEN)).toEqual([ORG, "qa-lead", "qa  lead!"]);
     expect(queriesMatching(client, /INSERT/)).toEqual([]);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     expect(client.releaseCount).toBe(1);
@@ -239,6 +271,7 @@ describe("createRole", () => {
     // Nothing answers the copy's lookup, the way a role deleted in another tab looks.
     const client = connectsTo([]);
     const result = await createRole(
+      ORG,
       { label: "QA Lead", description: "", copyFrom: "old-role" },
       ACTOR
     );
@@ -248,7 +281,10 @@ describe("createRole", () => {
       status: 400,
       error: "The role to copy from no longer exists. Refresh the page and try again.",
     });
-    expect(valuesOf(client, /FROM roles r\s+LEFT JOIN role_permissions/)).toEqual(["old-role"]);
+    expect(valuesOf(client, /FROM roles r\s+LEFT JOIN role_permissions/)).toEqual([
+      ORG,
+      "old-role",
+    ]);
     expect(queriesMatching(client, /INSERT/)).toEqual([]);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     expect(client.releaseCount).toBe(1);
@@ -262,7 +298,11 @@ describe("createRole", () => {
         rows: [{ label: "Admin", granted: [] }],
       },
     ]);
-    const result = await createRole({ label: "Deputy", description: "", copyFrom: "admin" }, ACTOR);
+    const result = await createRole(
+      ORG,
+      { label: "Deputy", description: "", copyFrom: "admin" },
+      ACTOR
+    );
 
     const expected = ALL_PERMISSIONS.filter((key) => !isAdminOnly(key));
     expect(result.ok && result.role.permissions).toEqual(expected);
@@ -270,6 +310,7 @@ describe("createRole", () => {
     expect(expected).toContain("approvals:approve");
     expect(expected.filter((key) => /^(users|roles):/.test(key))).toEqual([]);
     expect(valuesOf(client, /INSERT INTO role_permissions/)).toEqual([
+      ORG,
       "deputy",
       expected.map((key) => key.split(":")[0]),
       expected.map((key) => key.split(":")[1]),
@@ -287,6 +328,7 @@ describe("createRole", () => {
       },
     ]);
     const result = await createRole(
+      ORG,
       { label: "QA Lead 2", description: "", copyFrom: "qa-lead" },
       ACTOR
     );
@@ -295,10 +337,14 @@ describe("createRole", () => {
     // for a feature the app no longer has, is left behind.
     expect(result.ok && result.role.permissions).toEqual(["deploy:read", "deploy:run"]);
     expect(valuesOf(client, /INSERT INTO role_permissions/)).toEqual([
+      ORG,
       "qa-lead-2",
       ["deploy", "deploy"],
       ["read", "run"],
     ]);
+    // The copy is read from this organization's role of that name, and
+    // everything it writes is this organization's.
+    expectKeptToOrg(client);
   });
 
   test.each([
@@ -312,7 +358,11 @@ describe("createRole", () => {
         error: { code: "23505", message: "duplicate key value violates unique constraint" },
       },
     ]);
-    const result = await createRole({ label: "QA Lead", description: "", copyFrom: null }, ACTOR);
+    const result = await createRole(
+      ORG,
+      { label: "QA Lead", description: "", copyFrom: null },
+      ACTOR
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -335,7 +385,7 @@ describe("createRole", () => {
 
     // The error worth reporting is the first one, not the failed rollback.
     await expect(
-      createRole({ label: "QA Lead", description: "", copyFrom: null }, ACTOR)
+      createRole(ORG, { label: "QA Lead", description: "", copyFrom: null }, ACTOR)
     ).rejects.toThrow("disk full");
     expect(queriesMatching(client, /COMMIT/)).toEqual([]);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
@@ -359,13 +409,17 @@ describe("setRolePermissions", () => {
       '"Roles & permissions: Update" can only belong to the admin role.',
     ],
   ])("refuses %s before taking a connection", async (_name, role, keys, error) => {
-    expect(await setRolePermissions(role, keys, ACTOR)).toEqual({ ok: false, status: 400, error });
+    expect(await setRolePermissions(ORG, role, keys, ACTOR)).toEqual({
+      ok: false,
+      status: 400,
+      error,
+    });
     expect(mockConnects).toBe(0);
   });
 
   test("stores the Read a box implies, and clears rows for features that are gone", async () => {
     const client = roleHolding("qa-lead", ["deploy:read", "deploy:run", "reports:read"]);
-    const result = await setRolePermissions("qa-lead", ["deploy:run", "drift:run"], ACTOR);
+    const result = await setRolePermissions(ORG, "qa-lead", ["deploy:run", "drift:run"], ACTOR);
 
     expect(result).toEqual({
       ok: true,
@@ -374,19 +428,24 @@ describe("setRolePermissions", () => {
     });
     expect(queryTexts(client)).toEqual([
       "BEGIN",
-      "SELECT name FROM roles WHERE name = $1 FOR UPDATE",
-      "SELECT feature || ':' || action AS key FROM role_permissions WHERE role = $1",
-      "DELETE FROM role_permissions WHERE role = $1 AND feature || ':' || action = ANY($2::text[])",
-      "INSERT INTO role_permissions (role, feature, action) SELECT $1, feature, action " +
-        "FROM unnest($2::text[], $3::text[]) AS p(feature, action)",
+      "SELECT name FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE",
+      "SELECT feature || ':' || action AS key FROM role_permissions " +
+        "WHERE org_id = $1 AND role = $2",
+      "DELETE FROM role_permissions WHERE org_id = $1 AND role = $2 " +
+        "AND feature || ':' || action = ANY($3::text[])",
+      "INSERT INTO role_permissions (org_id, role, feature, action) " +
+        "SELECT $1::int, $2::text, feature, action " +
+        "FROM unnest($3::text[], $4::text[]) AS p(feature, action)",
       expect.stringMatching(/^INSERT INTO role_changes/),
       "COMMIT",
     ]);
     expect(valuesOf(client, /DELETE FROM role_permissions/)).toEqual([
+      ORG,
       "qa-lead",
       ["reports:read"],
     ]);
     expect(valuesOf(client, /INSERT INTO role_permissions/)).toEqual([
+      ORG,
       "qa-lead",
       ["drift", "drift"],
       ["read", "run"],
@@ -404,17 +463,19 @@ describe("setRolePermissions", () => {
       },
       expect.objectContaining({ kind: "grant", feature: "drift", action: "run" }),
     ]);
+    expectKeptToOrg(client);
     expect(client.releaseCount).toBe(1);
   });
 
   test("logs nothing for a Read the role already had through another box", async () => {
     // A Run row without its Read row, the way a hand-written row could be.
     const client = roleHolding("qa-lead", ["deploy:run"]);
-    const result = await setRolePermissions("qa-lead", ["deploy:run"], ACTOR);
+    const result = await setRolePermissions(ORG, "qa-lead", ["deploy:run"], ACTOR);
 
     expect(result).toEqual({ ok: true, permissions: ["deploy:read", "deploy:run"], changes: 0 });
     // The table catches up with what the role could already do...
     expect(valuesOf(client, /INSERT INTO role_permissions/)).toEqual([
+      ORG,
       "qa-lead",
       ["deploy"],
       ["read"],
@@ -425,7 +486,7 @@ describe("setRolePermissions", () => {
 
   test("logs one row per box, the ones ticked before the ones unticked", async () => {
     const client = roleHolding("qa-lead", ["deploy:read", "deploy:run"]);
-    const result = await setRolePermissions("qa-lead", ["drift:run"], ACTOR);
+    const result = await setRolePermissions(ORG, "qa-lead", ["drift:run"], ACTOR);
 
     expect(result.ok && result.changes).toBe(4);
     expect(logLines(client)).toEqual([
@@ -435,6 +496,7 @@ describe("setRolePermissions", () => {
       "revoke deploy:run",
     ]);
     expect(valuesOf(client, /DELETE FROM role_permissions/)).toEqual([
+      ORG,
       "qa-lead",
       ["deploy:read", "deploy:run"],
     ]);
@@ -442,7 +504,7 @@ describe("setRolePermissions", () => {
 
   test("takes everything away when sent an empty list", async () => {
     const client = roleHolding("qa-lead", ["drift:read", "drift:run"]);
-    const result = await setRolePermissions("qa-lead", [], ACTOR);
+    const result = await setRolePermissions(ORG, "qa-lead", [], ACTOR);
 
     expect(result).toEqual({ ok: true, permissions: [], changes: 2 });
     expect(logLines(client)).toEqual(["revoke drift:read", "revoke drift:run"]);
@@ -451,27 +513,33 @@ describe("setRolePermissions", () => {
 
   test("writes nothing but the lock when the role already has exactly that", async () => {
     const client = roleHolding("qa-lead", ["deploy:read", "deploy:run"]);
-    const result = await setRolePermissions("qa-lead", ["deploy:read", "deploy:run"], ACTOR);
+    const result = await setRolePermissions(
+      ORG,
+      "qa-lead",
+      ["deploy:read", "deploy:run"],
+      ACTOR
+    );
 
     expect(result).toEqual({ ok: true, permissions: ["deploy:read", "deploy:run"], changes: 0 });
     expect(queryTexts(client)).toEqual([
       "BEGIN",
-      "SELECT name FROM roles WHERE name = $1 FOR UPDATE",
-      "SELECT feature || ':' || action AS key FROM role_permissions WHERE role = $1",
+      "SELECT name FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE",
+      "SELECT feature || ':' || action AS key FROM role_permissions " +
+        "WHERE org_id = $1 AND role = $2",
       "COMMIT",
     ]);
   });
 
   test("refuses a role that has been deleted since the page loaded", async () => {
     const client = connectsTo([]);
-    expect(await setRolePermissions("qa-lead", ["deploy:run"], ACTOR)).toEqual({
+    expect(await setRolePermissions(ORG, "qa-lead", ["deploy:run"], ACTOR)).toEqual({
       ok: false,
       status: 404,
       error: "That role no longer exists. Refresh the page.",
     });
     expect(queryTexts(client)).toEqual([
       "BEGIN",
-      "SELECT name FROM roles WHERE name = $1 FOR UPDATE",
+      "SELECT name FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE",
       "ROLLBACK",
     ]);
     expect(client.releaseCount).toBe(1);
@@ -483,11 +551,16 @@ describe("setRolePermissions", () => {
   ])("passes a failure on with nothing committed, when %s", async (_name, extra) => {
     const client = connectsTo([
       ...extra,
-      { match: /SELECT name FROM roles WHERE name = \$1 FOR UPDATE/, rows: [{ name: "qa-lead" }] },
+      {
+        match: /SELECT name FROM roles WHERE org_id = \$1 AND name = \$2 FOR UPDATE/,
+        rows: [{ name: "qa-lead" }],
+      },
       { match: /INSERT INTO role_permissions/, error: { message: "disk full" } },
     ]);
 
-    await expect(setRolePermissions("qa-lead", ["deploy:run"], ACTOR)).rejects.toThrow("disk full");
+    await expect(setRolePermissions(ORG, "qa-lead", ["deploy:run"], ACTOR)).rejects.toThrow(
+      "disk full"
+    );
     expect(queriesMatching(client, /COMMIT|role_changes/)).toEqual([]);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     expect(client.releaseCount).toBe(1);
@@ -499,7 +572,7 @@ describe("resetRolePermissions", () => {
     ["admin", ADMIN_IS_FIXED],
     ["qa-lead", "Only Viewer and Editor have a default to go back to."],
   ])("refuses %s before taking a connection", async (role, error) => {
-    expect(await resetRolePermissions(role, ACTOR)).toEqual({ ok: false, status: 400, error });
+    expect(await resetRolePermissions(ORG, role, ACTOR)).toEqual({ ok: false, status: 400, error });
     expect(mockConnects).toBe(0);
   });
 
@@ -508,7 +581,7 @@ describe("resetRolePermissions", () => {
     // An admin took Deploy: Run away from editors and gave them Approve.
     const stored = [...preset.filter((key) => key !== "deploy:run"), "approvals:approve"];
     const client = roleHolding("editor", stored);
-    const result = await resetRolePermissions("editor", ACTOR);
+    const result = await resetRolePermissions(ORG, "editor", ACTOR);
 
     // The reset row is not a box, so it is not one of the changes counted.
     expect(result).toEqual({ ok: true, permissions: [...preset], changes: 2 });
@@ -523,20 +596,23 @@ describe("resetRolePermissions", () => {
       actor: ACTOR,
     });
     expect(valuesOf(client, /DELETE FROM role_permissions/)).toEqual([
+      ORG,
       "editor",
       ["approvals:approve"],
     ]);
     expect(valuesOf(client, /INSERT INTO role_permissions/)).toEqual([
+      ORG,
       "editor",
       ["deploy"],
       ["run"],
     ]);
+    expectKeptToOrg(client);
   });
 
   test("still logs a reset that found nothing to change, so the log shows it was pressed", async () => {
     const preset = presetFor("viewer") ?? [];
     const client = roleHolding("viewer", [...preset]);
-    const result = await resetRolePermissions("viewer", ACTOR);
+    const result = await resetRolePermissions(ORG, "viewer", ACTOR);
 
     expect(result).toEqual({ ok: true, permissions: [...preset], changes: 0 });
     expect(logLines(client)).toEqual(["reset"]);
@@ -545,14 +621,14 @@ describe("resetRolePermissions", () => {
 
 describe("deleteRole", () => {
   const FOUND: FakeStep = {
-    match: /SELECT label FROM roles WHERE name = \$1 FOR UPDATE/,
+    match: /SELECT label FROM roles WHERE org_id = \$1 AND name = \$2 FOR UPDATE/,
     rows: [{ label: "QA Lead" }],
   };
 
   test.each(["viewer", "editor", "admin"])(
     "refuses to delete %s, which is built in",
     async (role) => {
-      expect(await deleteRole(role, ACTOR)).toEqual({
+      expect(await deleteRole(ORG, role, ACTOR)).toEqual({
         ok: false,
         status: 400,
         error: "Viewer, Editor and Admin are built in and can't be deleted.",
@@ -563,14 +639,14 @@ describe("deleteRole", () => {
 
   test("refuses a role that has already gone", async () => {
     const client = connectsTo([]);
-    expect(await deleteRole("qa-lead", ACTOR)).toEqual({
+    expect(await deleteRole(ORG, "qa-lead", ACTOR)).toEqual({
       ok: false,
       status: 404,
       error: "That role no longer exists. Refresh the page.",
     });
     expect(queryTexts(client)).toEqual([
       "BEGIN",
-      "SELECT label FROM roles WHERE name = $1 FOR UPDATE",
+      "SELECT label FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE",
       "ROLLBACK",
     ]);
     expect(client.releaseCount).toBe(1);
@@ -581,8 +657,10 @@ describe("deleteRole", () => {
     [3, "3 people have this role. Give them another role on the Users tab first."],
   ])("refuses a role still held by %i", async (count, error) => {
     const client = connectsTo([FOUND, { match: /SELECT count\(\*\)/, rows: [{ count }] }]);
-    expect(await deleteRole("qa-lead", ACTOR)).toEqual({ ok: false, status: 409, error });
-    expect(valuesOf(client, /SELECT count\(\*\)/)).toEqual(["qa-lead"]);
+    expect(await deleteRole(ORG, "qa-lead", ACTOR)).toEqual({ ok: false, status: 409, error });
+    // The people who hold it in this organization. Another organization's
+    // QA Lead is another role, and its holders do not keep this one alive.
+    expect(valuesOf(client, /SELECT count\(\*\)/)).toEqual([ORG, "qa-lead"]);
     expect(queriesMatching(client, /DELETE|INSERT/)).toEqual([]);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     expect(client.releaseCount).toBe(1);
@@ -590,13 +668,13 @@ describe("deleteRole", () => {
 
   test("deletes a role nobody holds, and logs the name it had", async () => {
     const client = connectsTo([FOUND, { match: /SELECT count\(\*\)/, rows: [{ count: 0 }] }]);
-    expect(await deleteRole("qa-lead", ACTOR)).toEqual({ ok: true });
+    expect(await deleteRole(ORG, "qa-lead", ACTOR)).toEqual({ ok: true });
 
     expect(queryTexts(client)).toEqual([
       "BEGIN",
-      "SELECT label FROM roles WHERE name = $1 FOR UPDATE",
-      "SELECT count(*)::int AS count FROM profiles WHERE role = $1",
-      "DELETE FROM roles WHERE name = $1",
+      "SELECT label FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE",
+      "SELECT count(*)::int AS count FROM memberships WHERE org_id = $1 AND role = $2",
+      "DELETE FROM roles WHERE org_id = $1 AND name = $2",
       expect.stringMatching(/^INSERT INTO role_changes/),
       "COMMIT",
     ]);
@@ -612,6 +690,7 @@ describe("deleteRole", () => {
         actor: ACTOR,
       },
     ]);
+    expectKeptToOrg(client);
     expect(client.releaseCount).toBe(1);
   });
 
@@ -623,7 +702,7 @@ describe("deleteRole", () => {
         error: { code: "23503", message: "violates foreign key constraint" },
       },
     ]);
-    expect(await deleteRole("qa-lead", ACTOR)).toEqual({
+    expect(await deleteRole(ORG, "qa-lead", ACTOR)).toEqual({
       ok: false,
       status: 409,
       error: "Someone still has this role. Give them another role on the Users tab first.",
@@ -641,7 +720,7 @@ describe("deleteRole", () => {
       FOUND,
       { match: /SELECT count\(\*\)/, error: { message: "disk full" } },
     ]);
-    await expect(deleteRole("qa-lead", ACTOR)).rejects.toThrow("disk full");
+    await expect(deleteRole(ORG, "qa-lead", ACTOR)).rejects.toThrow("disk full");
     expect(queriesMatching(client, /DELETE|COMMIT/)).toEqual([]);
     expect(queryTexts(client).at(-1)).toBe("ROLLBACK");
     expect(client.releaseCount).toBe(1);
@@ -656,13 +735,13 @@ describe("logRoleChanges", () => {
 
   test("writes nothing at all for no entries", async () => {
     const client = createFakeClient([]);
-    await logRoleChanges(asConnection(client), []);
+    await logRoleChanges(asConnection(client), ORG, []);
     expect(client.queries).toEqual([]);
   });
 
   test("writes every entry in one statement, in the order given", async () => {
     const client = createFakeClient([]);
-    await logRoleChanges(asConnection(client), [
+    await logRoleChanges(asConnection(client), ORG, [
       { role: "editor", kind: "assign", subject: "sam@x", detail: "viewer", actor: ACTOR },
       { role: "editor", kind: "grant", feature: "deploy", action: "run", actor: ACTOR },
     ]);
@@ -691,51 +770,17 @@ describe("logRoleChanges", () => {
 });
 
 describe("reading roles", () => {
-  test("getProfileAccess finds a person whatever the case and spacing of their email", async () => {
-    mockPool = createFakeClient([
-      {
-        match: /WITH me AS/,
-        rows: [{ role: "editor", label: "Editor", granted: ["deploy:run", "users:read"] }],
-      },
-    ]);
-    expect(await getProfileAccess("  Umer@Example.COM ")).toEqual({
-      role: "editor",
-      roleLabel: "Editor",
-      // What the role can do: Run's Read added, the admin-only row ignored.
-      permissions: ["deploy:read", "deploy:run"],
-    });
-    // The second value is the role to fall back on when there is no profile.
-    expect(mockPool.queries[0].values).toEqual(["umer@example.com", "viewer"]);
-  });
-
-  test("getProfileAccess gives the admin everything, whatever is stored", async () => {
-    mockPool = createFakeClient([
-      { match: /WITH me AS/, rows: [{ role: "admin", label: "Admin", granted: [] }] },
-    ]);
-    expect((await getProfileAccess("umer@x")).permissions).toEqual([...ALL_PERMISSIONS]);
-  });
-
-  test("getProfileAccess names a role missing from the table by its key", async () => {
-    mockPool = createFakeClient([
-      { match: /WITH me AS/, rows: [{ role: "ghost", label: null, granted: [] }] },
-    ]);
-    expect(await getProfileAccess("umer@x")).toEqual({
-      role: "ghost",
-      roleLabel: "ghost",
-      permissions: [],
-    });
-  });
-
-  test("getRoleAccess answers null for a role that does not exist", async () => {
-    expect(await getRoleAccess("ghost")).toBeNull();
-    expect(mockPool.queries[0].values).toEqual(["ghost"]);
+  test("getRoleAccess answers null for a role the organization does not have", async () => {
+    expect(await getRoleAccess(ORG, "ghost")).toBeNull();
+    expect(mockPool.queries[0].values).toEqual([ORG, "ghost"]);
+    expectKeptToOrg(mockPool);
   });
 
   test("getRoleAccess answers what a role can do", async () => {
     mockPool = createFakeClient([
       { match: /FROM roles r/, rows: [{ label: "QA Lead", granted: ["drift:run"] }] },
     ]);
-    expect(await getRoleAccess("qa-lead")).toEqual({
+    expect(await getRoleAccess(ORG, "qa-lead")).toEqual({
       role: "qa-lead",
       roleLabel: "QA Lead",
       permissions: ["drift:read", "drift:run"],
@@ -766,7 +811,7 @@ describe("reading roles", () => {
         ],
       },
     ]);
-    expect(await listRoles()).toEqual([
+    expect(await listRoles(ORG)).toEqual([
       {
         name: "admin",
         label: "Admin",
@@ -784,6 +829,18 @@ describe("reading roles", () => {
         permissions: ["deploy:read", "deploy:run"],
       },
     ]);
+    expectKeptToOrg(mockPool);
+  });
+
+  test("listRoles counts holders and rows in the role's own organization only", async () => {
+    await listRoles(ORG);
+    // Two organizations can each have a role called qa-lead. Matching on the
+    // name alone would count the other one's members and add its boxes in.
+    const [sql] = queryTexts(mockPool);
+    expect(sql).toContain("WHERE m.org_id = r.org_id AND m.role = r.name");
+    expect(sql).toContain("ON p.org_id = r.org_id AND p.role = r.name");
+    expect(sql).toContain("WHERE r.org_id = $1");
+    expect(sql).toContain("GROUP BY r.org_id, r.name");
   });
 
   test("listRoles puts the built-in roles first, then the rest by name as a person reads it", async () => {
@@ -815,7 +872,7 @@ describe("reading roles", () => {
         ],
       },
     ]);
-    expect((await listRoles()).map((role) => role.label)).toEqual([
+    expect((await listRoles(ORG)).map((role) => role.label)).toEqual([
       "Viewer",
       "Editor",
       "Admin",
@@ -835,8 +892,15 @@ describe("reading roles", () => {
     [7.9, 7],
     [500, 200],
   ])("listRoleChanges(%p) asks for %i rows", async (limit, rows) => {
-    await listRoleChanges(limit);
-    expect(mockPool.queries[0].values).toEqual([rows]);
+    await listRoleChanges(ORG, limit);
+    expect(mockPool.queries[0].values).toEqual([ORG, rows]);
+  });
+
+  test("listRoleChanges reads the organization's log, and names roles from it alone", async () => {
+    await listRoleChanges(ORG);
+    const [sql] = queryTexts(mockPool);
+    expect(sql).toContain("ON r.org_id = c.org_id AND r.name = c.role");
+    expect(sql).toContain("WHERE c.org_id = $1");
   });
 
   test("listRoleChanges hands times back as text, and leaves a deleted role unnamed", async () => {
@@ -872,7 +936,7 @@ describe("reading roles", () => {
         ],
       },
     ]);
-    expect(await listRoleChanges()).toEqual([
+    expect(await listRoleChanges(ORG)).toEqual([
       {
         id: 9,
         role: "qa-lead",

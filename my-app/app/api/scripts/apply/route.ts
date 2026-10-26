@@ -24,6 +24,7 @@ import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcom
 import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
 import { readApplications } from "@/lib/application-read";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
+import { registryRoot } from "@/lib/registry-paths";
 import {
   analyseRunRisk,
   checkForwardOnly,
@@ -477,6 +478,13 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   const gate = await requirePermission("deploy:run");
   if (!gate.ok) return gate.response;
   attempt.actor = actorFor(gate.principal);
+  // The caller's organization. Everything this route reads or writes in the
+  // app's own database is inside it: the saved connection, the tracked schema,
+  // the approval it spends and the lineage it advances. A local rather than
+  // gate.principal.orgId at each use, because releaseClaimedApproval below is
+  // a nested function, and TypeScript does not carry the gate.ok check into one.
+  const orgId = gate.principal.orgId;
+  attempt.orgId = orgId;
 
   // ─── 1. Parse the request body ───────────────────────────────────────────
   //
@@ -714,10 +722,13 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       `SELECT name, host, port, database_name, username, password, connection_string, ssl, ssl_mode, environment,
               application_table, execute_role
        FROM connections
-       WHERE id = $1`,
-      [connectionId]
+       WHERE id = $1 AND org_id = $2`,
+      [connectionId, orgId]
     );
 
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist, and
+    // nothing ever runs against a database another organization saved.
     if (result.rows.length === 0) {
       return answerBeforeRun(
         { error: `No saved connection found with id ${connectionId}.` },
@@ -788,7 +799,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // not tracked or has never been checked.
   let storedDriftStatus: DriftStatus | null = null;
   try {
-    const tracked = await findTrackedSchema(connectionId, schemaName);
+    const tracked = await findTrackedSchema(orgId, connectionId, schemaName);
     if (tracked) {
       schemaEnvironment = tracked.environment;
       storedDriftStatus = tracked.driftStatus;
@@ -930,6 +941,10 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   if (isProduction(targetEnvironment) && !dryRun) {
     try {
       const claimed = await claimApproval({
+        // Only an approval given in the caller's organization. The connection
+        // is already known to be theirs (step 4), so this is the same set of
+        // approvals, and it stays right even if a check above ever moves.
+        orgId,
         connectionId,
         schemaName,
         scripts: queue.map((job) => ({
@@ -996,7 +1011,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     const id = claimedApprovalId;
     claimedApprovalId = null;
     try {
-      await releaseApproval(id);
+      await releaseApproval(orgId, id);
     } catch (error) {
       console.error("Apply — could not release deploy approval", id, error);
     }
@@ -1491,6 +1506,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // write a chain of nodes that all describe the same final state.
     try {
       const lineage = await recordAppliedMigrationToLineage({
+        orgId,
         connectionId,
         schemaName,
         targetConfig,
@@ -1535,6 +1551,10 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     let archived: ArchivedVersion[] | null = null;
     try {
       archived = await archiveAppliedVersions({
+        // The run's organization is the caller's: the connection was looked
+        // up with orgId above, so its versions go in that organization's
+        // folder of the registry.
+        root: registryRoot(gate.principal),
         database: connRow.database_name,
         schema: schemaName,
         versions: queue.map((job) => ({

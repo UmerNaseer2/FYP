@@ -28,6 +28,17 @@
  * The key is two hashtext() values: the schema, then the family or version
  * text. Two different keys can hash alike; that only makes two unrelated runs
  * wait for each other, it never lets two related runs through together.
+ *
+ * Why the organization is NOT part of the key, although nearly everything
+ * else in the app is kept apart by organization: these locks are taken on the
+ * TARGET database's own connection, and what they guard is that database's
+ * own script_patch ledger. Two organizations can each save a connection to
+ * the same database, and then their runs change the same ledger rows. A key
+ * with the organization in it would let those two runs through side by side,
+ * which is exactly the race the lock exists to stop. Keyed as they are, the
+ * runs queue. The cost is that two organizations deploying a family with the
+ * same name to the same database wait for each other, which is correct: it
+ * is one ledger.
  */
 import type { PoolClient } from "pg";
 

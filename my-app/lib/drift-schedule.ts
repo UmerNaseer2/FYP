@@ -124,12 +124,15 @@ export function isDue(entry: DriftScheduleEntry, now: Date): boolean {
  * starves. `limit` exists because a tick that fans out over fifty schemas at
  * once would open fifty connections to other people's databases; the rest are
  * picked up on the next tick, which is a minute away.
+ *
+ * Generic so a caller can hang its own fields on each entry (the scheduler
+ * adds the organization) and get the same objects back.
  */
-export function selectDue(
-  entries: DriftScheduleEntry[],
+export function selectDue<T extends DriftScheduleEntry>(
+  entries: T[],
   now: Date,
   limit: number
-): DriftScheduleEntry[] {
+): T[] {
   if (limit <= 0) return [];
   const due = entries.filter((entry) => isDue(entry, now));
   due.sort((a, b) => {

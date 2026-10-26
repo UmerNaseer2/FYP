@@ -11,7 +11,7 @@ import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 import { EXECUTE_ROLES, DEFAULT_EXECUTE_ROLE } from "../connection-access";
-import { DEFAULT_ROLE, ROLE_CHANGE_KINDS } from "../permissions";
+import { ROLE_CHANGE_KINDS } from "../permissions";
 
 /**
  * The app's own tables, as Sequelize models.
@@ -71,6 +71,79 @@ const NOW_TZ = literal("now()");
  */
 
 // ---------------------------------------------------------------------------
+// Organizations.
+//
+// An organization is a team: its people, the databases they connect to, and
+// everything the app records about those databases. Every table below that
+// holds a team's work has an `org_id` naming the organization it belongs to,
+// and every query in the app filters on it, so one team never reads another
+// team's rows. A row that belongs to another row, such as a snapshot of a
+// tracked schema or one target of a saved comparison, copies its parent's
+// org_id when it is written (an INSERT that selects it from the parent, in
+// the parent's organization only), so every table can be filtered on its own.
+//
+// Each of those tables also has an index that starts with `org_id`: one of its
+// own (`<table>_org_id_idx`), or a key that already leads with the column.
+// Every read filters on it, and deleting an organization has to find its rows
+// in every table.
+//
+// The keys from `org_id` to this table are added by lib/db/bootstrap.ts rather
+// than declared here. The note above the relationships at the end of this file
+// says why.
+// ---------------------------------------------------------------------------
+
+export class Organization extends Model<
+  InferAttributes<Organization>,
+  InferCreationAttributes<Organization>
+> {
+  declare id: CreationOptional<number>;
+  /**
+   * The organization's name in a link, such as "acme-labs". Fixed when the
+   * organization is created, so a saved link keeps working after a rename,
+   * which changes `name` only. The allowed format is a CHECK added by
+   * lib/db/bootstrap.ts.
+   */
+  declare slug: string;
+  /** What the screens show: "Acme Labs". */
+  declare name: string;
+  /** Whether a production deploy needs a second person to approve it. */
+  declare two_person_rule: CreationOptional<boolean>;
+  /** The desktop app's own organization, kept on that one computer. */
+  declare personal: CreationOptional<boolean>;
+  /**
+   * The organization that everything from before organizations existed was
+   * moved into, and the one a person joins when they first sign in. Exactly
+   * one row has it, which the partial unique index below enforces.
+   */
+  declare is_default: CreationOptional<boolean>;
+  declare created_at: CreationOptional<Date>;
+}
+
+Organization.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    slug: { type: DataTypes.TEXT, allowNull: false, unique: true },
+    name: { type: DataTypes.TEXT, allowNull: false },
+    two_person_rule: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    personal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    is_default: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "organizations",
+    indexes: [
+      {
+        name: "organizations_one_default_idx",
+        unique: true,
+        fields: ["is_default"],
+        where: { is_default: true },
+      },
+    ],
+  }
+);
+
+// ---------------------------------------------------------------------------
 // Saved database connections.
 // ---------------------------------------------------------------------------
 
@@ -79,6 +152,7 @@ export class Connection extends Model<
   InferCreationAttributes<Connection>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare name: string;
   declare host: string;
   declare port: CreationOptional<number>;
@@ -137,6 +211,7 @@ export class Connection extends Model<
 Connection.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     name: { type: DataTypes.TEXT, allowNull: false },
     host: { type: DataTypes.TEXT, allowNull: false },
     port: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 5432 },
@@ -172,7 +247,11 @@ Connection.init(
     last_test_latency_ms: { type: DataTypes.INTEGER, allowNull: true },
     last_test_error: { type: DataTypes.TEXT, allowNull: true },
   },
-  { sequelize, tableName: "connections" }
+  {
+    sequelize,
+    tableName: "connections",
+    indexes: [{ name: "connections_org_id_idx", fields: ["org_id"] }],
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -186,7 +265,14 @@ export class Profile extends Model<
   declare id: CreationOptional<number>;
   declare email: string;
   declare name: CreationOptional<string | null>;
-  declare role: CreationOptional<string>;
+  /**
+   * The role this person had before organizations existed. Nothing writes it
+   * any more: what someone may do is their row in `memberships`, one per
+   * organization they belong to. It is kept so that a backup taken before
+   * organizations still restores, and the memberships backfill in
+   * lib/db/bootstrap.ts reads it once to carry each person's role across.
+   */
+  declare role: CreationOptional<string | null>;
   declare created_at: CreationOptional<Date>;
   declare last_seen_at: CreationOptional<Date | null>;
 }
@@ -196,26 +282,67 @@ Profile.init(
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     email: { type: DataTypes.TEXT, allowNull: false, unique: true },
     name: { type: DataTypes.TEXT, allowNull: true },
-    // Any role in the `roles` table, which is a foreign key now (see the
-    // relationships at the end of this file) rather than a fixed list of three.
-    // A list here would refuse every role an admin creates.
-    role: { type: DataTypes.TEXT, allowNull: false, defaultValue: DEFAULT_ROLE },
+    // No key and no default. Roles belong to an organization now, so a role
+    // name on its own no longer says which role it means.
+    role: { type: DataTypes.TEXT, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
     last_seen_at: { type: DataTypes.DATE, allowNull: true },
   },
   { sequelize, tableName: "profiles" }
 );
 
+/**
+ * One person in one organization, and the role they have there.
+ *
+ * The role lives here rather than on the profile because a person can belong
+ * to several organizations, with a different role in each. The keys from this
+ * table are added by lib/db/bootstrap.ts: leaving an organization or deleting
+ * a profile removes the row, and (org_id, role) has to be a role of that same
+ * organization, which also stops a role somebody still has from being deleted.
+ */
+export class Membership extends Model<
+  InferAttributes<Membership>,
+  InferCreationAttributes<Membership>
+> {
+  declare org_id: number;
+  declare profile_id: number;
+  declare role: string;
+  declare created_at: CreationOptional<Date>;
+}
+
+Membership.init(
+  {
+    org_id: { type: DataTypes.INTEGER, primaryKey: true },
+    profile_id: { type: DataTypes.INTEGER, primaryKey: true },
+    role: { type: DataTypes.TEXT, allowNull: false },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "memberships",
+    // The primary key starts with org_id, which finds an organization's
+    // members. This finds a person's organizations, which every sign-in asks.
+    indexes: [{ name: "memberships_profile_id_idx", fields: ["profile_id"] }],
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Roles, and what each one may do.
 //
-// A role is a named set of permissions from the catalogue in lib/permissions.ts.
-// The three built-in roles are written on boot (setUpRoles in
-// lib/db/bootstrap.ts) and an admin can add more from the Admin screen.
+// A role is a named set of permissions from the catalogue in lib/permissions.ts,
+// and it belongs to one organization. Every organization has the three
+// built-in roles (seedBuiltInRoles in lib/db/bootstrap.ts writes them), and its
+// admins can add more from the Admin screen.
 // ---------------------------------------------------------------------------
 
 export class Role extends Model<InferAttributes<Role>, InferCreationAttributes<Role>> {
-  /** The key profiles.role holds: "viewer", "qa-lead". Never renamed. */
+  /**
+   * The organization the role belongs to. Each organization has its own copy
+   * of the built-in roles too, so an admin changing what "editor" may do in
+   * one team changes nothing for another.
+   */
+  declare org_id: number;
+  /** The key memberships.role holds: "viewer", "qa-lead". Never renamed. */
   declare name: string;
   /** What the screens show: "Viewer", "QA Lead". */
   declare label: string;
@@ -224,7 +351,8 @@ export class Role extends Model<InferAttributes<Role>, InferCreationAttributes<R
   declare built_in: CreationOptional<boolean>;
   /**
    * The preset permissions this role has already been given, so a boot after
-   * an admin unticked one does not quietly tick it again. See setUpRoles.
+   * an admin unticked one does not quietly tick it again. See
+   * seedBuiltInRoles.
    */
   declare preset_applied: CreationOptional<string[]>;
   declare created_at: CreationOptional<Date>;
@@ -232,12 +360,16 @@ export class Role extends Model<InferAttributes<Role>, InferCreationAttributes<R
 
 Role.init(
   {
+    // Declared before `name`, so the primary key is (org_id, name): two
+    // organizations can each have an "editor", and the key starts with the
+    // column every read filters on.
+    org_id: { type: DataTypes.INTEGER, primaryKey: true },
     name: { type: DataTypes.TEXT, primaryKey: true },
     label: { type: DataTypes.TEXT, allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: false, defaultValue: "" },
     built_in: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     // JSONB like deploy_attempts.scripts: a short list read and written whole,
-    // only ever by setUpRoles.
+    // only ever by seedBuiltInRoles.
     preset_applied: { type: DataTypes.JSONB, allowNull: false, defaultValue: [] },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
   },
@@ -245,17 +377,22 @@ Role.init(
 );
 
 /**
- * One permission one role holds: ("editor", "connections", "create").
+ * One permission one role holds in one organization: in organization 1,
+ * ("editor", "connections", "create").
  *
  * A row per permission rather than a list on the role, so that granting one is
  * an INSERT and revoking one is a DELETE, and two admins ticking different
  * boxes at the same moment cannot overwrite each other's work. The admin role
  * has no rows at all: it can do everything, and nothing stored can change that.
+ *
+ * (org_id, role) is a key to `roles`, added by lib/db/bootstrap.ts, so deleting
+ * a role deletes its rows.
  */
 export class RolePermission extends Model<
   InferAttributes<RolePermission>,
   InferCreationAttributes<RolePermission>
 > {
+  declare org_id: number;
   declare role: string;
   declare feature: string;
   declare action: string;
@@ -263,6 +400,7 @@ export class RolePermission extends Model<
 
 RolePermission.init(
   {
+    org_id: { type: DataTypes.INTEGER, primaryKey: true },
     role: { type: DataTypes.TEXT, primaryKey: true },
     feature: { type: DataTypes.TEXT, primaryKey: true },
     action: { type: DataTypes.TEXT, primaryKey: true },
@@ -282,6 +420,7 @@ export class RoleChange extends Model<
   InferCreationAttributes<RoleChange>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   /**
    * The role the change was about. Deliberately not a foreign key: the history
    * of a role has to outlive the role, or deleting one would erase the record
@@ -304,6 +443,7 @@ export class RoleChange extends Model<
 RoleChange.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     role: { type: DataTypes.TEXT, allowNull: false },
     kind: {
       type: DataTypes.TEXT,
@@ -317,7 +457,11 @@ RoleChange.init(
     actor: { type: DataTypes.TEXT, allowNull: false },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
   },
-  { sequelize, tableName: "role_changes" }
+  {
+    sequelize,
+    tableName: "role_changes",
+    indexes: [{ name: "role_changes_org_id_idx", fields: ["org_id"] }],
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -329,6 +473,7 @@ export class TrackedSchema extends Model<
   InferCreationAttributes<TrackedSchema>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare connection_id: number;
   declare schema_name: string;
   declare label: CreationOptional<string | null>;
@@ -355,6 +500,7 @@ export class TrackedSchema extends Model<
 TrackedSchema.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     connection_id: { type: DataTypes.INTEGER, allowNull: false },
     schema_name: { type: DataTypes.TEXT, allowNull: false },
     label: { type: DataTypes.TEXT, allowNull: true },
@@ -385,6 +531,7 @@ TrackedSchema.init(
         unique: true,
         fields: ["connection_id", "schema_name"],
       },
+      { name: "tracked_schemas_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -394,6 +541,7 @@ export class Snapshot extends Model<
   InferCreationAttributes<Snapshot>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare tracked_schema_id: number;
   /** The whole structural snapshot, as lib/postgres captured it. */
   declare snapshot: unknown;
@@ -405,6 +553,7 @@ export class Snapshot extends Model<
 Snapshot.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     tracked_schema_id: { type: DataTypes.INTEGER, allowNull: false },
     snapshot: { type: DataTypes.JSONB, allowNull: false },
     table_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -426,6 +575,7 @@ Snapshot.init(
         name: "snapshots_tracked_schema_id_captured_at_idx",
         fields: ["tracked_schema_id", "captured_at"],
       },
+      { name: "snapshots_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -435,6 +585,7 @@ export class LineageMigration extends Model<
   InferCreationAttributes<LineageMigration>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare tracked_schema_id: number;
   /** Position in this schema's lineage, 1 upwards. */
   declare seq: number;
@@ -449,6 +600,7 @@ export class LineageMigration extends Model<
 LineageMigration.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     tracked_schema_id: { type: DataTypes.INTEGER, allowNull: false },
     seq: { type: DataTypes.INTEGER, allowNull: false },
     name: { type: DataTypes.TEXT, allowNull: false },
@@ -476,6 +628,7 @@ LineageMigration.init(
         name: "lineage_migrations_snapshot_id_idx",
         fields: ["snapshot_id"],
       },
+      { name: "lineage_migrations_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -485,6 +638,7 @@ export class DriftEvent extends Model<
   InferCreationAttributes<DriftEvent>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare tracked_schema_id: number;
   declare status: string;
   declare summary: CreationOptional<string | null>;
@@ -520,6 +674,7 @@ export class DriftEvent extends Model<
 DriftEvent.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     tracked_schema_id: { type: DataTypes.INTEGER, allowNull: false },
     status: { type: DataTypes.TEXT, allowNull: false },
     summary: { type: DataTypes.TEXT, allowNull: true },
@@ -555,6 +710,7 @@ DriftEvent.init(
         name: "drift_events_baseline_snapshot_id_idx",
         fields: ["baseline_snapshot_id"],
       },
+      { name: "drift_events_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -581,6 +737,7 @@ export class SchemaMetric extends Model<
   InferCreationAttributes<SchemaMetric>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare tracked_schema_id: number;
   /** Counted from the snapshot the drift check had already fetched. */
   declare tables: number;
@@ -603,6 +760,7 @@ export class SchemaMetric extends Model<
 SchemaMetric.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     tracked_schema_id: { type: DataTypes.INTEGER, allowNull: false },
     tables: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     columns: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -630,6 +788,7 @@ SchemaMetric.init(
         name: "schema_metrics_tracked_schema_id_sampled_at_idx",
         fields: ["tracked_schema_id", "sampled_at"],
       },
+      { name: "schema_metrics_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -663,6 +822,7 @@ export class QueryHistory extends Model<
   InferCreationAttributes<QueryHistory>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare connection_id: number;
   declare schema_name: string;
   /** The SQL as submitted, cut at STORED_SQL_LIMIT (lib/query-history.ts). */
@@ -696,6 +856,7 @@ export class QueryHistory extends Model<
 QueryHistory.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     connection_id: { type: DataTypes.INTEGER, allowNull: false },
     schema_name: { type: DataTypes.TEXT, allowNull: false },
     query_text: { type: DataTypes.TEXT, allowNull: false },
@@ -743,6 +904,7 @@ QueryHistory.init(
         name: "query_history_fingerprint_idx",
         fields: ["fingerprint", "captured_at"],
       },
+      { name: "query_history_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -767,6 +929,7 @@ export class PerfThreshold extends Model<
   InferCreationAttributes<PerfThreshold>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare connection_id: number;
   declare schema_name: string;
   /** A ThresholdKey — see lib/perf-thresholds.ts. */
@@ -781,6 +944,7 @@ export class PerfThreshold extends Model<
 PerfThreshold.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     connection_id: { type: DataTypes.INTEGER, allowNull: false },
     schema_name: { type: DataTypes.TEXT, allowNull: false },
     threshold_key: { type: DataTypes.TEXT, allowNull: false },
@@ -801,6 +965,7 @@ PerfThreshold.init(
         unique: true,
         fields: ["connection_id", "schema_name", "threshold_key"],
       },
+      { name: "perf_thresholds_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -814,6 +979,7 @@ export class ComparisonSet extends Model<
   InferCreationAttributes<ComparisonSet>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare name: string;
   declare source_connection_id: CreationOptional<number | null>;
   /** The connection's name as it was when the set was saved, so a deleted
@@ -833,6 +999,7 @@ export class ComparisonSet extends Model<
 ComparisonSet.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     name: { type: DataTypes.TEXT, allowNull: false },
     source_connection_id: { type: DataTypes.INTEGER, allowNull: true },
     source_connection_label: { type: DataTypes.TEXT, allowNull: false, defaultValue: "" },
@@ -866,6 +1033,7 @@ export class ComparisonSetTarget extends Model<
   InferCreationAttributes<ComparisonSetTarget>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare set_id: number;
   /** Which slot on the Compare screen this target belongs in. */
   declare position: number;
@@ -877,6 +1045,7 @@ export class ComparisonSetTarget extends Model<
 ComparisonSetTarget.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     set_id: { type: DataTypes.INTEGER, allowNull: false },
     position: { type: DataTypes.INTEGER, allowNull: false },
     connection_id: { type: DataTypes.INTEGER, allowNull: true },
@@ -900,6 +1069,7 @@ ComparisonSetTarget.init(
         name: "comparison_set_targets_connection_id_idx",
         fields: ["connection_id"],
       },
+      { name: "comparison_set_targets_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -922,6 +1092,7 @@ export class ComparisonRun extends Model<
   InferCreationAttributes<ComparisonRun>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   /** The saved set this run came from, when one was open. Null otherwise. */
   declare set_id: CreationOptional<number | null>;
   declare source_connection_id: number;
@@ -949,6 +1120,7 @@ export class ComparisonRun extends Model<
 ComparisonRun.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     set_id: { type: DataTypes.INTEGER, allowNull: true },
     source_connection_id: { type: DataTypes.INTEGER, allowNull: false },
     source_schema: { type: DataTypes.TEXT, allowNull: false },
@@ -987,6 +1159,7 @@ ComparisonRun.init(
       // The other half of a saved set being deleted — see the association
       // below, which nulls this column rather than taking the history with it.
       { name: "comparison_runs_set_id_idx", fields: ["set_id"] },
+      { name: "comparison_runs_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -1000,6 +1173,7 @@ export class DeployApproval extends Model<
   InferCreationAttributes<DeployApproval>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   declare connection_id: number;
   declare schema_name: string;
   declare script_name: string;
@@ -1032,6 +1206,7 @@ export class DeployApproval extends Model<
 DeployApproval.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     connection_id: { type: DataTypes.INTEGER, allowNull: false },
     schema_name: { type: DataTypes.TEXT, allowNull: false },
     script_name: { type: DataTypes.TEXT, allowNull: false },
@@ -1085,6 +1260,7 @@ DeployApproval.init(
         name: "deploy_approvals_target_idx",
         fields: ["connection_id", "schema_name", "script_name", "status"],
       },
+      { name: "deploy_approvals_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -1120,6 +1296,7 @@ export class DeployAttempt extends Model<
   InferCreationAttributes<DeployAttempt>
 > {
   declare id: CreationOptional<number>;
+  declare org_id: number;
   /** Null when the request was refused before it named a usable connection. */
   declare connection_id: CreationOptional<number | null>;
   declare schema_name: CreationOptional<string | null>;
@@ -1140,6 +1317,7 @@ export class DeployAttempt extends Model<
 DeployAttempt.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
     connection_id: { type: DataTypes.INTEGER, allowNull: true },
     schema_name: { type: DataTypes.TEXT, allowNull: true },
     // JSONB rather than a row per script: an attempt is one decision about one
@@ -1167,6 +1345,7 @@ DeployAttempt.init(
         name: "deploy_attempts_target_idx",
         fields: ["connection_id", "schema_name", "created_at"],
       },
+      { name: "deploy_attempts_org_id_idx", fields: ["org_id"] },
     ],
   }
 );
@@ -1182,6 +1361,16 @@ DeployAttempt.init(
 // take the schema's whole lineage, its approval history, or the record of what
 // was analysed against it. `connection_name` is resolved by a LEFT JOIN at read
 // time, so a history row whose connection is gone still reads.
+//
+// The keys that involve organizations are not declared here at all: every
+// `org_id` key to `organizations`, the memberships keys to `organizations` and
+// `profiles`, and the (org_id, role) keys from `role_permissions` and
+// `memberships` to `roles`. lib/db/bootstrap.ts adds them by hand. sync() never
+// changes a table that already exists, and a database from before
+// organizations already has nearly every one of these tables, so a key
+// declared here would reach new installs only. Adding them in one place means
+// a fresh install and an upgraded one get the same keys from the same
+// statements.
 // ---------------------------------------------------------------------------
 
 TrackedSchema.hasMany(Snapshot, { foreignKey: "tracked_schema_id", onDelete: "CASCADE" });
@@ -1249,26 +1438,6 @@ ComparisonRun.belongsTo(Connection, {
 // Deleting the template does not delete what it found: the history belongs to
 // the pair of schemas, and the next run of that pair still wants it.
 ComparisonRun.belongsTo(ComparisonSet, { foreignKey: "set_id", onDelete: "SET NULL" });
-
-// A person's role has to be one that exists. RESTRICT, so a role somebody
-// still has cannot be deleted out from under them (the Admin screen says who
-// has it instead). There is deliberately no Role.hasMany(Profile) beside this:
-// for a NOT NULL key Sequelize would default that side to CASCADE, and deleting
-// a role must never delete the people in it. Role keys are never renamed, so
-// the ON UPDATE is only there to be explicit.
-//
-// On a database created before roles existed, sync() leaves `profiles` alone,
-// so setUpRoles in lib/db/bootstrap.ts adds this same key by hand.
-Profile.belongsTo(Role, {
-  foreignKey: "role",
-  as: "assignedRole",
-  onDelete: "RESTRICT",
-  onUpdate: "CASCADE",
-});
-
-// A role's permission rows mean nothing without the role.
-Role.hasMany(RolePermission, { foreignKey: "role", onDelete: "CASCADE" });
-RolePermission.belongsTo(Role, { foreignKey: "role" });
 
 // role_changes.role has no key at all, for the reason on the model: the record
 // of what happened to a role has to outlive the role.

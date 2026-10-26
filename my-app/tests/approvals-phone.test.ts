@@ -8,6 +8,8 @@
 //   - GET /api/deploy/approvals/[id]/phone, one request and its SQL;
 //   - the two fields the decision route checks for a phone, expectedFingerprint
 //     and expectedApprover.
+// And that all three routes stay inside the caller's organization: another
+// organization's request reads as missing, and its queue is never listed.
 //
 // The fingerprints and the approverKey are pinned as hex worked out on their
 // own, outside this code, because the desktop app computes the same
@@ -29,7 +31,7 @@ import type { ApprovalScript } from "@/lib/approval-fingerprint";
 import { BYPASS_PRINCIPAL } from "@/lib/auth-mode";
 import { refusalMessage } from "@/lib/permissions";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
-import { bypassAdminPrincipal, principalFor } from "./helpers/principals";
+import { TEST_ORG, bypassAdminPrincipal, principalFor } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -106,6 +108,7 @@ async function answerOf(res: Response): Promise<{ status: number; body: Record<s
 
 function newRequest(input: Partial<Parameters<typeof createApprovalRequest>[0]> = {}) {
   return createApprovalRequest({
+    orgId: TEST_ORG.id,
     connectionId: 3,
     schemaName: "sales",
     scriptName: "orders",
@@ -213,13 +216,13 @@ describe("the copy of the SQL a request keeps", () => {
   it("is added to an open request that has none, when the same run is asked for again", async () => {
     mockPoolQuery.mockResolvedValueOnce({ rows: [row({ id: 42 })] });
     const answer = await newRequest();
-    expect(answer.id).toBe(42);
+    expect(answer?.id).toBe(42);
     expect(mockPoolQuery).toHaveBeenCalledTimes(2);
     const update = call(1);
-    expect(update.sql).toBe(
-      "UPDATE deploy_approvals SET scripts = $2::jsonb WHERE id = $1 AND scripts IS NULL"
+    expect(update.sql.replace(/\s+/g, " ")).toBe(
+      "UPDATE deploy_approvals SET scripts = $2::jsonb WHERE id = $1 AND org_id = $3 AND scripts IS NULL"
     );
-    expect(update.values).toEqual([42, JSON.stringify(VECTOR_RUN)]);
+    expect(update.values).toEqual([42, JSON.stringify(VECTOR_RUN), TEST_ORG.id]);
   });
 
   it("is not written over an open request when the run is too big to keep", async () => {
@@ -294,8 +297,9 @@ describe("GET /api/deploy/approvals/phone", () => {
       ],
     });
 
-    const { sql } = call(0);
-    expect(sql).toContain("status = 'pending'");
+    const { sql, values } = call(0);
+    expect(sql).toContain("status = 'pending' AND org_id = $1");
+    expect(values).toEqual([TEST_ORG.id]);
     expect(sql).toContain("scripts IS NOT NULL AS has_sql");
     // Whether a copy exists, never the copy itself.
     expect(sql.replace("scripts IS NOT NULL AS has_sql", "")).not.toMatch(/\bscripts\b/);
@@ -345,8 +349,8 @@ describe("GET /api/deploy/approvals/[id]/phone", () => {
     expect(status).toBe(200);
     expect(body).toEqual({ id: 12, action: "deploy", fingerprint: DEPLOY_HEX, scripts: VECTOR_RUN });
     const { sql, values } = call(0);
-    expect(sql).toContain("scripts FROM deploy_approvals WHERE id = $1");
-    expect(values).toEqual([12]);
+    expect(sql).toContain("scripts FROM deploy_approvals WHERE id = $1 AND org_id = $2");
+    expect(values).toEqual([12, TEST_ORG.id]);
   });
 
   it("hands out the kept SQL of a rollback, hashed the way rollbacks are", async () => {
@@ -464,9 +468,11 @@ describe("POST /api/deploy/approvals/[id] from a phone", () => {
       await decide({ decision: "approve", expectedFingerprint: DEPLOY_HEX, expectedApprover: PERSON_HEX })
     );
     expect(status).toBe(200);
+    expect(call(0).values).toEqual([12, TEST_ORG.id]);
     const update = call(1);
     expect(update.sql).toContain("UPDATE deploy_approvals");
     expect(update.values.slice(0, 3)).toEqual([12, "approved", "Person@Example.test"]);
+    expect(update.values[7]).toBe(TEST_ORG.id);
     // COALESCE keeps the note the request was made with.
     expect(update.values[4]).toBeNull();
   });
@@ -539,5 +545,67 @@ describe("POST /api/deploy/approvals/[id] from a phone", () => {
     const { status } = await answerOf(await decide({ decision: "approve", note: "Looks fine" }));
     expect(status).toBe(200);
     expect(call(1).values[4]).toBe("Looks fine");
+  });
+});
+
+describe("inside the caller's organization", () => {
+  const OTHER_ORG = TEST_ORG.id + 1;
+
+  /** A pending request in each organization, with its SQL kept. */
+  const ROWS = [
+    { ...row({ id: 12 }), org_id: TEST_ORG.id, scripts: VECTOR_RUN, has_sql: true },
+    { ...row({ id: 13 }), org_id: OTHER_ORG, scripts: VECTOR_RUN, has_sql: true },
+  ];
+
+  /**
+   * Answers the way the statement's own WHERE clause would, so a statement
+   * that left the organization out would find the other organization's row.
+   */
+  function matching(text: string, values: unknown[] = []) {
+    const id = /WHERE id = \$(\d+)/.exec(text);
+    const org = /org_id = \$(\d+)/.exec(text);
+    const rows = ROWS.filter(
+      (one) =>
+        (!id || one.id === values[Number(id[1]) - 1]) &&
+        (!org || one.org_id === values[Number(org[1]) - 1])
+    );
+    return { rows, rowCount: rows.length };
+  }
+
+  beforeEach(() => {
+    mockPoolQuery.mockImplementation(async (...args: unknown[]) =>
+      matching(args[0] as string, args[1] as unknown[])
+    );
+  });
+
+  it("lists only the organization's own requests in the phone's queue", async () => {
+    const { status, body } = await answerOf(await listRoute());
+    expect(status).toBe(200);
+    expect((body.approvals as Array<{ id: number }>).map((one) => one.id)).toEqual([12]);
+  });
+
+  it("answers another organization's request as gone, and never hands out its SQL", async () => {
+    const res = await readRoute(new NextRequest("http://localhost/api/deploy/approvals/13/phone"), {
+      params: Promise.resolve({ id: "13" }),
+    });
+    const { status, body } = await answerOf(res);
+    expect(status).toBe(404);
+    expect(body).toEqual({ error: "That approval no longer exists." });
+  });
+
+  it("will not decide another organization's request", async () => {
+    const res = await decideRoute(
+      new NextRequest("http://localhost/api/deploy/approvals/13", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approve" }),
+      }),
+      { params: Promise.resolve({ id: "13" }) }
+    );
+    const { status, body } = await answerOf(res);
+    expect(status).toBe(404);
+    expect(body).toEqual({ error: "That approval no longer exists." });
+    const writes = mockPoolQuery.mock.calls.filter(([text]) => /UPDATE/.test(String(text)));
+    expect(writes).toHaveLength(0);
   });
 });

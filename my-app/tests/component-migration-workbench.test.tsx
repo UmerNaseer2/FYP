@@ -44,7 +44,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import {
@@ -1075,16 +1075,15 @@ describe("adding the rollback afterwards", () => {
 
   it("does not add it for a role that may no longer push", async () => {
     // An admin can untick "Scripts: Create" while the page is open, and the
-    // next session check brings that here. Adding the rollback writes to the
+    // next check of /api/me brings that here. Adding the rollback writes to the
     // registry like a push does, so the route would refuse it.
-    const { rerender } = await pushWithoutSavedRollback();
-    setUser("viewer");
-    rerender(<MigrationWorkbench {...BASE} />);
+    await pushWithoutSavedRollback();
+    act(() => setUser("viewer"));
 
-    const retry = screen.getByRole("button", { name: "Retry saving the rollback" });
-    expect(retry).toBeDisabled();
-    expect(retry).toHaveAttribute("title", pushRefusal("Viewer"));
-    fireEvent.click(retry);
+    const retry = () => screen.getByRole("button", { name: "Retry saving the rollback" });
+    await waitFor(() => expect(retry()).toHaveAttribute("title", pushRefusal("Viewer")));
+    expect(retry()).toBeDisabled();
+    fireEvent.click(retry());
     expect(pushesSent()).toBe(1);
   });
 

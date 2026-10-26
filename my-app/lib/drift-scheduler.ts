@@ -4,6 +4,7 @@ import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
 import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
 import type { DriftSource } from "./drift-source";
 import {
+  isDue,
   normalizeDriftInterval,
   selectDue,
   type DriftScheduleEntry,
@@ -32,6 +33,9 @@ import {
  *     than opening thirty connections to other people's databases at once.
  *   • It never throws. A tick that fails logs and the next one tries again;
  *     a scheduler that can kill the server is worse than no scheduler.
+ *   • One loop serves every organization. It reads every organization's
+ *     schedule, runs each check inside the organization its schema belongs to,
+ *     and tells each organization only what happened to its own schemas.
  */
 
 /** How often the loop wakes. Not the cadence — that is per schema. */
@@ -66,7 +70,10 @@ const CHECK_CONCURRENCY = 2;
  */
 const PRUNE_EVERY_MS = 6 * 60 * 60 * 1000;
 
-/** What the scheduler is doing, for /api/drift/schedule and the UI. */
+/**
+ * What the scheduler is doing, as one organization sees it, for
+ * /api/lineage/schedule and the UI.
+ */
 export type SchedulerStatus = {
   /** False when the loop is not running — disabled, or never started. */
   running: boolean;
@@ -74,24 +81,43 @@ export type SchedulerStatus = {
   stoppedReason: string | null;
   /** Ticks completed since the process started. */
   ticks: number;
-  /** Checks run since the process started. */
+  /** This organization's schemas checked by the loop since the process started. */
   checksRun: number;
   /** When the last tick finished, ISO. Null before the first one. */
   lastTickAt: string | null;
-  /** What the last tick did, for a status line that is not just a number. */
+  /**
+   * What the last tick did for this organization, for a status line that is
+   * not just a number.
+   */
   lastTickSummary: string | null;
   /** How often the loop wakes, in seconds — the resolution of every cadence. */
   tickSeconds: number;
 };
+
+/**
+ * What one tick did, kept until somebody asks.
+ *
+ * One tick checks every organization's due schemas together, and the schedule
+ * screen belongs to one organization. A line that added the tick up would tell
+ * each organization how much drift and how many unreachable databases the
+ * others have. So a tick that got as far as checking keeps one line for each
+ * organization, about that organization's schemas only. A tick that stopped
+ * before then keeps one shared line about the tick itself, which names nobody's
+ * schemas.
+ */
+export type TickReport =
+  | { kind: "shared"; line: string }
+  | { kind: "by_org"; byOrg: Map<number, string> };
 
 type SchedulerState = {
   timer: ReturnType<typeof setInterval> | null;
   /** True while a tick is in flight, so a slow tick cannot overlap the next. */
   busy: boolean;
   ticks: number;
-  checksRun: number;
+  /** Checks the loop has run since the process started, per organization. */
+  checksRunByOrg: Map<number, number>;
   lastTickAt: string | null;
-  lastTickSummary: string | null;
+  lastTick: TickReport | null;
   stoppedReason: string | null;
   /** When the monitoring readings were last pruned, ms. Null before the first. */
   lastPruneAt: number | null;
@@ -115,14 +141,20 @@ function state(): SchedulerState {
       timer: null,
       busy: false,
       ticks: 0,
-      checksRun: 0,
+      checksRunByOrg: new Map(),
       lastTickAt: null,
-      lastTickSummary: null,
+      lastTick: null,
       stoppedReason: null,
       lastPruneAt: null,
     };
   }
-  return globalThis.__driftSchedulerState;
+  const s = globalThis.__driftSchedulerState;
+  // The dev server keeps this object across edits, so one made by an older
+  // copy of this file can lack a field added since. Fill those in rather than
+  // break the schedule screen until the next restart.
+  s.checksRunByOrg ??= new Map();
+  s.lastTick ??= null;
+  return s;
 }
 
 /**
@@ -140,18 +172,34 @@ function disabledReason(): string | null {
   return null;
 }
 
-/** Every tracked schema, reduced to what scheduling depends on. */
-async function loadEntries(): Promise<DriftScheduleEntry[]> {
+/**
+ * A schema on a cadence, with the organization it belongs to. The check runs
+ * inside that organization, so it can only read and write that one's rows.
+ */
+type ScheduledSchema = DriftScheduleEntry & { orgId: number };
+
+/**
+ * Every tracked schema on a cadence, in every organization, reduced to what
+ * scheduling depends on.
+ *
+ * Across all organizations on purpose: there is one loop per process and one
+ * MAX_PER_TICK, so the most overdue schema goes first whoever owns it.
+ */
+async function loadEntries(): Promise<ScheduledSchema[]> {
   const result = await pool.query<{
     id: number;
+    org_id: number;
     drift_check_interval_minutes: number | null;
     last_drift_check_at: string | null;
   }>(
-    `SELECT id, drift_check_interval_minutes, last_drift_check_at
+    `-- every organization: one schedule serves them all, and each check is then
+     -- run inside the organization its schema belongs to
+     SELECT id, org_id, drift_check_interval_minutes, last_drift_check_at
        FROM tracked_schemas
       WHERE drift_check_interval_minutes > 0`
   );
   return result.rows.map((row) => ({
+    orgId: row.org_id,
     trackedSchemaId: row.id,
     intervalMinutes: normalizeDriftInterval(row.drift_check_interval_minutes),
     lastCheckedAt: row.last_drift_check_at ? new Date(row.last_drift_check_at) : null,
@@ -182,14 +230,26 @@ async function pruneIfDue(now: Date): Promise<void> {
 }
 
 /**
- * One pass: find what is due, check it, write down what happened.
+ * One pass: find what is due, check it, and write down what happened.
  *
- * Returns a one-line summary rather than throwing, so the caller can put it on
- * a status endpoint and a failed tick reads as a state rather than a crash.
+ * Never throws. A failed tick is written down like any other, so it reads as a
+ * state on the schedule screen rather than a crash.
  */
-export async function runSchedulerTick(now: Date = new Date()): Promise<string> {
+export async function runSchedulerTick(now: Date = new Date()): Promise<TickReport> {
+  const report = await checkWhatIsDue(now);
   const s = state();
-  if (s.busy) return "Skipped — the previous tick was still running.";
+  s.ticks += 1;
+  s.lastTickAt = new Date().toISOString();
+  s.lastTick = report;
+  return report;
+}
+
+/** The work of one tick, for runSchedulerTick to write down. */
+async function checkWhatIsDue(now: Date): Promise<TickReport> {
+  const s = state();
+  if (s.busy) {
+    return { kind: "shared", line: "Skipped — the previous tick was still running." };
+  }
   s.busy = true;
   let lock: TickLock | null = null;
   try {
@@ -202,49 +262,96 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<string> 
     // thing both copies can see, so the agreement about whose turn it is has to
     // be made there.
     lock = await takeTickLock();
-    if (!lock) return "Skipped — another copy of the app is running this tick.";
+    if (!lock) {
+      return {
+        kind: "shared",
+        line: "Skipped — another copy of the app is running this tick.",
+      };
+    }
 
     await syncMetadataTables();
     const entries = await loadEntries();
     const due = selectDue(entries, now, MAX_PER_TICK);
     await pruneIfDue(now);
 
-    if (due.length === 0) {
-      const watched = entries.length;
-      return watched === 0
-        ? "Nothing scheduled — no tracked schema has an automatic cadence."
-        : `Nothing due — ${watched} schema${watched === 1 ? "" : "s"} on a cadence.`;
-    }
-
     const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, async (entry) => {
       // "on_change" so a quarter-hourly "still fine" does not push a day of
       // real events out of the audit feed. The check is still stamped.
-      const result = await runDriftCheck(entry.trackedSchemaId, "scheduled", "on_change");
+      const result = await runDriftCheck(
+        entry.orgId,
+        entry.trackedSchemaId,
+        "scheduled",
+        "on_change"
+      );
       return result.ok ? result.run.status : `problem:${result.problem.kind}`;
     });
 
-    s.checksRun += outcomes.length;
-
-    const drifted = outcomes.filter((o) => o === "drifted").length;
-    const unreachable = outcomes.filter((o) => o === "unreachable").length;
-    const problems = outcomes.filter((o) => String(o).startsWith("problem:")).length;
-    const parts = [`Checked ${outcomes.length}`];
-    if (drifted > 0) parts.push(`${drifted} drifted`);
-    if (unreachable > 0) parts.push(`${unreachable} unreachable`);
-    if (problems > 0) parts.push(`${problems} could not run`);
-    const backlog = entries.filter((e) => !due.includes(e)).length;
-    if (due.length === MAX_PER_TICK && backlog > 0) {
-      parts.push(`capped at ${MAX_PER_TICK} — the rest run next tick`);
+    const checked = due.map((entry, index) => ({ entry, outcome: outcomes[index] }));
+    for (const { entry } of checked) {
+      s.checksRunByOrg.set(entry.orgId, (s.checksRunByOrg.get(entry.orgId) ?? 0) + 1);
     }
-    return `${parts.join(" · ")}.`;
+
+    const byOrg = new Map<number, string>();
+    for (const orgId of new Set(entries.map((entry) => entry.orgId))) {
+      byOrg.set(
+        orgId,
+        orgTickLine(
+          entries.filter((entry) => entry.orgId === orgId),
+          checked.filter((item) => item.entry.orgId === orgId),
+          now
+        )
+      );
+    }
+    return { kind: "by_org", byOrg };
   } catch (error) {
+    // The message stays in the server's log. It can come from any
+    // organization's check (a database error naming that organization's host,
+    // say), and the line below is shown to every organization.
     const message = error instanceof Error ? error.message : String(error);
     console.error("Drift scheduler — tick failed:", message);
-    return `Tick failed: ${message}`;
+    return {
+      kind: "shared",
+      line: "Tick failed. The server's log says why, and the next tick tries again.",
+    };
   } finally {
     if (lock) await releaseTickLock(lock);
     s.busy = false;
   }
+}
+
+/**
+ * One organization's line about a tick: how many of its own schemas were
+ * checked, and what the checks found.
+ *
+ * `entries` are the organization's schemas on a cadence, and `checked` the ones
+ * this tick ran. A schema can be due and still not checked: the tick stops at
+ * MAX_PER_TICK, most overdue first across every organization, and the next
+ * tick picks up the rest.
+ */
+function orgTickLine(
+  entries: ScheduledSchema[],
+  checked: Array<{ entry: ScheduledSchema; outcome: string }>,
+  now: Date
+): string {
+  const waiting = entries.filter(
+    (entry) => isDue(entry, now) && !checked.some((item) => item.entry === entry)
+  ).length;
+  if (checked.length === 0 && waiting === 0) {
+    const watched = entries.length;
+    return `Nothing due — ${watched} schema${watched === 1 ? "" : "s"} on a cadence.`;
+  }
+  if (checked.length === 0) return `${waiting} due, waiting for the next tick.`;
+
+  const count = (outcome: string) => checked.filter((item) => item.outcome === outcome).length;
+  const drifted = count("drifted");
+  const unreachable = count("unreachable");
+  const problems = checked.filter((item) => item.outcome.startsWith("problem:")).length;
+  const parts = [`Checked ${checked.length}`];
+  if (drifted > 0) parts.push(`${drifted} drifted`);
+  if (unreachable > 0) parts.push(`${unreachable} unreachable`);
+  if (problems > 0) parts.push(`${problems} could not run`);
+  if (waiting > 0) parts.push(`${waiting} more waiting for the next tick`);
+  return `${parts.join(" · ")}.`;
 }
 
 /** A held tick lock: the one connection it lives on, which has to unlock it. */
@@ -345,21 +452,16 @@ export function startDriftScheduler(): void {
   if (s.timer) return;
   s.stoppedReason = null;
 
-  const tick = async () => {
-    const summary = await runSchedulerTick();
-    s.ticks += 1;
-    s.lastTickAt = new Date().toISOString();
-    s.lastTickSummary = summary;
-  };
-
-  s.timer = setInterval(() => void tick(), TICK_MS);
+  // runSchedulerTick never throws and writes down what it did itself, so
+  // nothing here waits for it.
+  s.timer = setInterval(() => void runSchedulerTick(), TICK_MS);
   // Do not hold the process open for a timer whose job is optional. Without
   // this, `next build` and every test runner would hang for a minute at exit.
   s.timer.unref?.();
 
   // Run one immediately rather than making the first schema wait a minute for
   // a cadence it is already overdue for.
-  void tick();
+  void runSchedulerTick();
 
   console.log(`Drift scheduler — started, waking every ${TICK_MS / 1000}s.`);
 }
@@ -372,18 +474,35 @@ export function stopDriftScheduler(): void {
   s.stoppedReason = "Stopped.";
 }
 
-/** What the loop is doing right now. */
-export function driftSchedulerStatus(): SchedulerStatus {
+/**
+ * What the loop is doing right now, as organization `orgId` sees it.
+ *
+ * Whether it runs, how often it wakes and when it last did are the same for
+ * everyone, and say nothing about anyone's schemas. The count and the last
+ * tick's line are this organization's own: see TickReport for why.
+ */
+export function driftSchedulerStatus(orgId: number): SchedulerStatus {
   const s = state();
   return {
     running: s.timer !== null,
     stoppedReason: s.timer !== null ? null : (s.stoppedReason ?? "Not started."),
     ticks: s.ticks,
-    checksRun: s.checksRun,
+    checksRun: s.checksRunByOrg.get(orgId) ?? 0,
     lastTickAt: s.lastTickAt,
-    lastTickSummary: s.lastTickSummary,
+    lastTickSummary: lastTickLine(s.lastTick, orgId),
     tickSeconds: TICK_MS / 1000,
   };
+}
+
+/** The last tick's line for one organization, or null before the first tick. */
+function lastTickLine(report: TickReport | null, orgId: number): string | null {
+  if (!report) return null;
+  if (report.kind === "shared") return report.line;
+  // Not among the tick's lines: none of this organization's schemas is on a
+  // cadence, so the tick had nothing of theirs to look at.
+  return (
+    report.byOrg.get(orgId) ?? "Nothing scheduled — no tracked schema has an automatic cadence."
+  );
 }
 
 /**
@@ -396,14 +515,17 @@ export function driftSchedulerStatus(): SchedulerStatus {
  *
  * Deliberately fire-and-forget: the user is waiting on a response, and if this
  * fails nothing is lost — the schema stays due and the next tick picks it up.
+ *
+ * `orgId` is the organization of the person who asked, which owns the schema.
  */
 export function requestImmediateCheck(
+  orgId: number,
   trackedSchemaId: number,
   source: DriftSource = "tracking",
   mode: DriftRecordMode = "always"
 ): void {
   if (disabledReason()) return;
-  void runDriftCheck(trackedSchemaId, source, mode).catch((error) => {
+  void runDriftCheck(orgId, trackedSchemaId, source, mode).catch((error) => {
     console.error("Drift scheduler — immediate check failed:", error);
   });
 }

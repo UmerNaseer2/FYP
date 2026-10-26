@@ -365,7 +365,8 @@ describe("roleKeyFrom, the key a new role is stored under", () => {
   });
 
   test("makes the same key for names that differ only in case or punctuation", () => {
-    // Which is why createRole refuses the second one as already taken.
+    // Which is why createRole refuses the second one as already taken, when
+    // both are in the same organization.
     expect(roleKeyFrom("QA Lead")).toBe(roleKeyFrom("qa-lead"));
     expect(roleKeyFrom("QA Lead")).toBe(roleKeyFrom("QA  LEAD!"));
   });

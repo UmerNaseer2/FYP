@@ -12,7 +12,7 @@
 import { NextRequest } from "next/server";
 import type { Principal } from "@/lib/auth-guard";
 import type { VersionDetectionResult, VersionTimelineEntry } from "@/lib/version-detection";
-import { principalFor } from "./helpers/principals";
+import { principalFor, TEST_ORG } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -178,7 +178,11 @@ describe("what it answers with", () => {
 
   it("reads the schema the caller asked for, through the saved connection", async () => {
     await read("?connectionId=7&schema=warehouse");
-    expect(mockPoolQuery).toHaveBeenCalledWith(expect.stringContaining("FROM connections"), [7]);
+    // Looked up in the caller's organization only.
+    expect(mockPoolQuery).toHaveBeenCalledWith(
+      expect.stringContaining("FROM connections"),
+      [7, TEST_ORG.id]
+    );
     expect(mockFetchInfo).toHaveBeenCalledWith(expect.anything(), "warehouse");
   });
 });

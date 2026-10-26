@@ -38,6 +38,10 @@ import {
  *
  * Either one that does not match gets a 412 and changes nothing. The Deploy
  * screen sends neither, so nothing changes for it.
+ *
+ * Only a request in the decider's organization can be decided. Another
+ * organization's request answers 404, the same as one that was deleted, and
+ * the write names the organization too, so it could not land there anyway.
  */
 export async function POST(
   request: NextRequest,
@@ -89,7 +93,7 @@ export async function POST(
   }
 
   try {
-    const approval = await getApproval(id);
+    const approval = await getApproval(gate.principal.orgId, id);
     if (!approval) {
       return NextResponse.json({ error: "That approval no longer exists." }, { status: 404 });
     }
@@ -119,6 +123,7 @@ export async function POST(
     }
 
     const decided = await decideApproval({
+      orgId: gate.principal.orgId,
       id,
       approve: decision === "approve",
       decidedBy: gate.principal.email,
@@ -134,7 +139,7 @@ export async function POST(
     if (!decided) {
       // Someone decided it between the read and the write. Their decision
       // stands; report what it became rather than overwriting it.
-      const current = await getApproval(id);
+      const current = await getApproval(gate.principal.orgId, id);
       return NextResponse.json(
         {
           error: `Someone else already ${current?.status ?? "decided"} this request.`,

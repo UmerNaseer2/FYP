@@ -25,8 +25,8 @@
  *    an unset one leaves authentication enforced:
  *    tests/auth-role-and-bypass.test.ts, against the real module.
  *  - Reading the role and its permissions out of the database. That happens in
- *    the session callback in auth.ts, and in /api/me for "View as", before the
- *    answer ever reaches this hook. What is pinned below is what the hook does
+ *    /api/me (through lib/auth-guard.ts), before the answer ever reaches this
+ *    hook. What is pinned below is what the hook does
  *    with the answer, including one that somehow was not cleaned up first.
  *  - The screens that act on the answer: tests/component-auth-guard.test.tsx,
  *    tests/component-studio-shell.test.tsx, and the per-screen suites that
@@ -41,16 +41,7 @@ import { useUser, resetUserCache, ViewAsCookieSeen, type UserAccess } from "@/ho
 import { BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import { ALL_PERMISSIONS, presetFor, type PermissionKey } from "@/lib/permissions";
 
-type MockSession = {
-  user: {
-    name?: string | null;
-    email?: string | null;
-    role?: string;
-    roleLabel?: string;
-    permissions?: string[];
-    accessError?: boolean;
-  };
-} | null;
+type MockSession = { user: { name?: string | null; email?: string | null } } | null;
 
 let mockSession: MockSession = null;
 let mockStatus = "unauthenticated";
@@ -97,7 +88,7 @@ function withoutCan(access: UserAccess) {
   return rest;
 }
 
-/** A signed-in session, as the session callback in auth.ts leaves it. */
+/** A signed-in session, as auth.ts leaves it: who the person is, and nothing more. */
 function signIn(user: NonNullable<MockSession>["user"]) {
   mockSession = { user };
   mockStatus = "authenticated";
@@ -112,7 +103,7 @@ const VIEWER_ANSWER = {
   permissions: presetFor("viewer"),
   bypass: true,
   viewingAs: "viewer",
-  accessUnavailable: false,
+  org: { slug: "default", name: "Default" },
 };
 
 /** Answer every request with `body`, the way fetch would. */
@@ -147,155 +138,180 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+/** What /api/me says for someone holding `role` in the default organization. */
+function memberAnswer(role: string, roleLabel: string, permissions: readonly string[]) {
+  return {
+    role,
+    roleLabel,
+    permissions,
+    bypass: false,
+    viewingAs: null,
+    org: { slug: "default", name: "Default" },
+  };
+}
+
+const VIEWER = presetFor("viewer") ?? [];
+
+/** Let answers that have already arrived run all the way through. */
+async function flush() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function comeBack(event: "focus" | "visibilitychange") {
+  act(() => {
+    (event === "focus" ? window : document).dispatchEvent(new Event(event));
+  });
+}
+
 describe("with authentication enforced", () => {
-  test("says plainly that nobody is signed in", () => {
+  test("says plainly that nobody is signed in, and asks nobody", () => {
+    const fetchMock = answerMe({});
     const result = read();
-    expect(withoutCan(result)).toEqual({
-      user: null,
-      role: "viewer",
-      roleLabel: "Viewer",
-      isAdmin: false,
-      loading: false,
-      bypass: false,
-      viewingAs: null,
-      accessError: false,
-    });
-    expect(result.can("dashboard:read")).toBe(false);
-  });
-
-  test("gives the least role to someone with no role on their session", () => {
-    signIn({ name: "Ada", email: "ada@example.com" });
-    const result = read();
-    expect(result.role).toBe("viewer");
-    expect(result.roleLabel).toBe("Viewer");
-    expect(result.isAdmin).toBe(false);
-    // And nothing the session did not list. Being called a viewer is not the
-    // same as holding a viewer's boxes.
+    expect([result.user, result.loading, result.isAdmin]).toEqual([null, false, false]);
     expect(ALL_PERMISSIONS.some((key) => result.can(key))).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("takes the name and the address from the session", () => {
-    signIn({ name: "Ada Lovelace", email: "ada@example.com", role: "editor" });
-    expect(read().user).toEqual({ name: "Ada Lovelace", email: "ada@example.com" });
-  });
-
-  test("falls back to the address when the session carries no name", () => {
-    signIn({ email: "ada@example.com", role: "editor" });
-    expect(read().user).toEqual({ name: "ada@example.com", email: "ada@example.com" });
-  });
-
-  test("hands back empty strings, not undefined, when the session carries neither", () => {
-    // StudioShell picks its display name with `name || email || "Signed in"`,
-    // which needs both fields to exist before it can fall through them.
-    signIn({ role: "viewer" });
-    expect(read().user).toEqual({ name: "", email: "" });
-  });
-
-  test("still reports a user object for a session that thin", () => {
-    // Not null: null means signed out, and this person is signed in.
-    signIn({ role: "viewer" });
-    expect(read().user).not.toBeNull();
-  });
-
-  test("honours a role the session does carry, and what it may do", () => {
-    signIn({
-      email: "e@example.com",
-      role: "editor",
-      roleLabel: "Editor",
-      permissions: [...(presetFor("editor") ?? [])],
-    });
-    const result = read();
-    expect(result.role).toBe("editor");
-    expect(result.isAdmin).toBe(false);
-    expect(result.can("deploy:run")).toBe(true);
-    expect(result.can("approvals:approve")).toBe(false);
-  });
-
-  test("calls an admin an admin", () => {
-    signIn({ email: "a@example.com", role: "admin", roleLabel: "Admin", permissions: [...ALL_PERMISSIONS] });
-    const result = read();
-    expect(result.role).toBe("admin");
-    expect(result.isAdmin).toBe(true);
-  });
-
-  test("does not grant anything on a role it does not recognise", () => {
-    // It passes the key through rather than narrowing it, and the role holds
-    // what the session lists, which here is nothing. A name alone opens nothing,
-    // whatever it is.
-    signIn({ email: "x@example.com", role: "superuser" });
-    const result = read();
-    expect(result.isAdmin).toBe(false);
-    expect(result.roleLabel).toBe("superuser");
-    expect(ALL_PERMISSIONS.some((key) => result.can(key))).toBe(false);
-  });
-
-  test("calls a role by the name the session gives it", () => {
-    // A role an admin made has no built-in name, so the session's is the only one.
-    signIn({ email: "q@example.com", role: "qa-lead", roleLabel: "QA Lead", permissions: [] });
-    expect(read().roleLabel).toBe("QA Lead");
-  });
-
-  test("falls back to a built-in role's own name when the session gives none", () => {
-    signIn({ email: "e@example.com", role: "editor", permissions: [] });
-    expect(read().roleLabel).toBe("Editor");
-  });
-
-  test("answers yes only for a box the session lists", () => {
-    signIn({ email: "q@example.com", role: "qa-lead", permissions: ["connections:read"] });
-    const result = read();
-    expect(result.can("connections:read")).toBe(true);
-    expect(result.can("connections:create")).toBe(false);
-  });
-
-  test("never matches a permission this build does not know", () => {
-    // A key from a newer build, or one somebody typed into the database by
-    // hand. It is dropped on the way in, so no check can ever be answered by it.
-    signIn({ email: "q@example.com", role: "qa-lead", permissions: ["made-up:thing"] });
-    expect(read().can("made-up:thing" as PermissionKey)).toBe(false);
-  });
-
-  test("takes several boxes as any one of them, like the server does", () => {
-    signIn({ email: "q@example.com", role: "qa-lead", permissions: ["dashboard:read"] });
-    const result = read();
-    expect(result.can("connections:create", "dashboard:read")).toBe(true);
-    expect(result.can("connections:create", "deploy:run")).toBe(false);
-  });
-
-  test("keeps `can` the same function while the permissions stay the same", () => {
-    // Screens put it in effect and memo dependencies. A new one on every
-    // render would redo that work every time anything on the page changed.
-    signIn({ email: "q@example.com", role: "qa-lead", permissions: ["dashboard:read"] });
-    const { rerender } = render(<Probe />);
-    const first = (seen as UserAccess).can;
-    rerender(<Probe />);
-    expect((seen as UserAccess).can).toBe(first);
-
-    // And a new one when they do change, answering the new way.
-    signIn({ email: "q@example.com", role: "qa-lead", permissions: ["deploy:run"] });
-    rerender(<Probe />);
-    expect((seen as UserAccess).can).not.toBe(first);
-    expect((seen as UserAccess).can("deploy:run")).toBe(true);
-  });
-
-  test("says so when the database could not answer what the role may do", () => {
-    // The routes answer 503 then, so a screen should say "try again" rather
-    // than "your role can't".
-    signIn({ email: "v@example.com", role: "viewer", permissions: [], accessError: true });
-    expect(read().accessError).toBe(true);
-  });
-
-  test("reports loading while the session is still being fetched", () => {
-    // Screens wait on this before deciding to show "you do not have access":
-    // an unfetched session looks exactly like a viewer otherwise.
+  test("reports loading while the session is still being fetched, and asks nobody yet", () => {
     mockStatus = "loading";
-    const result = read();
-    expect(result.loading).toBe(true);
-    expect(result.user).toBeNull();
+    const fetchMock = answerMe({});
+    expect(read().loading).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("stops reporting loading once the answer is in", () => {
-    signIn({ email: "a@example.com", role: "admin" });
-    expect(read().loading).toBe(false);
+  test("draws a signed-in page as still loading on the server", () => {
+    signIn({ email: "a@example.com" });
+    function Show() {
+      return <i>{String(useUser().loading)}</i>;
+    }
+    expect(renderToStaticMarkup(<Show />)).toBe("<i>true</i>");
+  });
+
+  test("waits for /api/me, then is the role it names, with what it may do", async () => {
+    signIn({ email: "v@example.com", name: "Vee" });
+    const fetchMock = answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    expect(read().loading).toBe(true);
+    const result = await settled();
+    expect(fetchMock).toHaveBeenCalledWith("/api/me", { cache: "no-store" });
+    expect(result.user).toEqual({ email: "v@example.com", name: "Vee" });
+    expect([result.role, result.roleLabel, result.isAdmin]).toEqual(["viewer", "Viewer", false]);
+    expect(VIEWER.every((key) => result.can(key))).toBe(true);
+    expect(result.can("roles:update")).toBe(false);
+    expect([result.accessError, result.notMember, result.bypass]).toEqual([false, false, false]);
+  });
+
+  test("calls an admin an admin, and a custom role by its own name", async () => {
+    signIn({ email: "a@example.com" });
+    answerMe(memberAnswer("admin", "Admin", ALL_PERMISSIONS));
+    read();
+    expect((await settled()).isAdmin).toBe(true);
+
+    // The new answer goes in first: the hook already on screen asks again as
+    // soon as it is told to forget.
+    answerMe(memberAnswer("qa-lead", "QA Lead", [VIEWER[0]]));
+    act(() => resetUserCache());
+    read();
+    const custom = await settled();
+    expect([custom.role, custom.roleLabel, custom.isAdmin]).toEqual(["qa-lead", "QA Lead", false]);
+  });
+
+  test("takes the address as the name when the session carries no name", async () => {
+    signIn({ email: "a@example.com", name: null });
+    answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    read();
+    expect((await settled()).user).toEqual({ email: "a@example.com", name: "a@example.com" });
+  });
+
+  test("falls back to a built-in role's own name, and drops unknown permissions", async () => {
+    signIn({ email: "a@example.com" });
+    answerMe({ role: "editor", permissions: [VIEWER[0], "made:up", 7] });
+    read();
+    const result = await settled();
+    expect(result.roleLabel).toBe("Editor");
+    expect(result.can(VIEWER[0])).toBe(true);
+    expect(result.can("made:up" as PermissionKey)).toBe(false);
+  });
+
+  test("says they are not a member when /api/me answers 404, and grants nothing", async () => {
+    signIn({ email: "gone@example.com" });
+    answerMe({ error: "not a member" }, 404);
+    read();
+    const result = await settled();
+    expect([result.notMember, result.accessError, result.isAdmin]).toEqual([true, false, false]);
+    expect(ALL_PERMISSIONS.some((key) => result.can(key))).toBe(false);
+    expect(result.user?.email).toBe("gone@example.com");
+  });
+
+  test.each([
+    ["answers 401", () => answerMe({ error: "Sign in" }, 401)],
+    ["answers 503", () => answerMe({ error: "Try again." }, 503)],
+    ["answers 500", () => answerMe({ error: "Internal error" }, 500)],
+    ["answers without a role", () => answerMe({ permissions: ALL_PERMISSIONS })],
+    ["cannot be reached", () => {
+      const unreachable = jest.fn().mockRejectedValue(new Error("network"));
+      globalThis.fetch = unreachable as unknown as typeof fetch;
+    }],
+  ])("grants nothing, and says the check failed, when /api/me %s", async (_case, setUp) => {
+    // A 401 too: the session says they are signed in, so sending them to sign
+    // in again would only bring them back here.
+    signIn({ email: "a@example.com" });
+    setUp();
+    read();
+    const result = await settled();
+    expect([result.accessError, result.notMember, result.isAdmin]).toEqual([true, false, false]);
+    expect(ALL_PERMISSIONS.some((key) => result.can(key))).toBe(false);
+  });
+
+  test.each(["focus", "visibilitychange"] as const)(
+    "asks again on %s, and takes a role an admin changed meanwhile",
+    async (event) => {
+      signIn({ email: "a@example.com" });
+      answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+      read();
+      expect((await settled()).isAdmin).toBe(false);
+      answerMe(memberAnswer("admin", "Admin", ALL_PERMISSIONS));
+      comeBack(event);
+      await waitFor(() => expect(seen?.isAdmin).toBe(true));
+      expect(seen?.loading).toBe(false);
+    },
+  );
+
+  test("keeps what it knew when asking again fails", async () => {
+    // A screen with unsaved work would otherwise be swapped for "could not
+    // check" over a blip, when the next look will very likely answer.
+    signIn({ email: "a@example.com" });
+    answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    read();
+    const before = withoutCan(await settled());
+    const failing = answerMe({ error: "Try again." }, 503);
+    comeBack("focus");
+    await flush();
+    expect(failing).toHaveBeenCalledTimes(1);
+    expect(withoutCan(seen as UserAccess)).toEqual(before);
+  });
+
+  test("says they are not a member once an admin has removed them", async () => {
+    signIn({ email: "a@example.com" });
+    answerMe(memberAnswer("viewer", "Viewer", VIEWER));
+    read();
+    await settled();
+    answerMe({ error: "not a member" }, 404);
+    comeBack("focus");
+    await waitFor(() => expect(seen?.notMember).toBe(true));
+  });
+
+  test("does not ask again while the first answer is still on its way", async () => {
+    signIn({ email: "a@example.com" });
+    const fetchMock = jest.fn(() => new Promise(() => {}));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    read();
+    comeBack("focus");
+    comeBack("visibilitychange");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(seen?.loading).toBe(true);
   });
 });
 
@@ -315,6 +331,7 @@ describe('with the bypass on and nothing picked in "View as"', () => {
       bypass: true,
       viewingAs: null,
       accessError: false,
+      notMember: false,
     });
     expect(ALL_PERMISSIONS.every((key) => result.can(key))).toBe(true);
   });
@@ -335,10 +352,10 @@ describe('with the bypass on and nothing picked in "View as"', () => {
     expect(first).toBe(second);
   });
 
-  test("outranks whatever a real session happens to say", () => {
+  test("outranks whoever a real session happens to belong to", () => {
     // The API routes are already being let through as an admin. A UI that
     // refused the same person would be the two halves disagreeing.
-    signIn({ email: "viewer@example.com", role: "viewer", permissions: [] });
+    signIn({ email: "viewer@example.com" });
     const result = read();
     expect(result.isAdmin).toBe(true);
     expect(result.role).toBe("admin");
@@ -389,7 +406,7 @@ describe('with the bypass on and a role picked in "View as"', () => {
 
   test.each([
     ["answers with an error", () => answerMe({ error: "Internal error" }, 500)],
-    ["says it could not read the role", () => answerMe({ ...VIEWER_ANSWER, accessUnavailable: true })],
+    ["says its database did not answer", () => answerMe({ error: "Try again." }, 503)],
     ["cannot be reached", () => {
       globalThis.fetch = jest.fn().mockRejectedValue(new Error("network")) as unknown as typeof fetch;
     }],
@@ -414,7 +431,7 @@ describe('with the bypass on and a role picked in "View as"', () => {
       permissions: ALL_PERMISSIONS,
       bypass: true,
       viewingAs: null,
-      accessUnavailable: false,
+      org: { slug: "default", name: "Default" },
     });
     read();
     const result = await settled();
@@ -501,7 +518,8 @@ describe("reading the View as cookie the way the server reads it", () => {
 
   test("cuts a long value to a role key's length before showing it", async () => {
     // The cookie is whatever the browser holds, and with /api/me unreachable
-    // it is shown as the role's name. The server cuts it to the same length.
+    // it is shown as the role's name. Role keys are 32 characters at most, so
+    // a longer value was not set by the switcher, and no more than that shows.
     document.cookie = `${VIEW_AS_COOKIE}=${"x".repeat(100)}; path=/`;
     meUnreachable();
     read();
@@ -546,14 +564,15 @@ describe("on the server, before the page reaches the browser", () => {
 });
 
 describe("resetUserCache", () => {
-  test("is safe with real sign-in, and changes nothing there", () => {
-    // It is called on the way out of the app (StudioShell's sign-out handler).
-    // With real sign-in the session is the whole answer, so there is nothing
-    // of its own to forget.
-    signIn({ email: "a@example.com", role: "admin", roleLabel: "Admin", permissions: [...ALL_PERMISSIONS] });
-    const before = read();
-    expect(() => resetUserCache()).not.toThrow();
-    expect(withoutCan(read())).toEqual(withoutCan(before));
+  test("forgets the answer with real sign-in too, and asks again", async () => {
+    // Only tests need it: signing out loads a new page, which starts over.
+    signIn({ email: "a@example.com" });
+    const fetchMock = answerMe(memberAnswer("admin", "Admin", ALL_PERMISSIONS));
+    read();
+    expect((await settled()).isAdmin).toBe(true);
+    act(() => resetUserCache());
+    expect(withoutCan(await settled())).toEqual(withoutCan(read()));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   test("forgets the View as answer, and asks again for what is on the page", async () => {

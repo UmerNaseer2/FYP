@@ -13,6 +13,7 @@
 import { NextRequest } from "next/server";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
 import { schema } from "./helpers/snapshots";
+import { TEST_ORG } from "./helpers/principals";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
@@ -272,6 +273,7 @@ describe("Compare", () => {
   async function compare() {
     const { runComparison } = await import("../lib/compare-run");
     const screen = await runComparison(
+      TEST_ORG.id,
       new URLSearchParams({
         sourceConnection: "1",
         sourceSchema: "sales",
@@ -368,7 +370,7 @@ describe("drift check", () => {
     });
 
     const { computeDriftDetail } = await import("../lib/lineage-db");
-    const result = await computeDriftDetail(3);
+    const result = await computeDriftDetail(TEST_ORG.id, 3);
 
     expect(result).toMatchObject({
       kind: "unreachable",

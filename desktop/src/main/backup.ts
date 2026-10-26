@@ -170,6 +170,23 @@ const LINKS = `
   ORDER BY c.relname, con.conname`;
 
 /**
+ * Which table of the app's schema points to which, by name, for working out
+ * which tables a restore empties. Unlike LINKS, this keeps the links that were
+ * never checked, since PostgreSQL refuses to empty a table any link points to
+ * unless the table the link starts in is emptied in the same statement. A link
+ * into or out of one part of a partitioned table counts as the whole table's,
+ * since a restore empties a partitioned table with all its parts.
+ */
+const TABLE_LINKS = `
+  SELECT DISTINCT c.relname::text AS "table", f.relname::text AS "refTable"
+  FROM pg_constraint con
+  JOIN pg_class c ON c.oid = coalesce(pg_partition_root(con.conrelid), con.conrelid)
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_class f ON f.oid = coalesce(pg_partition_root(con.confrelid), con.confrelid)
+  JOIN pg_namespace fn ON fn.oid = f.relnamespace
+  WHERE con.contype = 'f' AND n.nspname = 'public' AND fn.nspname = 'public'`;
+
+/**
  * The indexes behind the rules that keep rows apart (primary keys, unique and
  * exclusion rules) that are allowed to wait until a transaction ends. Each
  * part of a partitioned table holds such a rule, and its index, for its own
@@ -283,6 +300,9 @@ type LiveTable = {
 /** A table of the backup, with the SQL that puts a batch of its rows into this database. */
 type Fit = { table: BackupTable; insert: string };
 
+/** A link from one table of the app's schema to another, as TABLE_LINKS gives it. */
+type TableLink = { table: string; refTable: string };
+
 /**
  * Saves a backup of the app's database, with `secrets` and `config`, to
  * `file`, locked with `passphrase`. Throws a BackupError when it cannot, with
@@ -358,9 +378,10 @@ export async function checkBackup(options: CheckBackupOptions): Promise<CheckedB
 }
 
 /**
- * Replaces every table of the app's database with the rows of a backup that
+ * Replaces the tables of the app's database with the rows of a backup that
  * checkBackup checked, all in one transaction, and marks the database with
- * which restore went in. The backup's secrets go to `writePending` just
+ * which restore went in. A table the backup does not have is emptied, unless
+ * the backup's rows point to it (see tablesToKeep). The backup's secrets go to `writePending` just
  * before the transaction commits, and to `removePending` when it turns out
  * not to, so the next start switches to them only if the data switched too.
  * Throws a BackupError when the backup cannot be restored, and then nothing
@@ -454,10 +475,14 @@ async function replaceTables(client: Client, handle: FileHandle, options: LoadBa
     await client.query("SET LOCAL lock_timeout = '30s'");
     const live = await readLiveTables(client);
     const fits = new Map(fitTables(backup.manifest, live).map((fit) => [fit.table.name, fit]));
+    const kept = tablesToKeep(live, backup.manifest, (await client.query<TableLink>(TABLE_LINKS)).rows);
+    const emptied = new Map([...live].filter(([name]) => !kept.has(name)));
     // PostgreSQL empties a table that another table points to only together
-    // with that table, so every table is emptied in one statement.
-    const everyTable = [...live.values()].map((table) => relation("public", table.name, table.kind));
-    await client.query(`TRUNCATE ${everyTable.join(", ")} RESTART IDENTITY`);
+    // with that table, so every table is emptied in one statement. The list
+    // is never empty: fitTables made sure there is a table, and only a table
+    // the backup's rows point to is kept, so a backup without tables keeps none.
+    const tables = [...emptied.values()].map((table) => relation("public", table.name, table.kind));
+    await client.query(`TRUNCATE ${tables.join(", ")} RESTART IDENTITY`);
 
     let batch: { fit: Fit; rows: string[]; text: number } | null = null;
     const send = async (): Promise<void> => {
@@ -486,7 +511,8 @@ async function replaceTables(client: Client, handle: FileHandle, options: LoadBa
     });
     await send();
     await checkWaitingRules(client);
-    await setCounters(client, live, manifest);
+    // A kept table's rows and counter are as they were, so its counter stays where it stands.
+    await setCounters(client, emptied, manifest);
     await checkLinks(client);
     await client.query(`COMMENT ON DATABASE ${quoteIdent(DB_NAME)} IS ${quoteLiteral(restoreComment(id))}`);
     pendingWritten = true;
@@ -562,6 +588,51 @@ function fitTables(manifest: BackupManifest, live: Map<string, LiveTable>): Fit[
     const insert = `INSERT INTO "public".${quoteIdent(table.name)} (${names}) OVERRIDING SYSTEM VALUE SELECT ${values} FROM json_array_elements($1::json) AS batch(r)`;
     return { table, insert };
   });
+}
+
+/**
+ * The tables of the app's database that a restore leaves as they are, rows
+ * and counters both: each table the backup does not have that the backup's
+ * rows point to, and each table the backup does not have that a kept table
+ * points to in turn. Every other table is emptied.
+ *
+ * This is for a backup made before a table its rows now point to existed.
+ * The one that matters is a backup from before organizations: its tables
+ * have no org_id column, so their rows go in under the default organization
+ * (org_id has a default on the desktop, see settleOrgIdDefaults in the web
+ * app's lib/db/bootstrap.ts), and that only works if the organizations table
+ * keeps its rows. Its memberships table is emptied, since nothing in the
+ * backup points to it, and the next start gives everyone back the role their
+ * restored profile carries (backfillMemberships in the same file).
+ *
+ * A kept table that points to a table being emptied is emptied as well,
+ * because PostgreSQL refuses to empty a table while a table it leaves alone
+ * points to it. Rows of the backup that point into such a table then break
+ * their link, and checkLinks refuses the backup, with nothing changed.
+ */
+function tablesToKeep(live: Map<string, LiveTable>, manifest: BackupManifest, links: TableLink[]): Set<string> {
+  const inBackup = new Set(manifest.tables.map((table) => table.name));
+  const kept = new Set<string>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const link of links) {
+      const from = inBackup.has(link.table) || kept.has(link.table);
+      if (from && live.has(link.refTable) && !inBackup.has(link.refTable) && !kept.has(link.refTable)) {
+        kept.add(link.refTable);
+        grew = true;
+      }
+    }
+  }
+  for (let shrank = true; shrank; ) {
+    shrank = false;
+    for (const link of links) {
+      if (kept.has(link.table) && live.has(link.refTable) && !kept.has(link.refTable)) {
+        kept.delete(link.table);
+        shrank = true;
+      }
+    }
+  }
+  return kept;
 }
 
 /** How many rows `table` has. */

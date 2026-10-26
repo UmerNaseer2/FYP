@@ -4,7 +4,9 @@
 // registry, and the highest of them. The Migration Workbench on Compare calls
 // it so the number it offers is bumped from the family's real highest
 // version: the same floor the push route checks against. One folder listing,
-// instead of the whole registry /api/github/pull downloads.
+// instead of the whole registry /api/github/pull downloads. The folder is
+// inside the caller's organization's part of the registry (registryRoot in
+// lib/registry-paths.ts), so the floor is that organization's own.
 //
 // Fails closed like the push guard: when GitHub can't be read the answer is a
 // readable 502, never an empty list, because an empty list would make the
@@ -24,6 +26,7 @@ import {
   githubNotConfiguredMessage,
   listFamilyFiles,
 } from "@/lib/github-registry";
+import { registryRoot, reservedFolderProblem } from "@/lib/registry-paths";
 import { familyPathProblem } from "@/lib/registry-push";
 import { highestVersion } from "@/lib/script-status";
 
@@ -41,7 +44,10 @@ export async function GET(request: NextRequest) {
   // The same name rules the push route applies, so a family this route
   // accepts is one that can actually be pushed. A missing parameter reads as
   // a missing name.
-  const problem = familyPathProblem(database, schema, script);
+  const root = registryRoot(gate.principal);
+  const problem =
+    familyPathProblem(database, schema, script) ??
+    reservedFolderProblem(root, database as string, schema as string);
   if (problem || database === null || schema === null || script === null) {
     return NextResponse.json(
       { ok: false, error: `${problem ?? "The database, schema and script name are all needed."} Nothing was read from GitHub.` },
@@ -57,7 +63,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const listing = await listFamilyFiles(config, database, schema, script);
+  const listing = await listFamilyFiles(config, root, database, schema, script);
   if (!listing.ok) {
     const statusNote = listing.status > 0 ? ` (status ${listing.status})` : "";
     return NextResponse.json(

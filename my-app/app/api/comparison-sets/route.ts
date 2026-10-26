@@ -16,6 +16,9 @@ import { parseSaveBody } from "@/lib/comparison-set-rules";
  * and editors may do the rest: a set is what somebody else's finger will
  * click before a migration runs against production, so rewriting one is not
  * everybody's to do.
+ *
+ * Every method works inside the caller's organization: it sees, saves and
+ * deletes only that organization's sets (see lib/comparison-sets.ts).
  */
 
 /** GET /api/comparison-sets — every saved set, with its targets in order. */
@@ -24,7 +27,7 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    return NextResponse.json({ sets: await listComparisonSets() });
+    return NextResponse.json({ sets: await listComparisonSets(gate.principal.orgId) });
   } catch (error) {
     console.error("GET comparison sets error:", error);
     return NextResponse.json(
@@ -62,7 +65,7 @@ export async function POST(request: NextRequest) {
     // The gate above let in a role with either Create or Update, because
     // which one a save is depends on whether its name is taken, and only
     // saveComparisonSet can tell. It refuses the one the role lacks.
-    const result = await saveComparisonSet(parseSaveBody(body), {
+    const result = await saveComparisonSet(gate.principal.orgId, parseSaveBody(body), {
       mayCreate: hasPermission(gate.principal, "comparison_sets:create"),
       mayUpdate: hasPermission(gate.principal, "comparison_sets:update"),
       roleLabel: gate.principal.roleLabel,
@@ -101,7 +104,7 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const removed = await deleteComparisonSet(id);
+    const removed = await deleteComparisonSet(gate.principal.orgId, id);
     if (!removed) {
       return NextResponse.json({ error: "No such comparison set." }, { status: 404 });
     }

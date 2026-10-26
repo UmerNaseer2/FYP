@@ -11,9 +11,12 @@
 // target pool are all stand-ins.
 import { createFakeClient, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { schema, table, column } from "./helpers/snapshots";
+import { TEST_ORG } from "./helpers/principals";
 
 // The metadata database: the connection row for the tracked schema, then the
-// INSERT of the reading.
+// INSERT of the reading. The INSERT copies its organization from the tracked
+// schema, so it writes one row while the schema is still in the organization
+// and none once it is not.
 const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>();
 jest.mock("../lib/version-db", () => ({
   __esModule: true,
@@ -49,15 +52,24 @@ function insertedValues(): unknown[] | null {
   return insert ? (insert[1] ?? null) : null;
 }
 
-function setUp(steps: FakeStep[]) {
+function setUp(steps: FakeStep[], { stillTracked = true } = {}) {
   mockClient = createFakeClient(steps);
   mockPoolQuery.mockReset();
-  mockPoolQuery.mockImplementation(async (text: string) =>
-    /FROM tracked_schemas/.test(text) ? { rows: [CONNECTION_ROW] } : { rows: [] }
-  );
+  mockPoolQuery.mockImplementation(async (text: string) => {
+    // Checked first: the INSERT reads FROM tracked_schemas too.
+    if (/INSERT INTO schema_metrics/.test(text)) {
+      return { rows: [], rowCount: stillTracked ? 1 : 0 };
+    }
+    return /FROM tracked_schemas/.test(text) ? { rows: [CONNECTION_ROW] } : { rows: [] };
+  });
 }
 
 const live = schema([table("orders", [column("id")])], { schema: "app" });
+
+/** One reading of tracked schema 7 in the test organization. */
+function reading(drifted: boolean) {
+  return { orgId: TEST_ORG.id, trackedSchemaId: 7, live, drifted };
+}
 
 describe("recordSchemaMetrics — the borrowed connection", () => {
   it("sets the timeout with SET LOCAL inside a transaction that it commits", async () => {
@@ -68,7 +80,7 @@ describe("recordSchemaMetrics — the borrowed connection", () => {
       },
     ]);
 
-    expect(await recordSchemaMetrics({ trackedSchemaId: 7, live, drifted: false })).toBe(true);
+    expect(await recordSchemaMetrics(reading(false))).toBe(true);
 
     const texts = queryTexts(mockClient);
     expect(texts[0]).toBe("BEGIN READ ONLY");
@@ -83,6 +95,8 @@ describe("recordSchemaMetrics — the borrowed connection", () => {
     expect(values).not.toBeNull();
     // total_bytes, index_bytes, estimated_rows are bound 8th to 10th.
     expect(values?.slice(7, 10)).toEqual([8192, 0, 3]);
+    // The reading is written under the caller's organization, last.
+    expect(values?.[11]).toBe(TEST_ORG.id);
   });
 
   it("rolls back when the size query times out, and still stores the counts", async () => {
@@ -94,7 +108,7 @@ describe("recordSchemaMetrics — the borrowed connection", () => {
     ]);
     const quiet = jest.spyOn(console, "error").mockImplementation(() => undefined);
 
-    expect(await recordSchemaMetrics({ trackedSchemaId: 7, live, drifted: true })).toBe(true);
+    expect(await recordSchemaMetrics(reading(true))).toBe(true);
     quiet.mockRestore();
 
     const texts = queryTexts(mockClient);
@@ -113,7 +127,7 @@ describe("recordSchemaMetrics — the borrowed connection", () => {
     ]);
     const quiet = jest.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await recordSchemaMetrics({ trackedSchemaId: 7, live, drifted: false });
+    await recordSchemaMetrics(reading(false));
     quiet.mockRestore();
 
     expect(mockClient.releaseCount).toBe(1);
@@ -130,12 +144,32 @@ describe("recordSchemaMetrics — what the size query counts", () => {
       },
     ]);
 
-    await recordSchemaMetrics({ trackedSchemaId: 7, live, drifted: false });
+    await recordSchemaMetrics(reading(false));
 
     const sizeQuery = mockClient.queries.find((query) => /pg_total_relation_size/.test(query.text));
     expect(sizeQuery?.text).toMatch(/c\.relkind IN \('r', 'm'\)/);
     expect(sizeQuery?.text).toMatch(/c\.reltuples < 0 AND pg_relation_size\(c\.oid\) > 0/);
     // The server said the estimate is unknown; the stored reading keeps it unknown.
     expect(insertedValues()?.slice(7, 10)).toEqual([16384, 8192, null]);
+  });
+});
+
+describe("recordSchemaMetrics — inside the organization", () => {
+  it("stores nothing, and says so, when the schema is no longer tracked in it", async () => {
+    // Untracked between the drift check and this reading, or a tracked schema
+    // id from another organization: the INSERT finds no row to copy from.
+    setUp(
+      [
+        {
+          match: /pg_total_relation_size/,
+          rows: [{ total_bytes: "8192", index_bytes: "0", estimated_rows: "3" }],
+        },
+      ],
+      { stillTracked: false }
+    );
+
+    expect(await recordSchemaMetrics(reading(false))).toBe(false);
+    // It still asked inside the caller's organization, never another one.
+    expect(insertedValues()?.[11]).toBe(TEST_ORG.id);
   });
 });

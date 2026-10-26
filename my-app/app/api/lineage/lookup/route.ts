@@ -7,7 +7,8 @@ import { findTrackedSchema } from "@/lib/lineage-db";
  *
  * Bridge for client screens (Deploy) that need to know whether a target schema
  * is tracked — and if so, its tracked id, HEAD version and latest drift status.
- * Returns `{ tracked: false }` when the pair isn't tracked.
+ * Returns `{ tracked: false }` when the pair isn't tracked, and for a
+ * connection in another organization, which the caller cannot deploy to.
  */
 export async function GET(request: NextRequest) {
   const gate = await requirePermission("drift:read", "deploy:read", "version_sync:read");
@@ -25,7 +26,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const head = await findTrackedSchema(connectionId, schemaName);
+    const head = await findTrackedSchema(gate.principal.orgId, connectionId, schemaName);
     if (!head) {
       return NextResponse.json({ tracked: false });
     }

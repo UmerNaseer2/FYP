@@ -16,10 +16,13 @@
 //     a role that may not overwrite is never asked whether it wants to.
 //   - A refused save writes nothing: it rolls back before any INSERT.
 //   - The connection goes back exactly once, however the save ends.
+//   - The save stays inside the caller's organization: every statement carries
+//     it, and a connection that is not the organization's own is refused the
+//     same way as one that was deleted, before anything is written.
 import { NextRequest, NextResponse } from "next/server";
 import type { Gate, Principal } from "@/lib/auth-guard";
 import { createFakeClient, queryTexts, type FakeClient } from "./helpers/fake-pg";
-import { principalFor } from "./helpers/principals";
+import { TEST_ORG, principalFor } from "./helpers/principals";
 
 let mockGate: Gate;
 /** The keys each call to requirePermission asked for, in order. */
@@ -93,11 +96,15 @@ const LOOKED_AND_ROLLED_BACK = ["BEGIN", "SELECT id FROM comparison_sets", "ROLL
 const WRITTEN = [
   "BEGIN",
   "SELECT id FROM comparison_sets",
+  "SELECT id FROM connections",
   "INSERT INTO comparison_sets",
   "DELETE FROM comparison_set_targets",
   "INSERT INTO comparison_set_targets",
   "COMMIT",
 ];
+
+/** The organization's own connections answering for NIGHTLY's source and target. */
+const OWN_CONNECTIONS = { match: /SELECT id FROM connections/, rows: [{ id: 1 }, { id: 2 }] };
 
 /**
  * Set up the stand-in database for one save: is the name already taken, and
@@ -110,6 +117,7 @@ function nameTakenBy(owner: number | null) {
       match: /SELECT id FROM comparison_sets WHERE lower\(name\)/,
       rows: owner === null ? [] : [{ id: owner }],
     },
+    OWN_CONNECTIONS,
     // What `(xmax = 0) AS created` answers: true only for a row the INSERT made.
     { match: /INSERT INTO comparison_sets\s/, rows: [{ id, created: owner === null }] },
   ]);
@@ -295,7 +303,7 @@ describe("a name that is taken rewrites that set", () => {
     // The route's gate never lets a role with neither box this far, but the
     // save keeps its own rule all the same, so it is checked on its own.
     nameTakenBy(5);
-    const result = await saveComparisonSet(parseSaveBody({ ...NIGHTLY, id: 5 }), {
+    const result = await saveComparisonSet(TEST_ORG.id, parseSaveBody({ ...NIGHTLY, id: 5 }), {
       mayCreate: false,
       mayUpdate: false,
       roleLabel: "Viewer",
@@ -333,6 +341,7 @@ describe("around the database", () => {
   test("a failed write rolls back, gives the connection back once, and says so", async () => {
     const errors = quietErrors();
     mockClient = createFakeClient([
+      OWN_CONNECTIONS,
       { match: /INSERT INTO comparison_sets\s/, error: { message: "Connection terminated" } },
     ]);
 
@@ -343,11 +352,74 @@ describe("around the database", () => {
     expect(statements()).toEqual([
       "BEGIN",
       "SELECT id FROM comparison_sets",
+      "SELECT id FROM connections",
       "INSERT INTO comparison_sets",
       "ROLLBACK",
     ]);
     expect([mockConnects, mockClient.releaseCount]).toEqual([1, 1]);
     expect(errors).toHaveBeenCalledTimes(1);
     expect(errors.mock.calls[0][0]).toBe("POST comparison set error:");
+  });
+});
+
+describe("inside the caller's organization", () => {
+  test("every statement of a save carries the caller's organization", async () => {
+    const [status] = await saveAs(EDITOR, NIGHTLY);
+    expect(status).toBe(200);
+
+    const sent = mockClient.queries;
+    const find = (pattern: RegExp) => sent.find((q) => pattern.test(q.text))?.values ?? [];
+    expect(find(/SELECT id FROM comparison_sets/)).toEqual(["Nightly", TEST_ORG.id]);
+    expect(find(/SELECT id FROM connections/)).toEqual([TEST_ORG.id, [1, 2]]);
+    expect(find(/INSERT INTO comparison_sets\s/)[7]).toBe(TEST_ORG.id);
+    expect(find(/DELETE FROM comparison_set_targets/)).toEqual([NEW_ID, TEST_ORG.id]);
+    expect(find(/INSERT INTO comparison_set_targets/)[5]).toBe(TEST_ORG.id);
+    // The read-back after COMMIT asks for the set in the same organization.
+    expect(mockPool.queries[0].values).toEqual([NEW_ID, TEST_ORG.id]);
+  });
+
+  test("a connection that is not the organization's own is refused before anything is written", async () => {
+    // Target 2 is another organization's connection, or one that was deleted:
+    // the lookup cannot tell them apart and neither can the person saving.
+    mockClient = createFakeClient([
+      { match: /SELECT id FROM comparison_sets WHERE lower\(name\)/, rows: [] },
+      { match: /SELECT id FROM connections/, rows: [{ id: 1 }] },
+    ]);
+
+    expect(await saveAs(EDITOR, NIGHTLY)).toEqual([
+      400,
+      {
+        error: "One of the connections in this set no longer exists. Pick it again, then save.",
+        conflict: false,
+      },
+    ]);
+    expect(statements()).toEqual([
+      "BEGIN",
+      "SELECT id FROM comparison_sets",
+      "SELECT id FROM connections",
+      "ROLLBACK",
+    ]);
+    expect(mockPool.queries).toEqual([]);
+    expect([mockConnects, mockClient.releaseCount]).toEqual([1, 1]);
+  });
+
+  test("the same connection named twice is looked up once", async () => {
+    // Source and target on one server, different schemas: a normal set. The
+    // check counts distinct ids, so one row back is the whole answer.
+    mockClient = createFakeClient([
+      { match: /SELECT id FROM comparison_sets WHERE lower\(name\)/, rows: [] },
+      { match: /SELECT id FROM connections/, rows: [{ id: 1 }] },
+      { match: /INSERT INTO comparison_sets\s/, rows: [{ id: NEW_ID, created: true }] },
+    ]);
+    const [status] = await saveAs(EDITOR, {
+      ...NIGHTLY,
+      targets: [{ connectionId: 1, schema: "staging" }],
+    });
+
+    expect(status).toBe(200);
+    expect(mockClient.queries.find((q) => /FROM connections/.test(q.text))?.values).toEqual([
+      TEST_ORG.id,
+      [1],
+    ]);
   });
 });

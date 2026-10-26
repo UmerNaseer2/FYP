@@ -162,7 +162,7 @@ function refused(id: number, refusal: Refusal): Answer {
 
 /** What GET /api/me answers with for a role holding these permissions. */
 function me(permissions: string[], fields: Record<string, unknown> = {}): Record<string, unknown> {
-  return { role: "viewer", roleLabel: "Viewer", permissions, bypass: false, viewingAs: null, accessUnavailable: false, ...fields };
+  return { role: "viewer", roleLabel: "Viewer", permissions, bypass: false, viewingAs: null, org: { slug: "personal", name: "Personal" }, ...fields };
 }
 
 /** A capture as GET /api/schema/snapshot answers with one (SchemaSnapshot in my-app/lib/postgres.ts), with more than a phone is shown. */
@@ -329,9 +329,19 @@ test("answers hello with nobody signed in, rather than refusing it, and logs not
 });
 
 test("refuses hello when the server could not read what the role may do", async () => {
-  const unknown = fakeApp({ "GET /api/me": ok(me(["compare:read"], { accessUnavailable: true })) });
+  newLogLines();
+  const unknown = fakeApp({ "GET /api/me": { status: 503, json: { error: "Could not check what your role can do, because the app's database did not answer." } } });
   assert.deepEqual(await answer({ id: 4, method: "hello" }, unknown.call), refused(4, "access-unknown"));
   assert.equal(REFUSALS["access-unknown"].code, "failed");
+  assert.match(newLogLines(), /answered the phone link's GET \/api\/me with 503: Could not check what your role can do/);
+});
+
+test("refuses hello with what to do about it when the person signed in is no longer a member, and logs nothing", async () => {
+  newLogLines();
+  const removed = fakeApp({ "GET /api/me": { status: 404, json: { error: "This organization does not exist, or you are not a member." } } });
+  assert.deepEqual(await answer({ id: 4, method: "hello" }, removed.call), refused(4, "not-member"));
+  assert.equal(REFUSALS["not-member"].code, "signed-out");
+  assert.equal(newLogLines(), "");
 });
 
 test("lists the shared connections only, in the app's order, with only what a phone shows", async () => {
@@ -480,7 +490,8 @@ test("leaves drift alerts off for a role that may not see drift, or when nobody 
   const cases: [AppAnswer, Refusal][] = [
     [ok(me(["dashboard:read", "compare:read", "visualizer:read"])), "forbidden"],
     [{ status: 401, json: { error: "Sign in to continue." } }, "signed-out"],
-    [ok(me(["drift:read"], { accessUnavailable: true })), "access-unknown"],
+    [{ status: 404, json: { error: "This organization does not exist, or you are not a member." } }, "not-member"],
+    [{ status: 503, json: { error: "Could not check what your role can do, because the app's database did not answer." } }, "access-unknown"],
     [ok({ role: "viewer" }), "failed"],
   ];
   newLogLines();
@@ -490,10 +501,13 @@ test("leaves drift alerts off for a role that may not see drift, or when nobody 
     assert.deepEqual(read, refused(4, refusal), refusal);
     assert.deepEqual(alerts.saved, [], refusal);
   }
-  // Only the answer that was not what GET /api/me gives is worth a line in the log.
+  // Only the server that could not read the role, and the answer that was not
+  // what GET /api/me gives, are worth a line in the log.
   const lines = newLogLines();
+  assert.match(lines, /answered the phone link's GET \/api\/me with 503/);
   assert.match(lines, /could not answer a phone's push\.subscribe\.\n.*did not answer with a list of permissions/);
   assert.equal(lines.match(/could not answer/g)?.length, 1, lines);
+  assert.equal(lines.match(/answered the phone link's/g)?.length, 1, lines);
 });
 
 test("refuses a subscription the computer would not send alerts to, without asking the server", async () => {
@@ -542,11 +556,14 @@ test("says whether drift alerts may go to phones from what the signed-in role ma
     [ok(me(["drift:read"])), "yes"],
     [ok(me(["dashboard:read", "compare:read"])), "forbidden"],
     [{ status: 401, json: { error: "Sign in to continue." } }, "signed-out"],
-    [ok(me(["drift:read"], { accessUnavailable: true })), "access-unknown"],
+    [{ status: 404, json: { error: "This organization does not exist, or you are not a member." } }, "not-member"],
   ];
   newLogLines();
   for (const [mine, allowed] of cases) assert.equal(await driftAlertsAllowed(fakeApp({ "GET /api/me": mine }).call, signal), allowed, allowed);
   assert.equal(newLogLines(), "");
+
+  assert.equal(await driftAlertsAllowed(fakeApp({ "GET /api/me": { status: 503, json: { error: "Could not check what your role can do, because the app's database did not answer." } } }).call, signal), "access-unknown");
+  assert.match(newLogLines(), /answered the phone link's GET \/api\/me with 503/);
 
   assert.equal(await driftAlertsAllowed(fakeApp({ "GET /api/me": ok(null) }).call, signal), "failed");
   assert.match(newLogLines(), /could not check whether drift alerts may go to phones\.\n.*did not answer with a list of permissions/);
@@ -631,8 +648,9 @@ test("refuses only with short plain sentences, each one a code every phone knows
     assert.match(message, /^[ -~]+\.$/, refusal);
     assert.deepEqual(readAnswer(writeRefusal(7, refusal as Refusal)), { id: 7, ok: false, error: { code, message } }, refusal);
   }
-  // The computer's own five reasons go out with a code every phone knows, and a sentence that says more.
+  // The computer's own six reasons go out with a code every phone knows, and a sentence that says more.
   for (const refusal of ["access-unknown", "no-answer", "too-slow"] as const) assert.equal(REFUSALS[refusal].code, "failed");
+  assert.equal(REFUSALS["not-member"].code, "signed-out");
   assert.equal(REFUSALS["bad-subscription"].code, "bad-request");
   assert.equal(REFUSALS["sql-missing"].code, "forbidden");
 });

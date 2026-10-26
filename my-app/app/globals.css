@@ -146,6 +146,11 @@ body {
   color: var(--text-2);
 }
 
+/* The way out, when there is one (AuthGuard's "not a member" screen). */
+.loading-state .actions {
+  margin-top: 16px;
+}
+
 /* =====================================================================
    Schema Studio — Design System (Phase 1 / Pass 0 Foundations)
    ADDITIVE. Ported from FYP/Pass 0 - Foundations.html. These tokens and

@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const view = await getDriftDetail(trackedSchemaId);
+    const view = await getDriftDetail(gate.principal.orgId, trackedSchemaId);
     if (!view) {
       return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
     }
@@ -94,8 +94,9 @@ export async function POST(request: NextRequest) {
 
   // The check and its audit row are one operation, shared with the scheduler
   // (lib/drift-runner.ts) so an automatic check and a button press can never
-  // record themselves differently.
-  const outcome = await runDriftCheck(trackedSchemaId, "manual");
+  // record themselves differently. It runs inside the caller's organization,
+  // so another organization's schema comes back not_found.
+  const outcome = await runDriftCheck(gate.principal.orgId, trackedSchemaId, "manual");
 
   if (!outcome.ok) {
     if (outcome.problem.kind === "not_found") {

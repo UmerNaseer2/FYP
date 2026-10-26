@@ -25,10 +25,16 @@ import type { ColumnSearch } from "./composite-index";
  * Reads are NOT best-effort. A history screen that silently shows an empty list
  * when the table could not be read is telling the user nothing has ever been
  * analysed, which is a different and false claim.
+ *
+ * Everything here is scoped to one organization: the reads take its id and
+ * filter on it, and a row is filed under the organization of the connection it
+ * was run against, and only when that connection is in the caller's.
  */
 
 /** What one recorded analysis needs from the caller. */
 export type RecordQueryInput = {
+  /** The organization the caller acts in. The connection must be in it. */
+  orgId: number;
   connectionId: number;
   schema: string;
   sql: string;
@@ -59,16 +65,23 @@ export type RecordQueryInput = {
  * puts that id in the response so the screen can link straight to the row it
  * just created — and a null there is what tells the screen not to offer a link
  * to something that is not in the table.
+ *
+ * The row takes its org_id from the connection, through a SELECT that only
+ * finds the connection inside `input.orgId`. For a connection in another
+ * organization nothing is filed and the answer is null, the same as any other
+ * row that could not be written.
  */
 export async function recordQuery(input: RecordQueryInput): Promise<number | null> {
   try {
     const result = await pool.query<{ id: number }>(
       `INSERT INTO query_history
-         (connection_id, schema_name, query_text, fingerprint,
+         (org_id, connection_id, schema_name, query_text, fingerprint,
           exec_time_ms, planning_ms, rows_returned, total_cost, estimated_rows,
           score, band, measured, high_count, medium_count, low_count, captured_by,
           searched_columns)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       SELECT org_id, id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+         FROM connections
+        WHERE id = $1 AND org_id = $18
        RETURNING id`,
       [
         input.connectionId,
@@ -95,13 +108,14 @@ export async function recordQuery(input: RecordQueryInput): Promise<number | nul
         // a PostgreSQL array literal, which JSONB refuses. null stays null — see
         // the column comment for why that is not the same as [].
         input.searches === null ? null : JSON.stringify(input.searches),
+        input.orgId,
       ]
     );
     const id = result.rows[0]?.id ?? null;
     // Pruning after the write, not before: the new row is the one that made the
     // table one longer, and pruning first would leave it one over the cap until
     // the next write. Best-effort inside a best-effort path.
-    if (id !== null) void pruneQueryHistory(input.connectionId, input.schema);
+    if (id !== null) void pruneQueryHistory(input.orgId, input.connectionId, input.schema);
     return id;
   } catch (error) {
     console.error(
@@ -125,6 +139,10 @@ export async function recordQuery(input: RecordQueryInput): Promise<number | nul
  * here, once, so that every caller downstream has numbers — a string that
  * looks like a number is the kind of thing that survives all the way to a
  * chart and then sorts "1000" before "9".
+ *
+ * The join also matches the organization, so a row can only ever be named
+ * after a connection in its own one. Each read below adds the filter on the
+ * history row's own org_id.
  */
 const SELECT_ROW = `
   SELECT h.id,
@@ -147,7 +165,7 @@ const SELECT_ROW = `
          h.captured_by,
          h.captured_at
     FROM query_history h
-    LEFT JOIN connections c ON c.id = h.connection_id
+    LEFT JOIN connections c ON c.id = h.connection_id AND c.org_id = h.org_id
 `;
 
 /** Raw row shape, before the numeric columns are read out of their strings. */
@@ -193,23 +211,30 @@ export const HISTORY_PAGE_SIZE = 50;
  * be read rather than showing an empty list that means "nothing here".
  */
 export async function listQueryHistory(
+  orgId: number,
   connectionId: number,
   schema: string,
   limit = HISTORY_PAGE_SIZE
 ): Promise<QueryHistoryRow[]> {
   const result = await pool.query<RawRow>(
     `${SELECT_ROW}
-      WHERE h.connection_id = $1 AND h.schema_name = $2
+      WHERE h.org_id = $1 AND h.connection_id = $2 AND h.schema_name = $3
       ORDER BY h.captured_at DESC, h.id DESC
-      LIMIT $3`,
-    [connectionId, schema, Math.min(Math.max(limit, 1), HISTORY_PAGE_SIZE)]
+      LIMIT $4`,
+    [orgId, connectionId, schema, Math.min(Math.max(limit, 1), HISTORY_PAGE_SIZE)]
   );
   return result.rows.map(toRow);
 }
 
 /** One row by id, or null. Used to open a stored analysis from the list. */
-export async function getQueryHistoryRow(id: number): Promise<QueryHistoryRow | null> {
-  const result = await pool.query<RawRow>(`${SELECT_ROW} WHERE h.id = $1`, [id]);
+export async function getQueryHistoryRow(
+  orgId: number,
+  id: number
+): Promise<QueryHistoryRow | null> {
+  const result = await pool.query<RawRow>(`${SELECT_ROW} WHERE h.id = $1 AND h.org_id = $2`, [
+    id,
+    orgId,
+  ]);
   const raw = result.rows[0];
   return raw ? toRow(raw) : null;
 }
@@ -224,6 +249,7 @@ export async function getQueryHistoryRow(id: number): Promise<QueryHistoryRow | 
  * different measurements, and averaging them would be meaningless.
  */
 export async function listRunsOfQuery(
+  orgId: number,
   connectionId: number,
   schema: string,
   fingerprint: string,
@@ -231,10 +257,11 @@ export async function listRunsOfQuery(
 ): Promise<QueryHistoryRow[]> {
   const result = await pool.query<RawRow>(
     `${SELECT_ROW}
-      WHERE h.connection_id = $1 AND h.schema_name = $2 AND h.fingerprint = $3
+      WHERE h.org_id = $1 AND h.connection_id = $2 AND h.schema_name = $3
+        AND h.fingerprint = $4
       ORDER BY h.captured_at DESC, h.id DESC
-      LIMIT $4`,
-    [connectionId, schema, fingerprint, Math.min(Math.max(limit, 1), HISTORY_PAGE_SIZE)]
+      LIMIT $5`,
+    [orgId, connectionId, schema, fingerprint, Math.min(Math.max(limit, 1), HISTORY_PAGE_SIZE)]
   );
   return result.rows.map(toRow);
 }
@@ -249,13 +276,22 @@ export async function listRunsOfQuery(
  *
  * Best-effort like the write: a table that is a few rows over its cap is not
  * worth failing a user's request over.
+ *
+ * Both rules stay inside the caller's organization. The age rule could safely
+ * sweep every organization at once, since the window is the same for all of
+ * them, but a request acting in one organization deleting another's rows is
+ * the kind of reach this table should never have, whatever the reason.
  */
-export async function pruneQueryHistory(connectionId: number, schema: string): Promise<void> {
+export async function pruneQueryHistory(
+  orgId: number,
+  connectionId: number,
+  schema: string
+): Promise<void> {
   try {
     await pool.query(
       `DELETE FROM query_history
-        WHERE captured_at < now() - ($1 || ' days')::interval`,
-      [String(QUERY_HISTORY_RETENTION_DAYS)]
+        WHERE org_id = $2 AND captured_at < now() - ($1 || ' days')::interval`,
+      [String(QUERY_HISTORY_RETENTION_DAYS), orgId]
     );
     // The cap, per connection-and-schema. `IN (SELECT … OFFSET …)` rather than a
     // window function: the index on (connection_id, schema_name, captured_at)
@@ -263,13 +299,13 @@ export async function pruneQueryHistory(connectionId: number, schema: string): P
     // of sorting the table.
     await pool.query(
       `DELETE FROM query_history
-        WHERE id IN (
+        WHERE org_id = $4 AND id IN (
           SELECT id FROM query_history
-           WHERE connection_id = $1 AND schema_name = $2
+           WHERE org_id = $4 AND connection_id = $1 AND schema_name = $2
            ORDER BY captured_at DESC, id DESC
            OFFSET $3
         )`,
-      [connectionId, schema, QUERY_HISTORY_MAX_ROWS]
+      [connectionId, schema, QUERY_HISTORY_MAX_ROWS, orgId]
     );
   } catch (error) {
     console.error(
@@ -307,6 +343,7 @@ export type QueryDayPoint = {
 };
 
 export async function queryTrend(
+  orgId: number,
   connectionId: number,
   schema: string,
   days: number
@@ -330,12 +367,18 @@ export async function queryTrend(
             max(exec_time_ms) FILTER (WHERE measured)             AS max_exec_ms,
             percentile_cont(0.5) WITHIN GROUP (ORDER BY score)     AS median_score
        FROM query_history
-      WHERE connection_id = $1
+      WHERE org_id = $4
+        AND connection_id = $1
         AND schema_name = $2
         AND captured_at >= now() - ($3 || ' days')::interval
       GROUP BY 1
       ORDER BY 1 ASC`,
-    [connectionId, schema, String(Math.min(Math.max(days, 1), QUERY_HISTORY_RETENTION_DAYS))]
+    [
+      connectionId,
+      schema,
+      String(Math.min(Math.max(days, 1), QUERY_HISTORY_RETENTION_DAYS)),
+      orgId,
+    ]
   );
 
   return result.rows.map((row) => ({
@@ -368,6 +411,7 @@ export const SEARCH_PATTERN_DAYS = 30;
  * queries rather than about the app.
  */
 export async function listSearches(
+  orgId: number,
   connectionId: number,
   schema: string,
   days: number = SEARCH_PATTERN_DAYS
@@ -375,12 +419,13 @@ export async function listSearches(
   const result = await pool.query<{ fingerprint: string; searched_columns: unknown }>(
     `SELECT fingerprint, searched_columns
        FROM query_history
-      WHERE connection_id = $1
+      WHERE org_id = $5
+        AND connection_id = $1
         AND schema_name = $2
         AND captured_at >= now() - ($3 || ' days')::interval
       ORDER BY captured_at DESC
       LIMIT $4`,
-    [connectionId, schema, String(days), QUERY_HISTORY_MAX_ROWS]
+    [connectionId, schema, String(days), QUERY_HISTORY_MAX_ROWS, orgId]
   );
   return result.rows.map((row) => ({
     fingerprint: row.fingerprint,

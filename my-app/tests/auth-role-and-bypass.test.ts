@@ -1,11 +1,19 @@
 // Two ways the sign-in path used to give someone more than they should have.
 //
-// AUTH-2 — a deleted user got their old role back. The session callback re-reads
-// the role from the database on every session read, so that demoting somebody
-// takes effect at once instead of waiting for their token to expire. But when
-// the lookup came back empty it fell back to `token.role`, and the token is a
-// copy of the answer from up to thirty days ago. Demote an admin to viewer,
-// delete them, and the fallback handed back the role they signed in with: admin.
+// AUTH-2 — a deleted user got their old role back. The session callback used
+// to re-read the role from the database on every session read, so that
+// demoting somebody took effect at once instead of waiting for their token to
+// expire. But when the lookup came back empty it fell back to `token.role`,
+// and the token is a copy of the answer from up to thirty days ago. Demote an
+// admin to viewer, delete them, and the fallback handed back the role they
+// signed in with: admin.
+//
+// The session carries no role at all now. It says who someone is, and the
+// gates in lib/auth-guard.ts read what they may do from their membership on
+// every request, so there is nothing in the token left to fall back on. What
+// the tests below hold the callbacks to is not putting any of it back: no role
+// copied into the session, and no token refresh quietly making somebody an
+// admin removed a member again on their next click.
 //
 // AUTH-4 — the bypass switch only understood one spelling of "off". Anything
 // but the exact text `false` left authentication turned off, and there is no
@@ -18,11 +26,65 @@ import fs from "fs";
 import path from "path";
 import { DEFAULT_ROLE, effectivePermissions, presetFor } from "@/lib/permissions";
 
-describe("the role a session gets", () => {
+/** The parts of a NextAuth token the callbacks read or write. */
+type Token = {
+  email?: string | null;
+  name?: string | null;
+  profileId?: number;
+  [claim: string]: unknown;
+};
+type Person = { email?: string | null; name?: string | null };
+type SessionShape = { user: { id?: string; email?: string; name?: string }; expires: string };
+type Callbacks = {
+  jwt(params: { token: Token; user?: Person }): Promise<Token>;
+  session(params: { session: SessionShape; token: Token }): SessionShape;
+};
+
+// next-auth and the Entra provider ship as ESM, which Jest's CommonJS runtime
+// cannot require, so both are stand-ins, as in tests/proxy.test.ts. This
+// NextAuth keeps the configuration auth.ts hands it, which the real one never
+// gives back, and that is how the tests below reach the callbacks to call them.
+let mockConfig: { callbacks: Callbacks } | undefined;
+jest.mock("next-auth", () => ({
+  __esModule: true,
+  default: (config: { callbacks: Callbacks }) => {
+    mockConfig = config;
+    return { handlers: {}, auth: jest.fn(), signIn: jest.fn(), signOut: jest.fn() };
+  },
+}));
+jest.mock("next-auth/providers/microsoft-entra-id", () => ({
+  __esModule: true,
+  default: () => ({ id: "microsoft-entra-id" }),
+}));
+// The database half of signing in. What it does with a profile and a
+// membership is tested against a real database in tests/org-migration.test.ts;
+// here it is only whether the callbacks call it, when, and with what. Relative
+// paths on purpose: next/jest rewrites the @/ alias inside import statements
+// only, so jest.mock("@/...") would not resolve.
+const mockUpsertProfile = jest.fn();
+jest.mock("../lib/version-db", () => ({
+  upsertProfile: (...args: unknown[]) => mockUpsertProfile(...args),
+}));
+
+/** The callbacks auth.ts gave NextAuth. */
+async function loadCallbacks(): Promise<Callbacks> {
+  // Imported here rather than at the top of the file: imports run first,
+  // before the `let` above exists for the stand-in to write to.
+  await import("../auth");
+  if (!mockConfig) throw new Error("auth.ts did not call NextAuth.");
+  return mockConfig.callbacks;
+}
+
+const UMER = { email: "umer@x", name: "Umer" };
+const EXPIRES = "2026-11-25T00:00:00.000Z";
+/** A session as NextAuth hands it to the callback, before anything is added. */
+const freshSession = (): SessionShape => ({ user: { ...UMER }, expires: EXPIRES });
+
+describe("the role a member holds", () => {
   it("starts a person nobody has given a role as a viewer", async () => {
-    // getProfileAccess answers this for "no such profile", and THROWS when the
-    // database cannot be read, so the two cases never look alike. Viewer is the
-    // least the app gives anyone.
+    // Everyone who joins an organization that already has members starts with
+    // this role (upsertProfile in lib/version-db.ts), and an admin decides from
+    // there. Viewer is the least the app gives anyone.
     expect(DEFAULT_ROLE).toBe("viewer");
   });
 
@@ -43,49 +105,83 @@ describe("the role a session gets", () => {
   });
 });
 
-describe("the session callback in auth.ts", () => {
-  // Read as source rather than called. NextAuth does not hand its callbacks
-  // back — `NextAuth({...})` returns handlers, signIn, signOut and auth, and
-  // nothing else — so there is no way to invoke this one from a test. What can
-  // be checked is the thing that was wrong and that an edit could put back:
-  // whether the token's stale role is consulted at all.
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "auth.ts"),
-    "utf8"
-  );
-
-  /** The body of `async session({ session, token })`, up to the next callback. */
-  const sessionCallback = (() => {
-    const start = source.indexOf("async session(");
-    expect(start).toBeGreaterThan(-1);
-    const end = source.indexOf("\n  },", start);
-    expect(end).toBeGreaterThan(start);
-    return source.slice(start, end);
-  })();
-
-  it("resolves the role from the lookup alone, never from the token", async () => {
-    expect(sessionCallback).toContain("getProfileAccess(session.user.email)");
-    expect(sessionCallback).toContain("session.user.role = access.role");
-    expect(sessionCallback).toContain("session.user.permissions = access.permissions");
-    // The exact shape of the bug, and anything else that reaches for the token
-    // while deciding a role.
-    expect(sessionCallback).not.toMatch(/token\.role/);
+describe("the sign-in callbacks in auth.ts", () => {
+  // Called, not read. NextAuth never hands its callbacks back, but the
+  // stand-in above keeps what auth.ts gave it, so each one runs here the way
+  // NextAuth runs it, with a token and a session shaped like NextAuth's.
+  let callbacks: Callbacks;
+  beforeAll(async () => {
+    callbacks = await loadCallbacks();
+  });
+  beforeEach(() => {
+    mockUpsertProfile.mockReset();
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
-  it("still reads the profile id from the token, which is not a privilege", async () => {
-    // token.role is the problem; token.profileId is not. It only says which row
-    // this person is, and a stale one names a profile that no longer exists —
-    // it grants nothing on its own.
-    expect(source).toContain("typeof token.profileId === \"number\"");
+  it("provisions the person at sign-in, as the provider named them", async () => {
+    // At sign-in NextAuth builds a fresh token from what the provider sent,
+    // and hands the same person over as `user`.
+    mockUpsertProfile.mockResolvedValue({ id: 41, ...UMER });
+    const token = await callbacks.jwt({ token: { ...UMER }, user: { ...UMER } });
+
+    expect(mockUpsertProfile.mock.calls).toEqual([[UMER.email, UMER.name]]);
+    expect(token).toEqual({ ...UMER, profileId: 41 });
   });
 
-  it("falls back to no permissions at all when the lookup throws", async () => {
-    // The other half: a database that cannot be read must not hand out a role
-    // either. The person keeps the least role, holds nothing, and is told the
-    // check failed rather than that their role can't.
-    expect(sessionCallback).toContain("session.user.role = DEFAULT_ROLE");
-    expect(sessionCallback).toContain("session.user.permissions = []");
-    expect(sessionCallback).toContain("session.user.accessError = true");
+  it("leaves a provisioned token alone, so a removed member stays removed", async () => {
+    // The callback runs again on every request that reads the session, long
+    // after sign-in. Provisioning there would make somebody an admin has just
+    // removed a member again on their very next click.
+    const provisioned = { ...UMER, profileId: 41 };
+    const token = await callbacks.jwt({ token: { ...provisioned } });
+
+    expect(mockUpsertProfile).not.toHaveBeenCalled();
+    expect(token).toEqual(provisioned);
+  });
+
+  it("tries again on a later request when sign-in could not provision", async () => {
+    // A token with no profile id was never provisioned, so there is nothing
+    // yet that an admin could have taken away.
+    mockUpsertProfile.mockResolvedValue({ id: 41, ...UMER });
+    const token = await callbacks.jwt({ token: { ...UMER } });
+
+    expect(mockUpsertProfile.mock.calls).toEqual([[UMER.email, UMER.name]]);
+    expect(token).toEqual({ ...UMER, profileId: 41 });
+  });
+
+  it("hands out nothing in its place when the database does not answer", async () => {
+    // No profile means no membership, and every gate refuses. The token stays
+    // without a profile id, so the next request tries again.
+    mockUpsertProfile.mockRejectedValue(new Error("connect ECONNREFUSED"));
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    const token = await callbacks.jwt({ token: { ...UMER }, user: { ...UMER } });
+
+    expect(token).toEqual(UMER);
+    expect(errors).toHaveBeenCalledWith(
+      "Failed to provision profile on sign-in:",
+      expect.any(Error)
+    );
+  });
+
+  it("puts who the person is in the session, and nothing about what they may do", () => {
+    // A token from before organizations still carries the role its owner
+    // signed in with. It is never read: what a member may do comes from the
+    // gates, fresh on every request. The profile id is read, and it grants
+    // nothing either. It only says which row this person is.
+    const token = { ...UMER, profileId: 41, role: "admin" };
+    const session = callbacks.session({ session: freshSession(), token });
+
+    // A plain answer, not a promise: reading a session never waits on the
+    // database.
+    expect(session).not.toBeInstanceOf(Promise);
+    expect(session).toEqual({ user: { ...UMER, id: "41" }, expires: EXPIRES });
+  });
+
+  it("has no id to put in the session before the person is provisioned", () => {
+    const session = callbacks.session({ session: freshSession(), token: { ...UMER } });
+    expect(session).toEqual({ user: UMER, expires: EXPIRES });
   });
 });
 

@@ -23,6 +23,10 @@ import { requestImmediateCheck } from "@/lib/drift-scheduler";
  * which is the normal case — the caller already picked the connection, so it
  * has already said which environment this is. It can still be overridden
  * because one server can host a staging schema and a production one.
+ *
+ * Everything happens inside the caller's organization: the connection must be
+ * one of its own, and the tracked schema, its baseline snapshot and its first
+ * lineage row all take their organization from the row they hang off.
  */
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("drift:create");
@@ -90,11 +94,13 @@ export async function POST(request: NextRequest) {
     // ssl_mode and environment are both added lazily; make sure they exist
     // before selecting them.
     await syncMetadataTables();
+    // Another organization's connection reads as missing, the same answer a
+    // deleted one gets, so this cannot be used to learn which ids exist.
     const result = await pool.query(
       `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment
        FROM connections
-       WHERE id = $1`,
-      [connectionId]
+       WHERE id = $1 AND org_id = $2`,
+      [connectionId, gate.principal.orgId]
     );
     if (result.rows.length === 0) {
       return NextResponse.json(
@@ -157,21 +163,36 @@ export async function POST(request: NextRequest) {
   try {
     await client.query("BEGIN");
 
-    // Insert the tracked schema. If it's already tracked, the UNIQUE constraint
-    // makes this insert no-op and we report a clean 409 instead of crashing.
     const environment: Environment =
       environmentOverride ?? toEnvironment(conn.environment);
+    const orgId = gate.principal.orgId;
 
+    // Insert the tracked schema, copying its organization from the connection
+    // row rather than from the request. The connection can be deleted while
+    // the snapshot above was being read, and then the SELECT finds nothing and
+    // nothing is inserted. If the schema is already tracked, the UNIQUE
+    // constraint makes the insert a no-op instead. Both come back as zero rows,
+    // so the check below tells them apart.
     const trackedResult = await client.query<TrackedSchemaRow>(
-      `INSERT INTO tracked_schemas (connection_id, schema_name, label, environment)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO tracked_schemas (org_id, connection_id, schema_name, label, environment)
+       SELECT org_id, id, $2, $3, $4 FROM connections WHERE id = $1 AND org_id = $5
        ON CONFLICT (connection_id, schema_name) DO NOTHING
        RETURNING id, connection_id, schema_name, label, environment, created_at`,
-      [connectionId, schemaName, label, environment]
+      [connectionId, schemaName, label, environment, orgId]
     );
 
     if (trackedResult.rows.length === 0) {
+      const stillThere = await client.query(
+        `SELECT 1 FROM connections WHERE id = $1 AND org_id = $2`,
+        [connectionId, orgId]
+      );
       await client.query("ROLLBACK");
+      if (stillThere.rows.length === 0) {
+        return NextResponse.json(
+          { error: `No saved connection found with id ${connectionId}.` },
+          { status: 404 }
+        );
+      }
       return NextResponse.json(
         { error: `Schema "${schemaName}" on "${conn.name}" is already tracked.` },
         { status: 409 }
@@ -181,19 +202,24 @@ export async function POST(request: NextRequest) {
     const tracked = trackedResult.rows[0];
     const tableCount = snap.data.tables.length;
 
+    // The snapshot and the lineage row take their organization from the
+    // tracked schema just inserted in this same transaction, so both always
+    // find it.
     const snapshotResult = await client.query<{ id: number }>(
-      `INSERT INTO snapshots (tracked_schema_id, snapshot, table_count, label)
-       VALUES ($1, $2::jsonb, $3, 'baseline')
+      `INSERT INTO snapshots (org_id, tracked_schema_id, snapshot, table_count, label)
+       SELECT org_id, id, $2::jsonb, $3, 'baseline' FROM tracked_schemas
+       WHERE id = $1 AND org_id = $4
        RETURNING id`,
-      [tracked.id, JSON.stringify(snap.data), tableCount]
+      [tracked.id, JSON.stringify(snap.data), tableCount, orgId]
     );
     const baselineSnapshotId = snapshotResult.rows[0].id;
 
     await client.query(
       `INSERT INTO lineage_migrations
-         (tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
-       VALUES ($1, 1, 'Baseline snapshot', 'additive', $2, NULL, $3)`,
-      [tracked.id, BASELINE_VERSION, baselineSnapshotId]
+         (org_id, tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
+       SELECT org_id, id, 1, 'Baseline snapshot', 'additive', $2, NULL, $3 FROM tracked_schemas
+       WHERE id = $1 AND org_id = $4`,
+      [tracked.id, BASELINE_VERSION, baselineSnapshotId, orgId]
     );
 
     await client.query("COMMIT");
@@ -202,7 +228,7 @@ export async function POST(request: NextRequest) {
     // recording that is the scheduler's job, not this route's, and the user is
     // waiting on a 201. Fire it and move on: if it fails, last_drift_check_at
     // stays null, which is exactly what makes the next tick pick this schema up.
-    requestImmediateCheck(tracked.id);
+    requestImmediateCheck(orgId, tracked.id);
 
     return NextResponse.json(
       {

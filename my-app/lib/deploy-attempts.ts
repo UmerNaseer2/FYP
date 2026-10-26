@@ -144,6 +144,12 @@ export type DeployAttemptRow = {
  * recorded before.
  */
 export type AttemptContext = {
+  /**
+   * The caller's organization, set as soon as the sign-in and permission gate
+   * lets the request through. Every row is filed under one, and an attempt
+   * refused at the gate has none: see recordDeployAttempt.
+   */
+  orgId?: number;
   connectionId?: number | null;
   schemaName?: string | null;
   scripts?: AttemptScript[];

@@ -8,7 +8,7 @@ export type { LineageDetail };
 /**
  * GET /api/lineage/<id> — everything the schema detail screen shows, in one
  * read: the tracked schema, its connection, its lineage newest-first, and the
- * latest drift check.
+ * latest drift check. A schema in another organization reads as not tracked.
  *
  * The screen used to call getLineageDetail itself while rendering, which put a
  * database query inside a UI component. It now goes through this route like
@@ -29,7 +29,7 @@ export async function GET(
   }
 
   try {
-    const detail = await getLineageDetail(id);
+    const detail = await getLineageDetail(gate.principal.orgId, id);
     if (!detail) {
       return NextResponse.json({ error: "That schema is not tracked." }, { status: 404 });
     }

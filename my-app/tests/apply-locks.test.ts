@@ -6,6 +6,7 @@
 import { NextRequest } from "next/server";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
+import { TEST_ORG } from "./helpers/principals";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
 // statements only, so jest.mock("@/...") would not resolve.
@@ -296,7 +297,8 @@ it("says the server rolled the run back when it refuses the COMMIT", async () =>
   ]);
   // Nothing landed, so the approval was not spent: it goes back for the
   // operator to fix the data and press Deploy again.
-  expect(mockReleaseApproval).toHaveBeenCalledWith(9);
+  // It goes back in the organization it was given in, the caller's.
+  expect(mockReleaseApproval).toHaveBeenCalledWith(TEST_ORG.id, 9);
 });
 
 it("still says the outcome is unknown when the COMMIT does not report back", async () => {

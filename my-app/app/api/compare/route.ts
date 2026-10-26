@@ -37,6 +37,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const screen = await runComparison(
+      // Only the caller's organization's connections, sets and history.
+      gate.principal.orgId,
       new URLSearchParams(query),
       // actorFor rather than the email: with the auth bypass on, every request
       // carries the same configured address, and writing it into the history

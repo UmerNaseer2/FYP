@@ -102,10 +102,10 @@ export type RequestOptions = {
 
 /**
  * Why the computer answers with an error: the codes rpc.ts gives a phone, and
- * five more that tell the person more than "failed", "bad-request" or
- * "forbidden" alone would.
+ * six more that tell the person more than "failed", "bad-request",
+ * "forbidden" or "signed-out" alone would.
  */
-export type Refusal = ErrorCode | "access-unknown" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing";
+export type Refusal = ErrorCode | "access-unknown" | "not-member" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing";
 
 /** The code and the sentence each refusal sends: words for the person holding the phone, with nothing from the server in them. */
 export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: string }>> = {
@@ -137,6 +137,10 @@ export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: stri
   expired: { code: "expired", message: "Nothing was decided, because that took too long or the computer restarted. Try again." },
   failed: { code: "failed", message: "The computer could not do that. Its log has the details." },
   "access-unknown": { code: "failed", message: "The computer could not check what the signed-in role may do. Try again in a moment." },
+  "not-member": {
+    code: "signed-out",
+    message: "The person signed in to Schema Studio on the computer no longer has access there. Sign out and back in on the computer, then try again.",
+  },
   "bad-subscription": {
     code: "bad-request",
     message: "The computer cannot send drift alerts through this browser's push service. Try another browser on the phone.",
@@ -227,7 +231,7 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
 async function hello(options: RequestOptions, signal: AbortSignal): Promise<HelloResult> {
   let json: unknown;
   try {
-    json = await ask(options, "GET", "/api/me", undefined, signal);
+    json = await ask(options, "GET", "/api/me", undefined, signal, ME_REFUSALS);
   } catch (error) {
     if (error instanceof Refused && error.refusal === "signed-out") {
       return { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: options.appVersion };
@@ -248,13 +252,20 @@ async function hello(options: RequestOptions, signal: AbortSignal): Promise<Hell
   };
 }
 
+/**
+ * GET /api/me answers 404 to someone signed in who is not a member of the
+ * app's organization: an admin removed them, or a backup restored on the
+ * computer does not have them. From that route it can mean nothing else, so
+ * the phone is told what to do about it rather than that something is gone.
+ * Signing in again makes them a member once more.
+ */
+const ME_REFUSALS: Readonly<Partial<Record<number, Refusal>>> = { 404: "not-member" };
+
 /** What GET /api/me answered with, and the keys of the role's permissions in it, such as "drift:read". */
 function readMe(json: unknown): { me: Record<string, unknown>; permissions: unknown[] } {
   const me = objectFields(json);
   const permissions = me?.permissions;
   if (me === null || !Array.isArray(permissions)) throw new Error("GET /api/me did not answer with a list of permissions.");
-  // The server could not read the role from its database, so the list says nothing about what the role may do.
-  if (me.accessUnavailable === true) throw new Refused("access-unknown");
   return { me, permissions };
 }
 
@@ -402,7 +413,7 @@ export async function driftAlertsAllowed(call: AppCaller, signal: AbortSignal): 
 
 /** Refuses unless the role signed in on the computer may see drift (drift:read), which is what drift alerts show. */
 async function checkDriftAlerts(options: Pick<RequestOptions, "call">, signal: AbortSignal): Promise<void> {
-  const { permissions } = readMe(await ask(options, "GET", "/api/me", undefined, signal));
+  const { permissions } = readMe(await ask(options, "GET", "/api/me", undefined, signal, ME_REFUSALS));
   if (!permissions.includes("drift:read")) throw new Refused("forbidden");
 }
 
@@ -447,8 +458,10 @@ export async function ask(
 
 /**
  * The refusal that an answer with this status, other than 200, stands for.
- * The routes above answer with these, and 503 is requirePermission saying it
- * could not read the role (my-app/lib/auth-guard.ts).
+ * The routes above answer with these. 503 is the gate in front of every route
+ * saying it could not read the role (my-app/lib/auth-guard.ts). The gate's 404
+ * for someone who is not a member reads as "not-found" here, except from
+ * GET /api/me, where it can only mean that (see ME_REFUSALS).
  */
 function refusalFor(status: number): Refusal {
   switch (status) {

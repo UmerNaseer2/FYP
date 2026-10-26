@@ -33,6 +33,15 @@ import { toDriftSource, type DriftSource } from "./drift-source";
  *   drift_events       — recorded drift checks, used by the audit feed (Phase 6B).
  *
  * A tracked schema's baseline is snapshot #1 + lineage migration seq 1 (v1.0.0).
+ *
+ * Every row in all four tables belongs to one organization (org_id), the same
+ * one as its tracked schema, and every function here takes the caller's
+ * organization and filters on it: each table on its own org_id, and each join
+ * on matching org_ids. A tracked schema in another organization therefore
+ * reads exactly like one that does not exist. New child rows (snapshots,
+ * lineage entries, drift events) take their org_id from the tracked schema
+ * they hang off, through INSERT ... SELECT, so a child can never be filed
+ * under a different organization from its parent.
  */
 
 // ── Row shapes ────────────────────────────────────────────────────────────
@@ -123,6 +132,7 @@ export function trackedSchemaKey(connectionId: number, schemaName: string): stri
  * treat "no head" as "not tracked".
  */
 export async function findTrackedSchemas(
+  orgId: number,
   refs: readonly TrackedSchemaRef[]
 ): Promise<Map<string, TrackedSchemaHead>> {
   const found = new Map<string, TrackedSchemaHead>();
@@ -148,17 +158,18 @@ export async function findTrackedSchemas(
      JOIN tracked_schemas ts
        ON ts.connection_id = want.connection_id
       AND ts.schema_name = want.schema_name
+      AND ts.org_id = $3
      LEFT JOIN LATERAL (
        SELECT version FROM lineage_migrations lm
-       WHERE lm.tracked_schema_id = ts.id
+       WHERE lm.tracked_schema_id = ts.id AND lm.org_id = ts.org_id
        ORDER BY lm.seq DESC LIMIT 1
      ) head ON TRUE
      LEFT JOIN LATERAL (
        SELECT status FROM drift_events de
-       WHERE de.tracked_schema_id = ts.id
+       WHERE de.tracked_schema_id = ts.id AND de.org_id = ts.org_id
        ORDER BY de.detected_at DESC, de.id DESC LIMIT 1
      ) drift ON TRUE`,
-    [refs.map((r) => r.connectionId), refs.map((r) => r.schemaName)]
+    [refs.map((r) => r.connectionId), refs.map((r) => r.schemaName), orgId]
   );
 
   for (const row of result.rows) {
@@ -180,10 +191,11 @@ export async function findTrackedSchemas(
  * component or an API route.
  */
 export async function findTrackedSchema(
+  orgId: number,
   connectionId: number,
   schemaName: string
 ): Promise<TrackedSchemaHead | null> {
-  const found = await findTrackedSchemas([{ connectionId, schemaName }]);
+  const found = await findTrackedSchemas(orgId, [{ connectionId, schemaName }]);
   return found.get(trackedSchemaKey(connectionId, schemaName)) ?? null;
 }
 
@@ -203,6 +215,8 @@ export async function findTrackedSchema(
  * (connection, schema) pair isn't tracked — untracked schemas have no lineage.
  */
 export async function recordAppliedMigrationToLineage(params: {
+  /** The organization the deploy ran in, which owns the connection. */
+  orgId: number;
   connectionId: number;
   schemaName: string;
   targetConfig: ClientConfig;
@@ -210,12 +224,12 @@ export async function recordAppliedMigrationToLineage(params: {
   name: string;
   sqlRef: string | null;
 }): Promise<{ advanced: boolean; reason?: string; seq?: number; version?: string }> {
-  const { connectionId, schemaName, targetConfig, changeLevel, name, sqlRef } = params;
+  const { orgId, connectionId, schemaName, targetConfig, changeLevel, name, sqlRef } = params;
   await syncMetadataTables();
 
   // Only tracked schemas have a lineage to advance. Cheap metadata lookup first,
   // so an apply to an untracked schema skips the extra introspection round-trip.
-  const tracked = await findTrackedSchema(connectionId, schemaName);
+  const tracked = await findTrackedSchema(orgId, connectionId, schemaName);
   if (!tracked) return { advanced: false, reason: "not tracked" };
   const trackedSchemaId = tracked.trackedSchemaId;
 
@@ -249,26 +263,49 @@ export async function recordAppliedMigrationToLineage(params: {
 
     const head = await client.query<{ version: string | null; seq: number | null }>(
       `SELECT version, seq FROM lineage_migrations
-       WHERE tracked_schema_id = $1 ORDER BY seq DESC LIMIT 1`,
-      [trackedSchemaId]
+       WHERE tracked_schema_id = $1 AND org_id = $2 ORDER BY seq DESC LIMIT 1`,
+      [trackedSchemaId, orgId]
     );
     const headVersion = head.rows[0]?.version ?? null;
     const headSeq = head.rows[0]?.seq ?? 0;
     const nextSeq = headSeq + 1;
     const nextVersion = getNextLineageVersion(headVersion, changeLevel);
 
+    // The three rows below take their org_id from the tracked schema, so none
+    // of them can land in another organization. The lookup above already found
+    // the schema in this one; a schema untracked since then (between that read
+    // and this lock) gives no row back, and there is no lineage left to
+    // advance.
     const snap = await client.query<{ id: number }>(
-      `INSERT INTO snapshots (tracked_schema_id, snapshot, table_count, label)
-       VALUES ($1, $2::jsonb, $3, 'deploy') RETURNING id`,
-      [trackedSchemaId, JSON.stringify(live.data), tableCount]
+      `INSERT INTO snapshots (org_id, tracked_schema_id, snapshot, table_count, label)
+       SELECT org_id, id, $2::jsonb, $3, 'deploy'
+         FROM tracked_schemas
+        WHERE id = $1 AND org_id = $4
+       RETURNING id`,
+      [trackedSchemaId, JSON.stringify(live.data), tableCount, orgId]
     );
+    if (snap.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return { advanced: false, reason: "not tracked" };
+    }
     const snapshotId = snap.rows[0].id;
 
     await client.query(
       `INSERT INTO lineage_migrations
-         (tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [trackedSchemaId, nextSeq, name.slice(0, 200), changeLevel, nextVersion, sqlRef, snapshotId]
+         (org_id, tracked_schema_id, seq, name, change_level, version, sql_ref, snapshot_id)
+       SELECT org_id, id, $2, $3, $4, $5, $6, $7
+         FROM tracked_schemas
+        WHERE id = $1 AND org_id = $8`,
+      [
+        trackedSchemaId,
+        nextSeq,
+        name.slice(0, 200),
+        changeLevel,
+        nextVersion,
+        sqlRef,
+        snapshotId,
+        orgId,
+      ]
     );
 
     const counts: DriftCounts = {
@@ -280,13 +317,16 @@ export async function recordAppliedMigrationToLineage(params: {
     };
     await client.query(
       `INSERT INTO drift_events
-         (tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
-       VALUES ($1, 'in_sync', $2, $3::jsonb, $4, 'deploy')`,
+         (org_id, tracked_schema_id, status, summary, detail, baseline_snapshot_id, source)
+       SELECT org_id, id, 'in_sync', $2, $3::jsonb, $4, 'deploy'
+         FROM tracked_schemas
+        WHERE id = $1 AND org_id = $5`,
       [
         trackedSchemaId,
         `Deploy applied — ${buildDriftSummary(nextVersion, counts)}`,
         JSON.stringify(counts),
         snapshotId,
+        orgId,
       ]
     );
 
@@ -445,6 +485,7 @@ function countRecorded(items: unknown): number | null {
  * safe to call directly from a server component (mirrors `findTrackedSchema`).
  */
 export async function getLineageDetail(
+  orgId: number,
   trackedSchemaId: number
 ): Promise<LineageDetail | null> {
   await syncMetadataTables();
@@ -473,9 +514,9 @@ export async function getLineageDetail(
        c.database_name AS connection_database,
        c.type          AS connection_type
      FROM tracked_schemas ts
-     LEFT JOIN connections c ON c.id = ts.connection_id
-     WHERE ts.id = $1`,
-    [trackedSchemaId]
+     LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
+     WHERE ts.id = $1 AND ts.org_id = $2`,
+    [trackedSchemaId, orgId]
   );
   if (head.rows.length === 0) return null;
   const ts = head.rows[0];
@@ -513,10 +554,10 @@ export async function getLineageDetail(
        s.captured_at AS snapshot_captured_at,
        s.snapshot    AS snapshot
      FROM lineage_migrations lm
-     LEFT JOIN snapshots s ON s.id = lm.snapshot_id
-     WHERE lm.tracked_schema_id = $1
+     LEFT JOIN snapshots s ON s.id = lm.snapshot_id AND s.org_id = lm.org_id
+     WHERE lm.tracked_schema_id = $1 AND lm.org_id = $2
      ORDER BY lm.seq DESC`,
-    [trackedSchemaId]
+    [trackedSchemaId, orgId]
   );
 
   const migrations: LineageNode[] = migRows.rows.map((m) => {
@@ -551,10 +592,10 @@ export async function getLineageDetail(
   }>(
     `SELECT status, summary, detail, detected_at
      FROM drift_events
-     WHERE tracked_schema_id = $1
+     WHERE tracked_schema_id = $1 AND org_id = $2
      ORDER BY detected_at DESC, id DESC
      LIMIT 1`,
-    [trackedSchemaId]
+    [trackedSchemaId, orgId]
   );
 
   return {
@@ -709,6 +750,7 @@ type TrackedConnRow = {
  * unreachable database) so neither the API nor a server component can crash.
  */
 export async function computeDriftDetail(
+  orgId: number,
   trackedSchemaId: number
 ): Promise<DriftComputation> {
   // The tables have to exist before any of this, and ssl_mode is added lazily,
@@ -721,9 +763,9 @@ export async function computeDriftDetail(
        c.name AS connection_name, c.host, c.port, c.database_name, c.type,
        c.username, c.password, c.connection_string, c.ssl, c.ssl_mode
      FROM tracked_schemas ts
-     LEFT JOIN connections c ON c.id = ts.connection_id
-     WHERE ts.id = $1`,
-    [trackedSchemaId]
+     LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
+     WHERE ts.id = $1 AND ts.org_id = $2`,
+    [trackedSchemaId, orgId]
   );
   if (res.rows.length === 0) return { kind: "not_found" };
   const t = res.rows[0];
@@ -758,11 +800,11 @@ export async function computeDriftDetail(
   const head = await pool.query<{ id: number; snapshot: SchemaSnapshot; version: string; seq: number }>(
     `SELECT s.id, s.snapshot, lm.version, lm.seq
      FROM lineage_migrations lm
-     JOIN snapshots s ON s.id = lm.snapshot_id
-     WHERE lm.tracked_schema_id = $1
+     JOIN snapshots s ON s.id = lm.snapshot_id AND s.org_id = lm.org_id
+     WHERE lm.tracked_schema_id = $1 AND lm.org_id = $2
      ORDER BY lm.seq DESC
      LIMIT 1`,
-    [trackedSchemaId]
+    [trackedSchemaId, orgId]
   );
   if (head.rows.length > 0) {
     expected = withoutToolTables(head.rows[0].snapshot);
@@ -776,9 +818,9 @@ export async function computeDriftDetail(
   } else {
     const latest = await pool.query<{ id: number; snapshot: SchemaSnapshot }>(
       `SELECT id, snapshot FROM snapshots
-       WHERE tracked_schema_id = $1
+       WHERE tracked_schema_id = $1 AND org_id = $2
        ORDER BY captured_at DESC, id DESC LIMIT 1`,
-      [trackedSchemaId]
+      [trackedSchemaId, orgId]
     );
     if (latest.rows.length > 0) {
       expected = withoutToolTables(latest.rows[0].snapshot);
@@ -895,9 +937,10 @@ export type DriftDetailView = {
  * tracked, so the page shows a clean not-found instead of crashing.
  */
 export async function getDriftDetail(
+  orgId: number,
   trackedSchemaId: number
 ): Promise<DriftDetailView | null> {
-  const comp = await computeDriftDetail(trackedSchemaId);
+  const comp = await computeDriftDetail(orgId, trackedSchemaId);
   if (comp.kind === "not_found") return null;
 
   const rec = await pool.query<{
@@ -907,10 +950,10 @@ export async function getDriftDetail(
   }>(
     `SELECT status, detected_at, acknowledged_at
      FROM drift_events
-     WHERE tracked_schema_id = $1
+     WHERE tracked_schema_id = $1 AND org_id = $2
      ORDER BY detected_at DESC, id DESC
      LIMIT 1`,
-    [trackedSchemaId]
+    [trackedSchemaId, orgId]
   );
   const lastRecorded =
     rec.rows.length > 0
@@ -1000,19 +1043,21 @@ type DriftEventFeedRow = {
 };
 
 /**
- * Drift check history, newest first. Pass a `trackedSchemaId` to scope it to one
- * schema (the detail screen's mini-history), or omit it for the full audit log.
- * Read-only; safe from a server component or an API route.
+ * Drift check history in one organization, newest first. Pass a
+ * `trackedSchemaId` to scope it to one schema (the detail screen's
+ * mini-history), or omit it for the organization's full audit log. Read-only;
+ * safe from a server component or an API route.
  */
 export async function listDriftEvents(
+  orgId: number,
   trackedSchemaId?: number | null,
   limit = 200
 ): Promise<DriftEventFeedItem[]> {
   await syncMetadataTables();
 
+  // A null $3 matches every schema: the one statement serves both the full
+  // log and one schema's history, without building the WHERE out of strings.
   const scoped = typeof trackedSchemaId === "number" && Number.isFinite(trackedSchemaId);
-  const where = scoped ? "WHERE de.tracked_schema_id = $1" : "";
-  const params = scoped ? [trackedSchemaId, limit] : [limit];
 
   const result = await pool.query<DriftEventFeedRow>(
     `SELECT
@@ -1021,12 +1066,13 @@ export async function listDriftEvents(
        ts.schema_name,
        c.name AS connection_name
      FROM drift_events de
-     JOIN tracked_schemas ts ON ts.id = de.tracked_schema_id
-     LEFT JOIN connections c ON c.id = ts.connection_id
-     ${where}
+     JOIN tracked_schemas ts ON ts.id = de.tracked_schema_id AND ts.org_id = de.org_id
+     LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
+     WHERE de.org_id = $1
+       AND ($3::int IS NULL OR de.tracked_schema_id = $3)
      ORDER BY de.detected_at DESC, de.id DESC
-     LIMIT ${scoped ? "$2" : "$1"}`,
-    params
+     LIMIT $2`,
+    [orgId, limit, scoped ? trackedSchemaId : null]
   );
 
   return result.rows.map((r) => ({
@@ -1107,16 +1153,17 @@ type TrackedListRow = {
 };
 
 /**
- * List every tracked schema with its lineage HEAD and latest recorded drift —
- * the cheap metadata read behind both the dashboard grid and the drift schema
- * picker. Uses LATERAL joins so each schema gets exactly its own HEAD + newest
- * drift row. Read-only; safe from a server component or an API route.
+ * List every tracked schema in one organization with its lineage HEAD and
+ * latest recorded drift: the cheap metadata read behind both the dashboard
+ * grid and the drift schema picker. Uses LATERAL joins so each schema gets
+ * exactly its own HEAD + newest drift row. Read-only; safe from a server
+ * component or an API route.
  */
-export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
+export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaListItem[]> {
   await syncMetadataTables();
 
-  const result = await pool.query<TrackedListRow>(`
-    SELECT
+  const result = await pool.query<TrackedListRow>(
+    `SELECT
       ts.id,
       ts.connection_id,
       ts.schema_name,
@@ -1135,28 +1182,30 @@ export async function listTrackedSchemas(): Promise<TrackedSchemaListItem[]> {
       drift.summary    AS drift_summary,
       drift.detected_at AS drift_checked_at
     FROM tracked_schemas ts
-    LEFT JOIN connections c ON c.id = ts.connection_id
+    LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
     LEFT JOIN LATERAL (
       SELECT version, seq
       FROM lineage_migrations lm
-      WHERE lm.tracked_schema_id = ts.id
+      WHERE lm.tracked_schema_id = ts.id AND lm.org_id = ts.org_id
       ORDER BY lm.seq DESC
       LIMIT 1
     ) head ON TRUE
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::int AS migration_count
       FROM lineage_migrations lm
-      WHERE lm.tracked_schema_id = ts.id
+      WHERE lm.tracked_schema_id = ts.id AND lm.org_id = ts.org_id
     ) counts ON TRUE
     LEFT JOIN LATERAL (
       SELECT status, summary, detected_at
       FROM drift_events de
-      WHERE de.tracked_schema_id = ts.id
+      WHERE de.tracked_schema_id = ts.id AND de.org_id = ts.org_id
       ORDER BY de.detected_at DESC, de.id DESC
       LIMIT 1
     ) drift ON TRUE
-    ORDER BY ts.created_at DESC, ts.id DESC
-  `);
+    WHERE ts.org_id = $1
+    ORDER BY ts.created_at DESC, ts.id DESC`,
+    [orgId]
+  );
 
   return result.rows.map((r) => ({
     id: r.id,
@@ -1203,6 +1252,7 @@ export type ConnectionDependents = {
  * what changes is that the user is now told the number before they confirm.
  */
 export async function getConnectionDependents(
+  orgId: number,
   connectionId: number
 ): Promise<ConnectionDependents> {
   await syncMetadataTables();
@@ -1211,11 +1261,13 @@ export async function getConnectionDependents(
   // connection?" is one question and the dialog asks it once. Counting them
   // here keeps the route to a single call, and comparison-sets does not import
   // this module, so the direction stays one way.
-  const comparisonSetNames = await listSetNamesUsingConnection(connectionId);
+  const comparisonSetNames = await listSetNamesUsingConnection(orgId, connectionId);
 
   const tracked = await pool.query<{ id: number; schema_name: string }>(
-    `SELECT id, schema_name FROM tracked_schemas WHERE connection_id = $1 ORDER BY schema_name`,
-    [connectionId]
+    `SELECT id, schema_name FROM tracked_schemas
+      WHERE connection_id = $1 AND org_id = $2
+      ORDER BY schema_name`,
+    [connectionId, orgId]
   );
 
   if (tracked.rows.length === 0) {
@@ -1230,8 +1282,9 @@ export async function getConnectionDependents(
 
   const ids = tracked.rows.map((r) => r.id);
   const snapshots = await pool.query<{ count: string }>(
-    `SELECT count(*)::text AS count FROM snapshots WHERE tracked_schema_id = ANY($1::int[])`,
-    [ids]
+    `SELECT count(*)::text AS count FROM snapshots
+      WHERE tracked_schema_id = ANY($1::int[]) AND org_id = $2`,
+    [ids, orgId]
   );
 
   return {

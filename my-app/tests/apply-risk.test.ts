@@ -9,6 +9,7 @@ import { NextRequest } from "next/server";
 import { toEnvironment } from "@/lib/environments";
 import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
 import { FAKE_TOKEN, guardGitHub, type GitHubGuard } from "./helpers/no-github";
+import { TEST_ORG } from "./helpers/principals";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 
 // Relative paths on purpose: next/jest rewrites the @/ alias inside import
@@ -264,6 +265,8 @@ describe("production approval", () => {
         "since the last one."
     );
     expect(mockClaim).toHaveBeenCalledTimes(1);
+    // Only an approval given in the caller's organization can be spent.
+    expect(mockClaim.mock.calls[0][0]).toMatchObject({ orgId: TEST_ORG.id, connectionId: 7 });
     expect(queriesMatching(mockClient, /\b(BEGIN|CREATE|INSERT|ALTER)\b/)).toEqual([]);
   });
 
@@ -714,5 +717,42 @@ describe("per-connection execution setting", () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("dev", undefined)] });
     const res = await apply(SAFE);
     expect(res.status).toBe(200);
+  });
+});
+
+describe("another organization's connection", () => {
+  // Connection ids are shared by every organization, so anybody can send one
+  // that is not theirs. The lookup names the caller's organization, and a
+  // connection saved in another one reads as missing: the same 404 a deleted
+  // one gets, before its password is decrypted, an approval is claimed or
+  // anything is sent to its database.
+  it("answers 404 for it, decrypting, claiming and running nothing", async () => {
+    // The saved row is in the next organization along, and the stand-in
+    // answers the way the lookup's WHERE clause would, so only a lookup that
+    // left the caller's organization out would find it.
+    const theirs = { ...connectionRow("prod"), id: 7, org_id: TEST_ORG.id + 1 };
+    mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
+      const [text, values = []] = args as [string, unknown[]?];
+      const holds = (column: string, value: unknown) => {
+        const param = new RegExp(`\\b${column} = \\$(\\d+)`).exec(text);
+        return !param || values[Number(param[1]) - 1] === value;
+      };
+      const found =
+        /FROM connections/.test(text) && holds("id", theirs.id) && holds("org_id", theirs.org_id);
+      return { rows: found ? [theirs] : [] };
+    });
+    mockClaim.mockResolvedValue({ id: 9 });
+
+    const res = await apply({ ...SAFE, acknowledgeProduction: true });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("No saved connection found with id 7.");
+    expect(JSON.stringify(res.body)).not.toContain("Sales dev");
+    const lookups = mockPoolQuery.mock.calls.filter(([text]) =>
+      /FROM connections/.test(String(text))
+    );
+    expect(lookups.map(([, values]) => values)).toEqual([[7, TEST_ORG.id]]);
+    expect(mockBuildPgConfig).not.toHaveBeenCalled();
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockClient.queries).toEqual([]);
   });
 });

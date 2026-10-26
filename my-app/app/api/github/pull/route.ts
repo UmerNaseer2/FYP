@@ -1,9 +1,12 @@
-// GET /api/github/pull: every script in the GitHub script registry, for
-// Deploy and the Script Editor.
+// GET /api/github/pull: every script in the caller's organization's part of
+// the GitHub script registry, for Deploy and the Script Editor.
 //
-// Layout: <database>/<schema>/<script_name>/v<version>.sql at the repository
-// root, each with an optional rollback beside it as v<version>.down.sql (the
-// naming rules live in lib/registry-paths.ts).
+// Layout: <database>/<schema>/<script_name>/v<version>.sql, each with an
+// optional rollback beside it as v<version>.down.sql, inside the
+// organization's folder: the repository root for the default organization,
+// orgs/<id>/ for any other. The naming rules and the reason for that split
+// live in lib/registry-paths.ts. The default organization's walk starts at the
+// root, so it skips orgs/<digits>/: those folders are other organizations'.
 //
 // Unlike the push route, one unreadable folder or file does not stop the
 // whole pull: the rest of the registry is still worth showing. But nothing is
@@ -36,7 +39,7 @@ import {
   repoUrl,
   type GitHubConfig,
 } from "@/lib/github-registry";
-import { groupRegistryFiles } from "@/lib/registry-paths";
+import { groupRegistryFiles, isOrganizationFolder, registryRoot } from "@/lib/registry-paths";
 import {
   describeGitHubFailure,
   githubErrorCode,
@@ -270,13 +273,17 @@ export async function GET() {
     return fail(500, GITHUB_UNCONFIGURED_CODE, githubNotConfiguredMessage(config.missing));
   }
 
-  // 1. The repository root: one folder per database.
-  const rootRes = await githubFetch(config, contentsPathUrl(config, ""));
+  // 1. The organization's root folder: one folder per database. "" (the
+  //    repository root) for the default organization, orgs/<id> otherwise.
+  const root = registryRoot(gate.principal);
+  const rootRes = await githubFetch(config, contentsPathUrl(config, root));
   if (!rootRes) return fail(502, "github_unreachable", UNREACHABLE);
   if (rootRes.status === 404) {
-    // GitHub answers 404 both for an EMPTY repository (nothing saved yet) and
-    // for one the token can't see. Asking for the repository itself tells the
-    // two apart, so a wrong name or token is reported, not shown as empty.
+    // GitHub answers 404 for an EMPTY repository (nothing saved yet), for an
+    // organization whose folder does not exist yet (nothing saved by it yet),
+    // and for a repository the token can't see. Asking for the repository
+    // itself tells them apart, so a wrong name or token is reported, not
+    // shown as empty.
     const repoRes = await githubFetch(config, repoUrl(config));
     if (!repoRes) return fail(502, "github_unreachable", UNREACHABLE);
     if (repoRes.ok) return NextResponse.json({ ok: true, scripts: [], warnings: [] });
@@ -289,22 +296,31 @@ export async function GET() {
   }
   const rootItems = asFolder(await rootRes.json().catch(() => null));
   if (!rootItems) {
+    const top = root
+      ? `this organization's folder in the registry repository (${root})`
+      : "the top of the registry repository";
     return fail(
       502,
       "github_error",
-      "GitHub's answer for the top of the registry repository was not a list of folders, so the registry could not be read. Try again; if it keeps happening, ask whoever runs the server to check GITHUB_REPO_OWNER and GITHUB_REPO_NAME.",
+      `GitHub's answer for ${top} was not a list of folders, so the registry could not be read. Try again; if it keeps happening, ask whoever runs the server to check GITHUB_REPO_OWNER and GITHUB_REPO_NAME.`,
     );
   }
 
   // 2. Walk database -> schema -> family folders. Files at the upper levels
-  //    (a README, say) are not scripts and are skipped.
+  //    (a README, say) are not scripts and are skipped. So is orgs/<digits>
+  //    when the walk starts at the repository root: that is another
+  //    organization's folder, not a database called "orgs" (the push route
+  //    refuses to create one, see reservedFolderProblem).
   const warnings: string[] = [];
   const perDatabase = await Promise.all(
     onlyFolders(rootItems).map(async (databaseDir) => {
       const schemaDirs = await listFolder(config, databaseDir.path, warnings);
       if (!schemaDirs) return [];
+      const ownSchemaDirs = onlyFolders(schemaDirs).filter(
+        (schemaDir) => root !== "" || !isOrganizationFolder(databaseDir.name, schemaDir.name),
+      );
       const perSchema = await Promise.all(
-        onlyFolders(schemaDirs).map(async (schemaDir) => {
+        ownSchemaDirs.map(async (schemaDir) => {
           const familyDirs = await listFolder(config, schemaDir.path, warnings);
           if (!familyDirs) return [];
           const perFamily = await Promise.all(

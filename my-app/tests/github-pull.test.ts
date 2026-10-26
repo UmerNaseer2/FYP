@@ -338,3 +338,80 @@ describe("GET /api/github/pull", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("GET /api/github/pull, organizations", () => {
+  // Organization 12 is not the default one, so its scripts sit under
+  // orgs/12/ (lib/registry-paths.ts). The stub answers only the addresses a
+  // test names, so a walk that strayed into another organization's folder,
+  // or into the repository root, fails the test.
+  function asOrganization12(): void {
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("viewer", { orgId: 12, orgSlug: "acme", orgName: "Acme", orgIsDefault: false }),
+    }));
+  }
+
+  it("walks another organization's own folder, and names its scripts without the prefix", async () => {
+    asOrganization12();
+    const orgFamily = `orgs/12/${FAMILY}`;
+    listFolder("orgs/12", [folder("orgs/12/db"), file("orgs/12/README.md")]);
+    listFolder("orgs/12/db", [folder("orgs/12/db/public")]);
+    listFolder("orgs/12/db/public", [folder(orgFamily)]);
+    listFolder(orgFamily, [file(`${orgFamily}/v1.0.0.sql`)]);
+    serve(`${orgFamily}/v1.0.0.sql`, UP1);
+
+    const { status, body } = await pull();
+    expect(status).toBe(200);
+    expect(body.scripts).toEqual([
+      {
+        database_name: "db",
+        schema_name: "public",
+        script_name: "orders_fix",
+        version: "1.0.0",
+        path: `${orgFamily}/v1.0.0.sql`,
+        sql_content: UP1,
+        rollback_state: "none",
+      },
+    ]);
+    expect(body.warnings).toEqual([]);
+    expect(calls[0].url).toBe(`${ROOT}/orgs/12`);
+  });
+
+  it("answers an empty list when that organization has saved nothing yet", async () => {
+    asOrganization12();
+    answers[`${ROOT}/orgs/12`] = () => json(404, { message: "Not Found" });
+    answers[REPO] = () => json(200, { full_name: "acme/registry" });
+    const { status, body } = await pull();
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true, scripts: [], warnings: [] });
+  });
+
+  it("names that organization's folder when GitHub's answer for it is not a list", async () => {
+    asOrganization12();
+    answers[`${ROOT}/orgs/12`] = () => json(200, { name: "12", type: "file" });
+    const { status, body } = await pull();
+    expect(status).toBe(502);
+    expect(body.code).toBe("github_error");
+    expect(body.error).toContain("this organization's folder in the registry repository (orgs/12)");
+  });
+
+  it("for the default organization, skips other organizations' folders but keeps a database named orgs", async () => {
+    // orgs/12 and orgs/5 are other organizations' folders: never listed.
+    // orgs/public is a default-organization database called "orgs" with
+    // the schema "public", which the push route allows.
+    listFolder("", [folder("orgs")]);
+    listFolder("orgs", [folder("orgs/12"), folder("orgs/5"), folder("orgs/public")]);
+    listFolder("orgs/public", [folder("orgs/public/orders_fix")]);
+    listFolder("orgs/public/orders_fix", [file("orgs/public/orders_fix/v1.0.0.sql")]);
+    serve("orgs/public/orders_fix/v1.0.0.sql", UP1);
+
+    const { status, body } = await pull();
+    expect(status).toBe(200);
+    const scripts = body.scripts as Array<Record<string, unknown>>;
+    expect(scripts.map((script) => [script.database_name, script.schema_name, script.version])).toEqual([
+      ["orgs", "public", "1.0.0"],
+    ]);
+    expect(calls.map((call) => call.url)).not.toContain(`${ROOT}/orgs/12`);
+    expect(calls.map((call) => call.url)).not.toContain(`${ROOT}/orgs/5`);
+  });
+});

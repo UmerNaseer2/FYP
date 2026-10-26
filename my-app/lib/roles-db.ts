@@ -3,7 +3,6 @@ import type { MetadataClient } from "./db/sequelize";
 import {
   ADMIN_ROLE,
   BUILT_IN_ROLES,
-  DEFAULT_ROLE,
   ROLE_DESCRIPTION_MAX,
   ROLE_LABEL_MAX,
   effectivePermissions,
@@ -27,6 +26,12 @@ import {
  * lib/db/models.ts and the built-in roles are seeded by setUpRoles in
  * lib/db/bootstrap.ts.
  *
+ * Every role belongs to one organization, and so does everything here. Each
+ * function takes the id of the organization it acts in (the principal's, see
+ * lib/auth-guard.ts) and every statement is filtered by it, so two
+ * organizations can each have a role called "QA Lead" without either one ever
+ * seeing, changing or deleting the other's.
+ *
  * Every write here runs in one transaction with the role's row locked, so two
  * admins saving at the same moment take turns instead of each writing half of
  * what they meant, and the log always describes what really happened.
@@ -37,7 +42,10 @@ import {
  * and turn the second into a 500.
  */
 
-/** What one person, or the "View as" switcher, may do. The session carries this. */
+/**
+ * What one member, or the "View as" switcher, may do. The gates read this on
+ * every request (lib/auth-guard.ts).
+ */
 export type RoleAccess = {
   role: string;
   /** The role's name as people read it: "Editor", "QA Lead". */
@@ -52,7 +60,7 @@ export type RoleSummary = {
   description: string;
   /** Viewer, Editor and Admin. They cannot be deleted. */
   builtIn: boolean;
-  /** How many people hold this role. A role in use cannot be deleted. */
+  /** How many members of the organization hold this role. A role in use cannot be deleted. */
   userCount: number;
   /** What the role can do. Everything for admin, whatever is stored otherwise. */
   permissions: PermissionKey[];
@@ -116,67 +124,42 @@ const PERMISSION_KEYS_SQL = `COALESCE(
   '{}'
 )`;
 
-function toAccess(role: string, label: string | null, granted: readonly string[]): RoleAccess {
-  return {
-    role,
-    // A role missing from the table (a hand-edited profile) has no label to
-    // show, so the key stands in for it rather than an empty pair of brackets.
-    roleLabel: label ?? role,
-    permissions: effectivePermissions(role, granted),
-  };
-}
-
-/** A role's label and stored permission rows, or null when there is no such role. */
+/**
+ * A role's label and stored permission rows, or null when the organization
+ * has no such role.
+ *
+ * The join matches on org_id as well as the name: the same name in another
+ * organization is another role, and its rows must never be counted in.
+ */
 async function readRole(
   db: Queryable,
+  orgId: number,
   role: string
 ): Promise<{ label: string; granted: string[] } | null> {
   const result = await db.query<{ label: string; granted: string[] }>(
     `SELECT r.label, ${PERMISSION_KEYS_SQL} AS granted
        FROM roles r
-       LEFT JOIN role_permissions p ON p.role = r.name
-      WHERE r.name = $1
-      GROUP BY r.name`,
-    [role]
+       LEFT JOIN role_permissions p ON p.org_id = r.org_id AND p.role = r.name
+      WHERE r.org_id = $1 AND r.name = $2
+      GROUP BY r.org_id, r.name`,
+    [orgId, role]
   );
   return result.rows[0] ?? null;
 }
 
 /**
- * What the person with this email may do, read fresh on every session.
- *
- * One query for the role and its permissions together, because the session
- * callback runs on every request. No profile means the default role, the
- * least this app gives anyone (see the session callback in auth.ts for why
- * that is not a sign-out).
+ * What a role in this organization may do, for the gates and the "View as"
+ * switcher. Null when the organization has no such role.
  */
-export async function getProfileAccess(email: string): Promise<RoleAccess> {
+export async function getRoleAccess(orgId: number, role: string): Promise<RoleAccess | null> {
   await syncMetadataTables();
-  const result = await pool.query<{ role: string; label: string | null; granted: string[] }>(
-    // lower(email) so the lookup goes through profiles_email_key_idx.
-    `WITH me AS (
-       SELECT COALESCE(
-         (SELECT role FROM profiles WHERE lower(email) = $1 LIMIT 1),
-         $2
-       ) AS role
-     )
-     SELECT me.role, r.label, ${PERMISSION_KEYS_SQL} AS granted
-       FROM me
-       LEFT JOIN roles r ON r.name = me.role
-       LEFT JOIN role_permissions p ON p.role = me.role
-      GROUP BY me.role, r.label`,
-    [email.trim().toLowerCase(), DEFAULT_ROLE]
-  );
-  const row = result.rows[0];
-  if (!row) return toAccess(DEFAULT_ROLE, null, []);
-  return toAccess(row.role, row.label, row.granted);
-}
-
-/** What a role may do, for the "View as" switcher. Null when there is no such role. */
-export async function getRoleAccess(role: string): Promise<RoleAccess | null> {
-  await syncMetadataTables();
-  const found = await readRole(pool, role);
-  return found ? toAccess(role, found.label, found.granted) : null;
+  const found = await readRole(pool, orgId, role);
+  if (!found) return null;
+  return {
+    role,
+    roleLabel: found.label,
+    permissions: effectivePermissions(role, found.granted),
+  };
 }
 
 /**
@@ -197,8 +180,11 @@ function builtInRank(role: string): number {
   return rank === -1 ? BUILT_IN_ROLES.length : rank;
 }
 
-/** Every role, built-in ones first in their usual order, then the rest by name. */
-export async function listRoles(): Promise<RoleSummary[]> {
+/**
+ * Every role in the organization, built-in ones first in their usual order,
+ * then the rest by name.
+ */
+export async function listRoles(orgId: number): Promise<RoleSummary[]> {
   await syncMetadataTables();
   const result = await pool.query<{
     name: string;
@@ -209,11 +195,14 @@ export async function listRoles(): Promise<RoleSummary[]> {
     granted: string[];
   }>(
     `SELECT r.name, r.label, r.description, r.built_in,
-            (SELECT count(*)::int FROM profiles u WHERE u.role = r.name) AS user_count,
+            (SELECT count(*)::int FROM memberships m
+              WHERE m.org_id = r.org_id AND m.role = r.name) AS user_count,
             ${PERMISSION_KEYS_SQL} AS granted
        FROM roles r
-       LEFT JOIN role_permissions p ON p.role = r.name
-      GROUP BY r.name`
+       LEFT JOIN role_permissions p ON p.org_id = r.org_id AND p.role = r.name
+      WHERE r.org_id = $1
+      GROUP BY r.org_id, r.name`,
+    [orgId]
   );
   const roles = result.rows.map((row) => ({
     name: row.name,
@@ -239,19 +228,22 @@ export async function listRoles(): Promise<RoleSummary[]> {
  * line commit together or not at all.
  *
  * The rows go in the order given. The Admin screen lists the log newest first,
- * so the last entry of a batch is the one shown on top of it.
+ * so the last entry of a batch is the one shown on top of it. Every row in a
+ * batch belongs to the one organization the change was made in.
  */
 export async function logRoleChanges(
   client: Queryable,
+  orgId: number,
   entries: readonly RoleChangeEntry[]
 ): Promise<void> {
   if (entries.length === 0) return;
   await client.query(
-    `INSERT INTO role_changes (role, kind, feature, action, subject, detail, actor)
-     SELECT * FROM unnest(
-       $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[]
+    `INSERT INTO role_changes (org_id, role, kind, feature, action, subject, detail, actor)
+     SELECT $1::int, * FROM unnest(
+       $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[]
      )`,
     [
+      orgId,
       entries.map((entry) => entry.role),
       entries.map((entry) => entry.kind),
       entries.map((entry) => entry.feature ?? null),
@@ -268,9 +260,11 @@ export async function logRoleChanges(
  *
  * The key it is stored under is made from the name (roleKeyFrom), so two names
  * that differ only in case, accents or punctuation ("QA Lead", "qa-lead") are
- * the same role and the second is refused.
+ * the same role and the second is refused. Only within the organization,
+ * though: another organization's "QA Lead" is no reason to refuse this one.
  */
 export async function createRole(
+  orgId: number,
   input: { label: string; description: string; copyFrom: string | null },
   actor: string
 ): Promise<RoleResult<{ role: RoleSummary }>> {
@@ -296,8 +290,10 @@ export async function createRole(
     // Checked first so the refusal can name the role that is in the way. The
     // unique indexes still have the last word if two admins race (see catch).
     const taken = await client.query<{ label: string }>(
-      `SELECT label FROM roles WHERE name = $1 OR lower(label) = lower($2) LIMIT 1`,
-      [name, label]
+      `SELECT label FROM roles
+        WHERE org_id = $1 AND (name = $2 OR lower(label) = lower($3))
+        LIMIT 1`,
+      [orgId, name, label]
     );
     if (taken.rows.length > 0) {
       await client.query("ROLLBACK");
@@ -310,7 +306,7 @@ export async function createRole(
     let permissions: PermissionKey[] = [];
     let detail: string | null = null;
     if (input.copyFrom !== null) {
-      const source = await readRole(client, input.copyFrom);
+      const source = await readRole(client, orgId, input.copyFrom);
       if (!source) {
         await client.query("ROLLBACK");
         return refuse(400, "The role to copy from no longer exists. Refresh the page and try again.");
@@ -324,22 +320,13 @@ export async function createRole(
     }
 
     await client.query(
-      `INSERT INTO roles (name, label, description) VALUES ($1, $2, $3)`,
-      [name, label, description]
+      `INSERT INTO roles (org_id, name, label, description) VALUES ($1, $2, $3, $4)`,
+      [orgId, name, label, description]
     );
     if (permissions.length > 0) {
-      await client.query(
-        `INSERT INTO role_permissions (role, feature, action)
-         SELECT $1, feature, action
-           FROM unnest($2::text[], $3::text[]) AS p(feature, action)`,
-        [
-          name,
-          permissions.map((key) => key.split(":")[0]),
-          permissions.map((key) => key.split(":")[1]),
-        ]
-      );
+      await insertPermissionRows(client, orgId, name, permissions);
     }
-    await logRoleChanges(client, [{ role: name, kind: "create-role", detail, actor }]);
+    await logRoleChanges(client, orgId, [{ role: name, kind: "create-role", detail, actor }]);
     await client.query("COMMIT");
 
     return {
@@ -362,12 +349,40 @@ export async function createRole(
 }
 
 /**
+ * Give a role in the organization these permission rows. The caller's
+ * transaction decides when they become real.
+ *
+ * The casts are needed because these values sit in a SELECT list, where
+ * Postgres cannot tell from the target column what type a parameter is meant
+ * to be, and an untyped one is taken as text.
+ */
+async function insertPermissionRows(
+  client: Queryable,
+  orgId: number,
+  role: string,
+  keys: readonly PermissionKey[]
+): Promise<void> {
+  await client.query(
+    `INSERT INTO role_permissions (org_id, role, feature, action)
+     SELECT $1::int, $2::text, feature, action
+       FROM unnest($3::text[], $4::text[]) AS p(feature, action)`,
+    [
+      orgId,
+      role,
+      keys.map((key) => key.split(":")[0]),
+      keys.map((key) => key.split(":")[1]),
+    ]
+  );
+}
+
+/**
  * Store a role's new permissions and log one row per box that changed.
  *
  * Shared by setRolePermissions and resetRolePermissions, which differ only in
  * where the new set comes from and whether a `reset` row heads the log.
  */
 async function writeRolePermissions(
+  orgId: number,
   role: string,
   target: readonly PermissionKey[],
   actor: string,
@@ -381,7 +396,10 @@ async function writeRolePermissions(
     // The lock is what makes two saves of the same role take turns: the second
     // reads what the first one stored, so its log rows describe its own change
     // and not the sum of both.
-    const found = await client.query(`SELECT name FROM roles WHERE name = $1 FOR UPDATE`, [role]);
+    const found = await client.query(
+      `SELECT name FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE`,
+      [orgId, role]
+    );
     if (found.rows.length === 0) {
       await client.query("ROLLBACK");
       return refuse(404, "That role no longer exists. Refresh the page.");
@@ -389,8 +407,9 @@ async function writeRolePermissions(
 
     const stored = (
       await client.query<{ key: string }>(
-        `SELECT feature || ':' || action AS key FROM role_permissions WHERE role = $1`,
-        [role]
+        `SELECT feature || ':' || action AS key FROM role_permissions
+          WHERE org_id = $1 AND role = $2`,
+        [orgId, role]
       )
     ).rows.map((row) => row.key);
 
@@ -404,21 +423,12 @@ async function writeRolePermissions(
     if (toDelete.length > 0) {
       await client.query(
         `DELETE FROM role_permissions
-          WHERE role = $1 AND feature || ':' || action = ANY($2::text[])`,
-        [role, toDelete]
+          WHERE org_id = $1 AND role = $2 AND feature || ':' || action = ANY($3::text[])`,
+        [orgId, role, toDelete]
       );
     }
     if (toInsert.length > 0) {
-      await client.query(
-        `INSERT INTO role_permissions (role, feature, action)
-         SELECT $1, feature, action
-           FROM unnest($2::text[], $3::text[]) AS p(feature, action)`,
-        [
-          role,
-          toInsert.map((key) => key.split(":")[0]),
-          toInsert.map((key) => key.split(":")[1]),
-        ]
-      );
+      await insertPermissionRows(client, orgId, role, toInsert);
     }
 
     // The log compares what the role could DO before and after, not the raw
@@ -437,7 +447,7 @@ async function writeRolePermissions(
     const changes = entries.length;
     // Last, so it sits on top of its own grants and revokes in the log.
     if (reset) entries.push({ role, kind: "reset", actor });
-    await logRoleChanges(client, entries);
+    await logRoleChanges(client, orgId, entries);
 
     await client.query("COMMIT");
     return { ok: true, permissions: [...target], changes };
@@ -468,6 +478,7 @@ function grantOrRevoke(
  * boxes be unticked could lock every admin out of this screen.
  */
 export async function setRolePermissions(
+  orgId: number,
   role: string,
   keys: readonly string[],
   actor: string
@@ -481,18 +492,19 @@ export async function setRolePermissions(
       return refuse(400, `"${permissionLabel(key)}" can only belong to the admin role.`);
     }
   }
-  return writeRolePermissions(role, effectivePermissions(role, keys), actor, false);
+  return writeRolePermissions(orgId, role, effectivePermissions(role, keys), actor, false);
 }
 
 /** Put Viewer or Editor back to what they start with on a new install. */
 export async function resetRolePermissions(
+  orgId: number,
   role: string,
   actor: string
 ): Promise<RoleResult<{ permissions: PermissionKey[]; changes: number }>> {
   if (role === ADMIN_ROLE) return refuse(400, ADMIN_IS_FIXED);
   const preset = presetFor(role);
   if (!preset) return refuse(400, "Only Viewer and Editor have a default to go back to.");
-  return writeRolePermissions(role, preset, actor, true);
+  return writeRolePermissions(orgId, role, preset, actor, true);
 }
 
 /**
@@ -502,7 +514,7 @@ export async function resetRolePermissions(
  * should go is a decision, and the Users tab is where it is made. The built-in
  * roles cannot be deleted at all, so there is always a role to give someone.
  */
-export async function deleteRole(role: string, actor: string): Promise<RoleResult> {
+export async function deleteRole(orgId: number, role: string, actor: string): Promise<RoleResult> {
   if (isBuiltInRole(role)) {
     return refuse(400, "Viewer, Editor and Admin are built in and can't be deleted.");
   }
@@ -513,11 +525,11 @@ export async function deleteRole(role: string, actor: string): Promise<RoleResul
     await client.query("BEGIN");
 
     // Locked so that nobody can be given this role while it is being deleted:
-    // the foreign key on profiles.role has to wait for this lock, and then
-    // finds the role gone.
+    // the foreign key from memberships (org_id, role) has to wait for this
+    // lock, and then finds the role gone.
     const found = await client.query<{ label: string }>(
-      `SELECT label FROM roles WHERE name = $1 FOR UPDATE`,
-      [role]
+      `SELECT label FROM roles WHERE org_id = $1 AND name = $2 FOR UPDATE`,
+      [orgId, role]
     );
     if (found.rows.length === 0) {
       await client.query("ROLLBACK");
@@ -525,8 +537,8 @@ export async function deleteRole(role: string, actor: string): Promise<RoleResul
     }
 
     const inUse = await client.query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM profiles WHERE role = $1`,
-      [role]
+      `SELECT count(*)::int AS count FROM memberships WHERE org_id = $1 AND role = $2`,
+      [orgId, role]
     );
     const count = inUse.rows[0]?.count ?? 0;
     if (count > 0) {
@@ -539,17 +551,18 @@ export async function deleteRole(role: string, actor: string): Promise<RoleResul
     }
 
     // Its permission rows go with it (ON DELETE CASCADE on role_permissions).
-    await client.query(`DELETE FROM roles WHERE name = $1`, [role]);
-    await logRoleChanges(client, [
+    await client.query(`DELETE FROM roles WHERE org_id = $1 AND name = $2`, [orgId, role]);
+    await logRoleChanges(client, orgId, [
       { role, kind: "delete-role", detail: found.rows[0].label, actor },
     ]);
     await client.query("COMMIT");
     return { ok: true };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
-    // 23503 foreign_key_violation: a profile still points at the role. The
-    // count above makes this close to impossible; it is here so that if it
-    // ever happens the person gets the same answer rather than a 500.
+    // 23503 foreign_key_violation: a membership still points at the role
+    // (memberships_org_id_role_fkey). The count above makes this close to
+    // impossible; it is here so that if it ever happens the person gets the
+    // same answer rather than a 500.
     if ((error as { code?: string })?.code === "23503") {
       return refuse(409, "Someone still has this role. Give them another role on the Users tab first.");
     }
@@ -559,8 +572,8 @@ export async function deleteRole(role: string, actor: string): Promise<RoleResul
   }
 }
 
-/** The most recent role changes, newest first. */
-export async function listRoleChanges(limit = 50): Promise<RoleChange[]> {
+/** The organization's most recent role changes, newest first. */
+export async function listRoleChanges(orgId: number, limit = 50): Promise<RoleChange[]> {
   await syncMetadataTables();
   const result = await pool.query<{
     id: number;
@@ -579,10 +592,11 @@ export async function listRoleChanges(limit = 50): Promise<RoleChange[]> {
     `SELECT c.id, c.role, r.label AS role_label, c.kind, c.feature, c.action,
             c.subject, c.detail, c.actor, c.created_at
        FROM role_changes c
-       LEFT JOIN roles r ON r.name = c.role
+       LEFT JOIN roles r ON r.org_id = c.org_id AND r.name = c.role
+      WHERE c.org_id = $1
       ORDER BY c.id DESC
-      LIMIT $1`,
-    [Math.min(Math.max(Math.trunc(limit), 1), 200)]
+      LIMIT $2`,
+    [orgId, Math.min(Math.max(Math.trunc(limit), 1), 200)]
   );
   return result.rows.map((row) => ({
     id: row.id,

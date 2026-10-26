@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useSyncExternalStore } from "react";
+import { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
 import { BYPASS_AUTH, BYPASS_PRINCIPAL, VIEW_AS_COOKIE } from "@/lib/auth-mode";
 import {
@@ -38,11 +38,18 @@ export type UserAccess = {
   viewingAs: string | null;
   can: Can;
   /**
-   * True when the app's database could not say what the role may do. The API
-   * answers 503 then, so a screen should say "try again", not "your role
-   * can't".
+   * True when the app could not say what the role may do: /api/me did not
+   * answer, or answered that its database did not. A screen should say "try
+   * again" then, not "your role can't".
    */
   accessError: boolean;
+  /**
+   * True when the person is signed in but is not a member of the organization
+   * the app acts in, which is what /api/me answers 404 for. With real sign-in
+   * that means an admin removed them after they signed in. With the bypass on
+   * it means the database has no default organization to act in.
+   */
+  notMember: boolean;
 };
 
 // Stable identity so components that memoise on `user` (StudioShell does)
@@ -53,51 +60,98 @@ const BYPASS_USER: CurrentUser = {
 };
 
 // ---------------------------------------------------------------------------
-// "View as", while the bypass is on.
+// What the person may do, as the server sees it.
 //
-// With the bypass on there is no session to say who the person is. The server
-// acts as an admin, unless the View as switcher on the studio rail has left a
-// cookie naming a role (bypassPrincipal in lib/auth-guard.ts). The browser has
-// to show the same app the server is enforcing, so when that cookie is there
-// it asks /api/me what the role may do. Every component on the page shares the
-// one answer, which is what this small store is for: without it each screen
-// would fetch the same thing, and for a moment they could disagree.
+// The sign-in session only says who the person is. What they may do is their
+// membership in the organization and what its role allows, and both can change
+// while they are signed in: an admin can change their role, edit the role, or
+// remove them. So the browser asks the server, through /api/me, which answers
+// with the same principal lib/auth-guard.ts hands every API route. A screen
+// then offers exactly what the server will allow, and never a button whose
+// request the server refuses.
+//
+// With the bypass on there is no session, and the server acts as the full
+// admin unless the View as switcher on the studio rail has left a cookie
+// naming a role (bypassPrincipal in lib/auth-guard.ts). With no cookie there
+// is nothing to ask: the answer is the full admin, straight away.
+//
+// Every component on the page shares the one answer, which is what this small
+// store is for. Without it each screen would fetch the same thing, and for a
+// moment they could disagree.
 // ---------------------------------------------------------------------------
 
-type ViewAsState = {
+type AccessState = {
   loading: boolean;
   role: string;
   roleLabel: string;
   permissions: readonly PermissionKey[];
   viewingAs: string | null;
   accessError: boolean;
+  notMember: boolean;
 };
 
-/** Not known yet: there is a View as cookie and /api/me has not answered. */
-const PENDING: ViewAsState = {
+const VIEWER_LABEL = BUILT_IN_ROLE_INFO[DEFAULT_ROLE].label;
+
+/** Not known yet: /api/me has not answered. */
+const PENDING: AccessState = {
   loading: true,
   role: DEFAULT_ROLE,
-  roleLabel: BUILT_IN_ROLE_INFO[DEFAULT_ROLE].label,
+  roleLabel: VIEWER_LABEL,
   permissions: [],
   viewingAs: null,
   accessError: false,
+  notMember: false,
 };
 
-/** No View as cookie: the bypass is the full admin it always was. */
-const NO_VIEW_AS: ViewAsState = {
+/** The bypass with no View as cookie: the full admin it always was. */
+const NO_VIEW_AS: AccessState = {
   loading: false,
   role: ADMIN_ROLE,
   roleLabel: BUILT_IN_ROLE_INFO[ADMIN_ROLE].label,
   permissions: ALL_PERMISSIONS,
   viewingAs: null,
   accessError: false,
+  notMember: false,
 };
 
-let state: ViewAsState = PENDING;
+/** /api/me answered 404: signed in, but not a member. Nothing is allowed. */
+const NOT_MEMBER: AccessState = {
+  loading: false,
+  role: DEFAULT_ROLE,
+  roleLabel: VIEWER_LABEL,
+  permissions: [],
+  viewingAs: null,
+  accessError: false,
+  notMember: true,
+};
+
+/** Nobody is signed in, so there is nothing to ask and nothing allowed. */
+const SIGNED_OUT: AccessState = {
+  loading: false,
+  role: DEFAULT_ROLE,
+  roleLabel: VIEWER_LABEL,
+  permissions: [],
+  viewingAs: null,
+  accessError: false,
+  notMember: false,
+};
+
+let state: AccessState = PENDING;
 let started = false;
-// Bumped by resetUserCache, so an answer to a question asked before a reset
-// cannot overwrite the answer to one asked after it.
+// Bumped by every fresh start and by resetUserCache, so an answer to a
+// question asked before one cannot overwrite the answer to a question asked
+// after it.
 let generation = 0;
+// With the bypass on, the View as cookie the current answer is about. A
+// different cookie on a later look (another tab picked a role) means the
+// answer is about the wrong role, so the lookup starts again.
+let question: string | null = null;
+// A quiet refresh is in flight, so another focus does not start a second one.
+let refreshing = false;
+/** An answer already in hand for the first question. See seedUserAccess. */
+let seed: AccessState | null = null;
+// Whether the focus and visibility listeners are on. Once per page.
+let watching = false;
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -126,68 +180,178 @@ function readViewAsCookie(): string | null {
   return found || null;
 }
 
-/** Ask the server what the role named in the cookie may do. */
-async function lookUpViewAs(picked: string, mine: number) {
-  // What the server does when it cannot read the role either (see
-  // bypassPrincipal): no permissions, and say why, rather than everything.
-  // The cookie is whatever the browser holds, so it is cut to a role key's
-  // length before it is shown anywhere.
-  const role = picked.slice(0, 32);
-  let next: ViewAsState = {
-    loading: false,
-    role,
-    roleLabel: role,
-    permissions: [],
-    viewingAs: role,
-    accessError: true,
-  };
+/**
+ * Ask the server what the person may do. Null when it gave no usable answer:
+ * the request failed, the server answered with an error, or the body was not
+ * an answer. 401 is one of those on purpose. The session said someone is
+ * signed in, so a 401 means the two briefly disagree, and treating it as
+ * "signed out" could send a signed-in person round in circles through /login.
+ */
+async function askMe(): Promise<AccessState | null> {
   try {
     const response = await fetch("/api/me", { cache: "no-store" });
-    const body = await response.json().catch(() => null);
-    if (response.ok && body && !body.accessUnavailable) {
-      const answered = typeof body.role === "string" && body.role ? body.role : role;
-      next = {
-        loading: false,
-        role: answered,
-        roleLabel:
-          typeof body.roleLabel === "string" && body.roleLabel ? body.roleLabel : answered,
-        // Filtered so a permission this build does not know can never match.
-        permissions: Array.isArray(body.permissions)
-          ? body.permissions.filter(isPermissionKey)
-          : [],
-        // Null when the role was deleted after it was picked: the server is
-        // the full admin again, and so is this.
-        viewingAs: typeof body.viewingAs === "string" ? body.viewingAs : null,
-        accessError: false,
-      };
-    }
+    const body: unknown = response.ok ? await response.json().catch(() => null) : null;
+    return readAnswer(response.status, body);
   } catch {
-    // The request itself failed. `next` already says so.
+    return null;
   }
+}
+
+/** What an answer from /api/me says, or null when it does not say. */
+function readAnswer(status: number, body: unknown): AccessState | null {
+  if (status === 404) return NOT_MEMBER;
+  if (status < 200 || status >= 300) return null;
+  if (typeof body !== "object" || body === null) return null;
+  const answer = body as {
+    role?: unknown;
+    roleLabel?: unknown;
+    permissions?: unknown;
+    viewingAs?: unknown;
+  };
+  if (typeof answer.role !== "string" || !answer.role) return null;
+  const role = answer.role;
+  return {
+    loading: false,
+    role,
+    roleLabel:
+      typeof answer.roleLabel === "string" && answer.roleLabel
+        ? answer.roleLabel
+        : isBuiltInRole(role)
+          ? BUILT_IN_ROLE_INFO[role].label
+          : role,
+    // Filtered so a permission this build does not know can never match.
+    permissions: Array.isArray(answer.permissions)
+      ? answer.permissions.filter(isPermissionKey)
+      : [],
+    // Null when the role picked in View as was deleted after it was picked:
+    // the server is the full admin again, and so is this.
+    viewingAs: typeof answer.viewingAs === "string" ? answer.viewingAs : null,
+    accessError: false,
+    notMember: false,
+  };
+}
+
+/**
+ * What to show when the first question got no usable answer: no permissions,
+ * and say why, the same as the server does when it cannot read the role.
+ * With the bypass on and a role picked, the badge still names that role, so
+ * the person can see what they were viewing the app as.
+ */
+function unanswered(picked: string | null): AccessState {
+  if (!picked) return { ...SIGNED_OUT, accessError: true };
+  // The cookie is whatever the browser holds. Role keys are 32 characters at
+  // most (roles_name_check), so a longer value was not set by the switcher,
+  // and it is cut to that length before it is shown anywhere.
+  const role = picked.slice(0, 32);
+  return { ...SIGNED_OUT, role, roleLabel: role, viewingAs: role, accessError: true };
+}
+
+async function lookUp(picked: string | null, mine: number) {
+  const answer = await askMe();
   if (mine !== generation) return;
-  state = next;
+  state = answer ?? unanswered(picked);
   emit();
 }
 
-/** Work out who the bypass is acting as. Once per page load. */
-function startViewAsLookup() {
+/**
+ * Find out what the person may do. Once per page load, and again only after
+ * resetUserCache, or when the View as cookie changed under the page.
+ */
+function start() {
   started = true;
   const mine = ++generation;
+  watchForReturn();
+  if (!BYPASS_AUTH) {
+    question = null;
+    if (seed) {
+      state = seed;
+      seed = null;
+      emit();
+      return;
+    }
+    void lookUp(null, mine);
+    return;
+  }
   const picked = readViewAsCookie();
+  question = picked;
   if (!picked) {
     state = NO_VIEW_AS;
     emit();
     return;
   }
-  void lookUpViewAs(picked, mine);
+  void lookUp(picked, mine);
+}
+
+function sameAccess(a: AccessState, b: AccessState) {
+  return (
+    a.role === b.role &&
+    a.roleLabel === b.roleLabel &&
+    a.permissions.join(",") === b.permissions.join(",") &&
+    a.viewingAs === b.viewingAs &&
+    a.accessError === b.accessError &&
+    a.notMember === b.notMember
+  );
+}
+
+/**
+ * Ask again, quietly, when the person comes back to the page. An admin may
+ * have changed their role, or removed them, while the tab sat in the
+ * background, and the screens should catch up without a reload.
+ *
+ * Quietly means nothing changes on screen until the answer is in, and a
+ * failed answer changes nothing at all: the guard would otherwise swap a page
+ * with unsaved work on it for "Could not check your access" over one dropped
+ * request. Not before the first answer, which is already on its way.
+ */
+function refresh() {
+  if (!started || refreshing || state.loading) return;
+  if (BYPASS_AUTH) {
+    const picked = readViewAsCookie();
+    if (picked !== question) {
+      // The answer on screen is about a different role. Showing it until the
+      // new one arrives would show the wrong role's screens, so start over.
+      state = PENDING;
+      start();
+      emit();
+      return;
+    }
+    // No cookie is the full admin, and there is nothing to ask about that.
+    if (!picked) return;
+  }
+  refreshing = true;
+  const mine = generation;
+  void askMe().then((answer) => {
+    // A reset since has cleared `refreshing` and asked afresh itself.
+    if (mine !== generation) return;
+    refreshing = false;
+    if (answer === null || sameAccess(answer, state)) return;
+    state = answer;
+    emit();
+  });
+}
+
+/**
+ * "Comes back" is the window getting focus again, or the tab becoming visible
+ * again. Both, because each misses a case: switching tabs does not always
+ * focus the window, and switching apps does not change the tab's visibility.
+ */
+function watchForReturn() {
+  if (watching || typeof window === "undefined") return;
+  watching = true;
+  window.addEventListener("focus", refresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refresh();
+  });
 }
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
-  // Started by the first component that wants the answer, so a page that never
-  // asks never fetches. Only with the bypass on: with real sign-in the session
-  // already says what the role may do.
-  if (BYPASS_AUTH && !started) startViewAsLookup();
+  // With the bypass on there is no session to wait for, so the first
+  // component that wants the answer starts the lookup, and a page that never
+  // asks never fetches. With real sign-in the lookup waits for the session to
+  // say someone is signed in (the effect in useUser), because asking for
+  // nobody would only get a 401.
+  if (BYPASS_AUTH && !started) start();
   return () => {
     listeners.delete(listener);
   };
@@ -205,29 +369,56 @@ function getSnapshot() {
 export const ViewAsCookieSeen = createContext<boolean | undefined>(undefined);
 
 /**
- * Forget what the browser knew about who it is. The sign-out handler calls it,
- * and so do the tests between cases, because the View as answer is otherwise
- * kept for the life of the page.
+ * Hand over an answer /api/me already gave, to be used instead of asking the
+ * first time someone signed in needs one. Only the first time: once the page
+ * has asked, a role that changed since is learned by asking again (on focus,
+ * or after resetUserCache), so an answer handed over after that is ignored.
+ * With the bypass on it is never used either, because the role picked in View
+ * as is a different question.
+ *
+ * For the page tests (tests/helpers/render-page.tsx), so the screen under test
+ * knows its role as soon as it is drawn, which is how a page will start once
+ * the server hands the answer down with the page itself.
+ */
+export function seedUserAccess(status: number, body: unknown) {
+  if (started) return;
+  seed = readAnswer(status, body) ?? unanswered(null);
+}
+
+/**
+ * Forget what the browser knew about what the person may do. For the tests,
+ * which call it between cases: the answer is otherwise kept for the life of
+ * the page, and in a test file that is every case in it.
+ *
+ * Signing out does not need it. Every way of signing out loads a new page (the
+ * login screen), and that starts from nothing anyway.
  */
 export function resetUserCache() {
+  const wasStarted = started;
   state = PENDING;
   started = false;
+  question = null;
+  refreshing = false;
+  seed = null;
   generation++;
   // Components already on the page will not subscribe again, so they would
-  // wait on PENDING forever. Ask again for them.
-  if (BYPASS_AUTH && listeners.size > 0) startViewAsLookup();
+  // wait on PENDING forever. Ask again for them: always with the bypass on,
+  // and with real sign-in only if the lookup had started, which means the
+  // session had already said someone is signed in.
+  if (listeners.size > 0 && (BYPASS_AUTH || wasStarted)) start();
   emit();
 }
 
 /**
  * Who the browser thinks it is, and what that person may do.
  *
- * With real sign-in this is the session: auth.ts reads the role, its name and
- * its permissions from the database on every request and puts them there.
- * With the bypass on it is the same principal lib/auth-guard hands the API
- * routes: the full admin, or the role picked in View as. Without that, a
- * screen could offer a button whose request the server then refuses, the
- * client and the server disagreeing about the one switch meant to control both.
+ * Who comes from the sign-in session, or from the bypass's stand-in. What they
+ * may do comes from /api/me in both cases, which is the same principal
+ * lib/auth-guard.ts hands the API routes: their role in the organization, or
+ * with the bypass on the full admin or the role picked in View as. Without
+ * that, a screen could offer a button whose request the server then refuses,
+ * the client and the server disagreeing about the one thing meant to control
+ * both.
  *
  * Screens ask `can(...)` rather than comparing role names, so a role an admin
  * made yesterday works on every screen without any screen knowing it exists.
@@ -236,59 +427,55 @@ export function resetUserCache() {
 export function useUser(): UserAccess {
   const { data: session, status } = useSession();
   const cookieSeen = useContext(ViewAsCookieSeen);
-  const viewAs = useSyncExternalStore(subscribe, getSnapshot, () =>
-    // The server's own reading of the cookie, so the first frame already
-    // matches: no cookie means the full admin straight away, and a cookie
-    // means "Checking your access…" until /api/me answers, never a page drawn
-    // as an admin's and then taken away.
-    cookieSeen === false ? NO_VIEW_AS : PENDING
+  const access = useSyncExternalStore(subscribe, getSnapshot, () =>
+    // The server's own reading of the View as cookie, so with the bypass on
+    // the first frame already matches: no cookie means the full admin
+    // straight away, and a cookie means "Checking your access…" until /api/me
+    // answers, never a page drawn as an admin's and then taken away. With
+    // real sign-in the first frame cannot know yet.
+    BYPASS_AUTH && cookieSeen === false ? NO_VIEW_AS : PENDING
   );
 
-  const permissions: readonly string[] = BYPASS_AUTH
-    ? viewAs.permissions
-    : (session?.user?.permissions ?? []).filter(isPermissionKey);
+  useEffect(() => {
+    if (!BYPASS_AUTH && status === "authenticated" && !started) start();
+  }, [status]);
+
+  // With real sign-in the store only speaks for someone the session says is
+  // signed in. While the session is still loading nothing is known yet, and
+  // once it says nobody is signed in there is nothing to know.
+  let shown: AccessState;
+  if (BYPASS_AUTH || session?.user) shown = access;
+  else if (status === "loading") shown = PENDING;
+  else shown = SIGNED_OUT;
+
   // Keyed on the list as one string, so `can` keeps its identity while the
   // permissions stay the same and a component that memoises on it does not
   // redo its work on every render.
-  const held = permissions.join(",");
+  const held = shown.permissions.join(",");
   const can = useMemo<Can>(() => {
     const list = held ? held.split(",") : [];
     return (...keys) => hasPermission({ permissions: list }, ...keys);
   }, [held]);
 
-  if (BYPASS_AUTH) {
-    return {
-      user: BYPASS_USER,
-      role: viewAs.role,
-      roleLabel: viewAs.roleLabel,
-      isAdmin: viewAs.role === ADMIN_ROLE,
-      loading: viewAs.loading,
-      bypass: true,
-      viewingAs: viewAs.viewingAs,
-      can,
-      accessError: viewAs.accessError,
-    };
-  }
-
-  const user: CurrentUser | null = session?.user
-    ? {
-        email: session.user.email ?? "",
-        name: session.user.name ?? session.user.email ?? "",
-      }
-    : null;
-  const role = session?.user?.role || DEFAULT_ROLE;
+  const user: CurrentUser | null = BYPASS_AUTH
+    ? BYPASS_USER
+    : session?.user
+      ? {
+          email: session.user.email ?? "",
+          name: session.user.name ?? session.user.email ?? "",
+        }
+      : null;
 
   return {
     user,
-    role,
-    roleLabel:
-      session?.user?.roleLabel ||
-      (isBuiltInRole(role) ? BUILT_IN_ROLE_INFO[role].label : role),
-    isAdmin: role === ADMIN_ROLE,
-    loading: status === "loading",
-    bypass: false,
-    viewingAs: null,
+    role: shown.role,
+    roleLabel: shown.roleLabel,
+    isAdmin: shown.role === ADMIN_ROLE,
+    loading: shown.loading,
+    bypass: BYPASS_AUTH,
+    viewingAs: shown.viewingAs,
     can,
-    accessError: session?.user?.accessError === true,
+    accessError: shown.accessError,
+    notMember: shown.notMember,
   };
 }

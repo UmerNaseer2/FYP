@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
 
   let comp;
   try {
-    comp = await computeDriftDetail(trackedSchemaId);
+    comp = await computeDriftDetail(gate.principal.orgId, trackedSchemaId);
   } catch (error) {
     console.error("Acknowledge — recompute failed:", error);
     return NextResponse.json({ error: "Could not read tracking metadata." }, { status: 500 });
@@ -52,26 +52,37 @@ export async function POST(request: NextRequest) {
   const counts = comp.kind === "ok" ? comp.counts : null;
   const snapshotId = comp.expected.snapshotId;
 
+  // The row copies its org_id from the tracked schema, and only from one in
+  // the caller's organization. A schema untracked since the recompute above
+  // gives no row, which is the same "not found" the recompute would give now.
+  let landed: boolean;
   try {
-    await pool.query(
+    const result = await pool.query(
       `INSERT INTO drift_events
-         (tracked_schema_id, status, summary, detail, baseline_snapshot_id,
+         (org_id, tracked_schema_id, status, summary, detail, baseline_snapshot_id,
           acknowledged_at, source)
-       VALUES ($1, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP, 'acknowledged')`,
+       SELECT org_id, id, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP, 'acknowledged'
+         FROM tracked_schemas
+        WHERE id = $1 AND org_id = $6`,
       [
         trackedSchemaId,
         status,
         `Acknowledged · ${comp.summary}`,
         counts ? JSON.stringify(counts) : null,
         snapshotId,
+        gate.principal.orgId,
       ]
     );
+    landed = (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Acknowledge — failed to record drift_event:", error);
     return NextResponse.json(
       { error: "Could not record the acknowledgement." },
       { status: 500 }
     );
+  }
+  if (!landed) {
+    return NextResponse.json({ error: "Tracked schema not found." }, { status: 404 });
   }
 
   return NextResponse.json({

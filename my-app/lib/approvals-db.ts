@@ -51,6 +51,15 @@ export type { ApprovalScript };
  * reading. What an approval covers is still pinned by the fingerprint, and
  * the phone's route hands the copy out only when it hashes back to it (see
  * getApprovalScripts).
+ *
+ * Every row belongs to one organization, the one that owns its connection. A
+ * request is written with INSERT ... SELECT from that connection, filtered by
+ * the caller's organization as well as its id, so a request can only be made
+ * on a connection the caller's organization owns, and it lands in that
+ * organization. Every read, decision, claim and release names the organization
+ * next to the id. A row from another organization reads as missing, and an
+ * approval given in one organization can never be spent by a run in another,
+ * even on a run whose SQL hashes to the same fingerprint.
  */
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "used";
@@ -185,7 +194,16 @@ function readStoredScripts(value: unknown): ApprovalScript[] | null {
   return scripts;
 }
 
+/**
+ * Ask for approval of one run, or hand back the identical request that is
+ * still open.
+ *
+ * Null when the connection is not one the organization owns: deleted, never
+ * saved, or another organization's. The route answers all three the same way.
+ */
 export async function createApprovalRequest(input: {
+  /** The caller's organization, which must own the connection. */
+  orgId: number;
   connectionId: number;
   schemaName: string;
   scriptName: string;
@@ -196,7 +214,7 @@ export async function createApprovalRequest(input: {
   requestedBy: string;
   note: string | null;
   action: ApprovalAction;
-}): Promise<DeployApproval> {
+}): Promise<DeployApproval | null> {
   await syncMetadataTables();
   const fingerprint = runFingerprint(input.scripts, input.action);
   const scripts = storedScripts(input.scripts);
@@ -207,14 +225,14 @@ export async function createApprovalRequest(input: {
   const open = await pool.query<DeployApproval>(
     `SELECT ${COLUMNS} FROM deploy_approvals
       WHERE connection_id = $1 AND schema_name = $2 AND run_fingerprint = $3
-        AND action = $4
+        AND action = $4 AND org_id = $5
         AND status IN ('pending', 'approved')
         -- An approved row that has expired cannot be claimed, so handing it
         -- back here would show "approved" on a screen whose Deploy button then
         -- says the run needs approval. Let it fall through to a fresh request.
         AND ${UNEXPIRED}
       ORDER BY id DESC LIMIT 1`,
-    [input.connectionId, input.schemaName, fingerprint, input.action]
+    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId]
   );
   if (open.rows.length > 0) {
     // A request made before copies were kept gets one now, so a phone can
@@ -222,18 +240,23 @@ export async function createApprovalRequest(input: {
     // the SQL that request covers.
     if (scripts !== null) {
       await pool.query(
-        `UPDATE deploy_approvals SET scripts = $2::jsonb WHERE id = $1 AND scripts IS NULL`,
-        [open.rows[0].id, scripts]
+        `UPDATE deploy_approvals SET scripts = $2::jsonb
+          WHERE id = $1 AND org_id = $3 AND scripts IS NULL`,
+        [open.rows[0].id, scripts, input.orgId]
       );
     }
     return open.rows[0];
   }
 
+  // The organization comes from the connection row, and only when that row is
+  // the caller's organization's. No such row means no insert, and null.
   const created = await pool.query<DeployApproval>(
     `INSERT INTO deploy_approvals
-       (connection_id, schema_name, script_name, target_version, run_fingerprint,
+       (org_id, connection_id, schema_name, script_name, target_version, run_fingerprint,
         migration_count, breaking_count, requested_by, note, action, scripts)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+     SELECT c.org_id, c.id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+       FROM connections c
+      WHERE c.id = $1 AND c.org_id = $12
      RETURNING ${COLUMNS}`,
     [
       input.connectionId,
@@ -247,13 +270,15 @@ export async function createApprovalRequest(input: {
       input.note,
       input.action,
       scripts,
+      input.orgId,
     ]
   );
-  return created.rows[0];
+  return created.rows[0] ?? null;
 }
 
 /** Every approval for one target, deploys and rollbacks together, newest first. */
 export async function listApprovals(
+  orgId: number,
   connectionId: number,
   schemaName: string,
   scriptName: string | null
@@ -261,10 +286,10 @@ export async function listApprovals(
   await syncMetadataTables();
   const result = await pool.query<DeployApproval>(
     `SELECT ${COLUMNS} FROM deploy_approvals
-      WHERE connection_id = $1 AND schema_name = $2
+      WHERE connection_id = $1 AND schema_name = $2 AND org_id = $4
         AND ($3::text IS NULL OR script_name = $3)
       ORDER BY id DESC LIMIT 50`,
-    [connectionId, schemaName, scriptName]
+    [connectionId, schemaName, scriptName, orgId]
   );
   return result.rows;
 }
@@ -293,9 +318,12 @@ export function decisionBlockReason(
  * Approve or reject a pending request.
  *
  * Returns null when the row moved out of `pending` between the check and the
- * write — someone else decided it first, and their decision stands.
+ * write — someone else decided it first, and their decision stands. Also null
+ * for another organization's row, which this never touches.
  */
 export async function decideApproval(input: {
+  /** The decider's organization, which must own the request. */
+  orgId: number;
   id: number;
   approve: boolean;
   decidedBy: string;
@@ -313,7 +341,7 @@ export async function decideApproval(input: {
         SET status = $2, decided_by = $3, decided_at = now(),
             self_approved = $4, note = COALESCE($5, note),
             expires_at = CASE WHEN $6 THEN now() + make_interval(hours => $7) END
-      WHERE id = $1 AND status = 'pending'
+      WHERE id = $1 AND org_id = $8 AND status = 'pending'
       RETURNING ${COLUMNS}`,
     [
       input.id,
@@ -323,17 +351,22 @@ export async function decideApproval(input: {
       input.note,
       input.approve,
       APPROVAL_VALID_HOURS,
+      input.orgId,
     ]
   );
   return result.rows[0] ?? null;
 }
 
-/** Read one approval by id, or null when there is no such row. */
-export async function getApproval(id: number): Promise<DeployApproval | null> {
+/**
+ * Read one approval by id, or null when the organization has no such row.
+ * Another organization's row reads as missing, the same answer a deleted one
+ * gets.
+ */
+export async function getApproval(orgId: number, id: number): Promise<DeployApproval | null> {
   await syncMetadataTables();
   const result = await pool.query<DeployApproval>(
-    `SELECT ${COLUMNS} FROM deploy_approvals WHERE id = $1`,
-    [id]
+    `SELECT ${COLUMNS} FROM deploy_approvals WHERE id = $1 AND org_id = $2`,
+    [id, orgId]
   );
   return result.rows[0] ?? null;
 }
@@ -343,37 +376,42 @@ export type PendingApproval = DeployApproval & { has_sql: boolean };
 
 /**
  * The newest hundred requests still waiting for a decision, on every
- * connection, for the phone's route. The desktop app then keeps only the ones
- * on connections shared with phones. The copies of their SQL stay behind:
- * getApprovalScripts reads one at a time.
+ * connection in the organization, for the phone's route. The desktop app then
+ * keeps only the ones on connections shared with phones. The copies of their
+ * SQL stay behind: getApprovalScripts reads one at a time.
  */
-export async function listPendingApprovals(): Promise<PendingApproval[]> {
+export async function listPendingApprovals(orgId: number): Promise<PendingApproval[]> {
   await syncMetadataTables();
   const result = await pool.query<PendingApproval>(
     `SELECT ${COLUMNS}, scripts IS NOT NULL AS has_sql FROM deploy_approvals
-      WHERE status = 'pending'
-      ORDER BY id DESC LIMIT 100`
+      WHERE status = 'pending' AND org_id = $1
+      ORDER BY id DESC LIMIT 100`,
+    [orgId]
   );
   return result.rows;
 }
 
 /**
- * One request and the copy of its SQL, or null when there is no such row.
+ * One request and the copy of its SQL, or null when the organization has no
+ * such row.
  *
  * `scripts` is the copy only when it hashes back to the request's own
  * fingerprint. The fingerprint is what an approval covers, so a copy that
  * disagreed with it (a row changed by hand, say) would show the approver SQL
  * other than the SQL their yes lets run. `copy` says why `scripts` is null.
  */
-export async function getApprovalScripts(id: number): Promise<{
+export async function getApprovalScripts(
+  orgId: number,
+  id: number
+): Promise<{
   approval: DeployApproval;
   scripts: ApprovalScript[] | null;
   copy: "kept" | "not-kept" | "does-not-match";
 } | null> {
   await syncMetadataTables();
   const result = await pool.query<DeployApproval & { scripts: unknown }>(
-    `SELECT ${COLUMNS}, scripts FROM deploy_approvals WHERE id = $1`,
-    [id]
+    `SELECT ${COLUMNS}, scripts FROM deploy_approvals WHERE id = $1 AND org_id = $2`,
+    [id, orgId]
   );
   const row = result.rows[0];
   if (!row) return null;
@@ -404,6 +442,8 @@ export async function getApprovalScripts(id: number): Promise<{
  * otherwise quietly spend the wrong kind of approval.
  */
 export async function claimApproval(input: {
+  /** The organization the run is in. Only its own approvals can be spent. */
+  orgId: number;
   connectionId: number;
   schemaName: string;
   scripts: ApprovalScript[];
@@ -417,14 +457,14 @@ export async function claimApproval(input: {
       WHERE id = (
         SELECT id FROM deploy_approvals
          WHERE connection_id = $1 AND schema_name = $2
-           AND run_fingerprint = $3 AND action = $4
+           AND run_fingerprint = $3 AND action = $4 AND org_id = $5
            AND status = 'approved'
            AND ${UNEXPIRED}
          ORDER BY id ASC LIMIT 1
          FOR UPDATE SKIP LOCKED
-      )
+      ) AND org_id = $5
       RETURNING ${COLUMNS}`,
-    [input.connectionId, input.schemaName, fingerprint, input.action]
+    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId]
   );
   return result.rows[0] ?? null;
 }
@@ -438,11 +478,11 @@ export async function claimApproval(input: {
  * migration before retrying, the fingerprint changes and this row stops
  * matching on its own.
  */
-export async function releaseApproval(id: number): Promise<void> {
+export async function releaseApproval(orgId: number, id: number): Promise<void> {
   await pool.query(
     `UPDATE deploy_approvals
         SET status = 'approved', used_at = NULL
-      WHERE id = $1 AND status = 'used'`,
-    [id]
+      WHERE id = $1 AND org_id = $2 AND status = 'used'`,
+    [id, orgId]
   );
 }

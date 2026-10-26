@@ -25,8 +25,9 @@
  *    and reloads the page once the server says yes.
  *  - A refusal or a failure says why, puts the picker back on the role the page
  *    is drawn as, lets the person try again, and does not reload.
- *  - Going back to Admin still works while the database is down, which is when
- *    someone stuck viewing as a role most needs it.
+ *  - Admin is always on offer, even when neither the list nor the role could
+ *    be loaded, so someone viewing as a role can go back as soon as the server
+ *    can switch them.
  *  - The list is loaded again when the Roles tab says it made or deleted a
  *    role, so a role made a minute ago can be picked without a reload. Only
  *    the newest answer counts, and a problem with the list never hides why a
@@ -88,16 +89,19 @@ const QA_LEAD_ME = {
   permissions: ["dashboard:read", "connections:read"],
   bypass: true,
   viewingAs: "qa-lead",
-  accessUnavailable: false,
+  org: { slug: "default", name: "Default" },
 };
 
 // The picker's own words, and the routes' (tests/view-as-routes.test.ts pins
 // those from the server's side).
-const LOAD_FAILED = "Could not load the roles. You can still go back to Admin.";
+const LOAD_FAILED = "Could not load the roles. Try again in a moment.";
 const SAVE_FAILED = "Could not switch roles. Try again in a moment.";
 const LIST_DB_DOWN =
   "Could not load the roles, because the app's database did not answer. " +
-  "You can still go back to Admin.";
+  "Try again in a moment.";
+const ME_DB_DOWN =
+  "Could not check what your role can do, because the app's database did not answer. " +
+  "Try again in a moment.";
 const SWITCH_DB_DOWN =
   "Could not switch roles, because the app's database did not answer. " +
   "Try again in a moment.";
@@ -305,11 +309,13 @@ describe("when the list cannot be loaded", () => {
     ]);
   });
 
-  test("still takes someone viewing as a role back to Admin while the database is down", async () => {
+  test("still offers Admin to someone viewing as a role while the database is down", async () => {
     // /api/me cannot read the role either, so the page holds nothing and calls
-    // the role by its key. Going back needs no database, so it still works.
+    // the role by its key. Admin stays on offer: the server switches back as
+    // soon as its database answers (until then it says to try again, see
+    // tests/view-as-routes.test.ts), and here it does.
     viewingAs("qa-lead");
-    replies["GET /api/me"] = { status: 200, body: { ...QA_LEAD_ME, accessUnavailable: true } };
+    replies["GET /api/me"] = { status: 503, body: { error: ME_DB_DOWN } };
     replies["GET /api/me/view-as"] = { status: 503, body: { error: LIST_DB_DOWN } };
     render(<ViewAsSwitcher />);
     await waitFor(() => expect(problem()).toBe(LIST_DB_DOWN));
