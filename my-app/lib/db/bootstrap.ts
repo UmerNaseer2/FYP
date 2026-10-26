@@ -62,22 +62,6 @@ import {
  */
 
 /**
- * The environment list as a SQL literal, generated from the TypeScript union in
- * lib/environments so a new environment can never be valid in one and rejected
- * by the other. Only ever built from our own constants — no user input.
- */
-const ENVIRONMENT_SQL_LIST = ENVIRONMENTS.map((e) => `'${e}'`).join(", ");
-
-/** The drift-source list as a SQL literal, generated the same way. */
-const DRIFT_SOURCE_SQL_LIST = DRIFT_SOURCE_VALUES.map((s) => `'${s}'`).join(", ");
-
-/** The threshold keys as a SQL literal, generated the same way. */
-const THRESHOLD_KEY_SQL_LIST = THRESHOLD_KEYS.map((k) => `'${k}'`).join(", ");
-
-/** The role change kinds as a SQL literal, generated the same way. */
-const ROLE_CHANGE_KIND_SQL_LIST = ROLE_CHANGE_KINDS.map((k) => `'${k}'`).join(", ");
-
-/**
  * Every table that holds one organization's data, by its `org_id` column.
  *
  * memberships is not here: its `org_id` is part of its primary key, and its
@@ -100,6 +84,7 @@ const ORG_TABLES = [
   "comparison_runs",
   "deploy_approvals",
   "deploy_attempts",
+  "invites",
 ] as const;
 
 /**
@@ -164,6 +149,69 @@ async function addCheckConstraint(
 }
 
 /**
+ * A list of values as a SQL literal: 'a', 'b'. Only ever built from the app's
+ * own constants, never from anything a person typed.
+ */
+function sqlList(values: readonly string[]): string {
+  return values.map((value) => `'${value.replace(/'/g, "''")}'`).join(", ");
+}
+
+/**
+ * Add a CHECK that `column` holds one of `values`, and widen it on a database
+ * whose list is shorter.
+ *
+ * Every list here comes from a TypeScript constant (the environments, the
+ * drift sources, the threshold keys, the kinds of change the role log knows),
+ * so a value is never valid in the code and refused by the database. Those
+ * lists grow. addCheckConstraint leaves a constraint that is already there
+ * alone, so on its own it would keep a database made by an older version on
+ * the older list, and the first row with a new value would fail to save there
+ * while a new database took it. That is the bug this exists for.
+ *
+ * Postgres keeps the rule as `kind = ANY (ARRAY['a'::text, 'b'::text])`, so
+ * the values the database allows now are the quoted words in its definition.
+ * When every value the code wants is already there, nothing happens. That
+ * includes a database a newer version has already widened, which an older
+ * version can then start against without narrowing it again. Otherwise the
+ * rule is dropped and added back with this version's values first and any
+ * extra ones the database allowed after them, in one statement, so there is
+ * never a moment without it. The extras are kept because rows written with
+ * them may still be there, and adding a rule checks every row.
+ *
+ * It only ever widens. Taking a value away needs its own migration, one that
+ * first decides what happens to the rows that hold it.
+ */
+async function addListCheck(
+  table: string,
+  constraintName: string,
+  column: string,
+  values: readonly string[]
+): Promise<void> {
+  const found = await metadataPool.query<{ definition: string }>(
+    `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conrelid = $1::regclass AND conname = $2`,
+    [table, constraintName]
+  );
+  const current = found.rows[0];
+  if (!current) {
+    await addCheckConstraint(table, constraintName, `${column} IN (${sqlList(values)})`);
+    return;
+  }
+  // Each value is quoted, with any quote inside it doubled. The cast after it
+  // (::text, or ::character varying for a varchar column) is outside the quotes.
+  const allowed = [...current.definition.matchAll(/'((?:[^']|'')*)'/g)].map((match) =>
+    match[1].replace(/''/g, "'")
+  );
+  if (values.every((value) => allowed.includes(value))) return;
+  const extras = allowed.filter((value) => !values.includes(value));
+  await metadataPool.query(
+    `ALTER TABLE ${table}
+       DROP CONSTRAINT ${constraintName},
+       ADD CONSTRAINT ${constraintName} CHECK (${column} IN (${sqlList([...values, ...extras])}))`
+  );
+}
+
+/**
  * Make sure the `public` schema exists before the metadata tables are created
  * in it.
  *
@@ -184,21 +232,16 @@ async function addConstraints(): Promise<void> {
     "connections_ssl_mode_check",
     "ssl_mode IN ('disable', 'require', 'verify-full')"
   );
-  await addCheckConstraint(
-    "connections",
-    "connections_environment_check",
-    `environment IN (${ENVIRONMENT_SQL_LIST})`
-  );
-  await addCheckConstraint(
+  // The environment list comes from the TypeScript union in lib/environments,
+  // so a new environment can never be valid in one and refused by the other.
+  await addListCheck("connections", "connections_environment_check", "environment", ENVIRONMENTS);
+  await addListCheck(
     "tracked_schemas",
     "tracked_schemas_environment_check",
-    `environment IN (${ENVIRONMENT_SQL_LIST})`
+    "environment",
+    ENVIRONMENTS
   );
-  await addCheckConstraint(
-    "drift_events",
-    "drift_events_source_check",
-    `source IN (${DRIFT_SOURCE_SQL_LIST})`
-  );
+  await addListCheck("drift_events", "drift_events_source_check", "source", DRIFT_SOURCE_VALUES);
   // A cadence the scheduler cannot act on is a schema nobody is watching, so
   // the floor is enforced here rather than trusted to every writer.
   await addCheckConstraint(
@@ -216,12 +259,10 @@ async function addConstraints(): Promise<void> {
     "name ~ '^[a-z0-9][a-z0-9-]{0,31}$'"
   );
   // The change log is read by people, so every row has to be one of the
-  // kinds the Admin screen knows how to describe.
-  await addCheckConstraint(
-    "role_changes",
-    "role_changes_kind_check",
-    `kind IN (${ROLE_CHANGE_KIND_SQL_LIST})`
-  );
+  // kinds the Admin screen knows how to describe. The list grew when
+  // invitations came (invite, cancel-invite, join), which is why it is widened
+  // rather than only added.
+  await addListCheck("role_changes", "role_changes_kind_check", "kind", ROLE_CHANGE_KINDS);
   await addCheckConstraint(
     "deploy_approvals",
     "deploy_approvals_status_check",
@@ -281,11 +322,7 @@ async function addConstraints(): Promise<void> {
   );
   // Only keys the app knows how to evaluate. A row with an unknown key is a
   // rule that can never fire, which is worse than no rule: it looks set.
-  await addCheckConstraint(
-    "perf_thresholds",
-    "perf_thresholds_key_check",
-    `threshold_key IN (${THRESHOLD_KEY_SQL_LIST})`
-  );
+  await addListCheck("perf_thresholds", "perf_thresholds_key_check", "threshold_key", THRESHOLD_KEYS);
   // An organization's slug is part of every address inside it, so only the
   // plain shape lib/org-slug.ts describes can be stored.
   await addCheckConstraint(
@@ -300,6 +337,25 @@ async function addConstraints(): Promise<void> {
     "identities",
     "identities_provider_check",
     "provider IN ('microsoft', 'github')"
+  );
+  // The two kinds of invitation lib/invites-db.ts makes.
+  await addCheckConstraint("invites", "invites_kind_check", "kind IN ('email', 'link')");
+  // An email invitation names its address and a link names none, so the
+  // question "who was this for?" always has the one answer the kind implies.
+  // The address is stored in lower case, because that is how it is compared
+  // with the addresses sign-in providers report.
+  await addCheckConstraint(
+    "invites",
+    "invites_email_check",
+    "(kind = 'email') = (email IS NOT NULL) AND (email IS NULL OR email = lower(email))"
+  );
+  // A link works for whoever has it, so it can only ever let someone read.
+  // This is the rule in the database, so a route that forgot it gets an
+  // error, not a link that makes strangers Editors.
+  await addCheckConstraint(
+    "invites",
+    "invites_link_role_check",
+    "kind <> 'link' OR role = 'viewer'"
   );
 }
 
@@ -327,6 +383,14 @@ async function addFunctionalIndexes(): Promise<void> {
        ON roles (org_id, lower(label))`
   );
   await metadataPool.query(`DROP INDEX IF EXISTS roles_label_key`);
+  // One invitation waiting per address in an organization. Inviting someone
+  // again cancels the one before (lib/invites-db.ts), and this is what stops
+  // two Admins doing it at the same moment from leaving two live links to one
+  // person. Used and cancelled ones are history and can be many.
+  await metadataPool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS invites_pending_email_key
+       ON invites (org_id, email) WHERE used_at IS NULL AND revoked_at IS NULL`
+  );
 }
 
 /**
@@ -869,6 +933,25 @@ async function addOrganizationKeys(client: MetadataClient): Promise<void> {
       "identities",
       "identities_profile_id_fkey",
       "FOREIGN KEY (profile_id) REFERENCES profiles (id) ON DELETE CASCADE",
+    ],
+    // An invitation offers one of its own organization's roles, and goes when
+    // the role does: there is nothing left for it to offer.
+    [
+      "invites",
+      "invites_org_id_role_fkey",
+      "FOREIGN KEY (org_id, role) REFERENCES roles (org_id, name) ON UPDATE CASCADE ON DELETE CASCADE",
+    ],
+    // Who sent it and who used it are history. Deleting either person keeps
+    // the invitation and empties the column.
+    [
+      "invites",
+      "invites_invited_by_fkey",
+      "FOREIGN KEY (invited_by) REFERENCES profiles (id) ON DELETE SET NULL",
+    ],
+    [
+      "invites",
+      "invites_used_by_fkey",
+      "FOREIGN KEY (used_by) REFERENCES profiles (id) ON DELETE SET NULL",
     ],
   ];
   const existing = await client.query<{ table_name: string; conname: string }>(

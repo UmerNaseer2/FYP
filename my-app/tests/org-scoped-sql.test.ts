@@ -47,6 +47,7 @@ const TENANT_TABLES = [
   "comparison_runs",
   "deploy_approvals",
   "deploy_attempts",
+  "invites",
 ];
 
 /**

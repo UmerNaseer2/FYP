@@ -203,9 +203,10 @@ export const FEATURES = [
   {
     key: "users",
     label: "Users",
-    description: "Who has signed in, and which role each person has.",
+    description: "Who belongs to this organization, who has been invited, and which role each person has.",
     adminOnly: true,
     actions: {
+      create: { does: "invite someone", from: "admin" },
       read: { does: "see the user list", from: "admin" },
       update: { does: "change someone's role", from: "admin" },
       delete: { does: "remove a user", from: "admin" },
@@ -454,6 +455,15 @@ export function withToggled(
  * What the role change log records (the `role_changes` table). One row per box
  * ticked or unticked, so the log reads as a list of decisions rather than a
  * before-and-after blob nobody can diff by eye.
+ *
+ * The last three are about people rather than permissions: an Admin inviting
+ * someone into a role (or making a link that does), an Admin cancelling an
+ * invitation, and someone joining by one. They sit in the same log because
+ * each one decides who holds a role, which is what the log is for.
+ *
+ * The database holds this list as a CHECK (lib/db/bootstrap.ts), which every
+ * start widens to match, so a kind can be added here and nowhere else. Taking
+ * one away is different: rows that hold it stay in the log.
  */
 export const ROLE_CHANGE_KINDS = [
   "create-role",
@@ -462,6 +472,9 @@ export const ROLE_CHANGE_KINDS = [
   "revoke",
   "reset",
   "assign",
+  "invite",
+  "cancel-invite",
+  "join",
 ] as const;
 export type RoleChangeKind = (typeof ROLE_CHANGE_KINDS)[number];
 

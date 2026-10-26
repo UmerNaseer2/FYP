@@ -76,11 +76,15 @@ const BEFORE: Record<string, OldRole> = {
  * moment somebody should decide.
  */
 const ADDED: Record<string, Gate> = {
+  "GET /api/admin/invites": { kind: "permission", keys: ["users:read"] },
+  "POST /api/admin/invites": { kind: "permission", keys: ["users:create"] },
+  "DELETE /api/admin/invites": { kind: "permission", keys: ["users:create"] },
   "GET /api/admin/roles": { kind: "permission", keys: ["roles:read"] },
   "POST /api/admin/roles": { kind: "permission", keys: ["roles:create"] },
   "PUT /api/admin/roles": { kind: "permission", keys: ["roles:update"] },
   "DELETE /api/admin/roles": { kind: "permission", keys: ["roles:delete"] },
   "POST /api/compare/phone": { kind: "permission", keys: ["compare:read"] },
+  "POST /api/invites/accept": { kind: "signed-in" },
   "GET /api/connections/phone": { kind: "permission", keys: ["compare:read", "visualizer:read"] },
   "GET /api/deploy/approvals/phone": { kind: "permission", keys: ["approvals:read"] },
   "GET /api/deploy/approvals/[id]/phone": { kind: "permission", keys: ["approvals:read"] },

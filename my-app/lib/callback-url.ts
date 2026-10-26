@@ -43,3 +43,29 @@ export function safeCallbackUrl(search: string, origin: string): string {
   const answer = path + url.search + url.hash;
   return new URL(answer, origin).origin === origin ? answer : DEFAULT_CALLBACK_URL;
 }
+
+/**
+ * The query flag that asks the sign-in page to have Microsoft or GitHub show
+ * their account picker (see wantsAccountPicker).
+ */
+const ACCOUNT_PICKER = { name: "account", value: "choose" } as const;
+
+/**
+ * The sign-in page's address, carrying on to `callbackUrl` once signed in.
+ *
+ * With `chooseAccount`, the sign-in also asks Microsoft or GitHub to show
+ * their account picker. Both otherwise sign straight back in to the account
+ * the browser last used, so someone who signed out to use another account
+ * would only be handed the same one again. The invitation page asks for it
+ * when an invitation is for an address the person has not signed in with.
+ */
+export function loginHref(callbackUrl: string, options: { chooseAccount?: boolean } = {}): string {
+  const query = new URLSearchParams({ callbackUrl });
+  if (options.chooseAccount) query.set(ACCOUNT_PICKER.name, ACCOUNT_PICKER.value);
+  return `/login?${query}`;
+}
+
+/** Whether the sign-in page's query string (window.location.search) asks for the account picker. */
+export function wantsAccountPicker(search: string): boolean {
+  return new URLSearchParams(search).get(ACCOUNT_PICKER.name) === ACCOUNT_PICKER.value;
+}

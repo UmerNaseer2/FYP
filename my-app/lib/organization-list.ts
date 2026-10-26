@@ -27,14 +27,19 @@ export function isOrgListing(body: unknown): body is OrgListing {
   if (typeof body !== "object" || body === null) return false;
   const { organizations, canCreate } = body as { organizations?: unknown; canCreate?: unknown };
   return (
-    Array.isArray(organizations) &&
-    organizations.every(
-      (org) =>
-        typeof org === "object" &&
-        org !== null &&
-        typeof (org as OrgSummary).slug === "string" &&
-        typeof (org as OrgSummary).name === "string"
-    ) &&
-    typeof canCreate === "boolean"
+    Array.isArray(organizations) && organizations.every(isOrgSummary) && typeof canCreate === "boolean"
+  );
+}
+
+/**
+ * Whether a value is one organization as the list gives it. Taking an
+ * invitation (POST /api/invites/accept) answers with one too.
+ */
+export function isOrgSummary(value: unknown): value is OrgSummary {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as OrgSummary).slug === "string" &&
+    typeof (value as OrgSummary).name === "string"
   );
 }

@@ -9,7 +9,7 @@ import {
   type DesktopBridge,
   type DesktopSignInResult,
 } from "@/lib/desktop-bridge";
-import { safeCallbackUrl } from "@/lib/callback-url";
+import { safeCallbackUrl, wantsAccountPicker } from "@/lib/callback-url";
 import {
   LogoIcon,
   SunIcon,
@@ -246,7 +246,15 @@ export default function LoginPage() {
       }
       setVia(chosen);
       setStatus("redirecting");
-      await signIn(BROWSER_PROVIDER[chosen], { callbackUrl });
+      // Microsoft and GitHub both sign straight back in to the account the
+      // browser last used, without asking. That is right for a normal
+      // sign-in, but not for someone who signed out to use another account,
+      // so for them both are asked to show their account picker instead.
+      if (wantsAccountPicker(window.location.search)) {
+        await signIn(BROWSER_PROVIDER[chosen], { callbackUrl }, { prompt: "select_account" });
+      } else {
+        await signIn(BROWSER_PROVIDER[chosen], { callbackUrl });
+      }
     } catch (error: unknown) {
       console.error(error);
       setErrorMsg(error instanceof Error ? error.message : "Sign-in failed.");

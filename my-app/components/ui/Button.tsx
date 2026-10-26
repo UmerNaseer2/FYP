@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, Ref } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "destructive";
 type Size = "sm" | "md" | "lg";
@@ -6,6 +6,8 @@ type Size = "sm" | "md" | "lg";
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: Variant;
   size?: Size;
+  /** To move focus to the button. React 19 hands it on to the button with the rest. */
+  ref?: Ref<HTMLButtonElement>;
 };
 
 const sizeClass: Record<Size, string> = {

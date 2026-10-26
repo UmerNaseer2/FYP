@@ -20,6 +20,8 @@
 //     leaves every other organization alone.
 //   - A second boot changes nothing, and two servers booting at once end up
 //     where one would have.
+//   - A check that lists the values a column may hold takes the values this
+//     app has added since it was made, and keeps any it does not know.
 //   - Deleting an organization deletes exactly its rows.
 //   - On the desktop the default organization is the personal one, and the
 //     tables on the bootstrap's list fill in org_id with it by default.
@@ -68,6 +70,7 @@ import {
   ADMIN_ROLE,
   BUILT_IN_ROLES,
   BUILT_IN_ROLE_INFO,
+  ROLE_CHANGE_KINDS,
   presetFor,
   readKeyOf,
   type BuiltInRole,
@@ -112,6 +115,7 @@ const ORG_TABLES = [
   "comparison_runs",
   "deploy_approvals",
   "deploy_attempts",
+  "invites",
 ];
 // Memberships belong to an organization too, but they came with
 // organizations, so they are not on the bootstrap's list of older tables to
@@ -848,6 +852,13 @@ async function fillOrganization(
      VALUES ($1, $2, 'probe_schema', 'applied', 200)`,
     [orgId, connectionId]
   );
+  // token_hash is unique across every organization, so each one's is its own.
+  await client.query(
+    `INSERT INTO invites
+       (org_id, token_hash, kind, email, role, invited_by, expires_at)
+     VALUES ($1, $2, 'email', $3, 'editor', $4, now() + interval '7 days')`,
+    [orgId, `probe-${orgId}`, `invitee-${orgId}@example.invalid`, profileId]
+  );
   await client.query(
     `INSERT INTO role_changes (org_id, role, kind, actor)
      VALUES ($1, 'editor', 'grant', 'probe@example.invalid')`,
@@ -968,6 +979,31 @@ describeWithDatabase("org-migration", () => {
       expect(
         shape.filter((line) => oldKeys.some((key) => line.includes(key)))
       ).toEqual([]);
+    }, SLOW);
+
+    test("takes the kinds of change added since, which its old check left out", async () => {
+      // Its check on role_changes.kind was made by an app that knew six kinds.
+      // A boot that only adds the checks a database lacks would have left it
+      // at those six, and every invitation and join would fail to be logged.
+      // The shape test above says the same of the whole list; this one says it
+      // of a row.
+      const { rows } = await client.query<{ definition: string }>(
+        `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+          WHERE conname = 'role_changes_kind_check'`
+      );
+      for (const kind of ROLE_CHANGE_KINDS) {
+        expect(rows[0].definition).toContain(`'${kind}'`);
+      }
+      await client.query("BEGIN");
+      try {
+        await client.query(
+          `INSERT INTO role_changes (org_id, role, kind, actor)
+           VALUES ($1, 'viewer', 'join', 'probe@example.invalid')`,
+          [defaultId]
+        );
+      } finally {
+        await client.query("ROLLBACK");
+      }
     }, SLOW);
 
     // Last in this block, because it boots the database again.
@@ -1433,6 +1469,46 @@ describeWithDatabase("org-migration", () => {
         await Promise.all([first.close(), second.close()]);
       }
       expect(await contents(twice)).toEqual(await contents(once));
+    }, SLOW);
+
+    test("widens a list check to what the app knows, and never narrows it", async () => {
+      const url = await freshDatabase("lists");
+      await boot(url);
+      const definition = () =>
+        withClient(url, async (client) => {
+          const { rows } = await client.query<{ definition: string }>(
+            `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+              WHERE conname = 'role_changes_kind_check'`
+          );
+          return rows[0].definition;
+        });
+      const allow = (kinds: readonly string[]) =>
+        withClient(url, (client) =>
+          client.query(
+            `ALTER TABLE role_changes
+               DROP CONSTRAINT role_changes_kind_check,
+               ADD CONSTRAINT role_changes_kind_check
+                 CHECK (kind IN (${kinds.map((kind) => `'${kind}'`).join(", ")}))`
+          )
+        );
+
+      // As a newer build would leave it: everything this one knows, and a kind
+      // it has never heard of. There is nothing to add, so the check is left
+      // exactly as it was, and the newer build's rows still fit.
+      await allow([...ROLE_CHANGE_KINDS, "from-a-newer-build"]);
+      const newer = await definition();
+      await boot(url);
+      expect(await definition()).toBe(newer);
+
+      // As an older build would leave it after a newer one had been at it: the
+      // kinds added since are missing. They are added, and the unknown one
+      // stays.
+      await allow([...ROLE_CHANGE_KINDS.slice(0, 6), "from-a-newer-build"]);
+      await boot(url);
+      const widened = await definition();
+      for (const kind of [...ROLE_CHANGE_KINDS, "from-a-newer-build"]) {
+        expect(widened).toContain(`'${kind}'`);
+      }
     }, SLOW);
 
     test("stops, saying how to fix it, when another org holds the default's address", async () => {

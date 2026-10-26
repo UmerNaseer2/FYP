@@ -43,10 +43,12 @@ const ANY_MEMBER = ["me", "me/view-as"];
 /**
  * Routes anyone signed in may call, before they belong to any organization.
  * Listing a person's organizations and making a new one have to answer people
- * who belong to none yet, since that is everybody who has just signed up. A
- * route here is outside every organization, so it gets the strictest look.
+ * who belong to none yet, since that is everybody who has just signed up.
+ * Taking an invitation is how someone joins an organization they are not in
+ * yet, so it cannot ask them to be in it first. A route here is outside every
+ * organization, so it gets the strictest look.
  */
-const SIGNED_IN = ["organizations"];
+const SIGNED_IN = ["organizations", "invites/accept"];
 
 const handlers = allHandlers();
 

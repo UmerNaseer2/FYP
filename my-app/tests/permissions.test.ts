@@ -73,6 +73,8 @@ const AGREED_GRID: Record<string, "viewer" | "editor" | "admin"> = {
   "alert_thresholds:read": "viewer",
   "alert_thresholds:update": "editor",
   "visualizer:read": "viewer",
+  // Create on Users is inviting someone: step 3 of the organizations plan.
+  "users:create": "admin",
   "users:read": "admin",
   "users:update": "admin",
   "users:delete": "admin",

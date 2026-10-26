@@ -11,7 +11,9 @@
 //   - saves stay apart when the role, the person or the time differs, and a
 //     row of any other kind ends a save, even one written at the same time;
 //   - a deleted role and a box this build no longer has still read;
-//   - making, deleting and giving out a role each read as a sentence.
+//   - making, deleting and giving out a role each read as a sentence;
+//   - so do inviting someone, cancelling an invitation and joining by one,
+//     for an address and for a link alike.
 //
 // The lines as the Admin page draws them: tests/page-admin.test.tsx.
 import { describeRoleChanges, type LogEntry } from "@/components/admin/RoleChangeLog";
@@ -184,5 +186,78 @@ describe("a role made, deleted or given to someone", () => {
     ["a role given to someone the row does not name", { kind: "assign" }, "gave someone the Editor role"],
   ])("%s", (_name, over, text) => {
     expect(describeRoleChanges([row({ id: 7, ...over })])).toEqual([line({ id: 7, text })]);
+  });
+});
+
+describe("an invitation made, cancelled or taken", () => {
+  test.each<[string, Partial<RoleChange> & Pick<RoleChange, "kind">, string]>([
+    [
+      "an invitation to an address",
+      { kind: "invite", subject: "grace@example.com" },
+      "invited grace@example.com as Editor",
+    ],
+    [
+      "an invitation link, with how long it lasts",
+      { kind: "invite", role: "viewer", roleLabel: "Viewer", detail: "30" },
+      "made a 30-day invitation link to join as Viewer",
+    ],
+    [
+      "an invitation link of one day",
+      { kind: "invite", role: "viewer", roleLabel: "Viewer", detail: "1" },
+      "made a 1-day invitation link to join as Viewer",
+    ],
+    [
+      // A row the app did not write, or a detail mangled since: the line
+      // still reads, without a number nobody chose.
+      "an invitation link whose length the row does not hold",
+      { kind: "invite", role: "viewer", roleLabel: "Viewer", detail: "soon" },
+      "made an invitation link to join as Viewer",
+    ],
+    [
+      "an invitation to an address, cancelled",
+      { kind: "cancel-invite", subject: "grace@example.com" },
+      "cancelled the invitation for grace@example.com",
+    ],
+    [
+      "an invitation link, cancelled",
+      { kind: "cancel-invite", role: "viewer", roleLabel: "Viewer" },
+      "cancelled an invitation link to join as Viewer",
+    ],
+    [
+      "an invitation to a role deleted since",
+      { kind: "invite", subject: "grace@example.com", role: "qa-lead", roleLabel: null },
+      "invited grace@example.com as qa-lead (deleted)",
+    ],
+  ])("%s", (_name, over, text) => {
+    expect(describeRoleChanges([row({ id: 7, ...over })])).toEqual([line({ id: 7, text })]);
+  });
+
+  // The person who joined is the actor: nobody else did anything.
+  test.each<[string, string, string]>([
+    ["by an invitation to their address", "email", "joined as Editor by invitation"],
+    ["through an invitation link", "link", "joined as Editor with an invitation link"],
+  ])("someone joining %s", (_name, detail, text) => {
+    const grace = { actor: "grace@example.com" };
+    expect(
+      describeRoleChanges([row({ id: 7, kind: "join", subject: "grace@example.com", detail, ...grace })])
+    ).toEqual([line({ id: 7, text, ...grace })]);
+  });
+
+  test("an invitation between two saves at the same moment keeps them apart", () => {
+    // Inviting someone and saving the grid are separate requests, so their
+    // rows never share a timestamp in practice. These do anyway, to show the
+    // line breaks on the kind of row and not only on the time: the boxes
+    // either side must not end up on one line, nor the older box under the
+    // invitation.
+    const rows = [
+      box(4, "grant", "drift:read"),
+      row({ id: 3, kind: "invite", subject: "grace@example.com" }),
+      box(2, "revoke", "drift:create"),
+    ];
+    expect(describeRoleChanges(rows)).toEqual([
+      line({ id: 4, text: EDITOR, gave: ["Drift tracking: Read"] }),
+      line({ id: 3, text: "invited grace@example.com as Editor" }),
+      line({ id: 2, text: EDITOR, tookAway: ["Drift tracking: Create"] }),
+    ]);
   });
 });

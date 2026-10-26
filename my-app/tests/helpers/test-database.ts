@@ -1,11 +1,12 @@
 // The throwaway Postgres that the real-database suites run against
-// (tests/org-migration.test.ts and tests/org-data-db.test.ts).
+// (tests/org-migration.test.ts, tests/org-data-db.test.ts and
+// tests/invites-db.test.ts).
 //
 // Those suites skip without TEST_DATABASE_URL, so a laptop with no database to
 // spare can still run every other test. CI gives them one, and sets
 // REQUIRE_TEST_DATABASE too (.github/workflows/ci.yml). With that set, a
 // missing URL fails the suite instead of skipping it: a run that lost its
-// database would otherwise skip both suites and still come up green.
+// database would otherwise skip every one of them and still come up green.
 //
 // This file is not a test itself: Jest only runs tests/**/*.test.ts.
 

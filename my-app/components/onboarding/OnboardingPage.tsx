@@ -3,19 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { LandingThemeToggle } from "@/components/landing/LandingThemeToggle";
-import {
-  AlertCircleIcon,
-  ChevronRightIcon,
-  LogoIcon,
-  PlusIcon,
-  RefreshIcon,
-  SignOutIcon,
-} from "@/components/ui/icons";
+import { OnboardingFrame, initialOf } from "@/components/onboarding/OnboardingFrame";
+import { AlertCircleIcon, ChevronRightIcon, PlusIcon, RefreshIcon } from "@/components/ui/icons";
+import { errorFrom, jsonOf } from "@/lib/api-answer";
 import { apiFetch } from "@/lib/api-fetch";
 import { cleanOrgName, orgNameProblem, orgSlugProblem, suggestSlug } from "@/lib/new-organization";
 import { isOrgListing, type OrgSummary } from "@/lib/organization-list";
-import { signOutEverywhere } from "@/lib/sign-out";
 
 /** The list, while it loads and once it has. */
 type Loaded =
@@ -39,22 +32,6 @@ type Made =
 const SIGN_IN_AGAIN = "/login?callbackUrl=/onboarding";
 
 const UNREACHABLE = "Could not reach the server. Check your connection, then try again.";
-
-/** The `error` a route sent with a refusal, or null when it sent none. */
-function errorFrom(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) return null;
-  const { error } = body as { error?: unknown };
-  return typeof error === "string" && error !== "" ? error : null;
-}
-
-/** A response's JSON, or null when it has none: a proxy's HTML page, say. */
-async function jsonOf(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
 
 async function readOrganizations(): Promise<Exclude<Loaded, { state: "loading" }>> {
   let response: Response;
@@ -231,223 +208,178 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
   }
 
   return (
-    <div className="auth-stage">
-      <div className="bg-grid" aria-hidden="true" />
-      <div className="bg-wash-a" aria-hidden="true" />
-      <div className="bg-wash-b" aria-hidden="true" />
+    <OnboardingFrame
+      title="Your organizations"
+      lede={
+        demo
+          ? "Sign-in is switched off here, so these are the demo's organizations."
+          : "Open one you belong to, or create a new one for your team."
+      }
+      signedIn={!demo}
+    >
+      <Divider label="Member of" />
 
-      <header className="onb-header relative z-10 px-8 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="w-7 h-7 rounded-lg grid place-items-center text-white"
-            style={{ background: "var(--brand)" }}
-          >
-            <LogoIcon size={15} />
-          </div>
-          <div className="onb-brand-name font-semibold text-[13.5px]">Schema Studio</div>
+      {loaded.state === "loading" && (
+        <div className="onb-loading" role="status">
+          <span className="spin" aria-hidden="true" />
+          <span>Loading your organizations…</span>
         </div>
-        <div className="flex items-center gap-2">
-          <LandingThemeToggle />
-          {!demo && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => void signOutEverywhere()}
-            >
-              <SignOutIcon size={14} />
-              <span>Sign out</span>
+      )}
+
+      {loaded.state === "failed" && (
+        <div className="flex flex-col items-start gap-3">
+          <div className="banner w-full" role="alert">
+            <AlertCircleIcon size={16} className="ico" />
+            <div className="body">
+              <div className="title">{loaded.message}</div>
+            </div>
+          </div>
+          {loaded.signedOut ? (
+            <Link className="btn btn-primary btn-sm" href={SIGN_IN_AGAIN}>
+              Sign in
+            </Link>
+          ) : (
+            <button type="button" className="btn btn-secondary btn-sm" onClick={tryAgain}>
+              <RefreshIcon size={14} />
+              <span>Try again</span>
             </button>
           )}
         </div>
-      </header>
+      )}
 
-      <main className="relative z-10 flex-1 grid place-items-center px-6 pb-10 pt-2">
-        <div className="w-full max-w-[440px]">
-          <article className="auth-card p-8">
-            <div className="flex flex-col items-center text-center">
-              <div
-                className="w-12 h-12 rounded-2xl grid place-items-center mb-4 text-white"
-                style={{
-                  background: "var(--brand)",
-                  boxShadow: "0 8px 24px -10px var(--brand), 0 0 0 6px var(--brand-soft)",
-                }}
-              >
-                <LogoIcon size={22} />
-              </div>
-              <h1 className="text-[24px] font-semibold tracking-[-0.015em]">Your organizations</h1>
-              <p className="text-[13.5px] mt-1.5" style={{ color: "var(--text-2)" }}>
-                {demo
-                  ? "Sign-in is switched off here, so these are the demo's organizations."
-                  : "Open one you belong to, or create a new one for your team."}
-              </p>
+      {loaded.state === "ready" && loaded.organizations.length === 0 && (
+        <div className="text-[13px]">
+          <p>You are not in any organization yet.</p>
+          <p className="help mt-1">
+            If someone has asked you to join theirs, open the invitation link they sent you.
+            {loaded.canCreate && " Or create your own below."}
+          </p>
+        </div>
+      )}
+
+      {loaded.state === "ready" && loaded.organizations.length > 0 && (
+        <ul className="onb-orgs">
+          {loaded.organizations.map((org) => (
+            <li key={org.slug}>
+              <Link className="onb-org" href={`/${org.slug}/studio`}>
+                <span className="mark" aria-hidden="true">
+                  {initialOf(org.name)}
+                </span>
+                <span className="text">
+                  <span className="name">{org.name}</span>
+                  <span className="slug">/{org.slug}</span>
+                </span>
+                <ChevronRightIcon size={14} className="chev" />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {loaded.state === "ready" && loaded.canCreate && (
+        <>
+          <Divider label="New organization" />
+          <form className="onb-form" onSubmit={handleSubmit} noValidate>
+            <div className="onb-field">
+              <label className="label" htmlFor="org-name">
+                Name
+              </label>
+              <input
+                ref={nameInput}
+                id="org-name"
+                className="input"
+                value={name}
+                onChange={(event) => changeName(event.target.value)}
+                readOnly={submitting !== null}
+                autoComplete="organization"
+                placeholder="Acme Data Team"
+                aria-invalid={nameProblem ? true : undefined}
+                aria-describedby={nameProblem ? "org-name-problem" : undefined}
+              />
+              {nameProblem && (
+                <p id="org-name-problem" className="field-problem">
+                  {nameProblem}
+                </p>
+              )}
             </div>
 
-            <Divider label="Member of" />
-
-            {loaded.state === "loading" && (
-              <div className="onb-loading" role="status">
-                <span className="spin" aria-hidden="true" />
-                <span>Loading your organizations…</span>
-              </div>
-            )}
-
-            {loaded.state === "failed" && (
-              <div className="flex flex-col items-start gap-3">
-                <div className="banner w-full" role="alert">
-                  <AlertCircleIcon size={16} className="ico" />
-                  <div className="body">
-                    <div className="title">{loaded.message}</div>
-                  </div>
-                </div>
-                {loaded.signedOut ? (
-                  <Link className="btn btn-primary btn-sm" href={SIGN_IN_AGAIN}>
-                    Sign in
-                  </Link>
-                ) : (
-                  <button type="button" className="btn btn-secondary btn-sm" onClick={tryAgain}>
-                    <RefreshIcon size={14} />
-                    <span>Try again</span>
-                  </button>
-                )}
-              </div>
-            )}
-
-            {loaded.state === "ready" && loaded.organizations.length === 0 && (
-              <div className="text-[13px]">
-                <p>You are not in any organization yet.</p>
-                <p className="help mt-1">
-                  If someone has asked you to join theirs, open the invitation link they sent you.
-                  {loaded.canCreate && " Or create your own below."}
-                </p>
-              </div>
-            )}
-
-            {loaded.state === "ready" && loaded.organizations.length > 0 && (
-              <ul className="onb-orgs">
-                {loaded.organizations.map((org) => (
-                  <li key={org.slug}>
-                    <Link className="onb-org" href={`/${org.slug}/studio`}>
-                      <span className="mark" aria-hidden="true">
-                        {initialOf(org.name)}
-                      </span>
-                      <span className="text">
-                        <span className="name">{org.name}</span>
-                        <span className="slug">/{org.slug}</span>
-                      </span>
-                      <ChevronRightIcon size={14} className="chev" />
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {loaded.state === "ready" && loaded.canCreate && (
-              <>
-                <Divider label="New organization" />
-                <form className="onb-form" onSubmit={handleSubmit} noValidate>
-                  <div className="onb-field">
-                    <label className="label" htmlFor="org-name">
-                      Name
-                    </label>
-                    <input
-                      ref={nameInput}
-                      id="org-name"
-                      className="input"
-                      value={name}
-                      onChange={(event) => changeName(event.target.value)}
-                      readOnly={submitting !== null}
-                      autoComplete="organization"
-                      placeholder="Acme Data Team"
-                      aria-invalid={nameProblem ? true : undefined}
-                      aria-describedby={nameProblem ? "org-name-problem" : undefined}
-                    />
-                    {nameProblem && (
-                      <p id="org-name-problem" className="field-problem">
-                        {nameProblem}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="onb-field">
-                    <label className="label" htmlFor="org-slug">
-                      Address
-                    </label>
-                    <input
-                      ref={slugInput}
-                      id="org-slug"
-                      className="input mono"
-                      value={slug}
-                      onChange={(event) => changeSlug(event.target.value)}
-                      onBlur={() => setSlugLeft(true)}
-                      readOnly={submitting !== null}
-                      autoComplete="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      placeholder="acme-data-team"
-                      aria-invalid={slugProblem ? true : undefined}
-                      aria-describedby={
-                        slugProblem ? "org-slug-help org-slug-problem" : "org-slug-help"
-                      }
-                    />
-                    <p id="org-slug-help" className="help">
-                      Its pages open at{" "}
-                      <span className="mono">/{trimmedSlug || "your-address"}/studio</span>
-                    </p>
-                    {slugProblem && (
-                      <p id="org-slug-problem" className="field-problem">
-                        {slugProblem}
-                      </p>
-                    )}
-                  </div>
-
-                  {banner && (
-                    <div className="banner" role="alert">
-                      <AlertCircleIcon size={16} className="ico" />
-                      <div className="body">
-                        <div className="title">{banner.message}</div>
-                        {banner.signedOut && (
-                          <Link className="flink" href={SIGN_IN_AGAIN}>
-                            Sign in again
-                          </Link>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    className="btn btn-primary w-full"
-                    disabled={submitting !== null}
-                    aria-busy={submitting !== null || undefined}
-                  >
-                    {submitting ? (
-                      <>
-                        <span className="spin" aria-hidden="true" />
-                        <span>{submitting === "creating" ? "Creating…" : "Opening…"}</span>
-                      </>
-                    ) : (
-                      <>
-                        <PlusIcon size={14} />
-                        <span>Create organization</span>
-                      </>
-                    )}
-                  </button>
-                  <p className="help text-center">You will be its Admin, and can invite others from it.</p>
-                </form>
-              </>
-            )}
-
-            {loaded.state === "ready" && !loaded.canCreate && (
-              <p className="help mt-6 text-center">
-                {demo
-                  ? "Creating an organization needs a real sign-in, so there is no one here to be its first Admin."
-                  : "This server does not create new organizations."}
+            <div className="onb-field">
+              <label className="label" htmlFor="org-slug">
+                Address
+              </label>
+              <input
+                ref={slugInput}
+                id="org-slug"
+                className="input mono"
+                value={slug}
+                onChange={(event) => changeSlug(event.target.value)}
+                onBlur={() => setSlugLeft(true)}
+                readOnly={submitting !== null}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                placeholder="acme-data-team"
+                aria-invalid={slugProblem ? true : undefined}
+                aria-describedby={
+                  slugProblem ? "org-slug-help org-slug-problem" : "org-slug-help"
+                }
+              />
+              <p id="org-slug-help" className="help">
+                Its pages open at{" "}
+                <span className="mono">/{trimmedSlug || "your-address"}/studio</span>
               </p>
+              {slugProblem && (
+                <p id="org-slug-problem" className="field-problem">
+                  {slugProblem}
+                </p>
+              )}
+            </div>
+
+            {banner && (
+              <div className="banner" role="alert">
+                <AlertCircleIcon size={16} className="ico" />
+                <div className="body">
+                  <div className="title">{banner.message}</div>
+                  {banner.signedOut && (
+                    <Link className="flink" href={SIGN_IN_AGAIN}>
+                      Sign in again
+                    </Link>
+                  )}
+                </div>
+              </div>
             )}
-          </article>
-        </div>
-      </main>
-    </div>
+
+            <button
+              type="submit"
+              className="btn btn-primary w-full"
+              disabled={submitting !== null}
+              aria-busy={submitting !== null || undefined}
+            >
+              {submitting ? (
+                <>
+                  <span className="spin" aria-hidden="true" />
+                  <span>{submitting === "creating" ? "Creating…" : "Opening…"}</span>
+                </>
+              ) : (
+                <>
+                  <PlusIcon size={14} />
+                  <span>Create organization</span>
+                </>
+              )}
+            </button>
+            <p className="help text-center">You will be its Admin, and can invite others from it.</p>
+          </form>
+        </>
+      )}
+
+      {loaded.state === "ready" && !loaded.canCreate && (
+        <p className="help mt-6 text-center">
+          {demo
+            ? "Creating an organization needs a real sign-in, so there is no one here to be its first Admin."
+            : "This server does not create new organizations."}
+        </p>
+      )}
+    </OnboardingFrame>
   );
 }
 
@@ -465,9 +397,4 @@ function Divider({ label }: { label: string }) {
       <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
     </div>
   );
-}
-
-/** The first character of a name, for the square beside it. Array.from keeps a whole emoji. */
-function initialOf(name: string): string {
-  return (Array.from(name)[0] ?? "?").toUpperCase();
 }

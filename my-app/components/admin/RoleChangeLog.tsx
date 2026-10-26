@@ -45,6 +45,48 @@ function lowerFirst(text: string): string {
   return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
+/**
+ * What one row says on its own, for every kind but the three a save writes.
+ * It follows the actor's name, so it starts with a verb.
+ */
+function sentenceFor(change: RoleChange): string {
+  const role = roleName(change);
+  switch (change.kind) {
+    case "create-role":
+      // detail is "Copied from Editor", or null for a role made empty.
+      return `created ${role}` + (change.detail ? ` (${lowerFirst(change.detail)})` : "");
+    case "delete-role":
+      // The role is gone, so its label is not in the roles table any more:
+      // the row kept it in `detail` for exactly this.
+      return `deleted ${change.detail ?? change.role}`;
+    case "invite": {
+      // An invitation to an address names it. A link names nobody, and its
+      // detail is how many days it was made to last, which is worth saying:
+      // a link anyone can use is a bigger door the longer it stays open.
+      if (change.subject) return `invited ${change.subject} as ${role}`;
+      const days = Number(change.detail);
+      return Number.isInteger(days) && days > 0
+        ? `made a ${days}-day invitation link to join as ${role}`
+        : `made an invitation link to join as ${role}`;
+    }
+    case "cancel-invite":
+      return change.subject
+        ? `cancelled the invitation for ${change.subject}`
+        : `cancelled an invitation link to join as ${role}`;
+    case "join":
+      // The actor is the person who joined, so the line is about them.
+      return change.detail === "link"
+        ? `joined as ${role} with an invitation link`
+        : `joined as ${role} by invitation`;
+    default:
+      // "assign": a role given to someone, by an Admin on the Users tab.
+      return (
+        `gave ${change.subject ?? "someone"} the ${role} role` +
+        (change.detail ? `, instead of ${change.detail}` : "")
+      );
+  }
+}
+
 /** The log's rows, newest first, as the lines the screen shows. */
 export function describeRoleChanges(changes: readonly RoleChange[]): LogEntry[] {
   const entries: LogEntry[] = [];
@@ -77,24 +119,11 @@ export function describeRoleChanges(changes: readonly RoleChange[]): LogEntry[] 
 
     // Any other row ends the save before it, even one with the same timestamp.
     openSave = null;
-    let text: string;
-    if (change.kind === "create-role") {
-      // detail is "Copied from Editor", or null for a role made empty.
-      text = `created ${roleName(change)}` + (change.detail ? ` (${lowerFirst(change.detail)})` : "");
-    } else if (change.kind === "delete-role") {
-      // The role is gone, so its label is not in the roles table any more:
-      // the row kept it in `detail` for exactly this.
-      text = `deleted ${change.detail ?? change.role}`;
-    } else {
-      text =
-        `gave ${change.subject ?? "someone"} the ${roleName(change)} role` +
-        (change.detail ? `, instead of ${change.detail}` : "");
-    }
     entries.push({
       id: change.id,
       actor: change.actor,
       createdAt: change.createdAt,
-      text,
+      text: sentenceFor(change),
       gave: [],
       tookAway: [],
     });
@@ -108,8 +137,9 @@ export function RoleChangeLog({ changes }: { changes: readonly RoleChange[] }) {
   if (entries.length === 0) {
     return (
       <p className="help">
-        Nothing has been changed yet. Every role made or deleted, every box ticked or unticked
-        and every role given to someone is listed here, with who did it.
+        Nothing has been changed yet. Every role made or deleted, every box ticked or unticked,
+        every role given to someone and every invitation made, cancelled or taken is listed
+        here, with who did it.
       </p>
     );
   }

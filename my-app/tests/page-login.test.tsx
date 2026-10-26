@@ -13,6 +13,8 @@
  * only when the server has its keys. Signing in carries on to the page that
  * sent the person here (?callbackUrl=), as long as that page is on this site;
  * lib/callback-url.ts has the rules and tests/callback-url.test.ts the cases.
+ * Someone sent here to sign in as somebody else (&account=choose) is shown
+ * Microsoft's or GitHub's account picker rather than signed straight back in.
  */
 
 import "@testing-library/jest-dom";
@@ -190,6 +192,37 @@ describe("where signing in carries on to", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Continue with Microsoft" }));
     expect(signInMock).toHaveBeenCalledWith("microsoft-entra-id", { callbackUrl: "/studio" });
+  });
+});
+
+describe("signing in as somebody else", () => {
+  // How the invitation page sends someone who signed out to take an
+  // invitation meant for another address (lib/callback-url.ts loginHref).
+  // Without the prompt, Microsoft and GitHub both sign straight back in to the
+  // account the browser last used, and the person is back where they started.
+  it.each([
+    ["Microsoft", CONFIGURED, "microsoft-entra-id"],
+    ["GitHub", GITHUB_ONLY, "github"],
+  ])("asks %s to show its account picker", async (label, routes, provider) => {
+    arriveWith(`?callbackUrl=${encodeURIComponent("/invite/abc123")}&account=choose`);
+    setRoutes(routes);
+    render(<LoginPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: `Continue with ${label}` }));
+    expect(signInMock.mock.calls).toEqual([
+      [provider, { callbackUrl: "/invite/abc123" }, { prompt: "select_account" }],
+    ]);
+  });
+
+  it("asks for no picker when the address does not say so", async () => {
+    // Exactly two arguments: a third, even an empty one, is sent on to the
+    // provider as authorization parameters.
+    arriveWith(`?callbackUrl=${encodeURIComponent("/invite/abc123")}&account=other`);
+    setRoutes(BOTH);
+    render(<LoginPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue with Microsoft" }));
+    expect(signInMock.mock.calls).toEqual([["microsoft-entra-id", { callbackUrl: "/invite/abc123" }]]);
   });
 });
 

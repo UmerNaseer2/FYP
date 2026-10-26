@@ -1,10 +1,11 @@
 /** @jest-environment jsdom */
 
 /**
- * The admin screen: the Users tab, which says who has which role and removes
- * people, the Roles & permissions tab, which says what each role can do,
- * makes and deletes custom roles, and lists who changed what, and the folding
- * guide above both that explains how to use them.
+ * The admin screen: the Users tab, which says who has which role, removes
+ * people and offers invitations, the Roles & permissions tab, which says what
+ * each role can do, makes and deletes custom roles, and lists who changed
+ * what, and the folding guide above both that explains how to use them. What
+ * the invitation panel itself does is tests/component-invite-panel.test.tsx.
  *
  * This is the first suite in the project that renders a page rather than
  * calling a function, so it is also the one that proves the setup works at all
@@ -41,6 +42,7 @@ jest.mock("../lib/auth-mode", () => ({
 import AdminPage from "@/app/[org]/(studio)/admin/page";
 import { ROLES_CHANGED_EVENT } from "@/components/studio/ViewAsSwitcher";
 import { resetUserCache } from "@/hooks/useUser";
+import type { InviteListing } from "@/lib/invites";
 import {
   ACTIONS,
   ACTION_LABELS,
@@ -61,6 +63,7 @@ import {
   setUser,
   type FetchRoute,
 } from "./helpers/render-page";
+import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 
 type Profile = { id: number; email: string; role: string };
 
@@ -84,6 +87,21 @@ const listRoute = (users: Profile[] = USERS, roles = ROLE_OPTIONS): FetchRoute =
   method: "GET",
   body: { users, roles },
 });
+
+/**
+ * What GET /api/admin/invites answers: nobody invited yet. Every test that
+ * opens the page as an admin needs it, because "Invite people" under the
+ * member list asks for it as the Users tab opens.
+ * tests/component-invite-panel.test.tsx is about what the panel does with it.
+ */
+const invitesRoute = (listing: InviteListing = { invites: [], canInvite: true }): FetchRoute => ({
+  match: "/api/admin/invites",
+  method: "GET",
+  body: listing,
+});
+
+/** The same, where nobody can be invited: the demo and the desktop app. */
+const NO_INVITING: InviteListing = { invites: [], canInvite: false };
 
 /**
  * The three built-in roles, one person each, and a custom one nobody has yet.
@@ -164,7 +182,7 @@ const rolesPutRoute: FetchRoute = {
 
 /** What a Roles tab test needs. Routes passed in come first, so they win. */
 function rolesRoutes(...first: FetchRoute[]): FetchRoute[] {
-  return [...first, listRoute(), rolesGetRoute, rolesPutRoute];
+  return [...first, listRoute(), invitesRoute(), rolesGetRoute, rolesPutRoute];
 }
 
 /** How many times the page has asked for the roles. */
@@ -219,7 +237,7 @@ afterEach(() => cleanup());
 
 describe("the Users tab", () => {
   it("lists the profiles the server returned", async () => {
-    setRoutes([listRoute()]);
+    setRoutes([invitesRoute(), listRoute()]);
     render(<AdminPage />);
 
     expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
@@ -232,7 +250,7 @@ describe("the Users tab", () => {
   });
 
   it("says nothing twice on an empty list", async () => {
-    setRoutes([listRoute([])]);
+    setRoutes([invitesRoute(), listRoute([])]);
     render(<AdminPage />);
 
     expect(await screen.findByText("No users yet")).toBeInTheDocument();
@@ -242,7 +260,7 @@ describe("the Users tab", () => {
 
   it("does not ask the admin API anything when the visitor is not an admin", async () => {
     setUser("viewer");
-    setRoutes([listRoute()]);
+    setRoutes([invitesRoute(), listRoute()]);
     render(<AdminPage />);
     // The mount effect runs inside render()'s act, so a request would already
     // be recorded; this only flushes anything React chose to defer.
@@ -261,7 +279,7 @@ describe("the Users tab", () => {
   });
 
   it("leaves your own row read-only", async () => {
-    setRoutes([listRoute([...USERS, { id: 4, email: "admin@example.com", role: "admin" }])]);
+    setRoutes([invitesRoute(), listRoute([...USERS, { id: 4, email: "admin@example.com", role: "admin" }])]);
     render(<AdminPage />);
     await screen.findByText("admin@example.com");
 
@@ -279,6 +297,7 @@ describe("the Users tab", () => {
 
   it("offers a retry when the list cannot be loaded, and the retry works", async () => {
     setRoutes([
+      invitesRoute(),
       {
         match: "/api/admin/users",
         method: "GET",
@@ -295,7 +314,7 @@ describe("the Users tab", () => {
 
     // A retry that only clears the message would look identical on screen for
     // a moment and leave the page empty, so check a row actually arrives.
-    setRoutes([listRoute()]);
+    setRoutes([invitesRoute(), listRoute()]);
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
     expect(screen.queryByText(/Couldn.t load users/)).not.toBeInTheDocument();
@@ -303,6 +322,7 @@ describe("the Users tab", () => {
 
   it("puts the old role back when the server refuses the change", async () => {
     setRoutes([
+      invitesRoute(),
       listRoute(),
       {
         match: "/api/admin/users",
@@ -343,6 +363,7 @@ describe("the Users tab", () => {
 
   it("locks every remove button while one removal is in flight", async () => {
     setRoutes([
+      invitesRoute(),
       listRoute(),
       { match: "/api/admin/users", method: "DELETE", body: { success: true } },
     ]);
@@ -375,6 +396,7 @@ describe("the Users tab", () => {
 
   it("keeps the row when the removal is refused, and says why", async () => {
     setRoutes([
+      invitesRoute(),
       listRoute(),
       {
         match: "/api/admin/users",
@@ -397,6 +419,7 @@ describe("the Users tab", () => {
 
   it("names a custom role on each row, and offers it in the picker", async () => {
     setRoutes([
+      invitesRoute(),
       listRoute(
         [USERS[0], USERS[1], { ...USERS[2], role: "qa-lead" }],
         [...ROLE_OPTIONS, { name: "qa-lead", label: "QA Lead" }]
@@ -424,10 +447,64 @@ describe("the Users tab", () => {
     await flushAsync();
   });
 
+  it("offers invitations under the list", async () => {
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+
+    // On the web an invitation is the only way in, so the panel is where the
+    // page says how anyone new arrives.
+    expect(await screen.findByRole("heading", { name: "Invite people" })).toBeInTheDocument();
+    expect(
+      fetchCalls.some((c) => c.method === "GET" && c.url.includes("/api/admin/invites"))
+    ).toBe(true);
+  });
+
+  it("draws no invitations where the server says nobody can be invited", async () => {
+    setRoutes([invitesRoute(NO_INVITING), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    await flushAsync();
+
+    // Not forms that could only be refused.
+    expect(screen.queryByRole("heading", { name: "Invite people" })).not.toBeInTheDocument();
+  });
+
+  it("says, before removing someone, that only an invitation brings them back", async () => {
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("grace@example.com");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove grace@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove grace@example.com?" });
+    // The old wording promised they could sign straight back in, which on the
+    // web is no longer true: nobody joins an organization by signing in.
+    expect(dialog).toHaveTextContent("they are back only if someone invites them again");
+    expect(dialog).not.toHaveTextContent("come back as a Viewer");
+  });
+
+  it("says, in the desktop app, that signing in again brings them back", async () => {
+    installDesktopBridge();
+    try {
+      setRoutes([invitesRoute(NO_INVITING), listRoute()]);
+      render(<AdminPage />);
+      await screen.findByText("grace@example.com");
+
+      fireEvent.click(screen.getByRole("button", { name: "Remove grace@example.com" }));
+      const dialog = await screen.findByRole("dialog", { name: "Remove grace@example.com?" });
+      // The desktop app lets in whoever signs in on it, as a Viewer once
+      // somebody is already there.
+      expect(dialog).toHaveTextContent("if they sign in to this app again they come back as a Viewer");
+      expect(dialog).not.toHaveTextContent("invites them again");
+    } finally {
+      removeDesktopBridge();
+    }
+  });
+
   describe("with sign-in off for testing", () => {
     it("says why nobody is listed, and says it once", async () => {
       mockBypass = true;
-      setRoutes([listRoute([])]);
+      setRoutes([invitesRoute(NO_INVITING), listRoute([])]);
       render(<AdminPage />);
 
       // Not "No users yet": with sign-in off, nobody new can ever arrive, and
@@ -440,7 +517,7 @@ describe("the Users tab", () => {
 
     it("lists the people who signed in before, under a note saying why it won't grow", async () => {
       mockBypass = true;
-      setRoutes([listRoute()]);
+      setRoutes([invitesRoute(NO_INVITING), listRoute()]);
       render(<AdminPage />);
 
       expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
@@ -852,7 +929,7 @@ describe("the guide above the tabs", () => {
   }
 
   it("opens on the first visit, with the steps and a line for every box", async () => {
-    setRoutes([listRoute()]);
+    setRoutes([invitesRoute(), listRoute()]);
     await openPage();
 
     expect(guide().open).toBe(true);
@@ -867,7 +944,7 @@ describe("the guide above the tabs", () => {
   });
 
   it("stays folded once folded, and open once opened again", async () => {
-    setRoutes([listRoute()]);
+    setRoutes([invitesRoute(), listRoute()]);
     await openPage();
     setOpen(guide(), false);
     cleanup();
@@ -884,7 +961,7 @@ describe("the guide above the tabs", () => {
 
   it("adds a step for View as while sign-in is off for testing", async () => {
     mockBypass = true;
-    setRoutes([listRoute()]);
+    setRoutes([invitesRoute(), listRoute()]);
     await openPage();
 
     expect(steps()).toHaveLength(5);
@@ -900,7 +977,7 @@ describe("the guide above the tabs", () => {
       jest.spyOn(Storage.prototype, method).mockImplementation(refuse)
     );
     try {
-      setRoutes([listRoute()]);
+      setRoutes([invitesRoute(), listRoute()]);
       await openPage();
       expect(guide().open).toBe(true);
 

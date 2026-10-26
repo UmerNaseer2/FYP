@@ -50,7 +50,7 @@ export default async function OrganizationLayout({
 }) {
   const { org: slug } = await params;
   // Not the shape of a slug (/Acme, /a) or a word kept back for a page to
-  // come (/invite): no organization can have this address.
+  // come (/settings): no organization can have this address.
   if (!isOrgSlug(slug)) notFound();
 
   const resolution = await resolveOrganization(slug);

@@ -390,6 +390,72 @@ Identity.init(
   }
 );
 
+/**
+ * An invitation into one organization, in one role.
+ *
+ * Two kinds. An "email" invitation is for one address: only someone whose
+ * sign-in provider vouches for that address can accept it, and it is used up
+ * once they do. A "link" invitation is for whoever has the link, until it
+ * expires or an Admin cancels it, so it only ever offers the Viewer role
+ * (invites_link_role_check in lib/db/bootstrap.ts): a link that leaks should
+ * at worst let a stranger read, never change anything.
+ *
+ * The link itself is never stored, only `token_hash`, the SHA-256 of the
+ * random part (lib/invites-db.ts). Someone who reads this table, or a backup
+ * of it, learns who was invited but cannot accept anything.
+ *
+ * The keys to `organizations`, `roles` and `profiles`, and the checks, are
+ * added by lib/db/bootstrap.ts. Deleting the organization or the role deletes
+ * its invitations. Deleting the person who sent one, or the person who used
+ * it, keeps the row with that column emptied, so the history stays whole.
+ */
+export class Invite extends Model<InferAttributes<Invite>, InferCreationAttributes<Invite>> {
+  declare id: CreationOptional<number>;
+  declare org_id: number;
+  declare token_hash: string;
+  /** "email" or "link". */
+  declare kind: string;
+  /** The address an email invitation is for, in lower case. Null for a link. */
+  declare email: CreationOptional<string | null>;
+  /** The key of the role it offers: memberships.role once accepted. */
+  declare role: string;
+  /** The profile of the Admin who made it. */
+  declare invited_by: CreationOptional<number | null>;
+  declare expires_at: Date;
+  /** When an email invitation was accepted, and by whom. A link is never used up. */
+  declare used_at: CreationOptional<Date | null>;
+  declare used_by: CreationOptional<number | null>;
+  /** When an Admin cancelled it, or a newer invitation to the same address replaced it. */
+  declare revoked_at: CreationOptional<Date | null>;
+  declare created_at: CreationOptional<Date>;
+}
+
+Invite.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
+    token_hash: { type: DataTypes.TEXT, allowNull: false },
+    kind: { type: DataTypes.TEXT, allowNull: false },
+    email: { type: DataTypes.TEXT, allowNull: true },
+    role: { type: DataTypes.TEXT, allowNull: false },
+    invited_by: { type: DataTypes.INTEGER, allowNull: true },
+    expires_at: { type: DataTypes.DATE, allowNull: false },
+    used_at: { type: DataTypes.DATE, allowNull: true },
+    used_by: { type: DataTypes.INTEGER, allowNull: true },
+    revoked_at: { type: DataTypes.DATE, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "invites",
+    indexes: [
+      // How an invitation is found when someone opens its link.
+      { name: "invites_token_hash_key", unique: true, fields: ["token_hash"] },
+      { name: "invites_org_id_idx", fields: ["org_id"] },
+    ],
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Roles, and what each one may do.
 //
@@ -496,9 +562,17 @@ export class RoleChange extends Model<
   /** For a grant or a revoke: which permission. */
   declare feature: CreationOptional<string | null>;
   declare action: CreationOptional<string | null>;
-  /** For an assign: whose role changed, by email. */
+  /**
+   * Who the change was about, by email: whose role an assign changed, who an
+   * invite or a cancel-invite was for (null for an invitation link, which is
+   * for nobody in particular), who joined.
+   */
   declare subject: CreationOptional<string | null>;
-  /** Anything else worth reading back: the role an assign moved someone from. */
+  /**
+   * Anything else worth reading back: the role an assign moved someone from,
+   * how many days an invitation link is good for, and for a join "email" or
+   * "link", which kind of invitation it was.
+   */
   declare detail: CreationOptional<string | null>;
   declare actor: string;
   declare created_at: CreationOptional<Date>;

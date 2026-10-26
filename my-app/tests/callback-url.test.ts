@@ -7,9 +7,19 @@
  * of naming another site that still starts with "/" is pinned down here. The
  * other site's page is never "/studio", so an answer that kept its path would
  * fail too, not only one that kept the whole address.
+ *
+ * loginHref and wantsAccountPicker, at the end: the sign-in page's address as
+ * the app writes it, and the flag in it that has Microsoft or GitHub show
+ * their account picker. tests/page-login.test.tsx checks the page passes that
+ * request on.
  */
 
-import { DEFAULT_CALLBACK_URL, safeCallbackUrl } from "@/lib/callback-url";
+import {
+  DEFAULT_CALLBACK_URL,
+  loginHref,
+  safeCallbackUrl,
+  wantsAccountPicker,
+} from "@/lib/callback-url";
 
 const ORIGIN = "https://studio.example";
 
@@ -67,4 +77,48 @@ test.each([
 test("keeps pages whose names only start like the refused ones", () => {
   expect(after("/loginhelp")).toBe("/loginhelp");
   expect(after("/apiary/studio")).toBe("/apiary/studio");
+});
+
+describe("the sign-in page's address", () => {
+  /** The query string of a link loginHref wrote, as the sign-in page will find it. */
+  function searchOf(href: string): string {
+    return new URL(href, ORIGIN).search;
+  }
+
+  test("carries on to the page asked for", () => {
+    expect(loginHref("/invite/abc123")).toBe("/login?callbackUrl=%2Finvite%2Fabc123");
+    expect(loginHref("/invite/abc123", { chooseAccount: false })).toBe(
+      "/login?callbackUrl=%2Finvite%2Fabc123",
+    );
+  });
+
+  test("keeps the page's own query and fragment inside callbackUrl", () => {
+    // Written unencoded, "&tab=prod" would be the sign-in page's own setting
+    // and "#top" its own fragment, and the person would land on the bare page.
+    const asked = "/acme/connections?tab=prod&env=staging#top";
+    expect(safeCallbackUrl(searchOf(loginHref(asked)), ORIGIN)).toBe(asked);
+    expect(safeCallbackUrl(searchOf(loginHref(asked, { chooseAccount: true })), ORIGIN)).toBe(asked);
+  });
+
+  test("asks for the account picker only when told to", () => {
+    const choosing = loginHref("/invite/abc123", { chooseAccount: true });
+    expect(choosing).toBe("/login?callbackUrl=%2Finvite%2Fabc123&account=choose");
+    expect(wantsAccountPicker(searchOf(choosing))).toBe(true);
+    expect(wantsAccountPicker(searchOf(loginHref("/invite/abc123")))).toBe(false);
+  });
+
+  test.each([
+    ["the flag on its own", "?account=choose", true],
+    ["the flag beside a callbackUrl", "?callbackUrl=%2Finvite%2Fabc123&account=choose", true],
+    ["no query at all", "", false],
+    ["only a callbackUrl", "?callbackUrl=%2Finvite%2Fabc123", false],
+    ["another value", "?account=other", false],
+    ["an empty value", "?account=", false],
+    ["the name with no value", "?account", false],
+    // The page being carried on to may have a query of its own. What is in
+    // there is that page's business, not a request to the sign-in page.
+    ["the flag inside the callbackUrl", `?callbackUrl=${encodeURIComponent("/x?account=choose")}`, false],
+  ])("wantsAccountPicker reads %s as %s", (_, search, wanted) => {
+    expect(wantsAccountPicker(search)).toBe(wanted);
+  });
 });

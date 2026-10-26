@@ -54,8 +54,8 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "admin",
   "schemas",
   "onboarding",
-  // Kept back for pages to come.
   "invite",
+  // Kept back for pages to come.
   "invites",
   "new",
   "settings",

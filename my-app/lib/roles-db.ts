@@ -75,13 +75,20 @@ export type RoleChange = {
   kind: RoleChangeKind;
   feature: string | null;
   action: string | null;
-  /** Who a role was given to, for `assign` rows. */
+  /**
+   * The person a row is about, by email address: who was given a role
+   * (`assign`), who was invited or whose invitation was cancelled (`invite`,
+   * `cancel-invite`; null for an invitation link, which names nobody), and who
+   * joined (`join`).
+   */
   subject: string | null;
   /**
    * The rest of the story, which depends on the kind:
    *   create-role  "Copied from Editor", or null for an empty role
    *   delete-role  the name the role had, so the row still reads after it is gone
    *   assign       the name of the role the person had before
+   *   invite       for an invitation link, how many days it was made to last
+   *   join         "email" or "link": which kind of invitation they joined with
    */
   detail: string | null;
   actor: string;

@@ -475,12 +475,12 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
            transition:background .15s ease, border-color .15s ease; }
 .onb-org:hover { background:var(--surface-2); border-color:color-mix(in oklab, var(--brand) 40%, var(--border-strong)); }
 .onb-org:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
-.onb-org .mark { flex:none; width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+.onb-org .mark, .inv-org .mark { flex:none; width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
                  background:var(--brand-soft); color:var(--brand); font-size:13px; font-weight:600; }
-.onb-org .text { flex:1; min-width:0; display:flex; flex-direction:column; }
+.onb-org .text, .inv-org .text { flex:1; min-width:0; display:flex; flex-direction:column; }
 /* A long name wraps rather than being cut off; names stop at 60 characters */
-.onb-org .name { font-size:13.5px; font-weight:500; overflow-wrap:anywhere; }
-.onb-org .slug { font-family:var(--font-geist-mono),ui-monospace; font-size:11.5px; color:var(--text-3); overflow-wrap:anywhere; }
+.onb-org .name, .inv-org .name { font-size:13.5px; font-weight:500; overflow-wrap:anywhere; }
+.onb-org .slug, .inv-org .slug { font-family:var(--font-geist-mono),ui-monospace; font-size:11.5px; color:var(--text-3); overflow-wrap:anywhere; }
 .onb-org .chev { flex:none; color:var(--text-3); }
 
 /* The new-organization form */
@@ -494,6 +494,14 @@ button.flink { background:none; border:0; padding:0; font:inherit; }
 
 /* The spinner on a brand-colored button, where the brand-colored ring would vanish */
 .btn-primary .spin { width:14px; height:14px; border-color:color-mix(in oklab, #fff 35%, transparent); border-top-color:#fff; }
+
+/* An invitation at /invite/<token> (components/invite/), on the same frame.
+   The organization it is for sits in a row like an .onb-org, but still, since
+   it is not a link: Join, under it, is what takes the person in. */
+.inv-org { display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--border);
+           border-radius:10px; background:var(--surface-2); }
+.inv-org .pill { flex:none; }
+.inv-actions { display:flex; flex-direction:column; gap:10px; margin-top:24px; }
 
 /* With Sign out beside the theme switch, the header needs the room on a phone.
    The card's own title still says where the person is. */

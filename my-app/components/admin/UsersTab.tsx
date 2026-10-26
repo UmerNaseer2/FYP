@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InvitePanel } from "@/components/admin/InvitePanel";
+import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { BUILT_IN_ROLES, BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
 import {
@@ -24,8 +26,10 @@ import {
 import { apiFetch } from "@/lib/api-fetch";
 
 /**
- * The Users tab on the Admin screen: everyone who has signed in, the role each
- * one has, and a way to remove them.
+ * The Users tab on the Admin screen: everyone in this organization, the role
+ * each one has, and a way to remove them. Under the list, whoever may invite
+ * (Users: Create) gets "Invite people" (InvitePanel.tsx), which is how anyone
+ * new gets in on the web.
  *
  * What each role may do is the Roles & permissions tab's business. This tab
  * only says who has which role.
@@ -65,6 +69,9 @@ function initialsOf(email: string): string {
 
 export function UsersTab({ active }: { active: boolean }) {
   const { user: currentUser, can, bypass } = useUser();
+  // Removing someone means something different in the desktop app, where
+  // signing in is all it takes to join (lib/accounts-db.ts joinOnSignIn).
+  const desktop = useDesktopBridge() !== null;
 
   const [users, setUsers] = useState<Profile[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
@@ -228,7 +235,7 @@ export function UsersTab({ active }: { active: boolean }) {
           are worth reading once there is something to count.
         */}
         <p className="text-[13.5px]" style={{ color: "var(--text-2)" }}>
-          Give people a role, or remove them from this app.
+          Give people a role, or remove them from this organization.
           {phase === "ready" && users.length > 0 && (
             <>
               {" "}
@@ -313,13 +320,13 @@ export function UsersTab({ active }: { active: boolean }) {
                 <EmptyState
                   icon={<UsersIcon size={22} />}
                   title="Nobody has signed in yet"
-                  description="Sign-in is off for testing, so everyone using the app is the same stand-in admin and nobody is added here. People appear here after they sign in once it is back on. To see the app as another role now, use View as in the sidebar."
+                  description="Sign-in is off for testing, so everyone using the app is the same stand-in admin and nobody is added here. People appear here once it is back on and they join this organization. To see the app as another role now, use View as in the sidebar."
                 />
               ) : (
                 <EmptyState
                   icon={<UsersIcon size={22} />}
                   title="No users yet"
-                  description="People appear here after they sign in for the first time."
+                  description="People appear here once they join this organization."
                 />
               )}
             </div>
@@ -407,6 +414,8 @@ export function UsersTab({ active }: { active: boolean }) {
           })}
       </div>
 
+      {can("users:create") && <InvitePanel active={active} options={options} />}
+
       {/* No "Removing…" confirmLabel: ConfirmDialog runs onConfirm and closes
           back to back, so a busy label on its own button could never be seen.
           The row's own button carries the wait instead. */}
@@ -416,7 +425,15 @@ export function UsersTab({ active }: { active: boolean }) {
         onConfirm={() => void confirmRemove()}
         destructive
         title={removeTarget ? `Remove ${removeTarget.email}?` : "Remove user?"}
-        description="This deletes their profile and role in this app. It does NOT remove their Microsoft/SSO login, so they could sign in again unless you also remove them from your identity provider."
+        description={
+          // Their sign-in account belongs to Microsoft or GitHub, so removing
+          // them here never touches it. What it does to their next sign-in is
+          // what differs: on the web nobody joins by signing in, but the
+          // desktop app lets in whoever signs in on it.
+          desktop
+            ? "They lose access at once. Their sign-in account is not touched, so if they sign in to this app again they come back as a Viewer."
+            : "They lose access to this organization at once. Their sign-in account is not touched, but signing in no longer brings them here: they are back only if someone invites them again. If this was their only organization, their profile is deleted too."
+        }
         confirmLabel="Remove access"
       />
     </div>
