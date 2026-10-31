@@ -50,6 +50,10 @@ export const MAX_SCHEMA_NAME_LENGTH = 128;
  * few hundred characters, and the phone's two keys are 87 and 22 characters.
  */
 export const MAX_PUSH_FIELD_LENGTH = 2048;
+/** The most sessions one live status lists. A phone has no use for a server's full 200, and the counts still cover them all. */
+export const MAX_LIVE_SESSIONS = 50;
+/** The longest query text one session in a live status holds, in characters. */
+export const MAX_LIVE_QUERY_LENGTH = 2000;
 /** The longest error message read from an answer, in characters. The computer's own are a sentence or two. */
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 /** How long the computer's public push key is: a P-256 point, written out whole. */
@@ -106,6 +110,7 @@ export type Request =
   | { id: number; method: "connections.list" }
   | { id: number; method: "schemas.list"; params: { connectionId: number } }
   | { id: number; method: "schema.read"; params: SchemaRef }
+  | { id: number; method: "live.read"; params: { connectionId: number } }
   | { id: number; method: "compare.run"; params: { source: SchemaRef; targets: SchemaRef[] } }
   | { id: number; method: "push.status" }
   | { id: number; method: "push.subscribe"; params: PushSubscriptionParams }
@@ -128,6 +133,8 @@ export type HelloResult = {
   canCompare: boolean;
   /** Whether that role may look at a schema's tables (schema.read). */
   canReadSchemas: boolean;
+  /** Whether that role may see any of a connection's live status (live.read). False from a computer too old to answer it. */
+  canSeeLive: boolean;
   /** The version of the app on the computer, such as "1.0.0". */
   appVersion: string;
 };
@@ -299,11 +306,116 @@ export type PasskeySignature = { credentialId: string; authenticatorData: string
 export type DecideParams = { approvalId: number; decision: ApprovalDecision; fingerprint: string; assertion: PasskeySignature };
 
 /** What the answer to each request holds when it succeeds. */
+/** A session's kind, worst first, as my-app/lib/db-activity.ts works it out. */
+export type LiveSessionKind = "blocked" | "idle-in-transaction" | "long-running" | "running";
+const LIVE_SESSION_KINDS: readonly LiveSessionKind[] = ["blocked", "idle-in-transaction", "long-running", "running"];
+
+/**
+ * One session the database is running. Never its client's address or the
+ * database user behind it, since neither helps someone deciding what to do
+ * from a phone, and the user may be the very login a phone is never told.
+ */
+export type LiveSession = {
+  /** PostgreSQL's number for the session. */
+  pid: number;
+  kind: LiveSessionKind;
+  /** How long it has been on this statement in seconds, or idle for an idle-in-transaction session. Null when the server does not say. */
+  querySeconds: number | null;
+  /** How long its transaction has been open in seconds, or null when it is not in one. */
+  xactSeconds: number | null;
+  /** The name the client gave itself, such as "psql", or null when it gave none. */
+  applicationName: string | null;
+  /** What it is waiting for, such as "Lock: transactionid", or null when nothing. */
+  waitingOn: string | null;
+  /**
+   * The SQL, cut to MAX_LIVE_QUERY_LENGTH. Null unless query text is turned on
+   * for this connection in Settings on the computer, and the server shows it.
+   */
+  query: string | null;
+};
+
+/** What a database's sessions are doing, at one moment. */
+export type LiveActivity = {
+  /** The moment this was read, as the computer's server tells it. */
+  takenAt: string;
+  /** How long a statement runs before it counts as long-running here, in seconds. */
+  longRunningSeconds: number;
+  /** How many sessions there are of each kind, counting those left out of `sessions`. */
+  total: number;
+  blocked: number;
+  idleInTransaction: number;
+  longRunning: number;
+  /** The worst MAX_LIVE_SESSIONS, worst first. */
+  sessions: LiveSession[];
+  /** Whether query text is turned on for this connection. When it is off, every session's query is null. */
+  queryText: boolean;
+  /** Whether the server kept back the SQL of a session, as it does from a login without the right to see it. */
+  someHidden: boolean;
+};
+
+export type HealthLevel = "good" | "watch" | "bad" | "unknown";
+const HEALTH_LEVELS: readonly HealthLevel[] = ["good", "watch", "bad", "unknown"];
+
+/** One measure of how a database is doing, worded by the app. */
+export type LiveMetric = {
+  label: string;
+  /** The value, ready to show, or null when it could not be measured. */
+  display: string | null;
+  level: HealthLevel;
+  note: string;
+};
+
+/** How a database is doing. */
+export type LiveHealth = {
+  /** When the server's counters started, since most of these are totals rather than what is happening now. Null when it does not say. */
+  since: string | null;
+  metrics: LiveMetric[];
+};
+
+export type DriftStatus = "in_sync" | "drifted" | "unreachable";
+const DRIFT_STATUSES: readonly DriftStatus[] = ["in_sync", "drifted", "unreachable"];
+
+/**
+ * One tracked schema's drift, as last recorded. Never the app's summary
+ * sentence, which can repeat what a server said, host names included: the
+ * phone words its own from the status.
+ */
+export type LiveDrift = {
+  /** The app's number for the tracked schema. */
+  id: number;
+  schema: string;
+  /** Null when it has never been checked. */
+  status: DriftStatus | null;
+  /** When it was last checked, or null when never. */
+  checkedAt: string | null;
+  /** The version it should be at, or null when it has none yet. */
+  headVersion: string | null;
+};
+
+/** Why a part of the live status is missing: this role may not see it, or the database or the app did not answer. */
+export type LiveProblem = "forbidden" | "unreachable" | "failed";
+const LIVE_PROBLEMS: readonly LiveProblem[] = ["forbidden", "unreachable", "failed"];
+
+/**
+ * A connection's live status. The parts fail on their own, so a database that
+ * is down still shows what was last recorded about its drift. A part is null
+ * only with the problem that explains it.
+ */
+export type LiveStatus = {
+  activity: LiveActivity | null;
+  activityProblem: LiveProblem | null;
+  /** Null when the database's statistics could not be read, even though its sessions could. */
+  health: LiveHealth | null;
+  drift: LiveDrift[] | null;
+  driftProblem: LiveProblem | null;
+};
+
 export type Results = {
   hello: HelloResult;
   "connections.list": ConnectionList;
   "schemas.list": SchemaList;
   "schema.read": SchemaOverview;
+  "live.read": LiveStatus;
   "compare.run": CompareSummary;
   "push.status": PushStatus;
   "push.subscribe": PushStatus;
@@ -390,7 +502,7 @@ export type Answer = { id: number; ok: true; result: unknown } | { id: number; o
  */
 export type RequestReading = { ok: true; request: Request } | { ok: false; id: number | null; code: "bad-request" | "unknown-method" };
 
-const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide"];
+const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "live.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide"];
 
 /** Writes a request. Only its own fields are written, so a SchemaRef that carries more, such as a connection's name, goes out without it. */
 export function writeRequest(request: Request): Bytes {
@@ -405,6 +517,8 @@ export function writeRequest(request: Request): Bytes {
       return writeJson({ id, method: request.method, params: { connectionId: request.params.connectionId } });
     case "schema.read":
       return writeJson({ id, method: request.method, params: copySchemaRef(request.params) });
+    case "live.read":
+      return writeJson({ id, method: request.method, params: { connectionId: request.params.connectionId } });
     case "compare.run": {
       const { source, targets } = request.params;
       return writeJson({ id, method: request.method, params: { source: copySchemaRef(source), targets: targets.map(copySchemaRef) } });
@@ -451,7 +565,8 @@ function readKnownRequest(id: number, fields: Record<string, unknown>): Request 
   const params = objectFields(fields.params);
   if (!hasExactly(fields, "id", "method", "params") || params === null) return null;
   switch (method) {
-    case "schemas.list": {
+    case "schemas.list":
+    case "live.read": {
       const connectionId = params.connectionId;
       return hasExactly(params, "connectionId") && isPositiveInteger(connectionId) ? { id, method, params: { connectionId } } : null;
     }
@@ -530,6 +645,7 @@ export function readAnswer(message: Bytes): Answer | null {
 
 const RESULT_READERS: { [M in Method]: (value: unknown) => Results[M] | null } = {
   hello: readHelloResult,
+  "live.read": readLiveStatus,
   "connections.list": readConnectionList,
   "schemas.list": readSchemaList,
   "schema.read": readSchemaOverview,
@@ -553,9 +669,67 @@ export function readResult<M extends Method>(method: M, value: unknown): Results
 function readHelloResult(value: unknown): HelloResult | null {
   const fields = objectFields(value);
   if (fields === null) return null;
-  const { signedIn, role, canCompare, canReadSchemas, appVersion } = fields;
+  const { signedIn, role, canCompare, canReadSchemas, canSeeLive, appVersion } = fields;
   if (typeof signedIn !== "boolean" || !isTextOrNull(role) || typeof canCompare !== "boolean" || typeof canReadSchemas !== "boolean" || typeof appVersion !== "string") return null;
-  return { signedIn, role, canCompare, canReadSchemas, appVersion };
+  // Not required: a computer whose app is older than the phone app does not send it, and cannot answer live.read either.
+  return { signedIn, role, canCompare, canReadSchemas, canSeeLive: canSeeLive === true, appVersion };
+}
+
+function readLiveStatus(value: unknown): LiveStatus | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { activityProblem, driftProblem } = fields;
+  const activity = fields.activity === null ? null : readLiveActivity(fields.activity);
+  const health = fields.health === null ? null : readLiveHealth(fields.health);
+  const drift = fields.drift === null ? null : readEach(fields.drift, readLiveDrift);
+  if ((fields.activity !== null && activity === null) || (fields.health !== null && health === null) || (fields.drift !== null && drift === null)) return null;
+  if (activityProblem !== null && !isLiveProblem(activityProblem)) return null;
+  if (driftProblem !== null && !isLiveProblem(driftProblem)) return null;
+  // A part is either there or explained, so the phone never has to guess why one is missing.
+  if ((activity === null) === (activityProblem === null) || (drift === null) === (driftProblem === null)) return null;
+  return { activity, activityProblem, health, drift, driftProblem };
+}
+
+function readLiveActivity(value: unknown): LiveActivity | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { takenAt, longRunningSeconds, total, blocked, idleInTransaction, longRunning, queryText, someHidden } = fields;
+  const sessions = readEach(fields.sessions, readLiveSession);
+  if (typeof takenAt !== "string" || !isSeconds(longRunningSeconds) || !isCount(total) || !isCount(blocked) || !isCount(idleInTransaction) || !isCount(longRunning)) return null;
+  if (typeof queryText !== "boolean" || typeof someHidden !== "boolean" || sessions === null || sessions.length > MAX_LIVE_SESSIONS) return null;
+  return { takenAt, longRunningSeconds, total, blocked, idleInTransaction, longRunning, sessions, queryText, someHidden };
+}
+
+function readLiveSession(value: unknown): LiveSession | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query } = fields;
+  if (!isPositiveInteger(pid) || !isLiveSessionKind(kind) || !isSecondsOrNull(querySeconds) || !isSecondsOrNull(xactSeconds)) return null;
+  if (!isTextOrNull(applicationName) || !isTextOrNull(waitingOn) || !isTextOrNull(query)) return null;
+  return { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query };
+}
+
+function readLiveHealth(value: unknown): LiveHealth | null {
+  const fields = objectFields(value);
+  if (fields === null || !isTextOrNull(fields.since)) return null;
+  const metrics = readEach(fields.metrics, readLiveMetric);
+  return metrics === null ? null : { since: fields.since, metrics };
+}
+
+function readLiveMetric(value: unknown): LiveMetric | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { label, display, level, note } = fields;
+  if (typeof label !== "string" || !isTextOrNull(display) || !isHealthLevel(level) || typeof note !== "string") return null;
+  return { label, display, level, note };
+}
+
+function readLiveDrift(value: unknown): LiveDrift | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { id, schema, status, checkedAt, headVersion } = fields;
+  if (!isPositiveInteger(id) || typeof schema !== "string" || (status !== null && !isDriftStatus(status)) || !isTextOrNull(checkedAt) || !isTextOrNull(headVersion)) return null;
+  return { id, schema, status, checkedAt, headVersion };
 }
 
 function readConnectionList(value: unknown): ConnectionList | null {
@@ -823,6 +997,15 @@ function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** A length of time in seconds, which the server measures to a fraction. */
+function isSeconds(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isSecondsOrNull(value: unknown): value is number | null {
+  return value === null || isSeconds(value);
+}
+
 /**
  * True for a schema name a request may hold: 1 to MAX_SCHEMA_NAME_LENGTH
  * characters, with no space at either end. The app's Compare trims every
@@ -852,3 +1035,7 @@ const isSeverity = oneOf(SEVERITIES);
 const isErrorCode = oneOf(ERROR_CODES);
 const PASSKEY_STATES: readonly PasskeyState[] = ["none", "allowed", "ready", "other-person"];
 const isPasskeyState = oneOf(PASSKEY_STATES);
+const isLiveSessionKind = oneOf(LIVE_SESSION_KINDS);
+const isHealthLevel = oneOf(HEALTH_LEVELS);
+const isDriftStatus = oneOf(DRIFT_STATUSES);
+const isLiveProblem = oneOf(LIVE_PROBLEMS);

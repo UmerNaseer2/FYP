@@ -85,6 +85,14 @@ export type PhoneLinkState = {
   relayOrigin: string | null;
   /** The saved connections phones may see, by their number in the app. None until the person shares some. */
   sharedConnectionIds: number[];
+  /**
+   * The shared connections whose running SQL phones may read, by the same
+   * numbers. None until the person turns it on, because SQL can hold private
+   * data, and only ever connections that are shared.
+   */
+  queryTextConnectionIds: number[];
+  /** Whether the computer stays awake for its phones while the link is on. Off until the person turns it on. */
+  keepAwake: boolean;
   phones: PairedPhone[];
   /** The Ed25519 private key the computer signs in to the relay with, as base64url. */
   signingKey: string;
@@ -103,6 +111,8 @@ export function newPhoneLinkState(random: (size: number) => Buffer): PhoneLinkSt
     enabled: false,
     relayOrigin: null,
     sharedConnectionIds: [],
+    queryTextConnectionIds: [],
+    keepAwake: false,
     phones: [],
     signingKey: random(KEY_BYTES).toString("base64url"),
     staticKey: random(KEY_BYTES).toString("base64url"),
@@ -191,10 +201,13 @@ export function parsePhoneLinkState(value: unknown): PhoneLinkState | null {
   if (!isRecord(value)) return null;
   const { signingKey, staticKey, pushKey } = value;
   if (!isKey(signingKey) || !isKey(staticKey)) return null;
+  const sharedConnectionIds = readConnectionIds(value.sharedConnectionIds);
   return {
     enabled: value.enabled === true,
     relayOrigin: typeof value.relayOrigin === "string" ? readRelayOrigin(value.relayOrigin) : null,
-    sharedConnectionIds: readConnectionIds(value.sharedConnectionIds),
+    sharedConnectionIds,
+    queryTextConnectionIds: readConnectionIds(value.queryTextConnectionIds).filter((id) => sharedConnectionIds.includes(id)),
+    keepAwake: value.keepAwake === true,
     phones: readPhones(value.phones),
     signingKey,
     staticKey,

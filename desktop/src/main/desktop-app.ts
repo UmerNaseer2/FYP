@@ -59,6 +59,7 @@ import {
   Menu,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   session,
   shell,
   type BrowserWindow,
@@ -303,6 +304,8 @@ export class DesktopApp {
   private phoneLink: PhoneLink | null = null;
   /** Why the phone link could not open or start, for Settings. */
   private phoneLinkProblem: string | null = null;
+  /** The hold that keeps the computer awake for its phones, while there is one. */
+  private keepAwakeHold: number | null = null;
   private mainWindow: BrowserWindow | null = null;
   private settingsWindow: BrowserWindow | null = null;
   /** The icon in the top bar, there while Keep running is on. */
@@ -448,8 +451,10 @@ export class DesktopApp {
       phone: {
         get: () => phoneView(this.phoneLink, this.phoneLinkProblem),
         setEnabled: (enabled) => this.phoneLink?.setEnabled(enabled),
+        setKeepAwake: (keepAwake) => this.phoneLink?.setKeepAwake(keepAwake),
         setRelay: (origin) => setRelay(this.phoneLink, origin, this.phoneLinkProblem),
         setShared: (ids) => this.phoneLink?.setSharedConnections(ids),
+        setQueryText: (ids) => this.phoneLink?.setQueryTextConnections(ids),
         forget: (key) => this.phoneLink?.forgetPhone(key),
         allowApprovals: (key) => this.phoneLink?.allowApprovals(key),
         turnOffApprovals: (key) => this.phoneLink?.turnOffApprovals(key),
@@ -793,6 +798,18 @@ export class DesktopApp {
     const view = phoneView(this.phoneLink, this.phoneLinkProblem);
     liveContents(this.settingsWindow)?.send(PHONE.changed, view);
     this.tray?.update(trayStatus(view));
+    this.holdAwake(view.available && view.enabled && view.keepAwake);
+  }
+
+  /** Holds the computer awake for its phones, or lets go. The screen may still turn off. */
+  private holdAwake(on: boolean): void {
+    if (on === (this.keepAwakeHold !== null)) return;
+    if (this.keepAwakeHold === null) {
+      this.keepAwakeHold = powerSaveBlocker.start("prevent-app-suspension");
+    } else {
+      powerSaveBlocker.stop(this.keepAwakeHold);
+      this.keepAwakeHold = null;
+    }
   }
 
   /** The saved connections, for Settings to choose which ones phones may see. The server lists them for whoever is signed in. */

@@ -452,7 +452,7 @@ test("makes new keys and saves them the first time, then keeps them out of the l
   const state = store.last;
   assert.deepEqual(
     { ...state, signingKey: "", staticKey: "", pushKey: "" },
-    { enabled: false, relayOrigin: null, sharedConnectionIds: [], phones: [], signingKey: "", staticKey: "", pushKey: "" },
+    { enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, phones: [], signingKey: "", staticKey: "", pushKey: "" },
   );
   assert.equal(fromBase64Url(state.signingKey)?.length, 32);
   assert.equal(fromBase64Url(state.staticKey)?.length, 32);
@@ -464,7 +464,7 @@ test("makes new keys and saves them the first time, then keeps them out of the l
   const logged = newLogLines();
   assert.match(logged, /A message with every key in it/);
   assert.ok(keysIn(state).every((key) => !logged.includes(key)), "the keys are not in the log");
-  assert.deepEqual(link.view(), { status: { state: "off" }, enabled: false, relayOrigin: null, sharedConnectionIds: [], phones: [] });
+  assert.deepEqual(link.view(), { status: { state: "off" }, enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, phones: [] });
 });
 
 test("makes new keys from the random bytes it is given", async () => {
@@ -732,6 +732,40 @@ test("shares the saved connections it is given, each once, and saves only a chan
   assert.equal(store.saved.length, 4);
 });
 
+test("shows phones a connection's SQL only when it is turned on for a connection that is shared", async () => {
+  const { link, store } = await openLink(stateWith({ sharedConnectionIds: [3, 7] }));
+  link.setQueryTextConnections([7, 9, "3", 7]);
+  assert.deepEqual(store.last.queryTextConnectionIds, [7], "only a shared connection, once");
+  assert.equal(countLines(newLogLines(), /Phones may now read the running SQL of 1 saved connection\./), 1);
+  const saves = store.saved.length;
+  link.setQueryTextConnections([7]);
+  assert.equal(store.saved.length, saves, "no change, nothing saved");
+  link.view().queryTextConnectionIds.push(3);
+  assert.deepEqual(link.view().queryTextConnectionIds, [7]);
+
+  // Sharing it again one day does not bring its SQL back: the person turns that on again themselves.
+  link.setSharedConnections([3]);
+  assert.deepEqual(store.last.queryTextConnectionIds, []);
+  link.setSharedConnections([3, 7]);
+  assert.deepEqual(store.last.queryTextConnectionIds, []);
+  link.setQueryTextConnections("nope");
+  assert.deepEqual(store.last.queryTextConnectionIds, []);
+});
+
+test("keeps the computer awake for phones only when it is told true, and remembers that", async () => {
+  const { link, store } = await openLink(stateWith());
+  for (const notAnAnswer of [undefined, null, "true", 1]) {
+    link.setKeepAwake(notAnAnswer);
+    assert.equal(link.view().keepAwake, false, String(notAnAnswer));
+  }
+  link.setKeepAwake(true);
+  assert.equal(link.view().keepAwake, true);
+  assert.equal(store.last.keepAwake, true);
+  link.setKeepAwake(false);
+  assert.equal(link.view().keepAwake, false);
+  assert.equal(store.last.keepAwake, false);
+});
+
 test("keeps a change that could not be saved until the app quits, and says so", async () => {
   const { link, store } = await openLink(stateWith());
   store.failSaves = true;
@@ -814,7 +848,7 @@ test("tells the app once a run of changes is done, never in the middle of one", 
   link.setSharedConnections([4]);
   await settle();
   assert.equal(views.length, 2);
-  assert.deepEqual(views[1], { status: { state: "off" }, enabled: false, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [4], phones: [] });
+  assert.deepEqual(views[1], { status: { state: "off" }, enabled: false, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [4], queryTextConnectionIds: [], keepAwake: false, phones: [] });
 
   link.setEnabled(true);
   await signIn(opener, link);

@@ -57,6 +57,8 @@ function saved(overrides: Record<string, unknown> = {}): Record<string, unknown>
     enabled: true,
     relayOrigin: "https://relay.example.com",
     sharedConnectionIds: [3, 1],
+    queryTextConnectionIds: [],
+    keepAwake: false,
     phones: [PHONE],
     signingKey: keyOf(1),
     staticKey: keyOf(2),
@@ -77,6 +79,8 @@ test("starts with new keys, the link off, nothing shared and no phones", () => {
     enabled: false,
     relayOrigin: null,
     sharedConnectionIds: [],
+    queryTextConnectionIds: [],
+    keepAwake: false,
     phones: [],
     signingKey: keyOf(1),
     staticKey: keyOf(2),
@@ -134,6 +138,23 @@ test("keeps only a relay address the phone link may use, written the one way", (
   assert.equal(parsePhoneLinkState(saved({ relayOrigin: "http://localhost:8787" }))?.relayOrigin, "http://localhost:8787");
   for (const relayOrigin of [undefined, null, "", "http://relay.example.com", "https://relay.example.com/room", "relay.example.com", 443]) {
     assert.equal(parsePhoneLinkState(saved({ relayOrigin }))?.relayOrigin, null, String(relayOrigin));
+  }
+});
+
+test("keeps the computer awake only when that was saved as turned on", () => {
+  assert.equal(newPhoneLinkState(crypto.randomBytes).keepAwake, false);
+  assert.equal(parsePhoneLinkState(saved({ keepAwake: true }))?.keepAwake, true);
+  for (const keepAwake of [undefined, null, false, "true", 1, {}]) {
+    assert.equal(parsePhoneLinkState(saved({ keepAwake }))?.keepAwake, false, String(keepAwake));
+  }
+});
+
+test("shows no connection's SQL until it is turned on, and only for a connection that is shared", () => {
+  assert.deepEqual(newPhoneLinkState(crypto.randomBytes).queryTextConnectionIds, []);
+  const read = parsePhoneLinkState(saved({ sharedConnectionIds: [4, 2], queryTextConnectionIds: [2, 9, 2, "4", 0] }));
+  assert.deepEqual(read?.queryTextConnectionIds, [2]);
+  for (const queryTextConnectionIds of [undefined, null, true, "2", { 0: 2 }]) {
+    assert.deepEqual(parsePhoneLinkState(saved({ sharedConnectionIds: [2], queryTextConnectionIds }))?.queryTextConnectionIds, [], String(queryTextConnectionIds));
   }
 });
 

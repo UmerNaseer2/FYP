@@ -82,8 +82,10 @@ export const PHONE = {
   changed: "phone:changed",
   paired: "phone:paired",
   setEnabled: "phone:set-enabled",
+  setKeepAwake: "phone:set-keep-awake",
   setRelay: "phone:set-relay",
   setShared: "phone:set-shared",
+  setQueryText: "phone:set-query-text",
   forget: "phone:forget",
   allowApprovals: "phone:allow-approvals",
   turnOffApprovals: "phone:turn-off-approvals",
@@ -215,6 +217,10 @@ export type PhoneView =
       relayOrigin: string | null;
       /** The saved connections phones may see, by their numbers. */
       sharedConnectionIds: number[];
+      /** The shared connections whose running SQL phones may read. */
+      queryTextConnectionIds: number[];
+      /** Whether the computer stays awake for its phones while the link is on. */
+      keepAwake: boolean;
       phones: PhoneSummary[];
       /** Why a phone cannot pair now, as a sentence for a person, or null when one can. */
       cannotPair: string | null;
@@ -246,8 +252,11 @@ export interface PhoneSettingsApi {
   /** Hears the name of a phone that has just paired with the code on show. */
   onPaired(listener: (name: string) => void): void;
   setEnabled(enabled: boolean): void;
+  setKeepAwake(keepAwake: boolean): void;
   setRelay(origin: string): Promise<SetRelayResult>;
   setShared(ids: number[]): void;
+  /** Sets which shared connections' running SQL phones may read. */
+  setQueryText(ids: number[]): void;
   /** Unpairs a phone, by its key. */
   forget(key: string): void;
   /** Lets a phone, by its key, set up a passkey to approve requests with, within the next 5 minutes. */

@@ -907,3 +907,110 @@ dl.card {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* The live status screen. A tone colors a tag or a count by what it means, as the environments do. */
+.tag.tone-good {
+  background: var(--good-soft);
+  color: var(--good-ink);
+}
+
+.tag.tone-warn {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.tag.tone-bad {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+}
+
+.stat dt {
+  color: var(--text-2);
+  font-size: 0.8125rem;
+}
+
+.stat dd {
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat.tone-warn dd {
+  color: var(--warn-ink);
+}
+
+.stat.tone-bad dd {
+  color: var(--bad-ink);
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session {
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.session-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.session-time {
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-sql summary {
+  padding: 6px 0;
+  color: var(--brand-ink);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* A running statement often comes as one long line, so here it wraps: what it does has to be readable without scrolling. An approval's SQL keeps its lines as written. */
+.session-sql .sql {
+  overflow-x: visible;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.live-row {
+  align-items: flex-start;
+}
+
+.live-value {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 45%;
+  text-align: right;
+}

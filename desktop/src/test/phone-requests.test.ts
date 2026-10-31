@@ -28,7 +28,7 @@ import {
   type PhoneApprovalRequests,
   type Refusal,
 } from "../main/phone-requests";
-import { readAnswer, type Answer, type CompareSummary, type Request } from "../shared/remote/rpc.js";
+import { MAX_LIVE_QUERY_LENGTH, MAX_LIVE_SESSIONS, readAnswer, type Answer, type CompareSummary, type LiveStatus, type Request } from "../shared/remote/rpc.js";
 import { newPhone, subscriptionOf } from "./push-phone";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ss-phone-requests-"));
@@ -144,10 +144,10 @@ function fakeApprovals(overrides: Partial<PhoneApprovalRequests> = {}): PhoneApp
 async function answer(
   request: Request,
   call: AppCaller,
-  options: { shared?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; signal?: AbortSignal } = {},
+  options: { shared?: readonly number[]; queryText?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; signal?: AbortSignal } = {},
 ): Promise<Answer> {
   const shared = options.shared ?? [1, 2, 3];
-  const requestOptions = { call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
+  const requestOptions = { call, sharedConnectionIds: () => shared, queryTextConnectionIds: () => options.queryText ?? [], appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
   const sent = await answerRequest(request, requestOptions, options.signal ?? new AbortController().signal);
   const read = readAnswer(sent);
   assert.ok(read, "a phone can read the answer");
@@ -288,23 +288,24 @@ test("says who is signed in on the computer, and what their role lets a phone do
   assert.deepEqual(await answer({ id: 1, method: "hello" }, app.call), {
     id: 1,
     ok: true,
-    result: { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true, appVersion: "1.2.3" },
+    result: { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true, canSeeLive: true, appVersion: "1.2.3" },
   });
   assert.deepEqual(app.calls, [{ method: "GET", path: "/api/me", body: undefined }]);
 
   // Reading a schema takes the Visualizer, and one of the boxes that lists a connection's schemas.
-  const cases: [string[], boolean, boolean][] = [
-    [[], false, false],
-    [["visualizer:read"], false, false],
-    [["visualizer:read", "performance:read"], false, true],
-    [["compare:read"], true, false],
-    [["dashboard:read", "visualizer:read"], false, true],
+  const cases: [string[], boolean, boolean, boolean][] = [
+    [[], false, false, false],
+    [["visualizer:read"], false, false, false],
+    [["visualizer:read", "performance:read"], false, true, true],
+    [["compare:read"], true, false, false],
+    [["dashboard:read", "visualizer:read"], false, true, true],
+    [["drift:read"], false, false, true],
   ];
-  for (const [permissions, canCompare, canReadSchemas] of cases) {
+  for (const [permissions, canCompare, canReadSchemas, canSeeLive] of cases) {
     const read = await answer({ id: 2, method: "hello" }, fakeApp({ "GET /api/me": ok(me(permissions)) }).call);
     assert.deepEqual(
       read,
-      { id: 2, ok: true, result: { signedIn: true, role: "Viewer", canCompare, canReadSchemas, appVersion: "1.2.3" } },
+      { id: 2, ok: true, result: { signedIn: true, role: "Viewer", canCompare, canReadSchemas, canSeeLive, appVersion: "1.2.3" } },
       permissions.join(" ") || "no permissions",
     );
   }
@@ -323,7 +324,7 @@ test("answers hello with nobody signed in, rather than refusing it, and logs not
   assert.deepEqual(await answer({ id: 3, method: "hello" }, app.call), {
     id: 3,
     ok: true,
-    result: { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: "1.2.3" },
+    result: { signedIn: false, role: null, canCompare: false, canReadSchemas: false, canSeeLive: false, appVersion: "1.2.3" },
   });
   assert.equal(newLogLines(), "");
 });
@@ -459,6 +460,195 @@ test("fails a comparison whose summary is not one the phone link can read, and l
   const request: Request = { id: 13, method: "compare.run", params: { source: { connectionId: 1, schema: "public" }, targets: [{ connectionId: 2, schema: "public" }] } };
   assert.deepEqual(await answer(request, fakeApp({ "POST /api/compare/phone": ok(broken) }).call), refused(13, "failed"));
   assert.match(newLogLines(), /answered with a summary the phone link cannot read/);
+});
+
+/** What the Performance screen's route answers, with fields no phone should get beside the ones it should. */
+function activityAnswer(sessions: unknown[] = [liveSession()], summary: Record<string, unknown> = {}): AppAnswer {
+  return ok({
+    connectionName: "Secret name",
+    database: "shop",
+    takenAt: "2026-10-30T10:00:00.000Z",
+    longRunningSeconds: 60,
+    thresholdConfigured: true,
+    sessions,
+    summary: { total: sessions.length, blocked: 1, idleInTransaction: 0, longRunning: 0, anyHidden: false, ...summary },
+    emptyMessage: "Nothing",
+    hiddenNote: null,
+    health: {
+      database: "shop",
+      since: "2026-10-01T00:00:00.000Z",
+      metrics: [{ key: "cache_hit_ratio", label: "Cache hit ratio", display: "99.1%", value: 99.1, level: "good", note: "Most reads come from memory." }],
+    },
+    breaches: [{ server: HOST }],
+    connectionHost: HOST,
+  });
+}
+
+function liveSession(changes: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    pid: 4242,
+    kind: "blocked",
+    querySeconds: 12.5,
+    xactSeconds: 40,
+    username: "secret_user",
+    applicationName: "report-runner",
+    clientAddr: "10.1.2.3",
+    state: "active",
+    waitingOn: "Lock: transactionid",
+    query: "SELECT secret FROM orders",
+    queryHidden: false,
+    ...changes,
+  };
+}
+
+const TRACKED = [
+  {
+    id: 9,
+    connectionId: 2,
+    schemaName: "sales",
+    label: null,
+    environment: "dev",
+    connectionHost: HOST,
+    driftStatus: "drifted",
+    driftSummary: `Could not reach ${HOST}`,
+    driftCheckedAt: "2026-10-30T09:00:00.000Z",
+    lastCheckedAt: "2026-10-30T09:59:00.000Z",
+    headVersion: "20261001",
+  },
+  { id: 10, connectionId: 7, schemaName: "other", driftStatus: "in_sync", driftCheckedAt: null, lastCheckedAt: null, headVersion: null },
+  { id: 11, connectionId: 2, schemaName: "public", driftStatus: null, driftCheckedAt: "2026-10-30T08:00:00.000Z", lastCheckedAt: null, headVersion: null },
+];
+const ACTIVITY_PATH = "GET /api/performance/activity?connectionId=2&schema=sales";
+const LIVE_REQUEST: Request = { id: 30, method: "live.read", params: { connectionId: 2 } };
+
+test("refuses live status for a connection that is not shared, without asking the app", async () => {
+  const app = fakeApp({});
+  assert.deepEqual(await answer({ id: 30, method: "live.read", params: { connectionId: 4 } }, app.call), refused(30, "not-shared"));
+  assert.deepEqual(app.calls, []);
+});
+
+test("sends a phone live status with only the fields it shows, and only this connection's schemas", async () => {
+  const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer() });
+  const read = await answer(LIVE_REQUEST, app.call);
+  assert.deepEqual(read, {
+    id: 30,
+    ok: true,
+    result: {
+      activity: {
+        takenAt: "2026-10-30T10:00:00.000Z",
+        longRunningSeconds: 60,
+        total: 1,
+        blocked: 1,
+        idleInTransaction: 0,
+        longRunning: 0,
+        sessions: [{ pid: 4242, kind: "blocked", querySeconds: 12.5, xactSeconds: 40, applicationName: "report-runner", waitingOn: "Lock: transactionid", query: null }],
+        queryText: false,
+        someHidden: false,
+      },
+      activityProblem: null,
+      health: { since: "2026-10-01T00:00:00.000Z", metrics: [{ label: "Cache hit ratio", display: "99.1%", level: "good", note: "Most reads come from memory." }] },
+      drift: [
+        { id: 9, schema: "sales", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001" },
+        { id: 11, schema: "public", status: null, checkedAt: "2026-10-30T08:00:00.000Z", headVersion: null },
+      ],
+      driftProblem: null,
+    },
+  });
+  const sent = JSON.stringify(read);
+  for (const secret of [HOST, "secret_user", "10.1.2.3", "SELECT secret", "Secret name"]) assert.ok(!sent.includes(secret), secret);
+});
+
+test("shows a session's SQL only when it is turned on for that connection, and cuts it short", async () => {
+  const long = "x".repeat(MAX_LIVE_QUERY_LENGTH + 5);
+  const sessions = [liveSession({ query: long }), liveSession({ pid: 2, query: null, queryHidden: true })];
+  const routes = { "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer(sessions, { anyHidden: true }) };
+  const off = await answer(LIVE_REQUEST, fakeApp(routes).call, { queryText: [5] });
+  assert.ok(off.ok && off.id === 30);
+  const offStatus = off.result as LiveStatus;
+  assert.equal(offStatus.activity?.queryText, false);
+  assert.deepEqual(offStatus.activity?.sessions.map((session) => session.query), [null, null]);
+
+  const on = await answer(LIVE_REQUEST, fakeApp(routes).call, { queryText: [2] });
+  assert.ok(on.ok);
+  const onStatus = on.result as LiveStatus;
+  assert.equal(onStatus.activity?.queryText, true);
+  assert.equal(onStatus.activity?.someHidden, true);
+  assert.deepEqual(onStatus.activity?.sessions.map((session) => session.query), ["x".repeat(MAX_LIVE_QUERY_LENGTH), null]);
+});
+
+test("sends the worst sessions a message holds, and the counts of them all", async () => {
+  const sessions = Array.from({ length: MAX_LIVE_SESSIONS + 3 }, (_, index) => liveSession({ pid: index + 1 }));
+  const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer(sessions) });
+  const read = await answer(LIVE_REQUEST, app.call);
+  assert.ok(read.ok);
+  const { activity } = read.result as LiveStatus;
+  assert.equal(activity?.total, MAX_LIVE_SESSIONS + 3);
+  assert.deepEqual(activity?.sessions.map((session) => session.pid), Array.from({ length: MAX_LIVE_SESSIONS }, (_, index) => index + 1));
+});
+
+test("asks about the public schema's rule when this connection tracks no schema, since the route needs a name", async () => {
+  const app = fakeApp({ "GET /api/lineage": ok([TRACKED[1]]), "GET /api/performance/activity?connectionId=2&schema=public": activityAnswer([]) });
+  const read = await answer(LIVE_REQUEST, app.call);
+  assert.ok(read.ok);
+  assert.deepEqual((read.result as LiveStatus).drift, []);
+  assert.deepEqual(app.calls.map((call) => call.path), ["/api/lineage", "/api/performance/activity?connectionId=2&schema=public"]);
+});
+
+test("still shows the part it could read when another part of live status has a problem", async () => {
+  const words = { error: `PostgreSQL reported: no route to ${HOST}` };
+  const noServer = await answer(LIVE_REQUEST, fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: { status: 502, json: words } }).call);
+  assert.ok(noServer.ok);
+  const unreachable = noServer.result as LiveStatus;
+  assert.equal(unreachable.activity, null);
+  assert.equal(unreachable.activityProblem, "unreachable");
+  assert.equal(unreachable.health, null);
+  assert.equal(unreachable.drift?.length, 2);
+  assert.ok(!JSON.stringify(noServer).includes(HOST));
+
+  const noPerformance = await answer(LIVE_REQUEST, fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: { status: 403, json: words } }).call);
+  assert.ok(noPerformance.ok);
+  assert.equal((noPerformance.result as LiveStatus).activityProblem, "forbidden");
+  assert.equal((noPerformance.result as LiveStatus).driftProblem, null);
+
+  const noDrift = await answer(
+    LIVE_REQUEST,
+    fakeApp({ "GET /api/lineage": { status: 403, json: words }, "GET /api/performance/activity?connectionId=2&schema=public": activityAnswer() }).call,
+  );
+  assert.ok(noDrift.ok);
+  assert.equal((noDrift.result as LiveStatus).driftProblem, "forbidden");
+  assert.equal((noDrift.result as LiveStatus).activityProblem, null);
+
+  // Health can be missing by itself: the route says so when it could not measure it.
+  const bare = ok({ ...(activityAnswer().json as Record<string, unknown>), health: null });
+  const noHealth = await answer(LIVE_REQUEST, fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: bare }).call);
+  assert.ok(noHealth.ok);
+  assert.equal((noHealth.result as LiveStatus).health, null);
+  assert.equal((noHealth.result as LiveStatus).activityProblem, null);
+});
+
+test("refuses live status as a whole when none of it may be seen, or the trouble is the whole request's", async () => {
+  const no = { status: 403, json: {} };
+  const both = fakeApp({ "GET /api/lineage": no, "GET /api/performance/activity?connectionId=2&schema=public": no });
+  assert.deepEqual(await answer(LIVE_REQUEST, both.call), refused(30, "forbidden"));
+
+  const signedOut = { status: 401, json: {} };
+  assert.deepEqual(await answer(LIVE_REQUEST, fakeApp({ "GET /api/lineage": signedOut }).call), refused(30, "signed-out"));
+  assert.deepEqual(await answer(LIVE_REQUEST, fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: { status: 404, json: {} } }).call), refused(30, "not-found"));
+  assert.deepEqual(await answer(LIVE_REQUEST, fakeApp({ "GET /api/lineage": new Error("down") }).call), refused(30, "no-answer"));
+  newLogLines();
+});
+
+test("fails the part of live status the app describes wrongly, without sending what it said", async () => {
+  const wrong = fakeApp({ "GET /api/lineage": ok({ tracked: [] }), "GET /api/performance/activity?connectionId=2&schema=public": activityAnswer() });
+  const read = await answer(LIVE_REQUEST, wrong.call);
+  assert.ok(read.ok);
+  assert.equal((read.result as LiveStatus).driftProblem, "failed");
+  assert.equal((read.result as LiveStatus).activityProblem, null);
+
+  // A session of an unknown kind makes the whole answer one a phone could not read, so it is refused rather than sent.
+  const odd = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer([liveSession({ kind: "sleeping" })]) });
+  assert.deepEqual(await answer(LIVE_REQUEST, odd.call), refused(30, "failed"));
+  newLogLines();
 });
 
 test("says whether the phone has drift alerts on, and the key its browser turns them on with, without asking the server", async () => {
@@ -633,7 +823,7 @@ test("fails a request when the app answers with something unexpected, and logs i
 test("reads which connections are shared at every request, so a change in Settings counts at once", async () => {
   let shared: number[] = [1];
   const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": ok({ schemas: ["public"] }) });
-  const options = { call: app.call, sharedConnectionIds: () => shared, appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
+  const options = { call: app.call, sharedConnectionIds: () => shared, queryTextConnectionIds: () => [], appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
   const ask = async (id: number) => readAnswer(await answerRequest({ id, method: "schemas.list", params: { connectionId: 1 } }, options, new AbortController().signal));
   assert.deepEqual(await ask(1), { id: 1, ok: true, result: { schemas: ["public"] } });
   shared = [];

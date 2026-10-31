@@ -7,7 +7,9 @@
  *
  * On top of that, a phone may use only the connections shared with phones in
  * Settings. That is checked here, before the server is asked anything, so a
- * request about any other connection never reaches it.
+ * request about any other connection never reaches it. And the SQL a session
+ * is running reaches a phone only when that is turned on for the connection
+ * too, because SQL can hold private data.
  *
  * A phone may change only two things. It may turn its own drift alerts on
  * and off: push.subscribe turns them on only while the role signed in on the
@@ -32,6 +34,8 @@ import { readPushSubscription, type PushSubscriptionFields } from "../core/web-p
 import type { Bytes } from "../shared/remote/bytes";
 import { objectFields } from "../shared/remote/json";
 import {
+  MAX_LIVE_QUERY_LENGTH,
+  MAX_LIVE_SESSIONS,
   isSchemaName,
   readResult,
   writeError,
@@ -44,6 +48,11 @@ import {
   type DecisionChallenge,
   type ErrorCode,
   type HelloResult,
+  type LiveActivity,
+  type LiveDrift,
+  type LiveHealth,
+  type LiveProblem,
+  type LiveStatus,
   type NewPasskeyParams,
   type PasskeyChallenge,
   type PasskeyState,
@@ -92,6 +101,8 @@ export type RequestOptions = {
   call: AppCaller;
   /** The connections shared with phones. Read for every request, so a change in Settings counts at once. */
   sharedConnectionIds: () => readonly number[];
+  /** The shared connections whose running SQL a phone may read, which is none until turned on in Settings. Read for every request too. */
+  queryTextConnectionIds: () => readonly number[];
   /** The version of the app on the computer, for hello. */
   appVersion: string;
   /** The drift alerts of the phone that asked, which push.status, push.subscribe and push.unsubscribe answer about. */
@@ -199,6 +210,8 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
       return writeResult(id, "schemas.list", await listSchemas(request.params.connectionId, options, signal));
     case "schema.read":
       return writeResult(id, "schema.read", await readSchema(request.params, options, signal));
+    case "live.read":
+      return writeResult(id, "live.read", await readLive(request.params.connectionId, options, signal));
     case "compare.run":
       return writeResult(id, "compare.run", await compare(request.params.source, request.params.targets, options, signal));
     case "push.status":
@@ -234,7 +247,7 @@ async function hello(options: RequestOptions, signal: AbortSignal): Promise<Hell
     json = await ask(options, "GET", "/api/me", undefined, signal, ME_REFUSALS);
   } catch (error) {
     if (error instanceof Refused && error.refusal === "signed-out") {
-      return { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: options.appVersion };
+      return { signedIn: false, role: null, canCompare: false, canReadSchemas: false, canSeeLive: false, appVersion: options.appVersion };
     }
     throw error;
   }
@@ -248,6 +261,8 @@ async function hello(options: RequestOptions, signal: AbortSignal): Promise<Hell
     canCompare: may("compare:read"),
     // GET /api/schema/snapshot asks for Visualizer, and GET /api/lineage/schemas, which lists the schemas to pick from, for any one of these three.
     canReadSchemas: may("visualizer:read") && (may("dashboard:read") || may("compare:read") || may("performance:read")),
+    // The two routes live.read reads. Either one is enough to show part of the screen.
+    canSeeLive: may("performance:read") || may("drift:read") || may("dashboard:read"),
     appVersion: options.appVersion,
   };
 }
@@ -358,6 +373,98 @@ function mapEach(value: unknown, map: (fields: Record<string, unknown>) => unkno
     const fields = objectFields(item);
     return fields === null ? null : map(fields);
   });
+}
+
+/**
+ * What a shared connection is doing right now, from the two routes the app's
+ * window reads for its Live Activity panel and its drift list. Both only read
+ * and record nothing, because a phone looking at this screen asks again every
+ * few seconds. So drift here is what was last recorded: rechecking it would
+ * connect to the database and write a result each time.
+ *
+ * Each part answers for itself, so a database that is down still shows its
+ * last recorded drift, and a role that may see only one part sees that part.
+ * Only a role that may see neither is refused outright.
+ */
+async function readLive(connectionId: number, options: RequestOptions, signal: AbortSignal): Promise<LiveStatus> {
+  checkShared([connectionId], options);
+  const drift = await part(async () => driftOf(await ask(options, "GET", "/api/lineage", undefined, signal), connectionId));
+  // The route asks for a schema only to pick whose saved long-running rule to
+  // use, since a server's sessions do not belong to a schema. The phone shows
+  // the rule it got, so this choice can never read as something it is not.
+  const schema = drift.value?.[0]?.schema ?? "public";
+  const path = `/api/performance/activity?connectionId=${connectionId}&schema=${encodeURIComponent(schema)}`;
+  const queryText = options.queryTextConnectionIds().includes(connectionId);
+  const activity = await part(async () => activityOf(await ask(options, "GET", path, undefined, signal), queryText));
+  if (drift.problem === "forbidden" && activity.problem === "forbidden") throw new Refused("forbidden");
+  return {
+    activity: activity.value?.activity ?? null,
+    activityProblem: activity.problem,
+    health: activity.value?.health ?? null,
+    drift: drift.value,
+    driftProblem: drift.problem,
+  };
+}
+
+/** The refusals one part of a live status can answer for. Any other, such as nobody being signed in, is true of the whole request. */
+const LIVE_PROBLEMS: Readonly<Partial<Record<Refusal, LiveProblem>>> = { forbidden: "forbidden", unreachable: "unreachable", failed: "failed" };
+
+async function part<T>(read: () => Promise<T>): Promise<{ value: T; problem: null } | { value: null; problem: LiveProblem }> {
+  try {
+    return { value: await read(), problem: null };
+  } catch (error) {
+    const problem = error instanceof Refused ? LIVE_PROBLEMS[error.refusal] : undefined;
+    if (problem === undefined) throw error;
+    return { value: null, problem };
+  }
+}
+
+/**
+ * This connection's tracked schemas from GET /api/lineage, which answers with
+ * every connection's. It holds more than a phone may be told, the connection's
+ * host and the app's summary of the last check among them, so only the fields
+ * named here are copied.
+ */
+function driftOf(json: unknown, connectionId: number): LiveDrift[] {
+  if (!Array.isArray(json)) throw new Refused("failed");
+  return json.flatMap((item) => {
+    const fields = objectFields(item);
+    if (fields === null || fields.connectionId !== connectionId) return [];
+    const { id, schemaName, driftStatus, lastCheckedAt, driftCheckedAt, headVersion } = fields;
+    return [{ id, schema: schemaName, status: driftStatus, checkedAt: lastCheckedAt ?? driftCheckedAt, headVersion } as LiveDrift];
+  });
+}
+
+/**
+ * The sessions and the health from GET /api/performance/activity, which holds
+ * more than a phone may be told, each session's database user and client
+ * address among them, so only the fields named here are copied. The SQL is
+ * copied only with `queryText` on: it can hold customer data, and a phone is
+ * more easily lost than the computer it is paired with.
+ */
+function activityOf(json: unknown, queryText: boolean): { activity: LiveActivity; health: LiveHealth | null } {
+  const fields = objectFields(json);
+  const summary = objectFields(fields?.summary);
+  if (fields === null || summary === null || !Array.isArray(fields.sessions)) throw new Refused("failed");
+  const sessions = fields.sessions.slice(0, MAX_LIVE_SESSIONS).map((session) => {
+    const each = objectFields(session) ?? {};
+    const { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query } = each;
+    return { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query: queryText && typeof query === "string" ? query.slice(0, MAX_LIVE_QUERY_LENGTH) : null };
+  });
+  const activity = {
+    takenAt: fields.takenAt,
+    longRunningSeconds: fields.longRunningSeconds,
+    total: summary.total,
+    blocked: summary.blocked,
+    idleInTransaction: summary.idleInTransaction,
+    longRunning: summary.longRunning,
+    sessions,
+    queryText,
+    someHidden: summary.anyHidden,
+  } as LiveActivity;
+  const health = objectFields(fields.health);
+  const metrics = health === null ? null : mapEach(health.metrics, ({ label, display, level, note }) => ({ label, display, level, note }));
+  return { activity, health: health === null || metrics === null ? null : ({ since: health.since, metrics } as LiveHealth) };
 }
 
 /**

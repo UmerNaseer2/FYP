@@ -112,6 +112,10 @@ export type PhoneLinkView = {
   enabled: boolean;
   relayOrigin: string | null;
   sharedConnectionIds: number[];
+  /** The shared connections whose running SQL phones may read. */
+  queryTextConnectionIds: number[];
+  /** Whether the computer stays awake for its phones while the link is on. */
+  keepAwake: boolean;
   /**
    * The paired phones, whether each is connected now, whether it gets drift
    * alerts, whether it may approve requests, and, while it may set that up,
@@ -348,6 +352,8 @@ export class PhoneLink {
       enabled: this.state.enabled,
       relayOrigin: this.state.relayOrigin,
       sharedConnectionIds: [...this.state.sharedConnectionIds],
+      queryTextConnectionIds: [...this.state.queryTextConnectionIds],
+      keepAwake: this.state.keepAwake,
       // Named one by one, so that where a phone's alerts go, and its passkey, are never passed on.
       phones: this.state.phones.map(({ key, name, pairedAt, lastSeenAt, push, passkey }) => ({
         key,
@@ -392,6 +398,14 @@ export class PhoneLink {
     this.saveState();
   }
 
+  /** Sets whether the computer stays awake for its phones while the link is on. Anything but true or false is ignored. */
+  setKeepAwake(keepAwake: unknown): void {
+    if (typeof keepAwake !== "boolean" || keepAwake === this.state.keepAwake) return;
+    logInfo(keepAwake ? "The computer will stay awake while the phone link is on." : "The computer may sleep while the phone link is on.");
+    this.state = { ...this.state, keepAwake };
+    this.saveState();
+  }
+
   /**
    * Sets the relay's address, and gives false, changing nothing, when the
    * text is not one. Phones paired through another relay keep using that
@@ -423,7 +437,20 @@ export class PhoneLink {
     const current = this.state.sharedConnectionIds;
     if (shared.length === current.length && shared.every((id, index) => id === current[index])) return;
     logInfo(`Phones may now see ${shared.length} saved ${shared.length === 1 ? "connection" : "connections"}.`);
-    this.state = { ...this.state, sharedConnectionIds: shared };
+    // A connection taken off the list loses this too, so sharing it again one
+    // day never turns its SQL back on without the person choosing to.
+    const queryText = this.state.queryTextConnectionIds.filter((id) => shared.includes(id));
+    this.state = { ...this.state, sharedConnectionIds: shared, queryTextConnectionIds: queryText };
+    this.saveState();
+  }
+
+  /** Sets which shared connections' running SQL phones may read, by their numbers. A connection that is not shared is left out. */
+  setQueryTextConnections(ids: unknown): void {
+    const queryText = readConnectionIds(ids).filter((id) => this.state.sharedConnectionIds.includes(id));
+    const current = this.state.queryTextConnectionIds;
+    if (queryText.length === current.length && queryText.every((id, index) => id === current[index])) return;
+    logInfo(`Phones may now read the running SQL of ${queryText.length} saved ${queryText.length === 1 ? "connection" : "connections"}.`);
+    this.state = { ...this.state, queryTextConnectionIds: queryText };
     this.saveState();
   }
 
@@ -514,6 +541,7 @@ export class PhoneLink {
     return {
       call: this.options.call,
       sharedConnectionIds: () => this.state.sharedConnectionIds,
+      queryTextConnectionIds: () => this.state.queryTextConnectionIds,
       appVersion: this.options.appVersion,
       alerts: {
         key: this.keys.push.publicKey.toString("base64url"),

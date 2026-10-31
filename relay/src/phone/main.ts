@@ -18,14 +18,15 @@ import { DECIDED_TEXT, decisionChoices, passkeyErrorText, type Choices } from ".
 import { PhoneConnection, RpcError, type ConnectionState, type EndReason, type RpcErrorCode } from "./connection.js";
 import { append, button, el, notice } from "./dom.js";
 import { defaultPhoneName, retryText } from "./format.js";
-import { forgetPairedComputer, loadPairedComputer, savePairedComputer } from "./idb-store.js";
+import { forgetPairedComputer, loadLastSeen, loadPairedComputer, saveLastSeen, savePairedComputer } from "./idb-store.js";
+import { agoText, offlineText } from "./live.js";
 import { HOME, parentOf, readRoute, writeRoute, type Route } from "./routes.js";
 import { readAddressPairing, readScannedText } from "./scan.js";
 import { startScanner } from "./scanner.js";
 import {
   approvalScreen, approvalsScreen, blockedScreen, compareScreen, confirmScreen, connectionScreen, homeScreen,
-  pairScreen, scanScreen, schemaScreen, settingsScreen,
-  type Actions, type AlertsView, type CompareForm, type Load, type ScanUi,
+  liveScreen, pairScreen, scanScreen, schemaScreen, settingsScreen,
+  type Actions, type AlertsView, type CompareForm, type LiveView, type Load, type ScanUi,
 } from "./screens.js";
 import type { PairedComputer } from "./store.js";
 import { approvalChallenge, approvalFingerprint, type ApprovalDecision } from "../shared/remote/approval.js";
@@ -33,7 +34,7 @@ import { fromBase64Url, sameBytes, toBase64Url, type Bytes } from "../shared/rem
 import { generateKeyPair, type KeyPair } from "../shared/remote/keys.js";
 import { cleanDeviceName, PAIRING_LIFETIME_MS, type PairingCode } from "../shared/remote/pairing.js";
 import { MAX_COMPARE_TARGETS } from "../shared/remote/rpc.js";
-import type { ApprovalList, ApprovalRead, CompareSummary, HelloResult, PasskeyChallenge, PushStatus, SharedConnection } from "../shared/remote/rpc.js";
+import type { ApprovalList, ApprovalRead, CompareSummary, HelloResult, LiveStatus, PasskeyChallenge, PushStatus, SharedConnection } from "../shared/remote/rpc.js";
 
 /** How long the phone waits for its offline helper (sw.ts) to start before it gives up on drift alerts for now. */
 const HELPER_WITHIN_MS = 10_000;
@@ -45,6 +46,9 @@ const CHALLENGE_FOR_MS = 4 * 60_000;
 const STALE_AFTER_MS = 30_000;
 /** How long a passkey prompt may stay open. */
 const PASSKEY_WITHIN_MS = 120_000;
+/** How long the live status screen waits after an answer before it asks again. */
+const LIVE_EVERY_MS = 5_000;
+const SAVE_SEEN_EVERY_MS = 60_000;
 
 const SOMETHING_WRONG = "Something went wrong on this phone. Reload the page, then try again.";
 const WAITING_TEXT = "Waiting for the computer. Schema Studio has to be running on it, with Let paired phones connect turned on.";
@@ -105,6 +109,11 @@ let statusKey: string | null = null;
 let statusTime: Text | null = null;
 let tabsKey: string | null = null;
 let hiddenAt: number | null = null;
+let lastLive: { connectionId: number; status: LiveStatus; at: number } | null = null;
+let liveAnsweredAt = 0;
+let liveAge: string | null = null;
+let lastSeen: number | null = null;
+let savedSeen: number | null = null;
 
 const actions: Actions = {
   go, openScan,
@@ -174,8 +183,18 @@ function startSession(paired: PairedComputer): void {
     return;
   }
   // Set before start(), which can already say how the link is doing.
-  session = newSession(paired, link);
+  const owner = newSession(paired, link);
+  session = owner;
   link.start();
+  loadLastSeen(paired.desktopId)
+    .then((at) => {
+      if (session !== owner || at === null || (lastSeen !== null && lastSeen >= at)) return;
+      lastSeen = at;
+      savedSeen = at;
+      renderStatus();
+    })
+    // Only a message depends on this, and it reads well without the time.
+    .catch(() => {});
 }
 
 /**
@@ -186,11 +205,16 @@ function startSession(paired: PairedComputer): void {
 function onLinkState(link: PhoneConnection, state: ConnectionState): void {
   const current = session;
   if (current !== null && current.link === link) {
+    const wasReady = current.state.kind === "ready";
     current.state = state;
     if (state.kind !== "ready") {
-      renderStatus();
+      if (wasReady) noteSeen(current, true);
+      // The live screen says at once that its numbers are getting old.
+      if (route.screen === "live") render();
+      else renderStatus();
       return;
     }
+    noteSeen(current, true);
     current.generation += 1;
     if (state.computerName !== current.paired.computerName) {
       current.paired = { ...current.paired, computerName: state.computerName };
@@ -386,6 +410,11 @@ function resetScreens(): void {
   alertsToken += 1;
   flash = null;
   forgetting = false;
+  lastLive = null;
+  liveAnsweredAt = 0;
+  liveAge = null;
+  lastSeen = null;
+  savedSeen = null;
 }
 
 /** Puts the code the phone read aside without pairing. */
@@ -427,8 +456,11 @@ function statusLine(state: ConnectionState): StatusLine | null {
       return { key: "connecting", text: "Connecting to the relay\u{2026}", time: null, action: null };
     case "opening":
       return { key: "opening", text: "Opening a private connection to the computer\u{2026}", time: null, action: null };
-    case "waiting":
-      return { key: "waiting", text: WAITING_TEXT, time: null, action: null };
+    case "waiting": {
+      // The key holds the words, so the line is rebuilt, and read out, only when they change.
+      const text = offlineText(lastSeen, Date.now());
+      return { key: `waiting:${text}`, text, time: null, action: null };
+    }
     case "retrying":
       return {
         key: `retrying:${state.reason}`,
@@ -498,6 +530,7 @@ function tabOf(screen: Route["screen"]): "home" | "approvals" | "settings" | nul
   switch (screen) {
     case "home":
     case "connection":
+    case "live":
     case "schema":
     case "compare":
       return "home";
@@ -615,7 +648,12 @@ function routeNodes(current: Session): Node[] {
     case "connection": {
       const id = route.connectionId;
       const connection = value(connectionsLoad())?.find((each) => each.id === id) ?? null;
-      return connectionScreen(connection, schemasLoad(id), actions, id);
+      return connectionScreen(connection, schemasLoad(id), value(helloLoad())?.canSeeLive ?? false, actions, id);
+    }
+    case "live": {
+      const id = route.connectionId;
+      const connection = value(connectionsLoad())?.find((each) => each.id === id) ?? null;
+      return liveScreen(connection, id, liveView(id), openTables, Date.now(), actions);
     }
     case "schema": {
       const { connectionId, schema } = route;
@@ -868,6 +906,9 @@ function refresh(): void {
     case "connection":
       drop("connections");
       drop(`schemas:${route.connectionId}`);
+      break;
+    case "live":
+      drop(liveKey(route.connectionId));
       break;
     case "schema":
       drop(`schema:${route.connectionId}/${route.schema}`);
@@ -1452,9 +1493,85 @@ function listen(): void {
 }
 
 /** Counts down to the link's next try, once a second. */
+/** A live status answer's place among the answers. */
+function liveKey(connectionId: number): string {
+  return `live:${connectionId}`;
+}
+
+function liveLoad(connectionId: number): Load<{ status: LiveStatus; at: number }> | undefined {
+  return need(liveKey(connectionId), (link) =>
+    link
+      .request({ method: "live.read", params: { connectionId } })
+      // The answer carries its own time, so coming back to it later still shows how old it is.
+      .then((status) => ({ status, at: Date.now() }))
+      .finally(() => {
+        liveAnsweredAt = Date.now();
+      }),
+  );
+}
+
+function liveView(connectionId: number): LiveView {
+  const load = liveLoad(connectionId);
+  if (load?.status === "loaded") lastLive = { connectionId, ...load.value };
+  const kept = lastLive?.connectionId === connectionId ? lastLive : null;
+  return {
+    status: kept?.status ?? null,
+    at: kept?.at ?? null,
+    linked: session?.state.kind === "ready",
+    problem: load?.status === "failed" ? load.message : null,
+  };
+}
+
+/**
+ * Asks again while the live status screen is open and can be seen, a few
+ * seconds after the last answer, however that answer went: what would fix a
+ * failure usually happens on the computer. The screen is rebuilt only when
+ * the answer comes, and a hidden page asks for nothing.
+ */
+function refreshLive(): void {
+  if (session === null || route.screen !== "live") return;
+  if (session.state.kind !== "ready") {
+    ageLive();
+    return;
+  }
+  if (document.visibilityState !== "visible" || Date.now() - liveAnsweredAt < LIVE_EVERY_MS) return;
+  const key = liveKey(route.connectionId);
+  const entry = session.answers.get(key);
+  if (entry === undefined || entry.load.status === "loading" || session.asking.has(key)) return;
+  entry.generation = -1;
+  liveLoad(route.connectionId);
+}
+
+/** Keeps "Last updated 5 minutes ago" true while the computer is away, rebuilding the screen only when those words change. */
+function ageLive(): void {
+  if (lastLive === null) return;
+  const words = agoText(lastLive.at, Date.now());
+  if (words === liveAge) return;
+  liveAge = words;
+  render();
+}
+
+/**
+ * Remembers when the computer was last seen, for the message that shows once
+ * it has gone. Saved at most once a minute unless it has to be, since only
+ * that message depends on it.
+ */
+function noteSeen(owner: Session, always = false): void {
+  const at = owner.link.computerHeardAt;
+  if (at === null) return;
+  if (lastSeen === null || at > lastSeen) lastSeen = at;
+  if (lastSeen === savedSeen) return;
+  if (!always && savedSeen !== null && lastSeen - savedSeen < SAVE_SEEN_EVERY_MS) return;
+  savedSeen = lastSeen;
+  // Losing it costs only the time in that message.
+  saveLastSeen(owner.paired.desktopId, lastSeen).catch(() => {});
+}
+
 function tick(): void {
   if (pending?.connection?.state.kind === "retrying") render();
-  else if (session?.state.kind === "retrying") renderStatus();
+  else if (session?.state.kind === "retrying" || session?.state.kind === "waiting") renderStatus();
+  if (session !== null) noteSeen(session);
+  refreshLive();
 }
 
 /** Starts the app: checks the browser can run it, reads the saved pairing, and shows the first screen. */

@@ -8,6 +8,7 @@ import test from "node:test";
 import { readUtf8, toBase64Url, utf8, type Bytes } from "../shared/remote/bytes.js";
 import {
   MAX_COMPARE_TARGETS,
+  MAX_LIVE_SESSIONS,
   MAX_PUSH_FIELD_LENGTH,
   MAX_REQUEST_BYTES,
   MAX_SCHEMA_NAME_LENGTH,
@@ -25,6 +26,8 @@ import {
   type DecideParams,
   type ErrorCode,
   type ForeignKeyOverview,
+  type LiveSession,
+  type LiveStatus,
   type Method,
   type NewPasskeyParams,
   type PushSubscriptionParams,
@@ -55,6 +58,7 @@ const METHODS: Method[] = [
   "connections.list",
   "schemas.list",
   "schema.read",
+  "live.read",
   "compare.run",
   "push.status",
   "push.subscribe",
@@ -99,6 +103,7 @@ const REQUESTS: Request[] = [
   { id: 2, method: "connections.list" },
   { id: 3, method: "schemas.list", params: { connectionId: 7 } },
   { id: 4, method: "schema.read", params: REF },
+  { id: 4, method: "live.read", params: { connectionId: 7 } },
   // The biggest number JSON carries exactly.
   { id: Number.MAX_SAFE_INTEGER, method: "compare.run", params: { source: REF, targets: [{ connectionId: 8, schema: "public" }, { connectionId: 7, schema: "archive" }] } },
   { id: 5, method: "push.status" },
@@ -195,8 +200,39 @@ const APPROVAL: ApprovalSummary = {
 };
 
 /** A successful answer to each request, as the computer sends it. */
+const LIVE_SESSION: LiveSession = {
+  pid: 4242,
+  kind: "blocked",
+  querySeconds: 12.5,
+  xactSeconds: 40,
+  applicationName: "report-runner",
+  waitingOn: "Lock: transactionid",
+  query: "SELECT 1",
+};
+const LIVE: LiveStatus = {
+  activity: {
+    takenAt: "2026-10-30T10:00:00.000Z",
+    longRunningSeconds: 60,
+    total: 3,
+    blocked: 1,
+    idleInTransaction: 1,
+    longRunning: 0,
+    sessions: [LIVE_SESSION],
+    queryText: true,
+    someHidden: false,
+  },
+  activityProblem: null,
+  health: { since: "2026-10-01T00:00:00.000Z", metrics: [{ label: "Cache hit ratio", display: "99.1%", level: "good", note: "Most reads come from memory." }] },
+  drift: [{ id: 9, schema: "public", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001" }],
+  driftProblem: null,
+};
+
+function liveWith(changes: Record<string, unknown>): unknown {
+  return { ...LIVE, activity: { ...LIVE.activity, ...changes } };
+}
+
 const RESULTS: { [M in Method]: Results[M] } = {
-  hello: { signedIn: true, role: "Viewer", canCompare: false, canReadSchemas: true, appVersion: "1.0.0" },
+  hello: { signedIn: true, role: "Viewer", canCompare: false, canReadSchemas: true, canSeeLive: true, appVersion: "1.0.0" },
   "connections.list": {
     connections: [
       { id: 7, name: "Production", environment: "prod", database: "shop" },
@@ -205,6 +241,7 @@ const RESULTS: { [M in Method]: Results[M] } = {
   },
   "schemas.list": { schemas: ["public", "archive"] },
   "schema.read": OVERVIEW,
+  "live.read": LIVE,
   "compare.run": SUMMARY,
   "push.status": { key: PUSH_KEY, subscribed: false },
   "push.subscribe": { key: PUSH_KEY, subscribed: true },
@@ -300,6 +337,10 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "schemas.list", params: { connectionId: "7" } },
     { id: 5, method: "schemas.list", params: REF },
     { id: 5, method: "schemas.list", params: { connectionId: 7 }, x: 1 },
+    { id: 5, method: "live.read" },
+    { id: 5, method: "live.read", params: {} },
+    { id: 5, method: "live.read", params: { connectionId: 0 } },
+    { id: 5, method: "live.read", params: REF },
     { id: 5, method: "schema.read", params: { connectionId: 7 } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "" } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "a".repeat(MAX_SCHEMA_NAME_LENGTH + 1) } },
@@ -431,7 +472,7 @@ test("writes each kind of result and reads it back the same", () => {
     assert.deepEqual(readResult(method, answer.result), RESULTS[method], method);
   }
   // Nobody signed in, so there is no role.
-  const signedOut = { signedIn: false, role: null, canCompare: false, canReadSchemas: false, appVersion: "1.0.0" };
+  const signedOut = { signedIn: false, role: null, canCompare: false, canReadSchemas: false, canSeeLive: false, appVersion: "1.0.0" };
   assert.deepEqual(readResult("hello", signedOut), signedOut);
   // A request whose SQL the computer could not show exactly, which a phone may only reject.
   const unshown = { ...RESULTS["approvals.read"], scripts: null };
@@ -533,6 +574,20 @@ test("reads a result with fields it does not know, and leaves them out", () => {
   assert.deepEqual(readResult("push.status", { ...RESULTS["push.status"], since: 1_640_000_000_000 }), RESULTS["push.status"]);
 });
 
+test("reads a live status with no activity or drift when it says why, and with no health at all", () => {
+  const lacking: LiveStatus[] = [
+    { ...LIVE, activity: null, activityProblem: "forbidden", health: null },
+    { ...LIVE, drift: null, driftProblem: "unreachable" },
+    { ...LIVE, health: null },
+  ];
+  for (const status of lacking) assert.deepEqual(readResult("live.read", status), status);
+});
+
+test("reads a computer's hello without canSeeLive as one that cannot show live status yet", () => {
+  const { canSeeLive: _left, ...older } = RESULTS.hello;
+  assert.equal(readResult("hello", older)?.canSeeLive, false);
+});
+
 test("refuses a result whose fields are the wrong kind", () => {
   const cases: [Method, unknown][] = [
     ["hello", { ...RESULTS.hello, role: 7 }],
@@ -554,6 +609,19 @@ test("refuses a result whose fields are the wrong kind", () => {
     ["compare.run", summaryWith({ history: 7 })],
     ["compare.run", summaryWith({ lines: [{ ...NOTE_LINE, severity: "warning" }] })],
     ["compare.run", summaryWith({ lines: [{ ...NOTE_LINE, change: "moved" }] })],
+    ["live.read", { ...LIVE, activity: null }],
+    ["live.read", { ...LIVE, activityProblem: "unreachable" }],
+    ["live.read", { ...LIVE, drift: null }],
+    ["live.read", { ...LIVE, driftProblem: "failed" }],
+    ["live.read", { ...LIVE, activity: null, activityProblem: "offline" }],
+    ["live.read", { ...LIVE, drift: [{ ...LIVE.drift?.[0], status: "stale" }] }],
+    ["live.read", { ...LIVE, health: { since: null, metrics: [{ label: "x", display: null, level: "fine", note: "y" }] } }],
+    ["live.read", liveWith({ sessions: Array.from({ length: MAX_LIVE_SESSIONS + 1 }, () => LIVE_SESSION) })],
+    ["live.read", liveWith({ sessions: [{ ...LIVE_SESSION, kind: "sleeping" }] })],
+    ["live.read", liveWith({ sessions: [{ ...LIVE_SESSION, pid: 0 }] })],
+    ["live.read", liveWith({ sessions: [{ ...LIVE_SESSION, querySeconds: "12" }] })],
+    ["live.read", liveWith({ total: -1 })],
+    ["live.read", liveWith({ queryText: "yes" })],
     ["push.status", { subscribed: true }],
     ["push.status", { key: PUSH_KEY, subscribed: "yes" }],
     ["push.subscribe", { key: PUSH_KEY, subscribed: null }],

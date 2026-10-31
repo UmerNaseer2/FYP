@@ -168,6 +168,8 @@ test("the Settings page's Phone section gets the phone link's messages, and cann
   phone.setEnabled(true, "extra");
   await phone.setRelay("https://relay.example.com", "extra");
   phone.setShared([1, 2], "extra");
+  phone.setQueryText([2], "extra");
+  phone.setKeepAwake(true, "extra");
   phone.forget("key", "extra");
   phone.allowApprovals("key", "extra");
   phone.turnOffApprovals("key", "extra");
@@ -183,6 +185,8 @@ test("the Settings page's Phone section gets the phone link's messages, and cann
     { kind: "send", channel: PHONE.setEnabled, args: [true] },
     { kind: "invoke", channel: PHONE.setRelay, args: ["https://relay.example.com"] },
     { kind: "send", channel: PHONE.setShared, args: [[1, 2]] },
+    { kind: "send", channel: PHONE.setQueryText, args: [[2]] },
+    { kind: "send", channel: PHONE.setKeepAwake, args: [true] },
     { kind: "send", channel: PHONE.forget, args: ["key"] },
     { kind: "send", channel: PHONE.allowApprovals, args: ["key"] },
     { kind: "send", channel: PHONE.turnOffApprovals, args: ["key"] },

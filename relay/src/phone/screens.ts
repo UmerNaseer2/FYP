@@ -7,11 +7,30 @@ import { ACTION_LABELS, requestedText, requestSize, requestTitle, versionText, t
 import { BUILD_VERSION } from "./build-info.js";
 import { button, el, envBadge, failed, heading, loading, notice, type Child } from "./dom.js";
 import { accessProblem, CHANGE_LABELS, countText, dayText, foreignKeyText, SEVERITY_LABELS, targetHeadline } from "./format.js";
+import {
+  activityProblemText,
+  agoText,
+  driftCheckedText,
+  driftProblemText,
+  driftTag,
+  healthSinceText,
+  HEALTH_LABELS,
+  HEALTH_TONES,
+  KIND_LABELS,
+  KIND_TONES,
+  longRunningText,
+  moreSessionsText,
+  queryTextHint,
+  sessionTimeText,
+  timeText,
+  transactionText,
+  type Tone,
+} from "./live.js";
 import type { Route } from "./routes.js";
 import type { PairedComputer } from "./store.js";
 import type { ApprovalDecision, ApprovalScript } from "../shared/remote/approval.js";
 import { MAX_COMPARE_TARGETS } from "../shared/remote/rpc.js";
-import type { ApprovalList, ApprovalRead, ApprovalSummary, CompareSummary, HelloResult, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
+import type { ApprovalList, ApprovalRead, ApprovalSummary, CompareSummary, HelloResult, LiveActivity, LiveDrift, LiveHealth, LiveSession, LiveStatus, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
 
 /** Something asked of the computer: still coming, in, or failed with a sentence to show. */
 export type Load<T> = { status: "loading" } | { status: "loaded"; value: T } | { status: "failed"; message: string };
@@ -163,9 +182,11 @@ export function homeScreen(computerName: string, hello: HelloResult | null, conn
   return nodes;
 }
 
-export function connectionScreen(connection: SharedConnection | null, schemas: Load<string[]> | undefined, actions: Actions, connectionId: number): Node[] {
+export function connectionScreen(connection: SharedConnection | null, schemas: Load<string[]> | undefined, canSeeLive: boolean, actions: Actions, connectionId: number): Node[] {
   const nodes: Node[] = [heading(connection?.name ?? "Connection")];
   if (connection !== null) nodes.push(el("p", { class: "lead" }, envBadge(connection.environment), " ", el("span", { class: "mono" }, connection.database)));
+  // Before the schemas load, because live status does not depend on them.
+  if (canSeeLive) nodes.push(el("div", { class: "actions" }, button("Live status", () => actions.go({ screen: "live", connectionId }), { class: "secondary", id: "live-status" })));
   if (schemas === undefined || schemas.status === "loading") return [...nodes, loading("Asking the computer for the schemas\u{2026}")];
   if (schemas.status === "failed") return [...nodes, failed(schemas.message, actions.refresh)];
   if (schemas.value.length === 0) return [...nodes, notice("This database has no schemas the phone can show.", "info")];
@@ -173,6 +194,128 @@ export function connectionScreen(connection: SharedConnection | null, schemas: L
     button(el("span", { class: "row-title mono" }, schema), () => actions.go({ screen: "schema", connectionId, schema }), { class: "row", id: `schema-${schema}` }),
   );
   return [...nodes, el("h2", { class: "section" }, countText(schemas.value.length, "schema", "schemas")), el("div", { class: "list" }, rows)];
+}
+
+/** What the live status screen knows: the newest answer, and how the link and the last ask went. */
+export type LiveView = {
+  /** The newest answer, kept while a new one is on its way so the numbers do not blink away. */
+  status: LiveStatus | null;
+  /** When the answer came, by this phone's own clock. */
+  at: number | null;
+  /** False while the computer is away: the numbers then show as old. */
+  linked: boolean;
+  /** Why the last ask failed, when it did. */
+  problem: string | null;
+};
+
+/**
+ * What a database is doing right now. The computer asks it each time, so the
+ * screen is as live as the link: it refreshes only while it is open, and
+ * every number on it stays marked with the time it was read.
+ */
+export function liveScreen(connection: SharedConnection | null, connectionId: number, view: LiveView, openTables: ReadonlySet<string>, now: number, actions: Actions): Node[] {
+  const nodes: Node[] = [heading("Live status")];
+  if (connection !== null) nodes.push(el("p", { class: "lead" }, envBadge(connection.environment), ` ${connection.name} \u{2022} `, el("span", { class: "mono" }, connection.database)));
+  const { status, at } = view;
+  if (status === null || at === null) {
+    if (view.problem !== null) return [...nodes, failed(view.problem, actions.refresh)];
+    return [...nodes, loading(view.linked ? "Asking the computer what this database is doing\u{2026}" : "Live status will show when the computer comes back.")];
+  }
+  nodes.push(el("p", { class: "hint", id: "live-updated" }, view.linked ? `Updated ${timeText(at)}. Refreshes every 5 seconds while this screen is open.` : `Last updated ${agoText(at, now)}. These numbers are old, because the computer is away.`));
+  if (view.problem !== null) nodes.push(notice(`Could not refresh just now. ${view.problem}`, "info"));
+  nodes.push(...activityPart(status, connectionId, openTables, actions), ...healthPart(status.health), ...driftPart(status, now));
+  return nodes;
+}
+
+function activityPart(status: LiveStatus, connectionId: number, openTables: ReadonlySet<string>, actions: Actions): Node[] {
+  const nodes: Node[] = [el("h2", { class: "section" }, "Right now")];
+  const { activity, activityProblem } = status;
+  if (activity === null) return [...nodes, notice(activityProblem === null ? "This database's activity is not showing." : activityProblemText(activityProblem), "bad")];
+  nodes.push(
+    el(
+      "dl",
+      { class: "stats" },
+      stat("Active", activity.total, "plain"),
+      stat("Waiting for a lock", activity.blocked, activity.blocked > 0 ? "bad" : "plain"),
+      stat("Idle in a transaction", activity.idleInTransaction, activity.idleInTransaction > 0 ? "warn" : "plain"),
+      stat("Long-running", activity.longRunning, activity.longRunning > 0 ? "warn" : "plain"),
+    ),
+  );
+  if (activity.sessions.length === 0) return [...nodes, el("p", { class: "muted" }, "No other session on this server is running a statement right now.")];
+  nodes.push(el("p", { class: "hint" }, longRunningText(activity)));
+  nodes.push(el("div", { class: "sessions" }, activity.sessions.map((session) => sessionCard(session, connectionId, openTables, actions))));
+  const more = moreSessionsText(activity);
+  if (more !== null) nodes.push(el("p", { class: "hint" }, more));
+  const hint = queryTextHint(activity);
+  if (hint !== null) nodes.push(el("p", { class: "hint" }, hint));
+  return nodes;
+}
+
+function stat(label: string, value: number, tone: Tone): Node {
+  return el("div", { class: `stat tone-${tone}` }, el("dt", {}, label), el("dd", {}, String(value)));
+}
+
+function toneTag(label: string, tone: Tone): Node {
+  return el("span", { class: `tag tone-${tone}` }, label);
+}
+
+function sessionCard(session: LiveSession, connectionId: number, openTables: ReadonlySet<string>, actions: Actions): Node {
+  const time = sessionTimeText(session);
+  const transaction = transactionText(session);
+  const facts = [session.applicationName, `Process ${session.pid}`].filter((fact) => fact !== null && fact !== "").join(" \u{2022} ");
+  const nodes: Child[] = [
+    el("div", { class: "session-head" }, toneTag(KIND_LABELS[session.kind], KIND_TONES[session.kind]), time !== null && el("span", { class: "session-time" }, time)),
+    el("p", { class: "small muted" }, facts),
+    session.waitingOn !== null && el("p", { class: "small" }, `Waiting on ${session.waitingOn}`),
+    transaction !== null && el("p", { class: "small muted" }, transaction),
+  ];
+  if (session.query !== null) {
+    // Each screen is built anew at every refresh, so a session keeps its SQL open by its number, as a schema's tables do.
+    const key = `live:${connectionId}/${session.pid}`;
+    const details = el("details", { class: "session-sql", open: openTables.has(key) }, el("summary", {}, "Show the SQL"), el("pre", { class: "sql" }, session.query));
+    details.addEventListener("toggle", () => actions.toggleTable(key, details.open));
+    nodes.push(details);
+  }
+  return el("div", { class: "card session" }, nodes);
+}
+
+function healthPart(health: LiveHealth | null): Node[] {
+  if (health === null) return [];
+  return [
+    el("h2", { class: "section" }, "Health"),
+    el("p", { class: "hint" }, healthSinceText(health)),
+    el(
+      "div",
+      { class: "list" },
+      health.metrics.map((metric) =>
+        el(
+          "div",
+          { class: "row live-row" },
+          el("span", { class: "row-main" }, el("span", { class: "row-title" }, metric.label), el("span", { class: "small muted" }, metric.note)),
+          el("span", { class: "live-value" }, metric.display !== null && el("span", { class: "mono" }, metric.display), toneTag(HEALTH_LABELS[metric.level], HEALTH_TONES[metric.level])),
+        ),
+      ),
+    ),
+  ];
+}
+
+function driftPart(status: LiveStatus, now: number): Node[] {
+  const nodes: Node[] = [el("h2", { class: "section" }, "Drift")];
+  const { drift, driftProblem } = status;
+  if (drift === null) return [...nodes, notice(driftProblem === null ? "Drift is not showing." : driftProblemText(driftProblem), "bad")];
+  if (drift.length === 0) return [...nodes, el("p", { class: "muted" }, "No schema on this connection is tracked for drift yet. Track one in Schema Studio on the computer.")];
+  return [...nodes, el("div", { class: "list" }, drift.map((each) => driftRow(each, now)))];
+}
+
+function driftRow(drift: LiveDrift, now: number): Node {
+  const tag = driftTag(drift);
+  const checked = driftCheckedText(drift, now);
+  return el(
+    "div",
+    { class: "row live-row" },
+    el("span", { class: "row-main" }, el("span", { class: "row-title mono" }, drift.schema), checked !== null && el("span", { class: "small muted" }, checked)),
+    el("span", { class: "live-value" }, toneTag(tag.label, tag.tone)),
+  );
 }
 
 export function schemaScreen(

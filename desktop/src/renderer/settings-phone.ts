@@ -38,6 +38,8 @@
   type PhonePairing = import("../shared/ipc").PhonePairing;
   /** The view while the phone link is open. */
   type LinkView = Extract<PhoneView, { available: true }>;
+  /** The two boxes a connection has: shared with phones, and its running SQL shown to them. */
+  type ConnectionChoice = "shared" | "query-text";
   /** A new pairing code: its drawing, and when it runs out. */
   type Code = Extract<PhonePairing, { ok: true }>;
   /** A button in a phone's row, by the phone's key and what the button does. */
@@ -79,6 +81,7 @@
   const unavailable = element<HTMLParagraphElement>("phone-unavailable");
   const content = element<HTMLDivElement>("phone-content");
   const enabledBox = element<HTMLInputElement>("phone-enabled");
+  const keepAwakeBox = element<HTMLInputElement>("phone-keep-awake");
   const statusParts = {
     dot: element<HTMLSpanElement>("phone-status-dot"),
     text: element<HTMLSpanElement>("phone-status"),
@@ -338,13 +341,16 @@
     setText(connectionParts.message, message);
   }
 
-  /** A saved connection's row: a box to tick, its name, and its database, but never its host or user name. */
-  function connectionRow(connection: PhoneConnection): HTMLLabelElement {
+  /**
+   * A saved connection's row: a box to tick, its name, and its database, but
+   * never its host or user name. Below it, while it is shared, a second box
+   * lets phones read the SQL it is running. Two labels side by side, because a
+   * label belongs to one box.
+   */
+  function connectionRow(connection: PhoneConnection): HTMLDivElement {
     const row = document.createElement("label");
     row.className = "row row-choice";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = String(connection.id);
+    const box = connectionBox(connection, "shared");
     const text = document.createElement("span");
     text.className = "choice-text";
     const name = document.createElement("span");
@@ -352,13 +358,35 @@
     name.textContent = connection.name;
     const detail = document.createElement("span");
     detail.className = "hint";
-    detail.textContent =
-      connection.environment === "unset"
-        ? `Database ${connection.database}`
-        : `${ENVIRONMENTS[connection.environment]}, database ${connection.database}`;
+    detail.textContent = connection.environment === "unset" ? `Database ${connection.database}` : `${ENVIRONMENTS[connection.environment]}, database ${connection.database}`;
     text.append(name, detail);
     row.append(box, text);
-    return row;
+
+    const queryRow = document.createElement("label");
+    queryRow.className = "row row-choice row-choice-inner";
+    queryRow.hidden = true;
+    const queryText = document.createElement("span");
+    queryText.className = "choice-text";
+    const queryName = document.createElement("span");
+    queryName.textContent = "Show phones the SQL it is running";
+    const queryDetail = document.createElement("span");
+    queryDetail.className = "hint";
+    queryDetail.textContent = "SQL can hold private data such as names or card numbers, so this is off until you turn it on.";
+    queryText.append(queryName, queryDetail);
+    queryRow.append(connectionBox(connection, "query-text"), queryText);
+
+    const both = document.createElement("div");
+    both.className = "connection-choices";
+    both.append(row, queryRow);
+    return both;
+  }
+
+  function connectionBox(connection: PhoneConnection, choice: ConnectionChoice): HTMLInputElement {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = String(connection.id);
+    box.dataset.choice = choice;
+    return box;
   }
 
   function showConnections(connections: PhoneConnection[]): void {
@@ -369,15 +397,26 @@
     showShared();
   }
 
-  function connectionBoxes(): HTMLInputElement[] {
-    return Array.from(connectionParts.list.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+  function connectionBoxes(choice: ConnectionChoice): HTMLInputElement[] {
+    return Array.from(connectionParts.list.querySelectorAll<HTMLInputElement>(`input[data-choice="${choice}"]`));
+  }
+
+  function tickedConnections(choice: ConnectionChoice): number[] {
+    return connectionBoxes(choice).filter((box) => box.checked).map((box) => Number(box.value));
   }
 
   /** Ticks the boxes of the connections phones may see now. */
   function showShared(): void {
     if (current === null || !connectionsListed) return;
     const shared = new Set(current.sharedConnectionIds);
-    for (const box of connectionBoxes()) box.checked = shared.has(Number(box.value));
+    for (const box of connectionBoxes("shared")) box.checked = shared.has(Number(box.value));
+    const queryText = new Set(current.queryTextConnectionIds);
+    for (const box of connectionBoxes("query-text")) {
+      const id = Number(box.value);
+      box.checked = queryText.has(id);
+      const row = box.closest("label");
+      if (row !== null) row.hidden = !shared.has(id);
+    }
   }
 
   /** Lists the saved connections, to choose which ones phones may see, or says why they cannot be listed. */
@@ -400,7 +439,7 @@
         // Check again is about to disappear, so focus must not be left on it.
         const hadFocus = connectionParts.problem.contains(document.activeElement);
         showConnections(answer.connections);
-        if (hadFocus) connectionBoxes()[0]?.focus();
+        if (hadFocus) connectionBoxes("shared")[0]?.focus();
       }
     } catch {
       showConnectionsProblem(CONNECTIONS_NOT_LISTED);
@@ -551,6 +590,9 @@
     if (!codeParts.panel.hidden && (!view.enabled || view.relayOrigin !== codeRelay)) hideCode();
     current = view;
     enabledBox.checked = view.enabled;
+    keepAwakeBox.checked = view.keepAwake;
+    // The hold applies only while the link is on.
+    keepAwakeBox.disabled = !view.enabled;
     showStatus(view.status);
     if (!relayEdited) relayParts.input.value = view.relayOrigin ?? "";
     showRelayWarning();
@@ -571,6 +613,7 @@
 
   function start(api: PhoneSettingsApi): void {
     enabledBox.addEventListener("change", () => api.setEnabled(enabledBox.checked));
+    keepAwakeBox.addEventListener("change", () => api.setKeepAwake(keepAwakeBox.checked));
     statusParts.connectNow.addEventListener("click", () => api.connectNow());
     relayParts.form.addEventListener("submit", (event) => {
       // The page may not send a form anywhere; the main process does the saving.
@@ -591,8 +634,9 @@
       api.cancelPairing();
       hideCode();
     });
-    connectionParts.list.addEventListener("change", () => {
-      api.setShared(connectionBoxes().filter((box) => box.checked).map((box) => Number(box.value)));
+    connectionParts.list.addEventListener("change", (event) => {
+      if (event.target instanceof HTMLInputElement && event.target.dataset.choice === "query-text") api.setQueryText(tickedConnections("query-text"));
+      else api.setShared(tickedConnections("shared"));
     });
     connectionParts.retry.addEventListener("click", () => void loadConnections(api));
     phoneList.addEventListener("click", (event) => {

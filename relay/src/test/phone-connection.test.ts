@@ -74,7 +74,7 @@ const START = 1_700_000_000_000;
 const ONLINE = writeControl({ type: "online" });
 const OFFLINE = writeControl({ type: "offline" });
 
-const HELLO: HelloResult = { signedIn: true, role: "Admin", canCompare: true, canReadSchemas: true, appVersion: "1.0.0" };
+const HELLO: HelloResult = { signedIn: true, role: "Admin", canCompare: true, canReadSchemas: true, canSeeLive: true, appVersion: "1.0.0" };
 const CONNECTIONS: ConnectionList = { connections: [{ id: 1, name: "Shop", environment: "prod", database: "shop" }] };
 const NOT_SHARED = "That connection is not shared with phones. Share it in Schema Studio's Settings on the computer.";
 const WELCOME: OpeningAnswer = { ok: true, name: COMPUTER_NAME };
@@ -433,6 +433,39 @@ test("waits on the open connection while the computer is away, and opens a sessi
   await computer.link.send(writeResult(1, "connections.list", CONNECTIONS));
   assert.deepEqual(await list, CONNECTIONS);
   assert.deepEqual(paired, []);
+});
+
+test("knows when the computer was last heard, and does not count hearing that it has gone", async () => {
+  const { phone, clock, sockets } = setUp({ pairing: undefined });
+  phone.start();
+  const socket = latest(sockets);
+  socket.accept();
+  socket.say(OFFLINE);
+  assert.equal(phone.computerHeardAt, null, "Nothing has been heard from a computer that has not opened a link.");
+  clock.advance(1_000);
+  socket.say(ONLINE);
+  const computer = await computerAnswers(socket, welcomeSession);
+  assert.ok(computer !== null, "The computer did not let the phone in.");
+  await until(() => stateOf(phone).kind === "ready", "the link to open");
+  const opened = clock.now();
+  assert.equal(phone.computerHeardAt, opened);
+
+  clock.advance(1_000);
+  socket.say(PONG);
+  assert.equal(phone.computerHeardAt, opened + 1_000, "An answer to a ping shows the relay would have said if it had gone.");
+
+  clock.advance(1_000);
+  const list = phone.request({ method: "connections.list" });
+  assert.deepEqual(await nextRequest(computer), { id: 1, method: "connections.list" });
+  await computer.link.send(writeResult(1, "connections.list", CONNECTIONS));
+  assert.deepEqual(await list, CONNECTIONS);
+  assert.equal(phone.computerHeardAt, opened + 2_000);
+
+  // A page a phone has frozen reads this long after it was sent, with no timer having run.
+  clock.time += 60 * 60_000;
+  socket.say(OFFLINE);
+  assert.equal(stateOf(phone).kind, "waiting");
+  assert.equal(phone.computerHeardAt, opened + 2_000);
 });
 
 test("has at most four requests at the computer at once, and sends the next as each is answered", async () => {

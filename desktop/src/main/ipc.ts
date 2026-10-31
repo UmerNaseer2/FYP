@@ -79,9 +79,11 @@ export type IpcHandlers = {
   phone: {
     get(): PhoneView;
     setEnabled(enabled: boolean): void;
+    setKeepAwake(keepAwake: boolean): void;
     /** Takes what the page sent as it is; it is read before it is used. */
     setRelay(origin: unknown): SetRelayResult;
     setShared(ids: unknown): void;
+    setQueryText(ids: unknown): void;
     forget(key: string): void;
     allowApprovals(key: string): void;
     turnOffApprovals(key: string): void;
@@ -194,8 +196,12 @@ export function registerIpc(handlers: IpcHandlers): void {
   on(settings, PHONE.setEnabled, (enabled) => {
     if (typeof enabled === "boolean") handlers.phone.setEnabled(enabled);
   });
+  on(settings, PHONE.setKeepAwake, (keepAwake) => {
+    if (typeof keepAwake === "boolean") handlers.phone.setKeepAwake(keepAwake);
+  });
   handle(settings, PHONE.setRelay, (origin) => handlers.phone.setRelay(origin));
   on(settings, PHONE.setShared, (ids) => handlers.phone.setShared(ids));
+  on(settings, PHONE.setQueryText, (ids) => handlers.phone.setQueryText(ids));
   on(settings, PHONE.forget, (key) => {
     if (typeof key === "string") handlers.phone.forget(key);
   });

@@ -14,6 +14,8 @@ function viewWith(status: PhoneStatus): PhoneView {
     enabled: true,
     relayOrigin: "https://relay.example.com",
     sharedConnectionIds: [],
+    queryTextConnectionIds: [],
+    keepAwake: false,
     phones: [],
     cannotPair: null,
   };

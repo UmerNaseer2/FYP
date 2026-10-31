@@ -1,8 +1,10 @@
 /**
  * Where the phone keeps its pairing: the browser's IndexedDB, which can hold
  * the phone's private key as a key the page can use but never read out.
- * There is one record, read with readPairedComputer (store.ts), so a damaged
- * or older record reads as none, and the phone asks to pair again.
+ * The pairing is read with readPairedComputer (store.ts), so a damaged or
+ * older record reads as none, and the phone asks to pair again. Beside it is
+ * when the computer was last seen, which only words a message, so losing it
+ * costs nothing.
  */
 import { readPairedComputer, type PairedComputer } from "./store.js";
 
@@ -10,6 +12,7 @@ const DATABASE = "schema-studio-phone";
 const DATABASE_VERSION = 1;
 const STORE = "pairing";
 const KEY = "computer";
+const LAST_SEEN = "last-seen";
 /** How long the storage has to answer before the app says so, since a stuck browser never answers at all. */
 const WITHIN_MS = 10_000;
 const TOO_SLOW = "The phone's storage did not answer in time. Reload the page to try again.";
@@ -87,7 +90,23 @@ export async function savePairedComputer(record: PairedComputer): Promise<void> 
   navigator.storage?.persist?.().catch(() => {});
 }
 
-/** Forgets the pairing. */
+/** Forgets the pairing, and when that computer was last seen. */
 export async function forgetPairedComputer(): Promise<void> {
-  await inStore("readwrite", (store) => store.delete(KEY));
+  await inStore("readwrite", (store) => {
+    store.delete(LAST_SEEN);
+    return store.delete(KEY);
+  });
+}
+
+/** When this computer was last seen, or null when that is not known. */
+export async function loadLastSeen(desktopId: string): Promise<number | null> {
+  const saved = await inStore("readonly", (store) => store.get(LAST_SEEN));
+  if (typeof saved !== "object" || saved === null) return null;
+  const { desktopId: savedId, at } = saved as { desktopId?: unknown; at?: unknown };
+  return savedId === desktopId && typeof at === "number" && Number.isFinite(at) ? at : null;
+}
+
+/** Saves when this computer was last seen. */
+export async function saveLastSeen(desktopId: string, at: number): Promise<void> {
+  await inStore("readwrite", (store) => store.put({ desktopId, at }, LAST_SEEN));
 }

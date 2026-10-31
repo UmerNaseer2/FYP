@@ -17,6 +17,7 @@ import { isSchemaName } from "../shared/remote/rpc.js";
 export type Route =
   | { screen: "home" }
   | { screen: "connection"; connectionId: number }
+  | { screen: "live"; connectionId: number }
   | { screen: "schema"; connectionId: number; schema: string }
   | { screen: "compare" }
   | { screen: "settings" }
@@ -51,6 +52,7 @@ export function readRoute(hash: string): Route {
   const connectionId = readId(parts[2]);
   if (connectionId === null) return HOME;
   if (parts.length === 3) return { screen: "connection", connectionId };
+  if (parts.length === 4 && parts[3] === "live") return { screen: "live", connectionId };
   if (parts.length !== 5 || parts[3] !== "schemas") return HOME;
   const schema = decode(parts[4]);
   return isSchemaName(schema) ? { screen: "schema", connectionId, schema } : HOME;
@@ -66,6 +68,8 @@ export function writeRoute(route: Route): string {
       return "";
     case "connection":
       return `#/connections/${route.connectionId}`;
+    case "live":
+      return `#/connections/${route.connectionId}/live`;
     case "schema": {
       // A schema name could hold "/", "#" or "%", so it is written escaped.
       // A name that cannot be written at all (one with half of an emoji,
@@ -98,6 +102,7 @@ export function parentOf(route: Route): Route | null {
   switch (route.screen) {
     case "home":
       return null;
+    case "live":
     case "schema":
       return { screen: "connection", connectionId: route.connectionId };
     case "approval":

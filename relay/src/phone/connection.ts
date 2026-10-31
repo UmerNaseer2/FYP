@@ -276,6 +276,14 @@ export class PhoneConnection {
   private readonly clock: Clock;
   private readonly random: () => number;
   private current: ConnectionState = { kind: "off" };
+  /**
+   * When the computer was last known to be there: the link had just opened,
+   * or something other than "it left" came from the relay while the link was
+   * open. A page a phone has frozen hears nothing, so this keeps the time from
+   * before the freeze. "It left" does not count, because a frozen page can
+   * read it long after it was sent.
+   */
+  computerHeardAt: number | null = null;
   private started = false;
   /** Set once stop() is called or the connection ends, after which it never connects again. */
   private finished = false;
@@ -447,13 +455,17 @@ export class PhoneConnection {
       connection.handshake = null;
       this.dropLink(connection);
       this.setState({ kind: "waiting" });
+    } else if (this.current.kind === "ready") {
+      // Anything else, such as the answer to a ping, shows that the relay is
+      // still there, and it would have said if the computer had gone.
+      this.computerHeardAt = connection.heardAt;
     }
-    // Anything else, such as the answer to a ping, only shows that the relay is still there.
   }
 
   private whenBinary(connection: Connection, data: Bytes): void {
     if (this.connection !== connection) return;
     this.heard(connection);
+    if (this.current.kind === "ready") this.computerHeardAt = connection.heardAt;
     const handshake = connection.handshake;
     if (handshake?.stage === "sent") {
       handshake.stage = "reading";
@@ -588,6 +600,7 @@ export class PhoneConnection {
       if (this.connection === connection && connection.link === link) this.transmit(connection, sealed);
     });
     connection.link = link;
+    this.computerHeardAt = this.clock.now();
     this.setState({ kind: "ready", computerName: answer.name });
     this.flush();
   }

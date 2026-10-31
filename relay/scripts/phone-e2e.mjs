@@ -131,7 +131,7 @@ const CONNECTIONS = [
   { id: 2, name: "Bookshop production", environment: "prod", database: "bookshop" },
   { id: 3, name: "Bookshop staging", environment: "staging", database: "bookshop" },
 ];
-const ME = { role: "admin", roleLabel: "Admin", permissions: ["dashboard:read", "compare:read", "visualizer:read", "drift:read", "deploy:read"] };
+const ME = { role: "admin", roleLabel: "Admin", permissions: ["dashboard:read", "compare:read", "visualizer:read", "drift:read", "deploy:read", "performance:read"] };
 const approver = crypto.randomBytes(32).toString("hex");
 SECRETS.add(approver);
 const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
@@ -140,6 +140,45 @@ const DEPLOY_SCRIPTS = [
   { name: "add_order_total", version: "3", sql: "ALTER TABLE orders ADD COLUMN total numeric;" },
 ];
 const ROLLBACK_SCRIPTS = [{ name: "add_order_total", version: "3", sql: "ALTER TABLE orders DROP COLUMN total;" }];
+
+// A word that may show on a phone only once query text is turned on for the connection.
+const LIVE_SQL_WORD = "customer_card_number";
+const LIVE_SQL = `SELECT c.id, c.${LIVE_SQL_WORD}, o.total FROM customers c JOIN orders o ON o.customer_id = c.id WHERE o.status = 'open' AND c.created_at > now() - interval '30 days' ORDER BY o.total DESC`;
+// What the window sees but a phone never should.
+const LIVE_PRIVATE = ["db.internal.example.test", "bookshop_app_user", "10.20.30.40", "PostgreSQL said something private"];
+const TRACKED = [
+  { id: 11, connectionId: 1, schemaName: "public", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "3", driftStatus: "drifted", driftSummary: LIVE_PRIVATE[3], driftCheckedAt: hoursAgo(2), lastCheckedAt: hoursAgo(0.2) },
+  { id: 12, connectionId: 1, schemaName: "sales", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "7", driftStatus: "in_sync", driftSummary: null, driftCheckedAt: hoursAgo(26), lastCheckedAt: hoursAgo(26) },
+  { id: 13, connectionId: 2, schemaName: "public", label: null, environment: "prod", connectionHost: LIVE_PRIVATE[0], headVersion: null, driftStatus: null, driftSummary: null, driftCheckedAt: null, lastCheckedAt: null },
+];
+const liveSession = (fields) => ({ querySeconds: null, xactSeconds: null, username: LIVE_PRIVATE[1], applicationName: "bookshop-web", clientAddr: LIVE_PRIVATE[2], state: "active", waitingOn: null, query: LIVE_SQL, queryHidden: false, ...fields });
+const activity = () => ({
+  connectionName: "Bookshop dev",
+  database: "bookshop",
+  takenAt: new Date().toISOString(),
+  longRunningSeconds: 60,
+  thresholdConfigured: true,
+  sessions: [
+    liveSession({ pid: 4101, kind: "blocked", querySeconds: 42.5, xactSeconds: 310, waitingOn: "Lock: transactionid" }),
+    liveSession({ pid: 4102, kind: "idle-in-transaction", querySeconds: 185, xactSeconds: 190, applicationName: "psql", query: "BEGIN" }),
+    liveSession({ pid: 4103, kind: "long-running", querySeconds: 7600, xactSeconds: 7600, applicationName: null }),
+    liveSession({ pid: 4104, kind: "running", querySeconds: 0.4, xactSeconds: 0.4 }),
+  ],
+  summary: { total: 4, blocked: 1, idleInTransaction: 1, longRunning: 1, anyHidden: false },
+  health: {
+    database: "bookshop",
+    since: hoursAgo(72),
+    metrics: [
+      { key: "cache_hit_ratio", label: "Cache hit ratio", display: "99.2%", value: 99.2, level: "good", note: "How often PostgreSQL found what it needed in memory." },
+      { key: "connections", label: "Connections", display: "88 of 100", value: 88, level: "watch", note: "How close this server is to refusing new connections." },
+      { key: "deadlocks", label: "Deadlocks", display: "12", value: 12, level: "bad", note: "Transactions PostgreSQL had to stop because they were waiting on each other." },
+      { key: "temp_files", label: "Temp files", display: null, value: null, level: "unknown", note: "This role can't read the figure." },
+    ],
+  },
+  breaches: [],
+  emptyMessage: "",
+  hiddenNote: null,
+});
 
 async function request(id, fields, scripts, hashed = scripts) {
   const fingerprint = await approvalFingerprint(hashed, fields.action);
@@ -226,6 +265,10 @@ async function call(method, target, body) {
       return answer(200, ME);
     case "GET /api/connections/phone":
       return answer(200, { connections: CONNECTIONS });
+    case "GET /api/lineage":
+      return answer(200, TRACKED);
+    case "GET /api/performance/activity":
+      return answer(200, activity());
     case "GET /api/lineage/schemas":
       return answer(200, { schemas: ["public", "sales"] });
     case "GET /api/schema/snapshot":
@@ -618,6 +661,45 @@ try {
     await A.tap("#connection-1");
     await A.waitFor(`${has("#schema-public")} && ${has("#schema-sales")}`, "the connection's schemas");
     await A.shot("connection");
+
+    // Live status.
+    const asksForLive = () => served.filter(({ route }) => route === "GET /api/performance/activity").length;
+    await A.tap("#live-status");
+    await A.waitFor(has("#live-updated"), "the live status screen");
+    const liveText = await A.text();
+    expect(liveText.includes("Waiting for a lock") && liveText.includes("Idle in a transaction") && liveText.includes("Drifted") && liveText.includes("Cache hit ratio"), "the live status screen shows sessions, health and drift");
+    expect(liveText.includes("The SQL is hidden") && !liveText.includes(LIVE_SQL_WORD) && (await A.evaluate(lacks(".session-sql"))), "a session's SQL stays hidden until it is turned on");
+    same(LIVE_PRIVATE.filter((word) => liveText.includes(word)), [], "the live status screen shows no address, user name or server words");
+    await A.shot("live");
+    await A.evaluate("document.querySelector('.live-row')?.scrollIntoView({ block: 'center' })");
+    await A.shot("live-health");
+    await A.evaluate("window.scrollTo(0, 0)");
+    const liveAsked = asksForLive();
+    await until(() => asksForLive() > liveAsked, 12000, "the live status screen to ask again");
+    pass("the live status screen refreshes by itself while it is open");
+    link.setQueryTextConnections([1]);
+    await A.waitFor(has(".session-sql"), "the SQL to reach the phone", 12000);
+    await A.tap("details.session-sql > summary");
+    await A.waitFor(hasText(LIVE_SQL_WORD), "the opened SQL");
+    await A.shot("live-sql");
+    const liveShown = asksForLive();
+    await until(() => asksForLive() > liveShown, 12000, "the live status screen to ask again");
+    await A.settle();
+    expect(await A.evaluate(`document.querySelector("details.session-sql").open`), "an opened session's SQL stays open through a refresh");
+    link.setQueryTextConnections([]);
+    await A.waitFor(lacks(".session-sql"), "the SQL to leave the phone once it is turned off", 12000);
+    pass("turning query text off takes the SQL away from the phone");
+    link.setEnabled(false);
+    await A.waitFor(hasText("Computer offline"), "the phone to say the computer has gone", 20000);
+    const awayText = await A.text();
+    expect(awayText.includes("Waiting for a lock") && awayText.includes("These numbers are old"), "with the computer away, the live screen keeps the last numbers and says they are old");
+    await A.shot("live-offline");
+    link.setEnabled(true);
+    await until(() => link.status().state === "connected", 20000, "the computer to connect again");
+    await A.waitFor(hasText("Refreshes every 5 seconds"), "the live screen to come back with the computer", 40000);
+    pass("the live status screen comes back by itself with the computer");
+    await A.tap("#back");
+    await A.waitFor(has("#schema-public"), "the connection screen");
     await A.tap("#schema-public");
     await A.waitFor(has('[data-name="books"]'), "the schema's tables");
     const names = await A.evaluate(`[...document.querySelectorAll("[data-name]")].map((node) => node.dataset.name)`);
@@ -769,6 +851,13 @@ try {
     await A.tap("button.tab", "Schemas");
     await A.waitFor(has("#connection-1"), "the home screen");
     await A.shot("dark-home");
+    await A.tap("#connection-1");
+    await A.waitFor(has("#live-status"), "the connection screen");
+    await A.tap("#live-status");
+    await A.waitFor(has("#live-updated"), "the live status screen");
+    await A.shot("dark-live");
+    await A.tap("button.tab", "Schemas");
+    await A.waitFor(has("#connection-1"), "the home screen");
     await A.tap("#connection-2");
     await A.waitFor(has("#schema-public"), "connection 2's schemas");
     await A.tap("#schema-public");

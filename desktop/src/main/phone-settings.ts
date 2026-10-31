@@ -44,6 +44,8 @@ export function phoneView(link: PhoneSettingsLink | null, problem: string | null
     enabled: view.enabled,
     relayOrigin: view.relayOrigin,
     sharedConnectionIds: [...view.sharedConnectionIds],
+    queryTextConnectionIds: [...view.queryTextConnectionIds],
+    keepAwake: view.keepAwake,
     phones: view.phones.map((phone) => ({
       key: phone.key,
       name: phone.name,

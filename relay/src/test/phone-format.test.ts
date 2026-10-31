@@ -46,7 +46,7 @@ function foreignKey(changes: Partial<ForeignKeyOverview> = {}): ForeignKeyOvervi
 
 /** A hello from a computer where someone with the Viewer role is signed in. */
 function hello(changes: Partial<HelloResult> = {}): HelloResult {
-  return { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true, appVersion: "1.0.0", ...changes };
+  return { signedIn: true, role: "Viewer", canCompare: true, canReadSchemas: true, canSeeLive: true, appVersion: "1.0.0", ...changes };
 }
 
 test("names each environment as the web app does", () => {

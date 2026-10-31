@@ -447,6 +447,11 @@ input {
   border-top: 1px solid var(--border);
 }
 
+/* Each connection's choices share a wrapper, so the line between connections goes on the wrapper. */
+.connection-choices + .connection-choices {
+  border-top: 1px solid var(--border);
+}
+
 .row-label {
   font-weight: 500;
 }
@@ -512,6 +517,17 @@ input {
 
 .row-choice:hover {
   background: var(--surface-2);
+}
+
+/* A second choice that belongs to the row above it, set in as far as that row's name. */
+.row-choice-inner {
+  padding-left: 42px;
+}
+
+/* Same specificity as .row + .row and later, so it wins: a connection and its inner choice read as one. */
+.row + .row-choice-inner {
+  border-top: none;
+  padding-top: 0;
 }
 
 /* A choice this copy cannot make, such as start at sign-in when run from the source code, does not light up. */

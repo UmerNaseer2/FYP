@@ -38,6 +38,8 @@ function fakeLink(
     enabled: true,
     relayOrigin: RELAY,
     sharedConnectionIds: [],
+    queryTextConnectionIds: [],
+    keepAwake: false,
     phones: [],
     ...overrides,
   };
@@ -66,6 +68,8 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
   const { link, view } = fakeLink({
     status: { state: "waiting", retryAt: 5_000, reason: "The relay could not be reached." },
     sharedConnectionIds: [3, 1],
+    queryTextConnectionIds: [1],
+    keepAwake: true,
     phones: [extra, phone(2, false, true), phone(3, false, false, true), phone(4, false, false, false, 7_000)],
   });
   const shown = phoneView(link, null);
@@ -75,10 +79,13 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
     enabled: true,
     relayOrigin: RELAY,
     sharedConnectionIds: [3, 1],
+    queryTextConnectionIds: [1],
+    keepAwake: true,
     phones: [phone(1, true), phone(2, false, true), phone(3, false, false, true), phone(4, false, false, false, 7_000)],
     cannotPair: "The phone link is not connected to the relay yet, and a phone pairs through it.",
   });
   assert.notEqual(shown.sharedConnectionIds, view.sharedConnectionIds);
+  assert.notEqual(shown.queryTextConnectionIds, view.queryTextConnectionIds);
   assert.equal(MAX_PAIRED_PHONES, 8);
 
   const plain = phoneView(fakeLink({ status: Object.assign({ state: "connected" as const }, { note: "x" }) }).link, null);

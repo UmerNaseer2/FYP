@@ -13,6 +13,8 @@ const ROUTES: Route[] = [
   { screen: "home" },
   { screen: "connection", connectionId: 1 },
   { screen: "connection", connectionId: Number.MAX_SAFE_INTEGER },
+  { screen: "live", connectionId: 1 },
+  { screen: "live", connectionId: Number.MAX_SAFE_INTEGER },
   { screen: "schema", connectionId: 7, schema: "public" },
   { screen: "schema", connectionId: 7, schema: "sales/2026" },
   { screen: "schema", connectionId: 7, schema: "a#b" },
@@ -37,6 +39,7 @@ test("reads each screen's address back as the same screen", () => {
 test("writes no address for the home screen, and one under \"#/\" for every other screen", () => {
   assert.equal(writeRoute(HOME), "");
   assert.equal(writeRoute({ screen: "connection", connectionId: 12 }), "#/connections/12");
+  assert.equal(writeRoute({ screen: "live", connectionId: 12 }), "#/connections/12/live");
   assert.equal(writeRoute({ screen: "schema", connectionId: 12, schema: "public" }), "#/connections/12/schemas/public");
   assert.equal(writeRoute({ screen: "compare" }), "#/compare");
   assert.equal(writeRoute({ screen: "settings" }), "#/settings");
@@ -64,6 +67,9 @@ test("opens the home screen for no address and for any address it does not know"
     "#settings",
     "#x/settings",
     "#x/connections/5",
+    "#/connections/5/live/more",
+    "#/connections/5/Live",
+    "#/connections/0/live",
     "#//settings",
     "#/settings/",
     "#/settings/more",
@@ -120,6 +126,7 @@ test("goes back from a schema to its connection, from a request to the list of r
   assert.equal(parentOf(HOME), null);
   assert.deepEqual(parentOf({ screen: "schema", connectionId: 9, schema: "sales" }), { screen: "connection", connectionId: 9 });
   assert.deepEqual(parentOf({ screen: "connection", connectionId: 9 }), HOME);
+  assert.deepEqual(parentOf({ screen: "live", connectionId: 9 }), { screen: "connection", connectionId: 9 });
   assert.deepEqual(parentOf({ screen: "compare" }), HOME);
   assert.deepEqual(parentOf({ screen: "settings" }), HOME);
   assert.deepEqual(parentOf({ screen: "scan" }), HOME);
