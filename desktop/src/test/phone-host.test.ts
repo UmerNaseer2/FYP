@@ -20,6 +20,7 @@ import { generateKeyPair, type KeyPair } from "../shared/remote/keys.js";
 import { Link, MAX_LINK_MESSAGE_BYTES, PIECE_BYTES } from "../shared/remote/link.js";
 import { Initiator } from "../shared/remote/noise.js";
 import {
+  ASK_WITHIN_MS,
   PAIRING_LIFETIME_MS,
   PAIRING_SECRET_BYTES,
   PHONE_LINK_PROLOGUE,
@@ -275,7 +276,12 @@ class TestPhone {
   }
 }
 
-async function setUp(options: { phones?: PairedPhone[]; answer?: PhoneHostOptions["answer"] } = {}) {
+/** A question the host put to the person at the computer, with the person's answer still to come. */
+type Question = { name: string; signal: AbortSignal; answer: Deferred<boolean> };
+
+async function setUp(
+  options: { phones?: PairedPhone[]; answer?: PhoneHostOptions["answer"]; askToPair?: PhoneHostOptions["askToPair"] | null } = {},
+) {
   const computerKey = await generateKeyPair("X25519", false);
   const wire = new Wire();
   const clock = new FakeClock();
@@ -284,6 +290,15 @@ async function setUp(options: { phones?: PairedPhone[]; answer?: PhoneHostOption
   const paired: PairedPhone[] = [];
   /** What host.connectedPhones() gave each time the host said the connected phones changed. */
   const connectedChanges: string[][] = [];
+  /** Each question the host put to the person at the computer, in order. */
+  const questions: Question[] = [];
+  /** How many times the host said the typed code stopped being good. */
+  const typedCodeChanges = { count: 0 };
+  const askToPair = (name: string, signal: AbortSignal): Promise<boolean> => {
+    const answer = deferred<boolean>();
+    questions.push({ name, signal, answer });
+    return answer.promise;
+  };
   const host = new PhoneHost({
     staticKey: computerKey,
     desktopId: DESKTOP_ID,
@@ -301,6 +316,10 @@ async function setUp(options: { phones?: PairedPhone[]; answer?: PhoneHostOption
     onConnectedChange: () => {
       connectedChanges.push(host.connectedPhones());
     },
+    ...(options.askToPair === null ? {} : { askToPair: options.askToPair ?? askToPair }),
+    onTypedCodeChange: () => {
+      typedCodeChanges.count += 1;
+    },
     clock,
   });
   /** A phone with a new key, unless it is given one. */
@@ -313,7 +332,7 @@ async function setUp(options: { phones?: PairedPhone[]; answer?: PhoneHostOption
     assert.deepEqual(await phone.connect(pairWith(code.secret, name)), LET_IN);
     return phone;
   };
-  return { host, wire, clock, computerKey, paired, connectedChanges, saved: () => saved, newPhone, pairedPhone };
+  return { host, wire, clock, computerKey, paired, connectedChanges, questions, typedCodeChanges, saved: () => saved, newPhone, pairedPhone };
 }
 
 test("pairs one phone with the latest pairing link, and answers what it asks", async () => {
@@ -821,4 +840,194 @@ test("makes a new secret for each pairing link, good for five minutes", async ()
   assert.equal(first.code.secret.length, PAIRING_SECRET_BYTES);
   assert.equal(first.expiresAt, clock.time + PAIRING_LIFETIME_MS);
   assert.notDeepEqual(host.startPairing().code.secret, first.code.secret);
+});
+
+/** A browser that typed the code, and the person at the computer has been asked about. */
+async function typedPhone(
+  { host, newPhone, questions }: Awaited<ReturnType<typeof setUp>>,
+  channel: number,
+  name?: string,
+): Promise<{ phone: TestPhone; secret: Bytes; question: Question; answered: Promise<OpeningAnswer | null> }> {
+  const phone = await newPhone(channel);
+  const { code } = host.startTypedPairing();
+  const already = questions.length;
+  const answered = phone.connect(pairWith(code.secret, name));
+  // A browser that went away hears nothing, and a test that drops it does not wait to hear that.
+  answered.catch(() => {});
+  await until(() => questions.length > already, "the person to be asked");
+  return { phone, secret: code.secret, question: questions[questions.length - 1], answered };
+}
+
+test("asks the person before a browser with the typed code pairs, and pairs it once they allow it", async () => {
+  const set = await setUp();
+  const { host, saved, paired } = set;
+  const { phone, question, answered } = await typedPhone(set, 1, "Chrome on Mac");
+  assert.equal(question.name, "Chrome on Mac");
+  // Nothing is paired while the question is up.
+  assert.equal(saved().length, 0);
+  await quiet();
+  assert.equal(saved().length, 0);
+  question.answer.resolve(true);
+  assert.deepEqual(await answered, LET_IN);
+  assert.deepEqual(saved().map((known) => known.key), [phone.keyText]);
+  assert.deepEqual(paired.map((known) => known.name), ["Chrome on Mac"]);
+  assert.equal(host.typedCodeIsGood(), false);
+  assert.equal(question.signal.aborted, false);
+  assert.deepEqual(await phone.request(schemasOf(1)), { id: 1, ok: true, result: { schemas: ["public"] } });
+});
+
+test("pairs nothing when the person says no, and the code is then used up", async () => {
+  const set = await setUp();
+  const { host, wire, saved, paired, typedCodeChanges, newPhone } = set;
+  const { code } = host.startPairing();
+  const { question, answered } = await typedPhone(set, 1);
+  assert.equal(question.signal.aborted, false);
+  question.answer.resolve(false);
+  assert.deepEqual(await answered, { ok: false, reason: "denied" });
+  assert.deepEqual(wire.closed, [1]);
+  assert.equal(saved().length, 0);
+  assert.equal(paired.length, 0);
+  assert.ok(typedCodeChanges.count >= 1);
+  // The pairing link made before it still works, and asks nothing.
+  const scanned = await newPhone(2);
+  assert.deepEqual(await scanned.connect(pairWith(code.secret)), LET_IN);
+});
+
+test("takes a no when the question cannot be put, or fails", async () => {
+  for (const askToPair of [null, async () => Promise.reject(new Error("no window"))]) {
+    const { host, saved, wire, newPhone } = await setUp({ askToPair });
+    const phone = await newPhone(1);
+    const { code } = host.startTypedPairing();
+    assert.deepEqual(await phone.connect(pairWith(code.secret)), { ok: false, reason: "denied" });
+    assert.deepEqual(wire.closed, [1]);
+    assert.equal(saved().length, 0);
+  }
+});
+
+test("asks once for a code, and sends a second browser away while the first is being asked about", async () => {
+  const set = await setUp();
+  const { host, wire, saved, questions, newPhone } = set;
+  const phone = await newPhone(1);
+  const { code } = host.startTypedPairing();
+  const first = phone.connect(pairWith(code.secret));
+  await until(() => questions.length === 1, "the person to be asked");
+  const other = await newPhone(2);
+  assert.deepEqual(await other.connect(pairWith(code.secret)), { ok: false, reason: "expired-code" });
+  assert.equal(questions.length, 1);
+  assert.deepEqual(wire.closed, [2]);
+  questions[0].answer.resolve(true);
+  assert.deepEqual(await first, LET_IN);
+  assert.deepEqual(saved().map((known) => known.key), [phone.keyText]);
+});
+
+test("takes the question back when its time runs out, and a late yes counts for nothing", async () => {
+  const set = await setUp();
+  const { clock, saved, wire, paired } = set;
+  const { question, answered } = await typedPhone(set, 1);
+  // The usual time to finish connecting does not apply, which is too short to read a question.
+  clock.advance(HANDSHAKE_WITHIN_MS);
+  assert.equal(question.signal.aborted, false);
+  assert.deepEqual(wire.closed, []);
+  clock.advance(ASK_WITHIN_MS - HANDSHAKE_WITHIN_MS);
+  assert.equal(question.signal.aborted, true);
+  question.answer.resolve(true);
+  assert.deepEqual(await answered, { ok: false, reason: "denied" });
+  assert.equal(saved().length, 0);
+  assert.equal(paired.length, 0);
+});
+
+test("takes the question back when the browser goes away, and pairs nothing", async () => {
+  const set = await setUp();
+  const { host, saved, paired, questions, newPhone } = set;
+  const { question, secret } = await typedPhone(set, 1);
+  assert.equal(question.signal.aborted, false);
+  host.closed(1);
+  assert.equal(question.signal.aborted, true);
+  question.answer.resolve(true);
+  await quiet();
+  assert.equal(saved().length, 0);
+  assert.equal(paired.length, 0);
+  // A browser that tries again over a new connection finds the code used, and raises no second question.
+  const again = await newPhone(2);
+  assert.deepEqual(await again.connect(pairWith(secret)), { ok: false, reason: "expired-code" });
+  assert.equal(questions.length, 1);
+});
+
+test("takes the question back for a cancel, a new code, or a phone that paired by the QR code", async () => {
+  const cancel = await setUp();
+  const asked = await typedPhone(cancel, 1);
+  cancel.host.cancelPairing();
+  assert.equal(asked.question.signal.aborted, true);
+  assert.deepEqual(await asked.answered, { ok: false, reason: "denied" });
+  assert.equal(cancel.saved().length, 0);
+
+  const renewed = await setUp();
+  const before = await typedPhone(renewed, 1);
+  renewed.host.startTypedPairing();
+  assert.equal(before.question.signal.aborted, true);
+  assert.deepEqual(await before.answered, { ok: false, reason: "denied" });
+  assert.equal(renewed.saved().length, 0);
+
+  const scanned = await setUp();
+  const { code } = scanned.host.startPairing();
+  const waiting = await typedPhone(scanned, 1);
+  assert.equal(waiting.question.signal.aborted, false);
+  const phone = await scanned.newPhone(2);
+  assert.deepEqual(await phone.connect(pairWith(code.secret)), LET_IN);
+  assert.equal(waiting.question.signal.aborted, true);
+  assert.deepEqual(await waiting.answered, { ok: false, reason: "denied" });
+  assert.deepEqual(scanned.saved().map((known) => known.key), [phone.keyText]);
+});
+
+test("asks nothing when the computer has all the phones it takes, and keeps the code", async () => {
+  const phones: PairedPhone[] = [];
+  for (let index = 0; index < MAX_PAIRED_PHONES; index += 1) {
+    phones.push({ key: `phone-${index}`, name: `Phone ${index}`, pairedAt: 1, lastSeenAt: 1 });
+  }
+  const { host, questions, saved, newPhone } = await setUp({ phones });
+  const phone = await newPhone(1);
+  const { code } = host.startTypedPairing();
+  assert.deepEqual(await phone.connect(pairWith(code.secret)), { ok: false, reason: "too-many-phones" });
+  assert.equal(questions.length, 0);
+  assert.equal(host.typedCodeIsGood(), true);
+  assert.equal(saved().length, MAX_PAIRED_PHONES);
+});
+
+test("asks nothing for a phone with the QR code, and that uses up the typed code shown with it", async () => {
+  const { host, questions, typedCodeChanges, newPhone } = await setUp();
+  const scanned = host.startPairing();
+  host.startTypedPairing();
+  const phone = await newPhone(1);
+  assert.deepEqual(await phone.connect(pairWith(scanned.code.secret)), LET_IN);
+  assert.equal(questions.length, 0);
+  // That link is used, and so is the code shown with it.
+  assert.equal(host.typedCodeIsGood(), false);
+  assert.equal(typedCodeChanges.count, 1);
+});
+
+test("makes a typed code with a secret of its own, which runs out like a pairing link", async () => {
+  const { host, clock, questions, saved, newPhone } = await setUp();
+  const scanned = host.startPairing();
+  const typed = host.startTypedPairing();
+  assert.notDeepEqual(typed.code.secret, scanned.code.secret);
+  assert.equal(typed.expiresAt, clock.time + PAIRING_LIFETIME_MS);
+  assert.equal(host.typedCodeIsGood(), true);
+  clock.advance(PAIRING_LIFETIME_MS);
+  assert.equal(host.typedCodeIsGood(), false);
+  const phone = await newPhone(1);
+  assert.deepEqual(await phone.connect(pairWith(typed.code.secret)), { ok: false, reason: "expired-code" });
+  assert.equal(questions.length, 0);
+  assert.equal(saved().length, 0);
+});
+
+test("lets go of a question when the relay connection drops", async () => {
+  const set = await setUp();
+  const { host, saved } = set;
+  const { question } = await typedPhone(set, 1);
+  assert.equal(question.signal.aborted, false);
+  host.dropAll();
+  assert.equal(question.signal.aborted, true);
+  question.answer.resolve(true);
+  await quiet();
+  assert.equal(saved().length, 0);
 });

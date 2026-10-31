@@ -221,6 +221,8 @@ export type PhoneView =
       queryTextConnectionIds: number[];
       /** Whether the computer stays awake for its phones while the link is on. */
       keepAwake: boolean;
+      /** Whether a short code on show could still pair a browser. It stops being so once used, as well as when it runs out. */
+      typedCodeLive: boolean;
       phones: PhoneSummary[];
       /** Why a phone cannot pair now, as a sentence for a person, or null when one can. */
       cannotPair: string | null;
@@ -229,10 +231,13 @@ export type PhoneView =
 /**
  * A new pairing code, as its QR drawing (src/main/qr.ts), and when it runs
  * out, or why a phone cannot pair now. The page never gets the pairing link
- * itself, because the link carries a one-time secret.
+ * itself, because the link carries a one-time secret. It does get the short
+ * code to type, because a person has to read it, and that code pairs nothing
+ * until they say Allow. The short code is null when it could not be made, and
+ * the QR drawing still works then.
  */
 export type PhonePairing =
-  | { ok: true; expiresAt: number; qr: { size: number; path: string } }
+  | { ok: true; expiresAt: number; qr: { size: number; path: string }; shortCode: string | null }
   | { ok: false; message: string };
 
 /** The answer to saving the relay's address: the address as it was saved, or why it was not. */

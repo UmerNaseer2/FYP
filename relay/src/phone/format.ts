@@ -108,13 +108,41 @@ export function dayText(time: number): string {
 }
 
 /**
- * A name for this phone, from what the browser says it runs on, which the
+ * A name for this device, from what the browser says it runs on, which the
  * person can change before pairing. An iPad's browser says it is a Mac, so a
- * Mac with a touch screen is taken for an iPad.
+ * Mac with a touch screen is taken for an iPad. On a laptop, the name says
+ * which browser, as each browser there pairs by itself.
  */
 export function defaultPhoneName(userAgent: string, maxTouchPoints: number): string {
   if (/\biPhone\b/.test(userAgent)) return "iPhone";
   if (/\biPad\b/.test(userAgent) || (/\bMacintosh\b/.test(userAgent) && maxTouchPoints > 1)) return "iPad";
   if (/\bAndroid\b/.test(userAgent)) return /\bMobile\b/.test(userAgent) ? "Android phone" : "Android tablet";
-  return "Phone";
+  const browser = firstMatch(userAgent, BROWSERS);
+  const system = firstMatch(userAgent, SYSTEMS);
+  return browser !== null && system !== null ? `${browser} on ${system}` : "Phone";
+}
+
+// In this order, because browsers name each other: Edge and Opera also say Chrome, and Chrome also says Safari.
+const BROWSERS: readonly (readonly [RegExp, string])[] = [
+  [/\bEdg\//, "Edge"],
+  [/\bOPR\//, "Opera"],
+  [/\bFirefox\//, "Firefox"],
+  [/\bChrome\//, "Chrome"],
+  [/\bSafari\//, "Safari"],
+];
+
+// In this order, because Ubuntu also says Linux.
+const SYSTEMS: readonly (readonly [RegExp, string])[] = [
+  [/\bMacintosh\b/, "Mac"],
+  [/\bWindows\b/, "Windows"],
+  [/\bCrOS\b/, "Chromebook"],
+  [/\bUbuntu\b/, "Ubuntu"],
+  [/\bLinux\b/, "Linux"],
+];
+
+function firstMatch(text: string, names: readonly (readonly [RegExp, string])[]): string | null {
+  for (const [pattern, name] of names) {
+    if (pattern.test(text)) return name;
+  }
+  return null;
 }

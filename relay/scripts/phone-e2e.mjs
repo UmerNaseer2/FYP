@@ -1,8 +1,10 @@
 /**
  * An end-to-end run of the phone app: two phones pair with a computer through
- * the relay, one by link and one with its camera, then read a schema, compare
- * two, set up approvals with a passkey, approve and reject requests, turn
- * drift alerts on and off, and forget the computer.
+ * the relay, one by link and one with its camera, then read a schema, watch a
+ * database's live status, compare two, set up approvals with a passkey,
+ * approve and reject requests, turn drift alerts on and off, and forget the
+ * computer. A laptop's browser then pairs by typing a short code, which the
+ * computer refuses once and allows once, and shows its screens at that width.
  *
  * The computer is the desktop app's real phone-link code (desktop/out), with
  * a fake web app server and a fake push service. The relay and the phone app
@@ -21,7 +23,8 @@
  * Set CHROME to Chrome's path when it is somewhere unusual. A picture of each
  * screen, light and dark, goes to relay/out/phone-e2e.
  *
- * It never prints pairing links, keys, push addresses or the approver hash.
+ * It never prints pairing links, short codes, keys, push addresses or the
+ * approver hash.
  */
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
@@ -72,8 +75,10 @@ const { createTestHarness } = relayRequire("wrangler");
 const qrModule = relayRequire("qrcode-generator");
 const qrcode = typeof qrModule === "function" ? qrModule : qrModule.default;
 const { openPhoneLink } = desktopRequire("./out/main/phone-link.js");
+const { codeBoxSenderFor } = desktopRequire("./out/main/code-box-sender.js");
 const { initLog } = desktopRequire("./out/main/log.js");
 const { approvalFingerprint } = desktopRequire("./out/shared/remote/approval.js");
+const { showShortCode } = desktopRequire("./out/shared/remote/short-code.js");
 const { decrypt } = desktopRequire("./out/test/push-phone.js");
 const { driftNotification } = desktopRequire("./out/core/drift-alerts.js");
 
@@ -561,6 +566,9 @@ try {
       return "plain";
     },
   };
+  // Who the computer asked about for a typed code, and its answer: No until a test wants to hold it or say Yes.
+  const asked = [];
+  let answerAsked = async () => false;
   const opened = await openPhoneLink({
     store,
     fileLabel: "~/.config/schema-studio/phone-link.json",
@@ -568,6 +576,11 @@ try {
     appVersion: "0.0.0-e2e",
     computerName: "Test computer",
     pushTransport,
+    sendCodeBox: codeBoxSenderFor((url, init) => fetch(url, init)),
+    askToPair: (name) => {
+      asked.push(name);
+      return answerAsked();
+    },
     onPaired: (phone) => paired.push(phone.name),
   });
   if (!opened.ok) throw new Error(`the phone link did not open: ${opened.reason}`);
@@ -917,6 +930,129 @@ try {
     fail("phase B", error.message);
   } finally {
     fs.rmSync(VIDEO, { force: true });
+  }
+
+  // ------------------------------------------------------------ a laptop's browser, with a typed code
+
+  const C_NAME = "Laptop browser";
+  try {
+    const { browserContextId } = await cdp.send("Target.createBrowserContext", {});
+    const C = await openPage("c", browserContextId);
+    await C.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await C.send("Page.navigate", { url: `${origin}/` });
+    await C.waitFor(has("#enter-code"), "the unpaired start screen");
+    expect(await C.evaluate(`document.querySelector("#enter-code").previousElementSibling === null`), "with a mouse or trackpad, typing a code comes first");
+    await C.shot("start");
+    await C.tap("#enter-code");
+    await C.waitFor(has("#short-code"), "the box for a code");
+    await C.shot("code");
+
+    // Mistakes, which use nothing up. These are not real codes, so pictures may show them.
+    await C.type("#short-code", "ABC");
+    await C.tap("#code-continue");
+    await C.waitFor(hasText("A code has 8 letters and numbers"), "the answer to a code that is too short");
+    await C.type("#short-code", "2222-2222");
+    const tried = Date.now();
+    for (const type of ["keyDown", "keyUp"]) {
+      await C.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+    }
+    await C.waitFor(hasText("That code is not right"), "the answer to a code nobody made", 30000);
+    note(`one try of a typed code took about ${Date.now() - tried} ms in this browser`);
+    pass("the Enter key sends a typed code");
+    same(await C.evaluate("document.activeElement.id"), "short-code", "after a wrong code, the cursor is back in the box");
+    await C.shot("code-wrong");
+
+    // A new code from the computer, as Settings asks for one. It goes on the secrets list before anything else can see it.
+    const newTypedCode = async () => {
+      const made = await link.newPairing();
+      if (made === null || made.shortCode === null) throw new Error("the computer gave no code to type");
+      for (const form of [made.link, made.shortCode, made.shortCode.toLowerCase(), showShortCode(made.shortCode)]) SECRETS.add(form);
+      return made.shortCode;
+    };
+
+    // No picture from typing a real code until the pairing screen: the code is a pairing secret. The computer says no.
+    const refused = await newTypedCode();
+    expect(link.view().typedCodeLive, "the computer says a code is waiting to be typed");
+    await C.type("#short-code", refused.toLowerCase());
+    await C.tap("#code-continue");
+    await C.waitFor(hasText("Pair this browser"), "the pairing screen after a typed code", 30000);
+    pass("a typed code is taken in small letters and with no hyphen");
+    expect(/ on (Mac|Linux|Windows)$/.test(await C.evaluate(`document.querySelector("#phone-name").value`)), "a laptop's browser is named after the browser and the system");
+    await C.shot("pairing");
+    await C.type("#phone-name", C_NAME);
+    await C.tap("#pair");
+    await C.waitFor(hasText("did not allow this"), "the answer after No on the computer", 30000);
+    same(asked, [C_NAME], "the computer asks about the name the browser gave");
+    expect(link.view().phones.length === 1, "a browser the computer said no to is not paired");
+    expect(!link.view().typedCodeLive, "the computer knows the code has been used");
+    await C.shot("denied");
+    await C.tap("#code-again");
+    await C.waitFor(has("#short-code"), "the box for a code, again");
+    await C.type("#short-code", refused);
+    await C.tap("#code-continue");
+    await C.waitFor(hasText("That code is not right"), "the answer to a used code", 30000);
+    pass("a typed code works once, even when the answer was no");
+
+    // The computer says yes, and the browser waits until it does.
+    let allow = () => {};
+    answerAsked = () => new Promise((resolve) => (allow = resolve));
+    const allowed = await newTypedCode();
+    await C.type("#short-code", showShortCode(allowed));
+    await C.tap("#code-continue");
+    await C.waitFor(hasText("Pair this browser"), "the pairing screen after a second typed code", 30000);
+    await C.type("#phone-name", C_NAME);
+    await C.tap("#pair");
+    await C.waitFor(hasText("is asking whether to allow this"), "the browser to say the computer is asking", 30000);
+    await C.shot("asking");
+    expect(link.view().phones.length === 1, "nothing pairs before the computer's answer");
+    allow(true);
+    await C.waitFor(has("#connection-1"), "the home screen after Allow", 25000);
+    expect(paired.at(-1) === C_NAME && link.view().phones.length === 2, "the computer keeps the browser it allowed");
+
+    // At this width the tabs are a rail down the left, and nothing sits under them.
+    const railed = async (label) => {
+      const layout = await C.evaluate(`(() => {
+        const box = (selector) => { const { left, right, top, bottom } = document.querySelector(selector).getBoundingClientRect(); return { left, right, top, bottom }; };
+        return { tabs: box(".tabs"), main: box(".app"), bar: box(".top"), wide: document.documentElement.scrollWidth, width: innerWidth, height: innerHeight };
+      })()`);
+      const { tabs, main, bar, wide, width, height } = layout;
+      expect(tabs.left === 0 && tabs.right < 300 && tabs.bottom - tabs.top === height, `${label}: the tabs run down the side`, JSON.stringify(layout));
+      expect(main.left >= tabs.right && bar.left >= tabs.right, `${label}: nothing sits under the tabs`, JSON.stringify(layout));
+      expect(wide <= width, `${label}: the page does not scroll sideways`, JSON.stringify(layout));
+    };
+    await railed("the home screen");
+    await C.shot("home");
+    await C.tap("#connection-1");
+    await C.waitFor(has("#live-status"), "the connection screen");
+    await C.tap("#live-status");
+    await C.waitFor(has("#live-updated"), "the live status screen");
+    await railed("the live status screen");
+    await C.shot("live");
+    link.setEnabled(false);
+    await C.waitFor(hasText("Computer offline"), "the browser to say the computer has gone", 20000);
+    await railed("the live status screen with the computer away");
+    await C.shot("live-offline");
+    link.setEnabled(true);
+    await until(() => link.status().state === "connected", 20000, "the computer to connect again");
+    await C.waitFor(hasText("Refreshes every 5 seconds"), "the live screen to come back with the computer", 40000);
+    await C.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    await C.shot("live-dark");
+    await C.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+    await C.tap("button.tab", "Settings");
+    await C.waitFor(has("#forget"), "the settings");
+    await railed("the settings");
+    await C.shot("settings");
+    await C.tap("#forget");
+    await C.waitFor(has("#forget-yes"), "the Forget question");
+    await C.tap("#forget-yes");
+    await C.waitFor(has("#enter-code"), "the start screen after forgetting", 15000);
+    link.forgetPhone(link.view().phones.find((phone) => phone.name === C_NAME)?.key);
+    expect(link.view().phones.length === 1, "the computer can forget the browser too");
+    // A wrong code is answered 404, which Chrome notes in the console by itself.
+    const problems = unexpected(C).filter((text) => !/status of 404/.test(text));
+    expect(problems.length === 0, `phone ${C.label} logged no errors`, problems.slice(0, 8).join(" | "));
+  } catch (error) {
+    fail("phase C", error.message);
   }
 
   // ------------------------------------------------------------ what nobody should see

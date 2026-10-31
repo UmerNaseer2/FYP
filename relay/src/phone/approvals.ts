@@ -76,11 +76,11 @@ export function decisionChoices(
   if (summary.ownRequest) return none("The person signed in on the computer asked for this request, so someone else has to decide it.");
   switch (list.passkey) {
     case "none":
-      return none("To approve or reject requests from this phone, set up approvals on it first. Requests shows how.");
+      return none("To approve or reject requests from this device, set up approvals on it first. Requests shows how.");
     case "allowed":
-      return none("Set up approvals on this phone first: go back to Requests and choose Set up approvals.");
+      return none("Set up approvals on this device first: go back to Requests and choose Set up approvals.");
     case "other-person":
-      return none("The person signed in on the computer is not the one who set up approvals on this phone. Set them up again to decide as whoever is signed in now.");
+      return none("The person signed in on the computer is not the one who set up approvals on this device. Set them up again to decide as whoever is signed in now.");
     case "ready":
       break;
   }
@@ -91,7 +91,7 @@ export function decisionChoices(
     return {
       approve: false,
       reject: true,
-      reason: "The computer cannot show the SQL this request runs, so it cannot be approved from a phone. Reject it here, or decide it in Schema Studio on the computer.",
+      reason: "The computer cannot show the SQL this request runs, so it cannot be approved here. Reject it here, or decide it in Schema Studio on the computer.",
     };
   }
   return { approve: true, reject: true, reason: null };
@@ -115,6 +115,6 @@ export function passkeyErrorText(name: string, kind: "create" | "get"): string {
     case "SecurityError":
       return "This browser would not use a passkey for this address. Approvals need the relay to be opened over HTTPS.";
     default:
-      return kind === "create" ? "The phone could not make a passkey. Try again." : "The phone could not use its passkey. Try again.";
+      return kind === "create" ? "This device could not make a passkey. Try again." : "This device could not use its passkey. Try again.";
   }
 }

@@ -25,6 +25,7 @@ const ROUTES: Route[] = [
   { screen: "compare" },
   { screen: "settings" },
   { screen: "scan" },
+  { screen: "code" },
   { screen: "approvals" },
   { screen: "approval", approvalId: 1 },
   { screen: "approval", approvalId: Number.MAX_SAFE_INTEGER },
@@ -44,6 +45,7 @@ test("writes no address for the home screen, and one under \"#/\" for every othe
   assert.equal(writeRoute({ screen: "compare" }), "#/compare");
   assert.equal(writeRoute({ screen: "settings" }), "#/settings");
   assert.equal(writeRoute({ screen: "scan" }), "#/scan");
+  assert.equal(writeRoute({ screen: "code" }), "#/code");
   assert.equal(writeRoute({ screen: "approvals" }), "#/approvals");
   assert.equal(writeRoute({ screen: "approval", approvalId: 31 }), "#/approvals/31");
 });
@@ -130,6 +132,7 @@ test("goes back from a schema to its connection, from a request to the list of r
   assert.deepEqual(parentOf({ screen: "compare" }), HOME);
   assert.deepEqual(parentOf({ screen: "settings" }), HOME);
   assert.deepEqual(parentOf({ screen: "scan" }), HOME);
+  assert.deepEqual(parentOf({ screen: "code" }), HOME);
   assert.deepEqual(parentOf({ screen: "approval", approvalId: 4 }), { screen: "approvals" });
   assert.deepEqual(parentOf({ screen: "approvals" }), HOME);
 });

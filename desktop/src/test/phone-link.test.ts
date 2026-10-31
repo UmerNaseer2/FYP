@@ -15,6 +15,7 @@ import { driftNotification, type DriftAlert } from "../core/drift-alerts";
 import { newPhoneLinkState, type PairedPhone, type PhoneLinkState, type PhonePasskey } from "../core/phone-link-file";
 import { isPushKey, readPushKey, type PushRequest, type PushResponse, type PushTransport } from "../core/web-push";
 import type { Clock } from "../main/clock";
+import type { BoxAnswer, CodeBoxSender } from "../main/code-box-sender";
 import { initLog, logFilePaths, logWarn } from "../main/log";
 import { ALLOW_MS } from "../main/phone-approvals";
 import {
@@ -45,6 +46,7 @@ import {
 import { CHALLENGE_BYTES, desktopIdFor } from "../shared/remote/relay-auth.js";
 import { CLOSE_REPLACED, addChannel, readChannel, readControl, relaySocketUrl, writeControl } from "../shared/remote/relay-protocol.js";
 import { readAnswer, readResult, writeRequest, type Answer, type Request } from "../shared/remote/rpc.js";
+import { makeCodeKeys, openCodeBox, readShortCode, showShortCode } from "../shared/remote/short-code.js";
 import { decrypt, newPhone, subscriptionOf, type Phone } from "./push-phone";
 import { assertion, newSoftwarePasskey, registration } from "./software-passkey";
 
@@ -464,7 +466,7 @@ test("makes new keys and saves them the first time, then keeps them out of the l
   const logged = newLogLines();
   assert.match(logged, /A message with every key in it/);
   assert.ok(keysIn(state).every((key) => !logged.includes(key)), "the keys are not in the log");
-  assert.deepEqual(link.view(), { status: { state: "off" }, enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, phones: [] });
+  assert.deepEqual(link.view(), { status: { state: "off" }, enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, typedCodeLive: false, phones: [] });
 });
 
 test("makes new keys from the random bytes it is given", async () => {
@@ -848,7 +850,7 @@ test("tells the app once a run of changes is done, never in the middle of one", 
   link.setSharedConnections([4]);
   await settle();
   assert.equal(views.length, 2);
-  assert.deepEqual(views[1], { status: { state: "off" }, enabled: false, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [4], queryTextConnectionIds: [], keepAwake: false, phones: [] });
+  assert.deepEqual(views[1], { status: { state: "off" }, enabled: false, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [4], queryTextConnectionIds: [], keepAwake: false, typedCodeLive: false, phones: [] });
 
   link.setEnabled(true);
   await signIn(opener, link);
@@ -1715,3 +1717,137 @@ for (const [when, putAway] of PUT_AWAY) {
     assert.deepEqual(link.view().phones, []);
   });
 }
+
+// A short code to type, for a browser with no camera
+
+type LeftBox = { origin: string; label: string; box: Bytes };
+
+/** A relay's door that keeps each box it is given, and gives these answers in turn, then "stored". */
+function fakeDoor(answers: BoxAnswer[] = []): { send: CodeBoxSender; left: LeftBox[] } {
+  const left: LeftBox[] = [];
+  const send: CodeBoxSender = async (origin, label, box) => {
+    left.push({ origin, label, box });
+    return answers.shift() ?? "stored";
+  };
+  return { send, left };
+}
+
+test("makes a short code whose box opens to a link with a secret of its own", async () => {
+  const door = fakeDoor();
+  const { link, opener } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }), { sendCodeBox: door.send });
+  link.start();
+  await signIn(opener, link);
+  assert.equal(link.view().typedCodeLive, false);
+
+  const made = await link.newPairing();
+  assert.ok(made !== null && made.shortCode !== null, "both ways to pair are on offer");
+  assert.equal(readShortCode(made.shortCode), made.shortCode);
+  assert.equal(link.view().typedCodeLive, true);
+  assert.equal(door.left.length, 1);
+  assert.equal(door.left[0].origin, RELAY_ORIGIN);
+
+  const keys = await makeCodeKeys(made.shortCode, RELAY_ORIGIN);
+  assert.equal(door.left[0].label, keys.label);
+  const opened = await openCodeBox(keys, door.left[0].box);
+  assert.ok(opened !== null, "the short code opens its box");
+  const typed = readPairingLink(opened);
+  const scanned = readPairingLink(made.link);
+  assert.ok(typed !== null && scanned !== null);
+  assert.equal(typed.relayOrigin, RELAY_ORIGIN);
+  assert.equal(typed.code.desktopId, scanned.code.desktopId);
+  assert.deepEqual(typed.code.desktopKey, scanned.code.desktopKey);
+  assert.notDeepEqual(typed.code.secret, scanned.code.secret, "a typed code pairs only once the person allows it, so its secret is not the QR code's");
+
+  const log = newLogLines();
+  for (const secret of [made.shortCode, showShortCode(made.shortCode), keys.label]) assert.ok(!log.includes(secret), "a short code stays out of the log");
+
+  link.cancelPairing();
+  assert.equal(link.view().typedCodeLive, false);
+});
+
+test("tries another short code when a label holds a box already, and gives up after that", async () => {
+  const tryAgain = fakeDoor(["taken"]);
+  const first = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }), { sendCodeBox: tryAgain.send });
+  first.link.start();
+  await signIn(first.opener, first.link);
+  const made = await first.link.newPairing();
+  assert.ok(made !== null && made.shortCode !== null);
+  assert.equal(tryAgain.left.length, 2);
+  assert.notEqual(tryAgain.left[0].label, tryAgain.left[1].label);
+  assert.equal(tryAgain.left[1].label, (await makeCodeKeys(made.shortCode, RELAY_ORIGIN)).label);
+
+  const stillTaken = fakeDoor(["taken", "taken"]);
+  const second = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }), { sendCodeBox: stillTaken.send });
+  second.link.start();
+  await signIn(second.opener, second.link);
+  const without = await second.link.newPairing();
+  assert.ok(without !== null);
+  assert.equal(without.shortCode, null);
+  assert.equal(stillTaken.left.length, 2);
+  assert.ok(readPairingLink(without.link) !== null, "the QR code still works");
+});
+
+test("shows no short code when its box cannot be left, and the QR code still works", async () => {
+  const refused = fakeDoor(["failed"]);
+  const noBox = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }), { sendCodeBox: refused.send });
+  noBox.link.start();
+  await signIn(noBox.opener, noBox.link);
+  const made = await noBox.link.newPairing();
+  assert.ok(made !== null);
+  assert.equal(made.shortCode, null);
+  assert.equal(refused.left.length, 1, "a door that is not working is not asked again");
+  assert.ok(readPairingLink(made.link) !== null);
+  assert.equal(countLines(newLogLines(), /only the QR code works for now/), 1);
+
+  const broken = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }), {
+    sendCodeBox: async () => {
+      throw new Error("The door fell off.");
+    },
+  });
+  broken.link.start();
+  await signIn(broken.opener, broken.link);
+  const madeAnyway = await broken.link.newPairing();
+  assert.ok(madeAnyway !== null);
+  assert.equal(madeAnyway.shortCode, null);
+
+  const noSender = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }));
+  noSender.link.start();
+  await signIn(noSender.opener, noSender.link);
+  const alone = await noSender.link.newPairing();
+  assert.ok(alone !== null);
+  assert.equal(alone.shortCode, null);
+});
+
+test("makes nothing while there is no connection to the relay", async () => {
+  const door = fakeDoor();
+  const { link } = await openLink(stateWith({ enabled: false, relayOrigin: RELAY_ORIGIN }), { sendCodeBox: door.send });
+  link.start();
+  assert.equal(await link.newPairing(), null);
+  assert.equal(door.left.length, 0);
+});
+
+test("shows no short code when the pairing was put away while its box was on its way", async () => {
+  for (const putAway of [(link: PhoneLink) => link.cancelPairing(), (link: PhoneLink) => link.newPairingLink()]) {
+    let arrive = (_answer: BoxAnswer) => {};
+    const sent = new Promise<BoxAnswer>((resolve) => {
+      arrive = resolve;
+    });
+    let leaving = false;
+    const { link, opener } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }), {
+      sendCodeBox: () => {
+        leaving = true;
+        return sent;
+      },
+    });
+    link.start();
+    await signIn(opener, link);
+    const making = link.newPairing();
+    await until(() => leaving, "the box to leave");
+    putAway(link);
+    arrive("stored");
+    const made = await making;
+    assert.ok(made !== null);
+    assert.equal(made.shortCode, null);
+    assert.equal(link.view().typedCodeLive, false);
+  }
+});

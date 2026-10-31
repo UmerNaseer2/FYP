@@ -56,10 +56,12 @@ import { KEY_BYTES, importKeyPair, type KeyPair } from "../shared/remote/keys";
 import { writePairingLink } from "../shared/remote/pairing";
 import { desktopIdFor } from "../shared/remote/relay-auth";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
+import { lockCodeBox, makeCodeKeys, makeShortCode, showShortCode } from "../shared/remote/short-code";
 import { SYSTEM_CLOCK, type Clock } from "./clock";
+import type { CodeBoxSender } from "./code-box-sender";
 import { addLogSecret, logError, logInfo, logWarn } from "./log";
 import { PhoneApprovals } from "./phone-approvals";
-import { PhoneHost } from "./phone-host";
+import { PhoneHost, type PhoneHostOptions } from "./phone-host";
 import { PushSender } from "./phone-push";
 import { PhoneRelay, type OpenSocket, type RelayStatus } from "./phone-relay";
 import { answerRequest, driftAlertsAllowed, type AppCaller, type Refusal, type RequestOptions } from "./phone-requests";
@@ -81,6 +83,10 @@ export type PhoneLinkOptions = {
   computerName: string;
   /** Sends drift alerts to the phones' push services (src/main/push-transport.ts). Tests pass in a fake push service. */
   pushTransport: PushTransport;
+  /** Leaves a short pairing code's locked box at the relay (src/main/code-box-sender.ts). With none, Settings shows the QR code alone. */
+  sendCodeBox?: CodeBoxSender;
+  /** Asks the person at the computer whether a browser that came with a short code may pair. With none, the answer is no. */
+  askToPair?: PhoneHostOptions["askToPair"];
   /**
    * Told once a run of changes is done: to a setting, to which phones are
    * connected, or to the connection to the relay. Settings then asks for
@@ -116,6 +122,8 @@ export type PhoneLinkView = {
   queryTextConnectionIds: number[];
   /** Whether the computer stays awake for its phones while the link is on. */
   keepAwake: boolean;
+  /** Whether a short code to type could still pair a browser. It stops being so once used, as well as when it runs out. */
+  typedCodeLive: boolean;
   /**
    * The paired phones, whether each is connected now, whether it gets drift
    * alerts, whether it may approve requests, and, while it may set that up,
@@ -299,6 +307,8 @@ export class PhoneLink {
       // Told after the pairing is saved, in a microtask like onChange, so that the app's code never runs in the middle of the host's.
       onPaired: (phone) => queueMicrotask(() => this.tell(() => this.options.onPaired?.(phone))),
       onConnectedChange: () => this.changed(),
+      askToPair: options.askToPair,
+      onTypedCodeChange: () => this.changed(),
       clock: options.clock,
     });
     this.push = new PushSender({
@@ -354,6 +364,7 @@ export class PhoneLink {
       sharedConnectionIds: [...this.state.sharedConnectionIds],
       queryTextConnectionIds: [...this.state.queryTextConnectionIds],
       keepAwake: this.state.keepAwake,
+      typedCodeLive: this.host.typedCodeIsGood(),
       // Named one by one, so that where a phone's alerts go, and its passkey, are never passed on.
       phones: this.state.phones.map(({ key, name, pairedAt, lastSeenAt, push, passkey }) => ({
         key,
@@ -379,6 +390,46 @@ export class PhoneLink {
     return { link: writePairingLink(this.connection.origin, code), expiresAt };
   }
 
+  /**
+   * A new pairing for Settings to show: the pairing link for the QR code, when
+   * it runs out, and a short code to type in a browser with no camera. The
+   * short code is null when its box could not be left at the relay, or when
+   * the pairing was replaced or put away meanwhile, and the QR code still
+   * works then. Null while there is no connection to the relay, as for
+   * newPairingLink.
+   */
+  async newPairing(): Promise<{ link: string; expiresAt: number; shortCode: string | null } | null> {
+    const made = this.newPairingLink();
+    if (made === null) return null;
+    return { ...made, shortCode: await this.newShortCode() };
+  }
+  /** Leaves a locked pairing link at the relay, and gives the short code that opens it. Never throws. */
+  private async newShortCode(): Promise<string | null> {
+    const send = this.options.sendCodeBox;
+    const origin = this.connection?.origin;
+    if (send === undefined || origin === undefined) return null;
+    // Made after the pairing link, which would replace it.
+    const { code } = this.host.startTypedPairing();
+    try {
+      const link = writePairingLink(origin, code);
+      // A label that holds a box already is another code's, which is very unlikely, so one more try is plenty.
+      for (let tries = 0; tries < 2; tries += 1) {
+        const shortCode = makeShortCode();
+        // Never logged anyway. Masked in both forms because a log masks only the exact text.
+        addLogSecret(shortCode);
+        addLogSecret(showShortCode(shortCode));
+        const keys = await makeCodeKeys(shortCode, origin);
+        const answer = await send(origin, keys.label, await lockCodeBox(keys, link));
+        // A cancel or a newer pairing while the box was on its way has made this code pair nothing, so it is not shown.
+        if (answer === "stored") return this.host.holdsTypedCode(code.secret) ? shortCode : null;
+        if (answer === "failed") break;
+      }
+    } catch (error) {
+      logWarn(`Could not make a short pairing code: ${String(error)}`);
+    }
+    logWarn("A short pairing code could not be left at the relay, so only the QR code works for now.");
+    return null;
+  }
   /** Makes the latest pairing link pair nothing, for when Settings puts it away. */
   cancelPairing(): void {
     this.host.cancelPairing();

@@ -2,7 +2,7 @@
  * Pairing a phone with the computer, and how each connection between them
  * opens.
  *
- * To pair, the computer shows a link, as a QR code and as text to copy:
+ * To pair, the computer shows a link as a QR code:
  *
  *   https://<relay>/#pair=v1.<computer's ID>.<computer's key>.<one-time secret>
  *
@@ -12,6 +12,12 @@
  * and no other, and a secret that shows the computer the phone saw the link.
  * All of that comes after "#", the part of a link that browsers never send
  * anywhere, so the relay never learns the key or the secret.
+ *
+ * A browser with no camera gets the same link another way: the computer also
+ * shows a short code to type, and the link comes locked behind it
+ * (short-code.ts). A typed code proves far less than a scanned link, so the
+ * link it unlocks has a secret of its own, and the computer asks its person
+ * to Allow or Deny before that secret pairs anything.
  *
  * Every connection then starts with a Noise IK handshake (noise.ts), the
  * phone first, and the first message carries the phone's opening, one of:
@@ -40,6 +46,13 @@ export const PHONE_LINK_PROLOGUE = utf8("Schema Studio phone link 1");
 export const PAIRING_SECRET_BYTES = 32;
 /** How long a pairing link works for, from when the computer shows it. */
 export const PAIRING_LIFETIME_MS = 5 * 60_000;
+/**
+ * How long the person at the computer has to Allow or Deny a browser that came
+ * with a typed code. A set time rather than what is left of the code, since a
+ * code typed in its last seconds would otherwise raise a question that goes
+ * before it can be read. The browser waits this long for the answer.
+ */
+export const ASK_WITHIN_MS = 120_000;
 /** The longest name a phone or computer is shown with, in characters. */
 export const MAX_DEVICE_NAME_LENGTH = 64;
 
@@ -125,9 +138,11 @@ export function readOpening(payload: Bytes): Opening | null {
  *    not the computer's latest one.
  *  - too-many-phones: the computer has as many paired phones as it takes.
  *  - not-paired: the computer does not know this phone, or it was removed.
+ *  - denied: the person at the computer did not allow a browser that came
+ *    with a typed code, by saying no or by not answering in time.
  */
-export type OpeningRefusal = "expired-code" | "too-many-phones" | "not-paired";
-const REFUSALS: readonly OpeningRefusal[] = ["expired-code", "too-many-phones", "not-paired"];
+export type OpeningRefusal = "expired-code" | "too-many-phones" | "not-paired" | "denied";
+const REFUSALS: readonly OpeningRefusal[] = ["expired-code", "too-many-phones", "not-paired", "denied"];
 
 /** The computer's answer to an opening: its own name when the phone may go on. */
 export type OpeningAnswer = { ok: true; name: string } | { ok: false; reason: OpeningRefusal };

@@ -105,10 +105,10 @@ test("offers nothing for the signed-in person's own request", async () => {
 test("offers nothing until the phone has a passkey for whoever is signed in", async () => {
   const fingerprint = await approvalFingerprint(SCRIPTS, "deploy");
   const reasons: Record<Exclude<PasskeyState, "ready">, string> = {
-    none: "To approve or reject requests from this phone, set up approvals on it first. Requests shows how.",
-    allowed: "Set up approvals on this phone first: go back to Requests and choose Set up approvals.",
+    none: "To approve or reject requests from this device, set up approvals on it first. Requests shows how.",
+    allowed: "Set up approvals on this device first: go back to Requests and choose Set up approvals.",
     "other-person":
-      "The person signed in on the computer is not the one who set up approvals on this phone. Set them up again to decide as whoever is signed in now.",
+      "The person signed in on the computer is not the one who set up approvals on this device. Set them up again to decide as whoever is signed in now.",
   };
   for (const [passkey, reason] of Object.entries(reasons) as [PasskeyState, string][]) {
     assert.deepEqual(decisionChoices(list(passkey), summary(fingerprint), read(fingerprint), fingerprint), { approve: false, reject: false, reason }, passkey);
@@ -135,7 +135,7 @@ test("offers nothing when what the computer showed is not the request in the lis
 test("only lets a request be rejected when the computer cannot show its SQL", async () => {
   const fingerprint = await approvalFingerprint(SCRIPTS, "deploy");
   const reason =
-    "The computer cannot show the SQL this request runs, so it cannot be approved from a phone. Reject it here, or decide it in Schema Studio on the computer.";
+    "The computer cannot show the SQL this request runs, so it cannot be approved here. Reject it here, or decide it in Schema Studio on the computer.";
   assert.deepEqual(decisionChoices(list(), summary(fingerprint, { sql: "missing" }), read(fingerprint, { scripts: null }), null), { approve: false, reject: true, reason });
   assert.deepEqual(decisionChoices(list(), summary(fingerprint, { sql: "missing" }), read(fingerprint), fingerprint), { approve: false, reject: true, reason });
 });
@@ -159,6 +159,6 @@ test("explains a passkey the browser would not make or use, without the browser'
     );
     assert.equal(passkeyErrorText("SecurityError", kind), "This browser would not use a passkey for this address. Approvals need the relay to be opened over HTTPS.");
   }
-  assert.equal(passkeyErrorText("UnknownError", "create"), "The phone could not make a passkey. Try again.");
-  assert.equal(passkeyErrorText("", "get"), "The phone could not use its passkey. Try again.");
+  assert.equal(passkeyErrorText("UnknownError", "create"), "This device could not make a passkey. Try again.");
+  assert.equal(passkeyErrorText("", "get"), "This device could not use its passkey. Try again.");
 });

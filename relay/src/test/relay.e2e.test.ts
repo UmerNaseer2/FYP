@@ -10,8 +10,9 @@ import { fileURLToPath } from "node:url";
 
 import { createTestHarness } from "wrangler";
 
+import { MAX_TRIES } from "../code-box-logic.js";
 import { MAX_PHONES, SIGN_IN_MS } from "../room-logic.js";
-import type { Bytes } from "../shared/remote/bytes.js";
+import { randomBytes, toBase64Url, type Bytes } from "../shared/remote/bytes.js";
 import { generateKeyPair, type KeyPair } from "../shared/remote/keys.js";
 import { desktopIdFor, signChallenge } from "../shared/remote/relay-auth.js";
 import {
@@ -27,10 +28,12 @@ import {
   PONG,
   readControl,
   relayPath,
+  relayCodePath,
   writeControl,
   type Control,
   type Role,
 } from "../shared/remote/relay-protocol.js";
+import { MAX_CODE_BOX_BYTES } from "../shared/remote/short-code.js";
 
 /** The relay as wrangler.jsonc describes it. This file runs from out/test, two folders below relay/. */
 const harness = createTestHarness({ root: fileURLToPath(new URL("../..", import.meta.url)), workers: [{ configPath: "wrangler.jsonc" }] });
@@ -352,6 +355,116 @@ test("lets only so many phones connect to a computer at once", async () => {
   await waitFor("the relay to close the extra phone", () => (extra.closing ? true : undefined));
   await harness.getWorker().evictDurableObject("Room", { name: computer.id, webSockets: "hibernate" });
   assert.equal((await extra.whenClosed()).code, CLOSE_FULL);
+});
+
+/** A label for a box, a new one each time, so that no test finds another's box. */
+function newLabel(): string {
+  return toBase64Url(randomBytes(32));
+}
+
+/**
+ * A request to the door that keeps boxes. Every test comes from an address of
+ * its own, so that the tries it uses up are not counted against another's.
+ */
+async function door(label: string, address: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("CF-Connecting-IP", address);
+  return fetch(new URL(relayCodePath(label), base), { ...init, headers });
+}
+
+test("gives a box to the first one who asks with its label, and to nobody after", async () => {
+  const label = newLabel();
+  const box = randomBytes(210);
+  const stored = await door(label, "192.0.2.1", { method: "PUT", body: box });
+  assert.equal(stored.status, 201);
+  const taken = await door(label, "192.0.2.1", { method: "POST" });
+  assert.equal(taken.status, 200);
+  assert.equal(taken.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(new Uint8Array(await taken.arrayBuffer()), box);
+  assert.equal((await door(label, "192.0.2.1", { method: "POST" })).status, 404);
+});
+
+test("will not write over a box that is still good", async () => {
+  const label = newLabel();
+  const first = randomBytes(64);
+  assert.equal((await door(label, "192.0.2.2", { method: "PUT", body: first })).status, 201);
+  assert.equal((await door(label, "192.0.2.2", { method: "PUT", body: randomBytes(64) })).status, 409);
+  assert.deepEqual(new Uint8Array(await (await door(label, "192.0.2.2", { method: "POST" })).arrayBuffer()), first);
+});
+
+test("still has a box after the place that keeps it has slept", async () => {
+  const label = newLabel();
+  const box = randomBytes(64);
+  assert.equal((await door(label, "192.0.2.3", { method: "PUT", body: box })).status, 201);
+  await harness.getWorker().evictDurableObject("CodeBox", { name: label });
+  assert.deepEqual(new Uint8Array(await (await door(label, "192.0.2.3", { method: "POST" })).arrayBuffer()), box);
+});
+
+test("takes only a box of a sensible size", async () => {
+  const label = newLabel();
+  assert.equal((await door(label, "192.0.2.4", { method: "PUT", body: randomBytes(MAX_CODE_BOX_BYTES + 1) })).status, 413);
+  assert.equal((await door(label, "192.0.2.4", { method: "PUT" })).status, 413);
+  assert.equal((await door(label, "192.0.2.4", { method: "POST" })).status, 404, "Nothing was kept.");
+  assert.equal((await door(label, "192.0.2.4", { method: "PUT", body: randomBytes(MAX_CODE_BOX_BYTES) })).status, 201);
+});
+
+test("takes a box sent in pieces with no length declared, up to the same size", async () => {
+  const sentInPieces = (...parts: Bytes[]): RequestInit =>
+    ({
+      method: "PUT",
+      body: new ReadableStream<Bytes>({
+        start(controller) {
+          for (const part of parts) controller.enqueue(part);
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    }) as RequestInit;
+  const box = randomBytes(300);
+  const label = newLabel();
+  assert.equal((await door(label, "192.0.2.9", sentInPieces(box.subarray(0, 100), box.subarray(100)))).status, 201);
+  const taken = await door(label, "192.0.2.9", { method: "POST" });
+  assert.deepEqual(new Uint8Array(await taken.arrayBuffer()), box);
+
+  const tooBig = newLabel();
+  const over = randomBytes(MAX_CODE_BOX_BYTES);
+  assert.equal((await door(tooBig, "192.0.2.9", sentInPieces(over, randomBytes(1)))).status, 413);
+  assert.equal((await door(tooBig, "192.0.2.9", { method: "POST" })).status, 404, "Nothing was kept.");
+});
+
+test("has no box for a label that never held one", async () => {
+  assert.equal((await door(newLabel(), "192.0.2.5", { method: "POST" })).status, 404);
+});
+
+test("opens the door only with PUT and POST, and only to the phone app's own pages", async () => {
+  const label = newLabel();
+  const asked = await door(label, "192.0.2.6");
+  assert.equal(asked.status, 405);
+  assert.equal(asked.headers.get("Allow"), "PUT, POST");
+  const elsewhere = { Origin: "https://example.test" };
+  assert.equal((await door(label, "192.0.2.6", { method: "PUT", body: randomBytes(64), headers: elsewhere })).status, 403);
+  assert.equal((await door(label, "192.0.2.6", { method: "POST", headers: elsewhere })).status, 403);
+  // The app's own page says where it came from too, and it is let in.
+  const own = { Origin: base.origin };
+  assert.equal((await door(label, "192.0.2.6", { method: "POST", headers: own })).status, 404);
+});
+
+test("does not take anything else for a label", async () => {
+  for (const path of ["/v1/code/short", `/v1/code/${newLabel()}/more`, "/v1/code/"]) {
+    const answer = await fetch(new URL(path, base), { method: "POST" });
+    assert.equal(answer.status, 404, path);
+  }
+});
+
+test("lets one address use the door only so many times in a minute, and not another", async () => {
+  const label = newLabel();
+  for (let tries = 1; tries <= MAX_TRIES; tries++) {
+    assert.equal((await door(label, "192.0.2.7", { method: "POST" })).status, 404, `Try ${tries}`);
+  }
+  const refused = await door(label, "192.0.2.7", { method: "POST" });
+  assert.equal(refused.status, 429);
+  assert.match(await refused.text(), /Wait a minute/);
+  assert.equal((await door(label, "192.0.2.8", { method: "POST" })).status, 404);
 });
 
 // Last, as it waits for a whole sign-in's time to run out.

@@ -22,6 +22,7 @@ export type Route =
   | { screen: "compare" }
   | { screen: "settings" }
   | { screen: "scan" }
+  | { screen: "code" }
   | { screen: "approvals" }
   | { screen: "approval"; approvalId: number };
 
@@ -42,7 +43,7 @@ export function readRoute(hash: string): Route {
   if (parts[0] !== "") return HOME;
   if (parts.length === 2) {
     const screen = parts[1];
-    return screen === "compare" || screen === "settings" || screen === "scan" || screen === "approvals" ? { screen } : HOME;
+    return screen === "compare" || screen === "settings" || screen === "scan" || screen === "code" || screen === "approvals" ? { screen } : HOME;
   }
   if (parts[1] === "approvals") {
     const approvalId = parts.length === 3 ? readId(parts[2]) : null;
@@ -88,6 +89,7 @@ export function writeRoute(route: Route): string {
     case "compare":
     case "settings":
     case "scan":
+    case "code":
     case "approvals":
       return `#/${route.screen}`;
   }

@@ -57,6 +57,9 @@ export type Actions = {
   go(route: Route): void;
   openScan(): void;
   restartScan(): void;
+  openCode(): void;
+  setCode(text: string): void;
+  submitCode(): void;
   setName(name: string): void;
   pair(name: string): void;
   cancelPairing(): void;
@@ -77,6 +80,8 @@ export type Actions = {
   turnOffAlerts(): void;
 };
 
+/** What the Enter a code screen shows. main.ts keeps it, because a screen is built again on every change. */
+export type CodeForm = { typed: string; checking: boolean; problem: string | null };
 /** The Scan screen's parts that change while it shows. */
 export type ScanUi = { video: HTMLVideoElement; message: HTMLParagraphElement; retry: HTMLButtonElement };
 
@@ -85,19 +90,26 @@ export function blockedScreen(message: string, canReload: boolean, actions: Acti
   return [heading("The phone app cannot open"), notice(message, "bad", canReload && button("Reload", actions.reload, { class: "secondary" }))];
 }
 
-export function pairScreen(alert: string | null, iosTip: boolean, actions: Actions): Node[] {
+/**
+ * The first screen on a device that has not paired. `typedFirst` is for a device
+ * whose camera is unlikely to be pointed at a screen, such as a laptop, where
+ * typing the code is the easier way.
+ */
+export function pairScreen(alert: string | null, iosTip: boolean, typedFirst: boolean, actions: Actions): Node[] {
+  const scan = button("Scan the code", actions.openScan, { class: typedFirst ? "secondary" : "primary" });
+  const type = button("Enter a code", actions.openCode, { class: typedFirst ? "primary" : "secondary", id: "enter-code" });
   return [
     heading("Pair with a computer"),
     alert !== null && notice(alert, "bad"),
-    el("p", { class: "lead" }, "See the schemas on a computer running Schema Studio from this phone, and compare them, wherever you are."),
+    el("p", { class: "lead" }, "See a computer's schemas and live status from here, and compare schemas, wherever you are. Schema Studio has to be running on the computer."),
     el(
       "ol",
       { class: "steps" },
       el("li", {}, "On the computer, open Schema Studio and go to Settings."),
       el("li", {}, "Under Phone, turn on Let paired phones connect, then choose Show a code."),
-      el("li", {}, "Scan the code with this phone."),
+      el("li", {}, "Scan the QR code it shows, or type the short code beside it."),
     ),
-    el("div", { class: "actions" }, button("Scan the code", actions.openScan, { class: "primary" })),
+    el("div", { class: "actions" }, typedFirst ? [type, scan] : [scan, type]),
     iosTip &&
       notice(
         "On an iPhone or iPad, add this page to the Home Screen first (the Share button, then Add to Home Screen), open it from there, and scan the code in the app. A link opened from the camera opens in Safari, which keeps its pairing apart from the Home Screen app's.",
@@ -109,25 +121,29 @@ export function pairScreen(alert: string | null, iosTip: boolean, actions: Actio
 /**
  * Naming the phone before it pairs. `status` says where the pairing has got
  * to while it is under way, and the name typed so far goes to setName, so a
- * new picture of the screen keeps it.
+ * new picture of the screen keeps it. `typed` says the code was typed in, so
+ * this is most likely a browser on a device with no camera to scan another with.
  */
-export function confirmScreen(name: string, problem: string | null, pairing: boolean, status: string | null, replaces: string | null, actions: Actions): Node[] {
+export function confirmScreen(name: string, problem: string | null, pairing: boolean, status: string | null, replaces: string | null, typed: boolean, actions: Actions): Node[] {
+  const device = typed ? "browser" : "phone";
   const input = el("input", { id: "phone-name", type: "text", maxlength: 64, autocomplete: "off", value: name, disabled: pairing });
   input.addEventListener("input", () => actions.setName(input.value));
   const form = el(
     "form",
     { class: "card" },
-    el("label", { class: "field", for: "phone-name" }, "Name this phone"),
+    el("label", { class: "field", for: "phone-name" }, `Name this ${device}`),
     input,
-    el("p", { class: "hint" }, "The computer lists this phone under this name in Settings, under Paired phones."),
-    replaces !== null && el("p", { class: "hint" }, `This phone is paired with ${replaces}. Pairing with this code replaces that pairing.`),
+    el("p", { class: "hint" }, `The computer lists this ${device} under this name in Settings, under Paired phones.`),
+    replaces !== null && el("p", { class: "hint" }, `This ${device} is paired with ${replaces}. Pairing with this code replaces that pairing.`),
     status !== null && el("p", { class: "hint", role: "status" }, status),
     el(
       "div",
       { class: "actions" },
       problem === null
         ? el("button", { type: "submit", class: "primary", id: "pair", disabled: pairing }, pairing ? "Pairing\u{2026}" : "Pair")
-        : button("Scan a new code", actions.openScan, { class: "primary", id: "scan-again" }),
+        : typed
+          ? button("Enter a new code", actions.openCode, { class: "primary", id: "code-again" })
+          : button("Scan a new code", actions.openScan, { class: "primary", id: "scan-again" }),
       button("Cancel", actions.cancelPairing, { class: "secondary", id: "cancel" }),
     ),
   );
@@ -135,7 +151,46 @@ export function confirmScreen(name: string, problem: string | null, pairing: boo
     event.preventDefault();
     actions.pair(input.value);
   });
-  return [heading("Pair this phone"), problem !== null ? notice(problem, "bad") : el("span", {}), form];
+  const title = heading(`Pair this ${device}`);
+  return problem !== null ? [title, notice(problem, "bad"), form] : [title, form];
+}
+
+/** Typing the short code Settings shows beside the QR code, for a device with no camera to scan it with. */
+export function codeScreen(form: CodeForm, actions: Actions): Node[] {
+  const input = el("input", {
+    id: "short-code",
+    class: "code-input",
+    // A text box, which main.ts keeps the cursor in when the screen is built again.
+    type: "text",
+    maxlength: 12,
+    placeholder: "XXXX-XXXX",
+    autocomplete: "off",
+    autocapitalize: "characters",
+    // As a string, because el leaves out an attribute that is false, and the browser would then check the spelling.
+    spellcheck: "false",
+    value: form.typed,
+    // Not disabled, which would take the focus away while the code is checked.
+    readonly: form.checking,
+  });
+  input.addEventListener("input", () => actions.setCode(input.value));
+  const box = el(
+    "form",
+    { class: "card" },
+    el("label", { class: "field", for: "short-code" }, "The code on the computer"),
+    input,
+    el("p", { class: "hint" }, "In Schema Studio on the computer, go to Settings and choose Show a code under Phone. The code has 8 letters and numbers, and runs out after 5 minutes."),
+    el(
+      "div",
+      { class: "actions" },
+      el("button", { type: "submit", class: "primary", id: "code-continue", disabled: form.checking }, form.checking ? "Checking\u{2026}" : "Continue"),
+    ),
+  );
+  box.addEventListener("submit", (event) => {
+    event.preventDefault();
+    actions.submitCode();
+  });
+  const title = heading("Enter a code");
+  return form.problem !== null ? [title, notice(form.problem, "bad"), box] : [title, box];
 }
 
 export function scanScreen(actions: Actions): { nodes: Node[]; ui: ScanUi } {
@@ -189,7 +244,7 @@ export function connectionScreen(connection: SharedConnection | null, schemas: L
   if (canSeeLive) nodes.push(el("div", { class: "actions" }, button("Live status", () => actions.go({ screen: "live", connectionId }), { class: "secondary", id: "live-status" })));
   if (schemas === undefined || schemas.status === "loading") return [...nodes, loading("Asking the computer for the schemas\u{2026}")];
   if (schemas.status === "failed") return [...nodes, failed(schemas.message, actions.refresh)];
-  if (schemas.value.length === 0) return [...nodes, notice("This database has no schemas the phone can show.", "info")];
+  if (schemas.value.length === 0) return [...nodes, notice("This database has no schemas this app can show.", "info")];
   const rows = schemas.value.map((schema) =>
     button(el("span", { class: "row-title mono" }, schema), () => actions.go({ screen: "schema", connectionId, schema }), { class: "row", id: `schema-${schema}` }),
   );
@@ -475,11 +530,11 @@ function requestRow(request: ApprovalSummary, connection: SharedConnection | und
 function passkeyPart(passkey: ApprovalList["passkey"], setup: PasskeyStep<"create">, passkeys: boolean, actions: Actions): Node[] {
   switch (passkey) {
     case "ready":
-      return [el("p", { class: "hint" }, "Approvals are set up on this phone.")];
+      return [el("p", { class: "hint" }, "Approvals are set up on this device.")];
     case "none":
       return [
         notice(
-          "To approve or reject requests from this phone, choose Allow approvals for it in Schema Studio's Settings on the computer, under Paired phones. Then set them up here within 5 minutes.",
+          "To approve or reject requests from this device, choose Allow approvals for it in Schema Studio's Settings on the computer, under Paired phones. Then set them up here within 5 minutes.",
           "info",
           button("Check again", actions.refresh, { class: "secondary", id: "check-passkey" }),
         ),
@@ -487,7 +542,7 @@ function passkeyPart(passkey: ApprovalList["passkey"], setup: PasskeyStep<"creat
     case "other-person":
       return [
         notice(
-          "The person signed in on the computer is not the one who set up approvals on this phone. To decide as whoever is signed in now, choose Allow approvals for this phone in Schema Studio's Settings on the computer, then set them up here again.",
+          "The person signed in on the computer is not the one who set up approvals on this device. To decide as whoever is signed in now, choose Allow approvals for this device in Schema Studio's Settings on the computer, then set them up here again.",
           "info",
           button("Check again", actions.refresh, { class: "secondary", id: "check-passkey" }),
         ),
@@ -502,7 +557,7 @@ function passkeyPart(passkey: ApprovalList["passkey"], setup: PasskeyStep<"creat
           el(
             "p",
             {},
-            "This phone makes a passkey for approvals, kept by its password manager. Each decision asks for Face ID, a fingerprint or the phone's screen lock, and the computer checks the passkey before it records anything.",
+            "This device makes a passkey for approvals, kept by its password manager. Each decision asks for Face ID, a fingerprint or its screen lock, and the computer checks the passkey before it records anything.",
           ),
           !passkeys &&
             notice("This browser cannot use passkeys, so approvals cannot be set up in it. Try the phone's own browser: Safari on an iPhone, or Chrome on Android.", "bad"),
@@ -540,7 +595,7 @@ export function approvalsScreen(
   if (list.status === "failed") return [...nodes, failed(list.message, actions.refresh)];
   const { approvals, passkey, canApprove } = list.value;
   if (canApprove) nodes.push(...passkeyPart(passkey, setup, passkeys, actions));
-  else nodes.push(notice("The role signed in on the computer may not approve or reject requests, so this phone can only show them.", "info"));
+  else nodes.push(notice("The role signed in on the computer may not approve or reject requests, so this device can only show them.", "info"));
   if (approvals.length === 0) return [...nodes, notice("No deploy or rollback requests are waiting for a decision.", "info")];
   const known = connections?.status === "loaded" ? connections.value : [];
   return [
@@ -629,7 +684,7 @@ export function approvalScreen(
     el(
       "p",
       { class: "hint" },
-      "Approving does not run anything: it lets the person who asked run it from the Deploy screen in Schema Studio. Either way, the phone asks for Face ID, a fingerprint or its screen lock first.",
+      "Approving does not run anything: it lets the person who asked run it from the Deploy screen in Schema Studio. Either way, this device asks for Face ID, a fingerprint or its screen lock first.",
     ),
     el(
       "div",
@@ -650,7 +705,7 @@ function alertsPart(alerts: AlertsView, actions: Actions): Node[] {
     el(
       "p",
       { class: "hint" },
-      "Get an alert on this phone when a schema tracked on the computer drifts, for the connections it shares with phones. Schema Studio has to be running on the computer.",
+      "Get an alert on this device when a schema tracked on the computer drifts, for the connections it shares with phones. Schema Studio has to be running on the computer.",
     ),
   ];
   switch (alerts.kind) {
@@ -661,10 +716,10 @@ function alertsPart(alerts: AlertsView, actions: Actions): Node[] {
     case "failed":
       return [...nodes, failed(alerts.message, actions.refresh)];
     case "ready":
-      nodes.push(el("p", { id: "alerts-state" }, alerts.on ? "This phone gets drift alerts." : "This phone does not get drift alerts."));
+      nodes.push(el("p", { id: "alerts-state" }, alerts.on ? "This device gets drift alerts." : "This device does not get drift alerts."));
       if (alerts.problem !== null) nodes.push(notice(alerts.problem, "bad"));
       if (alerts.blocked) {
-        return [...nodes, notice("Alerts are blocked for this app in the phone's settings. Allow notifications for it there, then try again.", "bad")];
+        return [...nodes, notice("Alerts are blocked for this app in this device's settings. Allow notifications for it there, then try again.", "bad")];
       }
       nodes.push(
         el(
@@ -685,19 +740,24 @@ export function settingsScreen(paired: PairedComputer, hello: HelloResult | null
     el(
       "dl",
       { class: "card" },
-      infoRow("This phone", paired.phoneName),
+      infoRow("This device", paired.phoneName),
       infoRow("Computer", paired.computerName),
       infoRow("Paired", `Paired on ${dayText(paired.pairedAt)}`),
       infoRow("Relay", new URL(paired.relayOrigin).host, true),
-      infoRow("Phone app version", BUILD_VERSION, true),
+      infoRow("App version", BUILD_VERSION, true),
       infoRow("Schema Studio version", hello?.appVersion ?? "Not known until the computer answers", hello !== null),
     ),
     ...alertsPart(alerts, actions),
     el("h2", { class: "section" }, "Pairing"),
-    el("div", { class: "actions" }, button("Scan a new pairing code", actions.openScan, { class: "secondary", id: "scan-new" })),
+    el(
+      "div",
+      { class: "actions" },
+      button("Scan a new pairing code", actions.openScan, { class: "secondary", id: "scan-new" }),
+      button("Enter a pairing code", actions.openCode, { class: "secondary", id: "code-new" }),
+    ),
     forgetting
       ? notice(
-          `Forget ${paired.computerName}? The computer keeps this phone in its list until you remove it there, under Paired phones.`,
+          `Forget ${paired.computerName}? The computer keeps this device in its list until you remove it there, under Paired phones.`,
           "bad",
           el("div", { class: "actions" }, button("Forget", actions.forget, { class: "danger", id: "forget-yes" }), button("Cancel", () => actions.askForget(false), { class: "secondary" })),
         )

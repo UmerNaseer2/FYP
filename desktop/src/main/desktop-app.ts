@@ -128,6 +128,7 @@ import {
   withBackupExtension,
 } from "./backup-settings";
 import { versionLabel, type BuildInfo } from "./build-info";
+import { sendCodeBox } from "./code-box-sender";
 import { ConfigStore } from "./config-store";
 import { makeDiagnostics } from "./diagnostics";
 import { DriftWatcher } from "./drift-watcher";
@@ -137,7 +138,7 @@ import { addLogSecret, logError, logFolder, logInfo, logWarn } from "./log";
 import { buildMenu } from "./menu";
 import { openPhoneLink, type PhoneLink } from "./phone-link";
 import type { AppAnswer } from "./phone-requests";
-import { CONNECTIONS_FAILED, makePairing, phoneView, readPhoneConnections, setRelay } from "./phone-settings";
+import { CONNECTIONS_FAILED, makePairing, pairQuestion, phoneView, readPhoneConnections, setRelay } from "./phone-settings";
 import { startPostgres, withClient, type RunningPostgres } from "./postgres";
 import { APP_HOST, APP_ORIGIN, serveAppPages } from "./protocol";
 import { sendToPushService } from "./push-transport";
@@ -761,6 +762,8 @@ export class DesktopApp {
         appVersion: app.getVersion(),
         computerName: os.hostname(),
         pushTransport: sendToPushService,
+        sendCodeBox,
+        askToPair: (name, signal) => this.askToPair(name, signal),
         onChange: () => this.phoneChanged(),
         onPaired: (phone) => liveContents(this.settingsWindow)?.send(PHONE.paired, phone.name),
       });
@@ -1256,6 +1259,32 @@ export class DesktopApp {
     return window !== null && !window.isDestroyed() && window.isVisible()
       ? dialog.showMessageBox(window, options)
       : dialog.showMessageBox(options);
+  }
+
+  /**
+   * Asks whether a browser that came with a short code may pair. A short code
+   * shows only in Settings, and closing Settings puts it away, so the question
+   * stands on Settings, and with no Settings the answer is no.
+   */
+  private async askToPair(name: string, signal: AbortSignal): Promise<boolean> {
+    const window = this.settingsWindow;
+    if (this.quitting || window === null || window.isDestroyed()) return false;
+    // The person has just been typing in the browser, so this app has to come forward for them to see the question.
+    window.show();
+    app.focus({ steal: true });
+    const question = pairQuestion(name);
+    const { response } = await dialog.showMessageBox(window, {
+      type: "question",
+      title: "Schema Studio",
+      message: question.message,
+      detail: question.detail,
+      buttons: ["Allow", "Deny"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      signal,
+    });
+    return response === 0;
   }
 
   // Quitting

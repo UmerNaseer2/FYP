@@ -27,7 +27,7 @@ import type { Bytes } from "../shared/remote/bytes.js";
 import { KEY_BYTES, type KeyPair } from "../shared/remote/keys.js";
 import { Link } from "../shared/remote/link.js";
 import { Initiator, type Session } from "../shared/remote/noise.js";
-import { PHONE_LINK_PROLOGUE, readOpeningAnswer, writeOpening, type Opening, type OpeningRefusal } from "../shared/remote/pairing.js";
+import { ASK_WITHIN_MS, PHONE_LINK_PROLOGUE, readOpeningAnswer, writeOpening, type Opening, type OpeningRefusal } from "../shared/remote/pairing.js";
 import {
   CLOSE_BROKEN,
   CLOSE_FULL,
@@ -71,6 +71,8 @@ export const PROBE_WITHIN_MS = 8_000;
  * computer gives up first.
  */
 export const HANDSHAKE_WITHIN_MS = 35_000;
+/** The same for a code the computer asks someone about first, again a little longer than the computer itself waits. */
+export const ASKING_WITHIN_MS = ASK_WITHIN_MS + 5_000;
 /** The wait before the first try at connecting again. Each failure in a row doubles it, up to MAX_WAIT_MS. */
 export const FIRST_WAIT_MS = 1_000;
 /**
@@ -85,9 +87,9 @@ export const STEADY_MS = 60_000;
 /** The close code for an ordinary close. It goes without a reason: a long one makes close() throw. */
 const NORMAL_CLOSE = 1000;
 
-const UNREACHABLE = "The relay could not be reached. Check the phone's internet connection.";
+const UNREACHABLE = "The relay could not be reached. Check this device's internet connection.";
 const VERSION_MISMATCH =
-  "This phone app and Schema Studio on the computer are different versions, so the phone could not read the computer's answer. Update Schema Studio on the computer.";
+  "This phone app and Schema Studio on the computer are different versions, so this device could not read the computer's answer. Update Schema Studio on the computer.";
 
 /** What a socket reports. "closed" always comes last, and it also comes when the connection could not be made. */
 export type SocketEvents = {
@@ -131,16 +133,18 @@ export type EndReason = OpeningRefusal | "version" | "pairing-timed-out" | "save
 /** What each end says, for the phone to show as it is. */
 export const END_MESSAGES: Record<EndReason, string> = {
   "expired-code":
-    "That pairing code has run out or was replaced by a newer one. Make a new one in Settings on the computer, then scan it.",
+    "That pairing code has run out or was replaced by a newer one. Make a new one in Settings on the computer, then try again.",
   "too-many-phones":
     "The computer already has as many phones paired as it takes. Remove one in Settings on the computer, then try again.",
   "not-paired":
-    "The computer no longer knows this phone. It was removed in Settings on the computer, or the computer's phone link was set up again. Pair the phone again.",
+    "The computer no longer knows this device. It was removed in Settings on the computer, or the computer's phone link was set up again. Pair this device again.",
   version:
     "This phone app and Schema Studio on the computer are different versions, so they could not understand each other. Update Schema Studio on the computer, then try again.",
+  denied:
+    "Schema Studio on the computer did not allow this, either because someone said no or because nobody answered in time. Make a new code in Settings on the computer, then try again.",
   "pairing-timed-out": "The pairing code ran out before the computer answered. Make a new one in Settings on the computer.",
   "save-failed":
-    "This phone could not save the pairing, so it could not stay paired. Check that the browser is not in private browsing and has space to store data, then pair again with a new code.",
+    "This device could not save the pairing, so it could not stay paired. Check that the browser is not in private browsing and has space to store data, then pair again with a new code.",
 };
 
 /** Where the connection is, for the app to show. */
@@ -192,6 +196,8 @@ export type Pairing = {
    * was scanned, since the code itself does not say when it was made.
    */
   until: number;
+  /** Whether the computer asks someone before it answers, as for a code typed in, which takes a person's time. */
+  asks?: boolean;
 };
 
 export type PhoneConnectionOptions = {
@@ -530,13 +536,13 @@ export class PhoneConnection {
     this.clock.clearTimeout(connection.handshakeTimer);
     connection.handshakeTimer = this.clock.setTimeout(() => {
       if (this.isCurrent(connection, handshake)) this.lose(connection, "The computer did not answer.");
-    }, HANDSHAKE_WITHIN_MS);
+    }, pairing?.asks === true ? ASKING_WITHIN_MS : HANDSHAKE_WITHIN_MS);
     this.setState({ kind: "opening" });
     let message: Bytes;
     try {
       message = await initiator.writeFirstMessage(writeOpening(opening));
     } catch {
-      if (this.isCurrent(connection, handshake)) this.lose(connection, "The phone could not start the handshake with the computer.");
+      if (this.isCurrent(connection, handshake)) this.lose(connection, "This device could not start the handshake with the computer.");
       return;
     }
     if (!this.isCurrent(connection, handshake)) return;
@@ -821,9 +827,9 @@ function closeReason(code: number, opened: boolean): string {
       return "Too many phones are connected to the computer right now.";
     case CLOSE_BROKEN:
     case CLOSE_TOO_BIG:
-      return "The relay could not read what this phone sent.";
+      return "The relay could not read what this device sent.";
     case CLOSE_TOO_FAST:
-      return "The relay said this phone sent too much at once.";
+      return "The relay said this device sent too much at once.";
     default:
       return opened ? "The connection to the relay closed." : UNREACHABLE;
   }

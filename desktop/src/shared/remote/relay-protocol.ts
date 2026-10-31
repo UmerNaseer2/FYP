@@ -12,6 +12,11 @@
  *    the room is its own before anything is passed to it;
  *  - /v1/phone/<id> for any number of phones.
  *
+ * It has one more door, which is not a room's: /v1/code/<label> keeps the locked
+ * box behind a short pairing code (short-code.ts), for a few minutes. PUT leaves
+ * a box there and POST takes it away. These are plain requests rather than
+ * WebSockets, since a browser that has only a typed code belongs to no room yet.
+ *
  * The link's encrypted messages travel as binary WebSocket messages:
  *  - between a phone and the relay, each is one Noise message as it is,
  *    because a phone's connection carries only that phone's link;
@@ -47,6 +52,9 @@ import { CHALLENGE_BYTES, isDesktopId, SIGNATURE_BYTES } from "./relay-auth.js";
 
 export type Role = "desktop" | "phone";
 
+/** A box's label (short-code.ts): 32 bytes in the URL-safe base64 that links use. */
+const CODE_LABEL = /^[A-Za-z0-9_-]{43}$/;
+
 /** The address of one of a room's doors, after the relay's own address. */
 export function relayPath(role: Role, desktopId: string): string {
   if (!isDesktopId(desktopId)) throw new Error("That is not a computer's ID.");
@@ -58,6 +66,18 @@ export function readRelayPath(pathname: string): { role: Role; desktopId: string
   const match = /^\/v1\/(desktop|phone)\/([^/]+)$/.exec(pathname);
   if (match === null || !isDesktopId(match[2])) return null;
   return { role: match[1] === "desktop" ? "desktop" : "phone", desktopId: match[2] };
+}
+
+/** The door that keeps the box under this label. */
+export function relayCodePath(label: string): string {
+  if (!CODE_LABEL.test(label)) throw new Error("That is not a label for a box.");
+  return `/v1/code/${label}`;
+}
+
+/** The label in the address of the door that keeps boxes, or null when the address is not that door. */
+export function readCodePath(pathname: string): string | null {
+  const match = /^\/v1\/code\/([^/]+)$/.exec(pathname);
+  return match !== null && CODE_LABEL.test(match[1]) ? match[1] : null;
 }
 
 /**

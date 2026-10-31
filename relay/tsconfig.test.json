@@ -2,9 +2,11 @@
   // The tests, which run in Node (`npm test`): the room's rules
   // (src/room-logic.ts) with pretend connections, the phone app's connection
   // to the computer (src/phone/connection.ts) with a pretend relay and
-  // computer, the phone app's addresses, wording, approval rules, saved
-  // record and scanner arithmetic (routes.ts, format.ts, approvals.ts,
-  // store.ts and scan.ts in src/phone), the built service worker, and
+  // computer, the rules for a short code's box (src/code-box-logic.ts), the
+  // phone app's addresses, wording, approval rules, saved
+  // record, scanner arithmetic and typed codes (routes.ts, format.ts,
+  // approvals.ts, store.ts, scan.ts and code-entry.ts in src/phone), the built
+  // service worker, and
   // the whole relay run on this machine by wrangler. These parts and the
   // shared code use only what Node has as well, so they are compiled here
   // too, against Node's globals.
@@ -23,9 +25,11 @@
     "outDir": "out"
   },
   "include": [
+    "src/code-box-logic.ts",
     "src/room-logic.ts",
     "src/phone/approvals.ts",
     "src/phone/clock.ts",
+    "src/phone/code-entry.ts",
     "src/phone/connection.ts",
     "src/phone/format.ts",
     "src/phone/routes.ts",

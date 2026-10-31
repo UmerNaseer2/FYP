@@ -2,7 +2,8 @@
  * The computer's side of the phone link, one phone at a time. It greets each
  * phone the relay connects, checks that the phone is paired or pairs it with
  * the one-time secret from the latest pairing link, then answers the phone's
- * requests over the encrypted link.
+ * requests over the encrypted link. A browser that came with the typed code
+ * pairs only once the person at the computer allows it.
  *
  * The relay only passes messages along, numbering each phone's connection (a
  * channel). Everything is encrypted from end to end, so the relay never sees
@@ -23,6 +24,7 @@ import type { KeyPair } from "../shared/remote/keys";
 import { Link, MAX_LINK_MESSAGE_BYTES } from "../shared/remote/link";
 import { Responder } from "../shared/remote/noise";
 import {
+  ASK_WITHIN_MS,
   PAIRING_LIFETIME_MS,
   PAIRING_SECRET_BYTES,
   PHONE_LINK_PROLOGUE,
@@ -81,6 +83,15 @@ export type PhoneHostOptions = {
   /** Told when a phone pairs, so that Settings can show it at once. It must not throw. */
   onPaired?: (phone: PairedPhone) => void;
   /**
+   * Asks the person at the computer whether a browser that came with the typed
+   * code, and calls itself `name`, may pair. Once `signal` aborts the question
+   * is over, so whatever asks should take it off the screen. With none, or if
+   * it throws, the answer is no.
+   */
+  askToPair?: (name: string, signal: AbortSignal) => Promise<boolean>;
+  /** Told when the typed code stops being good before it runs out, so that Settings can stop showing it. It must not throw. */
+  onTypedCodeChange?: () => void;
+  /**
    * Told when the first message from a phone that was let in opens, and when
    * such a phone goes, so that Settings can show which phones are connected.
    * It must not throw.
@@ -115,6 +126,8 @@ type Channel = {
   /** The requests being answered, by their number. */
   pending: Map<number, Pending>;
   handshakeTimer: unknown;
+  /** Aborts the question to the person at the computer, while this browser waits for the answer. */
+  asking: AbortController | null;
 };
 
 /** What the log says about a phone that was turned away, after "it". */
@@ -122,6 +135,7 @@ const TURNED_AWAY: Record<OpeningRefusal, string> = {
   "expired-code": "tried to pair with a pairing link that was out of date, used already, or not the latest one",
   "too-many-phones": "tried to pair while the computer had as many phones as it takes",
   "not-paired": "is not paired with this computer",
+  denied: "came with a typed code and was not allowed by the person at the computer",
 };
 
 export class PhoneHost {
@@ -129,6 +143,8 @@ export class PhoneHost {
   private readonly clock: Clock;
   /** The secret in the latest pairing link, until a phone uses it, it runs out, or it is cancelled. */
   private pairing: { secret: Bytes; expiresAt: number } | null = null;
+  /** The secret behind the latest typed code, until a browser uses it, it runs out, or it is cancelled. */
+  private typedPairing: { secret: Bytes; expiresAt: number } | null = null;
 
   constructor(private readonly options: PhoneHostOptions) {
     this.clock = options.clock ?? SYSTEM_CLOCK;
@@ -136,18 +152,44 @@ export class PhoneHost {
 
   /**
    * A new pairing code, for the pairing link Settings shows. Only the latest
-   * one pairs: it replaces the secret of any before it, and pairs one phone.
+   * one pairs: it replaces the secret of any before it, and of any typed code,
+   * and pairs one phone.
    */
   startPairing(): { code: PairingCode; expiresAt: number } {
+    this.dropTypedPairing();
     const secret = randomBytes(PAIRING_SECRET_BYTES);
     const expiresAt = this.clock.now() + PAIRING_LIFETIME_MS;
     this.pairing = { secret, expiresAt };
-    return { code: { desktopId: this.options.desktopId, desktopKey: this.options.staticKey.publicKey, secret }, expiresAt };
+    return { code: this.codeFor(secret), expiresAt };
   }
 
-  /** Makes the latest pairing link pair nothing. */
+  /**
+   * A pairing code for the link behind a typed code. Its secret is not the one
+   * in the QR code, because this one pairs only once the person allows it. So
+   * make it after startPairing, which would replace it.
+   */
+  startTypedPairing(): { code: PairingCode; expiresAt: number } {
+    this.dropTypedPairing();
+    const secret = randomBytes(PAIRING_SECRET_BYTES);
+    const expiresAt = this.clock.now() + PAIRING_LIFETIME_MS;
+    this.typedPairing = { secret, expiresAt };
+    return { code: this.codeFor(secret), expiresAt };
+  }
+
+  /** Whether a typed code could still be used now. */
+  typedCodeIsGood(): boolean {
+    return this.typedPairing !== null && this.clock.now() < this.typedPairing.expiresAt;
+  }
+
+  /** Whether this secret is the one behind the typed code, while that code is good. */
+  holdsTypedCode(secret: Bytes): boolean {
+    return this.typedCodeIsGood() && this.typedPairing !== null && sameBytes(this.typedPairing.secret, secret);
+  }
+
+  /** Makes the latest pairing link and typed code pair nothing, and takes back any question about them. */
   cancelPairing(): void {
     this.pairing = null;
+    this.dropTypedPairing();
   }
 
   /** The keys of the phones connected now, whose messages have opened, each once, however many connections it has. */
@@ -177,7 +219,7 @@ export class PhoneHost {
       this.options.close(number);
       return;
     }
-    const channel: Channel = { state: "waiting", phoneKey: null, link: null, confirmed: false, pending: new Map(), handshakeTimer: null };
+    const channel: Channel = { state: "waiting", phoneKey: null, link: null, confirmed: false, pending: new Map(), handshakeTimer: null, asking: null };
     channel.handshakeTimer = this.clock.setTimeout(() => {
       if (channel.state !== "open") this.shut(number, channel, "did not finish connecting in time");
     }, HANDSHAKE_WITHIN_MS);
@@ -251,7 +293,8 @@ export class PhoneHost {
     // Noted before anything is awaited, so that forgetting this phone meanwhile sends this connection away too.
     const key = toBase64Url(read.remoteStaticKey);
     channel.phoneKey = key;
-    const answer = this.admit(key, opening);
+    const answer = this.usesTypedCode(opening) ? await this.askFirst(channel, key, opening.name) : this.admit(key, opening);
+    if (this.channels.get(number) !== channel) return;
     const { message, session } = await responder.writeAnswer(writeOpeningAnswer(answer));
     if (this.channels.get(number) !== channel) return;
     if (!answer.ok) {
@@ -288,10 +331,49 @@ export class PhoneHost {
     if (pairing === null || now >= pairing.expiresAt || !sameBytes(pairing.secret, opening.secret)) {
       return { ok: false, reason: "expired-code" };
     }
-    const next = withPairedPhone(phones, key, opening.name, now);
+    return this.pairPhone(key, opening.name);
+  }
+
+  /** Whether an opening holds the secret behind the typed code, while that code is good. */
+  private usesTypedCode(opening: Opening): opening is Extract<Opening, { kind: "pair" }> {
+    return opening.kind === "pair" && this.holdsTypedCode(opening.secret);
+  }
+
+  /**
+   * Asks the person at the computer about a browser that came with the typed
+   * code, and pairs it on a yes. Anyone can guess at a code, so this question
+   * is what stands between a lucky guess and a paired browser.
+   */
+  private async askFirst(channel: Channel, key: string, name: string): Promise<OpeningAnswer> {
+    // Room is checked before the code is used up, so the person can remove a phone and use the same code again, as with a pairing link.
+    if (withPairedPhone(this.options.phones(), key, name, this.clock.now()) === null) return { ok: false, reason: "too-many-phones" };
+    // Used up before anything is awaited, so that a code raises one question at most, whatever the relay plays again.
+    this.dropTypedPairing();
+    const asking = new AbortController();
+    channel.asking = asking;
+    // The person's time replaces the time a phone has to finish connecting, which is too short to read a question and answer it.
+    this.clock.clearTimeout(channel.handshakeTimer);
+    channel.handshakeTimer = this.clock.setTimeout(() => asking.abort(), ASK_WITHIN_MS);
+    const ask = this.options.askToPair ?? (async () => false);
+    // Raced with the signal, so a question taken back is over at once, whatever the dialog does, and a late Allow counts for nothing.
+    const allowed = await new Promise<boolean>((resolve) => {
+      asking.signal.addEventListener("abort", () => resolve(false), { once: true });
+      ask(name, asking.signal).then(resolve, (error: unknown) => {
+        logWarn(`Could not ask whether a browser may pair: ${String(error)}`);
+        resolve(false);
+      });
+    });
+    channel.asking = null;
+    return allowed ? this.pairPhone(key, name) : { ok: false, reason: "denied" };
+  }
+
+  /** Pairs this phone. Saved at once, with nothing awaited, so that two phones using one link at the same moment cannot both pair. */
+  private pairPhone(key: string, name: string): OpeningAnswer {
+    const next = withPairedPhone(this.options.phones(), key, name, this.clock.now());
     // The secret is not used up, so the person can remove a phone and try the same link again.
     if (next === null) return { ok: false, reason: "too-many-phones" };
     this.pairing = null;
+    this.dropTypedPairing();
     this.options.savePhones(next);
     const phone = next.find((known) => known.key === key);
     if (phone !== undefined) {
@@ -299,6 +381,19 @@ export class PhoneHost {
       this.options.onPaired?.(phone);
     }
     return { ok: true, name: this.options.computerName };
+  }
+
+  /** What a pairing link needs, for this secret. */
+  private codeFor(secret: Bytes): PairingCode {
+    return { desktopId: this.options.desktopId, desktopKey: this.options.staticKey.publicKey, secret };
+  }
+
+  /** Makes the typed code pair nothing, and takes back any question about one. */
+  private dropTypedPairing(): void {
+    const had = this.typedPairing !== null;
+    this.typedPairing = null;
+    for (const channel of this.channels.values()) channel.asking?.abort();
+    if (had) this.options.onTypedCodeChange?.();
   }
 
   /**
@@ -391,6 +486,7 @@ export class PhoneHost {
   /** Forgets a connection, and stops each request it was waiting on. */
   private drop(number: number, channel: Channel): void {
     this.clock.clearTimeout(channel.handshakeTimer);
+    channel.asking?.abort();
     for (const entry of channel.pending.values()) {
       this.clock.clearTimeout(entry.timer);
       entry.controller.abort();

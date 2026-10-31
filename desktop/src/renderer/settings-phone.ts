@@ -48,6 +48,9 @@
   const NOT_LOADED = "Schema Studio could not load the phone link. Close this window and open Settings again.";
   const RELAY_NOT_SAVED = "Schema Studio could not save the relay. Try again, and if it keeps happening, the logs say why.";
   const NO_CODE = "Schema Studio could not make a pairing code. Try again, and if it keeps happening, the logs say why.";
+  const MAKING_CODE = "Making a code\u{2026}";
+  const NO_TYPED_CODE = "A code to type could not be made just now. Scanning the QR code still works.";
+  const TYPED_CODE_USED = "That code to type has been used, so it cannot pair anything more. Make a new code to type another.";
   const CONNECTIONS_NOT_LISTED =
     "Schema Studio could not list the saved connections. Try again, and if it keeps happening, the logs say why.";
   const NO_SAVED_CONNECTIONS =
@@ -107,6 +110,9 @@
     panel: element<HTMLDivElement>("phone-pairing"),
     drawing: element<HTMLDivElement>("phone-qr"),
     relay: element<HTMLElement>("phone-pairing-relay"),
+    typed: element<HTMLDivElement>("phone-pairing-typed"),
+    short: element<HTMLElement>("phone-short-code"),
+    typedNote: element<HTMLParagraphElement>("phone-pairing-typed-note"),
     expiry: element<HTMLParagraphElement>("phone-pairing-expiry"),
     renew: element<HTMLButtonElement>("phone-pairing-renew"),
     cancel: element<HTMLButtonElement>("phone-pairing-cancel"),
@@ -126,6 +132,10 @@
   let codeExpiresAt: number | null = null;
   /** The relay that the code on show leads to. */
   let codeRelay: string | null = null;
+  /** Whether a short code to type is on show beside the QR code. */
+  let typedOnShow = false;
+  /** Which making of a code is the latest, so that an answer coming after a Cancel is ignored. */
+  let codeRequest = 0;
   let makingCode = false;
   let savingRelay = false;
   /** Whether the relay box holds an address typed and not saved yet, which a new view must not overwrite. */
@@ -174,7 +184,7 @@
     }
     if (codeExpiresAt !== null) {
       const left = codeExpiresAt - Date.now();
-      if (left > 0) setText(codeParts.expiry, `This code runs out in ${duration(left)}.`);
+      if (left > 0) setText(codeParts.expiry, `${typedOnShow ? "These codes run" : "This code runs"} out in ${duration(left)}.`);
       else codeRunOut();
     }
     for (const setup of Array.from(phoneList.querySelectorAll<HTMLElement>("[data-until]"))) setText(setup, setupLeft(Number(setup.dataset.until)));
@@ -182,10 +192,27 @@
 
   /** Takes away a code that has run out, and offers a new one in its place. */
   function codeRunOut(): void {
+    const ranOut = typedOnShow ? "These codes have run out." : "This code has run out.";
     codeExpiresAt = null;
     codeParts.drawing.replaceChildren();
     codeParts.drawing.hidden = true;
-    setText(codeParts.expiry, "This code has run out.");
+    showTyped(null, "");
+    setText(codeParts.expiry, ranOut);
+    codeParts.renew.hidden = false;
+  }
+
+  /** Shows the short code to type, or takes it away and says why, if there is anything to say. */
+  function showTyped(shortCode: string | null, note: string): void {
+    typedOnShow = shortCode !== null;
+    setText(codeParts.short, shortCode ?? "");
+    codeParts.typed.hidden = shortCode === null;
+    setText(codeParts.typedNote, note);
+    codeParts.typedNote.hidden = note === "";
+  }
+
+  /** Takes away a short code that has been used. The QR code beside it still works, and a new one is on offer. */
+  function typedUsed(): void {
+    showTyped(null, TYPED_CODE_USED);
     codeParts.renew.hidden = false;
   }
 
@@ -210,6 +237,7 @@
     codeExpiresAt = code.expiresAt;
     codeRelay = current?.relayOrigin ?? null;
     setText(codeParts.relay, codeRelay ?? "");
+    showTyped(code.shortCode, code.shortCode === null ? NO_TYPED_CODE : "");
     codeParts.renew.hidden = true;
     codeParts.panel.hidden = false;
     pairParts.row.hidden = true;
@@ -221,9 +249,12 @@
   function hideCode(): void {
     // The panel is about to disappear, so focus must not be left inside it.
     const hadFocus = codeParts.panel.contains(document.activeElement);
+    // Anything on its way when the code is put away stays away.
+    codeRequest += 1;
     codeExpiresAt = null;
     codeRelay = null;
     codeParts.drawing.replaceChildren();
+    showTyped(null, "");
     codeParts.panel.hidden = true;
     pairParts.row.hidden = false;
     if (hadFocus) pairParts.button.focus();
@@ -254,18 +285,25 @@
   async function makeCode(api: PhoneSettingsApi): Promise<void> {
     if (makingCode) return;
     makingCode = true;
+    codeRequest += 1;
+    const request = codeRequest;
+    const relay = current?.relayOrigin ?? null;
     showPairButton();
     codeParts.renew.setAttribute("aria-disabled", "true");
     clearPairMessages();
+    setText(pairParts.status, MAKING_CODE);
     try {
       const answer = await api.pair();
-      if (answer.ok) showCode(answer);
-      else showPairError(answer.message);
+      // Leaving the short code's box at the relay can take some seconds. A code put away meanwhile pairs nothing, so it must not appear.
+      if (request !== codeRequest) return;
+      if (!answer.ok) showPairError(answer.message);
+      else if (current?.cannotPair === null && current.relayOrigin === relay) showCode(answer);
     } catch {
-      showPairError(NO_CODE);
+      if (request === codeRequest) showPairError(NO_CODE);
     } finally {
       makingCode = false;
       codeParts.renew.removeAttribute("aria-disabled");
+      if (pairParts.status.textContent === MAKING_CODE) setText(pairParts.status, "");
       showPairButton();
     }
   }
@@ -588,6 +626,8 @@
     // The phone link stops the code on show when it is turned off or its
     // relay changes, so the page takes the code away at the same moment.
     if (!codeParts.panel.hidden && (!view.enabled || view.relayOrigin !== codeRelay)) hideCode();
+    // A short code goes when it is used as well as when it runs out. The QR code beside it is still good.
+    if (typedOnShow && !view.typedCodeLive) typedUsed();
     current = view;
     enabledBox.checked = view.enabled;
     keepAwakeBox.checked = view.keepAwake;

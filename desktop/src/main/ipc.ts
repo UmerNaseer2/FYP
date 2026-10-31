@@ -87,7 +87,7 @@ export type IpcHandlers = {
     forget(key: string): void;
     allowApprovals(key: string): void;
     turnOffApprovals(key: string): void;
-    pair(): PhonePairing;
+    pair(): Promise<PhonePairing>;
     cancelPairing(): void;
     connectNow(): void;
     connections(): Promise<PhoneConnections>;

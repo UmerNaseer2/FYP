@@ -139,7 +139,20 @@ it, and the app trusts it with nothing it carries.
 - A pairing code holds a secret of 32 random bytes that works once, within 5
   minutes (`src/shared/remote/pairing.ts`). It is in the link's fragment
   (after `#`), which browsers never send to the relay. The app never logs
-  it, and Settings gets only a picture of the QR code, never the link.
+  it, and Settings gets only a picture of the QR code and the short code to
+  type, never the link.
+- The short code is for a browser with no camera. It is 8 letters and numbers,
+  about 40 bits, with lookalikes such as 0 and O left out
+  (`src/shared/remote/short-code.ts`). The computer locks the pairing link with
+  AES-GCM under a key made from the code by PBKDF2, with 2 million rounds, and
+  leaves only that locked box at the relay, under a label also made from the
+  code. The code itself stays on the computer's screen and is never sent. The
+  relay hands the box over once and drops it after 5 minutes, and a new code
+  replaces the old one.
+- A typed code pairs nothing by itself. The computer first asks whether to
+  allow it, and only Allow lets the browser in (`askFirst` in
+  `src/main/phone-host.ts`). It waits 2 minutes for an answer, and a code that
+  got a No stays used.
 - A paired phone can make only the requests in `METHODS`
   (`src/shared/remote/rpc.ts`), and each one is read strictly: exact
   fields, types and lengths.
@@ -213,7 +226,9 @@ keys alone decide nothing:
   (`relay/src/phone/dom.ts`), so nothing the computer sends can become
   markup.
 - It runs only over HTTPS. It reads the pairing code from the address and
-  takes it out of the address at once, and it logs nothing.
+  takes it out of the address at once, and it logs nothing. A typed short code
+  is held only in memory while its screen is open, and only the label made
+  from it is sent.
 - The phone's own key is made so that the page can use it but never read it
   out, and is kept in the phone's IndexedDB with the paired computer's
   record (`relay/src/phone/idb-store.ts`).
@@ -272,7 +287,7 @@ and code values, emails, and the home folder. PostgreSQL's own log is
 redacted when the diagnostics read it. Beyond that, the app never logs the
 pairing link, challenges, one-time numbers or signatures, an approval's
 SQL, the approver's email or its hash, push addresses and keys, a backup's
-passphrase, or what a phone asked to compare.
+passphrase, the short pairing code, or what a phone asked to compare.
 
 ## What it does not protect against
 
@@ -284,12 +299,30 @@ passphrase, or what a phone asked to compare.
 - **Someone who sees the QR code within its 5 minutes** can pair as a phone
   before the person does. The code works only once, every phone is listed in
   Settings and logged when it pairs, and a phone can be removed at once.
+- **Someone who sees the short code within its 5 minutes** can open the box,
+  but still needs the person to choose Allow on the computer. The question
+  names the browser by a name the browser chose, so nobody should choose Allow
+  unless they have just typed the code themselves.
+- **A hacked relay can guess short codes with no limit on tries.** It holds the
+  label and the box, so it can try codes as fast as it can work out keys. As a
+  rough estimate, trying every code takes about 2e18 rounds of PBKDF2, so
+  finding one inside its 5 minutes would take hundreds of thousands of graphics
+  cards. One try takes about 0.3 seconds in Chrome on an M3 Mac, and has not
+  been timed on a phone. If a relay did find a code in time and swapped the
+  box, the browser would be talking to a fake computer. The real computer would
+  stay untouched and would show no question.
+- **The limit on tries does not stop a flood.** The relay allows 30 tries a
+  minute from one address (`CodeTries` in `relay/src/code-box.ts`), but the
+  Worker runs before that limit, so a flood still spends the Cloudflare free
+  plan's daily requests. People could then be unable to pair or connect until
+  the next day.
 - **The phone app comes from the relay.** The relay cannot read or change
   what the computer and a phone say to each other, but it serves the phone
   app's code, so whoever controls the relay could serve an app that does
   something else. Keep the Cloudflare account that runs it locked down.
 - **What the relay sees:** the computer's ID, IP addresses, and when and how
-  much is sent.
+  much is sent. For a typed code, it also holds a label and a locked box, for
+  up to 5 minutes.
 - **The relay can always stop the phone link**, as anything in the middle of
   a network can. Someone who knows the computer's ID (it is in each pairing
   code) could also keep its room's 8 phone places full, which keeps phones

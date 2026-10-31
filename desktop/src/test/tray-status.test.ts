@@ -16,6 +16,7 @@ function viewWith(status: PhoneStatus): PhoneView {
     sharedConnectionIds: [],
     queryTextConnectionIds: [],
     keepAwake: false,
+    typedCodeLive: false,
     phones: [],
     cannotPair: null,
   };

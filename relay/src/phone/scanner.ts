@@ -24,11 +24,11 @@ function loadQrReader(): Promise<ReadQr> {
     script.addEventListener("load", () => {
       const found = (globalThis as { jsQR?: unknown }).jsQR;
       if (typeof found === "function") resolve(found as ReadQr);
-      else reject(new Error("The QR code reader could not be loaded. Check the phone's internet connection, then try again."));
+      else reject(new Error("The QR code reader could not be loaded. Check this device's internet connection, then try again."));
     });
     script.addEventListener("error", () => {
       script.remove();
-      reject(new Error("The QR code reader could not be loaded. Check the phone's internet connection, then try again."));
+      reject(new Error("The QR code reader could not be loaded. Check this device's internet connection, then try again."));
     });
     document.head.append(script);
   });

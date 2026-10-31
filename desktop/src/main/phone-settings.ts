@@ -3,21 +3,24 @@
  * the page shows as they are.
  *
  * The page never gets the pairing link: the link carries a one-time secret,
- * so only its QR drawing leaves this module, and nothing here logs it. Each
- * refusal is a sentence for a person, written here rather than in the page,
- * so that the page has no rules of its own to fall out of step with the
- * phone link's.
+ * so only its QR drawing leaves this module, and nothing here logs it. The
+ * short code to type is the one secret the page does get, because a person has
+ * to read it there. It pairs nothing until that person says Allow, and it is
+ * no more logged than the link is. Each refusal is a sentence for a person,
+ * written here rather than in the page, so that the page has no rules of its
+ * own to fall out of step with the phone link's.
  */
 import { MAX_PAIRED_PHONES } from "../core/phone-link-file";
 import type { PhoneConnections, PhonePairing, PhoneStatus, PhoneView, SetRelayResult } from "../shared/ipc";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { readResult } from "../shared/remote/rpc";
+import { showShortCode } from "../shared/remote/short-code";
 import type { PhoneLink, PhoneLinkStatus, PhoneLinkView } from "./phone-link";
 import type { AppAnswer } from "./phone-requests";
 import { pairingQr } from "./qr";
 
 /** The parts of the phone link that Settings uses, so that a test can stand in for it. */
-export type PhoneSettingsLink = Pick<PhoneLink, "view" | "newPairingLink" | "setRelayOrigin">;
+export type PhoneSettingsLink = Pick<PhoneLink, "view" | "newPairing" | "setRelayOrigin">;
 
 /** Shown until the phone link has opened, which it does once Schema Studio has started. */
 export const NOT_STARTED = "The phone link starts once Schema Studio has started.";
@@ -46,6 +49,7 @@ export function phoneView(link: PhoneSettingsLink | null, problem: string | null
     sharedConnectionIds: [...view.sharedConnectionIds],
     queryTextConnectionIds: [...view.queryTextConnectionIds],
     keepAwake: view.keepAwake,
+    typedCodeLive: view.typedCodeLive,
     phones: view.phones.map((phone) => ({
       key: phone.key,
       name: phone.name,
@@ -77,14 +81,28 @@ function pairingProblem(view: PhoneLinkView): string | null {
   return null;
 }
 
-/** A new pairing code for Settings to show, as its QR drawing, or why a phone cannot pair now. */
-export function makePairing(link: PhoneSettingsLink | null, problem: string | null): PhonePairing {
+/** A new pairing code for Settings to show, as its QR drawing and a short code to type, or why a phone cannot pair now. */
+export async function makePairing(link: PhoneSettingsLink | null, problem: string | null): Promise<PhonePairing> {
   if (link === null) return { ok: false, message: problem ?? NOT_STARTED };
   const cannotPair = pairingProblem(link.view());
   if (cannotPair !== null) return { ok: false, message: cannotPair };
-  const made = link.newPairingLink();
+  const made = await link.newPairing();
   if (made === null) return { ok: false, message: NOT_CONNECTED };
-  return { ok: true, expiresAt: made.expiresAt, qr: pairingQr(made.link) };
+  return {
+    ok: true,
+    expiresAt: made.expiresAt,
+    qr: pairingQr(made.link),
+    shortCode: made.shortCode === null ? null : showShortCode(made.shortCode),
+  };
+}
+
+/** What the computer asks before a browser that came with a short code may pair. The name is the browser's own word for itself, so it says no more than that. */
+export function pairQuestion(name: string): { message: string; detail: string } {
+  return {
+    message: `Pair "${name}" with this computer?`,
+    detail:
+      "Choose Allow only if you have just typed the code from Settings into that browser yourself. A paired browser can see the connections you chose in Settings, whenever Schema Studio is running on this computer.",
+  };
 }
 
 /** Saves the relay's address as the person typed it, tidied, or says why it is not one. */

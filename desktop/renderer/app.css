@@ -648,6 +648,20 @@ input {
   gap: 8px;
 }
 
+.pairing-typed {
+  display: grid;
+  gap: 4px;
+}
+
+/* Large enough to read across a desk and type. One click selects all of it, for someone who would rather paste it. */
+.short-code {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  user-select: all;
+}
+
 .phone-row {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;

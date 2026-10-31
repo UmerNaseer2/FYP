@@ -15,6 +15,13 @@ It runs on Cloudflare Workers, with one Durable Object, called a room here,
 for each computer. A room that has nothing to do is taken out of memory but
 keeps its connections open, and costs nothing while it sleeps.
 
+It also keeps short pairing codes' locked boxes, at `/v1/code/<label>`. A PUT
+leaves a box under a label for 5 minutes, and a POST hands it over once. The
+label and the box are made from the code on the computer, so the relay never
+sees the code and cannot open the box. An address gets 30 tries a minute. That
+limit runs after the Worker does, so a flood still spends the free plan's daily
+requests.
+
 ## The phone app
 
 The relay also serves the phone app, the web app a phone opens to pair with
@@ -22,6 +29,9 @@ the computer (File, then Settings, then Phone, then Show a code, in the
 desktop app). With it, the person holding the phone can:
 
 - browse the schemas of the connections the computer shares with phones;
+- watch a connection's live status: running queries, health and drift,
+  refreshed every 5 seconds while that screen is open, with the SQL shown only
+  when it is turned on for that connection on the computer;
 - compare a schema with the same schema on up to 6 other connections;
 - approve or reject deploy and rollback requests after reading their exact
   SQL, with a passkey (Face ID, a fingerprint or the phone's screen lock),
@@ -40,6 +50,11 @@ inside the app. Safari and the Home Screen app keep separate storage, so a
 computer paired in Safari is not paired in the Home Screen app, and drift
 alerts work only in the Home Screen app (iOS 16.4 or later).
 
+In a laptop's browser, the same page shows its tabs as a rail down the left.
+To pair one, open the relay's address, choose Enter a code, type the short code
+that Settings shows beside the QR code, then choose Allow in Schema Studio on
+the computer.
+
 Forget, in the phone app's Settings, forgets the computer on the phone only.
 The computer keeps the phone in its list until it is removed there, under
 Paired phones.
@@ -54,6 +69,8 @@ version, which a phone picks up the next time it opens the app online.
   never reach it: Cloudflare serves those itself, from `public/`.
 - `src/room.ts` is the room as Cloudflare runs it, and `src/room-logic.ts`
   holds its rules: who may connect, signing in, and passing messages on.
+- `src/code-box.ts` keeps a short code's locked box and counts tries, and
+  `src/code-box-logic.ts` holds the rules for both.
 - `src/phone/` is the phone app, in TypeScript, with no framework and no
   bundler:
   - `main.ts` runs it: what it remembers, what it asks the computer, and
@@ -65,11 +82,13 @@ version, which a phone picks up the next time it opens the app online.
     reload and the Home Screen icon all work.
   - `scan.ts` and `scanner.ts` read the pairing code with the camera, using
     jsQR, which loads only when the phone first scans.
+  - `code-entry.ts` reads a typed short code and opens its box.
   - `store.ts` and `idb-store.ts` keep the paired computer in IndexedDB,
     with its private key held so that the page can use it but never read it
     out.
   - `format.ts` and `approvals.ts` hold the words for what the computer
     sends, and the rules for what the phone offers for each request.
+  - `live.ts` holds the rules for the live status screen.
   - `sw.ts` is the service worker. It keeps a copy of the app's files, used
     only when the network does not answer, and shows drift alerts.
   - `clock.ts` and `build-info.ts` give the rest the time and the app's
@@ -94,11 +113,11 @@ npm test
 
 `npm run check` type-checks the relay as Cloudflare runs it, and the phone
 app and its service worker as browsers run them. `npm test` builds the phone
-app, then runs the room's rules on their own, then the whole relay on this
-computer, run the way Cloudflare runs it, with pretend computers and phones
-connecting to it, then the parts of the phone app that run without a page:
-its link to the computer, routes, scanning, what it keeps, its words and its
-service worker. The desktop workflow on GitHub runs both.
+app, then runs the room's and the boxes' rules on their own, then the whole
+relay on this computer, run the way Cloudflare runs it, with pretend computers
+and phones connecting to it, then the parts of the phone app that run without
+a page: its link to the computer, routes, scanning, what it keeps, its words
+and its service worker. The desktop workflow on GitHub runs both.
 
 ```bash
 npm run e2e:phone
@@ -106,10 +125,12 @@ npm run e2e:phone
 
 This runs the phone app from start to end in Google Chrome: two phones pair
 with a computer through the relay, one by link and one with its camera, then
-read a schema, compare two, set up approvals with a passkey, approve and
-reject requests, turn drift alerts on and off, and forget the computer. The
-computer is the desktop app's own phone link code, so compile that first
-(`npm ci`, then `npm run build:ts`, in `desktop/`). It is not part of
+read a schema, watch a database's live status, compare two, set up approvals
+with a passkey, approve and reject requests, turn drift alerts on and off, and
+forget the computer. A laptop's browser then pairs by typing a short code,
+which the computer refuses once and allows once, and shows its screens at that
+width. The computer is the desktop app's own phone link code, so compile that
+first (`npm ci`, then `npm run build:ts`, in `desktop/`). It is not part of
 `npm test` or the GitHub workflow, because it needs Chrome. A picture of each
 screen, light and dark, goes to `out/phone-e2e`. Set `CHROME` to Chrome's
 path when it is somewhere unusual.

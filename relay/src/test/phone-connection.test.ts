@@ -9,6 +9,7 @@ import test from "node:test";
 
 import type { Clock } from "../phone/clock.js";
 import {
+  ASKING_WITHIN_MS,
   CONNECT_WITHIN_MS,
   END_MESSAGES,
   FIRST_WAIT_MS,
@@ -30,6 +31,7 @@ import { generateKeyPair, KEY_BYTES } from "../shared/remote/keys.js";
 import { Link } from "../shared/remote/link.js";
 import { Responder } from "../shared/remote/noise.js";
 import {
+  ASK_WITHIN_MS,
   PAIRING_LIFETIME_MS,
   PAIRING_SECRET_BYTES,
   PHONE_LINK_PROLOGUE,
@@ -80,9 +82,9 @@ const NOT_SHARED = "That connection is not shared with phones. Share it in Schem
 const WELCOME: OpeningAnswer = { ok: true, name: COMPUTER_NAME };
 
 // What the phone says when it cannot reach the relay, and when it cannot read an answer. connection.ts keeps them to itself.
-const UNREACHABLE = "The relay could not be reached. Check the phone's internet connection.";
+const UNREACHABLE = "The relay could not be reached. Check this device's internet connection.";
 const VERSION_MISMATCH =
-  "This phone app and Schema Studio on the computer are different versions, so the phone could not read the computer's answer. Update Schema Studio on the computer.";
+  "This phone app and Schema Studio on the computer are different versions, so this device could not read the computer's answer. Update Schema Studio on the computer.";
 
 type Timer = { at: number; run: () => void; id: number };
 
@@ -503,6 +505,7 @@ test("has at most four requests at the computer at once, and sends the next as e
 for (const [why, pairing] of [
   ["expired-code", true],
   ["too-many-phones", true],
+  ["denied", true],
   ["not-paired", false],
 ] as const) {
   for (const thenClose of [undefined, CLOSE_SENT_AWAY]) {
@@ -663,9 +666,9 @@ test("waits a random part of each wait, never less than half of it", () => {
 const CLOSES: [number, string, number][] = [
   [CLOSE_SENT_AWAY, "The computer ended the connection.", FIRST_WAIT_MS],
   [CLOSE_FULL, "Too many phones are connected to the computer right now.", MAX_WAIT_MS],
-  [CLOSE_BROKEN, "The relay could not read what this phone sent.", FIRST_WAIT_MS],
-  [CLOSE_TOO_BIG, "The relay could not read what this phone sent.", FIRST_WAIT_MS],
-  [CLOSE_TOO_FAST, "The relay said this phone sent too much at once.", MAX_WAIT_MS],
+  [CLOSE_BROKEN, "The relay could not read what this device sent.", FIRST_WAIT_MS],
+  [CLOSE_TOO_BIG, "The relay could not read what this device sent.", FIRST_WAIT_MS],
+  [CLOSE_TOO_FAST, "The relay said this device sent too much at once.", MAX_WAIT_MS],
   [1006, "The connection to the relay closed.", FIRST_WAIT_MS],
 ];
 
@@ -908,6 +911,21 @@ test("gives the relay a time limit to say whether the computer is there", () => 
   clock.advance(CONNECT_WITHIN_MS);
   assert.deepEqual(retrying(phone, clock), { wait: FIRST_WAIT_MS, reason: "The relay did not say whether the computer is there." });
   assert.equal(pings(socket), 0);
+});
+
+test("waits as long as the computer does when the computer has to ask someone first", async () => {
+  const { phone, clock, sockets } = setUp({ pairing: { ...pairingUntil(START + PAIRING_LIFETIME_MS), asks: true } });
+  phone.start();
+  const socket = latest(sockets);
+  socket.accept();
+  socket.say(ONLINE);
+  await until(() => binaries(socket).length > 0, "the phone's opening");
+  // Well past the time a computer that asks nobody has to answer, and the relay stays in touch all along.
+  advanceAnswering(clock, socket, ASKING_WITHIN_MS - 1);
+  assert.equal(stateOf(phone).kind, "opening");
+  assert.ok(ASK_WITHIN_MS < ASKING_WITHIN_MS - 1, "the computer gives up first");
+  clock.advance(1);
+  assert.deepEqual(retrying(phone, clock), { wait: FIRST_WAIT_MS, reason: "The computer did not answer." });
 });
 
 test("gives the computer a time limit to answer the handshake", async () => {

@@ -15,6 +15,7 @@
  * with what, and what each button does.
  */
 import { DECIDED_TEXT, decisionChoices, passkeyErrorText, type Choices } from "./approvals.js";
+import { readTypedCode, type CodeOutcome } from "./code-entry.js";
 import { PhoneConnection, RpcError, type ConnectionState, type EndReason, type RpcErrorCode } from "./connection.js";
 import { append, button, el, notice } from "./dom.js";
 import { defaultPhoneName, retryText } from "./format.js";
@@ -24,9 +25,9 @@ import { HOME, parentOf, readRoute, writeRoute, type Route } from "./routes.js";
 import { readAddressPairing, readScannedText } from "./scan.js";
 import { startScanner } from "./scanner.js";
 import {
-  approvalScreen, approvalsScreen, blockedScreen, compareScreen, confirmScreen, connectionScreen, homeScreen,
+  approvalScreen, approvalsScreen, blockedScreen, codeScreen, compareScreen, confirmScreen, connectionScreen, homeScreen,
   liveScreen, pairScreen, scanScreen, schemaScreen, settingsScreen,
-  type Actions, type AlertsView, type CompareForm, type LiveView, type Load, type ScanUi,
+  type Actions, type AlertsView, type CodeForm, type CompareForm, type LiveView, type Load, type ScanUi,
 } from "./screens.js";
 import type { PairedComputer } from "./store.js";
 import { approvalChallenge, approvalFingerprint, type ApprovalDecision } from "../shared/remote/approval.js";
@@ -50,9 +51,9 @@ const PASSKEY_WITHIN_MS = 120_000;
 const LIVE_EVERY_MS = 5_000;
 const SAVE_SEEN_EVERY_MS = 60_000;
 
-const SOMETHING_WRONG = "Something went wrong on this phone. Reload the page, then try again.";
+const SOMETHING_WRONG = "Something went wrong on this device. Reload the page, then try again.";
 const WAITING_TEXT = "Waiting for the computer. Schema Studio has to be running on it, with Let paired phones connect turned on.";
-const UNREADABLE_CHALLENGE = "The phone could not read what the computer sent for the passkey. Update Schema Studio on the computer, then try again.";
+const UNREADABLE_CHALLENGE = "This device could not read what the computer sent for the passkey. Update Schema Studio on the computer, then try again.";
 /** Refusals that mean what Requests said about this phone's passkey is out of date, so the list is asked for again. */
 const PASSKEY_GONE = new Set<RpcErrorCode>(["no-passkey", "other-person", "not-allowed", "forbidden"]);
 /** A load that has not finished yet. */
@@ -73,7 +74,7 @@ const backButton = part<HTMLButtonElement>("back");
 
 type Entry = { load: Load<unknown>; generation: number };   // generation -1 = ask again
 type Session = { paired: PairedComputer; link: PhoneConnection; state: ConnectionState; generation: number; answers: Map<string, Entry>; asking: Map<string, object> };
-type Pending = { code: PairingCode; scannedAt: number; name: string; problem: string | null; pairing: boolean; connection: PhoneConnection | null };
+type Pending = { code: PairingCode; typed: boolean; scannedAt: number; name: string; problem: string | null; pairing: boolean; connection: PhoneConnection | null };
 type DecisionKeys = { credentialId: Bytes; fingerprint: string; challenges: Record<ApprovalDecision, Bytes> };
 type AlertsSetup = { registration: ServiceWorkerRegistration; key: Bytes; status: PushStatus; subscription: PushSubscription | null };
 type StatusLine = { key: string; text: string; time: string | null; action: { label: string; run: () => void } | null };
@@ -81,6 +82,9 @@ type Focus = { id: string; start: number | null; end: number | null };
 
 let session: Session | null = null;
 let pending: Pending | null = null;
+let codeForm: CodeForm = { typed: "", checking: false, problem: null };
+// Which check of a typed code is the one still wanted, so a late answer is ignored once the person has left the screen.
+let codeToken: object | null = null;
 let blocked: { message: string; canReload: boolean } | null = null;
 let pairAlert: string | null = null;
 let route: Route = HOME;
@@ -116,9 +120,11 @@ let lastSeen: number | null = null;
 let savedSeen: number | null = null;
 
 const actions: Actions = {
-  go, openScan,
+  go, openScan, openCode,
   restartScan: () => { if (scanUi !== null) startScan(scanUi); },
   setName: (name) => { if (pending !== null) pending.name = name; },
+  setCode: (text) => { codeForm.typed = text; },
+  submitCode: () => void submitCode(),
   pair: (name) => void pair(name),
   cancelPairing,
   checkAgain: () => { drop("hello"); drop("connections"); drop("approvals"); render(); },
@@ -179,7 +185,7 @@ function startSession(paired: PairedComputer): void {
     // The saved pairing was checked as it was read (store.ts), so this should
     // not happen. If it does, pairing again is the way out.
     session = null;
-    pairAlert = "This phone's saved pairing could not be used. Pair it again.";
+    pairAlert = "This device's saved pairing could not be used. Pair it again.";
     return;
   }
   // Set before start(), which can already say how the link is doing.
@@ -297,9 +303,9 @@ function approvalsLoad(): Load<ApprovalList> | undefined {
 }
 
 /** Holds a pairing code the phone just read, for the person to confirm with a name for the phone. */
-function startPending(code: PairingCode): void {
+function startPending(code: PairingCode, typed = false): void {
   dropPending();
-  pending = { code, scannedAt: Date.now(), name: session?.paired.phoneName ?? phoneKind(), problem: null, pairing: false, connection: null };
+  pending = { code, typed, scannedAt: Date.now(), name: session?.paired.phoneName ?? phoneKind(), problem: null, pairing: false, connection: null };
   pairAlert = null;
 }
 
@@ -327,7 +333,7 @@ async function pair(typed: string): Promise<void> {
   } catch {
     if (pending === current) {
       current.pairing = false;
-      current.problem = "This phone could not make a key for the pairing. Reload the page, then scan the code again.";
+      current.problem = "This device could not make a key for the pairing. Reload the page, then pair again.";
       render();
     }
     return;
@@ -341,13 +347,13 @@ async function pair(typed: string): Promise<void> {
       desktopId: code.desktopId,
       desktopKey: code.desktopKey,
       staticKey,
-      pairing: { secret: code.secret, name, until: current.scannedAt + PAIRING_LIFETIME_MS },
+      pairing: { secret: code.secret, name, until: current.scannedAt + PAIRING_LIFETIME_MS, asks: current.typed },
       onPaired: (computerName) => onPaired(current, connection, staticKey, name, computerName),
       onState: (state) => onLinkState(connection, state),
     });
   } catch {
     current.pairing = false;
-    current.problem = "That pairing code could not be read. Make a new one in Settings on the computer, then scan it.";
+    current.problem = "That pairing code could not be read. Make a new one in Settings on the computer, then try again.";
     render();
     return;
   }
@@ -430,15 +436,64 @@ function openScan(): void {
   go({ screen: "scan" });
 }
 
+/** Opens the box for typing a short pairing code, putting aside one the phone read before. */
+function openCode(): void {
+  dropPending();
+  pairAlert = null;
+  go({ screen: "code" });
+}
+
+/** Acts on a typed code: pairs with it, or says why it cannot. */
+async function submitCode(): Promise<void> {
+  if (codeForm.checking) return;
+  const token = {};
+  codeToken = token;
+  codeForm.checking = true;
+  codeForm.problem = null;
+  render();
+  const outcome = await readTypedCode(codeForm.typed, location.origin, (url, init) => fetch(url, init));
+  // The person left this screen while the answer was on its way.
+  if (codeToken !== token) return;
+  codeToken = null;
+  codeForm.checking = false;
+  if (outcome.kind === "pair") {
+    startPending(outcome.code, true);
+    returnTo(HOME);
+    return;
+  }
+  codeForm.problem = codeProblem(outcome);
+  render();
+  // The button that was used is disabled while checking, so the focus goes to where the code can be fixed.
+  document.getElementById("short-code")?.focus();
+}
+
+/** Why a typed code did not lead to a pairing. */
+function codeProblem(outcome: Exclude<CodeOutcome, { kind: "pair" }>): string {
+  switch (outcome.kind) {
+    case "not-a-code":
+      return "A code has 8 letters and numbers. Check it against the one on the computer.";
+    case "wrong":
+      return "That code is not right, or it has run out. Check it on the computer, or make a new one in Settings there.";
+    case "too-many":
+      return "Too many tries. Wait a minute, then try again.";
+    case "offline":
+      return "The relay could not be reached. Check this device's internet connection, then try again.";
+    case "browser":
+      return "This browser could not work with the code. Reload the page and try again, or try another browser.";
+    case "other-relay":
+      return `That code is for another relay (${new URL(outcome.relayOrigin).host}). Open that relay's address in this browser to pair with it.`;
+  }
+}
+
 /** What the confirm screen says about a pairing under way, or null when there is nothing to say. */
-function pendingStatus(state: ConnectionState): string | null {
+function pendingStatus(state: ConnectionState, typed: boolean): string | null {
   switch (state.kind) {
     case "connecting":
       return "Connecting to the relay\u{2026}";
     case "waiting":
       return WAITING_TEXT;
     case "opening":
-      return "Pairing with the computer\u{2026}";
+      return typed ? "Schema Studio on the computer is asking whether to allow this. Choose Allow there." : "Pairing with the computer\u{2026}";
     case "retrying":
       return `${state.reason} ${retryText(state.retryAt, Date.now())}.`;
     default:
@@ -525,7 +580,7 @@ function renderStatus(): void {
   ]);
 }
 
-/** The tab a screen belongs to, or null for the camera, which shows no tabs. */
+/** The tab a screen belongs to, or null for the camera and the code box, which show no tabs. */
 function tabOf(screen: Route["screen"]): "home" | "approvals" | "settings" | null {
   switch (screen) {
     case "home":
@@ -540,6 +595,7 @@ function tabOf(screen: Route["screen"]): "home" | "approvals" | "settings" | nul
     case "settings":
       return "settings";
     case "scan":
+    case "code":
       return null;
   }
 }
@@ -547,7 +603,7 @@ function tabOf(screen: Route["screen"]): "home" | "approvals" | "settings" | nul
 /** Shows the Back button and the tabs as they fit the screen showing. */
 function renderChrome(): void {
   const plain = pending === null && blocked === null;
-  backButton.hidden = !plain || (session === null ? route.screen !== "scan" : parentOf(route) === null);
+  backButton.hidden = !plain || (session === null ? route.screen !== "scan" && route.screen !== "code" : parentOf(route) === null);
   const current = plain && session !== null ? tabOf(route.screen) : null;
   // The Requests tab says how many requests are waiting, so the list is asked for on every tab.
   const waiting = current !== null ? value(approvalsLoad())?.approvals.length ?? 0 : 0;
@@ -613,6 +669,7 @@ function screenKey(): string {
   if (blocked !== null) return "blocked";
   if (pending !== null) return "pending";
   if (route.screen === "scan") return "scan";
+  if (route.screen === "code") return "code";
   if (session === null) return "pair";
   return `route:${writeRoute(route)}`;
 }
@@ -626,12 +683,14 @@ function screenNodes(): Node[] {
       pending.name,
       pending.problem,
       pending.pairing,
-      connection === null ? null : pendingStatus(connection.state),
+      connection === null ? null : pendingStatus(connection.state, pending.typed),
       session?.paired.computerName ?? null,
+      pending.typed,
       actions,
     );
   }
-  if (session === null) return pairScreen(pairAlert, iosTip(), actions);
+  if (route.screen === "code") return codeScreen(codeForm, actions);
+  if (session === null) return pairScreen(pairAlert, iosTip(), typedFirst(), actions);
   return withAlert(routeNodes(session));
 }
 
@@ -670,6 +729,7 @@ function routeNodes(current: Session): Node[] {
       if (pushSupported() && alerts.prepared === null) void prepareAlerts(current);
       return settingsScreen(current.paired, value(helloLoad()), alertsView(), forgetting, actions);
     case "scan":
+    case "code":
       return [];
   }
 }
@@ -887,6 +947,10 @@ function setRoute(next: Route): void {
     stopScan();
     scanUi = null;
   }
+  if (route.screen === "code" && next.screen !== "code") {
+    codeForm = { typed: "", checking: false, problem: null };
+    codeToken = null;
+  }
   if (next.screen !== "approvals") flash = null;
   if (route.screen === "settings" && next.screen !== "settings") forgetting = false;
   if (route.screen === "approval" && (next.screen !== "approval" || next.approvalId !== route.approvalId)) resetDeciding();
@@ -934,6 +998,7 @@ function refresh(): void {
       }
       break;
     case "scan":
+    case "code":
       break;
   }
   render();
@@ -1028,7 +1093,7 @@ function foundCode(text: string, ui: ScanUi): void {
       returnTo(HOME);
       return;
     case "other-relay":
-      say(ui, `That code is for another relay (${new URL(read.relayOrigin).host}). Open that relay's address on this phone to pair with it.`);
+      say(ui, `That code is for another relay (${new URL(read.relayOrigin).host}). Open that relay's address on this device to pair with it.`);
       return;
     case "not-pairing":
       say(ui, "That is not a Schema Studio pairing code. Scan the code under Pair a phone in Settings on the computer.");
@@ -1135,7 +1200,7 @@ async function setUpPasskey(): Promise<void> {
     problem = passkeyProblem(error, "create");
   }
   if (session !== owner) return;
-  if (problem === null && route.screen === "approvals") flash = "Approvals are set up on this phone. Open a request to approve or reject it.";
+  if (problem === null && route.screen === "approvals") flash = "Approvals are set up on this device. Open a request to approve or reject it.";
   if (problem === null || gone) drop("approvals");
   setup = { prepared: null, working: null, problem };
   render();
@@ -1265,7 +1330,7 @@ async function prepareAlerts(owner: Session): Promise<void> {
   try {
     const status = await owner.link.request({ method: "push.status" });
     const key = fromBase64Url(status.key);
-    if (key === null) throw new Problem("The computer sent a key for drift alerts that this phone cannot read. Update Schema Studio on the computer, then try again.");
+    if (key === null) throw new Problem("The computer sent a key for drift alerts that this device cannot read. Update Schema Studio on the computer, then try again.");
     const registration = await withinTime(
       navigator.serviceWorker.ready,
       HELPER_WITHIN_MS,
@@ -1352,7 +1417,7 @@ async function turnOffAlerts(): Promise<void> {
     }
     if (alerts.prepared === prepared) alerts = { ...alerts, prepared: { status: "loaded", value: { ...ready, status, subscription: null } } };
   } catch {
-    problem = "The phone could not turn off drift alerts. Try again.";
+    problem = "This device could not turn off drift alerts. Try again.";
   }
   if (session !== owner) return;
   alerts = { ...alerts, working: false, problem };
@@ -1363,9 +1428,9 @@ async function turnOffAlerts(): Promise<void> {
 function alertsProblem(error: unknown): string {
   if (error instanceof RpcError || error instanceof Problem) return error.message;
   const name = error instanceof DOMException ? error.name : "";
-  if (name === "NotAllowedError") return "Alerts were not turned on, because the phone did not allow notifications for this app.";
-  if (name === "AbortError") return "The browser's push service could not be reached. Check the phone's connection, then try again.";
-  return "The phone could not turn on drift alerts. Try again.";
+  if (name === "NotAllowedError") return "Alerts were not turned on, because this device did not allow notifications for this app.";
+  if (name === "AbortError") return "The browser's push service could not be reached. Check this device's connection, then try again.";
+  return "This device could not turn on drift alerts. Try again.";
 }
 
 /** What the Settings screen shows about drift alerts. */
@@ -1426,10 +1491,15 @@ async function forget(): Promise<void> {
   } catch (error) {
     // idb-store.ts words its errors for the person holding the phone.
     const reason = error instanceof Error ? ` ${error.message}` : "";
-    pairAlert = `This phone could not finish forgetting the computer, so it may still be paired the next time the app opens.${reason}`;
+    pairAlert = `This device could not finish forgetting the computer, so it may still be paired the next time the app opens.${reason}`;
   }
   forgetBusy = false;
   replace(HOME);
+}
+
+/** Whether typing a code suits this device better than its camera. A mouse or trackpad means a laptop or a desktop. */
+function typedFirst(): boolean {
+  return !window.matchMedia("(pointer: coarse)").matches;
 }
 
 /** Whether to tell the person to add the app to the Home Screen: on an iPhone or iPad, outside the Home Screen app, where drift alerts do not work. */

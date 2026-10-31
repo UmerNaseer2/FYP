@@ -153,7 +153,7 @@ test("writes a day as the web app does", () => {
   assert.equal(dayText(new Date(2026, 0, 1, 12).getTime()), "1 Jan 2026");
 });
 
-test("names the phone after what its browser says it runs on", () => {
+test("names the device after what its browser says it runs on", () => {
   const iPhone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
   const oldIPad = "Mozilla/5.0 (iPad; CPU OS 12_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1";
   // An iPad's Safari says it is a Mac, and only its touch screen gives it away.
@@ -164,10 +164,25 @@ test("names the phone after what its browser says it runs on", () => {
   assert.equal(defaultPhoneName(iPhone, 5), "iPhone");
   assert.equal(defaultPhoneName(oldIPad, 5), "iPad");
   assert.equal(defaultPhoneName(mac, 5), "iPad");
-  assert.equal(defaultPhoneName(mac, 1), "Phone");
-  assert.equal(defaultPhoneName(mac, 0), "Phone");
+  assert.equal(defaultPhoneName(mac, 1), "Safari on Mac");
+  assert.equal(defaultPhoneName(mac, 0), "Safari on Mac");
   assert.equal(defaultPhoneName(androidPhone, 5), "Android phone");
   assert.equal(defaultPhoneName(androidTablet, 5), "Android tablet");
-  assert.equal(defaultPhoneName(ubuntu, 0), "Phone");
+  assert.equal(defaultPhoneName(ubuntu, 0), "Firefox on Ubuntu");
+  const chromeOnMac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  const chromeOnWindows = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  const edge = `${chromeOnWindows} Edg/130.0.0.0`;
+  const opera = `${chromeOnWindows} OPR/115.0.0.0`;
+  const chromeOnLinux = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  const chromebook = "Mozilla/5.0 (X11; CrOS x86_64 15183.69.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  assert.equal(defaultPhoneName(chromeOnMac, 0), "Chrome on Mac");
+  assert.equal(defaultPhoneName(chromeOnWindows, 0), "Chrome on Windows");
+  assert.equal(defaultPhoneName(edge, 0), "Edge on Windows");
+  assert.equal(defaultPhoneName(opera, 0), "Opera on Windows");
+  assert.equal(defaultPhoneName(chromeOnLinux, 0), "Chrome on Linux");
+  assert.equal(defaultPhoneName(chromebook, 0), "Chrome on Chromebook");
+  // A browser that says too little keeps the plain name.
+  assert.equal(defaultPhoneName("Mozilla/5.0 (Windows NT 10.0)", 0), "Phone");
+  assert.equal(defaultPhoneName("Chrome/130.0.0.0", 0), "Phone");
   assert.equal(defaultPhoneName("", 0), "Phone");
 });

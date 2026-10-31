@@ -46,6 +46,7 @@
   --mono: ui-monospace, "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", monospace;
   --bar-height: 52px;
   --tabs-height: 56px;
+  --rail-width: 12rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -637,6 +638,14 @@ input[type="search"] {
   appearance: none;
 }
 
+/* Easy to check against the computer's screen. Shown in capitals, as the computer shows it, however it is typed. */
+input.code-input {
+  font-family: var(--mono);
+  font-size: 1.25rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 input::placeholder {
   color: var(--text-3);
 }
@@ -1013,4 +1022,68 @@ dl.card {
   gap: 4px;
   max-width: 45%;
   text-align: right;
+}
+
+/*
+ * A wide screen, as in a laptop browser: the tabs become a rail down the left, so that the page has its height back, and a screen gets more room.
+ * The rail is checked through :has, as the room for the tabs is, so a browser without :has keeps the tabs along the bottom and the page stays whole.
+ */
+@media (min-width: 56rem) {
+  body:has(> .tabs:not([hidden])) {
+    padding-left: calc(var(--rail-width) + env(safe-area-inset-left));
+  }
+
+  body:has(> .tabs:not([hidden])) .app {
+    max-width: 52rem;
+    padding-right: max(24px, env(safe-area-inset-right));
+    padding-bottom: calc(40px + env(safe-area-inset-bottom));
+    padding-left: 24px;
+  }
+
+  body:has(> .tabs:not([hidden])) .tabs {
+    top: 0;
+    right: auto;
+    width: calc(var(--rail-width) + env(safe-area-inset-left));
+    grid-auto-flow: row;
+    grid-auto-rows: max-content;
+    gap: 4px;
+    padding: 12px 8px max(12px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    border-top: 0;
+    border-right: 1px solid var(--border);
+  }
+
+  body:has(> .tabs:not([hidden])) .tab {
+    justify-content: flex-start;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: var(--radius-small);
+  }
+
+  body:has(> .tabs:not([hidden])) .tab[aria-current="page"] {
+    background: var(--brand-soft);
+  }
+
+  body:has(> .tabs:not([hidden])) .tab[aria-current="page"]::before {
+    display: none;
+  }
+
+  /* A phone's buttons share the width for a thumb. Across a page this wide they would only look like bars. */
+  .actions > button {
+    flex: 0 0 auto;
+    min-width: 9rem;
+  }
+
+  .stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .lead,
+  .hint {
+    max-width: 40rem;
+  }
+
+  input.code-input {
+    max-width: 16rem;
+  }
 }

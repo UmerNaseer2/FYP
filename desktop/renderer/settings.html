@@ -128,6 +128,11 @@
                   <div id="phone-qr" class="qr"></div>
                   <div class="pairing-text">
                     <p>Point your phone's camera at this code and open the link it finds, which leads to <code id="phone-pairing-relay" class="path"></code>.</p>
+                    <div id="phone-pairing-typed" class="pairing-typed" hidden>
+                      <p>No camera? Open that address in a browser, choose Enter a code, and type:</p>
+                      <code id="phone-short-code" class="short-code"></code>
+                    </div>
+                    <p id="phone-pairing-typed-note" class="hint" hidden></p>
                     <p id="phone-pairing-expiry" class="hint countdown"></p>
                     <span class="token-actions">
                       <button id="phone-pairing-renew" class="button" type="button" hidden>Make a new code</button>

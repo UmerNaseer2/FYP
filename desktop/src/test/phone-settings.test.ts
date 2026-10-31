@@ -12,6 +12,7 @@ import {
   CONNECTIONS_FAILED,
   makePairing,
   NOT_STARTED,
+  pairQuestion,
   phoneView,
   readPhoneConnections,
   setRelay,
@@ -29,7 +30,7 @@ function phone(number: number, connected = false, alerts = false, approvals = fa
 /** A phone link that shows the view it is given and notes what Settings asks of it. */
 function fakeLink(
   overrides: Partial<PhoneLinkView> = {},
-  pairing: { link: string; expiresAt: number } | null = null,
+  pairing: { link: string; expiresAt: number; shortCode: string | null } | null = null,
   takesRelay = true,
 ) {
   const calls = { pairingLinks: 0, relays: [] as unknown[] };
@@ -40,12 +41,13 @@ function fakeLink(
     sharedConnectionIds: [],
     queryTextConnectionIds: [],
     keepAwake: false,
+    typedCodeLive: false,
     phones: [],
     ...overrides,
   };
   const link: PhoneSettingsLink = {
     view: () => view,
-    newPairingLink: () => {
+    newPairing: async () => {
       calls.pairingLinks += 1;
       return pairing;
     },
@@ -81,6 +83,7 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
     sharedConnectionIds: [3, 1],
     queryTextConnectionIds: [1],
     keepAwake: true,
+    typedCodeLive: false,
     phones: [phone(1, true), phone(2, false, true), phone(3, false, false, true), phone(4, false, false, false, 7_000)],
     cannotPair: "The phone link is not connected to the relay yet, and a phone pairs through it.",
   });
@@ -98,9 +101,9 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
   assert.equal(off.enabled, false);
 });
 
-test("says why a phone cannot pair, and asks for no pairing link until one can", () => {
-  assert.deepEqual(makePairing(null, null), { ok: false, message: NOT_STARTED });
-  assert.deepEqual(makePairing(null, KEYS_PROBLEM), { ok: false, message: KEYS_PROBLEM });
+test("says why a phone cannot pair, and asks for no pairing link until one can", async () => {
+  assert.deepEqual(await makePairing(null, null), { ok: false, message: NOT_STARTED });
+  assert.deepEqual(await makePairing(null, KEYS_PROBLEM), { ok: false, message: KEYS_PROBLEM });
   const refusals: Array<[Partial<PhoneLinkView>, RegExp]> = [
     [{ enabled: false, status: { state: "off" } }, /^Turn the phone link on to pair a phone\.$/],
     [{ relayOrigin: null, status: { state: "needs-relay" } }, /^Add a relay first/],
@@ -110,8 +113,8 @@ test("says why a phone cannot pair, and asks for no pairing link until one can",
     [{ phones: Array.from({ length: MAX_PAIRED_PHONES }, (_, index) => phone(index)) }, /^8 phones are paired, the most there can be\./],
   ];
   for (const [overrides, message] of refusals) {
-    const { link, calls } = fakeLink(overrides, { link: `${RELAY}/#pair=v1.x`, expiresAt: 9 });
-    const answer = makePairing(link, null);
+    const { link, calls } = fakeLink(overrides, { link: `${RELAY}/#pair=v1.x`, expiresAt: 9, shortCode: null });
+    const answer = await makePairing(link, null);
     assert.equal(answer.ok, false);
     assert.match(answer.ok ? "" : answer.message, message);
     assert.equal(calls.pairingLinks, 0, `no pairing link was made for ${message}`);
@@ -126,20 +129,45 @@ test("says why a phone cannot pair, and asks for no pairing link until one can",
   const shown = phoneView(link, null);
   assert.ok(shown.available);
   assert.equal(shown.cannotPair, null, "the page may offer a code");
-  const answer = makePairing(link, null);
+  const answer = await makePairing(link, null);
   assert.match(answer.ok ? "" : answer.message, /not connected to the relay yet/);
   assert.equal(calls.pairingLinks, 1);
 });
 
-test("gives the page the pairing code's drawing and never the link with its secret", () => {
+test("gives the page the pairing code's drawing and never the link with its secret", async () => {
   const secret = "Sec_RET".repeat(6) + "x";
   const text = `${RELAY}/#pair=v1.${"d".repeat(22)}.${"k".repeat(43)}.${secret}`;
-  const { link, calls } = fakeLink({}, { link: text, expiresAt: 123_456 });
-  const answer = makePairing(link, null);
-  assert.deepEqual(answer, { ok: true, expiresAt: 123_456, qr: pairingQr(text) });
+  const { link, calls } = fakeLink({}, { link: text, expiresAt: 123_456, shortCode: null });
+  const answer = await makePairing(link, null);
+  assert.deepEqual(answer, { ok: true, expiresAt: 123_456, qr: pairingQr(text), shortCode: null });
   assert.equal(calls.pairingLinks, 1);
   const sent = JSON.stringify(answer);
   assert.ok(!sent.includes(secret) && !sent.includes("#pair="), "the answer holds neither the link nor its secret");
+});
+
+test("gives the page the short code as a person would read it, and still nothing else secret", async () => {
+  const secret = "Sec_RET".repeat(6) + "x";
+  const text = `${RELAY}/#pair=v1.${"d".repeat(22)}.${"k".repeat(43)}.${secret}`;
+  const { link } = fakeLink({}, { link: text, expiresAt: 123_456, shortCode: "K7F29XQM" });
+  const answer = await makePairing(link, null);
+  assert.ok(answer.ok);
+  assert.equal(answer.shortCode, "K7F2-9XQM");
+  const sent = JSON.stringify(answer);
+  assert.ok(!sent.includes(secret) && !sent.includes("#pair="), "the answer holds neither the link nor its secret");
+});
+
+test("says when a short code is still good, for the page to stop showing one that is not", () => {
+  const live = phoneView(fakeLink({ typedCodeLive: true }).link, null);
+  assert.ok(live.available && live.typedCodeLive);
+  const used = phoneView(fakeLink({ typedCodeLive: false }).link, null);
+  assert.ok(used.available && !used.typedCodeLive);
+});
+
+test("names the browser in the question the computer asks, and says what Allow gives it", () => {
+  const { message, detail } = pairQuestion("Chrome on Mac");
+  assert.equal(message, 'Pair "Chrome on Mac" with this computer?');
+  assert.match(detail, /Allow only if you have just typed the code/);
+  assert.match(detail, /can see the connections you chose/);
 });
 
 test("saves a relay's address tidied, and refuses one that is not a relay's", () => {

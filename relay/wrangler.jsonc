@@ -3,6 +3,8 @@
   // messages between a phone and the computer it is paired with. Each
   // computer has a room there, a Durable Object named after the computer's
   // ID (src/room.ts), so all of one computer's connections meet in one place.
+  // It also keeps the locked box behind a short pairing code for a few minutes
+  // (src/code-box.ts), and it counts how often each address asks for one.
   //
   // `npm run dev` runs it on this machine, and `npm test` starts it the same
   // way for src/test/relay.e2e.test.ts. Putting it online needs a Cloudflare
@@ -18,9 +20,18 @@
   // by itself (web_socket_auto_reply_to_close), which src/room.ts relies on.
   "compatibility_date": "2026-10-19",
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+    "bindings": [
+      { "name": "ROOMS", "class_name": "Room" },
+      { "name": "CODE_BOXES", "class_name": "CodeBox" },
+      { "name": "CODE_TRIES", "class_name": "CodeTries" }
+    ]
   },
   // New Durable Object classes must keep their storage in SQLite, the only
-  // kind on the free plan. A room stores nothing but its sign-in alarm.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+  // kind on the free plan. A room stores nothing but its sign-in alarm. Each
+  // class is listed once, under the tag that first brought it in, and a tag
+  // that has gone online must never change.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Room"] },
+    { "tag": "v2", "new_sqlite_classes": ["CodeBox", "CodeTries"] }
+  ]
 }
