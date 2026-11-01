@@ -103,7 +103,7 @@ export async function GET() {
     });
 
     const view: ScheduleView = {
-      scheduler: driftSchedulerStatus(gate.principal.orgId),
+      scheduler: await driftSchedulerStatus(gate.principal.orgId),
       choices: DRIFT_INTERVAL_CHOICES,
       rows,
     };

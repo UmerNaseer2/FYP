@@ -94,10 +94,10 @@ const ORG_TABLES = [
  * lib/lineage-db.ts and app/api/lineage/rebaseline/route.ts take a one-key
  * pg_advisory_xact_lock keyed by a tracked schema's id, and every one-key lock
  * shares a single space. Those ids are 32-bit integers, so a key above
- * 2^31 - 1 can never be one of them. (lib/family-lock.ts and
- * lib/drift-scheduler.ts use the two-key form, which is a separate space.)
+ * 2^31 - 1 can never be one of them. (lib/family-lock.ts uses the two-key form,
+ * which is a separate space.)
  */
-const BOOTSTRAP_LOCK_KEY = 7_365_786_101;
+export const BOOTSTRAP_LOCK_KEY = 7_365_786_101;
 
 /** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
 function onDesktop(): boolean {
@@ -1007,11 +1007,11 @@ async function loosenProfileRole(client: MetadataClient): Promise<void> {
  *
  * One transaction, so a crash cannot leave `roles` without a primary key. On a
  * database that has already moved, it is five catalog reads and nothing else.
- * It runs on the connection that holds createEverything's lock, because a
- * transaction belongs to one connection and the pool hands out a different one
- * for every statement.
+ * It has a connection of its own, because a transaction belongs to one
+ * connection and the pool hands out a different one for every statement.
  */
-async function moveToOrganizations(client: MetadataClient, defaultId: number): Promise<void> {
+async function moveToOrganizations(defaultId: number): Promise<void> {
+  const client = await metadataPool.connect();
   try {
     await client.query("BEGIN");
     await settleOrgIdDefaults(client, defaultId);
@@ -1025,6 +1025,8 @@ async function moveToOrganizations(client: MetadataClient, defaultId: number): P
     // error worth reporting is the first one.
     await client.query("ROLLBACK").catch(() => {});
     throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -1055,49 +1057,144 @@ async function backfillMemberships(defaultId: number): Promise<void> {
 }
 
 /**
+ * Keep Supabase's Data API out of these tables.
+ *
+ * Supabase serves a database's public schema over the internet to anyone with
+ * the project's anon key, which is meant to be public, and nothing here uses that
+ * door: every read and write goes through this app's own routes. Row level
+ * security with no policies shuts it. The app connects as the tables' owner, which
+ * the policies do not apply to, so it carries on as before.
+ *
+ * Only where the anon role exists, so nothing changes on Docker or the desktop.
+ * Only tables where it is off, so that a boot with nothing to do takes no lock.
+ * And only this app's tables, because the project may hold someone else's.
+ */
+async function closeTablesToDataApi(): Promise<void> {
+  const anon = await metadataPool.query("SELECT 1 FROM pg_roles WHERE rolname = 'anon'");
+  if (anon.rows.length === 0) return;
+  const ours = Object.values(sequelize.models).map((model) => model.tableName);
+  const open = await metadataPool.query(
+    `SELECT c.relname
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema()
+        AND c.relkind = 'r'
+        AND NOT c.relrowsecurity
+        AND c.relname = ANY($1::text[])`,
+    [ours]
+  );
+  for (const { relname } of open.rows as { relname: string }[]) {
+    await metadataPool.query(`ALTER TABLE "${relname}" ENABLE ROW LEVEL SECURITY`);
+  }
+}
+
+/**
+ * This deployment's name, on a host that gives one.
+ *
+ * The steps are idempotent but not free: a cold start on a set-up database sends
+ * over a hundred statements, and even an ALTER TABLE ... ADD COLUMN IF NOT EXISTS
+ * that changes nothing takes ACCESS EXCLUSIVE briefly on a live table. Fine once
+ * per server start. Not fine on serverless, where a cold start is routine. Every
+ * cold start of one deployment runs the same code, so once one has finished the
+ * rest have nothing to do, and a new deployment has a new name and does it all
+ * once more.
+ */
+function bootStamp(): string | null {
+  return process.env.VERCEL_DEPLOYMENT_ID?.trim() || null;
+}
+
+/** Whether a cold start of this deployment has already finished the job. */
+async function alreadyDone(stamp: string): Promise<boolean> {
+  try {
+    const { rows } = await metadataPool.query(
+      "SELECT 1 FROM metadata_boot_stamps WHERE stamp = $1",
+      [stamp]
+    );
+    return rows.length > 0;
+  } catch {
+    // The table not being there yet is the normal first time. Anything else (a
+    // database that is down, say) the full path reports properly.
+    return false;
+  }
+}
+
+/**
  * Everything above, in order, under a lock in the database.
  *
  * The lock is for two servers starting against the same database at once: the
- * second waits, then finds everything already done. It is a session lock, not
- * pg_advisory_xact_lock, on purpose. An xact lock would hold
- * moveToOrganizations' ACCESS EXCLUSIVE locks until one final COMMIT, while the
- * later steps borrow other connections from the pool, so the bootstrap would
- * wait on itself.
+ * second waits, then finds everything already done.
+ *
+ * It is a transaction lock, held by a transaction on a connection kept aside
+ * that does nothing else. A session lock does not survive a transaction pooler
+ * (Supabase's port 6543 is one), which takes the server connection back the
+ * moment no transaction is open: the unlock reaches a different server
+ * connection, the lock stays behind on the first, and the next cold start waits
+ * for ever. This transaction holds nothing but the lock, so the steps can borrow
+ * other connections from the pool without waiting on it, and
+ * moveToOrganizations' ACCESS EXCLUSIVE locks still end at its own COMMIT.
+ *
+ * Both limits are for a server that freezes or dies while it holds the lock,
+ * which must not keep everyone else out for ever. Every step is idempotent, so a
+ * holder thrown out halfway only means the next one finishes the job.
  */
-async function createEverything(): Promise<void> {
+async function createEverything(stamp: string | null): Promise<void> {
   const lock = await metadataPool.connect();
   try {
-    await lock.query("SELECT pg_advisory_lock($1::bigint)", [BOOTSTRAP_LOCK_KEY]);
-    try {
-      await ensureMetadataSchema();
-      const defaultId = await ensureDefaultOrganization();
-      await addOrgIdToOlderTables(defaultId);
-      // No `alter` and no `force`: this is CREATE TABLE IF NOT EXISTS plus the
-      // missing indexes. It never rewrites a table that already holds data, which
-      // is the only behaviour that is safe to run on someone's live metadata store
-      // at the top of a request.
-      await sequelize.sync();
-      await backfillOlderTables();
-      await moveToOrganizations(lock, defaultId);
-      // Before setUpRoles: the old roles_label_key is unique across every
-      // organization, so seeding "Viewer" into a second one would fail on it.
-      await addFunctionalIndexes();
-      // Before backfillMemberships and before the first profile is written:
-      // both give people a role, and resolveIdentity (lib/accounts-db.ts)
-      // waits for this whole function.
-      await setUpRoles();
-      await backfillMemberships(defaultId);
-      await addConstraints();
-    } finally {
-      // A failed unlock in practice means a broken connection, and the server
-      // drops a session's advisory locks when the session ends.
-      await lock
-        .query("SELECT pg_advisory_unlock($1::bigint)", [BOOTSTRAP_LOCK_KEY])
-        .catch(() => {});
+    await lock.query("BEGIN");
+    await lock.query(
+      "SET LOCAL lock_timeout = '120s'; SET LOCAL idle_in_transaction_session_timeout = '300s'"
+    );
+    await lock.query("SELECT pg_advisory_xact_lock($1::bigint)", [BOOTSTRAP_LOCK_KEY]);
+    // Asked again now the lock is held: a cold start that waited here while another
+    // finished this deployment's boot has nothing left to do.
+    if (stamp && (await alreadyDone(stamp))) {
+      await lock.query("COMMIT");
+      return;
     }
+    await ensureMetadataSchema();
+    const defaultId = await ensureDefaultOrganization();
+    await addOrgIdToOlderTables(defaultId);
+    // No `alter` and no `force`: this is CREATE TABLE IF NOT EXISTS plus the
+    // missing indexes. It never rewrites a table that already holds data, which
+    // is the only behaviour that is safe to run on someone's live metadata store
+    // at the top of a request.
+    await sequelize.sync();
+    await backfillOlderTables();
+    await moveToOrganizations(defaultId);
+    // Before setUpRoles: the old roles_label_key is unique across every
+    // organization, so seeding "Viewer" into a second one would fail on it.
+    await addFunctionalIndexes();
+    // Before backfillMemberships and before the first profile is written:
+    // both give people a role, and resolveIdentity (lib/accounts-db.ts)
+    // waits for this whole function.
+    await setUpRoles();
+    await backfillMemberships(defaultId);
+    await addConstraints();
+    await closeTablesToDataApi();
+    // In the lock's own transaction, so the stamp appears the moment the lock lets
+    // go and a cold start waiting on it finds the stamp straight away.
+    if (stamp) {
+      await lock.query(
+        "INSERT INTO metadata_boot_stamps (stamp) VALUES ($1) ON CONFLICT (stamp) DO NOTHING",
+        [stamp]
+      );
+    }
+    await lock.query("COMMIT");
+  } catch (error) {
+    // The ROLLBACK can fail too (the connection may be what broke), and the
+    // error worth reporting is the first one.
+    await lock.query("ROLLBACK").catch(() => {});
+    throw error;
   } finally {
     lock.release();
   }
+}
+
+/** The whole job, unless this deployment has already done it. */
+async function bootOnce(): Promise<void> {
+  const stamp = bootStamp();
+  if (stamp && (await alreadyDone(stamp))) return;
+  await createEverything(stamp);
 }
 
 let inFlight: Promise<void> | null = null;
@@ -1111,7 +1208,7 @@ let inFlight: Promise<void> | null = null;
  */
 export function syncMetadataTables(): Promise<void> {
   if (!inFlight) {
-    inFlight = createEverything().catch((error) => {
+    inFlight = bootOnce().catch((error) => {
       inFlight = null;
       throw error;
     });

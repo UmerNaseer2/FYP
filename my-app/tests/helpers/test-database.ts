@@ -1,6 +1,7 @@
 // The throwaway Postgres that the real-database suites run against
-// (tests/org-migration.test.ts, tests/org-data-db.test.ts and
-// tests/invites-db.test.ts).
+// (tests/org-migration.test.ts, tests/org-data-db.test.ts,
+// tests/invites-db.test.ts, tests/access-requests-db.test.ts,
+// tests/drift-lease-db.test.ts and tests/bootstrap-lock-db.test.ts).
 //
 // Those suites skip without TEST_DATABASE_URL, so a laptop with no database to
 // spare can still run every other test. CI gives them one, and sets

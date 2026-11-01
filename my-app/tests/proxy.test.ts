@@ -94,6 +94,19 @@ describe("edge proxy", () => {
     });
   });
 
+  it("lets a scheduled call through even where sign-in is not set up", async () => {
+    const { proxy } = await loadProxy({
+      NEXT_PUBLIC_AUTH_BYPASS: "false",
+      AZURE_AD_CLIENT_ID: "",
+      AZURE_AD_CLIENT_SECRET: "",
+      AZURE_AD_TENANT_ID: "",
+      NEXTAUTH_SECRET: "",
+    });
+    // Its route checks its own secret, and says so if that is what is missing.
+    const call = new NextRequest("http://localhost:3000/api/internal/drift-tick");
+    expect((await proxy(call)).status).toBe(200);
+  });
+
   it("opens the landing page even where sign-in is not set up", async () => {
     const { proxy } = await loadProxy({
       NEXT_PUBLIC_AUTH_BYPASS: "false",
@@ -147,6 +160,16 @@ describe("edge proxy", () => {
       mockSession = null;
       const { proxy } = await loadProxy(signInOn);
       expect((await proxy(api())).status).toBe(401);
+    });
+
+    it("lets a scheduled call through with no session, for its route to check", async () => {
+      // A person's session means nothing here: pg_cron has none.
+      mockSession = null;
+      const { proxy } = await loadProxy(signInOn);
+      const at = (pathname: string) => new NextRequest(`http://localhost:3000${pathname}`);
+      expect((await proxy(at("/api/internal/drift-tick"))).status).toBe(200);
+      // Only that path: the rest of the API still needs someone signed in.
+      expect((await proxy(at("/api/internal/other"))).status).toBe(401);
     });
 
     it("lets a signed-out visitor open the landing page and nothing else", async () => {
@@ -257,10 +280,25 @@ describe("edge proxy", () => {
 
 describe("isPublicPath", () => {
   // No reload needed: the list is fixed and no switch reads it.
-  it("opens the landing page and nothing else", () => {
+  it("opens the landing page, and no other page", () => {
     expect(isPublicPath("/")).toBe(true);
     // Exact paths only. A prefix match on "/" would open every page there is.
     for (const guarded of ["/studio", "/login", "/api/me", "//", "", "/index"]) {
+      expect(isPublicPath(guarded)).toBe(false);
+    }
+  });
+
+  it("opens the scheduled call's own path and nothing beside it", () => {
+    // Its route checks the shared secret, so this one exact path is safe to open.
+    expect(isPublicPath("/api/internal/drift-tick")).toBe(true);
+    for (const guarded of [
+      "/api/internal",
+      "/api/internal/",
+      "/api/internal/other",
+      "/api/internal/drift-tick/",
+      "/api/internal/drift-tick/x",
+      "/api/internal/drift-tick-x",
+    ]) {
       expect(isPublicPath(guarded)).toBe(false);
     }
   });

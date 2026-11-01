@@ -356,7 +356,10 @@ export async function queryTrend(
     max_exec_ms: string | null;
     median_score: string | null;
   }>(
-    `SELECT to_char(date_trunc('day', captured_at), 'YYYY-MM-DD') AS day,
+    `SELECT -- UTC spelled out: behind a transaction pooler this statement may land
+            -- on a server connection that never saw the zone Sequelize sets when it
+            -- connects, and a run must not move to another day when that happens.
+            to_char(date_trunc('day', captured_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
             count(*)                                              AS runs,
             count(*) FILTER (WHERE measured)                      AS measured_runs,
             -- FILTER, not a CASE inside the aggregate: percentile_cont over a

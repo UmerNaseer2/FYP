@@ -62,6 +62,7 @@ function view(rows: ScheduleRow[], running = true, checksRun = 30) {
       lastTickAt: HOUR_AGO,
       lastTickSummary: "2 schemas checked, 1 drifted",
       tickSeconds: 30,
+      external: false,
     },
     choices: DRIFT_INTERVAL_CHOICES,
     rows,
@@ -183,6 +184,72 @@ describe("schedule table", () => {
     // from, which reads as the click having failed.
     expect(screen.getByText("31 checks this run")).toBeInTheDocument();
     expect(cadenceOf()).toHaveTextContent("Every 5 minutes");
+  });
+
+  it("says a scheduled call wakes it on a host with no server left running", async () => {
+    const shown = view([row(60)]);
+    setRoutes([
+      {
+        match: "/api/lineage/schedule",
+        method: "GET",
+        body: { ...shown, scheduler: { ...shown.scheduler, external: true, checksRun: null } },
+      },
+    ]);
+    render(<ScheduleTable />);
+
+    expect(await screen.findByText("Running")).toBeInTheDocument();
+    expect(screen.getByText(/A scheduled call wakes this server every minute/)).toBeInTheDocument();
+    // Each instance would keep a count of its own, so no count beats a wrong one.
+    expect(screen.queryByText(/checks this run/)).toBeNull();
+  });
+
+  it("says what is missing when no scheduled call has come in", async () => {
+    const shown = view([row(60)], false);
+    setRoutes([
+      {
+        match: "/api/lineage/schedule",
+        method: "GET",
+        body: {
+          ...shown,
+          scheduler: {
+            ...shown.scheduler,
+            external: true,
+            checksRun: null,
+            stoppedReason: "Nothing is checking these schemas on its own: no scheduled call has come in.",
+          },
+        },
+      },
+    ]);
+    render(<ScheduleTable />);
+
+    expect(await screen.findByText("Not running")).toBeInTheDocument();
+    expect(screen.getByText(/no scheduled call has come in/)).toBeInTheDocument();
+    expect(screen.queryByText(/checks this run/)).toBeNull();
+  });
+
+  it("still says when the last pass was after the scheduled calls stop", async () => {
+    const shown = view([row(60)], false);
+    setRoutes([
+      {
+        match: "/api/lineage/schedule",
+        method: "GET",
+        body: {
+          ...shown,
+          scheduler: {
+            ...shown.scheduler,
+            external: true,
+            checksRun: null,
+            stoppedReason: "Nothing is checking these schemas on its own: no scheduled call has come in.",
+            lastTickAt: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+            lastTickSummary: "Checked 1 · 1 drifted.",
+          },
+        },
+      },
+    ]);
+    render(<ScheduleTable />);
+
+    expect(await screen.findByText("Not running")).toBeInTheDocument();
+    expect(screen.getByText(/Last pass .*Checked 1 · 1 drifted\./)).toBeInTheDocument();
   });
 
   it("reports a refused save without dropping the table", async () => {

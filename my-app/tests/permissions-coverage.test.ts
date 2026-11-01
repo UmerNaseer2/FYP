@@ -31,6 +31,8 @@ const EXEMPT: Record<string, string> = {
   // NextAuth's own endpoints. Signing in is how a person gets a role at all,
   // so there is nothing yet to check it against.
   "auth/[...nextauth]": "sign-in itself",
+  // A scheduled call, with no person behind it to hold a role.
+  "internal/drift-tick": "checked against CRON_SECRET instead",
 };
 
 /**

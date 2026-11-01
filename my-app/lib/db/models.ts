@@ -507,6 +507,60 @@ AccessRequest.init(
 );
 
 // ---------------------------------------------------------------------------
+// The state of the app itself, which belongs to no organization.
+// ---------------------------------------------------------------------------
+
+/**
+ * One row every copy of the app can see: who holds the drift checker's tick (the
+ * lease in lib/drift-scheduler.ts) and what the last tick did. One loop serves
+ * every organization, so the row is not any one organization's.
+ */
+export class DriftSchedulerState extends Model<
+  InferAttributes<DriftSchedulerState>,
+  InferCreationAttributes<DriftSchedulerState>
+> {
+  declare name: string;
+  declare holder: string | null;
+  declare lease_until: Date | null;
+  declare last_tick_at: Date | null;
+  declare last_report: unknown;
+  declare last_prune_at: Date | null;
+}
+
+DriftSchedulerState.init(
+  {
+    name: { type: DataTypes.TEXT, primaryKey: true },
+    holder: { type: DataTypes.TEXT, allowNull: true },
+    lease_until: { type: DataTypes.DATE, allowNull: true },
+    last_tick_at: { type: DataTypes.DATE, allowNull: true },
+    last_report: { type: DataTypes.JSONB, allowNull: true },
+    last_prune_at: { type: DataTypes.DATE, allowNull: true },
+  },
+  { sequelize, tableName: "drift_scheduler_state" }
+);
+
+/**
+ * One row per deployment that has finished setting these tables up, so the rest
+ * of that deployment's cold starts can skip it (lib/db/bootstrap.ts). A deployment
+ * is the whole app's, not any one organization's.
+ */
+export class BootStamp extends Model<
+  InferAttributes<BootStamp>,
+  InferCreationAttributes<BootStamp>
+> {
+  declare stamp: string;
+  declare finished_at: CreationOptional<Date>;
+}
+
+BootStamp.init(
+  {
+    stamp: { type: DataTypes.TEXT, primaryKey: true },
+    finished_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  { sequelize, tableName: "metadata_boot_stamps" }
+);
+
+// ---------------------------------------------------------------------------
 // Roles, and what each one may do.
 //
 // A role is a named set of permissions from the catalogue in lib/permissions.ts,

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { after } from "next/server";
 import pool, { syncMetadataTables } from "./version-db";
 import { mapWithLimit } from "./concurrency";
 import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
@@ -15,16 +17,20 @@ import {
  *
  * Until this existed, every drift check in the app was a button press, and the
  * only thing watching a tracked schema was the user remembering to open the
- * page. This is one interval timer in the Node process, started from
- * instrumentation.ts, that wakes once a minute, asks lib/drift-schedule which
- * schemas are due, and runs the same check the button runs.
+ * page. Something wakes this once a minute, it asks lib/drift-schedule which
+ * schemas are due, and it runs the same check the button runs.
+ *
+ * What wakes it depends on where the app runs (see schedulerMode):
+ *
+ *   • A timer in the server itself, started from instrumentation.ts, wherever a
+ *     process stays up: Docker, the desktop app, `npm run dev`. No cron and no
+ *     queue there, because this has to be runnable with `npm run dev` and
+ *     nothing else.
+ *   • A scheduled call to /api/internal/drift-tick on a serverless host, where a
+ *     process lives only while requests come in and a timer has nothing to run in.
  *
  * It is deliberately the smallest thing that can be honest:
  *
- *   • No cron, no queue, no worker process. One timer, in the server the app
- *     is already running. A queue would be the right answer for many machines
- *     sharing one database, and the wrong answer for a project that has to be
- *     runnable with `npm run dev` and nothing else.
  *   • All the arithmetic — due, overdue, cadence — lives in lib/drift-schedule
  *     where it can be unit-tested without waiting fifteen minutes. Everything
  *     here is I/O and guards.
@@ -36,6 +42,8 @@ import {
  *   • One loop serves every organization. It reads every organization's
  *     schedule, runs each check inside the organization its schema belongs to,
  *     and tells each organization only what happened to its own schemas.
+ *   • Copies of the app agree through one row in the database, a lease with an
+ *     expiry, so only one runs a tick and a dead copy cannot stop the schedule.
  */
 
 /** How often the loop wakes. Not the cadence — that is per schema. */
@@ -71,6 +79,24 @@ const CHECK_CONCURRENCY = 2;
 const PRUNE_EVERY_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * How long a copy of the app holds the tick before others may take it over, in
+ * seconds, and how often it renews that while it is still working. The gap is
+ * what a dead or frozen copy costs: ticks skip for up to this long, then the
+ * schedule carries on without it.
+ */
+const LEASE_SECONDS = 180;
+const LEASE_RENEW_MS = 30_000;
+
+/** The one row of drift_scheduler_state. */
+const STATE_ROW = "tick";
+
+/**
+ * How recently a tick must have happened for scheduled calls to count as
+ * arriving. A missed call or two is not news, so a few minutes, not one.
+ */
+const RECENT_CALL_MINUTES = 5;
+
+/**
  * What the scheduler is doing, as one organization sees it, for
  * /api/lineage/schedule and the UI.
  */
@@ -81,8 +107,12 @@ export type SchedulerStatus = {
   stoppedReason: string | null;
   /** Ticks completed since the process started. */
   ticks: number;
-  /** This organization's schemas checked by the loop since the process started. */
-  checksRun: number;
+  /**
+   * This organization's schemas checked by the loop since the process started.
+   * Null when calls from outside wake it, because each instance would have a
+   * count of its own.
+   */
+  checksRun: number | null;
   /** When the last tick finished, ISO. Null before the first one. */
   lastTickAt: string | null;
   /**
@@ -92,6 +122,8 @@ export type SchedulerStatus = {
   lastTickSummary: string | null;
   /** How often the loop wakes, in seconds — the resolution of every cadence. */
   tickSeconds: number;
+  /** True when a scheduled call from outside wakes the checker, not a timer here. */
+  external: boolean;
 };
 
 /**
@@ -109,6 +141,22 @@ export type TickReport =
   | { kind: "shared"; line: string }
   | { kind: "by_org"; byOrg: Map<number, string> };
 
+/** A TickReport as the database keeps it, where a Map cannot go. */
+type StoredReport =
+  | { kind: "shared"; line: string }
+  | { kind: "by_org"; byOrg: Record<string, string> };
+
+function toStored(report: TickReport): StoredReport {
+  return report.kind === "shared"
+    ? report
+    : { kind: "by_org", byOrg: Object.fromEntries(report.byOrg) };
+}
+
+const TICK_FAILED: TickReport = {
+  kind: "shared",
+  line: "Tick failed. The server's log says why, and the next tick tries again.",
+};
+
 type SchedulerState = {
   timer: ReturnType<typeof setInterval> | null;
   /** True while a tick is in flight, so a slow tick cannot overlap the next. */
@@ -116,11 +164,7 @@ type SchedulerState = {
   ticks: number;
   /** Checks the loop has run since the process started, per organization. */
   checksRunByOrg: Map<number, number>;
-  lastTickAt: string | null;
-  lastTick: TickReport | null;
   stoppedReason: string | null;
-  /** When the monitoring readings were last pruned, ms. Null before the first. */
-  lastPruneAt: number | null;
 };
 
 declare global {
@@ -142,10 +186,7 @@ function state(): SchedulerState {
       busy: false,
       ticks: 0,
       checksRunByOrg: new Map(),
-      lastTickAt: null,
-      lastTick: null,
       stoppedReason: null,
-      lastPruneAt: null,
     };
   }
   const s = globalThis.__driftSchedulerState;
@@ -153,23 +194,31 @@ function state(): SchedulerState {
   // copy of this file can lack a field added since. Fill those in rather than
   // break the schedule screen until the next restart.
   s.checksRunByOrg ??= new Map();
-  s.lastTick ??= null;
   return s;
 }
 
 /**
- * Whether the loop is allowed to run at all.
+ * How the checker gets woken on this server, if at all.
  *
- * DRIFT_SCHEDULER=off is the kill switch — for a demo where nobody wants the
- * app touching a database on its own, and for a build machine where the tracked
+ * DRIFT_SCHEDULER=off is the kill switch: for a demo where nobody wants the app
+ * touching a database on its own, and for a build machine where the tracked
  * connections point at hosts that no longer exist.
+ *
+ * "external" means no timer here: a scheduled call to /api/internal/drift-tick
+ * does the waking. It is the default on Vercel because a forgotten variable must
+ * not start a timer on serverless, where a process lives only while requests
+ * come in and startDriftScheduler would fire a tick at every cold start.
  */
-function disabledReason(): string | null {
+function schedulerMode(): "off" | "external" | "timer" {
   const flag = (process.env.DRIFT_SCHEDULER ?? "").trim().toLowerCase();
-  if (flag === "off" || flag === "false" || flag === "0") {
-    return "Turned off by DRIFT_SCHEDULER.";
-  }
-  return null;
+  if (flag === "off" || flag === "false" || flag === "0") return "off";
+  if (flag === "external" || process.env.VERCEL) return "external";
+  return "timer";
+}
+
+/** Why the checker may not run at all, or null when it may. */
+export function disabledReason(): string | null {
+  return schedulerMode() === "off" ? "Turned off by DRIFT_SCHEDULER." : null;
 }
 
 /**
@@ -210,16 +259,24 @@ async function loadEntries(): Promise<ScheduledSchema[]> {
  * Throw away monitoring readings past the retention window, occasionally.
  *
  * Runs inside the tick rather than on a timer of its own, so there is still
- * exactly one background loop in this process — and so the kill switch that
- * stops the scheduler stops this too. Failure is swallowed inside
- * pruneSchemaMetrics: a tick that could not tidy up has still done its real
- * job, and the next one tries again.
+ * exactly one background loop, and so the kill switch that stops the scheduler
+ * stops this too. When it last ran is kept in the row with the lease, by the
+ * database's clock, because a serverless instance starts knowing nothing and
+ * would otherwise prune on every tick. Stamped before pruning, as a failed prune
+ * is not worth retrying every minute. Failure is swallowed inside
+ * pruneSchemaMetrics: a tick that could not tidy up has still done its real job,
+ * and a later one tries again.
  */
-async function pruneIfDue(now: Date): Promise<void> {
-  const s = state();
-  const at = now.getTime();
-  if (s.lastPruneAt !== null && at - s.lastPruneAt < PRUNE_EVERY_MS) return;
-  s.lastPruneAt = at;
+async function pruneIfDue(): Promise<void> {
+  const claimed = await pool.query(
+    `UPDATE drift_scheduler_state
+        SET last_prune_at = now()
+      WHERE name = $1
+        AND (last_prune_at IS NULL OR last_prune_at < now() - make_interval(secs => $2))
+      RETURNING name`,
+    [STATE_ROW, PRUNE_EVERY_MS / 1000]
+  );
+  if (claimed.rows.length === 0) return;
   const removed = await pruneSchemaMetrics(METRIC_RETENTION_DAYS);
   if (removed > 0) {
     console.log(
@@ -237,22 +294,21 @@ async function pruneIfDue(now: Date): Promise<void> {
  */
 export async function runSchedulerTick(now: Date = new Date()): Promise<TickReport> {
   const report = await checkWhatIsDue(now);
-  const s = state();
-  s.ticks += 1;
-  s.lastTickAt = new Date().toISOString();
-  s.lastTick = report;
+  state().ticks += 1;
   return report;
 }
 
-/** The work of one tick, for runSchedulerTick to write down. */
+/** The work of one tick, for runSchedulerTick to count. */
 async function checkWhatIsDue(now: Date): Promise<TickReport> {
   const s = state();
   if (s.busy) {
     return { kind: "shared", line: "Skipped — the previous tick was still running." };
   }
   s.busy = true;
-  let lock: TickLock | null = null;
   try {
+    // Before the lease: with the database down this reads as a failed tick, not
+    // as another copy having the work.
+    await syncMetadataTables();
     // `s.busy` above is a variable in this process, so it says nothing about
     // the copy of the app running next to this one. Two replicas — or a
     // `next dev` left open beside a `next start`, which is the version of this
@@ -261,62 +317,71 @@ async function checkWhatIsDue(now: Date): Promise<TickReport> {
     // every "always" drift event is written twice. The database is the only
     // thing both copies can see, so the agreement about whose turn it is has to
     // be made there.
-    lock = await takeTickLock();
-    if (!lock) {
+    const lease = await takeTickLease();
+    if (!lease) {
       return {
         kind: "shared",
         line: "Skipped — another copy of the app is running this tick.",
       };
     }
-
-    await syncMetadataTables();
-    const entries = await loadEntries();
-    const due = selectDue(entries, now, MAX_PER_TICK);
-    await pruneIfDue(now);
-
-    const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, async (entry) => {
-      // "on_change" so a quarter-hourly "still fine" does not push a day of
-      // real events out of the audit feed. The check is still stamped.
-      const result = await runDriftCheck(
-        entry.orgId,
-        entry.trackedSchemaId,
-        "scheduled",
-        "on_change"
-      );
-      return result.ok ? result.run.status : `problem:${result.problem.kind}`;
-    });
-
-    const checked = due.map((entry, index) => ({ entry, outcome: outcomes[index] }));
-    for (const { entry } of checked) {
-      s.checksRunByOrg.set(entry.orgId, (s.checksRunByOrg.get(entry.orgId) ?? 0) + 1);
+    let report: TickReport = TICK_FAILED;
+    try {
+      report = await checkUnderLease(now);
+      return report;
+    } finally {
+      await finishTick(lease, report);
     }
-
-    const byOrg = new Map<number, string>();
-    for (const orgId of new Set(entries.map((entry) => entry.orgId))) {
-      byOrg.set(
-        orgId,
-        orgTickLine(
-          entries.filter((entry) => entry.orgId === orgId),
-          checked.filter((item) => item.entry.orgId === orgId),
-          now
-        )
-      );
-    }
-    return { kind: "by_org", byOrg };
   } catch (error) {
     // The message stays in the server's log. It can come from any
     // organization's check (a database error naming that organization's host,
     // say), and the line below is shown to every organization.
     const message = error instanceof Error ? error.message : String(error);
     console.error("Drift scheduler — tick failed:", message);
-    return {
-      kind: "shared",
-      line: "Tick failed. The server's log says why, and the next tick tries again.",
-    };
+    return TICK_FAILED;
   } finally {
-    if (lock) await releaseTickLock(lock);
     s.busy = false;
   }
+}
+
+/** What a tick does once it holds the lease. */
+async function checkUnderLease(now: Date): Promise<TickReport> {
+  const s = state();
+  const entries = await loadEntries();
+  const due = selectDue(entries, now, MAX_PER_TICK);
+  // A tick that could not tidy up can still do its real job.
+  await pruneIfDue().catch((error) => {
+    console.error("Drift scheduler — prune failed:", error);
+  });
+
+  const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, async (entry) => {
+    // "on_change" so a quarter-hourly "still fine" does not push a day of
+    // real events out of the audit feed. The check is still stamped.
+    const result = await runDriftCheck(
+      entry.orgId,
+      entry.trackedSchemaId,
+      "scheduled",
+      "on_change"
+    );
+    return result.ok ? result.run.status : `problem:${result.problem.kind}`;
+  });
+
+  const checked = due.map((entry, index) => ({ entry, outcome: outcomes[index] }));
+  for (const { entry } of checked) {
+    s.checksRunByOrg.set(entry.orgId, (s.checksRunByOrg.get(entry.orgId) ?? 0) + 1);
+  }
+
+  const byOrg = new Map<number, string>();
+  for (const orgId of new Set(entries.map((entry) => entry.orgId))) {
+    byOrg.set(
+      orgId,
+      orgTickLine(
+        entries.filter((entry) => entry.orgId === orgId),
+        checked.filter((item) => item.entry.orgId === orgId),
+        now
+      )
+    );
+  }
+  return { kind: "by_org", byOrg };
 }
 
 /**
@@ -354,84 +419,78 @@ function orgTickLine(
   return `${parts.join(" · ")}.`;
 }
 
-/** A held tick lock: the one connection it lives on, which has to unlock it. */
-type TickLock = { client: Awaited<ReturnType<typeof pool.connect>> };
+/** A held lease: who holds it, and the timer keeping it alive. */
+type TickLease = { holder: string; renew: ReturnType<typeof setInterval> };
 
 /**
- * The tick lock's key.
+ * Claim this tick for this copy of the app, or find that another copy has it.
  *
- * Two hashtext() values, the same spelling lib/family-lock uses, so every
- * advisory lock this app takes reads the same way in pg_locks. That two-integer
- * form is also a different lock space from the single-bigint
- * `pg_advisory_xact_lock($trackedSchemaId)` the deploy and re-baseline paths
- * take, so this can never accidentally block one of those — or be blocked by
- * one, which would be worse.
+ * It does not wait: a tick that queued behind another copy's tick would run the
+ * moment it finished and check everything all over again, which is the doubling
+ * this is here to prevent. Not getting the lease is a complete answer: the other
+ * copy is doing the work.
+ *
+ * A row with an expiry rather than an advisory lock. A session lock does not
+ * survive a transaction pooler, which takes the server connection back between
+ * statements. A transaction lock would hold a transaction open on the metadata
+ * database for the whole tick. And a frozen serverless instance keeps its socket
+ * open, so either lock could hold for a long time and silently stop the schedule,
+ * whereas a lease runs out by the database's clock. That is also why a process
+ * killed mid-tick does not wedge the schedule for everybody else: ticks skip for
+ * at most LEASE_SECONDS, then one takes over.
  */
-const TICK_LOCK_KEY = ["drift-scheduler", "tick"];
+async function takeTickLease(): Promise<TickLease | null> {
+  const holder = randomUUID();
+  const taken = await pool.query(
+    `INSERT INTO drift_scheduler_state (name, holder, lease_until)
+     VALUES ($1, $2, now() + make_interval(secs => $3))
+     ON CONFLICT (name) DO UPDATE
+       SET holder = EXCLUDED.holder, lease_until = EXCLUDED.lease_until
+       WHERE drift_scheduler_state.lease_until IS NULL
+          OR drift_scheduler_state.lease_until < now()
+     RETURNING holder`,
+    [STATE_ROW, holder, LEASE_SECONDS]
+  );
+  if (taken.rows.length === 0) return null;
+  const renew = setInterval(() => void renewTickLease(holder), LEASE_RENEW_MS);
+  // Same reason as the loop's timer: this must not hold a process open.
+  renew.unref?.();
+  return { holder, renew };
+}
 
-/**
- * Claim this tick for this process, or find that another copy has it.
- *
- * `pg_try_advisory_lock` rather than the waiting kind: a tick that queued behind
- * another copy's tick would run the moment it finished and check everything all
- * over again, which is the doubling this is here to prevent. Not getting the
- * lock is a complete answer — the other copy is doing the work.
- *
- * Session-scoped rather than transaction-scoped, so the tick does not have to
- * hold a transaction open on the metadata database for a minute. The safety
- * that buys a transaction is kept a different way: PostgreSQL drops every
- * advisory lock a session held the moment that session ends, so a process that
- * is killed mid-tick releases this on the way out and does not wedge the
- * schedule for everybody else.
- *
- * Returns null on any failure, including a database that is simply not there.
- * A scheduler that stops checking because it could not take a lock would turn
- * a brief outage into a silent permanent one.
- */
-async function takeTickLock(): Promise<TickLock | null> {
-  let client: Awaited<ReturnType<typeof pool.connect>>;
+/** Keep the lease while a long tick is still working. Only ever touches our own row. */
+async function renewTickLease(holder: string): Promise<void> {
   try {
-    client = await pool.connect();
-  } catch (error) {
-    console.error("Drift scheduler — could not reach the metadata database:", error);
-    return null;
-  }
-  try {
-    const held = await client.query<{ taken: boolean }>(
-      `SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS taken`,
-      TICK_LOCK_KEY
+    await pool.query(
+      `UPDATE drift_scheduler_state
+          SET lease_until = now() + make_interval(secs => $3)
+        WHERE name = $1 AND holder = $2`,
+      [STATE_ROW, holder, LEASE_SECONDS]
     );
-    if (held.rows[0]?.taken === true) return { client };
   } catch (error) {
-    console.error("Drift scheduler — could not take the tick lock:", error);
+    // The lease runs out on its own at worst, and the check carries on.
+    console.error("Drift scheduler — could not renew the tick lease:", error);
   }
-  // Not ours: hand the connection straight back rather than holding one of the
-  // five for a tick that is not going to do anything.
-  client.release();
-  return null;
 }
 
 /**
- * Give the tick back, on the same connection that took it.
+ * Give the tick back and write down what it did, in one statement.
  *
- * The unlock has to run on that connection — a session lock belongs to a
- * session, and `pool.query` would pick whichever one is free. Releasing without
- * unlocking would hand a connection that still holds the lock back to the pool,
- * where it would sit holding it for as long as the pool keeps it alive, and no
- * copy of the app would ever tick again.
+ * A failure only logs, because the lease runs out on its own. A lease lost to
+ * another copy (this one froze past its expiry) matches nothing, and that copy's
+ * report is the one to keep.
  */
-async function releaseTickLock(lock: TickLock): Promise<void> {
+async function finishTick(lease: TickLease, report: TickReport): Promise<void> {
+  clearInterval(lease.renew);
   try {
-    await lock.client.query(
-      `SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`,
-      TICK_LOCK_KEY
+    await pool.query(
+      `UPDATE drift_scheduler_state
+          SET holder = NULL, lease_until = NULL, last_tick_at = now(), last_report = $2::jsonb
+        WHERE name = $3 AND holder = $1`,
+      [lease.holder, JSON.stringify(toStored(report)), STATE_ROW]
     );
   } catch (error) {
-    // The only realistic cause is a connection that has already broken, and a
-    // broken session has had its locks released by the server anyway.
-    console.error("Drift scheduler — could not release the tick lock:", error);
-  } finally {
-    lock.client.release();
+    console.error("Drift scheduler — could not finish the tick:", error);
   }
 }
 
@@ -447,6 +506,11 @@ export function startDriftScheduler(): void {
   if (reason) {
     s.stoppedReason = reason;
     console.log(`Drift scheduler — not started. ${reason}`);
+    return;
+  }
+  if (schedulerMode() === "external") {
+    // Nothing to start: a scheduled call to /api/internal/drift-tick does the waking.
+    console.log("Drift scheduler — no timer here, a scheduled call wakes it.");
     return;
   }
   if (s.timer) return;
@@ -474,34 +538,59 @@ export function stopDriftScheduler(): void {
   s.stoppedReason = "Stopped.";
 }
 
+/** What the schedule screen says when calls from outside have stopped, or never began. */
+const NO_CALL_YET =
+  `Nothing is checking these schemas on its own: no scheduled call has reached this server in the last ${RECENT_CALL_MINUTES} minutes. ` +
+  "Checks still run when you press Check drift now. deploy/SUPABASE-VERCEL.md shows how to set the call up.";
+
 /**
  * What the loop is doing right now, as organization `orgId` sees it.
  *
+ * The last tick is read from the row with the lease, so every copy of the app
+ * shows the same pass, including a serverless instance that has never ticked.
  * Whether it runs, how often it wakes and when it last did are the same for
  * everyone, and say nothing about anyone's schemas. The count and the last
  * tick's line are this organization's own: see TickReport for why.
+ *
+ * With calls from outside there is no timer here to look at, so "running" means
+ * a call arrived recently. An unexpired lease counts too, so that a long tick
+ * does not flicker to "not running" halfway.
  */
-export function driftSchedulerStatus(orgId: number): SchedulerStatus {
+export async function driftSchedulerStatus(orgId: number): Promise<SchedulerStatus> {
+  await syncMetadataTables();
   const s = state();
+  const external = schedulerMode() === "external";
+  const result = await pool.query(
+    `SELECT last_tick_at, last_report,
+            COALESCE(lease_until > now(), false)
+              OR COALESCE(now() - last_tick_at < make_interval(mins => $2), false) AS recent
+       FROM drift_scheduler_state
+      WHERE name = $1`,
+    [STATE_ROW, RECENT_CALL_MINUTES]
+  );
+  const row = result.rows[0] as
+    | { last_tick_at: Date | string | null; last_report: StoredReport | null; recent: boolean }
+    | undefined;
+  const running = external ? row?.recent === true : s.timer !== null;
   return {
-    running: s.timer !== null,
-    stoppedReason: s.timer !== null ? null : (s.stoppedReason ?? "Not started."),
+    running,
+    stoppedReason: running ? null : external ? NO_CALL_YET : (s.stoppedReason ?? "Not started."),
     ticks: s.ticks,
-    checksRun: s.checksRunByOrg.get(orgId) ?? 0,
-    lastTickAt: s.lastTickAt,
-    lastTickSummary: lastTickLine(s.lastTick, orgId),
+    checksRun: external ? null : (s.checksRunByOrg.get(orgId) ?? 0),
+    lastTickAt: row?.last_tick_at ? new Date(row.last_tick_at).toISOString() : null,
+    lastTickSummary: lastTickLine(row?.last_report ?? null, orgId),
     tickSeconds: TICK_MS / 1000,
+    external,
   };
 }
 
-/** The last tick's line for one organization, or null before the first tick. */
-function lastTickLine(report: TickReport | null, orgId: number): string | null {
+function lastTickLine(report: StoredReport | null, orgId: number): string | null {
   if (!report) return null;
   if (report.kind === "shared") return report.line;
   // Not among the tick's lines: none of this organization's schemas is on a
   // cadence, so the tick had nothing of theirs to look at.
   return (
-    report.byOrg.get(orgId) ?? "Nothing scheduled — no tracked schema has an automatic cadence."
+    report.byOrg[orgId] ?? "Nothing scheduled — no tracked schema has an automatic cadence."
   );
 }
 
@@ -525,7 +614,13 @@ export function requestImmediateCheck(
   mode: DriftRecordMode = "always"
 ): void {
   if (disabledReason()) return;
-  void runDriftCheck(orgId, trackedSchemaId, source, mode).catch((error) => {
-    console.error("Drift scheduler — immediate check failed:", error);
-  });
+  const check = () =>
+    runDriftCheck(orgId, trackedSchemaId, source, mode).catch((error) => {
+      console.error("Drift scheduler — immediate check failed:", error);
+    });
+  // A serverless function can be frozen the moment its response is sent, which
+  // would stop a floating check partway, and after() keeps it alive. Only in
+  // external mode, because after() throws outside a request.
+  if (schedulerMode() === "external") after(check);
+  else void check();
 }

@@ -5,6 +5,9 @@ server by itself, usually within ten minutes: CI takes about two, the server
 checks GitHub every five, and the rebuild takes a minute or two. Nobody has
 to log in.
 
+To run it on Vercel with its data in Supabase instead, see
+[SUPABASE-VERCEL.md](SUPABASE-VERCEL.md).
+
 How it works: the server cannot be reached from GitHub (only through
 Splashtop), so GitHub cannot push to it. Instead the server asks. cron runs
 [`auto-update.sh`](auto-update.sh) every five minutes. When `main` on GitHub

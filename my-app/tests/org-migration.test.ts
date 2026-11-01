@@ -123,8 +123,16 @@ const ORG_TABLES = [
 // move.
 const ORG_SCOPED = [...ORG_TABLES, "memberships"];
 // A person, and the accounts they sign in with, belong to no organization:
-// one person can be in several.
-const NOT_ORG_SCOPED = ["organizations", "profiles", "identities"];
+// one person can be in several. The last two belong to the server: whose turn
+// the drift check is (one tick covers every organization), and which deployments
+// have finished setting up these tables.
+const NOT_ORG_SCOPED = [
+  "organizations",
+  "profiles",
+  "identities",
+  "drift_scheduler_state",
+  "metadata_boot_stamps",
+];
 
 const VIEWER_PRESET = presetFor("viewer") ?? [];
 const EDITOR_PRESET = presetFor("editor") ?? [];
@@ -279,8 +287,9 @@ async function boot(
 }
 
 // Boots like boot(), and says how many clients the bootstrap took from the
-// pool for itself. Every boot takes one to hold its lock; a second means it
-// found an organization due for its built-in roles.
+// pool for itself. Every boot takes one to hold its lock and one for
+// moveToOrganizations' transaction; a third means it found an organization due
+// for its built-in roles.
 async function bootCountingClients(url: string): Promise<number> {
   const app = await load(url);
   const connect = jest.spyOn(app.metadataPool, "connect");
@@ -1375,7 +1384,7 @@ describeWithDatabase("org-migration", () => {
         `INSERT INTO organizations (slug, name)
          VALUES ('second-org', 'Second Org') RETURNING id`
       );
-      expect(await bootCountingClients(url)).toBe(2);
+      expect(await bootCountingClients(url)).toBe(3);
       expect(await rolesOf(client, secondId)).toEqual(EXPECTED_BUILT_IN_ROLES);
       expect(await builtInPermissionsOf(client, secondId)).toEqual(
         EXPECTED_BUILT_IN_PERMISSIONS
@@ -1411,7 +1420,7 @@ describeWithDatabase("org-migration", () => {
       const second = await orgRoleRows(client, secondId);
       expect(second).not.toEqual([]);
 
-      expect(await bootCountingClients(url)).toBe(2);
+      expect(await bootCountingClients(url)).toBe(3);
       expect(await permissionsOf(client, defaultId, "viewer")).toEqual(
         [...VIEWER_PRESET].sort()
       );
@@ -1428,7 +1437,7 @@ describeWithDatabase("org-migration", () => {
       expect(await orgRoleRows(client, secondId)).toEqual(second);
 
       // Given once: the next boot finds nothing due.
-      expect(await bootCountingClients(url)).toBe(1);
+      expect(await bootCountingClients(url)).toBe(2);
       expect(await permissionsOf(client, defaultId, "viewer")).toEqual(
         [...VIEWER_PRESET].sort()
       );
@@ -1445,7 +1454,7 @@ describeWithDatabase("org-migration", () => {
           [defaultId, value, ADMIN_ROLE]
         );
         const rows = await everyRow(client);
-        expect([value, await bootCountingClients(url)]).toEqual([value, 1]);
+        expect([value, await bootCountingClients(url)]).toEqual([value, 2]);
         expect(await everyRow(client)).toEqual(rows);
       }
     }, SLOW);

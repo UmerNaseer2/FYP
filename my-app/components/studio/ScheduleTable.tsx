@@ -37,10 +37,11 @@ type SchedulerStatus = {
   running: boolean;
   stoppedReason: string | null;
   ticks: number;
-  checksRun: number;
+  checksRun: number | null;
   lastTickAt: string | null;
   lastTickSummary: string | null;
   tickSeconds: number;
+  external: boolean;
 };
 
 type ScheduleView = {
@@ -188,6 +189,9 @@ export function ScheduleTable() {
 
   const { scheduler, rows } = view;
   const automatic = rows.filter((r) => r.intervalMinutes > 0).length;
+  const waking = scheduler.external
+    ? "A scheduled call wakes this server every minute, and it"
+    : `This server wakes every ${scheduler.tickSeconds}s and`;
   const options = DRIFT_INTERVAL_CHOICES.map((c) => ({
     value: String(c.minutes),
     label: c.label,
@@ -237,20 +241,22 @@ export function ScheduleTable() {
             </div>
             <p className="text-[12.5px] mt-1.5 max-w-[70ch]" style={{ color: "var(--text-2)" }}>
               {scheduler.running
-                ? `This server wakes every ${scheduler.tickSeconds}s and checks whichever tracked ` +
+                ? `${waking} checks whichever tracked ` +
                   `schemas are due. ${automatic} of ${rows.length} ` +
                   `${rows.length === 1 ? "schema is" : "schemas are"} on a cadence.`
                 : scheduler.stoppedReason ??
                   "Nothing is checking these schemas on its own. Checks only run when you press Check drift now."}
             </p>
-            {scheduler.running && scheduler.lastTickSummary && (
+            {scheduler.lastTickSummary && (
               <p className="text-[12px] mt-1" style={{ color: "var(--text-3)" }}>
                 Last pass {ago(scheduler.lastTickAt, now)} · {scheduler.lastTickSummary}
               </p>
             )}
           </div>
           <div className="text-right text-[12px] shrink-0" style={{ color: "var(--text-3)" }}>
-            <div className="mono">{scheduler.checksRun} checks this run</div>
+            {scheduler.checksRun !== null && (
+              <div className="mono">{scheduler.checksRun} checks this run</div>
+            )}
             <button
               type="button"
               className="btn btn-secondary btn-sm mt-2"

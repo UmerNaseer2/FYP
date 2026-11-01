@@ -108,7 +108,7 @@ const ADDED: Record<string, Gate> = {
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */
-const UNGATED = ["GET /api/auth/[...nextauth]", "POST /api/auth/[...nextauth]"];
+const UNGATED = ["GET /api/internal/drift-tick", "GET /api/auth/[...nextauth]", "POST /api/auth/[...nextauth]"];
 
 const BELOW: Record<OldRole, OldRole | null> = { viewer: null, editor: "viewer", admin: "editor" };
 
