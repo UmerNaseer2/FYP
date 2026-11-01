@@ -39,7 +39,7 @@ const EXEMPT: Record<string, string> = {
  * app should keep a phone's passkey for, and (only while authentication is off)
  * which role to view the app as.
  */
-const ANY_MEMBER = ["me", "me/approver", "me/view-as"];
+const ANY_MEMBER = ["me", "me/approver", "me/view-as", "requests", "requests/[id]", "requests/seen"];
 
 /**
  * Routes anyone signed in may call, before they belong to any organization.

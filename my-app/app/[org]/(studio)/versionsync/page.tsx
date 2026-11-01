@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useState } from "react";
 import Link from "next/link";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal, Skeleton } from "@/components/ui";
@@ -20,6 +21,7 @@ import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { refusalMessage } from "@/lib/permissions";
 import {
   cutForwardOnly,
@@ -487,6 +489,8 @@ export default function VersionSyncPage() {
     });
     setProgress("");
     setApplying(false);
+    // However it ended, it may have spent an approval, which the number on the rail counts.
+    window.dispatchEvent(new Event(REQUESTS_CHANGED_EVENT));
 
     if (!result.ok) {
       if (result.failure === "refused") {
@@ -1002,7 +1006,10 @@ function Result({
               <InfoIcon size={15} className="ico" />
               <div>
                 <div className="title">You can read this list, but not replay it</div>
-                <div className="body">{apply.runRefusal}</div>
+                <div className="body">
+                  {apply.runRefusal}
+                  <AskAdmin permission="deploy:run" />
+                </div>
               </div>
             </div>
           )}
@@ -1432,6 +1439,8 @@ function ReplayBody({
   function reloadApprovals() {
     setApprovalsReloading(true);
     setApprovalsTry((t) => t + 1);
+    // Whatever moved this on may have changed the number beside Requests on the rail.
+    window.dispatchEvent(new Event(REQUESTS_CHANGED_EVENT));
   }
 
   const runApprovals =

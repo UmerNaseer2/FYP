@@ -48,10 +48,14 @@ jest.mock("../lib/version-db", () => ({
   default: { query: async () => ({ rows: [] }) },
   syncMetadataTables: async () => undefined,
 }));
+// The link to ask for a box reads who is signed in.
+jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
+jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { fingerprintBody, rollbackFingerprintBody, type ApprovalScript } from "@/lib/approval-fingerprint";
 import { runFingerprint } from "@/lib/approvals-db";
+import { resetPageState } from "./helpers/render-page";
 
 type PanelProps = Parameters<typeof ApprovalPanel>[0];
 
@@ -111,6 +115,7 @@ function show(over: Partial<PanelProps> = {}): HTMLElement {
   return panel as HTMLElement;
 }
 
+beforeEach(() => resetPageState());
 afterEach(() => cleanup());
 
 describe("before there is anything to say", () => {
@@ -193,6 +198,39 @@ describe("a list nobody could read", () => {
 
     expect(panel).toHaveTextContent("whether this rollback is cleared");
     expect(panel).toHaveTextContent("when you press Roll back");
+  });
+});
+
+describe("the way forward from a refusal", () => {
+  it("offers to ask for the box a role needs to clear a run", async () => {
+    show({ mayApprove: false, roleLabel: "Editor", pending: row() });
+
+    expect(await screen.findByRole("link", { name: "Ask for it" })).toHaveAttribute(
+      "href",
+      "/requests?ask=approvals%3Aapprove"
+    );
+  });
+
+  it("offers to ask for the box a role needs to request a run", async () => {
+    show({ mayRequest: false, roleLabel: "Viewer" });
+
+    expect(await screen.findByRole("link", { name: "Ask for it" })).toHaveAttribute(
+      "href",
+      "/requests?ask=approvals%3Acreate"
+    );
+  });
+
+  it("tells the person who asked where their request went, and offers nothing to ask for", () => {
+    // They are not missing a box. The rule says somebody else has to read it.
+    const panel = show({
+      mayApprove: false,
+      roleLabel: "Release requester",
+      pending: row({ requested_by: "me@example.com" }),
+    });
+
+    expect(panel).toHaveTextContent("Anyone who can approve it sees it on their Requests page.");
+    expect(panel).not.toHaveTextContent("can't clear");
+    expect(screen.queryByRole("link", { name: "Ask for it" })).not.toBeInTheDocument();
   });
 });
 
@@ -373,11 +411,11 @@ describe("what an approval says it covers", () => {
     );
   });
 
-  it("says migration once when there is one", () => {
+  it("reads properly when there is one migration", () => {
     const panel = show({ migrationCount: 1, approved: row({ status: "approved", migration_count: 1 }) });
 
-    expect(panel).toHaveTextContent("Cleared for exactly these 1 migration through");
-    expect(panel).not.toHaveTextContent("1 migrations");
+    expect(panel).toHaveTextContent("Cleared for exactly this migration through");
+    expect(panel).not.toHaveTextContent("1 migration");
   });
 
   it("does not call a self-approval a second person", () => {

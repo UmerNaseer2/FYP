@@ -6,6 +6,7 @@ import { Card, EmptyState, Pill } from "@/components/ui";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { AlertCircleIcon, CheckIcon, PlayIcon } from "@/components/ui/icons";
+import { AskAdmin } from "./AskAdmin";
 import {
   FindingCard,
   SeverityFilter,
@@ -260,7 +261,8 @@ export function QueryAnalyzer({
                   </>
                 ) : (
                   <>
-                    {refusalMessage(roleLabel, "performance:run")}{" "}
+                    {refusalMessage(roleLabel, "performance:run")}
+                    <AskAdmin permission="performance:run" />{" "}
                     You can still analyse it: the server will say what it would
                     do, using its own estimates, without touching any rows.
                   </>

@@ -1,7 +1,9 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import {
   DeployIcon,
   RefreshIcon,
@@ -89,6 +91,7 @@ import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 import { shortUtcDate } from "@/lib/format-date";
 import { apiFetch } from "@/lib/api-fetch";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 
 // ---------------------------------------------------------------------------
 // Deploy (S5) — Pre-flight → Run → Verify stepper.
@@ -910,7 +913,7 @@ function approvalRequestedToast(bypass: boolean, mayApprove: boolean): string {
     : 'Approval requested. Switch "View as" back to Admin to clear it';
 }
 
-export default function DeployPage() {
+function DeployBody() {
   // Who is looking, and what their role may do here. The approval panel needs
   // to know whether to offer Request and Approve at all (each is a box an
   // admin ticks for a role on the Admin screen), and whether this is the same
@@ -927,6 +930,20 @@ export default function DeployPage() {
   const runRefusal =
     sessionLoading || can("deploy:run") ? null : refusalMessage(roleLabel, "deploy:run");
   const mayRequestApproval = can("approvals:create");
+  // A link from the Requests page names the run it is about, so the reader lands
+  // on that target with it checked. Each part is used when its list arrives, and
+  // one no list holds is ignored, because the link may be old. Choosing anything
+  // by hand drops what is left of it.
+  const searchParams = useSearchParams();
+  const linked = useRef({
+    connection: searchParams.get("connection"),
+    schema: searchParams.get("schema"),
+    script: searchParams.get("script"),
+    version: searchParams.get("version"),
+  });
+  const forgetLink = () => {
+    linked.current = { connection: null, schema: null, script: null, version: null };
+  };
   const mayApprove = can("approvals:approve");
 
   // ── Selection state ──────────────────────────────────────────────────────
@@ -1156,8 +1173,14 @@ export default function DeployPage() {
         // An unreadable list is not an empty one. Saying "add a connection
         // first" when the app database is down sends the user to a page that
         // will fail the same way.
-        if (Array.isArray(data)) setConnections(data as Connection[]);
-        else setConnectionsFailed(true);
+        if (Array.isArray(data)) {
+          const list = data as Connection[];
+          setConnections(list);
+          const wanted = linked.current.connection;
+          if (wanted && list.some((c) => String(c.id) === wanted)) setConnectionId(wanted);
+        } else {
+          setConnectionsFailed(true);
+        }
       })
       .catch(() => setConnectionsFailed(true))
       .finally(() => setConnectionsLoaded(true));
@@ -1703,6 +1726,18 @@ export default function DeployPage() {
     setSchemaEnvironment(DEFAULT_ENVIRONMENT);
   }, [connectionId, schema]);
 
+  // The last of a link from the Requests page: its script, then the same read of
+  // the target that "Check database" does, which is what the reader came to see.
+  useEffect(() => {
+    const wanted = linked.current.script;
+    if (!wanted || !connectionId || !schema || !schemaScriptNames.includes(wanted)) return;
+    linked.current.script = null;
+    setScriptGroup(wanted);
+    void runPreflightCheck(connectionId, schema, wanted);
+    void runDriftCheck(connectionId, schema);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schemaScriptNames]);
+
   // Default the target to the latest pending version once pre-flight returns.
   // Re-runs after a partial deploy keep a still-valid pick, else snap to latest.
   useEffect(() => {
@@ -1712,6 +1747,12 @@ export default function DeployPage() {
       return;
     }
     const versions = pendingScripts.map((s) => s.version);
+    const wanted = linked.current.version;
+    if (wanted && versions.includes(wanted)) {
+      linked.current.version = null;
+      setTargetVersion(wanted);
+      return;
+    }
     if (!targetVersion || !versions.includes(targetVersion)) {
       setTargetVersion(pendingScripts[pendingScripts.length - 1].version);
     }
@@ -1898,6 +1939,11 @@ export default function DeployPage() {
     mayReadApprovals,
     roleLabel,
   ]);
+
+  // Whatever moved this on may have changed the number beside Requests on the rail.
+  useEffect(() => {
+    if (approvalReloadKey > 0) window.dispatchEvent(new Event(REQUESTS_CHANGED_EVENT));
+  }, [approvalReloadKey]);
 
   // Every approval row for this exact batch, newest first (the API orders by
   // id DESC). Anything with a different fingerprint belongs to different SQL
@@ -2094,6 +2140,8 @@ export default function DeployPage() {
         // One schema leaves nothing to choose, so it is picked, as Compare
         // and Performance do.
         if (list.length === 1) setSchema((current) => (current === "" ? list[0] : current));
+        const wanted = linked.current.schema;
+        if (wanted && list.includes(wanted)) setSchema(wanted);
       }
     } catch {
       if (schemasFor.current === id) setSchemasError("Network error loading schemas.");
@@ -2939,8 +2987,15 @@ export default function DeployPage() {
           <div className="role-note mt-4 max-w-[80ch]">
             <InfoIcon size={15} className="ico" />
             <div className="body space-y-0.5">
-              <p>{runRefusal}</p>
-              <p>You can still see what is pending on each target and what has run before.</p>
+              <p>
+                {runRefusal}
+                <AskAdmin permission="deploy:run" />
+              </p>
+              <p>
+                You can still see what is pending on each target and what has run before.
+                {mayRequestApproval &&
+                  " For a production target, check the database and request approval. Once it is approved, someone who can run a deploy runs it."}
+              </p>
             </div>
           </div>
         )}
@@ -3023,6 +3078,7 @@ export default function DeployPage() {
                     label: `${c.name} — ${c.host}/${c.database_name}`,
                   }))}
                   onChange={(value) => {
+                    forgetLink();
                     setConnectionId(value);
                     setSchema("");
                     setScriptGroup("");
@@ -3068,7 +3124,9 @@ export default function DeployPage() {
                         against it. Everything else on this page still works.
                       </span>
                     )}
-                    {!targetIsReadOnly && !mayExecuteOnTarget && (
+                    {/* A missing "Deploy: Run" is already said at the top of the page,
+                        so only the rule this connection adds is said here. */}
+                    {targetExecuteRole === "admin" && !mayExecuteOnTarget && (
                       <span className="help" style={{ color: "var(--break)" }}>
                         {/* The apply route's own words, so this line and the
                             refusal a press would get read the same. */}
@@ -3110,6 +3168,7 @@ export default function DeployPage() {
                   }
                   options={schemas.map((s) => ({ value: s, label: s }))}
                   onChange={(value) => {
+                    forgetLink();
                     setSchema(value);
                     setScriptGroup("");
                     setPreflightResult(null);
@@ -3135,6 +3194,7 @@ export default function DeployPage() {
                   placeholder={!schema ? "Select a schema first" : "Select a script group…"}
                   options={schemaScriptNames.map((name) => ({ value: name, label: name }))}
                   onChange={(value) => {
+                    forgetLink();
                     setScriptGroup(value);
                     setPreflightResult(null);
                     setPreflightError(null);
@@ -4679,7 +4739,7 @@ export default function DeployPage() {
             </div>
           )}
           <div className="verify-hero">
-            <div className="ring" />
+            <div className="verify-glow" />
             <div className="relative flex items-start gap-5 flex-wrap">
               <div className="check-big">
                 <CheckIcon size={28} />
@@ -4961,5 +5021,14 @@ function ChecklistItem({
       <span className="flex-none grid place-items-center">{icon}</span>
       <span style={stub ? { color: "var(--text-3)" } : undefined}>{children}</span>
     </li>
+  );
+}
+
+// useSearchParams needs a Suspense boundary above it for the build to succeed.
+export default function DeployPage() {
+  return (
+    <Suspense fallback={null}>
+      <DeployBody />
+    </Suspense>
   );
 }

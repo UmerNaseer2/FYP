@@ -397,6 +397,102 @@ export async function listPendingApprovals(orgId: number): Promise<PendingApprov
 }
 
 /**
+ * A production request with the name of its connection, for the Requests page.
+ * The name comes from a subquery because COLUMNS are unprefixed, so a join would
+ * make `id` ambiguous.
+ */
+export type ListedApproval = DeployApproval & { connection_name: string | null };
+
+const LISTED_COLUMNS = `${COLUMNS},
+  (SELECT c.name FROM connections c
+    WHERE c.id = deploy_approvals.connection_id
+      AND c.org_id = deploy_approvals.org_id) AS connection_name`;
+
+/** `leaveOut` drops one person's own, for someone who may not decide those. */
+const NOT_FROM = `($2::text IS NULL OR lower(requested_by) <> lower($2::text))`;
+
+/** Runs waiting for a second person, oldest first. */
+export async function listRunsToApprove(
+  orgId: number,
+  leaveOut: string | null
+): Promise<ListedApproval[]> {
+  await syncMetadataTables();
+  const result = await pool.query<ListedApproval>(
+    `SELECT ${LISTED_COLUMNS} FROM deploy_approvals
+      WHERE org_id = $1 AND status = 'pending' AND ${NOT_FROM}
+      ORDER BY id LIMIT 100`,
+    [orgId, leaveOut]
+  );
+  return result.rows;
+}
+
+export async function countRunsToApprove(orgId: number, leaveOut: string | null): Promise<number> {
+  await syncMetadataTables();
+  const result = await pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM deploy_approvals
+      WHERE org_id = $1 AND status = 'pending' AND ${NOT_FROM}`,
+    [orgId, leaveOut]
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+/** Runs approved and not used yet, still in time to be run. Oldest first. */
+export async function listRunsReadyToRun(orgId: number): Promise<ListedApproval[]> {
+  await syncMetadataTables();
+  const result = await pool.query<ListedApproval>(
+    `SELECT ${LISTED_COLUMNS} FROM deploy_approvals
+      WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}
+      ORDER BY id LIMIT 100`,
+    [orgId]
+  );
+  return result.rows;
+}
+
+export async function countRunsReadyToRun(orgId: number): Promise<number> {
+  await syncMetadataTables();
+  const result = await pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM deploy_approvals
+      WHERE org_id = $1 AND status = 'approved' AND ${UNEXPIRED}`,
+    [orgId]
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+/** The production runs this person asked for, newest first. */
+export async function listOwnRuns(orgId: number, email: string): Promise<ListedApproval[]> {
+  await syncMetadataTables();
+  const result = await pool.query<ListedApproval>(
+    `SELECT ${LISTED_COLUMNS} FROM deploy_approvals
+      WHERE org_id = $1 AND lower(requested_by) = lower($2)
+      ORDER BY id DESC LIMIT 20`,
+    [orgId, email]
+  );
+  return result.rows;
+}
+
+/**
+ * How many of this person's runs someone else answered after `since` (null:
+ * ever). A used run counts because the run can follow the approval before the
+ * person who asked has looked.
+ */
+export async function countOwnRunsAnsweredSince(
+  orgId: number,
+  email: string,
+  since: string | Date | null
+): Promise<number> {
+  await syncMetadataTables();
+  const result = await pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM deploy_approvals
+      WHERE org_id = $1 AND lower(requested_by) = lower($2)
+        AND status IN ('approved', 'rejected', 'used')
+        AND lower(decided_by) IS DISTINCT FROM lower(requested_by)
+        AND ($3::timestamptz IS NULL OR decided_at > $3::timestamptz)`,
+    [orgId, email, since]
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+/**
  * One request and the copy of its SQL, or null when the organization has no
  * such row.
  *

@@ -12,6 +12,7 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { apiFetch } from "@/lib/api-fetch";
+import { AskAdmin } from "./AskAdmin";
 
 /**
  * Client island on the schema-detail page: relabel this schema's environment.
@@ -103,7 +104,12 @@ export function SchemaEnvironmentPicker({
         ))}
       </div>
       <p className="help mt-1.5">{ENVIRONMENT_META[value].help}</p>
-      {changeRefusal && <p className="help mt-1.5">{changeRefusal}</p>}
+      {changeRefusal && (
+        <p className="help mt-1.5">
+          {changeRefusal}
+          <AskAdmin permission="drift:update" />
+        </p>
+      )}
       {isProduction(value) && (
         <p
           className="text-[12px] mt-1.5 inline-flex items-center gap-1.5"

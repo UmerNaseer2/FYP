@@ -346,7 +346,11 @@ body {
 .nav-item:hover { background:var(--surface-3); color:var(--text); }
 .nav-item.active{ background:var(--brand-soft); color:var(--brand); }
 .nav-item .ico { width:16px; height:16px; flex:none; }
-.nav-item .badge { margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:999px; }
+.nav-item .badge { margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:999px;
+                   background:var(--brand); color:#fff; font-weight:600; }
+/* The rail folded to icons: no room for a number, so a dot on the icon's corner. */
+.nav-item { position:relative; }
+.nav-item .badge-dot { position:absolute; top:5px; right:5px; margin:0; padding:0; width:7px; height:7px; }
 
 /* Collapsed-sidebar expand control (logo + chevron). */
 .sb-expand { cursor:pointer; transition:background .12s ease; }
@@ -1266,7 +1270,8 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .verify-hero { position:relative; overflow:hidden; border-radius:18px; padding:36px;
                background: linear-gradient(180deg, color-mix(in oklab, var(--sync) 10%, var(--surface)), var(--surface) 60%);
                border:1px solid color-mix(in oklab, var(--sync) 35%, var(--border)); }
-.verify-hero .ring { position:absolute; right:-80px; top:-80px; width:340px; height:340px; pointer-events:none;
+/* Not ".ring": Tailwind has a utility of that name, and it drew an outline here. */
+.verify-hero .verify-glow { position:absolute; right:-80px; top:-80px; width:340px; height:340px; pointer-events:none;
                      background: radial-gradient(circle, color-mix(in oklab, var(--sync) 24%, transparent) 0%, transparent 60%); }
 .check-big { width:56px; height:56px; border-radius:999px; background:var(--sync); color:#fff; display:grid; place-items:center;
              box-shadow: 0 0 0 8px color-mix(in oklab, var(--sync) 18%, transparent); }

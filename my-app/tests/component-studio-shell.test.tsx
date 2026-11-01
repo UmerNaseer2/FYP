@@ -50,7 +50,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { OrgProvider } from "@/components/OrgProvider";
 import { StudioShell } from "@/components/studio/StudioShell";
@@ -206,6 +206,13 @@ describe("a window with room for the rail", () => {
     expect(rail()).toBeInTheDocument();
     expect(screen.getByRole("navigation")).toHaveTextContent("Workspace");
     expect(screen.getByRole("main")).toHaveTextContent("The page itself");
+  });
+
+  test("holds what is placed absolutely on a page, so the window never grows", () => {
+    // jsdom has no layout, so this pins the class: text hidden for screen readers
+    // far down Deploy made the window taller than the screen without it.
+    renderShell();
+    expect(screen.getByRole("main")).toHaveClass("relative");
   });
 
   test("names the screen you are on, from the address bar", () => {
@@ -604,5 +611,66 @@ describe("a window too narrow for the rail", () => {
     expect(mediaListeners.size).toBe(1);
     unmount();
     expect(mediaListeners.size).toBe(0);
+  });
+});
+
+describe("the number beside Requests", () => {
+  // The rail's own read of what is waiting. Nothing else in this file answers a
+  // fetch, so it is handed one for just these cases, and it notes who asked.
+  const realFetch = globalThis.fetch;
+  let asked: string[] = [];
+  function answerCounts(counts: { waiting: number; answered: number }) {
+    asked = [];
+    globalThis.fetch = (async (input: unknown) => {
+      if (String(input).includes("/api/requests")) asked.push(String(input));
+      return { ok: true, status: 200, json: async () => ({ counts }) };
+    }) as unknown as typeof fetch;
+  }
+  const requestsRow = (name: RegExp) => screen.findByRole("link", { name });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("adds what is waiting on this person to the answers they haven't read", async () => {
+    answerCounts({ waiting: 2, answered: 1 });
+    renderShell();
+    expect(await requestsRow(/^Requests\s*3 waiting$/)).toBeInTheDocument();
+    expect(asked).toEqual(["/api/requests?only=counts"]);
+  });
+
+  test("offers the row with no number when nothing is waiting", async () => {
+    answerCounts({ waiting: 0, answered: 0 });
+    renderShell();
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(await requestsRow(/^Requests$/)).toBeInTheDocument();
+  });
+
+  test("offers the row to every role, since anyone may ask", async () => {
+    signInAs("viewer");
+    answerCounts({ waiting: 0, answered: 1 });
+    renderShell();
+    expect(await requestsRow(/^Requests\s*1 waiting$/)).toBeInTheDocument();
+  });
+
+  test("asks nothing when nobody is signed in", () => {
+    mockSession = null;
+    answerCounts({ waiting: 5, answered: 5 });
+    renderShell();
+    expect(asked).toEqual([]);
+  });
+
+  test("asks nothing of someone who isn't in this organization", () => {
+    me = NOT_A_MEMBER;
+    answerCounts({ waiting: 5, answered: 5 });
+    renderShell();
+    expect(asked).toEqual([]);
+  });
+
+  test("asks nothing while the app database can't say who this is", () => {
+    me = DATABASE_DOWN;
+    answerCounts({ waiting: 5, answered: 5 });
+    renderShell();
+    expect(asked).toEqual([]);
   });
 });

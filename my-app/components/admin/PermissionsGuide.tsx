@@ -49,31 +49,30 @@ export function PermissionsGuide({ showViewAs }: PermissionsGuideProps) {
   const panel = useRef<HTMLDetailsElement>(null);
 
   // Drawn folded, which is also how the server draws it, so the first frame
-  // matches and nothing jumps for someone who folded it away before. Then it
-  // opens, unless this browser remembers it being folded.
+  // matches. It stays folded until someone opens it, because open it pushes the
+  // people and the invite form off the screen. This browser remembers an opening.
   //
   // It sets `open` on the element rather than keeping it in state, because the
   // browser folds and unfolds a <details> by itself when its header is clicked.
   // Two copies of "is it open" (React's and the browser's) could disagree;
   // one cannot.
   useEffect(() => {
-    let folded = false;
+    let opened = false;
     try {
-      folded = localStorage.getItem(GUIDE_KEY) === "closed";
+      opened = localStorage.getItem(GUIDE_KEY) === "open";
     } catch {
-      // Storage is blocked (some private windows). The guide opens every time.
+      // Storage is blocked (some private windows). The guide starts folded every time.
     }
-    if (!folded && panel.current) panel.current.open = true;
+    if (opened && panel.current) panel.current.open = true;
   }, []);
 
   // Runs on every fold and unfold, the person's and the one above. The one
   // above only ever writes down "open", which is what it is, so it is harmless.
   function remember(open: boolean) {
     try {
-      if (open) localStorage.removeItem(GUIDE_KEY);
-      else localStorage.setItem(GUIDE_KEY, "closed");
+      localStorage.setItem(GUIDE_KEY, open ? "open" : "closed");
     } catch {
-      // Nothing is remembered, so the guide opens again on the next visit.
+      // Nothing is remembered, so the guide is folded again on the next visit.
     }
   }
 

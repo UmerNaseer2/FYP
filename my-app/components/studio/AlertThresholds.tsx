@@ -13,6 +13,7 @@ import {
   type ThresholdKey,
   type ThresholdSetting,
 } from "@/lib/perf-thresholds";
+import { AskAdmin } from "./AskAdmin";
 import type { PerfTarget } from "./PerfTargetPicker";
 import { apiFetch } from "@/lib/api-fetch";
 
@@ -121,7 +122,10 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
         <InfoIcon size={15} className="ico" />
         <div>
           <div className="title">{"You can't see the alert thresholds"}</div>
-          <div className="body">{refusalMessage(roleLabel, "alert_thresholds:read")}</div>
+          <div className="body">
+            {refusalMessage(roleLabel, "alert_thresholds:read")}
+            <AskAdmin permission="alert_thresholds:read" />
+          </div>
         </div>
       </div>
     );
@@ -251,6 +255,7 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
               You can see these rules but not change them. Changing what the app
               alerts on changes it for everybody using this connection.{" "}
               {refusalMessage(roleLabel, "alert_thresholds:update")}
+              <AskAdmin permission="alert_thresholds:update" />
             </div>
           </div>
         </div>

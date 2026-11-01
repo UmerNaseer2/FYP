@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { Skeleton } from "@/components/ui";
@@ -80,7 +81,10 @@ export default function AdminPage() {
           <InfoIcon size={15} className="ico" />
           <div>
             <div className="title">{"You can't manage users or roles"}</div>
-            <div className="body">{refusalMessage(roleLabel, "users:read")}</div>
+            <div className="body">
+                {refusalMessage(roleLabel, "users:read")}
+                <AskAdmin permission="users:read" />
+              </div>
           </div>
         </div>
       ) : (

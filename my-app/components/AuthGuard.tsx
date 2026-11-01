@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { signOutEverywhere } from "@/lib/sign-out";
@@ -152,6 +153,7 @@ export default function AuthGuard({
               (askFor === undefined
                 ? "Only admins can open it."
                 : `Ask an admin to allow "${permissionLabel(askFor)}" for your role, then reload.`)}
+          {askFor !== undefined && <AskAdmin permission={askFor} />}
         </div>
       </div>
     );

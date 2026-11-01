@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import {
   Button,
   Pill,
@@ -481,6 +482,9 @@ export default function DashboardPage() {
             {roleNotes.map((note) => (
               <p key={note}>{note}</p>
             ))}
+            <p>
+              <AskAdmin />
+            </p>
           </div>
         </div>
       )}

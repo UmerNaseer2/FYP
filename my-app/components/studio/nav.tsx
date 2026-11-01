@@ -10,6 +10,7 @@ import {
   SchemaMapIcon,
   VersionSyncIcon,
   UsersIcon,
+  InboxIcon,
 } from "@/components/ui/icons";
 import type { FeatureKey } from "@/lib/permissions";
 import { orgSlugFromPath } from "@/lib/org-slug";
@@ -28,9 +29,12 @@ export type NavItem = {
   /**
    * The feature this screen belongs to (lib/permissions). The rail shows it
    * only when the role may Read that feature, or any one of them for a list,
-   * which is the same question the screen's own AuthGuard asks.
+   * which is the same question the screen's own AuthGuard asks. Left out for a
+   * screen that every member may open.
    */
-  feature: FeatureKey | FeatureKey[];
+  feature?: FeatureKey | FeatureKey[];
+  /** How many things are waiting on this screen, shown beside its label. */
+  badge?: number;
 };
 
 // The order is the order the work happens in, not alphabetical and not by how
@@ -40,6 +44,9 @@ export type NavItem = {
 // generated, deploy it, record the version, then watch for drift and for
 // performance. Visualizer sits after those because it explains a schema rather
 // than changing one.
+//
+// Requests sits just above them: anyone can use it, whatever their role, so it
+// is not a step in that sequence either.
 //
 // Connections and Admin are last together, away from that sequence. They are
 // both setup — things you do once and come back to rarely — and Connections
@@ -108,6 +115,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/connections",
     icon: <ConnectionsIcon className="ico" />,
     feature: "connections",
+  },
+  {
+    screen: "Requests",
+    label: "Requests",
+    href: "/requests",
+    icon: <InboxIcon className="ico" />,
   },
   {
     screen: "Admin",

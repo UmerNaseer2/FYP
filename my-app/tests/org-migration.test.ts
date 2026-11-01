@@ -116,6 +116,7 @@ const ORG_TABLES = [
   "deploy_approvals",
   "deploy_attempts",
   "invites",
+  "access_requests",
 ];
 // Memberships belong to an organization too, but they came with
 // organizations, so they are not on the bootstrap's list of older tables to
@@ -847,6 +848,11 @@ async function fillOrganization(
     [orgId, connectionId]
   );
   await client.query(
+    `INSERT INTO access_requests (org_id, requested_by, permission)
+     VALUES ($1, 'probe@example.invalid', 'deploy:run')`,
+    [orgId]
+  );
+  await client.query(
     `INSERT INTO deploy_attempts
        (org_id, connection_id, schema_name, outcome, http_status)
      VALUES ($1, $2, 'probe_schema', 'applied', 200)`,
@@ -1141,7 +1147,8 @@ describeWithDatabase("org-migration", () => {
             [probeId]
           )
         ).rejects.toMatchObject({
-          code: "23503",
+          // restrict_violation from PostgreSQL 18 on, foreign_key_violation before.
+          code: expect.stringMatching(/^(23503|23001)$/),
           constraint: "memberships_org_id_role_fkey",
         });
       });

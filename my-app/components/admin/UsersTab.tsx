@@ -45,6 +45,7 @@ import { apiFetch } from "@/lib/api-fetch";
 type Profile = {
   id: number;
   email: string;
+  name?: string | null;
   role: string;
 };
 
@@ -371,7 +372,7 @@ export function UsersTab({ active }: { active: boolean }) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[14px] font-medium truncate">{u.email}</span>
+                      <span className="text-[14px] font-medium truncate">{u.name || u.email}</span>
                       {isYou && (
                         <span
                           className="text-[10.5px] px-1.5 py-0.5 rounded-md flex-none"
@@ -381,6 +382,11 @@ export function UsersTab({ active }: { active: boolean }) {
                         </span>
                       )}
                     </div>
+                    {u.name && u.name !== u.email && (
+                      <div className="text-[12.5px] truncate" style={{ color: "var(--text-2)" }}>
+                        {u.email}
+                      </div>
+                    )}
                     <div className="mt-1">
                       <Pill tone={roleTone(u.role)} dot={u.role === "admin"}>
                         {labelOf(u.role)}
@@ -402,7 +408,8 @@ export function UsersTab({ active }: { active: boolean }) {
                     )
                   ) : (
                     (canChangeRoles || canRemove) && (
-                      <div className="flex items-center gap-2 w-full sm:w-auto">
+                      // This column holds the width: .ds-select sets its own, and a Tailwind width on it would lose.
+                      <div className="flex items-center justify-end gap-2 w-full sm:w-[200px]">
                         {canChangeRoles && (
                           <Select
                             variant="input"
@@ -411,7 +418,7 @@ export function UsersTab({ active }: { active: boolean }) {
                             disabled={busy}
                             options={options}
                             onChange={(value) => void updateRole(u.id, value)}
-                            className="flex-1 sm:flex-none sm:w-[150px]"
+                            className="flex-1"
                           />
                         )}
                         {canRemove && (
@@ -460,7 +467,7 @@ export function UsersTab({ active }: { active: boolean }) {
           // desktop app lets in whoever signs in on it.
           desktop
             ? "They lose access at once. Their sign-in account is not touched, so if they sign in to this app again they come back as a Viewer."
-            : "They lose access to this organization at once. Their sign-in account is not touched, but signing in no longer brings them here: they are back only if someone invites them again. If this was their only organization, their profile is deleted too."
+            : "They lose access to this organization at once. Their sign-in account is not touched, but signing in no longer brings them here. They are back only if someone invites them again or they use a join link that is still open, so cancel any link you don't want them to have under Invite people. If this was their only organization, their profile is deleted too."
         }
         confirmLabel="Remove access"
       />

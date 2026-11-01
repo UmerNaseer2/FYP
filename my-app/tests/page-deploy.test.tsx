@@ -39,10 +39,12 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
+jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import DeployPage from "@/app/[org]/(studio)/deploy/page";
 import { OrgProvider } from "@/components/OrgProvider";
 import { sha256Hex } from "@/components/studio/ApprovalPanel";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import {
   fetchCalls,
@@ -52,6 +54,7 @@ import {
   resetPageState,
   setCustomRole,
   setRoutes,
+  setSearchParams,
   setUser,
   TEST_ORG,
   type FetchRoute,
@@ -284,12 +287,13 @@ describe("who is allowed to run anything here", () => {
           "and yours (Viewer) may not"
       )
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'Running migrations against "Dev box" needs a role that may run deployments, and ' +
-          'yours ("Viewer") may not. Ask an admin to allow "Deploy: Run" for your role.'
-      )
-    ).toBeInTheDocument();
+    // The top of the page says it once and offers the way to ask, so the line under
+    // the connection is kept for what is about that connection alone.
+    expect(screen.getByRole("link", { name: "Ask for it" })).toHaveAttribute(
+      "href",
+      "/test-org/requests?ask=deploy%3Arun"
+    );
+    expect(screen.queryByText(/Running migrations against "Dev box"/)).toBeNull();
   });
 
   it("lets a role that may deploy but not read approvals run nothing on production", async () => {
@@ -635,5 +639,149 @@ describe("the run itself", () => {
     expect(screen.getByText(/0 of 2 applied/)).toBeInTheDocument();
     expect(screen.queryByText(/applied · committed with the run/)).not.toBeInTheDocument();
     expect(screen.getByText("Deploy failed — nothing was applied")).toBeInTheDocument();
+  });
+});
+
+describe("the number beside Requests on the rail", () => {
+  const heard = jest.fn();
+  beforeEach(() => {
+    heard.mockClear();
+    window.addEventListener(REQUESTS_CHANGED_EVENT, heard);
+  });
+  afterEach(() => window.removeEventListener(REQUESTS_CHANGED_EVENT, heard));
+
+  it("is told when a decision is made here", async () => {
+    setRoutes([
+      { match: /\/api\/deploy\/approvals\/\d+$/, method: "POST", body: { approval: approval() } },
+      {
+        match: "/api/deploy/approvals",
+        body: {
+          approvals: [
+            approval({ run_fingerprint: await runFingerprint(), status: "pending", decided_by: null, decided_at: null }),
+          ],
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await selectBothVersions(/Prod box/);
+    const approve = await screen.findByRole("button", { name: "Approve this run" });
+    expect(heard).not.toHaveBeenCalled();
+
+    fireEvent.click(approve);
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+  });
+
+  it("is told when a run has finished here", async () => {
+    setRoutes([
+      {
+        match: "/api/scripts/apply",
+        method: "POST",
+        body: { success: true, results: [{ script_name: "invoices", version: "1.0.1", status: "applied", statements: 1 }] },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+    await pick("Connection", /Dev box/);
+    await pick("Schema", "public");
+    await pick("Script group", "invoices");
+    fireEvent.click(await screen.findByRole("button", { name: "Check database" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run v1.0.1…" }, { timeout: 3000 }));
+    const deploy = await screen.findByRole("button", { name: "Deploy v1.0.1" }, { timeout: 3000 });
+    await waitFor(() => expect(deploy).toBeEnabled());
+    expect(heard).not.toHaveBeenCalled();
+
+    fireEvent.click(deploy);
+    await screen.findByText(/^Deploy complete .* up to v1\.0\.1$/, undefined, { timeout: 3000 });
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+    await flushAsync();
+  });
+});
+
+describe("arriving from a link on the Requests page", () => {
+  const box = (name: string) => screen.getByRole("combobox", { name });
+  const reads = () => fetchCalls.filter((c) => c.url.includes("/api/scripts/preflight"));
+  // Two schemas, because the page picks a lone schema by itself, and landing on
+  // that one would prove nothing about the link.
+  const twoSchemas: FetchRoute = {
+    match: "/api/scripts/schemas",
+    body: { schemas: ["archive", "public"] },
+  };
+  /** The version the run would end on, from the summary beside the run button. */
+  const endsOn = () => document.querySelector(".vchip.next");
+
+  it("opens on the target the link names and reads it", async () => {
+    setRoutes([twoSchemas, ...baseRoutes()]);
+    setSearchParams("connection=2&schema=public&script=invoices");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(box("Connection")).toHaveTextContent("Prod box"));
+    await waitFor(() => expect(box("Schema")).toHaveTextContent("public"));
+    await waitFor(() => expect(box("Script group")).toHaveTextContent("invoices"));
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    expect(reads()[0].body).toContain("invoices");
+  });
+
+  it("picks the version the link names, not the latest", async () => {
+    setRoutes(baseRoutes());
+    setSearchParams("connection=1&schema=public&script=invoices&version=1.0.1");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(endsOn()).toHaveTextContent("v1.0.1"));
+  });
+
+  it("takes the latest when the link names no version, as a rollback's link does not", async () => {
+    setRoutes(baseRoutes());
+    setSearchParams("connection=1&schema=public&script=invoices");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(endsOn()).toHaveTextContent("v1.0.2"));
+  });
+
+  it("takes the latest when the version named is not waiting to run", async () => {
+    setRoutes(baseRoutes());
+    setSearchParams("connection=1&schema=public&script=invoices&version=9.9.9");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(endsOn()).toHaveTextContent("v1.0.2"));
+  });
+
+  it("leaves a connection this organization doesn't have unpicked", async () => {
+    setRoutes(baseRoutes());
+    setSearchParams("connection=99&schema=public&script=invoices");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(box("Connection")).toBeEnabled());
+    await flushAsync();
+    expect(box("Connection")).not.toHaveTextContent(/box/);
+    expect(reads()).toHaveLength(0);
+  });
+
+  it("stops at the first thing it can't find, and reads nothing", async () => {
+    setRoutes([twoSchemas, ...baseRoutes()]);
+    setSearchParams("connection=1&schema=gone&script=invoices");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(box("Connection")).toHaveTextContent("Dev box"));
+    await flushAsync();
+    expect(box("Schema")).not.toHaveTextContent(/gone|public|archive/);
+    expect(reads()).toHaveLength(0);
+  });
+
+  it("forgets the rest of the link once the reader picks something by hand", async () => {
+    setRoutes([twoSchemas, ...baseRoutes()]);
+    setSearchParams("connection=1&schema=public&script=invoices");
+    // Held, so the hand pick lands while the link is still being followed.
+    const release = holdNext("/api/scripts/schemas");
+    render(<DeployPage />);
+
+    await waitFor(() => expect(box("Connection")).toHaveTextContent("Dev box"));
+    await pick("Connection", /Prod box/);
+    release();
+    await flushAsync();
+
+    expect(box("Connection")).toHaveTextContent("Prod box");
+    expect(box("Schema")).not.toHaveTextContent("public");
+    expect(reads()).toHaveLength(0);
   });
 });

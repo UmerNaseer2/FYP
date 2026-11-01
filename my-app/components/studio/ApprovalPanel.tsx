@@ -13,6 +13,7 @@ import { permissionLabel, refusalMessage } from "@/lib/permissions";
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { versionKey } from "@/lib/script-status";
+import { AskAdmin } from "./AskAdmin";
 
 // ── Deploy approvals (the two-person rule) ─────────────────────────────────
 // One row of `deploy_approvals`, exactly as /api/deploy/approvals returns it.
@@ -344,8 +345,7 @@ export function ApprovalPanel({
             </p>
           ) : (
             <p className="appr__body">
-              Cleared for exactly these {migrationCount} migration
-              {migrationCount === 1 ? "" : "s"}
+              Cleared for exactly {migrationCount === 1 ? "this migration" : `these ${migrationCount} migrations`}
               {targetVersion ? <> through <span className="mono">{vLabel(targetVersion)}</span></> : null}, and
               good for one run. Edit any of the SQL and this stops applying.
             </p>
@@ -382,7 +382,18 @@ export function ApprovalPanel({
           </p>
           {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
           {!mayApprove ? (
-            <p className="appr__meta">{approveRefusal}</p>
+            // Someone who has just asked needs no telling that they can't answer
+            // themselves, only where the people who can will see it.
+            mine && !bypass ? (
+              <p className="appr__meta">
+                Anyone who can approve it sees it on their Requests page.
+              </p>
+            ) : (
+              <p className="appr__meta">
+                {approveRefusal}
+                <AskAdmin permission="approvals:approve" />
+              </p>
+            )
           ) : selfDecision ? (
             // The server's own words (decisionBlockReason in lib/approvals-db),
             // so this line and the refusal it would give read the same.
@@ -495,7 +506,10 @@ export function ApprovalPanel({
           ) : (
             // No note box either: it would only be sent with a request this
             // role cannot make.
-            <p className="appr__meta">{requestRefusal}</p>
+            <p className="appr__meta">
+              {requestRefusal}
+              <AskAdmin permission="approvals:create" />
+            </p>
           )}
         </>
       )}

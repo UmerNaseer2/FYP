@@ -433,3 +433,37 @@ describe("hosting it", () => {
     expect(rail().className.trim()).toBe("flex flex-col");
   });
 });
+
+describe("the number beside a row", () => {
+  const withNumber = (badge: number | undefined): NavItem[] =>
+    ITEMS.map((item) => (item.href === "/drift" ? { ...item, badge } : item));
+  const badge = () => document.querySelector(".nav-item .badge") as HTMLElement | null;
+
+  test("shows the number, and tells a screen reader what it counts", () => {
+    renderRail({ items: withNumber(3) });
+    expect(screen.getByRole("link", { name: /^Drift watch\s*3 waiting$/ })).toBeInTheDocument();
+    expect(screen.getByText("3")).not.toHaveClass("sr-only");
+  });
+
+  test.each([
+    ["none", 0],
+    ["no answer yet", undefined],
+  ])("shows nothing for %s", (_name, count) => {
+    renderRail({ items: withNumber(count) });
+    expect(badge()).toBeNull();
+    expect(rail()).not.toHaveTextContent("waiting");
+  });
+
+  test("folds down to a dot, with the number still there for a screen reader", () => {
+    renderRail({ items: withNumber(12), collapsed: true });
+    expect(badge()).toHaveClass("badge-dot");
+    expect(screen.getByText("12")).toHaveClass("sr-only");
+    expect(badge()).toHaveTextContent("12 waiting");
+  });
+
+  test("stays on the row it belongs to", () => {
+    renderRail({ items: withNumber(3) });
+    expect(document.querySelectorAll(".nav-item .badge")).toHaveLength(1);
+    expect(link("Dashboard")).not.toHaveTextContent("3");
+  });
+});

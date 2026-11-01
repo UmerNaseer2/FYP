@@ -605,11 +605,13 @@ export async function deleteRole(orgId: number, role: string, actor: string): Pr
     return { ok: true };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
-    // 23503 foreign_key_violation: a membership still points at the role
+    // 23503 foreign_key_violation (23001 restrict_violation from PostgreSQL 18
+    // on): a membership still points at the role
     // (memberships_org_id_role_fkey). The count above makes this close to
     // impossible; it is here so that if it ever happens the person gets the
     // same answer rather than a 500.
-    if ((error as { code?: string })?.code === "23503") {
+    const code = (error as { code?: string })?.code;
+    if (code === "23503" || code === "23001") {
       return refuse(409, "Someone still has this role. Give them another role on the Users tab first.");
     }
     throw error;

@@ -152,6 +152,12 @@ export function StudioSidebar({
               >
                 {item.icon}
                 <span className={labelHidden}>{item.label}</span>
+                {item.badge ? (
+                  <span className={`badge ${collapsed ? "badge-dot" : ""}`}>
+                    <span className={collapsed ? "sr-only" : ""}>{item.badge}</span>
+                    <span className="sr-only"> waiting</span>
+                  </span>
+                ) : null}
               </Link>
             );
           })}

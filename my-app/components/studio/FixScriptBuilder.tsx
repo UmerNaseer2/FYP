@@ -17,6 +17,7 @@ import {
   startingUnticked,
   type FixScriptItem,
 } from "@/lib/perf-sql";
+import { AskAdmin } from "./AskAdmin";
 import { downloadText } from "./ExportBar";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 
@@ -318,6 +319,7 @@ export function FixScriptBuilder({
         <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
           {refusalMessage(roleLabel, "scripts:create")} Copy or download the
           script instead.
+          <AskAdmin permission="scripts:create" />
         </p>
       )}
     </Card>

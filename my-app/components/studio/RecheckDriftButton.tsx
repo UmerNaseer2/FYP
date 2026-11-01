@@ -6,6 +6,7 @@ import { RefreshIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { apiFetch } from "@/lib/api-fetch";
+import { AskAdmin } from "./AskAdmin";
 
 /**
  * Re-runs the drift check via POST /api/lineage/drift, then tells the screen
@@ -111,6 +112,7 @@ export function RecheckDriftButton({
       {runRefusal && explainRefusal && (
         <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
           {runRefusal}
+          <AskAdmin permission="drift:run" />
         </span>
       )}
     </span>

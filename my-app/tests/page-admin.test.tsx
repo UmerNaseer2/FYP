@@ -518,7 +518,9 @@ describe("the Users tab", () => {
     const dialog = await screen.findByRole("dialog", { name: "Remove grace@example.com?" });
     // The old wording promised they could sign straight back in, which on the
     // web is no longer true: nobody joins an organization by signing in.
-    expect(dialog).toHaveTextContent("they are back only if someone invites them again");
+    expect(dialog).toHaveTextContent(
+      "They are back only if someone invites them again or they use a join link that is still open"
+    );
     expect(dialog).not.toHaveTextContent("come back as a Viewer");
   });
 
@@ -971,11 +973,11 @@ describe("the guide above the tabs", () => {
     await screen.findByText("ada@example.com");
   }
 
-  it("opens on the first visit, with the steps and a line for every box", async () => {
+  it("starts folded on the first visit, holding the steps and a line for every box", async () => {
     setRoutes([invitesRoute(), listRoute()]);
     await openPage();
 
-    expect(guide().open).toBe(true);
+    expect(guide().open).toBe(false);
     // Named and ordered as the grid's columns are, so the guide and the grid
     // never call the same box two different things.
     expect(within(guide()).getAllByRole("term").map((term) => term.textContent)).toEqual(
@@ -986,20 +988,20 @@ describe("the guide above the tabs", () => {
     expect(within(guide()).queryByText("View as")).not.toBeInTheDocument();
   });
 
-  it("stays folded once folded, and open once opened again", async () => {
+  it("stays open once opened, and folded once folded again", async () => {
     setRoutes([invitesRoute(), listRoute()]);
     await openPage();
-    setOpen(guide(), false);
+    setOpen(guide(), true);
     cleanup();
 
     // The next visit, in the same browser.
     await openPage();
-    expect(guide().open).toBe(false);
-    setOpen(guide(), true);
+    expect(guide().open).toBe(true);
+    setOpen(guide(), false);
     cleanup();
 
     await openPage();
-    expect(guide().open).toBe(true);
+    expect(guide().open).toBe(false);
   });
 
   it("adds a step for View as while sign-in is off for testing", async () => {
@@ -1011,7 +1013,7 @@ describe("the guide above the tabs", () => {
     expect(within(steps()[4]).getByText("View as")).toBeInTheDocument();
   });
 
-  it("still opens, and still folds, when the browser keeps nothing", async () => {
+  it("still folds and unfolds when the browser keeps nothing", async () => {
     // What a private window that blocks storage does: every touch throws.
     const refuse = () => {
       throw new DOMException("The operation is insecure.", "SecurityError");
@@ -1022,10 +1024,10 @@ describe("the guide above the tabs", () => {
     try {
       setRoutes([invitesRoute(), listRoute()]);
       await openPage();
-      expect(guide().open).toBe(true);
-
-      setOpen(guide(), false);
       expect(guide().open).toBe(false);
+
+      setOpen(guide(), true);
+      expect(guide().open).toBe(true);
     } finally {
       spies.forEach((spy) => spy.mockRestore());
     }

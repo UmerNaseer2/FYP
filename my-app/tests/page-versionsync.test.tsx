@@ -22,6 +22,7 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 
 import VersionSyncPage from "@/app/[org]/(studio)/versionsync/page";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
+import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
 import {
   type FetchRoute,
@@ -290,6 +291,52 @@ describe("the replay check's production approval", () => {
 
     releaseReread();
     expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
+  });
+});
+
+describe("the number beside Requests on the rail", () => {
+  const heard = jest.fn();
+  beforeEach(() => {
+    heard.mockClear();
+    window.addEventListener(REQUESTS_CHANGED_EVENT, heard);
+  });
+  afterEach(() => window.removeEventListener(REQUESTS_CHANGED_EVENT, heard));
+
+  it("is told when a decision is made here", async () => {
+    const hash = await runFingerprint();
+    let row = approval(hash, { status: "pending", decided_by: null, decided_at: null });
+    setRoutes([
+      ...baseRoutes(),
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: () => ({ approvals: [row] }) },
+      DECIDE,
+    ]);
+    await openReplayCheck();
+    await screen.findByText("Waiting for a second person");
+    expect(heard).not.toHaveBeenCalled();
+
+    row = approval(hash);
+    fireEvent.click(screen.getByRole("button", { name: "Approve this run" }));
+    expect(await screen.findByText("Approved by a second person")).toBeInTheDocument();
+    expect(heard).toHaveBeenCalled();
+  });
+
+  it("is told when a replay has run here", async () => {
+    const hash = await runFingerprint();
+    setRoutes([
+      ...baseRoutes(),
+      { match: /\/api\/deploy\/approvals\?/, method: "GET", body: { approvals: [approval(hash)] } },
+      { match: "/api/scripts/apply", method: "POST", body: { success: true, results: [] } },
+    ]);
+    await openReplayCheck();
+    await screen.findByText("Approved by a second person");
+    screen.getAllByRole("checkbox").forEach((box) => fireEvent.click(box));
+    const replay = await screen.findByRole("button", { name: "Replay 1 version on production" });
+    await waitFor(() => expect(replay).toBeEnabled());
+    expect(heard).not.toHaveBeenCalled();
+
+    fireEvent.click(replay);
+    await screen.findByText(/^Replayed 1 version onto /);
+    expect(heard).toHaveBeenCalled();
   });
 });
 

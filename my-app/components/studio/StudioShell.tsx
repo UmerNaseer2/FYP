@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
+import { useRequestCounts } from "@/hooks/useRequestCounts";
 import { useTheme } from "@/hooks/useTheme";
 import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
@@ -51,6 +52,10 @@ export function StudioShell({ children, user }: StudioShellProps) {
   const { theme, toggleTheme } = useTheme();
   const orgPath = useOrgHref();
   const [collapsed, setCollapsed] = useState(false);
+  const waitingRequests = useRequestCounts(
+    !notMember && !loading && !accessError && !!authUser,
+    pathname
+  );
 
   // Mobile: the sidebar leaves the grid and becomes an off-canvas drawer.
   // `matchMedia` (not a one-shot innerWidth read) so rotation/resize is handled,
@@ -93,14 +98,19 @@ export function StudioShell({ children, user }: StudioShellProps) {
     () =>
       NAV_ITEMS.filter((item) => {
         if (notMember) return false;
+        if (item.feature === undefined) return true;
         const features = Array.isArray(item.feature) ? item.feature : [item.feature];
         const [first, ...rest] = features.map(readKeyOf);
         if (loading || accessError || !authUser) {
           return [first, ...rest].some((key) => VIEWER_READS.includes(key));
         }
         return can(first, ...rest);
-      }).map((item) => ({ ...item, href: orgPath(item.href) })),
-    [notMember, loading, accessError, authUser, can, orgPath],
+      }).map((item) => ({
+        ...item,
+        href: orgPath(item.href),
+        badge: item.href === "/requests" ? waitingRequests : undefined,
+      })),
+    [notMember, loading, accessError, authUser, can, orgPath, waitingRequests],
   );
 
   // Whether the rail may name the role. See the badge below.
@@ -162,6 +172,11 @@ export function StudioShell({ children, user }: StudioShellProps) {
         it, and the whole window scrolls instead: the sidebar scrolls away
         with the page, and its footer (the theme, Sign out, View as) ends up
         below the bottom of the screen on any long page.
+
+        relative keeps absolutely placed things inside it, such as the text
+        hidden for screen readers. Without it they are placed against the
+        window, not this column, so one far down a long page makes the window
+        taller and the whole shell can scroll up, leaving an empty band below.
       */}
       <div className="flex flex-col min-w-0 min-h-0">
         <StudioTopbar
@@ -169,7 +184,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
           showMenu={isMobile}
           onMenuClick={() => setMobileNavOpen(true)}
         />
-        <main className="flex-1 min-h-0 overflow-y-auto" style={{ background: "var(--bg)" }}>
+        <main className="relative flex-1 min-h-0 overflow-y-auto" style={{ background: "var(--bg)" }}>
           {children}
         </main>
       </div>

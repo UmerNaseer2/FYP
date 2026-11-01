@@ -85,6 +85,7 @@ const ORG_TABLES = [
   "deploy_approvals",
   "deploy_attempts",
   "invites",
+  "access_requests",
 ] as const;
 
 /**
@@ -267,6 +268,11 @@ async function addConstraints(): Promise<void> {
     "deploy_approvals",
     "deploy_approvals_status_check",
     "status IN ('pending', 'approved', 'rejected', 'used')"
+  );
+  await addCheckConstraint(
+    "access_requests",
+    "access_requests_status_check",
+    "status IN ('pending', 'allowed', 'declined', 'done', 'withdrawn')"
   );
   // The two-person rule, in the database.
   //
@@ -697,6 +703,9 @@ async function backfillOlderTables(): Promise<void> {
   // `organizations`, in addOrganizationKeys.
   await metadataPool.query(
     `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS last_org_id INTEGER`
+  );
+  await metadataPool.query(
+    `ALTER TABLE memberships ADD COLUMN IF NOT EXISTS requests_seen_at TIMESTAMPTZ`
   );
 
   await alterTimestampColumns();

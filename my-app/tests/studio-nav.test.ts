@@ -44,6 +44,7 @@ const ROOT = path.join(__dirname, "..");
 
 /** A row's features as a list, the way the shell reads them. */
 function featuresOf(item: NavItem): FeatureKey[] {
+  if (item.feature === undefined) return [];
   return Array.isArray(item.feature) ? item.feature : [item.feature];
 }
 
@@ -59,6 +60,7 @@ describe("the list of screens", () => {
       "Performance",
       "Visualizer",
       "Connections",
+      "Requests",
       "Admin",
     ]);
   });
@@ -150,10 +152,13 @@ describe("the list of screens", () => {
 
   test("shows a new install's viewer every row except Admin", () => {
     // What the Viewer role's description promises on the Admin screen, and
-    // what the rail showed a viewer before roles became editable.
+    // what the rail showed a viewer before roles became editable. A row with no
+    // feature (Requests) is open to every member, as the rail treats it.
     const viewer = presetFor("viewer") ?? [];
-    const shown = NAV_ITEMS.filter((item) =>
-      featuresOf(item).some((feature) => viewer.includes(readKeyOf(feature)))
+    const shown = NAV_ITEMS.filter(
+      (item) =>
+        item.feature === undefined ||
+        featuresOf(item).some((feature) => viewer.includes(readKeyOf(feature)))
     );
     expect(shown.map((item) => item.screen)).toEqual(
       NAV_ITEMS.map((item) => item.screen).filter((screen) => screen !== "Admin")

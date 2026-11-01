@@ -18,6 +18,7 @@ import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift-schedule";
 import { refusalMessage } from "@/lib/permissions";
 import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
+import { AskAdmin } from "./AskAdmin";
 
 /** One row of the cadence table (mirrors ScheduleRow on the server). */
 export type ScheduleRow = {
@@ -278,7 +279,10 @@ export function ScheduleTable() {
           <InfoIcon size={15} className="ico" />
           <div>
             <div className="title">You can see this schedule, but not change it</div>
-            <div className="body">{changeRefusal}</div>
+            <div className="body">
+              {changeRefusal}
+              <AskAdmin permission="drift:update" />
+            </div>
           </div>
         </div>
       )}

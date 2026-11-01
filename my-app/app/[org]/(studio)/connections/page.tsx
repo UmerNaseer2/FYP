@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
+import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -897,6 +898,9 @@ export default function ConnectionsPage() {
               {roleNotes.map((note) => (
                 <p key={note}>{note}</p>
               ))}
+              <p>
+                <AskAdmin />
+              </p>
             </div>
           </div>
         </section>

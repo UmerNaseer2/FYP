@@ -317,6 +317,8 @@ export class Membership extends Model<
   declare profile_id: number;
   declare role: string;
   declare created_at: CreationOptional<Date>;
+  /** When this person last read their answers on the Requests page. */
+  declare requests_seen_at: CreationOptional<Date | null>;
 }
 
 Membership.init(
@@ -325,6 +327,7 @@ Membership.init(
     profile_id: { type: DataTypes.INTEGER, primaryKey: true },
     role: { type: DataTypes.TEXT, allowNull: false },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    requests_seen_at: { type: DataTypes.DATE, allowNull: true },
   },
   {
     sequelize,
@@ -453,6 +456,53 @@ Invite.init(
       { name: "invites_token_hash_key", unique: true, fields: ["token_hash"] },
       { name: "invites_org_id_idx", fields: ["org_id"] },
     ],
+  }
+);
+
+/**
+ * Someone asking for something their role can't do (lib/access-requests.ts).
+ *
+ * The asker is kept as an email and a name, the way deploy_approvals keeps one,
+ * rather than a profile id: a request should still read properly after the
+ * person has left and their profile has gone, and the sign-in bypass has no
+ * profile at all.
+ */
+export class AccessRequest extends Model<
+  InferAttributes<AccessRequest>,
+  InferCreationAttributes<AccessRequest>
+> {
+  declare id: CreationOptional<number>;
+  declare org_id: number;
+  declare requested_by: string;
+  declare requested_by_name: string | null;
+  /** The permission asked for, or null for "something else". */
+  declare permission: string | null;
+  declare message: string | null;
+  declare status: CreationOptional<string>;
+  declare decided_by: string | null;
+  declare decided_at: Date | null;
+  declare decision_note: string | null;
+  declare created_at: CreationOptional<Date>;
+}
+
+AccessRequest.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: { type: DataTypes.INTEGER, allowNull: false },
+    requested_by: { type: DataTypes.TEXT, allowNull: false },
+    requested_by_name: { type: DataTypes.TEXT, allowNull: true },
+    permission: { type: DataTypes.TEXT, allowNull: true },
+    message: { type: DataTypes.TEXT, allowNull: true },
+    status: { type: DataTypes.TEXT, allowNull: false, defaultValue: "pending" },
+    decided_by: { type: DataTypes.TEXT, allowNull: true },
+    decided_at: { type: DataTypes.DATE, allowNull: true },
+    decision_note: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "access_requests",
+    indexes: [{ name: "access_requests_org_id_idx", fields: ["org_id"] }],
   }
 );
 

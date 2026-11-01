@@ -100,6 +100,11 @@ const ADDED: Record<string, Gate> = {
   "POST /api/me/view-as": { kind: "member" },
   "GET /api/organizations": { kind: "signed-in" },
   "POST /api/organizations": { kind: "signed-in" },
+  // Asking is open to every member. Who may answer is checked inside.
+  "GET /api/requests": { kind: "member" },
+  "POST /api/requests": { kind: "member" },
+  "PATCH /api/requests/[id]": { kind: "member" },
+  "POST /api/requests/seen": { kind: "member" },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */
