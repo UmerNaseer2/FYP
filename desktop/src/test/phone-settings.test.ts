@@ -74,22 +74,59 @@ test("writes each entry of the action log as a sentence, and marks all but one t
     ["signed-out", "Refused: nobody was signed in on the computer."],
     ["forbidden", "Refused: the signed-in role may not do this."],
     ["not-shared", "Refused: this connection is not shared with phones."],
-    ["not-found", "Refused: that schema is not tracked."],
+    ["not-found", "Refused: the app could not find what it named."],
     ["no-baseline", "This schema has no baseline yet."],
     ["unreachable", "The database could not be reached."],
     ["failed", "It did not work."],
+    ["started", "Started."],
+    ["sent-for-approval", "Sent for approval."],
+    ["changed", "Refused: something had changed since the phone looked."],
+    ["gone", "That query had already ended."],
+    ["passkey-refused", "Refused: the passkey's signature was not good."],
+    ["no-passkey", "Refused: no passkey was set up on the phone."],
+    ["other-person", "Refused: someone else was signed in on the computer."],
+    ["expired", "Refused: it took too long, or the computer had restarted."],
+    ["not-applied", "Failed: the run did not change the database."],
+    ["outcome-unknown", "Could not tell how it ended. Check the history."],
+    ["already-running", "Refused: a run for this script was still going."],
+    ["database-refused", "Refused: the database did not let this connection's login cancel it."],
+    ["read-only", "Refused: this connection's settings do not allow it."],
+    ["no-registry", "Failed: the script registry could not be read."],
   ];
+  // A run that started, or a query that had already ended, is not a refusal to look into.
+  const good = new Set<PhoneActionOutcome>(["done", "started", "sent-for-approval", "gone"]);
   for (const [outcome, sentence] of outcomes) {
     const { link } = fakeLink({ actions: [{ at: 5, phone: "Phone 1", action: "drift-check", connectionId: 2, schema: "sales", outcome }] });
     const view = phoneView(link, null);
     assert.ok(view.available);
-    assert.deepEqual(view.actions, [{ at: 5, phone: "Phone 1", title: "Check drift now", outcome: sentence, bad: outcome !== "done", connectionId: 2, schema: "sales" }]);
+    assert.deepEqual(view.actions, [{ at: 5, phone: "Phone 1", title: "Check drift now", outcome: sentence, bad: !good.has(outcome), connectionId: 2, schema: "sales", detail: null }]);
   }
   const { link } = fakeLink({ actions: [{ at: 6, phone: "Phone 2", action: "drift-acknowledge", connectionId: 3, schema: null, outcome: "done" }] });
   const view = phoneView(link, null);
   assert.ok(view.available);
   assert.equal(view.actions[0]?.title, "Acknowledge drift");
   assert.equal(view.actions[0]?.schema, null);
+});
+
+test("names each kind of change a phone can start, and says what it was about", () => {
+  const entry = { at: 7, phone: "Phone 3", connectionId: 4, schema: "sales", outcome: "started" as const };
+  const { link } = fakeLink({
+    actions: [
+      { ...entry, action: "deploy", detail: "users_migration to v1.2.0" },
+      { ...entry, action: "rollback", detail: "users_migration to before its first version" },
+      { ...entry, action: "cancel-query", schema: null, outcome: "done", detail: "session 123" },
+    ],
+  });
+  const view = phoneView(link, null);
+  assert.ok(view.available);
+  assert.deepEqual(
+    view.actions.map(({ title, detail }) => [title, detail]),
+    [
+      ["Start a deploy", "users_migration to v1.2.0"],
+      ["Start a rollback", "users_migration to before its first version"],
+      ["Cancel a query", "session 123"],
+    ],
+  );
 });
 
 test("says why there is nothing to show before the phone link has opened", () => {

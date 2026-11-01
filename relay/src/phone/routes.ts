@@ -11,13 +11,18 @@
  *
  * Pure, so the tests (src/test/phone-routes.test.ts) can run it in Node.
  */
-import { isSchemaName } from "../shared/remote/rpc.js";
+import type { ApprovalAction } from "../shared/remote/approval.js";
+import { isSchemaName, isScriptText } from "../shared/remote/rpc.js";
 
 /** A screen, and what it shows. */
 export type Route =
   | { screen: "home" }
   | { screen: "connection"; connectionId: number }
   | { screen: "live"; connectionId: number }
+  | { screen: "deploy"; connectionId: number }
+  | { screen: "deploy-family"; connectionId: number; schema: string; script: string }
+  /** One run. For a rollback, a null version is before the first version. */
+  | { screen: "deploy-plan"; connectionId: number; schema: string; script: string; action: ApprovalAction; version: string | null }
   | { screen: "schema"; connectionId: number; schema: string }
   | { screen: "compare" }
   | { screen: "settings" }
@@ -54,6 +59,7 @@ export function readRoute(hash: string): Route {
   if (connectionId === null) return HOME;
   if (parts.length === 3) return { screen: "connection", connectionId };
   if (parts.length === 4 && parts[3] === "live") return { screen: "live", connectionId };
+  if (parts[3] === "deploy") return readDeployRoute(connectionId, parts.slice(4));
   if (parts.length !== 5 || parts[3] !== "schemas") return HOME;
   const schema = decode(parts[4]);
   return isSchemaName(schema) ? { screen: "schema", connectionId, schema } : HOME;
@@ -71,6 +77,11 @@ export function writeRoute(route: Route): string {
       return `#/connections/${route.connectionId}`;
     case "live":
       return `#/connections/${route.connectionId}/live`;
+    case "deploy":
+      return `#/connections/${route.connectionId}/deploy`;
+    case "deploy-family":
+    case "deploy-plan":
+      return writeDeployRoute(route);
     case "schema": {
       // A schema name could hold "/", "#" or "%", so it is written escaped.
       // A name that cannot be written at all (one with half of an emoji,
@@ -107,6 +118,12 @@ export function parentOf(route: Route): Route | null {
     case "live":
     case "schema":
       return { screen: "connection", connectionId: route.connectionId };
+    case "deploy":
+      return { screen: "live", connectionId: route.connectionId };
+    case "deploy-family":
+      return { screen: "deploy", connectionId: route.connectionId };
+    case "deploy-plan":
+      return { screen: "deploy-family", connectionId: route.connectionId, schema: route.schema, script: route.script };
     case "approval":
       return { screen: "approvals" };
     default:
@@ -115,6 +132,33 @@ export function parentOf(route: Route): Route | null {
 }
 
 /** A connection's or a request's ID from an address, or null when it is not one. */
+/** The rest of an address under a connection's "deploy". */
+function readDeployRoute(connectionId: number, parts: readonly string[]): Route {
+  if (parts.length === 0) return { screen: "deploy", connectionId };
+  const schema = decode(parts[0] ?? "");
+  const script = decode(parts[1] ?? "");
+  if (!isSchemaName(schema) || !isScriptText(script)) return HOME;
+  if (parts.length === 2) return { screen: "deploy-family", connectionId, schema, script };
+  const action = parts[2];
+  if ((action !== "deploy" && action !== "revert") || parts.length > 4) return HOME;
+  if (parts.length === 3) return { screen: "deploy-plan", connectionId, schema, script, action, version: null };
+  const version = decode(parts[3] ?? "");
+  return isScriptText(version) ? { screen: "deploy-plan", connectionId, schema, script, action, version } : HOME;
+}
+
+/** Names are written escaped, as a schema's are. One that cannot be written at all opens the connection's list of scripts instead. */
+function writeDeployRoute(route: Extract<Route, { screen: "deploy-family" | "deploy-plan" }>): string {
+  const list = `#/connections/${route.connectionId}/deploy`;
+  try {
+    const family = `${list}/${encodeURIComponent(route.schema)}/${encodeURIComponent(route.script)}`;
+    if (route.screen === "deploy-family") return family;
+    const plan = `${family}/${route.action}`;
+    return route.version === null ? plan : `${plan}/${encodeURIComponent(route.version)}`;
+  } catch {
+    return list;
+  }
+}
+
 function readId(text: string): number | null {
   if (!ID.test(text)) return null;
   const id = Number(text);

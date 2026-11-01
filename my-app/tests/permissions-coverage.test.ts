@@ -34,11 +34,12 @@ const EXEMPT: Record<string, string> = {
 };
 
 /**
- * Routes any member may call, whatever their role. Both are about the person
- * asking rather than any feature: what their own role may do, and (only while
- * authentication is off) which role to view the app as.
+ * Routes any member may call, whatever their role. All are about the person
+ * asking rather than any feature: what their own role may do, who the desktop
+ * app should keep a phone's passkey for, and (only while authentication is off)
+ * which role to view the app as.
  */
-const ANY_MEMBER = ["me", "me/view-as"];
+const ANY_MEMBER = ["me", "me/approver", "me/view-as"];
 
 /**
  * Routes anyone signed in may call, before they belong to any organization.

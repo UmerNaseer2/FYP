@@ -70,6 +70,7 @@ const AGREED_GRID: Record<string, "viewer" | "editor" | "admin"> = {
   "drift:delete": "editor",
   "drift:run": "editor",
   "performance:read": "viewer",
+  "performance:update": "editor",
   "performance:run": "editor",
   "alert_thresholds:read": "viewer",
   "alert_thresholds:update": "editor",

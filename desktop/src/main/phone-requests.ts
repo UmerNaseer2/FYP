@@ -20,8 +20,10 @@
  * request, which src/main/phone-approvals.ts answers: only with a passkey
  * set up on that phone, and only as the person who set it up. And with Allow
  * control on for that phone, which is read for each request, it may check a
- * tracked schema's drift now and acknowledge drift. Each such try goes in the
- * action log on the computer, whether or not it was allowed.
+ * tracked schema's drift now and acknowledge drift, and, signing with that
+ * passkey, start a deploy or a rollback or cancel a running query, which
+ * src/main/phone-control.ts answers. Each such try goes in the action log on
+ * the computer, whether or not it was allowed.
  *
  * Nothing the server says in words reaches a phone. Its error messages can
  * name a database's host or repeat what the database said, so a refusal is
@@ -48,8 +50,17 @@ import {
   type ConnectionList,
   type ApprovalList,
   type ApprovalRead,
+  type CancelParams,
+  type CancelResult,
   type DecideParams,
   type DecisionChallenge,
+  type DeployFamilyParams,
+  type DeployFamilyStatus,
+  type DeployList,
+  type DeployPlan,
+  type DeployPlanParams,
+  type DeployStartParams,
+  type DeployStartResult,
   type DriftActionParams,
   type DriftActionResult,
   type ErrorCode,
@@ -104,6 +115,21 @@ export type PhoneApprovalRequests = {
   decide: (params: DecideParams, signal: AbortSignal) => Promise<{ status: "approved" | "rejected" }>;
 };
 
+/**
+ * The deploys, rollbacks and cancels of one paired phone, which
+ * src/main/phone-control.ts answers. Each throws a Refused for a refusal.
+ */
+export type PhoneControlRequests = {
+  deployList: (connectionId: number, signal: AbortSignal) => Promise<DeployList>;
+  deployFamily: (params: DeployFamilyParams, signal: AbortSignal) => Promise<DeployFamilyStatus>;
+  deployPlan: (params: DeployPlanParams, signal: AbortSignal) => Promise<DeployPlan>;
+  begin: () => DecisionChallenge;
+  deployStart: (params: DeployStartParams, signal: AbortSignal) => Promise<DeployStartResult>;
+  cancelSession: (params: CancelParams, signal: AbortSignal) => Promise<CancelResult>;
+  /** What its passkey can do now, for the live view's buttons. */
+  passkey: (signal: AbortSignal) => Promise<PasskeyState>;
+};
+
 export type RequestOptions = {
   call: AppCaller;
   /** The connections shared with phones. Read for every request, so a change in Settings counts at once. */
@@ -118,6 +144,8 @@ export type RequestOptions = {
   approvals: PhoneApprovalRequests;
   /** Allow control for the phone that asked, and the log its tries go in. */
   control: PhoneControl;
+  /** The deploys, rollbacks and cancels of the phone that asked. */
+  controlRequests: PhoneControlRequests;
 };
 
 /** What the phone link knows about one phone's Allow control. */
@@ -130,10 +158,10 @@ export type PhoneControl = {
 
 /**
  * Why the computer answers with an error: the codes rpc.ts gives a phone, and
- * seven more that tell the person more than "failed", "bad-request",
+ * fifteen more that tell the person more than "failed", "bad-request",
  * "forbidden" or "signed-out" alone would.
  */
-export type Refusal = ErrorCode | "access-unknown" | "not-member" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing" | "no-baseline";
+export type Refusal = ErrorCode | "access-unknown" | "not-member" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing" | "no-baseline" | "control-no-passkey" | "control-other-person" | "control-changed" | "control-expired" | "database-refused" | "read-only" | "no-registry" | "already-running";
 
 /** The code and the sentence each refusal sends: words for the person holding the phone, with nothing from the server in them. */
 export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: string }>> = {
@@ -177,6 +205,14 @@ export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: stri
   "too-slow": { code: "failed", message: "The computer took too long to answer." },
   "control-off": { code: "control-off", message: "Allow control is off for this device. Turn it on under Paired phones in Schema Studio's Settings on the computer." },
   "no-baseline": { code: "failed", message: "This schema has no baseline to compare with yet. Set one in Schema Studio on the computer." },
+  "control-no-passkey": { code: "no-passkey", message: "This device needs a passkey to do this. In Schema Studio's Settings on the computer, choose Set up passkey for it under Paired phones." },
+  "control-other-person": { code: "other-person", message: "The person signed in on the computer is not the one who set up the passkey on this device. Set it up again to act as whoever is signed in now." },
+  "control-changed": { code: "changed", message: "Something changed on the computer since you looked. Nothing ran. Look again, then try again." },
+  "control-expired": { code: "expired", message: "Nothing ran, because that took too long or the computer restarted. Try again." },
+  "database-refused": { code: "failed", message: "The database did not let this connection's login cancel that query." },
+  "read-only": { code: "forbidden", message: "This connection's settings do not let the signed-in role change anything on it." },
+  "no-registry": { code: "failed", message: "Schema Studio could not read the script registry. Try again, or check it on the computer." },
+  "already-running": { code: "failed", message: "A run for this script is still going. Wait for it to end, then look again." },
   "sql-missing": {
     code: "forbidden",
     message: "The computer cannot show the SQL this request runs, so it cannot be approved from a phone. Reject it here, or decide it in Schema Studio on the computer.",
@@ -208,7 +244,7 @@ export async function answerRequest(request: Request, options: RequestOptions, s
   }
 }
 
-/** Thrown in this file, and in src/main/phone-approvals.ts, to answer with a refusal instead of a result. */
+/** Thrown in this file, and in src/main/phone-approvals.ts and src/main/phone-control.ts, to answer with a refusal instead of a result. */
 export class Refused extends Error {
   readonly refusal: Refusal;
 
@@ -256,6 +292,18 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
       return writeResult(id, "drift.check", await driftAction("drift-check", "/api/lineage/drift", request.params, options, signal));
     case "drift.acknowledge":
       return writeResult(id, "drift.acknowledge", await driftAction("drift-acknowledge", "/api/lineage/acknowledge", request.params, options, signal));
+    case "deploy.list":
+      return writeResult(id, "deploy.list", await options.controlRequests.deployList(request.params.connectionId, signal));
+    case "deploy.family":
+      return writeResult(id, "deploy.family", await options.controlRequests.deployFamily(request.params, signal));
+    case "deploy.plan":
+      return writeResult(id, "deploy.plan", await options.controlRequests.deployPlan(request.params, signal));
+    case "control.begin":
+      return writeResult(id, "control.begin", options.controlRequests.begin());
+    case "deploy.start":
+      return writeResult(id, "deploy.start", await options.controlRequests.deployStart(request.params, signal));
+    case "session.cancel":
+      return writeResult(id, "session.cancel", await options.controlRequests.cancelSession(request.params, signal));
   }
 }
 
@@ -438,18 +486,29 @@ async function readLive(connectionId: number, options: RequestOptions, signal: A
  * cannot be read just shows no buttons.
  */
 async function liveControl(options: RequestOptions, signal: AbortSignal): Promise<LiveControl> {
-  if (!options.control.allowed()) return { allowed: false, canCheck: false, canAcknowledge: false };
+  const nothing = { canCheck: false, canAcknowledge: false, canDeploy: false, canCancel: false, passkey: "none" as const };
+  if (!options.control.allowed()) return { allowed: false, ...nothing };
   try {
     const { permissions } = readMe(await ask(options, "GET", "/api/me", undefined, signal, ME_REFUSALS));
-    return { allowed: true, canCheck: permissions.includes("drift:run") || permissions.includes("deploy:run"), canAcknowledge: permissions.includes("drift:update") };
+    const may = (key: string): boolean => permissions.includes(key);
+    return {
+      allowed: true,
+      canCheck: may("drift:run") || may("deploy:run"),
+      canAcknowledge: may("drift:update"),
+      // What /api/deploy/phone asks for, and one way or the other to take the next step.
+      canDeploy: may("deploy:read") && (may("deploy:run") || may("approvals:create")),
+      // What POST /api/performance/cancel asks for.
+      canCancel: may("performance:update"),
+      passkey: await options.controlRequests.passkey(signal),
+    };
   } catch (error) {
     if (!(error instanceof Refused) && !signal.aborted) logWarn("The phone link could not read what the signed-in role may do.", error);
-    return { allowed: true, canCheck: false, canAcknowledge: false };
+    return { allowed: true, ...nothing };
   }
 }
 
 /** The word in the action log for a refusal. Any other is written as "failed". */
-const ACTION_OUTCOMES: Readonly<Partial<Record<Refusal, PhoneActionOutcome>>> = {
+export const ACTION_OUTCOMES: Readonly<Partial<Record<Refusal, PhoneActionOutcome>>> = {
   "control-off": "control-off",
   "signed-out": "signed-out",
   forbidden: "forbidden",
@@ -457,6 +516,15 @@ const ACTION_OUTCOMES: Readonly<Partial<Record<Refusal, PhoneActionOutcome>>> = 
   "not-found": "not-found",
   "no-baseline": "no-baseline",
   unreachable: "unreachable",
+  "control-changed": "changed",
+  "control-no-passkey": "no-passkey",
+  "control-other-person": "other-person",
+  "control-expired": "expired",
+  "passkey-refused": "passkey-refused",
+  "already-running": "already-running",
+  "database-refused": "database-refused",
+  "read-only": "read-only",
+  "no-registry": "no-registry",
 };
 
 /**
@@ -547,8 +615,8 @@ function activityOf(json: unknown, queryText: boolean): { activity: LiveActivity
   if (fields === null || summary === null || !Array.isArray(fields.sessions)) throw new Refused("failed");
   const sessions = fields.sessions.slice(0, MAX_LIVE_SESSIONS).map((session) => {
     const each = objectFields(session) ?? {};
-    const { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query } = each;
-    return { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query: queryText && typeof query === "string" ? query.slice(0, MAX_LIVE_QUERY_LENGTH) : null };
+    const { pid, kind, querySeconds, queryStart, xactSeconds, applicationName, waitingOn, query } = each;
+    return { pid, kind, querySeconds, queryStart, xactSeconds, applicationName, waitingOn, query: queryText && typeof query === "string" ? query.slice(0, MAX_LIVE_QUERY_LENGTH) : null };
   });
   const activity = {
     takenAt: fields.takenAt,
@@ -624,7 +692,7 @@ async function checkDriftAlerts(options: Pick<RequestOptions, "call">, signal: A
 }
 
 /** Refuses unless every connection named is shared with phones. */
-function checkShared(connectionIds: readonly number[], options: RequestOptions): void {
+export function checkShared(connectionIds: readonly number[], options: Pick<RequestOptions, "sharedConnectionIds">): void {
   const shared = options.sharedConnectionIds();
   if (!connectionIds.every((id) => shared.includes(id))) throw new Refused("not-shared");
 }

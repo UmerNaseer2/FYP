@@ -64,10 +64,11 @@ import { SYSTEM_CLOCK, type Clock } from "./clock";
 import type { CodeBoxSender } from "./code-box-sender";
 import { addLogSecret, logError, logInfo, logWarn } from "./log";
 import { PhoneApprovals } from "./phone-approvals";
+import { PhoneControlActions } from "./phone-control";
 import { PhoneHost, type PhoneHostOptions } from "./phone-host";
 import { PushSender } from "./phone-push";
 import { PhoneRelay, type OpenSocket, type RelayStatus } from "./phone-relay";
-import { answerRequest, driftAlertsAllowed, type AppCaller, type Refusal, type RequestOptions } from "./phone-requests";
+import { answerRequest, driftAlertsAllowed, type AppCaller, type PhoneControl, type Refusal, type RequestOptions } from "./phone-requests";
 import type { ProtectedStore, Protection } from "./secrets";
 
 /** Where the phone link's state is kept: phone-link.json through a ProtectedStore in the app, a fake in the tests. */
@@ -289,6 +290,7 @@ export class PhoneLink {
   private pushRefusal: Refusal | null = null;
   /** Lets paired phones approve or reject the app's deploy and rollback requests. */
   private readonly approvals: PhoneApprovals;
+  private readonly controlActions: PhoneControlActions;
 
   /** Made by openPhoneLink. */
   constructor(
@@ -333,6 +335,12 @@ export class PhoneLink {
         this.saveState();
       },
       onChange: () => this.changed(),
+      clock: options.clock,
+    });
+    this.controlActions = new PhoneControlActions({
+      call: options.call,
+      sharedConnectionIds: () => this.state.sharedConnectionIds,
+      approvals: this.approvals,
       clock: options.clock,
     });
   }
@@ -538,7 +546,9 @@ export class PhoneLink {
   /**
    * For Settings' "Allow control": the phone with this key may check and
    * acknowledge drift from now on, until it is turned off. It is the one way
-   * this gets turned on, and a phone cannot ask for it.
+   * this gets turned on, and a phone cannot ask for it. A phone with no passkey
+   * also gets its 5 minutes to set one up, since starting a run or cancelling a
+   * query needs one.
    */
   allowControl(key: unknown): void {
     const phone = this.state.phones.find((known) => known.key === key);
@@ -546,6 +556,7 @@ export class PhoneLink {
     logInfo(`Allow control was turned on for the phone "${phone.name}".`);
     this.state = { ...this.state, phones: withPhoneControl(this.state.phones, phone.key, this.now()) };
     this.saveState();
+    if (phone.passkey === undefined) this.approvals.allow(phone.key);
   }
 
   /** For Settings' "Turn off control". It counts at once, since every request reads it, and works with the link off too. */
@@ -619,6 +630,10 @@ export class PhoneLink {
    * own alerts on or off, and only ever decide with its own passkey.
    */
   private requestOptions(phoneKey: string): RequestOptions {
+    const control: PhoneControl = {
+      allowed: () => this.state.phones.some((phone) => phone.key === phoneKey && phone.control !== undefined),
+      record: (entry) => this.recordAction(phoneKey, entry),
+    };
     return {
       call: this.options.call,
       sharedConnectionIds: () => this.state.sharedConnectionIds,
@@ -630,10 +645,8 @@ export class PhoneLink {
         set: (subscription) => this.setDriftAlerts(phoneKey, subscription),
       },
       approvals: this.approvals.forPhone(phoneKey),
-      control: {
-        allowed: () => this.state.phones.some((phone) => phone.key === phoneKey && phone.control !== undefined),
-        record: (entry) => this.recordAction(phoneKey, entry),
-      },
+      control,
+      controlRequests: this.controlActions.forPhone(phoneKey, control),
     };
   }
 

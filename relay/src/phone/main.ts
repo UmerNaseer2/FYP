@@ -17,6 +17,7 @@
 import { DECIDED_TEXT, decisionChoices, passkeyErrorText, type Choices } from "./approvals.js";
 import { readTypedCode, type CodeOutcome } from "./code-entry.js";
 import { PhoneConnection, RpcError, type ConnectionState, type EndReason, type RpcErrorCode } from "./connection.js";
+import { CANCEL_LOST_TEXT, mayCancel, mayControl, RUN_LOST_TEXT, signedTicks, stepOf, UPDATE_TEXT } from "./deploy.js";
 import { append, button, el, notice } from "./dom.js";
 import { defaultPhoneName, retryText } from "./format.js";
 import { forgetPairedComputer, loadLastSeen, loadPairedComputer, saveLastSeen, savePairedComputer } from "./idb-store.js";
@@ -26,16 +27,17 @@ import { readAddressPairing, readScannedText } from "./scan.js";
 import { startScanner } from "./scanner.js";
 import {
   approvalScreen, approvalsScreen, blockedScreen, codeScreen, compareScreen, confirmScreen, connectionScreen, homeScreen,
-  liveScreen, pairScreen, scanScreen, schemaScreen, settingsScreen,
-  type Actions, type AlertsView, type CodeForm, type CompareForm, type DriftActions, type LiveView, type Load, type ScanUi,
+  deployFamilyScreen, deployPlanScreen, deployScreen, liveScreen, pairScreen, scanScreen, schemaScreen, settingsScreen,
+  type Actions, type AlertsView, type CodeForm, type CompareForm, type DriftActions, type LiveView, type Load, type PlanView, type ScanUi,
 } from "./screens.js";
 import type { PairedComputer } from "./store.js";
-import { approvalChallenge, approvalFingerprint, type ApprovalDecision } from "../shared/remote/approval.js";
+import { approvalChallenge, approvalFingerprint, type ApprovalAction, type ApprovalDecision, type ApprovalScript } from "../shared/remote/approval.js";
+import { cancelChallenge, deployChallenge, type ControlTick, type DeployStep } from "../shared/remote/control.js";
 import { fromBase64Url, sameBytes, toBase64Url, type Bytes } from "../shared/remote/bytes.js";
 import { generateKeyPair, type KeyPair } from "../shared/remote/keys.js";
 import { cleanDeviceName, PAIRING_LIFETIME_MS, type PairingCode } from "../shared/remote/pairing.js";
 import { MAX_COMPARE_TARGETS } from "../shared/remote/rpc.js";
-import type { ApprovalList, ApprovalRead, CompareSummary, HelloResult, LiveStatus, PasskeyChallenge, PushStatus, SharedConnection } from "../shared/remote/rpc.js";
+import type { ApprovalList, ApprovalRead, CancelResult, CompareSummary, DeployPlan, DeployStartStatus, HelloResult, LiveSession, LiveStatus, PasskeyChallenge, PasskeySignature, PushStatus, SharedConnection } from "../shared/remote/rpc.js";
 
 /** How long the phone waits for its offline helper (sw.ts) to start before it gives up on drift alerts for now. */
 const HELPER_WITHIN_MS = 10_000;
@@ -56,6 +58,8 @@ const WAITING_TEXT = "Waiting for the computer. Schema Studio has to be running 
 const UNREADABLE_CHALLENGE = "This device could not read what the computer sent for the passkey. Update Schema Studio on the computer, then try again.";
 /** Refusals that mean what Requests said about this phone's passkey is out of date, so the list is asked for again. */
 const PASSKEY_GONE = new Set<RpcErrorCode>(["no-passkey", "other-person", "not-allowed", "forbidden"]);
+/** The same, for a step on a screen that also goes when Allow control is turned off. */
+const CONTROL_GONE = new Set<RpcErrorCode>([...PASSKEY_GONE, "control-off"]);
 /** A load that has not finished yet. */
 const LOADING: Load<never> = { status: "loading" };
 
@@ -103,11 +107,22 @@ let alerts: { prepared: Load<AlertsSetup> | null; working: boolean; problem: str
 let alertsToken = 0;
 let driftActions: DriftActions = { running: null, confirming: null, result: null };
 let driftActionsToken = 0;
+type StartKeys = { credentialId: Bytes; challenge: Bytes; fingerprint: string; step: DeployStep; ticks: ControlTick[] };
+type CancelKeys = { credentialId: Bytes; challenge: Bytes };
+let starting: { prepared: Load<StartKeys> | null; working: true | null; problem: string | null; result: DeployStartStatus | null } = { prepared: null, working: null, problem: null, result: null };
+let startingToken = 0;
+let startingTimer: number | undefined;
+/** Which run the boxes and the challenge are for. */
+let startingFor: string | null = null;
+let ticked = new Set<ControlTick>();
+let cancelling: { pid: number | null; queryStart: string | null; prepared: Load<CancelKeys> | null; working: true | null; problem: string | null; result: CancelResult["status"] | null } = { pid: null, queryStart: null, prepared: null, working: null, problem: null, result: null };
+let cancellingToken = 0;
+let cancellingTimer: number | undefined;
 let flash: string | null = null;
 let forgetting = false;
 let forgetBusy = false;
-const fingerprints = new WeakMap<ApprovalRead, string | null>();
-const fingerprinting = new WeakSet<ApprovalRead>();
+const fingerprints = new WeakMap<object, string | null>();
+const fingerprinting = new WeakSet<object>();
 let scanUi: ScanUi | null = null;
 let stopScanning: (() => void) | null = null;
 let shownKey: string | null = null;
@@ -144,6 +159,10 @@ const actions: Actions = {
   checkDrift: (connectionId, id) => void runDriftAction("check", connectionId, id),
   askAcknowledge,
   acknowledgeDrift: (connectionId, id) => void runDriftAction("acknowledge", connectionId, id),
+  toggleTick,
+  startRun: () => void startRun(),
+  askCancel,
+  cancelQuery: () => void cancelQuery(),
 };
 
 /** The sentence to show for something that went wrong. Only this app's own words are shown, never a browser's, which are written for developers. */
@@ -420,6 +439,8 @@ function resetScreens(): void {
   alerts = { prepared: null, working: false, problem: null };
   alertsToken += 1;
   resetDriftActions();
+  resetPlan();
+  resetCancelling();
   flash = null;
   forgetting = false;
   lastLive = null;
@@ -592,6 +613,9 @@ function tabOf(screen: Route["screen"]): "home" | "approvals" | "settings" | nul
     case "home":
     case "connection":
     case "live":
+    case "deploy":
+    case "deploy-family":
+    case "deploy-plan":
     case "schema":
     case "compare":
       return "home";
@@ -718,8 +742,14 @@ function routeNodes(current: Session): Node[] {
     case "live": {
       const id = route.connectionId;
       const connection = value(connectionsLoad())?.find((each) => each.id === id) ?? null;
-      return liveScreen(connection, id, liveView(id), openTables, Date.now(), actions);
+      return liveScreen(connection, id, liveView(current, id), openTables, Date.now(), actions);
     }
+    case "deploy":
+      return deployNodes(current, route);
+    case "deploy-family":
+      return deployFamilyNodes(route);
+    case "deploy-plan":
+      return deployPlanNodes(current, route);
     case "schema": {
       const { connectionId, schema } = route;
       const overview = need(`schema:${connectionId}/${schema}`, (link) => link.request({ method: "schema.read", params: { connectionId, schema } }));
@@ -776,13 +806,7 @@ function compareNodes(): Node[] {
 function approvalsNodes(current: Session): Node[] {
   const list = approvalsLoad();
   const shown = value(list);
-  if (shown !== null && setup.working === null) {
-    if (shown.canApprove && shown.passkey === "allowed" && passkeysSupported()) {
-      if (setup.prepared === null) void prepareSetup(current);
-    } else if (setup.prepared !== null || setup.problem !== null) {
-      setup = { prepared: null, working: null, problem: null };
-    }
-  }
+  if (shown !== null) keepSetup(shown.canApprove && shown.passkey === "allowed" && passkeysSupported(), current);
   return approvalsScreen(list, connectionsLoad(), flash, setup, passkeysSupported(), actions);
 }
 
@@ -815,7 +839,7 @@ function choicesFor(list: ApprovalList | null, read: ApprovalRead | null, approv
  * Null when the computer showed no SQL, and undefined while it is still
  * being worked out.
  */
-function fingerprintOf(read: ApprovalRead): string | null | undefined {
+function fingerprintOf(read: { scripts: readonly ApprovalScript[] | null; action: ApprovalAction }): string | null | undefined {
   if (read.scripts === null) return null;
   if (fingerprints.has(read)) return fingerprints.get(read);
   if (!fingerprinting.has(read)) {
@@ -958,7 +982,15 @@ function setRoute(next: Route): void {
     codeToken = null;
   }
   if (next.screen !== "approvals") flash = null;
-  if (route.screen === "live" && (next.screen !== "live" || next.connectionId !== route.connectionId)) resetDriftActions();
+  if (route.screen === "live" && (next.screen !== "live" || next.connectionId !== route.connectionId)) {
+    resetDriftActions();
+    resetCancelling();
+  }
+  // Coming back to one of these asks again, as a run may have moved on.
+  if ((route.screen === "deploy" || route.screen === "deploy-family" || route.screen === "deploy-plan") && writeRoute(next) !== writeRoute(route)) {
+    drop(deployKey(route));
+    if (route.screen === "deploy-plan") resetPlan();
+  }
   if (route.screen === "settings" && next.screen !== "settings") forgetting = false;
   if (route.screen === "approval" && (next.screen !== "approval" || next.approvalId !== route.approvalId)) resetDeciding();
   if (next.screen === "schema" && (route.screen !== "schema" || route.connectionId !== next.connectionId || route.schema !== next.schema)) filter = "";
@@ -980,6 +1012,17 @@ function refresh(): void {
       break;
     case "live":
       drop(liveKey(route.connectionId));
+      resetSetup();
+      break;
+    case "deploy":
+    case "deploy-family":
+      drop(deployKey(route));
+      resetSetup();
+      break;
+    case "deploy-plan":
+      drop(deployKey(route));
+      resetSetup();
+      if (starting.working === null && starting.result === null) resetStarting();
       break;
     case "schema":
       drop(`schema:${route.connectionId}/${route.schema}`);
@@ -1137,7 +1180,7 @@ function passkeyProblem(error: unknown, kind: "create" | "get"): string {
   return passkeyErrorText(error instanceof DOMException ? error.name : "", kind);
 }
 
-/** Asks the computer for the challenge a new passkey signs, before the person taps Set up approvals, so that the prompt opens at once. */
+/** Asks the computer for the challenge a new passkey signs, before the person taps the button, so that the prompt opens at once. */
 async function prepareSetup(owner: Session): Promise<void> {
   setupToken += 1;
   const token = setupToken;
@@ -1152,7 +1195,7 @@ async function prepareSetup(owner: Session): Promise<void> {
     prepared = error instanceof RpcError && error.code === "lost" ? null : { status: "failed", message: errorText(error) };
   }
   if (session !== owner || setupToken !== token) return;
-  if (gone) drop("approvals");
+  if (gone) dropPasskeyAnswers();
   setup = { ...setup, prepared };
   render();
 }
@@ -1169,7 +1212,7 @@ async function setUpPasskey(): Promise<void> {
     render();
     return;
   }
-  const label = `Approvals on ${owner.paired.computerName}`;
+  const label = `Schema Studio on ${owner.paired.computerName}`;
   const made = startPasskey(() =>
     navigator.credentials.create({
       publicKey: {
@@ -1208,7 +1251,7 @@ async function setUpPasskey(): Promise<void> {
   }
   if (session !== owner) return;
   if (problem === null && route.screen === "approvals") flash = "Approvals are set up on this device. Open a request to approve or reject it.";
-  if (problem === null || gone) drop("approvals");
+  if (problem === null || gone) dropPasskeyAnswers();
   setup = { prepared: null, working: null, problem };
   render();
 }
@@ -1279,19 +1322,13 @@ async function decide(decision: ApprovalDecision): Promise<void> {
   render();
   try {
     const credential = await signed;
-    const response = credential.response as AuthenticatorAssertionResponse;
     const answer = await owner.link.request({
       method: "approvals.decide",
       params: {
         approvalId,
         decision,
         fingerprint: keys.fingerprint,
-        assertion: {
-          credentialId: toBase64Url(new Uint8Array(credential.rawId)),
-          authenticatorData: toBase64Url(new Uint8Array(response.authenticatorData)),
-          clientDataJSON: toBase64Url(new Uint8Array(response.clientDataJSON)),
-          signature: toBase64Url(new Uint8Array(response.signature)),
-        },
+        assertion: assertionOf(credential),
       },
     });
     if (session !== owner) return;
@@ -1601,6 +1638,298 @@ function askAcknowledge(id: number | null): void {
   document.getElementById(target)?.focus({ preventScroll: true });
 }
 
+/** What a passkey's signature travels as. */
+function assertionOf(credential: PublicKeyCredential): PasskeySignature {
+  const response = credential.response as AuthenticatorAssertionResponse;
+  return {
+    credentialId: toBase64Url(new Uint8Array(credential.rawId)),
+    authenticatorData: toBase64Url(new Uint8Array(response.authenticatorData)),
+    clientDataJSON: toBase64Url(new Uint8Array(response.clientDataJSON)),
+    signature: toBase64Url(new Uint8Array(response.signature)),
+  };
+}
+
+/** Asks this device's passkey to sign. It has to start straight after the tap, or a browser refuses. */
+function signWithPasskey(challenge: Bytes, credentialId: Bytes) {
+  return startPasskey(() =>
+    navigator.credentials.get({
+      publicKey: { challenge, rpId: location.hostname, allowCredentials: [{ type: "public-key", id: credentialId }], userVerification: "required", timeout: PASSKEY_WITHIN_MS },
+    }),
+  );
+}
+
+function resetSetup(): void {
+  if (setup.working === null) setup = { prepared: null, working: null, problem: null };
+}
+
+/** Gets the passkey's setup ready while a screen offers it, and forgets it when none does. */
+function keepSetup(wanted: boolean, current: Session): void {
+  if (setup.working !== null) return;
+  if (wanted) {
+    if (setup.prepared === null) void prepareSetup(current);
+  } else if (setup.prepared !== null || setup.problem !== null) {
+    setup = { prepared: null, working: null, problem: null };
+  }
+}
+
+/** The passkey's state is part of these answers, so the screen showing one asks again when it changes. */
+function dropPasskeyAnswers(): void {
+  drop("approvals");
+  const shown = currentRoute();
+  if (shown.screen === "live") {
+    // The numbers kept for the screen say what the passkey was.
+    lastLive = null;
+    drop(liveKey(shown.connectionId));
+  } else if (shown.screen === "deploy" || shown.screen === "deploy-plan") drop(deployKey(shown));
+}
+
+function deployKey(target: Route): string {
+  return `deploy:${writeRoute(target)}`;
+}
+
+function connectionOf(connectionId: number): SharedConnection | null {
+  return value(connectionsLoad())?.find((each) => each.id === connectionId) ?? null;
+}
+
+/** A computer from before these features answers that it does not know the question. */
+function askingNewer<T>(asked: Promise<T>): Promise<T> {
+  return asked.catch((error: unknown) => {
+    if (error instanceof RpcError && error.code === "unknown-method") throw new Problem(UPDATE_TEXT);
+    throw error;
+  });
+}
+
+function deployNodes(current: Session, target: Extract<Route, { screen: "deploy" }>): Node[] {
+  const { connectionId } = target;
+  const list = need(deployKey(target), (link) => askingNewer(link.request({ method: "deploy.list", params: { connectionId } })));
+  keepSetup(value(list)?.passkey === "allowed" && passkeysSupported(), current);
+  return deployScreen(connectionOf(connectionId), connectionId, list, setup, passkeysSupported(), actions);
+}
+
+function deployFamilyNodes(target: Extract<Route, { screen: "deploy-family" }>): Node[] {
+  const { connectionId, schema, script } = target;
+  const status = need(deployKey(target), (link) => askingNewer(link.request({ method: "deploy.family", params: { connectionId, schemaName: schema, scriptName: script } })));
+  return deployFamilyScreen(target, status, Date.now(), actions);
+}
+
+function planView(plan: PlanView["plan"], hash: PlanView["hash"]): PlanView {
+  return { plan, hash, ticked, starting, setup, passkeys: passkeysSupported() };
+}
+
+function deployPlanNodes(current: Session, target: Extract<Route, { screen: "deploy-plan" }>): Node[] {
+  const connection = connectionOf(target.connectionId);
+  // It has run or been asked for, so the question is over and there is nothing to read again.
+  if (starting.result !== null) return deployPlanScreen(target, connection, planView(undefined, undefined), actions);
+  const { connectionId, schema, script, action, version } = target;
+  const load = need(deployKey(target), (link) =>
+    askingNewer(link.request({ method: "deploy.plan", params: { connectionId, schemaName: schema, scriptName: script, action, targetVersion: version } })),
+  );
+  const plan = value(load);
+  const hash = plan === null ? undefined : fingerprintOf(plan);
+  if (plan !== null) {
+    // A changed run is a new question: its boxes start empty, and a challenge for the old one is no use.
+    const shape = JSON.stringify([plan.fingerprint, plan.next, plan.risks]);
+    if (shape !== startingFor && starting.working === null) {
+      const { problem } = starting;
+      resetStarting();
+      starting = { ...starting, problem };
+      ticked = new Set();
+      startingFor = shape;
+    }
+    const step = stepOf(plan.next);
+    if (step !== null && plan.passkey === "ready" && hash === plan.fingerprint && starting.prepared === null && starting.working === null) void prepareStart(current, target, plan, step);
+  }
+  keepSetup(plan?.passkey === "allowed" && passkeysSupported(), current);
+  return deployPlanScreen(target, connection, planView(load, hash), actions);
+}
+
+function resetStarting(): void {
+  startingToken += 1;
+  window.clearTimeout(startingTimer);
+  startingTimer = undefined;
+  starting = { prepared: null, working: null, problem: null, result: null };
+}
+
+function resetPlan(): void {
+  resetStarting();
+  ticked = new Set();
+  startingFor = null;
+}
+
+function toggleTick(tick: ControlTick, on: boolean): void {
+  if (on) ticked.add(tick);
+  else ticked.delete(tick);
+  render();
+}
+
+/** Fetches the one-time number and works out what to sign before the tap, since a browser lets a page use a passkey only straight after one. */
+async function prepareStart(owner: Session, target: Extract<Route, { screen: "deploy-plan" }>, plan: DeployPlan, step: DeployStep): Promise<void> {
+  const token = startingToken;
+  starting = { ...starting, prepared: LOADING };
+  let prepared: Load<StartKeys> | null;
+  let gone = false;
+  try {
+    const begun = await owner.link.request({ method: "control.begin" });
+    const nonce = fromBase64Url(begun.nonce);
+    const credentialId = fromBase64Url(begun.credentialId);
+    if (nonce === null || credentialId === null) throw new Problem(UNREADABLE_CHALLENGE);
+    const ticks = signedTicks(plan);
+    const challenge = await deployChallenge(nonce, { connectionId: target.connectionId, schemaName: target.schema, scriptName: target.script, action: target.action, targetVersion: target.version, fingerprint: plan.fingerprint, step, ticks });
+    prepared = { status: "loaded", value: { credentialId, challenge, fingerprint: plan.fingerprint, step, ticks } };
+  } catch (error) {
+    gone = error instanceof RpcError && CONTROL_GONE.has(error.code);
+    prepared = error instanceof RpcError && error.code === "lost" ? null : { status: "failed", message: errorText(error) };
+  }
+  if (session !== owner || startingToken !== token) return;
+  if (gone) dropPasskeyAnswers();
+  starting = { ...starting, prepared };
+  window.clearTimeout(startingTimer);
+  startingTimer = undefined;
+  if (prepared?.status === "loaded") {
+    startingTimer = window.setTimeout(() => {
+      if (startingToken !== token || starting.working !== null) return;
+      starting = { ...starting, prepared: null };
+      render();
+    }, CHALLENGE_FOR_MS);
+  }
+  render();
+}
+
+async function startRun(): Promise<void> {
+  const owner = session;
+  const keys = value(starting.prepared);
+  const target = currentRoute();
+  if (owner === null || target.screen !== "deploy-plan" || keys === null || starting.working !== null || starting.result !== null) return;
+  const token = startingToken;
+  const signed = signWithPasskey(keys.challenge, keys.credentialId);
+  window.clearTimeout(startingTimer);
+  startingTimer = undefined;
+  starting = { ...starting, working: true, problem: null };
+  render();
+  try {
+    const credential = await signed;
+    const { status } = await owner.link.request({
+      method: "deploy.start",
+      params: {
+        connectionId: target.connectionId,
+        schemaName: target.schema,
+        scriptName: target.script,
+        action: target.action,
+        targetVersion: target.version,
+        fingerprint: keys.fingerprint,
+        step: keys.step,
+        ticks: keys.ticks,
+        assertion: assertionOf(credential),
+      },
+    });
+    if (session !== owner) return;
+    drop(deployKey(target));
+    if (startingToken === token) starting = { prepared: null, working: null, problem: null, result: status };
+  } catch (error) {
+    if (session !== owner) return;
+    const code = error instanceof RpcError ? error.code : null;
+    drop(deployKey(target));
+    if (code !== null && CONTROL_GONE.has(code)) dropPasskeyAnswers();
+    if (startingToken === token) starting = { prepared: null, working: null, problem: code === "lost" ? RUN_LOST_TEXT : passkeyProblem(error, "get"), result: null };
+  }
+  render();
+}
+
+function resetCancelling(): void {
+  cancellingToken += 1;
+  window.clearTimeout(cancellingTimer);
+  cancellingTimer = undefined;
+  cancelling = { pid: null, queryStart: null, prepared: null, working: null, problem: null, result: null };
+}
+
+/** The second tap's buttons take the place of the first one, and the other way round. The confirming one starts out disabled, so the focus goes to the way out. */
+function askCancel(chosen: LiveSession | null): void {
+  const was = cancelling.pid;
+  resetCancelling();
+  if (chosen !== null && chosen.queryStart !== null) cancelling = { ...cancelling, pid: chosen.pid, queryStart: chosen.queryStart };
+  render();
+  const focus = chosen === null ? `cancel-${was}` : `cancel-no-${chosen.pid}`;
+  document.getElementById(focus)?.focus({ preventScroll: true });
+}
+
+/** Keeps the question true to the query it asked about, and gets its challenge ready while it is open. */
+function keepCancelling(current: Session, connectionId: number, status: LiveStatus | null, linked: boolean): void {
+  const { pid, queryStart } = cancelling;
+  if (pid === null || queryStart === null || cancelling.working !== null || status === null) return;
+  const shown = status.activity?.sessions.find((each) => each.pid === pid);
+  if (shown === undefined || shown.queryStart !== queryStart || !mayCancel(shown, status.control)) {
+    const { result, problem } = cancelling;
+    resetCancelling();
+    cancelling = { ...cancelling, result, problem };
+    return;
+  }
+  if (linked && cancelling.prepared === null) void prepareCancel(current, connectionId, pid, queryStart);
+}
+
+async function prepareCancel(owner: Session, connectionId: number, pid: number, queryStart: string): Promise<void> {
+  const token = cancellingToken;
+  cancelling = { ...cancelling, prepared: LOADING };
+  let prepared: Load<CancelKeys> | null;
+  let gone = false;
+  try {
+    const begun = await owner.link.request({ method: "control.begin" });
+    const nonce = fromBase64Url(begun.nonce);
+    const credentialId = fromBase64Url(begun.credentialId);
+    if (nonce === null || credentialId === null) throw new Problem(UNREADABLE_CHALLENGE);
+    prepared = { status: "loaded", value: { credentialId, challenge: await cancelChallenge(nonce, { connectionId, pid, queryStart }) } };
+  } catch (error) {
+    gone = error instanceof RpcError && CONTROL_GONE.has(error.code);
+    prepared = error instanceof RpcError && error.code === "lost" ? null : { status: "failed", message: errorText(error) };
+  }
+  if (session !== owner || cancellingToken !== token) return;
+  if (gone) dropPasskeyAnswers();
+  cancelling = { ...cancelling, prepared };
+  window.clearTimeout(cancellingTimer);
+  cancellingTimer = undefined;
+  if (prepared?.status === "loaded") {
+    cancellingTimer = window.setTimeout(() => {
+      if (cancellingToken !== token || cancelling.working !== null) return;
+      cancelling = { ...cancelling, prepared: null };
+      render();
+    }, CHALLENGE_FOR_MS);
+  }
+  render();
+}
+
+async function cancelQuery(): Promise<void> {
+  const owner = session;
+  const keys = value(cancelling.prepared);
+  const { pid, queryStart } = cancelling;
+  const target = currentRoute();
+  if (owner === null || target.screen !== "live" || keys === null || pid === null || queryStart === null || cancelling.working !== null) return;
+  const token = cancellingToken;
+  const signed = signWithPasskey(keys.challenge, keys.credentialId);
+  window.clearTimeout(cancellingTimer);
+  cancellingTimer = undefined;
+  cancelling = { ...cancelling, working: true, problem: null };
+  render();
+  try {
+    const credential = await signed;
+    const { status } = await owner.link.request({ method: "session.cancel", params: { connectionId: target.connectionId, pid, queryStart, assertion: assertionOf(credential) } });
+    if (session !== owner) return;
+    drop(liveKey(target.connectionId));
+    if (cancellingToken === token) {
+      resetCancelling();
+      cancelling = { ...cancelling, result: status };
+    }
+  } catch (error) {
+    if (session !== owner) return;
+    const code = error instanceof RpcError ? error.code : null;
+    drop(liveKey(target.connectionId));
+    if (code !== null && CONTROL_GONE.has(code)) dropPasskeyAnswers();
+    if (cancellingToken === token) {
+      resetCancelling();
+      cancelling = { ...cancelling, problem: code === "lost" ? CANCEL_LOST_TEXT : passkeyProblem(error, "get") };
+    }
+  }
+  render();
+}
+
 /**
  * Asks the computer to check or acknowledge one schema's drift, once. A failure
  * is shown, not tried again: only the person knows whether they still want it,
@@ -1633,16 +1962,23 @@ async function runDriftAction(what: "check" | "acknowledge", connectionId: numbe
   document.getElementById(`check-drift-${id}`)?.focus({ preventScroll: true });
 }
 
-function liveView(connectionId: number): LiveView {
+function liveView(current: Session, connectionId: number): LiveView {
   const load = liveLoad(connectionId);
   if (load?.status === "loaded") lastLive = { connectionId, ...load.value };
   const kept = lastLive?.connectionId === connectionId ? lastLive : null;
+  const linked = session?.state.kind === "ready";
+  const control = kept?.status.control ?? null;
+  keepSetup(linked && mayControl(control) && control?.passkey === "allowed" && passkeysSupported(), current);
+  keepCancelling(current, connectionId, kept?.status ?? null, linked);
   return {
     status: kept?.status ?? null,
     at: kept?.at ?? null,
-    linked: session?.state.kind === "ready",
+    linked,
     problem: load?.status === "failed" ? load.message : null,
     driftActions,
+    cancelling,
+    setup,
+    passkeys: passkeysSupported(),
   };
 }
 

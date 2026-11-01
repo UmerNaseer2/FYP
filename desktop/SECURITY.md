@@ -180,8 +180,28 @@ the next section says.
   phone link on or off.
 - With it on, a phone can check a schema's drift now and acknowledge a drift
   (`driftAction` in `src/main/phone-requests.ts`), on the connections chosen in
-  Settings and for schemas tracked on that connection. There is no other way
-  to change anything from a phone, and no box for free SQL.
+  Settings and for schemas tracked on that connection.
+- With it on and a passkey on the phone, it can also start a deploy or a
+  rollback, ask for approval on production, and cancel a running query
+  (`src/main/phone-control.ts`). There is no other way to change anything from
+  a phone, and no box for free SQL: a run takes the SQL in the app's own plan,
+  and a cancel names one query by its session and when it began.
+- Each of those takes a fresh passkey signature over a one-time number and
+  exactly what would happen (`src/shared/remote/control.ts`): for a run the
+  connection, schema, script, version, SQL fingerprint, next step and ticked
+  risks. The phone works out the fingerprint itself before it offers to sign,
+  so what it signs is what it shows. The computer then reads the plan again and
+  refuses if the fingerprint, the step or the risks have changed.
+- A passkey acts only as the person who set it up: the computer compares who is
+  signed in now with the passkey's hash of their email.
+- On production a run goes through the same queue as the web page: asking takes
+  no ticks, someone else approves it, and the run that follows still takes its
+  ticks. A cancel does not go through the queue, because a stuck query is the
+  emergency it is for. It needs the passkey, Allow control and the role's
+  `performance:update`, and the action log on the computer is its only record.
+- The same passkey signs approvals and control, so a passkey set up for Allow
+  control also lets a person whose role may approve decide approvals on that
+  device.
 - Those go through the app's own routes as whoever is signed in on the
   computer, with their permissions. The app's records cannot tell the phone
   from that person, so a phone with Allow control is as trusted as they are.
@@ -318,9 +338,17 @@ passphrase, the short pairing code, or what a phone asked to compare.
   way the app does. Nothing a desktop app does can stop that.
 - **No login keyring.** Without GNOME Keyring or KWallet (or with only
   `basic_text`), secrets are protected by file permissions alone.
-- **A paired phone can flood the action log.** Every try is written, so a
-  misbehaving phone can push older entries out of the 200 it keeps. Each try is
-  also logged, and removing the phone stops it. It cannot change an entry.
+- **A paired phone can flood the action log.** Every try is written, runs
+  included, so a misbehaving phone can push older entries out of the 200 it
+  keeps. Each try is also logged, and removing the phone stops it. It cannot
+  change an entry.
+- **Quitting the app during a run from a phone loses how it ended.** The action
+  log keeps saying started, because nothing is left to record the end. The
+  server's run carries on, so check the database.
+- **A session idle in a transaction cannot be cancelled from a phone.** It has
+  no running query to cancel, and ending a session is deliberately not offered.
+- **A read-only connection blocks asking for approval on a phone.** The web page
+  still offers the request on that connection.
 - **Someone who sees the QR code within its 5 minutes** can pair as a phone
   before the person does. The code works only once, every phone is listed in
   Settings and logged when it pairs, and a phone can be removed at once.
@@ -406,5 +434,6 @@ passphrase, the short pairing code, or what a phone asked to compare.
   `app://` list, and its preload checks the exact page.
 - A change to what a phone signs for an approval changes the label
   `schema-studio approval v1` too, so an old signature can never count under
-  new rules.
+  new rules. The same goes for `schema-studio control v1` and what a phone signs
+  for a run or a cancel.
 - Anything newly logged goes through `redact`.

@@ -5,6 +5,7 @@
  */
 import { ACTION_LABELS, requestedText, requestSize, requestTitle, versionText, type Choices } from "./approvals.js";
 import { BUILD_VERSION } from "./build-info.js";
+import { allTicked, CANCEL_QUESTION, cancelResultText, deployButtonText, mayCancel, mayControl, MISMATCH_TEXT, NO_FAMILIES_TEXT, PARTIAL_TEXT, passkeyText, planTitle, registryText, riskRows, rollbackButtonText, runText, startStatusText, startStatusTone, stepButton, stepOf, stepText, whereText, type RiskRow } from "./deploy.js";
 import { button, el, envBadge, failed, heading, loading, notice, type Child } from "./dom.js";
 import { accessProblem, CHANGE_LABELS, countText, dayText, foreignKeyText, SEVERITY_LABELS, targetHeadline } from "./format.js";
 import {
@@ -33,8 +34,9 @@ import {
 import type { Route } from "./routes.js";
 import type { PairedComputer } from "./store.js";
 import type { ApprovalDecision, ApprovalScript } from "../shared/remote/approval.js";
+import type { ControlTick } from "../shared/remote/control.js";
 import { MAX_COMPARE_TARGETS } from "../shared/remote/rpc.js";
-import type { ApprovalList, ApprovalRead, ApprovalSummary, CompareSummary, HelloResult, LiveActivity, LiveControl, LiveDrift, LiveHealth, LiveSession, LiveStatus, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
+import type { ApprovalList, ApprovalRead, ApprovalSummary, CancelResult, CompareSummary, DeployFamilyStatus, DeployList, DeployPlan, DeployStartStatus, HelloResult, LiveActivity, LiveControl, LiveDrift, LiveHealth, LiveSession, LiveStatus, PasskeyState, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
 
 /** Something asked of the computer: still coming, in, or failed with a sentence to show. */
 export type Load<T> = { status: "loading" } | { status: "loaded"; value: T } | { status: "failed"; message: string };
@@ -86,6 +88,12 @@ export type Actions = {
   /** Asks the question before an acknowledgement, for this tracked schema, or takes it away. */
   askAcknowledge(id: number | null): void;
   acknowledgeDrift(connectionId: number, id: number): void;
+  /** Ticks or unticks a risk of the run being looked at. */
+  toggleTick(tick: ControlTick, on: boolean): void;
+  startRun(): void;
+  /** Asks the question before cancelling this session's query, or takes it away. */
+  askCancel(session: LiveSession | null): void;
+  cancelQuery(): void;
 };
 
 /** What the Enter a code screen shows. main.ts keeps it, because a screen is built again on every change. */
@@ -270,6 +278,29 @@ export type LiveView = {
   /** Why the last ask failed, when it did. */
   problem: string | null;
   driftActions: DriftActions;
+  cancelling: CancelView;
+  /** Setting up this device's passkey, for the buttons that need one. */
+  setup: PasskeyStep<"create">;
+  passkeys: boolean;
+};
+
+/** Cancel query's question, and how the last one ended. */
+export type CancelView = PasskeyStep<true> & {
+  /** The session the question is about, or null when nothing is being asked. */
+  pid: number | null;
+  /** Stays when the session leaves the list, since that is what a cancel is for. */
+  result: CancelResult["status"] | null;
+};
+
+/** What the screen for one run shows. */
+export type PlanView = {
+  plan: Load<DeployPlan> | undefined;
+  /** The fingerprint of the SQL, worked out on this device: null if it could not be, undefined while it is being worked out. */
+  hash: string | null | undefined;
+  ticked: ReadonlySet<ControlTick>;
+  starting: PasskeyStep<true> & { result: DeployStartStatus | null };
+  setup: PasskeyStep<"create">;
+  passkeys: boolean;
 };
 
 /** What the drift part is in the middle of. One action runs at a time. */
@@ -296,11 +327,18 @@ export function liveScreen(connection: SharedConnection | null, connectionId: nu
   }
   nodes.push(el("p", { class: "hint", id: "live-updated" }, view.linked ? `Updated ${timeText(at)}. Refreshes every 5 seconds while this screen is open.` : `Last updated ${agoText(at, now)}. These numbers are old, because the computer is away.`));
   if (view.problem !== null) nodes.push(notice(`Could not refresh just now. ${view.problem}`, "info"));
-  nodes.push(...activityPart(status, connectionId, openTables, actions), ...healthPart(status.health), ...driftPart(status, connectionId, view, now, actions));
+  if (view.cancelling.result !== null) nodes.push(notice(cancelResultText(view.cancelling.result), "info"));
+  if (view.cancelling.problem !== null) nodes.push(notice(view.cancelling.problem, "bad"));
+  const { control } = status;
+  if (view.linked && control !== null && mayControl(control)) {
+    nodes.push(...controlPasskeyPart(control.passkey, view.setup, view.passkeys, actions));
+    if (control.canDeploy) nodes.push(el("div", { class: "actions" }, button("Deploy or roll back", () => actions.go({ screen: "deploy", connectionId }), { class: "secondary", id: "open-deploy" })));
+  }
+  nodes.push(...activityPart(status, connectionId, view, openTables, actions), ...healthPart(status.health), ...driftPart(status, connectionId, view, now, actions));
   return nodes;
 }
 
-function activityPart(status: LiveStatus, connectionId: number, openTables: ReadonlySet<string>, actions: Actions): Node[] {
+function activityPart(status: LiveStatus, connectionId: number, view: LiveView, openTables: ReadonlySet<string>, actions: Actions): Node[] {
   const nodes: Node[] = [el("h2", { class: "section" }, "Right now")];
   const { activity, activityProblem } = status;
   if (activity === null) return [...nodes, notice(activityProblem === null ? "This database's activity is not showing." : activityProblemText(activityProblem), "bad")];
@@ -316,7 +354,7 @@ function activityPart(status: LiveStatus, connectionId: number, openTables: Read
   );
   if (activity.sessions.length === 0) return [...nodes, el("p", { class: "muted" }, "No other session on this server is running a statement right now.")];
   nodes.push(el("p", { class: "hint" }, longRunningText(activity)));
-  nodes.push(el("div", { class: "sessions" }, activity.sessions.map((session) => sessionCard(session, connectionId, openTables, actions))));
+  nodes.push(el("div", { class: "sessions" }, activity.sessions.map((session) => sessionCard(session, connectionId, status.control, view, openTables, actions))));
   const more = moreSessionsText(activity);
   if (more !== null) nodes.push(el("p", { class: "hint" }, more));
   const hint = queryTextHint(activity);
@@ -332,7 +370,7 @@ function toneTag(label: string, tone: Tone): Node {
   return el("span", { class: `tag tone-${tone}` }, label);
 }
 
-function sessionCard(session: LiveSession, connectionId: number, openTables: ReadonlySet<string>, actions: Actions): Node {
+function sessionCard(session: LiveSession, connectionId: number, control: LiveControl | null, view: LiveView, openTables: ReadonlySet<string>, actions: Actions): Node {
   const time = sessionTimeText(session);
   const transaction = transactionText(session);
   const facts = [session.applicationName, `Process ${session.pid}`].filter((fact) => fact !== null && fact !== "").join(" \u{2022} ");
@@ -349,6 +387,7 @@ function sessionCard(session: LiveSession, connectionId: number, openTables: Rea
     details.addEventListener("toggle", () => actions.toggleTable(key, details.open));
     nodes.push(details);
   }
+  nodes.push(...cancelPart(session, control, view, actions));
   return el("div", { class: "card session" }, nodes);
 }
 
@@ -793,6 +832,149 @@ function alertsPart(alerts: AlertsView, actions: Actions): Node[] {
       );
       return nodes;
   }
+}
+
+/** Cancel query, with its question. The computer asks for the passkey and decides again. */
+function cancelPart(session: LiveSession, control: LiveControl | null, view: LiveView, actions: Actions): Node[] {
+  if (!view.linked || control?.passkey !== "ready" || !mayCancel(session, control)) return [];
+  const { cancelling } = view;
+  const id = session.pid;
+  if (cancelling.pid !== id) return [el("div", { class: "actions" }, button("Cancel query", () => actions.askCancel(session), { class: "secondary", id: `cancel-${id}` }))];
+  const ready = cancelling.prepared?.status === "loaded" && cancelling.working === null;
+  return [
+    el("div", { class: "drift-confirm" }, el("p", {}, CANCEL_QUESTION),
+      cancelling.prepared?.status === "failed" && failed(cancelling.prepared.message, () => actions.askCancel(session)),
+      el("div", { class: "actions" },
+        button(cancelling.working !== null ? "Cancelling\u{2026}" : "Cancel query", actions.cancelQuery, { class: "danger", id: `cancel-yes-${id}`, disabled: !ready }),
+        button("Keep it running", () => actions.askCancel(null), { class: "secondary", id: `cancel-no-${id}`, disabled: cancelling.working !== null }),
+      )),
+  ];
+}
+
+/**
+ * The passkey for the buttons that change something. Approvals have their own
+ * (passkeyPart), since someone who may approve but not deploy should not read
+ * about deploys.
+ */
+function controlPasskeyPart(passkey: PasskeyState, setup: PasskeyStep<"create">, passkeys: boolean, actions: Actions): Node[] {
+  if (passkey === "ready") return [];
+  const text = passkeyText(passkey);
+  if (text !== null) return [notice(text, "info", button("Check again", actions.refresh, { class: "secondary", id: "check-passkey" }))];
+  const ready = setup.prepared?.status === "loaded" && setup.working === null;
+  return [
+    el("section", { class: "card" },
+      el("h2", { class: "section" }, "Set up a passkey"),
+      el("p", {}, "This device makes a passkey for Schema Studio, kept by its password manager. Each action asks for Face ID, a fingerprint or its screen lock, and the computer checks the passkey before it does anything."),
+      !passkeys && notice("This browser cannot use passkeys, so this cannot be set up in it. Try the phone's own browser: Safari on an iPhone, or Chrome on Android.", "bad"),
+      setup.problem !== null && notice(setup.problem, "bad"),
+      setup.prepared?.status === "failed" && failed(setup.prepared.message, actions.refresh),
+      passkeys && el("div", { class: "actions" },
+        button(setup.working !== null ? "Setting up\u{2026}" : "Set up passkey", actions.setUpPasskey, { class: "primary", id: "set-up", disabled: !ready })),
+    ),
+  ];
+}
+
+/** The scripts that could run on a connection, under each schema. */
+export function deployScreen(connection: SharedConnection | null, connectionId: number, list: Load<DeployList> | undefined, setup: PasskeyStep<"create">, passkeys: boolean, actions: Actions): Node[] {
+  const nodes: Node[] = [heading("Deploy or roll back")];
+  if (connection !== null) nodes.push(el("p", { class: "lead" }, envBadge(connection.environment), ` ${connection.name}`));
+  if (list === undefined || list.status === "loading") return [...nodes, loading("Asking the computer for its scripts\u{2026}")];
+  if (list.status === "failed") return [...nodes, failed(list.message, actions.refresh)];
+  const { registry, partial, families, passkey } = list.value;
+  nodes.push(...controlPasskeyPart(passkey, setup, passkeys, actions));
+  const problem = registryText(registry);
+  if (problem !== null) return [...nodes, notice(problem, "info", button("Check again", actions.refresh, { class: "secondary", id: "check-registry" }))];
+  if (partial) nodes.push(notice(PARTIAL_TEXT, "info"));
+  if (families.length === 0) return [...nodes, el("p", { class: "muted" }, NO_FAMILIES_TEXT)];
+  for (const schema of new Set(families.map((family) => family.schemaName))) {
+    const rows = families.flatMap((family, index) =>
+      family.schemaName !== schema
+        ? []
+        : [button(
+            el("span", { class: "row-main" }, el("span", { class: "row-title mono" }, family.scriptName), el("span", { class: "small muted" }, `Newest ${versionText(family.newestVersion)}`)),
+            () => actions.go({ screen: "deploy-family", connectionId, schema, script: family.scriptName }),
+            { class: "row", id: `family-${index}` },
+          )],
+    );
+    nodes.push(el("h2", { class: "section mono" }, schema), el("div", { class: "list" }, rows));
+  }
+  return nodes;
+}
+
+/** Where one script stands, and the runs on offer from there. */
+export function deployFamilyScreen(route: Extract<Route, { screen: "deploy-family" }>, status: Load<DeployFamilyStatus> | undefined, now: number, actions: Actions): Node[] {
+  const { connectionId, schema, script } = route;
+  const nodes: Node[] = [heading(script), el("p", { class: "hint mono" }, schema)];
+  if (status === undefined || status.status === "loading") return [...nodes, loading("Asking the computer where this script stands\u{2026}")];
+  if (status.status === "failed") return [...nodes, failed(status.message, actions.refresh)];
+  const { waiting, undo, partial, run } = status.value;
+  nodes.push(el("p", { class: "lead" }, whereText(status.value)));
+  if (partial) nodes.push(notice(PARTIAL_TEXT, "info"));
+  if (run !== null) nodes.push(notice(runText(run, now), run.state === "not-applied" || run.state === "unknown" ? "bad" : "info"));
+  // The computer refuses a second run of a script while one is going, so none is offered.
+  if (run?.state === "running") return [...nodes, el("div", { class: "actions" }, button("Check again", actions.refresh, { class: "secondary", id: "check-run" }))];
+  if (waiting.length === 0 && undo.length === 0) nodes.push(el("p", { class: "muted" }, "There is nothing to deploy or roll back on this script."));
+  if (waiting.length > 0) {
+    nodes.push(el("h2", { class: "section" }, "Deploy"), el("div", { class: "list" }, waiting.map((version, index) =>
+      button(el("span", { class: "row-title" }, deployButtonText(version)), () => actions.go({ screen: "deploy-plan", connectionId, schema, script, action: "deploy", version }), { class: "row", id: `deploy-${index}` }))));
+  }
+  if (undo.length > 0) {
+    nodes.push(el("h2", { class: "section" }, "Roll back"), el("div", { class: "list" }, undo.map((choice, index) =>
+      button(el("span", { class: "row-title" }, rollbackButtonText(choice)), () => actions.go({ screen: "deploy-plan", connectionId, schema, script, action: "revert", version: choice.target }), { class: "row", id: `undo-${index}` }))));
+  }
+  return nodes;
+}
+
+function riskRow(row: RiskRow, canTick: boolean, ticked: ReadonlySet<ControlTick>, actions: Actions): Node {
+  const body = el("span", { class: "row-main" }, el("span", {}, row.text), row.labels.map((label) => el("span", { class: "small mono risk-label" }, label)));
+  if (!canTick) return el("div", { class: "row" }, body);
+  const box = el("input", { type: "checkbox", id: `risk-${row.tick}`, checked: ticked.has(row.tick) });
+  box.addEventListener("change", () => actions.toggleTick(row.tick, box.checked));
+  return el("label", { class: "row", for: `risk-${row.tick}` }, box, body);
+}
+
+/** One run: what it would do, what it risks, and the passkey button for its next step. */
+export function deployPlanScreen(route: Extract<Route, { screen: "deploy-plan" }>, connection: SharedConnection | null, view: PlanView, actions: Actions): Node[] {
+  const { connectionId, schema, script, action, version } = route;
+  const load = view.plan;
+  const environment = load?.status === "loaded" ? load.value.environment : connection?.environment ?? null;
+  const nodes: Node[] = [
+    heading(planTitle(action, version)),
+    el("dl", { class: "card" },
+      infoRow("Script", script, true),
+      infoRow("Schema", schema, true),
+      infoRow("Connection", [connection?.name ?? "", " ", environment !== null && envBadge(environment)]),
+    ),
+  ];
+  const { starting } = view;
+  if (starting.result !== null) {
+    return [...nodes,
+      notice(startStatusText(starting.result, action), startStatusTone(starting.result)),
+      el("div", { class: "actions" }, button("Back to this script", () => actions.go({ screen: "deploy-family", connectionId, schema, script }), { class: "primary", id: "back-to-family" })),
+    ];
+  }
+  if (load === undefined || load.status === "loading") return [...nodes, loading("Asking the computer for the SQL\u{2026}")];
+  if (load.status === "failed") return [...nodes, failed(load.message, actions.refresh)];
+  const plan = load.value;
+  const label = stepButton(plan.next, plan.action);
+  nodes.push(...controlPasskeyPart(plan.passkey, view.setup, view.passkeys, actions));
+  if (label === null) nodes.push(notice(stepText(plan), "info"));
+  if (plan.partial) nodes.push(notice(PARTIAL_TEXT, "info"));
+  const rows = riskRows(plan.risks);
+  const canTick = stepOf(plan.next) === "run";
+  if (rows.length > 0) nodes.push(el("h2", { class: "section" }, canTick ? "Tick each one to go on" : "What this run risks"), el("div", { class: "list" }, rows.map((row) => riskRow(row, canTick, view.ticked, actions))));
+  nodes.push(el("h2", { class: "section" }, plan.action === "revert" ? "The SQL it runs to roll back" : "The SQL it runs"), ...plan.scripts.map(scriptCard));
+  // No step to take, or no passkey to take it with: what is above says why.
+  if (label === null || plan.passkey !== "ready") return nodes;
+  if (view.hash !== undefined && view.hash !== plan.fingerprint) return [...nodes, notice(MISMATCH_TEXT, "bad")];
+  if (starting.problem !== null) nodes.push(notice(starting.problem, "bad"));
+  if (starting.prepared?.status === "failed") nodes.push(failed(starting.prepared.message, actions.refresh));
+  const ready = starting.prepared?.status === "loaded" && starting.working === null && allTicked(plan, view.ticked);
+  nodes.push(
+    el("p", { class: "hint" }, stepText(plan)),
+    el("div", { class: "actions" }, button(starting.working !== null ? "Starting\u{2026}" : label, actions.startRun, { class: "primary", id: "start-run", disabled: !ready })),
+  );
+  return nodes;
 }
 
 export function settingsScreen(paired: PairedComputer, hello: HelloResult | null, alerts: AlertsView, forgetting: boolean, actions: Actions): Node[] {

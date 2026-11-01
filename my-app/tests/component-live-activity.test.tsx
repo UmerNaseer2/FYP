@@ -103,6 +103,7 @@ const activity = (over: Partial<Activity> = {}): Activity => ({
 const session = (over: Partial<ActivitySession> & { pid: number }): ActivitySession => ({
   kind: "running",
   querySeconds: 2,
+  queryStart: null,
   xactSeconds: null,
   username: "app",
   applicationName: null,

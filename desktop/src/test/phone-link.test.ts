@@ -1652,6 +1652,7 @@ test("lets only the phone Settings allowed set up a passkey through the relay, t
     status: 200,
     json: { approver, canApprove: true, approvals: [approvalRequest(12, 5, fingerprint), approvalRequest(13, 9, fingerprint)] },
   });
+  caller.answers.set("GET /api/me/approver", { status: 200, json: { approver, canApprove: true, canControl: false } });
   const kept = APPROVAL_SCRIPTS.map((script) => ({ scriptName: script.name, version: script.version, sqlContent: script.sql }));
   caller.answers.set("GET /api/deploy/approvals/12/phone", { status: 200, json: { id: 12, action: "deploy", fingerprint, scripts: kept } });
   caller.answers.set("POST /api/deploy/approvals/12", { status: 200, json: { approval: { id: 12, status: "approved" } } });

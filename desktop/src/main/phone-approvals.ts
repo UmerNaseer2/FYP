@@ -16,6 +16,12 @@
  * else signs in on the computer, the phone decides nothing until approvals
  * are set up on it again.
  *
+ * The same passkey signs what a phone does with Allow control on
+ * (src/main/phone-control.ts), and anyone whose role may do either can set it
+ * up. Those signatures have their own one-time numbers, kept apart here, and
+ * their own signed text (src/shared/remote/control.ts), so one made for a
+ * decision never serves as one of those, or the other way round.
+ *
  * Each decision signs a one-time number from the computer, the request, the
  * decision and the fingerprint of the SQL the person read (approvalChallenge
  * in src/shared/remote/approval.ts). Before the app's server is asked, the
@@ -47,6 +53,7 @@ import {
   type DecisionChallenge,
   type NewPasskeyParams,
   type PasskeyChallenge,
+  type PasskeySignature,
   type PasskeyState,
 } from "../shared/remote/rpc";
 import { SYSTEM_CLOCK, type Clock } from "./clock";
@@ -83,11 +90,16 @@ type AllowWindow = { until: number; challenge: Bytes | null; timer: unknown };
 /** The approval queue as the app gives it, before it is kept to the shared connections. */
 type Queue = { approver: string; canApprove: boolean; approvals: ApprovalSummary[] };
 
+/** Who is signed in on the computer and what a passkey can do for them, from GET /api/me/approver. The hash stays on this computer. */
+export type SignedInPerson = { approver: string; canApprove: boolean; canControl: boolean };
+
 export class PhoneApprovals {
   private readonly options: PhoneApprovalsOptions;
   private readonly clock: Clock;
   private readonly windows = new Map<string, AllowWindow>();
   private readonly nonces = new Map<string, { nonce: Bytes; until: number }>();
+  /** Apart from a decision's numbers, so starting a run never disturbs an approval being prepared. */
+  private readonly controlNonces = new Map<string, { nonce: Bytes; until: number }>();
 
   constructor(options: PhoneApprovalsOptions) {
     this.options = options;
@@ -118,6 +130,7 @@ export class PhoneApprovals {
     if (window !== undefined) this.clock.clearTimeout(window.timer);
     this.windows.delete(phoneKey);
     this.nonces.delete(phoneKey);
+    this.controlNonces.delete(phoneKey);
   }
 
   /**
@@ -130,6 +143,7 @@ export class PhoneApprovals {
     for (const window of this.windows.values()) this.clock.clearTimeout(window.timer);
     this.windows.clear();
     this.nonces.clear();
+    this.controlNonces.clear();
     if (open) this.options.onChange?.();
   }
 
@@ -186,8 +200,9 @@ export class PhoneApprovals {
       logWarn(`The phone link did not take a phone's new passkey: ${made.reason}`);
       throw new Refused("passkey-refused");
     }
-    const queue = await this.queue(signal);
-    if (!queue.canApprove) throw new Refused("forbidden");
+    // Either right gives a passkey a use. Someone who may deploy but not approve has no queue to read this from.
+    const who = await this.whoAmI(signal);
+    if (!who.canApprove && !who.canControl) throw new Refused("forbidden");
     // Settings may have stopped allowing it, or the phone been forgotten, while the app was asked.
     const phone = this.options.phone(phoneKey);
     if (this.windows.get(phoneKey) !== window || phone === undefined) throw new Refused("not-allowed");
@@ -195,7 +210,7 @@ export class PhoneApprovals {
       credentialId: toBase64Url(made.passkey.credentialId),
       publicKey: made.passkey.key,
       signCount: made.passkey.signCount,
-      approver: queue.approver,
+      approver: who.approver,
       addedAt: this.clock.now(),
     });
     this.close(phoneKey, window);
@@ -223,7 +238,7 @@ export class PhoneApprovals {
     // Read only after the wait above, so a passkey taken away meanwhile is not used.
     const passkey = this.options.phone(phoneKey)?.passkey;
     if (passkey === undefined) throw new Refused("no-passkey");
-    this.checkSignature(phoneKey, passkey, params, challenge);
+    this.checkSignature(phoneKey, passkey, params, challenge, "decision");
 
     const queue = await this.queue(signal);
     const summary = this.waiting(queue, params.approvalId);
@@ -262,24 +277,65 @@ export class PhoneApprovals {
     return { status: wanted };
   }
 
-  /** Refuses unless the decision was signed by this phone's passkey, over this decision's challenge, and keeps its new counter. */
-  private checkSignature(phoneKey: string, passkey: PhonePasskey, params: DecideParams, challenge: Bytes): void {
-    const credentialId = fromBase64Url(params.assertion.credentialId);
-    const authenticatorData = fromBase64Url(params.assertion.authenticatorData);
-    const clientDataJSON = fromBase64Url(params.assertion.clientDataJSON);
-    const signature = fromBase64Url(params.assertion.signature);
+  /** Refuses unless it was signed by this phone's passkey, over this challenge, and keeps its new counter. */
+  private checkSignature(phoneKey: string, passkey: PhonePasskey, { assertion }: Pick<DecideParams, "assertion">, challenge: Bytes, what: "decision" | "action"): void {
+    const credentialId = fromBase64Url(assertion.credentialId);
+    const authenticatorData = fromBase64Url(assertion.authenticatorData);
+    const clientDataJSON = fromBase64Url(assertion.clientDataJSON);
+    const signature = fromBase64Url(assertion.signature);
     if (credentialId === null || authenticatorData === null || clientDataJSON === null || signature === null) throw new Refused("bad-request");
     if (toBase64Url(credentialId) !== passkey.credentialId) {
-      logWarn("The phone link did not take a phone's decision: it was signed by a passkey other than the one set up on the phone.");
+      logWarn(`The phone link did not take a phone's ${what}: it was signed by a passkey other than the one set up on the phone.`);
       throw new Refused("passkey-refused");
     }
     const checked = checkAssertion({ authenticatorData, clientDataJSON, signature }, passkey.publicKey, passkey.signCount, { challenge, origin: this.origin() });
     if (!checked.ok) {
-      logWarn(`The phone link did not take a phone's decision: ${checked.reason}`);
+      logWarn(`The phone link did not take a phone's ${what}: ${checked.reason}`);
       throw new Refused("passkey-refused");
     }
     // Kept even if the decision goes no further: the passkey counted this signature, so the next one has to count past it.
     if (checked.signCount !== passkey.signCount) this.options.savePasskey(phoneKey, { ...passkey, signCount: checked.signCount });
+  }
+
+  /** control.begin: the one-time number the phone's next deploy, rollback or cancel signs. A newer one replaces it. */
+  beginControl(phoneKey: string): DecisionChallenge {
+    const passkey = this.options.phone(phoneKey)?.passkey;
+    if (passkey === undefined) throw new Refused("control-no-passkey");
+    const nonce = randomBytes(32);
+    this.controlNonces.set(phoneKey, { nonce, until: this.clock.now() + DECISION_MS });
+    return { nonce: toBase64Url(nonce), credentialId: passkey.credentialId };
+  }
+
+  /** Checks one signed control action, over the text `challengeFor` works out from its one-time number, and gives the hash of the person whose passkey signed it. */
+  async checkControl(phoneKey: string, assertion: PasskeySignature, challengeFor: (nonce: Bytes) => Promise<Bytes>): Promise<string> {
+    // Taken out before anything else, whatever happens next, so each number acts once at most.
+    const issued = this.controlNonces.get(phoneKey);
+    this.controlNonces.delete(phoneKey);
+    if (issued === undefined || this.clock.now() >= issued.until) throw new Refused("control-expired");
+    const challenge = await challengeFor(issued.nonce);
+    // Read only after the wait above, so a passkey taken away meanwhile is not used.
+    const passkey = this.options.phone(phoneKey)?.passkey;
+    if (passkey === undefined) throw new Refused("control-no-passkey");
+    this.checkSignature(phoneKey, passkey, { assertion }, challenge, "action");
+    return passkey.approver;
+  }
+
+  /** What this phone's passkey can do now. The app is asked only when there is a passkey to compare with who is signed in. */
+  async controlPasskey(phoneKey: string, signal: AbortSignal): Promise<PasskeyState> {
+    if (this.openWindow(phoneKey) !== undefined) return "allowed";
+    if (this.options.phone(phoneKey)?.passkey === undefined) return "none";
+    return this.passkeyState(phoneKey, (await this.whoAmI(signal)).approver);
+  }
+
+  /** Who is signed in on the computer, from the app's server. */
+  async whoAmI(signal: AbortSignal): Promise<SignedInPerson> {
+    const fields = objectFields(await ask(this.options, "GET", "/api/me/approver", undefined, signal, { 404: "not-member" }));
+    const approver = fields?.approver;
+    if (typeof approver !== "string" || !APPROVER.test(approver)) {
+      logWarn("The app's answer about who is signed in was not in the shape the phone link reads.");
+      throw new Refused("failed");
+    }
+    return { approver, canApprove: fields?.canApprove === true, canControl: fields?.canControl === true };
   }
 
   /** The approval queue from the app's server, with the hash of who is signed in, which only this computer sees. */
@@ -383,7 +439,7 @@ function userIdOf(phoneKey: string): string {
 }
 
 /** One script as the app's route gives it, in the shape a phone is shown. */
-function readScript(value: unknown): ApprovalScript | null {
+export function readScript(value: unknown): ApprovalScript | null {
   const fields = objectFields(value);
   const name = fields?.scriptName;
   const version = fields?.version;

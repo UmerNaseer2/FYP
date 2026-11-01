@@ -36,6 +36,7 @@ export const ACTIVITY_SQL = `
     wait_event,
     backend_type,
     query,
+    to_char(query_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS query_start_utc,
     EXTRACT(EPOCH FROM (now() - query_start))      AS query_seconds,
     EXTRACT(EPOCH FROM (now() - xact_start))       AS xact_seconds,
     EXTRACT(EPOCH FROM (now() - state_change))     AS state_seconds
@@ -46,6 +47,27 @@ export const ACTIVITY_SQL = `
     AND state <> 'idle'
   ORDER BY query_start ASC NULLS LAST
   LIMIT 200
+`;
+
+/**
+ * Cancel one running statement, and nothing else about its session.
+ *
+ * The number and the moment the statement began name it together. A number
+ * alone is not enough: by the time somebody has read the screen and decided,
+ * that session may be on its next statement, or have ended and left its number
+ * to a stranger. No row comes back when it has moved on, so nothing is
+ * cancelled. pg_cancel_backend leaves the session connected. There is no
+ * terminate here on purpose: ending a session rolls back its work and takes
+ * its connection away, which is not a thing to do from a phone.
+ */
+export const CANCEL_SQL = `
+  SELECT pg_cancel_backend(pid) AS cancelled
+    FROM pg_stat_activity
+   WHERE pid = $1
+     AND query_start = $2::timestamptz
+     AND pid <> pg_backend_pid()
+     AND backend_type = 'client backend'
+     AND state = 'active'
 `;
 
 /** One row of ACTIVITY_SQL, before shaping. Every field can come back null. */
@@ -59,6 +81,7 @@ export type ActivityRow = {
   wait_event: string | null;
   backend_type: string | null;
   query: string | null;
+  query_start_utc: string | null;
   query_seconds: string | number | null;
   xact_seconds: string | number | null;
   state_seconds: string | number | null;
@@ -86,6 +109,12 @@ export type ActivitySession = {
   kind: ActivityKind;
   /** How long it has been on this statement, in seconds. Null if never started. */
   querySeconds: number | null;
+  /**
+   * When this statement began, in UTC with its microseconds, as text. With the
+   * pid it names this one statement, so a cancel cannot hit a later one (see
+   * CANCEL_SQL). Text because a JavaScript Date would drop the microseconds.
+   */
+  queryStart: string | null;
   /** How long its transaction has been open. Null when not in one. */
   xactSeconds: number | null;
   username: string | null;
@@ -155,6 +184,7 @@ export function toSession(row: ActivityRow, longRunningSeconds: number): Activit
     // For an idle-in-transaction session, how long it has been idle is the
     // number that matters, and that is state_change.
     querySeconds: kind === "idle-in-transaction" ? stateSeconds : querySeconds,
+    queryStart: row.query_start_utc ?? null,
     xactSeconds,
     username: row.username,
     applicationName: row.application_name || null,

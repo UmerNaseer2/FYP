@@ -220,6 +220,8 @@ export type PhoneActionRow = {
   title: string;
   /** How that went, as a sentence. */
   outcome: string;
+  /** Which script or session, for a run or a cancel. */
+  detail: string | null;
   /** Whether it did not happen. */
   bad: boolean;
   connectionId: number;

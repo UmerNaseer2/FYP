@@ -430,6 +430,36 @@ export async function getApprovalScripts(
 }
 
 /**
+ * Whether an approval for this exact run already exists, without spending it.
+ *
+ * The phone's plan reads this to say what the next step is: run it, wait for
+ * the decision, or ask. It is only advice for the screen. claimApproval is what
+ * decides, at the moment of the run, so a row that changes between the two only
+ * means a refusal there.
+ */
+export async function findOpenApproval(input: {
+  orgId: number;
+  connectionId: number;
+  schemaName: string;
+  scripts: ApprovalScript[];
+  action: ApprovalAction;
+}): Promise<"approved" | "pending" | null> {
+  await syncMetadataTables();
+  const fingerprint = runFingerprint(input.scripts, input.action);
+  const result = await pool.query<{ status: "approved" | "pending" }>(
+    `SELECT status FROM deploy_approvals
+      WHERE connection_id = $1 AND schema_name = $2
+        AND run_fingerprint = $3 AND action = $4 AND org_id = $5
+        AND status IN ('pending', 'approved')
+        AND ${UNEXPIRED}
+      ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END, id ASC
+      LIMIT 1`,
+    [input.connectionId, input.schemaName, fingerprint, input.action, input.orgId],
+  );
+  return result.rows[0]?.status ?? null;
+}
+
+/**
  * Claim the approval that covers this exact run, marking it used.
  *
  * Claiming BEFORE the run is deliberate. An approval authorises one run; if two

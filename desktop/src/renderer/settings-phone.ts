@@ -178,7 +178,7 @@
   /** How long a phone has left to set up approvals, as its row says it. */
   function setupLeft(until: number): string {
     const left = until - Date.now();
-    return left > 0 ? `Set up approvals on the phone within ${duration(left)}.` : "The time to set up approvals has run out.";
+    return left > 0 ? `Set up the passkey on the phone within ${duration(left)}.` : "The time to set up the passkey has run out.";
   }
 
   /** Moves the countdowns on: to the next try at the relay, to the end of the code on show, and to the end of each phone's time to set up approvals. */
@@ -501,7 +501,11 @@
     const pairedOn = new Date(phone.pairedAt).toLocaleDateString(undefined, { dateStyle: "medium" });
     const alerts = phone.alerts ? " Gets drift alerts." : "";
     const approvals = phone.approvals ? " Can approve deploys and rollbacks." : "";
-    const control = phone.control ? " Can check and acknowledge drift." : "";
+    const control = !phone.control
+      ? ""
+      : phone.approvals
+        ? " Can check and acknowledge drift, start deploys and rollbacks, and cancel queries."
+        : " Can check and acknowledge drift. Needs a passkey to start a run or cancel a query.";
     if (phone.connected) return `Connected now. Paired on ${pairedOn}.${alerts}${approvals}${control}`;
     const lastSeen = new Date(phone.lastSeenAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
     return `Last seen ${lastSeen}. Paired on ${pairedOn}.${alerts}${approvals}${control}`;
@@ -517,15 +521,15 @@
     if (action === "keep") {
       button.textContent = "Keep it";
     } else if (action === "allow") {
-      button.textContent = "Allow approvals";
-      button.setAttribute("aria-label", `Allow approvals on ${phone.name}`);
+      button.textContent = phone.control ? "Set up passkey" : "Allow approvals";
+      button.setAttribute("aria-label", phone.control ? `Set up a passkey on ${phone.name}` : `Allow approvals on ${phone.name}`);
     } else if (action === "turn-off" && phone.approvals) {
-      button.textContent = "Turn off approvals";
-      button.setAttribute("aria-label", `Turn off approvals on ${phone.name}`);
+      button.textContent = phone.control ? "Remove passkey" : "Turn off approvals";
+      button.setAttribute("aria-label", phone.control ? `Remove the passkey on ${phone.name}` : `Turn off approvals on ${phone.name}`);
     } else if (action === "turn-off") {
       // The phone has no passkey yet, only time to set one up, so this ends that time.
       button.textContent = "Cancel setup";
-      button.setAttribute("aria-label", `Cancel setting up approvals on ${phone.name}`);
+      button.setAttribute("aria-label", `Cancel setting up ${phone.control ? "a passkey" : "approvals"} on ${phone.name}`);
     } else if (action === "allow-control") {
       button.textContent = "Allow control";
       button.setAttribute("aria-label", `Allow control from ${phone.name}`);
@@ -645,7 +649,7 @@
     const outcome = document.createElement("span");
     outcome.className = entry.bad ? "hint phone-action-bad" : "hint";
     outcome.textContent = entry.outcome;
-    const place = [entry.phone, connectionNames.get(entry.connectionId) ?? `Connection ${entry.connectionId}`, ...(entry.schema === null ? [] : [entry.schema])].join(", ");
+    const place = [entry.phone, connectionNames.get(entry.connectionId) ?? `Connection ${entry.connectionId}`, ...(entry.schema === null ? [] : [entry.schema]), ...(entry.detail === null ? [] : [entry.detail])].join(", ");
     const detail = document.createElement("span");
     detail.className = "hint";
     detail.textContent = `${place}. ${new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`;

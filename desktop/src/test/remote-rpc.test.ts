@@ -12,6 +12,7 @@ import {
   MAX_PUSH_FIELD_LENGTH,
   MAX_REQUEST_BYTES,
   MAX_SCHEMA_NAME_LENGTH,
+  MAX_SCRIPT_TEXT_LENGTH,
   isSchemaName,
   readAnswer,
   readRequest,
@@ -20,10 +21,14 @@ import {
   writeRequest,
   writeResult,
   type ApprovalSummary,
+  type CancelParams,
   type ChangeLine,
   type ColumnOverview,
   type CompareSummary,
   type DecideParams,
+  type DeployPlan,
+  type DeployPlanParams,
+  type DeployStartParams,
   type ErrorCode,
   type ForeignKeyOverview,
   type LiveSession,
@@ -71,6 +76,12 @@ const METHODS: Method[] = [
   "approvals.decide",
   "drift.check",
   "drift.acknowledge",
+  "deploy.list",
+  "deploy.family",
+  "deploy.plan",
+  "control.begin",
+  "deploy.start",
+  "session.cancel",
 ];
 
 /** A schema in one of the computer's saved connections. */
@@ -99,6 +110,12 @@ const ASSERTION = { credentialId: base64Url(16), authenticatorData: base64Url(37
 /** A decision on a request, signed with the phone's passkey. */
 const DECIDE: DecideParams = { approvalId: 12, decision: "approve", fingerprint: FINGERPRINT, assertion: ASSERTION };
 
+const DEPLOY_FAMILY = { connectionId: 7, schemaName: "public", scriptName: "users_migration" };
+const DEPLOY_PLAN: DeployPlanParams = { ...DEPLOY_FAMILY, action: "deploy", targetVersion: "2.0.0" };
+const DEPLOY_START: DeployStartParams = { ...DEPLOY_PLAN, fingerprint: FINGERPRINT, step: "run", ticks: ["production", "breaking", "data-loss", "other-scripts", "drift"], assertion: ASSERTION };
+const QUERY_START = "2026-10-30T09:59:48.123456Z";
+const CANCEL: CancelParams = { connectionId: 7, pid: 4242, queryStart: QUERY_START, assertion: ASSERTION };
+
 /** One of each request a phone may send. */
 const REQUESTS: Request[] = [
   { id: 1, method: "hello" },
@@ -119,6 +136,14 @@ const REQUESTS: Request[] = [
   { id: 13, method: "approvals.decide", params: DECIDE },
   { id: 14, method: "drift.check", params: { connectionId: 7, trackedSchemaId: 9 } },
   { id: 15, method: "drift.acknowledge", params: { connectionId: 7, trackedSchemaId: 9 } },
+  { id: 16, method: "deploy.list", params: { connectionId: 7 } },
+  { id: 17, method: "deploy.family", params: DEPLOY_FAMILY },
+  { id: 18, method: "deploy.plan", params: DEPLOY_PLAN },
+  { id: 19, method: "deploy.plan", params: { ...DEPLOY_FAMILY, action: "revert", targetVersion: null } },
+  { id: 20, method: "control.begin" },
+  { id: 21, method: "deploy.start", params: DEPLOY_START },
+  { id: 22, method: "deploy.start", params: { ...DEPLOY_START, action: "revert", targetVersion: null, step: "ask", ticks: [] } },
+  { id: 23, method: "session.cancel", params: CANCEL },
 ];
 
 /** A column, as the computer describes it. */
@@ -208,6 +233,7 @@ const LIVE_SESSION: LiveSession = {
   pid: 4242,
   kind: "blocked",
   querySeconds: 12.5,
+  queryStart: QUERY_START,
   xactSeconds: 40,
   applicationName: "report-runner",
   waitingOn: "Lock: transactionid",
@@ -229,7 +255,19 @@ const LIVE: LiveStatus = {
   health: { since: "2026-10-01T00:00:00.000Z", metrics: [{ label: "Cache hit ratio", display: "99.1%", level: "good", note: "Most reads come from memory." }] },
   drift: [{ id: 9, schema: "public", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001", acknowledgedAt: null }],
   driftProblem: null,
-  control: { allowed: true, canCheck: true, canAcknowledge: false },
+  control: { allowed: true, canCheck: true, canAcknowledge: false, canDeploy: true, canCancel: false, passkey: "other-person" },
+};
+
+const DEPLOY_PLAN_RESULT: DeployPlan = {
+  ...DEPLOY_PLAN,
+  environment: "prod",
+  partial: false,
+  fingerprint: FINGERPRINT,
+  scripts: [{ name: "users_migration", version: "2.0.0", sql: "DROP TABLE t;" }],
+  risks: { production: true, breaking: ["users_migration v2.0.0"], dataLoss: ["users_migration v2.0.0"], otherScripts: ["orders v1.0.0"], drift: "drifted" },
+  next: "blocked",
+  blockedReason: "read-only",
+  passkey: "ready",
 };
 
 function liveWith(changes: Record<string, unknown>): unknown {
@@ -264,6 +302,12 @@ const RESULTS: { [M in Method]: Results[M] } = {
   "approvals.decide": { status: "approved" },
   "drift.check": { status: "in_sync" },
   "drift.acknowledge": { status: "drifted" },
+  "deploy.list": { registry: "ok", partial: true, families: [{ schemaName: "public", scriptName: "users_migration", newestVersion: "2.0.0", versionCount: 3 }], passkey: "allowed" },
+  "deploy.family": { currentVersion: "1.0.0", waiting: ["1.1.0", "2.0.0"], undo: [{ target: "0.9.0", undoCount: 1 }, { target: null, undoCount: 2 }], partial: false, run: { state: "running", at: 1_790_000_000_000 } },
+  "deploy.plan": DEPLOY_PLAN_RESULT,
+  "control.begin": { nonce: base64Url(32), credentialId: base64Url(16) },
+  "deploy.start": { status: "sent-for-approval" },
+  "session.cancel": { status: "gone" },
 };
 
 /** OVERVIEW with its table changed. */
@@ -358,6 +402,35 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "drift.acknowledge", params: { connectionId: 7 } },
     { id: 5, method: "drift.acknowledge", params: { connectionId: 7, trackedSchemaId: 1.5 } },
     { id: 5, method: "drift.acknowledge", params: { connectionId: 7, trackedSchemaId: 9, x: 1 } },
+    { id: 5, method: "deploy.list" },
+    { id: 5, method: "deploy.list", params: { connectionId: 0 } },
+    { id: 5, method: "deploy.list", params: { connectionId: 7, x: 1 } },
+    { id: 5, method: "deploy.family", params: { connectionId: 7, schemaName: "public" } },
+    { id: 5, method: "deploy.family", params: { ...DEPLOY_FAMILY, schemaName: " public" } },
+    { id: 5, method: "deploy.family", params: { ...DEPLOY_FAMILY, scriptName: "" } },
+    { id: 5, method: "deploy.family", params: { ...DEPLOY_FAMILY, scriptName: "a".repeat(MAX_SCRIPT_TEXT_LENGTH + 1) } },
+    { id: 5, method: "deploy.family", params: { ...DEPLOY_FAMILY, x: 1 } },
+    { id: 5, method: "deploy.plan", params: DEPLOY_FAMILY },
+    { id: 5, method: "deploy.plan", params: { ...DEPLOY_PLAN, action: "delete" } },
+    { id: 5, method: "deploy.plan", params: { ...DEPLOY_PLAN, targetVersion: 2 } },
+    { id: 5, method: "deploy.plan", params: { ...DEPLOY_PLAN, targetVersion: "" } },
+    { id: 5, method: "deploy.plan", params: { ...DEPLOY_PLAN, x: 1 } },
+    { id: 5, method: "control.begin", params: {} },
+    { id: 5, method: "deploy.start", params: DEPLOY_PLAN },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, fingerprint: "nope" } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, step: "approve" } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: "production" } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["everything"] } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, ticks: ["production", "production"] } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, assertion: { ...ASSERTION, signature: "not base64url!" } } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, assertion: { ...ASSERTION, x: 1 } } },
+    { id: 5, method: "deploy.start", params: { ...DEPLOY_START, x: 1 } },
+    { id: 5, method: "session.cancel", params: { connectionId: 7, pid: 4242, queryStart: QUERY_START } },
+    { id: 5, method: "session.cancel", params: { ...CANCEL, pid: 0 } },
+    { id: 5, method: "session.cancel", params: { ...CANCEL, pid: "4242" } },
+    { id: 5, method: "session.cancel", params: { ...CANCEL, queryStart: "" } },
+    { id: 5, method: "session.cancel", params: { ...CANCEL, queryStart: "2".repeat(33) } },
+    { id: 5, method: "session.cancel", params: { ...CANCEL, x: 1 } },
     { id: 5, method: "schema.read", params: { connectionId: 7 } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "" } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "a".repeat(MAX_SCHEMA_NAME_LENGTH + 1) } },
@@ -460,6 +533,21 @@ test("reads a passkey's answers with each part as big as a request takes, and ea
         approvalId: Number.MAX_SAFE_INTEGER,
         decision: "reject",
         fingerprint: FINGERPRINT,
+        assertion: { credentialId: base64Url(1023), authenticatorData: base64Url(1024), clientDataJSON: base64Url(2048), signature: base64Url(256) },
+      },
+    },
+    {
+      id: Number.MAX_SAFE_INTEGER,
+      method: "deploy.start",
+      params: {
+        connectionId: Number.MAX_SAFE_INTEGER,
+        schemaName: "a".repeat(MAX_SCHEMA_NAME_LENGTH),
+        scriptName: "a".repeat(MAX_SCRIPT_TEXT_LENGTH),
+        action: "deploy",
+        targetVersion: "a".repeat(MAX_SCRIPT_TEXT_LENGTH),
+        fingerprint: FINGERPRINT,
+        step: "run",
+        ticks: ["production", "breaking", "data-loss", "other-scripts", "drift"],
         assertion: { credentialId: base64Url(1023), authenticatorData: base64Url(1024), clientDataJSON: base64Url(2048), signature: base64Url(256) },
       },
     },
@@ -613,7 +701,7 @@ test("reads a computer that sends no control switch or acknowledgement as an old
 
 test("reads a control switch's fields as off unless they say true, so a bad one shows no buttons", () => {
   const read = readResult("live.read", { ...LIVE, control: { allowed: "yes", canCheck: 1, canAcknowledge: null } });
-  assert.deepEqual(read?.control, { allowed: false, canCheck: false, canAcknowledge: false });
+  assert.deepEqual(read?.control, { allowed: false, canCheck: false, canAcknowledge: false, canDeploy: false, canCancel: false, passkey: "none" });
 });
 
 test("reads when a drift was acknowledged, and refuses a time that is not text", () => {

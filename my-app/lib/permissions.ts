@@ -180,6 +180,7 @@ export const FEATURES = [
     description: "Query analysis, live activity and trends.",
     actions: {
       read: { does: "open the Performance screen", from: "viewer" },
+      update: { does: "cancel a stuck query on a live database", from: "editor" },
       run: { does: "measure a query on a live database", from: "editor" },
     },
   },

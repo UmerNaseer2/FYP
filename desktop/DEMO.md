@@ -140,7 +140,8 @@ File, then Settings, then Phone:
 - Paired phones lists each paired phone, with Allow approvals (so that
   deploy and rollback requests can be approved or rejected from it with a
   passkey), Turn off approvals, Allow control (so that it can check and
-  acknowledge drift), Turn off control, and Remove.
+  acknowledge drift and, with a passkey, start a deploy or a rollback and
+  cancel a running query), Set up passkey, Turn off control, and Remove.
 - What phones tried to change lists every try, refused ones too.
 
 Then, with the phone:
@@ -161,8 +162,14 @@ Then, with the phone:
    even with the app closed.
 6. On the computer, choose Allow control for the phone. On the phone, open
    the connection, then Live status, and under Drift choose Check now, then
-   Acknowledge. Settings lists both under What phones tried to change. Choose
-   Turn off control, and the buttons leave the phone within 5 seconds.
+   Acknowledge. Settings lists both under What phones tried to change.
+7. If the phone has no passkey yet, choose Set up passkey for it on the
+   computer, then set it up from Live status on the phone. Choose Deploy or
+   roll back, pick a script and a version, read its SQL, tick what it risks,
+   and sign with the passkey. On a production connection the same steps send
+   a request for approval instead. Back on Live status, choose Cancel query on
+   a long query and sign. Settings lists each one. Choose Turn off control, and
+   the buttons leave the phone within 5 seconds.
 
 Point out that the relay passes on messages it cannot read, that the
 pairing code never reaches the relay, and that a phone can do only what the

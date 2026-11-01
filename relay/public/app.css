@@ -1107,3 +1107,8 @@ dl.card {
     max-width: 16rem;
   }
 }
+
+/* A script's name and version under a risk can be one long word. */
+.risk-label {
+  overflow-wrap: anywhere;
+}

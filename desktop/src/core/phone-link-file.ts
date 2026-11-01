@@ -2,8 +2,8 @@
  * What phone-link.json holds: whether the phone link is on, the relay it goes
  * through, which saved connections phones may see, the phones paired with this
  * computer with the drift alerts each has asked for, the passkey each approves
- * requests with and whether Allow control is on for it, the log of what phones
- * tried to change, and the phone link's own keys.
+ * requests and signs control actions with and whether Allow control is on for
+ * it, the log of what phones tried to change, and the phone link's own keys.
  *
  *  - signingKey proves to the relay that this is the computer the phones
  *    paired with (src/shared/remote/relay-auth.ts). The relay knows the
@@ -86,12 +86,12 @@ export type PairedPhone = {
 };
 
 /** What a phone tried to change. */
-export type PhoneActionName = "drift-check" | "drift-acknowledge";
-const PHONE_ACTION_NAMES: readonly PhoneActionName[] = ["drift-check", "drift-acknowledge"];
+export type PhoneActionName = "drift-check" | "drift-acknowledge" | "deploy" | "rollback" | "cancel-query";
+const PHONE_ACTION_NAMES: readonly PhoneActionName[] = ["drift-check", "drift-acknowledge", "deploy", "rollback", "cancel-query"];
 
 /** How it went, as a fixed word, so that nothing a server said can reach the log. */
-export type PhoneActionOutcome = "done" | "control-off" | "signed-out" | "forbidden" | "not-shared" | "not-found" | "no-baseline" | "unreachable" | "failed";
-const PHONE_ACTION_OUTCOMES: readonly PhoneActionOutcome[] = ["done", "control-off", "signed-out", "forbidden", "not-shared", "not-found", "no-baseline", "unreachable", "failed"];
+export type PhoneActionOutcome = "done" | "control-off" | "signed-out" | "forbidden" | "not-shared" | "not-found" | "no-baseline" | "unreachable" | "failed" | "started" | "sent-for-approval" | "changed" | "gone" | "passkey-refused" | "no-passkey" | "other-person" | "expired" | "not-applied" | "outcome-unknown" | "already-running" | "database-refused" | "read-only" | "no-registry";
+const PHONE_ACTION_OUTCOMES: readonly PhoneActionOutcome[] = ["done", "control-off", "signed-out", "forbidden", "not-shared", "not-found", "no-baseline", "unreachable", "failed", "started", "sent-for-approval", "changed", "gone", "passkey-refused", "no-passkey", "other-person", "expired", "not-applied", "outcome-unknown", "already-running", "database-refused", "read-only", "no-registry"];
 
 /**
  * One try by a phone to change something, refused or not. It is kept on the
@@ -110,6 +110,8 @@ export type PhoneAction = {
   /** The schema it was about, or null when it was refused before the computer looked it up. */
   schema: string | null;
   outcome: PhoneActionOutcome;
+  /** What it was about, in a few words, such as "users_migration to v1.2.0" or "session 123". */
+  detail?: string;
 };
 
 export type PhoneLinkState = {
@@ -238,10 +240,10 @@ function readPhones(value: unknown): PairedPhone[] {
 
 function readAction(value: unknown): PhoneAction | null {
   if (!isRecord(value)) return null;
-  const { at, phone, action, connectionId, schema, outcome } = value;
+  const { at, phone, action, connectionId, schema, outcome, detail } = value;
   if (!isTime(at) || typeof phone !== "string" || !PHONE_ACTION_NAMES.some((known) => known === action) || !PHONE_ACTION_OUTCOMES.some((known) => known === outcome)) return null;
   if (typeof connectionId !== "number" || !Number.isSafeInteger(connectionId) || connectionId <= 0 || (schema !== null && typeof schema !== "string")) return null;
-  return { at, phone: cleanDeviceName(phone, "Phone"), action: action as PhoneActionName, connectionId, schema, outcome: outcome as PhoneActionOutcome };
+  return { at, phone: cleanDeviceName(phone, "Phone"), action: action as PhoneActionName, connectionId, schema, outcome: outcome as PhoneActionOutcome, ...(typeof detail === "string" ? { detail } : {}) };
 }
 
 /** The action log's entries that can be read, the newest MAX_PHONE_ACTIONS of them. */

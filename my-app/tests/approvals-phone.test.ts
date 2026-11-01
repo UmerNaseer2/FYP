@@ -10,6 +10,7 @@
 //     and expectedApprover.
 // And that all three routes stay inside the caller's organization: another
 // organization's request reads as missing, and its queue is never listed.
+// Last, findOpenApproval, which tells a phone how a run stands in the queue.
 //
 // The fingerprints and the approverKey are pinned as hex worked out on their
 // own, outside this code, because the desktop app computes the same
@@ -24,6 +25,7 @@ import {
   MAX_STORED_SQL_CHARS,
   approverKey,
   createApprovalRequest,
+  findOpenApproval,
   runFingerprint,
   type DeployApproval,
 } from "@/lib/approvals-db";
@@ -635,5 +637,50 @@ describe("inside the caller's organization", () => {
     expect(body).toEqual({ error: "That approval no longer exists." });
     const writes = mockPoolQuery.mock.calls.filter(([text]) => /UPDATE/.test(String(text)));
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe("findOpenApproval", () => {
+  const INPUT = {
+    orgId: TEST_ORG.id,
+    connectionId: 3,
+    schemaName: "public",
+    scripts: VECTOR_RUN,
+    action: "deploy" as const,
+  };
+
+  it("looks for exactly this run, in this organization", async () => {
+    await findOpenApproval(INPUT);
+    const [sql, values] = mockPoolQuery.mock.calls[0] as [string, unknown[]];
+    expect(values).toEqual([3, "public", DEPLOY_HEX, "deploy", TEST_ORG.id]);
+    expect(sql).toMatch(/org_id = \$5/);
+    expect(sql).toMatch(/status IN \('pending', 'approved'\)/);
+    expect(sql).toMatch(/expires_at/);
+    // It only reads: claimApproval is what spends an approval.
+    expect(sql).not.toMatch(/UPDATE|INSERT|DELETE/);
+  });
+
+  it("tells a rollback's request from a deploy's", async () => {
+    await findOpenApproval({ ...INPUT, action: "revert" });
+    expect((mockPoolQuery.mock.calls[0] as [string, unknown[]])[1]).toEqual([
+      3,
+      "public",
+      REVERT_HEX,
+      "revert",
+      TEST_ORG.id,
+    ]);
+  });
+
+  it("prefers an approved request to one still waiting", async () => {
+    await findOpenApproval(INPUT);
+    expect(String(mockPoolQuery.mock.calls[0][0])).toMatch(/CASE status WHEN 'approved' THEN 0 ELSE 1 END/);
+  });
+
+  it("answers the status it found, or null", async () => {
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ status: "approved" }] });
+    await expect(findOpenApproval(INPUT)).resolves.toBe("approved");
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ status: "pending" }] });
+    await expect(findOpenApproval(INPUT)).resolves.toBe("pending");
+    await expect(findOpenApproval(INPUT)).resolves.toBe(null);
   });
 });

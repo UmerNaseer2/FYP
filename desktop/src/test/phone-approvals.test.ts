@@ -19,7 +19,7 @@ import { Refused, type AppAnswer, type AppCaller, type PhoneApprovalRequests } f
 import { approvalChallenge, approvalFingerprint, type ApprovalDecision, type ApprovalScript } from "../shared/remote/approval.js";
 import { fromBase64Url, type Bytes } from "../shared/remote/bytes.js";
 import { objectFields } from "../shared/remote/json.js";
-import type { ApprovalSummary, DecideParams, NewPasskeyParams, PasskeyState } from "../shared/remote/rpc.js";
+import type { ApprovalSummary, DecideParams, NewPasskeyParams, PasskeySignature, PasskeyState } from "../shared/remote/rpc.js";
 import { assertion, newSoftwarePasskey, registration, RELAY_ORIGIN, type SoftwarePasskey } from "./software-passkey";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ss-phone-approvals-"));
@@ -96,6 +96,7 @@ const OTHER_APPROVER = "b2".repeat(32);
 const SCRIPTS: ApprovalScript[] = [{ name: "add_order_note", version: "1.1.0", sql: "ALTER TABLE orders ADD COLUMN note text;" }];
 
 const QUEUE = "GET /api/deploy/approvals/phone";
+const WHO = "GET /api/me/approver";
 const SQL_12 = "GET /api/deploy/approvals/12/phone";
 const DECIDE_12 = "POST /api/deploy/approvals/12";
 
@@ -134,6 +135,11 @@ function summary(changes: Partial<ApprovalSummary> = {}): ApprovalSummary {
 /** What the queue route answers with these requests waiting, for whoever APPROVER stands for unless changed. */
 function queueAnswer(approvals: unknown[], changes: Record<string, unknown> = {}): AppAnswer {
   return { status: 200, json: { approver: APPROVER, canApprove: true, approvals, ...changes } };
+}
+
+/** What the who-am-I route answers, for whoever APPROVER stands for unless changed. */
+function whoAnswer(changes: Record<string, unknown> = {}): AppAnswer {
+  return { status: 200, json: { approver: APPROVER, canApprove: true, canControl: false, ...changes } };
 }
 
 /** What request 12's SQL route answers: the scripts kept with it, in the app's own field names, or null for none. */
@@ -193,6 +199,7 @@ class Fixture {
 
   constructor() {
     this.app.answers.set(QUEUE, queueAnswer([summary()]));
+    this.app.answers.set(WHO, whoAnswer());
     this.app.answers.set(SQL_12, sqlAnswer(SCRIPTS));
     this.app.answers.set(DECIDE_12, (body) => {
       const status = objectFields(body)?.decision === "approve" ? "approved" : "rejected";
@@ -290,6 +297,17 @@ async function signed(requests: PhoneApprovalRequests, passkey: SoftwarePasskey,
       clientDataJSON: made.clientDataJSON.toString("base64url"),
       signature: made.signature.toString("base64url"),
     },
+  };
+}
+
+/** A signature over `challenge`, as a phone sends it. */
+function signatureOver(passkey: SoftwarePasskey, challenge: Bytes): PasskeySignature {
+  const made = assertion(passkey, challenge);
+  return {
+    credentialId: passkey.credentialId.toString("base64url"),
+    authenticatorData: made.authenticatorData.toString("base64url"),
+    clientDataJSON: made.clientDataJSON.toString("base64url"),
+    signature: made.signature.toString("base64url"),
   };
 }
 
@@ -457,7 +475,7 @@ test("lets a phone set up its passkey only in the 5 minutes after Allow approval
   assert.equal(await refusalOf(() => requests.beginPasskey()), "not-allowed");
   assert.equal((await requests.list(SIGNAL)).passkey, "ready");
   // Setting it up asked the app who is signed in, and nothing else.
-  assert.deepEqual(fixture.app.routes(), [QUEUE, QUEUE]);
+  assert.deepEqual(fixture.app.routes(), [WHO, QUEUE]);
 });
 
 test("keeps a setup the phone is in the middle of when Allow approvals is chosen again", async () => {
@@ -526,24 +544,30 @@ test("keeps no passkey for someone who may not approve, or once Settings stops a
   const fixture = new Fixture();
   const key = fixture.addPhone();
   const passkey = newSoftwarePasskey();
-  fixture.app.answers.set(QUEUE, queueAnswer([], { canApprove: false }));
+  fixture.app.answers.set(WHO, whoAnswer({ canApprove: false }));
   assert.equal(await refusalOf(() => setUpPasskey(fixture, key, passkey)), "forbidden");
 
-  fixture.app.answers.set(QUEUE, () => {
+  // Someone who may run or cancel things needs one as much as someone who may approve.
+  fixture.app.answers.set(WHO, whoAnswer({ canApprove: false, canControl: true }));
+  assert.deepEqual(await setUpPasskey(fixture, key, passkey), { passkey: "ready" });
+  fixture.saved.length = 0;
+  fixture.phones.set(key, { name: "Test phone" });
+
+  fixture.app.answers.set(WHO, () => {
     fixture.approvals.forget(key);
-    return queueAnswer([]);
+    return whoAnswer();
   });
   assert.equal(await refusalOf(() => setUpPasskey(fixture, key, passkey)), "not-allowed");
-  fixture.app.answers.set(QUEUE, () => {
+  fixture.app.answers.set(WHO, () => {
     fixture.phones.delete(key);
-    return queueAnswer([]);
+    return whoAnswer();
   });
   assert.equal(await refusalOf(() => setUpPasskey(fixture, key, passkey)), "not-allowed");
   assert.deepEqual(fixture.saved, []);
 
   // Without a relay there is no page to check the passkey was made on.
   fixture.phones.set(key, { name: "Test phone" });
-  fixture.app.answers.set(QUEUE, queueAnswer([]));
+  fixture.app.answers.set(WHO, whoAnswer());
   fixture.relayOrigin = null;
   newLogLines();
   assert.equal(await refusalOf(() => setUpPasskey(fixture, key, passkey)), "failed");
@@ -827,4 +851,160 @@ test("logs no challenge, one-time number, signature, SQL or who is signed in", a
     key,
   ];
   for (const secret of secrets) assert.ok(!lines.includes(secret));
+});
+
+/** What a control action's signature is over in these tests: any text will do, as PhoneControlActions works out the real one. */
+const CONTROL_TEXT = crypto.randomBytes(32);
+
+/** The number to sign, and that signature's check, as one action from a phone. */
+async function checkedControl(fixture: Fixture, key: string, passkey: SoftwarePasskey): Promise<string> {
+  fixture.approvals.beginControl(key);
+  return fixture.approvals.checkControl(key, signatureOver(passkey, CONTROL_TEXT), async () => CONTROL_TEXT);
+}
+
+test("gives a phone a number to sign for a control action only when it has a passkey", async () => {
+  const fixture = new Fixture();
+  const passkey = newSoftwarePasskey();
+  assert.equal(await refusalOf(() => fixture.approvals.beginControl(fixture.addPhone())), "control-no-passkey");
+
+  const key = fixture.addPhone("Test phone", keptPasskey(passkey));
+  const first = fixture.approvals.beginControl(key);
+  assert.equal(first.credentialId, passkey.credentialId.toString("base64url"));
+  assert.equal(decoded(first.nonce).length, 32);
+  assert.notEqual(fixture.approvals.beginControl(key).nonce, first.nonce);
+});
+
+test("checks a control action's signature over what the number and the action make, and says whose passkey it was", async () => {
+  const fixture = new Fixture();
+  const passkey = newSoftwarePasskey();
+  const key = fixture.addPhone("Test phone", keptPasskey(passkey));
+  const { nonce } = fixture.approvals.beginControl(key);
+  let given: Bytes | null = null;
+  const made = await fixture.approvals.checkControl(key, signatureOver(passkey, CONTROL_TEXT), async (issued) => {
+    given = issued;
+    return CONTROL_TEXT;
+  });
+  assert.equal(made, APPROVER);
+  assert.deepEqual(given, decoded(nonce));
+});
+
+test("takes a control number out before anything else, so it acts once at most", async () => {
+  const fixture = new Fixture();
+  const passkey = newSoftwarePasskey();
+  const key = fixture.addPhone("Test phone", keptPasskey(passkey));
+  const signature = (): PasskeySignature => signatureOver(passkey, CONTROL_TEXT);
+  const check = (): Promise<string> => fixture.approvals.checkControl(key, signature(), async () => CONTROL_TEXT);
+
+  // None asked for yet.
+  assert.equal(await refusalOf(check), "control-expired");
+  // Used once.
+  fixture.approvals.beginControl(key);
+  assert.equal(await check(), APPROVER);
+  assert.equal(await refusalOf(check), "control-expired");
+  // Too old.
+  fixture.approvals.beginControl(key);
+  fixture.clock.advance(DECISION_MS);
+  assert.equal(await refusalOf(check), "control-expired");
+  // Spent by a failure as much as by a success.
+  fixture.approvals.beginControl(key);
+  assert.equal(await refusalOf(() => fixture.approvals.checkControl(key, signatureOver(passkey, crypto.randomBytes(32)), async () => CONTROL_TEXT)), "passkey-refused");
+  assert.equal(await refusalOf(check), "control-expired");
+  // Removed along with the phone's approvals.
+  fixture.approvals.beginControl(key);
+  fixture.approvals.forget(key);
+  assert.equal(await refusalOf(check), "control-expired");
+});
+
+test("refuses a control action signed by the wrong passkey, and says so in the log without what it signed", async () => {
+  const fixture = new Fixture();
+  // One that counts its signatures, so a copy of it can fall behind.
+  const passkey = newSoftwarePasskey(5);
+  const key = fixture.addPhone("Test phone", keptPasskey(passkey));
+  newLogLines();
+  fixture.approvals.beginControl(key);
+  const wrong = signatureOver(newSoftwarePasskey(2), CONTROL_TEXT);
+  assert.equal(await refusalOf(() => fixture.approvals.checkControl(key, wrong, async () => CONTROL_TEXT)), "passkey-refused");
+  // A copy of the passkey that has not counted the signature made here.
+  await checkedControl(fixture, key, passkey);
+  fixture.approvals.beginControl(key);
+  const bad = signatureOver({ ...passkey, signCount: passkey.signCount - 1 }, CONTROL_TEXT);
+  assert.equal(await refusalOf(() => fixture.approvals.checkControl(key, bad, async () => CONTROL_TEXT)), "passkey-refused");
+
+  const lines = newLogLines();
+  assert.equal(countLines(lines, /did not take a phone's action:/), 2);
+  for (const secret of [wrong.signature, bad.signature, wrong.clientDataJSON, APPROVER, key]) assert.ok(!lines.includes(secret));
+});
+
+test("does not use a passkey taken away while the action's text was being worked out", async () => {
+  const fixture = new Fixture();
+  const passkey = newSoftwarePasskey();
+  const key = fixture.addPhone("Test phone", keptPasskey(passkey));
+  fixture.approvals.beginControl(key);
+  const refusal = await refusalOf(() =>
+    fixture.approvals.checkControl(key, signatureOver(passkey, CONTROL_TEXT), async () => {
+      fixture.phones.set(key, { name: "Test phone" });
+      return CONTROL_TEXT;
+    }),
+  );
+  assert.equal(refusal, "control-no-passkey");
+});
+
+test("keeps a control number and an approval's number apart, so neither disturbs the other", async () => {
+  const fixture = new Fixture();
+  const passkey = newSoftwarePasskey();
+  const key = fixture.addPhone("Test phone", keptPasskey(passkey));
+  const requests = fixture.approvals.forPhone(key);
+  await requests.list(SIGNAL);
+  await requests.read(12, SIGNAL);
+
+  // A decision being prepared, and a control action begun and finished meanwhile.
+  const sent = await signed(requests, passkey, decision());
+  assert.equal(await checkedControl(fixture, key, passkey), APPROVER);
+  assert.deepEqual(await requests.decide(sent, SIGNAL), { status: "approved" });
+
+  // And the other way round.
+  await requests.read(12, SIGNAL);
+  fixture.approvals.beginControl(key);
+  const next = await signed(requests, passkey, decision());
+  assert.deepEqual(await requests.decide(next, SIGNAL), { status: "approved" });
+  assert.equal(await fixture.approvals.checkControl(key, signatureOver(passkey, CONTROL_TEXT), async () => CONTROL_TEXT), APPROVER);
+});
+
+test("says where a phone's passkey stands for control, asking who is signed in only when it holds one", async () => {
+  const fixture = new Fixture();
+  const none = fixture.addPhone();
+  assert.equal(await fixture.approvals.controlPasskey(none, SIGNAL), "none");
+  assert.equal(fixture.app.calls.length, 0);
+  fixture.approvals.allow(none);
+  assert.equal(await fixture.approvals.controlPasskey(none, SIGNAL), "allowed");
+  assert.equal(fixture.app.calls.length, 0);
+
+  const passkey = newSoftwarePasskey();
+  const held = fixture.addPhone("Test phone", keptPasskey(passkey));
+  assert.equal(await fixture.approvals.controlPasskey(held, SIGNAL), "ready");
+  fixture.app.answers.set(WHO, whoAnswer({ approver: OTHER_APPROVER }));
+  assert.equal(await fixture.approvals.controlPasskey(held, SIGNAL), "other-person");
+  assert.deepEqual(fixture.app.routes(), [WHO, WHO]);
+});
+
+test("reads who is signed in, and logs only that the answer's shape was wrong", async () => {
+  const fixture = new Fixture();
+  assert.deepEqual(await fixture.approvals.whoAmI(SIGNAL), { approver: APPROVER, canApprove: true, canControl: false });
+
+  fixture.app.answers.set(WHO, whoAnswer({ canApprove: "yes", canControl: 1 }));
+  assert.deepEqual(await fixture.approvals.whoAmI(SIGNAL), { approver: APPROVER, canApprove: false, canControl: false });
+
+  newLogLines();
+  for (const approver of [undefined, 7, "not-a-hash", "someone@example.com"]) {
+    fixture.app.answers.set(WHO, whoAnswer({ approver }));
+    assert.equal(await refusalOf(() => fixture.approvals.whoAmI(SIGNAL)), "failed");
+  }
+  const lines = newLogLines();
+  assert.equal(countLines(lines, /The app's answer about who is signed in was not in the shape/), 4);
+  assert.ok(!lines.includes("someone@example.com"));
+
+  fixture.app.answers.set(WHO, { status: 404, json: {} });
+  assert.equal(await refusalOf(() => fixture.approvals.whoAmI(SIGNAL)), "not-member");
+  fixture.app.answers.set(WHO, { status: 401, json: {} });
+  assert.equal(await refusalOf(() => fixture.approvals.whoAmI(SIGNAL)), "signed-out");
 });

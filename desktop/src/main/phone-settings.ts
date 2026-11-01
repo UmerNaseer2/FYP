@@ -69,6 +69,9 @@ export function phoneView(link: PhoneSettingsLink | null, problem: string | null
 const ACTION_TITLES: Readonly<Record<PhoneActionName, string>> = {
   "drift-check": "Check drift now",
   "drift-acknowledge": "Acknowledge drift",
+  deploy: "Start a deploy",
+  rollback: "Start a rollback",
+  "cancel-query": "Cancel a query",
 };
 
 const ACTION_OUTCOMES: Readonly<Record<PhoneActionOutcome, string>> = {
@@ -77,11 +80,28 @@ const ACTION_OUTCOMES: Readonly<Record<PhoneActionOutcome, string>> = {
   "signed-out": "Refused: nobody was signed in on the computer.",
   forbidden: "Refused: the signed-in role may not do this.",
   "not-shared": "Refused: this connection is not shared with phones.",
-  "not-found": "Refused: that schema is not tracked.",
+  "not-found": "Refused: the app could not find what it named.",
   "no-baseline": "This schema has no baseline yet.",
   unreachable: "The database could not be reached.",
   failed: "It did not work.",
+  started: "Started.",
+  "sent-for-approval": "Sent for approval.",
+  changed: "Refused: something had changed since the phone looked.",
+  gone: "That query had already ended.",
+  "passkey-refused": "Refused: the passkey's signature was not good.",
+  "no-passkey": "Refused: no passkey was set up on the phone.",
+  "other-person": "Refused: someone else was signed in on the computer.",
+  expired: "Refused: it took too long, or the computer had restarted.",
+  "not-applied": "Failed: the run did not change the database.",
+  "outcome-unknown": "Could not tell how it ended. Check the history.",
+  "already-running": "Refused: a run for this script was still going.",
+  "database-refused": "Refused: the database did not let this connection's login cancel it.",
+  "read-only": "Refused: this connection's settings do not allow it.",
+  "no-registry": "Failed: the script registry could not be read.",
 };
+
+/** The ones that went as they should. Anything else stands out in the log. */
+const GOOD_OUTCOMES: ReadonlySet<PhoneActionOutcome> = new Set<PhoneActionOutcome>(["done", "started", "sent-for-approval", "gone"]);
 
 function actionRow(entry: PhoneAction): PhoneActionRow {
   return {
@@ -89,9 +109,10 @@ function actionRow(entry: PhoneAction): PhoneActionRow {
     phone: entry.phone,
     title: ACTION_TITLES[entry.action],
     outcome: ACTION_OUTCOMES[entry.outcome],
-    bad: entry.outcome !== "done",
+    bad: !GOOD_OUTCOMES.has(entry.outcome),
     connectionId: entry.connectionId,
     schema: entry.schema,
+    detail: entry.detail ?? null,
   };
 }
 

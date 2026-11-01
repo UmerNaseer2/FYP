@@ -54,7 +54,7 @@ function field(value: string): string {
   return `${value.length}:${value}`;
 }
 
-async function sha256(bytes: Bytes): Promise<Bytes> {
+export async function sha256(bytes: Bytes): Promise<Bytes> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
 }
 

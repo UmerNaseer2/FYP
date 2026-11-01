@@ -15,6 +15,14 @@ const ROUTES: Route[] = [
   { screen: "connection", connectionId: Number.MAX_SAFE_INTEGER },
   { screen: "live", connectionId: 1 },
   { screen: "live", connectionId: Number.MAX_SAFE_INTEGER },
+  { screen: "deploy", connectionId: 7 },
+  { screen: "deploy-family", connectionId: 7, schema: "public", script: "users_migration" },
+  { screen: "deploy-family", connectionId: 7, schema: "sales/2026", script: "a#b c%" },
+  { screen: "deploy-plan", connectionId: 7, schema: "public", script: "users_migration", action: "deploy", version: "1.2.0" },
+  { screen: "deploy-plan", connectionId: 7, schema: "public", script: "users_migration", action: "deploy", version: null },
+  { screen: "deploy-plan", connectionId: 7, schema: "public", script: "users_migration", action: "revert", version: "1/2" },
+  { screen: "deploy-plan", connectionId: 7, schema: "public", script: "users_migration", action: "revert", version: null },
+  { screen: "deploy-plan", connectionId: 7, schema: "x".repeat(128), script: "y".repeat(255), action: "revert", version: "z".repeat(255) },
   { screen: "schema", connectionId: 7, schema: "public" },
   { screen: "schema", connectionId: 7, schema: "sales/2026" },
   { screen: "schema", connectionId: 7, schema: "a#b" },
@@ -116,6 +124,43 @@ test("never reads a pairing link's code as a screen", () => {
   // The shape of a pairing link's "#..." part, with made-up parts.
   const pairing = `#pair=v1.${"A".repeat(22)}.${"B".repeat(43)}.${"C".repeat(43)}`;
   assert.deepEqual(readRoute(pairing), HOME);
+});
+
+test("writes the deploy screens' addresses under their connection", () => {
+  const family = { connectionId: 12, schema: "public", script: "users" };
+  assert.equal(writeRoute({ screen: "deploy", connectionId: 12 }), "#/connections/12/deploy");
+  assert.equal(writeRoute({ screen: "deploy-family", ...family }), "#/connections/12/deploy/public/users");
+  assert.equal(writeRoute({ screen: "deploy-plan", ...family, action: "deploy", version: "3" }), "#/connections/12/deploy/public/users/deploy/3");
+  assert.equal(writeRoute({ screen: "deploy-plan", ...family, action: "revert", version: "2" }), "#/connections/12/deploy/public/users/revert/2");
+  assert.equal(writeRoute({ screen: "deploy-plan", ...family, action: "revert", version: null }), "#/connections/12/deploy/public/users/revert");
+});
+
+test("opens the home screen for a deploy address it cannot read", () => {
+  for (const address of [
+    "#/connections/12/deploy/public",
+    "#/connections/12/deploy/public/users/other",
+    "#/connections/12/deploy/public/users/deploy/3/more",
+    `#/connections/12/deploy/${"x".repeat(129)}/users`,
+    `#/connections/12/deploy/public/${"y".repeat(256)}`,
+    `#/connections/12/deploy/public/users/deploy/${"z".repeat(256)}`,
+    "#/connections/12/deploy/public/%E0%A4%A",
+    "#/connections/x/deploy",
+  ]) {
+    assert.deepEqual(readRoute(address), HOME, address);
+  }
+});
+
+test("writes a deploy name that cannot be escaped as the connection's list of scripts instead", () => {
+  const half = "\ud83d";
+  assert.equal(writeRoute({ screen: "deploy-family", connectionId: 12, schema: half, script: "users" }), "#/connections/12/deploy");
+  assert.equal(writeRoute({ screen: "deploy-plan", connectionId: 12, schema: "public", script: "users", action: "deploy", version: half }), "#/connections/12/deploy");
+});
+
+test("goes back from a run to its script, from a script to the list of scripts, and from that list to the live status", () => {
+  const family = { connectionId: 12, schema: "public", script: "users" };
+  assert.deepEqual(parentOf({ screen: "deploy-plan", ...family, action: "revert", version: null }), { screen: "deploy-family", ...family });
+  assert.deepEqual(parentOf({ screen: "deploy-family", ...family }), { screen: "deploy", connectionId: 12 });
+  assert.deepEqual(parentOf({ screen: "deploy", connectionId: 12 }), { screen: "live", connectionId: 12 });
 });
 
 test("writes a schema name that cannot be escaped as its connection's address instead", () => {

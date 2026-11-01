@@ -27,6 +27,7 @@ import {
   type AppCaller,
   type PhoneAlerts,
   type PhoneApprovalRequests,
+  type PhoneControlRequests,
   type Refusal,
   type PhoneControl,
 } from "../main/phone-requests";
@@ -114,6 +115,46 @@ function fakeControl(allowed = false): PhoneControl & { entries: Omit<PhoneActio
   };
 }
 
+/** A phone's deploys and cancels, answering each with a fixed result and noting what it was asked with. */
+function fakeControlRequests(overrides: Partial<PhoneControlRequests> = {}): PhoneControlRequests & { asked: unknown[][] } {
+  const asked: unknown[][] = [];
+  return {
+    deployList: async (connectionId, signal) => {
+      asked.push(["deployList", connectionId, signal]);
+      return { registry: "ok", partial: false, families: [], passkey: "none" };
+    },
+    deployFamily: async (params, signal) => {
+      asked.push(["deployFamily", params, signal]);
+      return { currentVersion: null, waiting: [], undo: [], partial: false, run: null };
+    },
+    deployPlan: async (params, signal) => {
+      asked.push(["deployPlan", params, signal]);
+      throw new Refused("not-found");
+    },
+    begin: () => {
+      asked.push(["begin"]);
+      return { nonce: "bm9uY2U", credentialId: "Y3JlZA" };
+    },
+    deployStart: async (params, signal) => {
+      asked.push(["deployStart", params, signal]);
+      return { status: "running" };
+    },
+    cancelSession: async (params, signal) => {
+      asked.push(["cancelSession", params, signal]);
+      return { status: "cancelled" };
+    },
+    passkey: async (signal) => {
+      asked.push(["passkey", signal]);
+      return "none";
+    },
+    ...overrides,
+    asked,
+  };
+}
+
+/** A live status's switch while Allow control is off. */
+const NO_CONTROL = { allowed: false, canCheck: false, canAcknowledge: false, canDeploy: false, canCancel: false, passkey: "none" };
+
 /** A fingerprint of a request's SQL, as the app's server writes one. */
 const FINGERPRINT = "ab".repeat(32);
 
@@ -158,10 +199,10 @@ function fakeApprovals(overrides: Partial<PhoneApprovalRequests> = {}): PhoneApp
 async function answer(
   request: Request,
   call: AppCaller,
-  options: { shared?: readonly number[]; queryText?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; control?: PhoneControl; signal?: AbortSignal } = {},
+  options: { shared?: readonly number[]; queryText?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; controlRequests?: PhoneControlRequests; control?: PhoneControl; signal?: AbortSignal } = {},
 ): Promise<Answer> {
   const shared = options.shared ?? [1, 2, 3];
-  const requestOptions = { call, control: options.control ?? fakeControl(), sharedConnectionIds: () => shared, queryTextConnectionIds: () => options.queryText ?? [], appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
+  const requestOptions = { call, control: options.control ?? fakeControl(), controlRequests: options.controlRequests ?? fakeControlRequests(), sharedConnectionIds: () => shared, queryTextConnectionIds: () => options.queryText ?? [], appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
   const sent = await answerRequest(request, requestOptions, options.signal ?? new AbortController().signal);
   const read = readAnswer(sent);
   assert.ok(read, "a phone can read the answer");
@@ -555,7 +596,7 @@ test("sends a phone live status with only the fields it shows, and only this con
         blocked: 1,
         idleInTransaction: 0,
         longRunning: 0,
-        sessions: [{ pid: 4242, kind: "blocked", querySeconds: 12.5, xactSeconds: 40, applicationName: "report-runner", waitingOn: "Lock: transactionid", query: null }],
+        sessions: [{ pid: 4242, queryStart: null, kind: "blocked", querySeconds: 12.5, xactSeconds: 40, applicationName: "report-runner", waitingOn: "Lock: transactionid", query: null }],
         queryText: false,
         someHidden: false,
       },
@@ -566,7 +607,7 @@ test("sends a phone live status with only the fields it shows, and only this con
         { id: 11, schema: "public", status: null, checkedAt: "2026-10-30T08:00:00.000Z", headVersion: null, acknowledgedAt: null },
       ],
       driftProblem: null,
-      control: { allowed: false, canCheck: false, canAcknowledge: false },
+      control: NO_CONTROL,
     },
   });
   const sent = JSON.stringify(read);
@@ -926,26 +967,115 @@ test("logs a check whose database could not be reached as that, not as done, and
 });
 
 test("tells a phone what it may do in a live status only when Allow control is on, from what the role may do", async () => {
-  const cases: [string[], { canCheck: boolean; canAcknowledge: boolean }][] = [
-    [[], { canCheck: false, canAcknowledge: false }],
-    [["drift:run"], { canCheck: true, canAcknowledge: false }],
-    [["deploy:run"], { canCheck: true, canAcknowledge: false }],
-    [["drift:update"], { canCheck: false, canAcknowledge: true }],
-    [["drift:run", "drift:update"], { canCheck: true, canAcknowledge: true }],
+  const nothing = { canCheck: false, canAcknowledge: false, canDeploy: false, canCancel: false };
+  const cases: [string[], typeof nothing][] = [
+    [[], nothing],
+    [["drift:run"], { ...nothing, canCheck: true }],
+    [["deploy:run"], { ...nothing, canCheck: true }],
+    [["drift:update"], { ...nothing, canAcknowledge: true }],
+    [["drift:run", "drift:update"], { ...nothing, canCheck: true, canAcknowledge: true }],
+    [["deploy:read"], nothing],
+    [["deploy:read", "deploy:run"], { ...nothing, canCheck: true, canDeploy: true }],
+    [["deploy:read", "approvals:create"], { ...nothing, canDeploy: true }],
+    [["approvals:create"], nothing],
+    [["performance:update"], { ...nothing, canCancel: true }],
   ];
   for (const [permissions, may] of cases) {
     const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer(), "GET /api/me": ok(me(permissions)) });
     const read = await answer(LIVE_REQUEST, app.call, { control: fakeControl(true) });
     assert.ok(read.ok);
-    assert.deepEqual((read.result as LiveStatus).control, { allowed: true, ...may }, permissions.join());
+    assert.deepEqual((read.result as LiveStatus).control, { allowed: true, ...may, passkey: "none" }, permissions.join());
   }
+});
+
+test("says in a live status whether this phone's passkey can sign, and shows no buttons when that cannot be read", async () => {
+  const routes = { "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer(), "GET /api/me": ok(me(["performance:update"])) };
+  const ready = await answer(LIVE_REQUEST, fakeApp(routes).call, { control: fakeControl(true), controlRequests: fakeControlRequests({ passkey: async () => "ready" }) });
+  assert.ok(ready.ok);
+  assert.deepEqual((ready.result as LiveStatus).control, { ...NO_CONTROL, allowed: true, canCancel: true, passkey: "ready" });
+
+  const failing = fakeControlRequests({
+    passkey: async () => {
+      throw new Refused("failed");
+    },
+  });
+  const read = await answer(LIVE_REQUEST, fakeApp(routes).call, { control: fakeControl(true), controlRequests: failing });
+  assert.ok(read.ok);
+  assert.deepEqual((read.result as LiveStatus).control, { ...NO_CONTROL, allowed: true });
+});
+
+test("tells a phone when a running query began, which is what its cancel names", async () => {
+  const began = "2026-10-30T09:59:47.500Z";
+  const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer([liveSession({ queryStart: began })]) });
+  const read = await answer(LIVE_REQUEST, app.call);
+  assert.ok(read.ok);
+  assert.equal((read.result as LiveStatus).activity?.sessions[0]?.queryStart, began);
+});
+
+const SIGNATURE = { credentialId: "Y3JlZA", authenticatorData: "YXV0aA", clientDataJSON: "Y2xpZW50", signature: "c2ln" };
+const FAMILY_PARAMS = { connectionId: 2, schemaName: "sales", scriptName: "users_migration" };
+const PLAN_PARAMS = { ...FAMILY_PARAMS, action: "deploy" as const, targetVersion: "2.0.0" };
+const START_PARAMS = { ...PLAN_PARAMS, fingerprint: "ab".repeat(32), step: "run" as const, ticks: [], assertion: SIGNATURE };
+const CANCEL_PARAMS = { connectionId: 2, pid: 4242, queryStart: "2026-10-30T09:59:47.500Z", assertion: SIGNATURE };
+
+test("passes a phone's deploys and cancels on with the request's signal, and sends back what they answer", async () => {
+  const { signal } = new AbortController();
+  const control = fakeControl(true);
+  const requests = fakeControlRequests();
+  const app = fakeApp({});
+  const asked = async (request: Request): Promise<Answer> => answer(request, app.call, { control, controlRequests: requests, signal });
+
+  assert.deepEqual(await asked({ id: 50, method: "deploy.list", params: { connectionId: 2 } }), {
+    id: 50,
+    ok: true,
+    result: { registry: "ok", partial: false, families: [], passkey: "none" },
+  });
+  assert.deepEqual(await asked({ id: 51, method: "deploy.family", params: FAMILY_PARAMS }), {
+    id: 51,
+    ok: true,
+    result: { currentVersion: null, waiting: [], undo: [], partial: false, run: null },
+  });
+  assert.deepEqual(await asked({ id: 52, method: "control.begin" }), { id: 52, ok: true, result: { nonce: "bm9uY2U", credentialId: "Y3JlZA" } });
+  assert.deepEqual(await asked({ id: 53, method: "deploy.start", params: START_PARAMS }), { id: 53, ok: true, result: { status: "running" } });
+  assert.deepEqual(await asked({ id: 54, method: "session.cancel", params: CANCEL_PARAMS }), { id: 54, ok: true, result: { status: "cancelled" } });
+
+  assert.deepEqual(requests.asked, [
+    ["deployList", 2, signal],
+    ["deployFamily", FAMILY_PARAMS, signal],
+    ["begin"],
+    ["deployStart", START_PARAMS, signal],
+    ["cancelSession", CANCEL_PARAMS, signal],
+  ]);
+  assert.equal(app.calls.length, 0);
+});
+
+test("turns a refusal from a deploy or a cancel into its fixed sentence", async () => {
+  const refuses = (refusal: Refusal): PhoneControlRequests =>
+    fakeControlRequests({
+      deployStart: async () => {
+        throw new Refused(refusal);
+      },
+    });
+  const request: Request = { id: 55, method: "deploy.start", params: START_PARAMS };
+  const refusals: Refusal[] = ["control-off", "control-no-passkey", "control-other-person", "control-changed", "control-expired", "already-running", "no-registry"];
+  for (const refusal of refusals) {
+    assert.deepEqual(await answer(request, fakeApp({}).call, { controlRequests: refuses(refusal) }), refused(55, refusal));
+  }
+  // The plan's default in the fake refuses too, which is the same way out.
+  assert.deepEqual(await answer({ id: 56, method: "deploy.plan", params: PLAN_PARAMS }, fakeApp({}).call), refused(56, "not-found"));
+  const cancel = fakeControlRequests({
+    cancelSession: async () => {
+      throw new Refused("database-refused");
+    },
+  });
+  assert.deepEqual(await answer({ id: 57, method: "session.cancel", params: CANCEL_PARAMS }, fakeApp({}).call, { controlRequests: cancel }), refused(57, "database-refused"));
 });
 
 test("asks the app nothing about the role in a live status while Allow control is off", async () => {
   const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer() });
   const read = await answer(LIVE_REQUEST, app.call, { control: fakeControl(false) });
   assert.ok(read.ok);
-  assert.deepEqual((read.result as LiveStatus).control, { allowed: false, canCheck: false, canAcknowledge: false });
+  assert.deepEqual((read.result as LiveStatus).control, NO_CONTROL);
   assert.ok(!app.calls.some((call) => call.path === "/api/me"));
 });
 
@@ -955,7 +1085,7 @@ test("shows no buttons in a live status when the role cannot be read, and the re
     const read = await answer(LIVE_REQUEST, app.call, { control: fakeControl(true) });
     assert.ok(read.ok);
     const live = read.result as LiveStatus;
-    assert.deepEqual(live.control, { allowed: true, canCheck: false, canAcknowledge: false });
+    assert.deepEqual(live.control, { ...NO_CONTROL, allowed: true });
     assert.equal(live.drift?.length, 2);
   }
 });
@@ -972,7 +1102,7 @@ test("sends when a drift was acknowledged, and nothing else the app records abou
 test("reads which connections are shared at every request, so a change in Settings counts at once", async () => {
   let shared: number[] = [1];
   const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": ok({ schemas: ["public"] }) });
-  const options = { call: app.call, control: fakeControl(), sharedConnectionIds: () => shared, queryTextConnectionIds: () => [], appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
+  const options = { call: app.call, control: fakeControl(), controlRequests: fakeControlRequests(), sharedConnectionIds: () => shared, queryTextConnectionIds: () => [], appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
   const ask = async (id: number) => readAnswer(await answerRequest({ id, method: "schemas.list", params: { connectionId: 1 } }, options, new AbortController().signal));
   assert.deepEqual(await ask(1), { id: 1, ok: true, result: { schemas: ["public"] } });
   shared = [];

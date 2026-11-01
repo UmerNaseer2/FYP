@@ -33,7 +33,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 function session(changes: Partial<LiveSession> = {}): LiveSession {
-  return { pid: 42, kind: "running", querySeconds: 12, xactSeconds: 12, applicationName: "psql", waitingOn: null, query: null, ...changes };
+  return { pid: 42, kind: "running", querySeconds: 12, xactSeconds: 12, applicationName: "psql", waitingOn: null, query: null, queryStart: null, ...changes };
 }
 
 function activity(changes: Partial<LiveActivity> = {}): LiveActivity {
@@ -51,14 +51,14 @@ function activity(changes: Partial<LiveActivity> = {}): LiveActivity {
   };
 }
 
-const ALLOWED: LiveControl = { allowed: true, canCheck: true, canAcknowledge: true };
+const ALLOWED: LiveControl = { allowed: true, canCheck: true, canAcknowledge: true, canDeploy: false, canCancel: false, passkey: "none" };
 
 test("offers Check now and Acknowledge only for what Allow control and the role allow", () => {
   const drifted = drift({ status: "drifted" });
   assert.deepEqual(driftControls(drifted, ALLOWED), { check: true, acknowledge: true });
   assert.deepEqual(driftControls(drifted, { ...ALLOWED, canCheck: false }), { check: false, acknowledge: true });
   assert.deepEqual(driftControls(drifted, { ...ALLOWED, canAcknowledge: false }), { check: true, acknowledge: false });
-  assert.deepEqual(driftControls(drifted, { allowed: false, canCheck: false, canAcknowledge: false }), { check: false, acknowledge: false });
+  assert.deepEqual(driftControls(drifted, { ...ALLOWED, allowed: false, canCheck: false, canAcknowledge: false }), { check: false, acknowledge: false });
   assert.deepEqual(driftControls(drifted, null), { check: false, acknowledge: false });
 });
 
@@ -73,9 +73,9 @@ test("offers Acknowledge only for drift nobody has acknowledged yet", () => {
 test("says why there are no buttons, and nothing when there are or the computer is older", () => {
   assert.equal(controlHint(null), null);
   assert.equal(controlHint(ALLOWED), null);
-  assert.equal(controlHint({ allowed: true, canCheck: false, canAcknowledge: true }), null);
-  assert.match(controlHint({ allowed: false, canCheck: false, canAcknowledge: false }) ?? "", /turn on Allow control for it under Paired phones/);
-  assert.match(controlHint({ allowed: true, canCheck: false, canAcknowledge: false }) ?? "", /role signed in on the computer may not/);
+  assert.equal(controlHint({ ...ALLOWED, canCheck: false }), null);
+  assert.match(controlHint({ ...ALLOWED, allowed: false, canCheck: false, canAcknowledge: false }) ?? "", /turn on Allow control for it under Paired phones/);
+  assert.match(controlHint({ ...ALLOWED, canCheck: false, canAcknowledge: false }) ?? "", /role signed in on the computer may not/);
 });
 
 test("says what a check found, in words that stay true as the row above moves on", () => {

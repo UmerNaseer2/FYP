@@ -12,10 +12,13 @@
  * signed with a passkey set up on that phone. With Allow control turned on for
  * that phone in Settings, which it is not until the person turns it on, it may
  * also check a tracked schema's drift now and acknowledge drift (drift.check
- * and drift.acknowledge). The computer answers every request through its own
- * copy of the app, which checks it as it checks anything asked from the app's
- * window, so a phone may do only what the person signed in on the computer may
- * do, and only with the connections chosen for phones in Settings.
+ * and drift.acknowledge), and, signed with that same passkey, start a deploy or
+ * a rollback (deploy.start) and cancel a running query (session.cancel). It
+ * never supplies SQL: a run is always what the script registry holds. The
+ * computer answers every request through its own copy of the app, which checks
+ * it as it checks anything asked from the app's window, so a phone may do only
+ * what the person signed in on the computer may do, and only with the
+ * connections chosen for phones in Settings.
  *
  * Every message is read strictly, except what a successful answer holds:
  *  - the computer refuses anything that is not exactly a request it knows,
@@ -31,6 +34,7 @@
  */
 import { isFingerprint, type ApprovalAction, type ApprovalDecision, type ApprovalScript } from "./approval.js";
 import { fromBase64Url, fromBase64UrlOfLength, utf8, type Bytes } from "./bytes.js";
+import { CONTROL_TICKS, type ControlTick, type DeployStep, type RunRisks } from "./control.js";
 import { hasExactly, objectFields, readJsonObject } from "./json.js";
 
 /** The biggest request a phone may send. The biggest the limits below allow, setting up a passkey (passkey.finish), is under 12 KB. */
@@ -56,6 +60,10 @@ export const MAX_PUSH_FIELD_LENGTH = 2048;
 export const MAX_LIVE_SESSIONS = 50;
 /** The longest query text one session in a live status holds, in characters. */
 export const MAX_LIVE_QUERY_LENGTH = 2000;
+/** The longest script name or version a request may hold, in characters: what a file name in the script registry can be. */
+export const MAX_SCRIPT_TEXT_LENGTH = 255;
+/** The longest "when the query began" a request may hold, in characters. The app writes 27. */
+const MAX_QUERY_START_LENGTH = 32;
 /** The longest error message read from an answer, in characters. The computer's own are a sentence or two. */
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 /** How long the computer's public push key is: a P-256 point, written out whole. */
@@ -110,6 +118,17 @@ export type PushSubscriptionParams = { endpoint: string; p256dh: string; auth: s
  *  - drift.acknowledge: marks its drift as seen. Both only while Allow control
  *    is on for this phone in Settings on the computer, which it reads afresh
  *    each time, and each try is written in the computer's action log.
+ *  - deploy.list: the script families a connection's database has in the
+ *    script registry,
+ *  - deploy.family: where one of them stands and what could be done with it, and
+ *  - deploy.plan: exactly what a deploy or rollback would run, its risks and the
+ *    step that comes next. These three only read, and only while Allow control
+ *    is on.
+ *  - control.begin: a one-time number for the phone's next signed action.
+ *  - deploy.start: takes that step, signed with the passkey over that number,
+ *    the run, its fingerprint, the step and the risks the person accepted.
+ *  - session.cancel: cancels one running query, signed the same way. Both only
+ *    while Allow control is on, and each try goes in the action log.
  */
 export type Request =
   | { id: number; method: "hello" }
@@ -128,7 +147,13 @@ export type Request =
   | { id: number; method: "approvals.begin" }
   | { id: number; method: "approvals.decide"; params: DecideParams }
   | { id: number; method: "drift.check"; params: DriftActionParams }
-  | { id: number; method: "drift.acknowledge"; params: DriftActionParams };
+  | { id: number; method: "drift.acknowledge"; params: DriftActionParams }
+  | { id: number; method: "deploy.list"; params: { connectionId: number } }
+  | { id: number; method: "deploy.family"; params: DeployFamilyParams }
+  | { id: number; method: "deploy.plan"; params: DeployPlanParams }
+  | { id: number; method: "control.begin" }
+  | { id: number; method: "deploy.start"; params: DeployStartParams }
+  | { id: number; method: "session.cancel"; params: CancelParams };
 
 /**
  * Which tracked schema to act on. It names its connection too, so that the
@@ -138,6 +163,100 @@ export type DriftActionParams = { connectionId: number; trackedSchemaId: number 
 
 /** What a drift action found. Never the app's summary or report, which can repeat what a server said: the phone words its own sentence from the status. */
 export type DriftActionResult = { status: DriftStatus };
+
+/** One script family: one script's versions under one schema, on one connection. */
+export type DeployFamilyParams = { connectionId: number; schemaName: string; scriptName: string };
+
+/** One run of a family. A null targetVersion is a rollback to before the first version. */
+export type DeployPlanParams = DeployFamilyParams & { action: ApprovalAction; targetVersion: string | null };
+
+/** Whether the script registry could be read. */
+export type DeployRegistry = "ok" | "unconfigured" | "unreachable";
+
+export type DeployFamily = { schemaName: string; scriptName: string; newestVersion: string; versionCount: number };
+
+export type DeployList = {
+  registry: DeployRegistry;
+  /** Some of the registry could not be read, so the list may be missing something. */
+  partial: boolean;
+  families: DeployFamily[];
+  passkey: PasskeyState;
+};
+
+/** How far back a rollback could go: a version, or null for before the first one, and how many versions that undoes. */
+export type RollbackChoice = { target: string | null; undoCount: number };
+
+export type DeployRunState = "running" | "done" | "not-applied" | "unknown";
+
+/** The last run this computer started for a family from a phone. The computer keeps it in memory only. */
+export type DeployRun = { state: DeployRunState; at: number };
+
+export type DeployFamilyStatus = {
+  currentVersion: string | null;
+  /** The versions a deploy could go up to, oldest first. */
+  waiting: string[];
+  /** How far a rollback could go, nearest first. */
+  undo: RollbackChoice[];
+  partial: boolean;
+  run: DeployRun | null;
+};
+
+/**
+ * Which step comes next for this person, on this run: running it, running it
+ * because somebody approved exactly this run, asking for approval, waiting for
+ * a decision on the request already made, or nothing.
+ */
+export type DeployNext = "run" | "run-approved" | "ask-approval" | "waiting" | "blocked";
+
+/** Why nothing can be done with a run. The phone has its own sentence for each. */
+export type DeployBlockedReason = "nothing-to-do" | "transaction-control" | "application" | "no-rollback" | "read-only" | "role";
+
+/** Exactly what one deploy or rollback would run, for the person to read and sign. */
+export type DeployPlan = {
+  action: ApprovalAction;
+  connectionId: number;
+  schemaName: string;
+  scriptName: string;
+  targetVersion: string | null;
+  environment: Environment;
+  partial: boolean;
+  /** The app's fingerprint of `scripts`. The phone works it out again before it lets anyone sign. */
+  fingerprint: string;
+  /** In the order they run. */
+  scripts: ApprovalScript[];
+  risks: RunRisks;
+  next: DeployNext;
+  blockedReason: DeployBlockedReason | null;
+  passkey: PasskeyState;
+};
+
+/**
+ * Takes the next step of a run, signed. `ticks` are the risks the person
+ * accepted, and the computer passes on no others. Asking for approval needs
+ * none, because a request changes nothing but a row in a queue.
+ */
+export type DeployStartParams = DeployPlanParams & {
+  fingerprint: string;
+  step: DeployStep;
+  ticks: ControlTick[];
+  assertion: PasskeySignature;
+};
+
+/**
+ * How it went. "running" is a run still going when the computer stopped
+ * waiting, whose end deploy.family reports. "not-applied" is one that ended
+ * with nothing changed. "unknown" is one the computer could not see the end of,
+ * so the schema's history in the app has to say.
+ */
+export type DeployStartStatus = "done" | "sent-for-approval" | "running" | "not-applied" | "unknown";
+
+export type DeployStartResult = { status: DeployStartStatus };
+
+/** One running query, by its session's number and when it began, signed. */
+export type CancelParams = { connectionId: number; pid: number; queryStart: string; assertion: PasskeySignature };
+
+/** "gone" is a query that ended before the cancel reached it. */
+export type CancelResult = { status: "cancelled" | "gone" };
 
 export type Method = Request["method"];
 
@@ -303,10 +422,10 @@ export type ApprovalSummary = {
   ownRequest: boolean;
 };
 /**
- * Whether this phone can decide requests: "none" until approvals are set up
- * on it, "allowed" while Settings on the computer lets it set up a passkey,
- * "ready" once it has one, and "other-person" when the person signed in on
- * the computer is not the one who set it up.
+ * Whether this phone has a passkey to sign with: "none" until one is set up on
+ * it, "allowed" while Settings on the computer lets it set one up, "ready" once
+ * it has one, and "other-person" when the person signed in on the computer is
+ * not the one who set it up.
  */
 export type PasskeyState = "none" | "allowed" | "ready" | "other-person";
 export type ApprovalList = { approvals: ApprovalSummary[]; passkey: PasskeyState; canApprove: boolean };
@@ -322,7 +441,6 @@ export type DecisionChallenge = { nonce: string; credentialId: string };
 export type PasskeySignature = { credentialId: string; authenticatorData: string; clientDataJSON: string; signature: string };
 export type DecideParams = { approvalId: number; decision: ApprovalDecision; fingerprint: string; assertion: PasskeySignature };
 
-/** What the answer to each request holds when it succeeds. */
 /** A session's kind, worst first, as my-app/lib/db-activity.ts works it out. */
 export type LiveSessionKind = "blocked" | "idle-in-transaction" | "long-running" | "running";
 const LIVE_SESSION_KINDS: readonly LiveSessionKind[] = ["blocked", "idle-in-transaction", "long-running", "running"];
@@ -338,6 +456,8 @@ export type LiveSession = {
   kind: LiveSessionKind;
   /** How long it has been on this statement in seconds, or idle for an idle-in-transaction session. Null when the server does not say. */
   querySeconds: number | null;
+  /** When its statement began, as the app writes it, which together with `pid` says which query to cancel. Null when there is no way to tell. */
+  queryStart: string | null;
   /** How long its transaction has been open in seconds, or null when it is not in one. */
   xactSeconds: number | null;
   /** The name the client gave itself, such as "psql", or null when it gave none. */
@@ -419,6 +539,12 @@ export type LiveControl = {
   canCheck: boolean;
   /** Whether it may acknowledge drift: Allow control is on, and the role signed in on the computer may. */
   canAcknowledge: boolean;
+  /** Whether it may look at deploys and rollbacks to start one: Allow control is on, and the role signed in on the computer may read them and may run or ask for them. */
+  canDeploy: boolean;
+  /** Whether it may cancel a running query: Allow control is on, and the role signed in on the computer may. */
+  canCancel: boolean;
+  /** Whether this phone has a passkey to sign those with, for the person signed in on the computer. */
+  passkey: PasskeyState;
 };
 
 /** Why a part of the live status is missing: this role may not see it, or the database or the app did not answer. */
@@ -441,6 +567,7 @@ export type LiveStatus = {
   control: LiveControl | null;
 };
 
+/** What the answer to each request holds when it succeeds. */
 export type Results = {
   hello: HelloResult;
   "connections.list": ConnectionList;
@@ -459,6 +586,12 @@ export type Results = {
   "approvals.decide": { status: "approved" | "rejected" };
   "drift.check": DriftActionResult;
   "drift.acknowledge": DriftActionResult;
+  "deploy.list": DeployList;
+  "deploy.family": DeployFamilyStatus;
+  "deploy.plan": DeployPlan;
+  "control.begin": DecisionChallenge;
+  "deploy.start": DeployStartResult;
+  "session.cancel": CancelResult;
 };
 
 /**
@@ -474,14 +607,14 @@ export type Results = {
  *  - busy: the phone has MAX_PENDING_REQUESTS requests waiting already.
  *  - bad-request: not a request the computer understands.
  *  - unknown-method: a request this version of the computer's app does not know.
- *  - not-allowed: approvals cannot be set up on this phone until Settings on the computer allows it.
- *  - no-passkey: approvals are not set up on this phone.
+ *  - not-allowed: a passkey cannot be set up on this phone until Settings on the computer allows it.
+ *  - no-passkey: this phone has no passkey to sign with.
  *  - passkey-refused: the passkey's answer did not check out.
- *  - other-person: someone else is signed in on the computer than set approvals up on this phone.
- *  - changed: the request changed while the phone was deciding.
+ *  - other-person: someone else is signed in on the computer than set up this phone's passkey.
+ *  - changed: what was signed changed while the phone was deciding, so nothing happened.
  *  - already-decided: the request is no longer waiting for a decision.
  *  - own-request: the person signed in on the computer asked for it.
- *  - expired: the one-time number for the decision ran out, or the computer restarted.
+ *  - expired: the one-time number for what was signed ran out, or the computer restarted.
  *  - control-off: Allow control is off for this phone in Settings on the computer.
  *  - failed: anything else.
  */
@@ -538,7 +671,7 @@ export type Answer = { id: number; ok: true; result: unknown } | { id: number; o
  */
 export type RequestReading = { ok: true; request: Request } | { ok: false; id: number | null; code: "bad-request" | "unknown-method" };
 
-const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "live.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide", "drift.check", "drift.acknowledge"];
+const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "live.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide", "drift.check", "drift.acknowledge", "deploy.list", "deploy.family", "deploy.plan", "control.begin", "deploy.start", "session.cancel"];
 
 /** Writes a request. Only its own fields are written, so a SchemaRef that carries more, such as a connection's name, goes out without it. */
 export function writeRequest(request: Request): Bytes {
@@ -562,6 +695,7 @@ export function writeRequest(request: Request): Bytes {
     case "approvals.list":
     case "passkey.begin":
     case "approvals.begin":
+    case "control.begin":
       return writeJson({ id, method: request.method });
     case "approvals.read":
       return writeJson({ id, method: request.method, params: { approvalId: request.params.approvalId } });
@@ -571,8 +705,7 @@ export function writeRequest(request: Request): Bytes {
     }
     case "approvals.decide": {
       const { approvalId, decision, fingerprint, assertion } = request.params;
-      const { credentialId, authenticatorData, clientDataJSON, signature } = assertion;
-      return writeJson({ id, method: request.method, params: { approvalId, decision, fingerprint, assertion: { credentialId, authenticatorData, clientDataJSON, signature } } });
+      return writeJson({ id, method: request.method, params: { approvalId, decision, fingerprint, assertion: copyAssertion(assertion) } });
     }
     case "push.subscribe": {
       const { endpoint, p256dh, auth } = request.params;
@@ -582,6 +715,24 @@ export function writeRequest(request: Request): Bytes {
     case "drift.acknowledge": {
       const { connectionId, trackedSchemaId } = request.params;
       return writeJson({ id, method: request.method, params: { connectionId, trackedSchemaId } });
+    }
+    case "deploy.list":
+      return writeJson({ id, method: request.method, params: { connectionId: request.params.connectionId } });
+    case "deploy.family": {
+      const { connectionId, schemaName, scriptName } = request.params;
+      return writeJson({ id, method: request.method, params: { connectionId, schemaName, scriptName } });
+    }
+    case "deploy.plan": {
+      const { connectionId, schemaName, scriptName, action, targetVersion } = request.params;
+      return writeJson({ id, method: request.method, params: { connectionId, schemaName, scriptName, action, targetVersion } });
+    }
+    case "deploy.start": {
+      const { connectionId, schemaName, scriptName, action, targetVersion, fingerprint, step, ticks, assertion } = request.params;
+      return writeJson({ id, method: request.method, params: { connectionId, schemaName, scriptName, action, targetVersion, fingerprint, step, ticks, assertion: copyAssertion(assertion) } });
+    }
+    case "session.cancel": {
+      const { connectionId, pid, queryStart, assertion } = request.params;
+      return writeJson({ id, method: request.method, params: { connectionId, pid, queryStart, assertion: copyAssertion(assertion) } });
     }
   }
 }
@@ -600,14 +751,15 @@ export function readRequest(message: Bytes): RequestReading {
 /** The request in a message whose id is good, or null when it is not exactly one of the requests above. */
 function readKnownRequest(id: number, fields: Record<string, unknown>): Request | null {
   const method = fields.method;
-  if (method === "hello" || method === "connections.list" || method === "push.status" || method === "push.unsubscribe" || method === "approvals.list" || method === "passkey.begin" || method === "approvals.begin") {
+  if (method === "hello" || method === "connections.list" || method === "push.status" || method === "push.unsubscribe" || method === "approvals.list" || method === "passkey.begin" || method === "approvals.begin" || method === "control.begin") {
     return hasExactly(fields, "id", "method") ? { id, method } : null;
   }
   const params = objectFields(fields.params);
   if (!hasExactly(fields, "id", "method", "params") || params === null) return null;
   switch (method) {
     case "schemas.list":
-    case "live.read": {
+    case "live.read":
+    case "deploy.list": {
       const connectionId = params.connectionId;
       return hasExactly(params, "connectionId") && isPositiveInteger(connectionId) ? { id, method, params: { connectionId } } : null;
     }
@@ -633,14 +785,39 @@ function readKnownRequest(id: number, fields: Record<string, unknown>): Request 
     }
     case "approvals.decide": {
       const { approvalId, decision, fingerprint } = params;
-      const assertion = objectFields(params.assertion);
+      const assertion = readAssertion(params.assertion);
       if (!hasExactly(params, "approvalId", "decision", "fingerprint", "assertion") || assertion === null) return null;
       if (!isPositiveInteger(approvalId) || (decision !== "approve" && decision !== "reject") || !isFingerprint(fingerprint)) return null;
-      const { credentialId, authenticatorData, clientDataJSON, signature } = assertion;
-      if (!hasExactly(assertion, "credentialId", "authenticatorData", "clientDataJSON", "signature")) return null;
-      if (!isBase64UrlUpTo(credentialId, MAX_CREDENTIAL_ID_BYTES) || !isBase64UrlUpTo(authenticatorData, MAX_AUTHENTICATOR_DATA_BYTES)) return null;
-      if (!isBase64UrlUpTo(clientDataJSON, MAX_CLIENT_DATA_BYTES) || !isBase64UrlUpTo(signature, MAX_SIGNATURE_BYTES)) return null;
-      return { id, method, params: { approvalId, decision, fingerprint, assertion: { credentialId, authenticatorData, clientDataJSON, signature } } };
+      return { id, method, params: { approvalId, decision, fingerprint, assertion } };
+    }
+    case "deploy.family": {
+      const { connectionId, schemaName, scriptName } = params;
+      if (!hasExactly(params, "connectionId", "schemaName", "scriptName")) return null;
+      return isPositiveInteger(connectionId) && isSchemaName(schemaName) && isScriptText(scriptName) ? { id, method, params: { connectionId, schemaName, scriptName } } : null;
+    }
+    case "deploy.plan": {
+      const { connectionId, schemaName, scriptName, action, targetVersion } = params;
+      if (!hasExactly(params, "connectionId", "schemaName", "scriptName", "action", "targetVersion")) return null;
+      if (!isPositiveInteger(connectionId) || !isSchemaName(schemaName) || !isScriptText(scriptName)) return null;
+      if (!isApprovalAction(action) || (targetVersion !== null && !isScriptText(targetVersion))) return null;
+      return { id, method, params: { connectionId, schemaName, scriptName, action, targetVersion } };
+    }
+    case "deploy.start": {
+      const { connectionId, schemaName, scriptName, action, targetVersion, fingerprint, step } = params;
+      if (!hasExactly(params, "connectionId", "schemaName", "scriptName", "action", "targetVersion", "fingerprint", "step", "ticks", "assertion")) return null;
+      if (!isPositiveInteger(connectionId) || !isSchemaName(schemaName) || !isScriptText(scriptName)) return null;
+      if (!isApprovalAction(action) || (targetVersion !== null && !isScriptText(targetVersion))) return null;
+      if (!isFingerprint(fingerprint) || (step !== "run" && step !== "ask")) return null;
+      const ticks = readTicks(params.ticks);
+      const assertion = readAssertion(params.assertion);
+      if (ticks === null || assertion === null) return null;
+      return { id, method, params: { connectionId, schemaName, scriptName, action, targetVersion, fingerprint, step, ticks, assertion } };
+    }
+    case "session.cancel": {
+      const { connectionId, pid, queryStart } = params;
+      const assertion = readAssertion(params.assertion);
+      if (!hasExactly(params, "connectionId", "pid", "queryStart", "assertion") || assertion === null) return null;
+      return isPositiveInteger(connectionId) && isPositiveInteger(pid) && isQueryStart(queryStart) ? { id, method, params: { connectionId, pid, queryStart, assertion } } : null;
     }
     case "push.subscribe": {
       const { endpoint, p256dh, auth } = params;
@@ -708,6 +885,12 @@ const RESULT_READERS: { [M in Method]: (value: unknown) => Results[M] | null } =
   "approvals.decide": readDecided,
   "drift.check": readDriftActionResult,
   "drift.acknowledge": readDriftActionResult,
+  "deploy.list": readDeployList,
+  "deploy.family": readDeployFamilyStatus,
+  "deploy.plan": readDeployPlan,
+  "control.begin": readDecisionChallenge,
+  "deploy.start": readDeployStartResult,
+  "session.cancel": readCancelResult,
 };
 
 /** Reads what a successful answer to this kind of request holds, or gives null when it is not that. */
@@ -739,12 +922,19 @@ function readLiveStatus(value: unknown): LiveStatus | null {
   return { activity, activityProblem, health, drift, driftProblem, control: readLiveControl(fields.control) };
 }
 
-/** Not required: a computer whose app is older than the phone app does not send it, and cannot answer drift.check or drift.acknowledge either. */
+/** Not required: a computer whose app is older than the phone app does not send it, and cannot answer drift.check or drift.acknowledge either. Nor its newer fields, which leave those buttons out. */
 function readLiveControl(value: unknown): LiveControl | null {
   const fields = objectFields(value);
   if (fields === null) return null;
-  const { allowed, canCheck, canAcknowledge } = fields;
-  return { allowed: allowed === true, canCheck: canCheck === true, canAcknowledge: canAcknowledge === true };
+  const { allowed, canCheck, canAcknowledge, canDeploy, canCancel, passkey } = fields;
+  return {
+    allowed: allowed === true,
+    canCheck: canCheck === true,
+    canAcknowledge: canAcknowledge === true,
+    canDeploy: canDeploy === true,
+    canCancel: canCancel === true,
+    passkey: isPasskeyState(passkey) ? passkey : "none",
+  };
 }
 
 function readDriftActionResult(value: unknown): DriftActionResult | null {
@@ -765,10 +955,11 @@ function readLiveActivity(value: unknown): LiveActivity | null {
 function readLiveSession(value: unknown): LiveSession | null {
   const fields = objectFields(value);
   if (fields === null) return null;
-  const { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query } = fields;
+  const { pid, kind, querySeconds, queryStart, xactSeconds, applicationName, waitingOn, query } = fields;
   if (!isPositiveInteger(pid) || !isLiveSessionKind(kind) || !isSecondsOrNull(querySeconds) || !isSecondsOrNull(xactSeconds)) return null;
   if (!isTextOrNull(applicationName) || !isTextOrNull(waitingOn) || !isTextOrNull(query)) return null;
-  return { pid, kind, querySeconds, xactSeconds, applicationName, waitingOn, query };
+  // An older computer does not send it, and one a request could not carry would only be refused: both just show no button to cancel.
+  return { pid, kind, querySeconds, queryStart: isQueryStart(queryStart) ? queryStart : null, xactSeconds, applicationName, waitingOn, query };
 }
 
 function readLiveHealth(value: unknown): LiveHealth | null {
@@ -976,6 +1167,103 @@ function readApprovalRead(value: unknown): ApprovalRead | null {
   return read.length === scripts.length ? { id, action, fingerprint, scripts: read } : null;
 }
 
+/** A passkey's signature in a request, each part no bigger than a passkey's can be. Names the four fields, so nothing else in it gets further. */
+function readAssertion(value: unknown): PasskeySignature | null {
+  const fields = objectFields(value);
+  if (fields === null || !hasExactly(fields, "credentialId", "authenticatorData", "clientDataJSON", "signature")) return null;
+  const { credentialId, authenticatorData, clientDataJSON, signature } = fields;
+  if (!isBase64UrlUpTo(credentialId, MAX_CREDENTIAL_ID_BYTES) || !isBase64UrlUpTo(authenticatorData, MAX_AUTHENTICATOR_DATA_BYTES)) return null;
+  if (!isBase64UrlUpTo(clientDataJSON, MAX_CLIENT_DATA_BYTES) || !isBase64UrlUpTo(signature, MAX_SIGNATURE_BYTES)) return null;
+  return { credentialId, authenticatorData, clientDataJSON, signature };
+}
+
+function copyAssertion({ credentialId, authenticatorData, clientDataJSON, signature }: PasskeySignature): PasskeySignature {
+  return { credentialId, authenticatorData, clientDataJSON, signature };
+}
+
+/** The risks accepted in a request: words this file knows, each at most once. */
+function readTicks(value: unknown): ControlTick[] | null {
+  const ticks = readEach(value, (item) => (isControlTick(item) ? item : null));
+  return ticks !== null && new Set(ticks).size === ticks.length ? ticks : null;
+}
+
+function readDeployList(value: unknown): DeployList | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { registry, partial, passkey } = fields;
+  const families = readEach(fields.families, readDeployFamily);
+  if (!isDeployRegistry(registry) || typeof partial !== "boolean" || families === null || !isPasskeyState(passkey)) return null;
+  return { registry, partial, families, passkey };
+}
+
+function readDeployFamily(value: unknown): DeployFamily | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { schemaName, scriptName, newestVersion, versionCount } = fields;
+  if (typeof schemaName !== "string" || typeof scriptName !== "string" || typeof newestVersion !== "string" || !isCount(versionCount)) return null;
+  return { schemaName, scriptName, newestVersion, versionCount };
+}
+
+function readDeployFamilyStatus(value: unknown): DeployFamilyStatus | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { currentVersion, partial } = fields;
+  const waiting = readEach(fields.waiting, readText);
+  const undo = readEach(fields.undo, readRollbackChoice);
+  if (!isTextOrNull(currentVersion) || typeof partial !== "boolean" || waiting === null || undo === null) return null;
+  return { currentVersion, waiting, undo, partial, run: readDeployRun(fields.run) };
+}
+
+function readRollbackChoice(value: unknown): RollbackChoice | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { target, undoCount } = fields;
+  return isTextOrNull(target) && isCount(undoCount) ? { target, undoCount } : null;
+}
+
+/** Not required: one this phone app cannot read is no reason to lose the rest of the screen. */
+function readDeployRun(value: unknown): DeployRun | null {
+  const fields = objectFields(value);
+  const state = fields?.state;
+  const at = fields?.at;
+  return isDeployRunState(state) && isCount(at) ? { state, at } : null;
+}
+
+function readDeployPlan(value: unknown): DeployPlan | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { action, connectionId, schemaName, scriptName, targetVersion, environment, partial, fingerprint, next, blockedReason, passkey } = fields;
+  if (!isApprovalAction(action) || !isPositiveInteger(connectionId) || typeof schemaName !== "string" || typeof scriptName !== "string" || !isTextOrNull(targetVersion)) return null;
+  if (!isEnvironment(environment) || typeof partial !== "boolean" || !isFingerprint(fingerprint)) return null;
+  if (!isDeployNext(next) || (blockedReason !== null && !isDeployBlockedReason(blockedReason)) || !isPasskeyState(passkey)) return null;
+  const scripts = readEach(fields.scripts, readApprovalScript);
+  const risks = readRunRisks(fields.risks);
+  if (scripts === null || risks === null) return null;
+  return { action, connectionId, schemaName, scriptName, targetVersion, environment, partial, fingerprint, scripts, risks, next, blockedReason, passkey };
+}
+
+function readRunRisks(value: unknown): RunRisks | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { production, drift } = fields;
+  const breaking = readEach(fields.breaking, readText);
+  const dataLoss = readEach(fields.dataLoss, readText);
+  const otherScripts = readEach(fields.otherScripts, readText);
+  if (typeof production !== "boolean" || breaking === null || dataLoss === null || otherScripts === null) return null;
+  if (drift !== null && drift !== "drifted" && drift !== "unreachable") return null;
+  return { production, breaking, dataLoss, otherScripts, drift };
+}
+
+function readDeployStartResult(value: unknown): DeployStartResult | null {
+  const status = objectFields(value)?.status;
+  return isDeployStartStatus(status) ? { status } : null;
+}
+
+function readCancelResult(value: unknown): CancelResult | null {
+  const status = objectFields(value)?.status;
+  return status === "cancelled" || status === "gone" ? { status } : null;
+}
+
 function readApprovalScript(value: unknown): ApprovalScript | null {
   const fields = objectFields(value);
   if (fields === null) return null;
@@ -1082,6 +1370,15 @@ export function isSchemaName(value: unknown): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= MAX_SCHEMA_NAME_LENGTH && value.trim() === value;
 }
 
+/** True for a script's name or version that a request can hold. The computer leaves others out of what it lists, so a phone is never shown one it cannot ask about. */
+export function isScriptText(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= MAX_SCRIPT_TEXT_LENGTH;
+}
+
+function isQueryStart(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= MAX_QUERY_START_LENGTH;
+}
+
 /** True for one of a push subscription's fields in a request: a string of 1 to MAX_PUSH_FIELD_LENGTH characters. */
 function isPushField(value: unknown): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= MAX_PUSH_FIELD_LENGTH;
@@ -1103,3 +1400,14 @@ const isLiveSessionKind = oneOf(LIVE_SESSION_KINDS);
 const isHealthLevel = oneOf(HEALTH_LEVELS);
 const isDriftStatus = oneOf(DRIFT_STATUSES);
 const isLiveProblem = oneOf(LIVE_PROBLEMS);
+const isControlTick = oneOf(CONTROL_TICKS);
+const DEPLOY_REGISTRIES: readonly DeployRegistry[] = ["ok", "unconfigured", "unreachable"];
+const isDeployRegistry = oneOf(DEPLOY_REGISTRIES);
+const DEPLOY_RUN_STATES: readonly DeployRunState[] = ["running", "done", "not-applied", "unknown"];
+const isDeployRunState = oneOf(DEPLOY_RUN_STATES);
+const DEPLOY_NEXT_STEPS: readonly DeployNext[] = ["run", "run-approved", "ask-approval", "waiting", "blocked"];
+const isDeployNext = oneOf(DEPLOY_NEXT_STEPS);
+const DEPLOY_BLOCKED_REASONS: readonly DeployBlockedReason[] = ["nothing-to-do", "transaction-control", "application", "no-rollback", "read-only", "role"];
+const isDeployBlockedReason = oneOf(DEPLOY_BLOCKED_REASONS);
+const DEPLOY_START_STATUSES: readonly DeployStartStatus[] = ["done", "sent-for-approval", "running", "not-applied", "unknown"];
+const isDeployStartStatus = oneOf(DEPLOY_START_STATUSES);
