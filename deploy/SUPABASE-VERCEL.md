@@ -1,6 +1,6 @@
 # Running Schema Studio on Supabase and Vercel
 
-> **Not yet run on real accounts.** The code behind this guide was tested on plain PostgreSQL through a stand-in for a transaction pooler, not on Supabase or Vercel themselves. Expect to correct a step or two the first time through.
+> **Half run on real accounts.** The database side of this guide has run on a real Supabase project through its transaction pooler. Vercel has not, so expect to correct a step or two there the first time through.
 
 The web app runs on Vercel. Its own data (people, roles, saved connections, history) lives in a Supabase project, used as an ordinary PostgreSQL database. It is the same code as the Docker deployment in [README.md](README.md), set up through environment variables. Sign-in stays with Microsoft (and GitHub if you want it) through NextAuth. Supabase Auth is not used.
 
@@ -13,7 +13,7 @@ The web app runs on Vercel. Its own data (people, roles, saved connections, hist
 
 ## 1. Create the Supabase project
 
-1. Create a project in the same region as your Vercel functions, because every request makes several database calls and distance adds up. Vercel's default is Washington, D.C. (`iad1`, which is `us-east-1` in Supabase). If your people are far from there, put both near them, for example Singapore: `ap-southeast-1` in Supabase and `sin1` under **Settings**, **Functions**, **Function Regions** in Vercel.
+1. Create a project in the same region as your Vercel functions, because every request makes several database calls and distance adds up. Vercel's default is Washington, D.C. (`iad1`, which is `us-east-1` in Supabase). If your people are far from there, put both near them, for example Singapore: `ap-southeast-1` in Supabase and `sin1` under **Settings**, **Functions**, **Function Regions** in Vercel. A project that already exists stays where it is, so match Vercel to it instead, for example Sydney: `ap-southeast-2` in Supabase and `syd1` in Vercel.
 2. Press **Connect** and copy the **Transaction pooler** string (port 6543). This is `DATABASE_URL_A`. The direct address is IPv6 unless you buy the IPv4 add-on, and the pooler is what Supabase recommends for serverless. The app keeps no session state, so it works behind it.
 3. Leave the database's time zone at UTC.
 4. Turn off the **Data API** in its settings in the Supabase dashboard. The app talks to PostgreSQL directly and never uses it. While it is on, Supabase serves the `public` schema over the internet to anyone with the project's public key, limited only by that role's grants, and tables made outside the dashboard (as the app's are) do not get row level security on their own.
@@ -21,6 +21,8 @@ The web app runs on Vercel. Its own data (people, roles, saved connections, hist
 The app also turns on row level security for its own tables, with no policies, whenever it finds Supabase's `anon` role. Those roles then see no rows even if the Data API stays on. The app is not affected, because a table's owner is exempt.
 
 That is why every copy must connect as the same database user: the app creates its tables on first start and has to own them.
+
+If the project already holds tables from an older copy of the app, move them to another schema before the first start (`ALTER TABLE ... SET SCHEMA`), and remove any trigger on `auth.users` that writes into them. Otherwise the app would try to upgrade tables it did not make, and anyone signing up through Supabase Auth with the project's public key could add rows to them.
 
 ## 2. Create the Vercel project
 
@@ -54,7 +56,7 @@ Preview deployments have addresses of their own, so sign-in works there only if 
 
 ## 4. Deploy and sign in
 
-Deploy, then open the site and sign in. The first request of a new deployment creates or updates the tables, so it can take a few seconds.
+Deploy, then open the site and sign in. The first request of a new deployment creates or updates the tables, which is about 130 statements. That should take a few seconds with the app and the database in the same region, and over a minute from far away: 79 seconds on an empty project at about 290 ms a round trip.
 
 ## 5. Schedule the drift checker
 
@@ -139,6 +141,7 @@ Both free plans can run this, with limits worth knowing first.
 
 - The connection to the app's own database is encrypted, but the server's certificate is not verified. This is the same as the Docker setup.
 - On the first start of a new deployment, a burst of requests about as large as the pooler's server connections can use them all up waiting on the setup lock. Those requests fail after 120 seconds, and later ones work.
+- A copy with no deployment stamp, such as a Docker copy, runs the whole setup on every start, and copies starting together take turns. From far away that measured 79 seconds for the first and about 42 for each one after it, so a fourth starting together would run out the 120 second wait. Its request would fail, and a later one would work.
 
 ## Sources
 
