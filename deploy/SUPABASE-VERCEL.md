@@ -45,6 +45,8 @@ If the project already holds tables from an older copy of the app, move them to 
 
 Leave `ALLOW_PRIVATE_DB_HOSTS` unset, because there is no private network to reach from here. Leave `DRIFT_SCHEDULER` blank, because on Vercel a blank value means a scheduled call wakes the checker.
 
+Do not set `NEXTAUTH_URL` or `AUTH_URL`, and delete an old one from a project that already exists. The sign-in library uses it in place of the request's own address, so a stale value sends sign-in to the wrong site, and previews would all use it too.
+
 ## 3. Add the sign-in addresses
 
 Add these to the provider, using your site's production address:
