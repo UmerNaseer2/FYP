@@ -193,3 +193,63 @@ describe("selectDue", () => {
     expect(entries.map((e) => e.trackedSchemaId)).toEqual([3, 1]);
   });
 });
+
+describe("letting a schema through early", () => {
+  const CHECKED = "2026-09-09T10:00:03.000Z";
+  const HALF_A_GAP = 7.5 * 60_000;
+
+  it("lets through only what falls due inside the window", () => {
+    const e = entry(1, 15, CHECKED);
+    // Due at 10:15:03, so the window opens at 10:07:33.
+    expect(isDue(e, AT("2026-09-09T10:07:32.000Z"), HALF_A_GAP)).toBe(false);
+    expect(isDue(e, AT("2026-09-09T10:07:33.000Z"), HALF_A_GAP)).toBe(true);
+  });
+
+  it("changes nothing when no window is given", () => {
+    const e = entry(1, 15, CHECKED);
+    expect(isDue(e, AT("2026-09-09T10:15:02.000Z"))).toBe(false);
+    expect(selectDue([e], AT("2026-09-09T10:15:02.000Z"), 10)).toEqual([]);
+  });
+
+  it("never lets a manual-only schema through", () => {
+    const e = entry(1, DRIFT_INTERVAL_OFF, CHECKED);
+    expect(isDue(e, AT("2030-01-01T00:00:00.000Z"), HALF_A_GAP)).toBe(false);
+  });
+
+  it("selects what is inside the window and leaves the rest", () => {
+    const soon = entry(1, 15, CHECKED);
+    const later = entry(2, 60, CHECKED);
+    const due = selectDue([later, soon], AT("2026-09-09T10:15:00.000Z"), 10, HALF_A_GAP);
+    expect(due.map((e) => e.trackedSchemaId)).toEqual([1]);
+  });
+
+  /** Calls `gap` minutes apart, each check stamped three seconds in: how many calls check? */
+  function checksOver(calls: number, cadence: number, gap: number, earlyMs: number): number {
+    const start = AT("2026-09-09T10:00:00.000Z").getTime();
+    let lastCheckedAt = new Date(start + 3_000);
+    let checks = 0;
+    for (let call = 1; call <= calls; call += 1) {
+      const now = new Date(start + call * gap * 60_000);
+      if (isDue({ trackedSchemaId: 1, intervalMinutes: cadence, lastCheckedAt }, now, earlyMs)) {
+        checks += 1;
+        lastCheckedAt = new Date(now.getTime() + 3_000);
+      }
+    }
+    return checks;
+  }
+
+  it("keeps a cadence as long as the gap between calls to every call", () => {
+    expect(checksOver(8, 15, 15, HALF_A_GAP)).toBe(8);
+    // Without the window, each check's own few seconds cost the next call.
+    expect(checksOver(8, 15, 15, 0)).toBe(4);
+  });
+
+  it("does not check more often than the cadence asks", () => {
+    expect(checksOver(16, 30, 15, HALF_A_GAP)).toBe(8);
+    expect(checksOver(16, 60, 15, HALF_A_GAP)).toBe(4);
+  });
+
+  it("checks a shorter cadence on every call, since it cannot do better", () => {
+    expect(checksOver(8, 5, 15, HALF_A_GAP)).toBe(8);
+  });
+});

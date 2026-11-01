@@ -17,8 +17,9 @@ import {
  *
  * Until this existed, every drift check in the app was a button press, and the
  * only thing watching a tracked schema was the user remembering to open the
- * page. Something wakes this once a minute, it asks lib/drift-schedule which
- * schemas are due, and it runs the same check the button runs.
+ * page. Something wakes this every so often (each minute, on most hosts), it
+ * asks lib/drift-schedule which schemas are due, and it runs the same check the
+ * button runs.
  *
  * What wakes it depends on where the app runs (see schedulerMode):
  *
@@ -46,14 +47,14 @@ import {
  *     expiry, so only one runs a tick and a dead copy cannot stop the schedule.
  */
 
-/** How often the loop wakes. Not the cadence — that is per schema. */
+/** How often this server's own timer wakes the loop. Not the cadence: that is per schema. */
 const TICK_MS = 60_000;
 
 /**
  * Most schemas checked in one tick.
  *
  * Each check introspects a whole remote schema, so this is a limit on how much
- * of somebody else's database this app is willing to read per minute. The rest
+ * of somebody else's database this app is willing to read per tick. The rest
  * are picked up next tick, most-overdue first, so nothing starves.
  */
 const MAX_PER_TICK = 6;
@@ -91,10 +92,17 @@ const LEASE_RENEW_MS = 30_000;
 const STATE_ROW = "tick";
 
 /**
- * How recently a tick must have happened for scheduled calls to count as
- * arriving. A missed call or two is not news, so a few minutes, not one.
+ * The least time since a tick for scheduled calls to still count as arriving.
+ * A missed call or two is not news, so a few minutes, not one. A slower schedule
+ * waits longer: see recentCallMinutes.
  */
 const RECENT_CALL_MINUTES = 5;
+
+/**
+ * The longest gap DRIFT_CALL_MINUTES may name, a day. Beyond that no cadence on
+ * offer could be kept, so it is more likely a typo than a schedule.
+ */
+const MAX_CALL_MINUTES = 1440;
 
 /**
  * What the scheduler is doing, as one organization sees it, for
@@ -214,6 +222,37 @@ function schedulerMode(): "off" | "external" | "timer" {
   if (flag === "off" || flag === "false" || flag === "0") return "off";
   if (flag === "external" || process.env.VERCEL) return "external";
   return "timer";
+}
+
+/**
+ * How many minutes apart the scheduled calls come, from DRIFT_CALL_MINUTES.
+ *
+ * The schedule lives with whatever makes the calls, so this server cannot see it,
+ * and without being told it could not tell a slow schedule from calls that have
+ * stopped. A free hosting plan needs the slow one: deploy/SUPABASE-VERCEL.md says
+ * why. Anything that is not a whole number of minutes reads as the usual minute.
+ */
+function callMinutes(): number {
+  const minutes = Number(process.env.DRIFT_CALL_MINUTES);
+  return Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_CALL_MINUTES ? minutes : 1;
+}
+
+/** How recently a tick must have happened for scheduled calls to count as arriving. */
+function recentCallMinutes(): number {
+  return Math.max(RECENT_CALL_MINUTES, callMinutes() * 3);
+}
+
+/**
+ * How long before its due time a tick may check a schema, in milliseconds.
+ *
+ * A check is stamped when it finishes, a few seconds into the tick, so one cadence
+ * later the schema falls due a few seconds after the matching tick began. Waiting
+ * for the next tick costs under a minute when a timer here does the waking. With
+ * calls fifteen minutes apart it would turn "every 15 minutes" into every 30, so a
+ * schema due within half a gap goes now rather than nearly a whole gap late.
+ */
+function earlyMs(): number {
+  return schedulerMode() === "external" ? (callMinutes() * 60_000) / 2 : 0;
 }
 
 /** Why the checker may not run at all, or null when it may. */
@@ -347,7 +386,7 @@ async function checkWhatIsDue(now: Date): Promise<TickReport> {
 async function checkUnderLease(now: Date): Promise<TickReport> {
   const s = state();
   const entries = await loadEntries();
-  const due = selectDue(entries, now, MAX_PER_TICK);
+  const due = selectDue(entries, now, MAX_PER_TICK, earlyMs());
   // A tick that could not tidy up can still do its real job.
   await pruneIfDue().catch((error) => {
     console.error("Drift scheduler — prune failed:", error);
@@ -399,7 +438,7 @@ function orgTickLine(
   now: Date
 ): string {
   const waiting = entries.filter(
-    (entry) => isDue(entry, now) && !checked.some((item) => item.entry === entry)
+    (entry) => isDue(entry, now, earlyMs()) && !checked.some((item) => item.entry === entry)
   ).length;
   if (checked.length === 0 && waiting === 0) {
     const watched = entries.length;
@@ -539,9 +578,12 @@ export function stopDriftScheduler(): void {
 }
 
 /** What the schedule screen says when calls from outside have stopped, or never began. */
-const NO_CALL_YET =
-  `Nothing is checking these schemas on its own: no scheduled call has reached this server in the last ${RECENT_CALL_MINUTES} minutes. ` +
-  "Checks still run when you press Check drift now. deploy/SUPABASE-VERCEL.md shows how to set the call up.";
+function noCallYet(minutes: number): string {
+  return (
+    `Nothing is checking these schemas on its own: no scheduled call has reached this server in the last ${minutes} minutes. ` +
+    "Checks still run when you press Check drift now. deploy/SUPABASE-VERCEL.md shows how to set the call up."
+  );
+}
 
 /**
  * What the loop is doing right now, as organization `orgId` sees it.
@@ -560,13 +602,14 @@ export async function driftSchedulerStatus(orgId: number): Promise<SchedulerStat
   await syncMetadataTables();
   const s = state();
   const external = schedulerMode() === "external";
+  const recentMinutes = recentCallMinutes();
   const result = await pool.query(
     `SELECT last_tick_at, last_report,
             COALESCE(lease_until > now(), false)
               OR COALESCE(now() - last_tick_at < make_interval(mins => $2), false) AS recent
        FROM drift_scheduler_state
       WHERE name = $1`,
-    [STATE_ROW, RECENT_CALL_MINUTES]
+    [STATE_ROW, recentMinutes]
   );
   const row = result.rows[0] as
     | { last_tick_at: Date | string | null; last_report: StoredReport | null; recent: boolean }
@@ -574,12 +617,12 @@ export async function driftSchedulerStatus(orgId: number): Promise<SchedulerStat
   const running = external ? row?.recent === true : s.timer !== null;
   return {
     running,
-    stoppedReason: running ? null : external ? NO_CALL_YET : (s.stoppedReason ?? "Not started."),
+    stoppedReason: running ? null : external ? noCallYet(recentMinutes) : (s.stoppedReason ?? "Not started."),
     ticks: s.ticks,
     checksRun: external ? null : (s.checksRunByOrg.get(orgId) ?? 0),
     lastTickAt: row?.last_tick_at ? new Date(row.last_tick_at).toISOString() : null,
     lastTickSummary: lastTickLine(row?.last_report ?? null, orgId),
-    tickSeconds: TICK_MS / 1000,
+    tickSeconds: external ? callMinutes() * 60 : TICK_MS / 1000,
     external,
   };
 }

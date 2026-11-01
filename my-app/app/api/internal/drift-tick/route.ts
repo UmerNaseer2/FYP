@@ -7,7 +7,7 @@ import { disabledReason, runSchedulerTick } from "@/lib/drift-scheduler";
  *
  * On a serverless host a process lives only while requests come in, so a timer
  * has nothing to run in. Something outside (Supabase's pg_cron, see
- * deploy/SUPABASE-VERCEL.md) calls this once a minute instead.
+ * deploy/SUPABASE-VERCEL.md) calls this on a schedule instead.
  *
  * There is no person behind the call, so no session and no role: proxy.ts lets
  * it through (lib/public-paths.ts) and the shared secret below is the whole check.

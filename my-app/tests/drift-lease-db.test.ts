@@ -73,6 +73,7 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
   const savedDesktop = process.env.SCHEMA_STUDIO_DESKTOP;
   const savedVercel = process.env.VERCEL;
   const savedScheduler = process.env.DRIFT_SCHEDULER;
+  const savedCallMinutes = process.env.DRIFT_CALL_MINUTES;
   let server: Client;
   let db: Client;
   let databaseName = "";
@@ -168,6 +169,7 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
     mockCheck.mockResolvedValue(IN_SYNC);
     mockPrune.mockClear();
     delete process.env.VERCEL;
+    delete process.env.DRIFT_CALL_MINUTES;
     globalThis.__driftSchedulerState = undefined;
   });
 
@@ -189,6 +191,7 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
     restore("SCHEMA_STUDIO_DESKTOP", savedDesktop);
     restore("VERCEL", savedVercel);
     restore("DRIFT_SCHEDULER", savedScheduler);
+    restore("DRIFT_CALL_MINUTES", savedCallMinutes);
     await db?.end();
     if (server) {
       if (databaseName) {
@@ -493,5 +496,105 @@ describeWithDatabase("the drift checker's lease on a real database", () => {
       expect(status.running).toBe(false);
       expect(status.stoppedReason).toMatch(/no scheduled call has reached this server/);
     }, SLOW);
+
+    it("is not put off by a missed call or two on the usual schedule", async () => {
+      await tickAsNewCopy();
+      await db.query(`UPDATE drift_scheduler_state SET last_tick_at = now() - interval '4 minutes'`);
+      expect((await scheduler.driftSchedulerStatus(orgA)).running).toBe(true);
+    }, SLOW);
+
+    it.each(["", "abc", "0", "-5", "1.5", "1441", "99999999999"])(
+      "reads DRIFT_CALL_MINUTES=%s as the usual minute",
+      async (value) => {
+        process.env.DRIFT_CALL_MINUTES = value;
+        await tickAsNewCopy();
+        const status = await scheduler.driftSchedulerStatus(orgA);
+        expect(status).toMatchObject({ running: true, tickSeconds: 60 });
+      },
+      SLOW
+    );
+
+    it("accepts calls a day apart", async () => {
+      process.env.DRIFT_CALL_MINUTES = "1440";
+      await tickAsNewCopy();
+      const status = await scheduler.driftSchedulerStatus(orgA);
+      expect(status).toMatchObject({ running: true, tickSeconds: 86_400 });
+    }, SLOW);
+
+    describe("with calls fifteen minutes apart", () => {
+      const NEARLY_DUE = "now() - interval '14 minutes 57 seconds'";
+
+      beforeEach(() => {
+        process.env.DRIFT_CALL_MINUTES = "15";
+      });
+
+      afterEach(async () => {
+        await db.query(`DELETE FROM tracked_schemas WHERE id <> ALL($1::int[])`, [[schemaA, schemaB]]);
+        await db.query(`DELETE FROM connections WHERE name NOT IN ('probe-a', 'probe-b')`);
+        await db.query(`UPDATE tracked_schemas SET last_drift_check_at = NULL`);
+      });
+
+      it("still reads as running between two calls, and says how far apart they are", async () => {
+        await tickAsNewCopy();
+        await db.query(`UPDATE drift_scheduler_state SET last_tick_at = now() - interval '20 minutes'`);
+
+        const status = await scheduler.driftSchedulerStatus(orgA);
+
+        expect(status).toMatchObject({ running: true, stoppedReason: null, tickSeconds: 900 });
+      }, SLOW);
+
+      it("still reads as running after one missed call", async () => {
+        await tickAsNewCopy();
+        await db.query(`UPDATE drift_scheduler_state SET last_tick_at = now() - interval '44 minutes'`);
+        expect((await scheduler.driftSchedulerStatus(orgA)).running).toBe(true);
+      }, SLOW);
+
+      it("reads as not running once a couple of calls have been missed", async () => {
+        await tickAsNewCopy();
+        await db.query(`UPDATE drift_scheduler_state SET last_tick_at = now() - interval '46 minutes'`);
+
+        const status = await scheduler.driftSchedulerStatus(orgA);
+
+        expect(status.running).toBe(false);
+        expect(status.stoppedReason).toMatch(/in the last 45 minutes/);
+      }, SLOW);
+
+      it("checks a schema that falls due just after the call came", async () => {
+        await db.query(`UPDATE tracked_schemas SET last_drift_check_at = ${NEARLY_DUE}`);
+        await tickAsNewCopy();
+        expect(mockCheck).toHaveBeenCalledTimes(2);
+      }, SLOW);
+
+      it("leaves a schema that is not due for more than half a gap", async () => {
+        await db.query(`UPDATE tracked_schemas SET last_drift_check_at = now() - interval '7 minutes'`);
+        await tickAsNewCopy();
+        expect(mockCheck).not.toHaveBeenCalled();
+      }, SLOW);
+
+      it("counts a schema in the window as waiting when the tick has no room for it", async () => {
+        for (const name of ["c", "d", "e", "f", "g"]) await addSchema(orgA, `probe-${name}`);
+        await db.query(`UPDATE tracked_schemas SET last_drift_check_at = ${NEARLY_DUE}`);
+
+        await tickAsNewCopy();
+
+        expect(mockCheck).toHaveBeenCalledTimes(6);
+        expect((await scheduler.driftSchedulerStatus(orgA)).lastTickSummary).toBe(
+          "Checked 5 · 1 more waiting for the next tick."
+        );
+      }, SLOW);
+
+      it("does not check early where a timer here does the waking", async () => {
+        delete process.env.VERCEL;
+        await db.query(`UPDATE tracked_schemas SET last_drift_check_at = ${NEARLY_DUE}`);
+        await tickAsNewCopy();
+        expect(mockCheck).not.toHaveBeenCalled();
+      }, SLOW);
+
+      it("does not change how a timer here reports itself", async () => {
+        delete process.env.VERCEL;
+        await tickAsNewCopy();
+        expect((await scheduler.driftSchedulerStatus(orgA)).tickSeconds).toBe(60);
+      }, SLOW);
+    });
   });
 });

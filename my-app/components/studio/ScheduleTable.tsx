@@ -63,6 +63,12 @@ function ago(iso: string | null, now: number | null): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+/** "minute" / "15 minutes", for the sentence about the scheduled call. */
+function callGap(seconds: number): string {
+  const minutes = Math.round(seconds / 60);
+  return minutes === 1 ? "minute" : `${minutes} minutes`;
+}
+
 /** "in 8m" for a future instant, "now" once it has passed. */
 function until(iso: string | null, now: number | null): string {
   if (!iso || now === null) return "—";
@@ -190,8 +196,11 @@ export function ScheduleTable() {
   const { scheduler, rows } = view;
   const automatic = rows.filter((r) => r.intervalMinutes > 0).length;
   const waking = scheduler.external
-    ? "A scheduled call wakes this server every minute, and it"
+    ? `A scheduled call wakes this server every ${callGap(scheduler.tickSeconds)}, and it`
     : `This server wakes every ${scheduler.tickSeconds}s and`;
+  // A cadence cannot beat the call that wakes it. "Next check" reads "now" until
+  // that call comes, which would look stuck if nothing said why.
+  const slowCalls = scheduler.tickSeconds > 60 ? "A shorter cadence still waits for the next call. " : "";
   const options = DRIFT_INTERVAL_CHOICES.map((c) => ({
     value: String(c.minutes),
     label: c.label,
@@ -242,7 +251,7 @@ export function ScheduleTable() {
             <p className="text-[12.5px] mt-1.5 max-w-[70ch]" style={{ color: "var(--text-2)" }}>
               {scheduler.running
                 ? `${waking} checks whichever tracked ` +
-                  `schemas are due. ${automatic} of ${rows.length} ` +
+                  `schemas are due. ${slowCalls}${automatic} of ${rows.length} ` +
                   `${rows.length === 1 ? "schema is" : "schemas are"} on a cadence.`
                 : scheduler.stoppedReason ??
                   "Nothing is checking these schemas on its own. Checks only run when you press Check drift now."}

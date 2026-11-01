@@ -13,7 +13,7 @@ The web app runs on Vercel. Its own data (people, roles, saved connections, hist
 
 ## 1. Create the Supabase project
 
-1. Create a project in a region near your Vercel functions. Every request makes several database calls, so distance adds up.
+1. Create a project in the same region as your Vercel functions, because every request makes several database calls and distance adds up. Vercel's default is Washington, D.C. (`iad1`, which is `us-east-1` in Supabase). If your people are far from there, put both near them, for example Singapore: `ap-southeast-1` in Supabase and `sin1` under **Settings**, **Functions**, **Function Regions** in Vercel.
 2. Press **Connect** and copy the **Transaction pooler** string (port 6543). This is `DATABASE_URL_A`. The direct address is IPv6 unless you buy the IPv4 add-on, and the pooler is what Supabase recommends for serverless. The app keeps no session state, so it works behind it.
 3. Leave the database's time zone at UTC.
 4. Turn off the **Data API** in its settings in the Supabase dashboard. The app talks to PostgreSQL directly and never uses it. While it is on, Supabase serves the `public` schema over the internet to anyone with the project's public key, limited only by that role's grants, and tables made outside the dashboard (as the app's are) do not get row level security on their own.
@@ -39,6 +39,7 @@ That is why every copy must connect as the same database user: the app creates i
 | `GITHUB_PAT`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` | The repository that holds the script registry. |
 | `NEXT_PUBLIC_AUTH_BYPASS` | `false` |
 | `CRON_SECRET` | A new random value: `openssl rand -hex 32`. Under 32 characters, the route refuses every call. |
+| `DRIFT_CALL_MINUTES` | `15` on the free plan: the minutes between the scheduled calls in step 5. Blank means every minute. |
 
 Leave `ALLOW_PRIVATE_DB_HOSTS` unset, because there is no private network to reach from here. Leave `DRIFT_SCHEDULER` blank, because on Vercel a blank value means a scheduled call wakes the checker.
 
@@ -57,7 +58,9 @@ Deploy, then open the site and sign in. The first request of a new deployment cr
 
 ## 5. Schedule the drift checker
 
-A serverless host keeps no process running, so the checker's usual timer has nothing to run in. Something outside has to call it every minute. Vercel's own cron runs once a day at most on the free plan, so this uses `pg_cron` inside Supabase.
+A serverless host keeps no process running, so the checker's usual timer has nothing to run in. Something outside has to call it on a schedule. Vercel's own cron runs once a day at most on the free plan, so this uses `pg_cron` inside Supabase.
+
+The schedule below calls every 15 minutes, which is right for the free plan. Step 7 says why. On Pro, use `* * * * *` and leave `DRIFT_CALL_MINUTES` blank. Keep the two matched, because the server cannot see the schedule and would read slow calls as calls that have stopped.
 
 Run this in the Supabase SQL editor, with your own values:
 
@@ -69,7 +72,7 @@ select vault.create_secret('<the CRON_SECRET value>', 'drift_tick_secret');
 
 select cron.schedule(
   'schema-studio-drift-tick',
-  '* * * * *',
+  '*/15 * * * *',
   $$
   select net.http_get(
     url := 'https://<your-site>/api/internal/drift-tick',
@@ -85,7 +88,7 @@ select cron.schedule(
 
 Use the production address, since deployment protection can stop a call to a deployment's own address.
 
-Open the **Schedule** screen after a minute or two. It should read **Running** and say a scheduled call wakes the server. If it says no call has arrived, ask Supabase what happened:
+Open the **Schedule** screen after the first call. It should read **Running** and say a scheduled call wakes the server every 15 minutes. If it says no call has arrived, ask Supabase what happened:
 
 ```sql
 select status_code, timed_out, error_msg from net._http_response order by created desc limit 5;
@@ -103,6 +106,8 @@ To stop the calls:
 select cron.unschedule('schema-studio-drift-tick');
 ```
 
+Checks run only when a call comes, so a schema is never checked more often than that, whatever its cadence says. A schema that falls due within half a gap is checked on this call rather than nearly a whole gap late, so a 15 minute cadence means every call and not every other one. Each call checks at most 6 schemas, so calls 15 minutes apart mean at most 24 checks an hour, and the rest wait for a later call.
+
 ## 6. Sharing the database with the Docker copy
 
 The Docker copy can stay on beside Vercel, with both showing the same data:
@@ -110,6 +115,25 @@ The Docker copy can stay on beside Vercel, with both showing the same data:
 - Point it at the same `DATABASE_URL_A` and use the same `APP_ENCRYPTION_KEY`.
 - Saved connections are shared too, so a connection to a private database works from the Docker copy and fails from Vercel.
 - Let one copy run the checker. Set `DRIFT_SCHEDULER=off` on the other, or leave the `pg_cron` call out. Two copies would not check twice, but one that cannot reach a private database would record it as unreachable.
+
+## 7. Staying inside the free plans
+
+Both free plans can run this, with limits worth knowing first.
+
+**Vercel Hobby**
+
+- The plan is for non-commercial, personal use only, so a rollout for a real organization belongs on Pro.
+- A month allows 4 hours of Active CPU, 360 GB-hours of provisioned memory and 1,000,000 function calls. Treat these as shared by every project on the account.
+- Go over and, in most cases, you wait until 30 days have passed before you can use that feature again.
+- A call every minute is 43,200 calls a month, which leaves 333 ms of CPU for each one even with nothing else on the account running. Time spent waiting on a database does not count as CPU, but a cold start does, and it can cost more than that. So every minute risks the whole allowance.
+- A call every 15 minutes is 2,880 calls a month. At a full second of CPU each, which is an estimate and not a measurement, that is 0.8 hours, a fifth of the allowance.
+- Look at **Usage** in the Vercel dashboard after a day or two. If Active CPU climbs too fast, slow the schedule down and change `DRIFT_CALL_MINUTES` to match.
+- A Docker copy on the same database can run the checker instead (step 6). Leave the `pg_cron` call out, and Vercel spends nothing on it.
+
+**Supabase Free**
+
+- You get two free projects, each with 500 MB of database size and a fixed 2 GB disk.
+- A project without enough database activity over a week gets paused, and that stops sign-in, the app and the scheduled calls together. Supabase emails a warning first, and you restore the project from its dashboard. Its documentation says a few requests a day are typically enough. The scheduled calls read the database, so they should count, but nobody has yet watched this over a week.
 
 ## Known limits
 
@@ -123,6 +147,12 @@ The Docker copy can stay on beside Vercel, with both showing the same data:
 - [Supabase: new tables and the Data API](https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically)
 - [Supabase: scheduling calls](https://supabase.com/docs/guides/functions/schedule-functions)
 - [Supabase: pg_net](https://supabase.com/docs/guides/database/extensions/pg_net)
+- [Supabase: free project pausing](https://supabase.com/docs/guides/platform/free-project-pausing)
+- [Supabase: billing and plan limits](https://supabase.com/docs/guides/platform/billing-on-supabase)
+- [Supabase: database size](https://supabase.com/docs/guides/platform/database-size)
 - [Vercel: function limits](https://vercel.com/docs/functions/limitations)
 - [Vercel: system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables)
 - [Vercel: cron usage and pricing](https://vercel.com/docs/cron-jobs/usage-and-pricing)
+- [Vercel: Hobby plan](https://vercel.com/docs/plans/hobby)
+- [Vercel: function usage and pricing](https://vercel.com/docs/functions/usage-and-pricing)
+- [Vercel: function regions](https://vercel.com/docs/functions/configuring-functions/region)

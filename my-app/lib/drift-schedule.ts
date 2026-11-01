@@ -104,8 +104,13 @@ export function nextDueAt(entry: DriftScheduleEntry): Date | null {
   return new Date(entry.lastCheckedAt.getTime() + interval * 60_000);
 }
 
-/** Whether this schema should be checked at `now`. */
-export function isDue(entry: DriftScheduleEntry, now: Date): boolean {
+/**
+ * Whether this schema should be checked at `now`.
+ *
+ * `earlyMs` also lets through a schema that falls due within that long, for a
+ * scheduler that wakes too rarely to wait for the exact moment.
+ */
+export function isDue(entry: DriftScheduleEntry, now: Date, earlyMs = 0): boolean {
   const interval = normalizeDriftInterval(entry.intervalMinutes);
   if (interval === DRIFT_INTERVAL_OFF) return false;
   // Never checked and scheduled: due now. This is the "first check runs
@@ -113,7 +118,7 @@ export function isDue(entry: DriftScheduleEntry, now: Date): boolean {
   // supposed to run at tracking time failed.
   if (!entry.lastCheckedAt) return true;
   const due = entry.lastCheckedAt.getTime() + interval * 60_000;
-  return now.getTime() >= due;
+  return now.getTime() + earlyMs >= due;
 }
 
 /**
@@ -123,7 +128,7 @@ export function isDue(entry: DriftScheduleEntry, now: Date): boolean {
  * fairly instead of the same few rows being checked every tick while the tail
  * starves. `limit` exists because a tick that fans out over fifty schemas at
  * once would open fifty connections to other people's databases; the rest are
- * picked up on the next tick, which is a minute away.
+ * picked up on the next tick.
  *
  * Generic so a caller can hang its own fields on each entry (the scheduler
  * adds the organization) and get the same objects back.
@@ -131,10 +136,11 @@ export function isDue(entry: DriftScheduleEntry, now: Date): boolean {
 export function selectDue<T extends DriftScheduleEntry>(
   entries: T[],
   now: Date,
-  limit: number
+  limit: number,
+  earlyMs = 0
 ): T[] {
   if (limit <= 0) return [];
-  const due = entries.filter((entry) => isDue(entry, now));
+  const due = entries.filter((entry) => isDue(entry, now, earlyMs));
   due.sort((a, b) => {
     // A schema that has never been checked is the most overdue there is.
     const aAt = a.lastCheckedAt ? a.lastCheckedAt.getTime() : Number.NEGATIVE_INFINITY;

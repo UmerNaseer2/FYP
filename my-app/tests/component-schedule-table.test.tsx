@@ -192,7 +192,10 @@ describe("schedule table", () => {
       {
         match: "/api/lineage/schedule",
         method: "GET",
-        body: { ...shown, scheduler: { ...shown.scheduler, external: true, checksRun: null } },
+        body: {
+          ...shown,
+          scheduler: { ...shown.scheduler, external: true, checksRun: null, tickSeconds: 60 },
+        },
       },
     ]);
     render(<ScheduleTable />);
@@ -201,6 +204,28 @@ describe("schedule table", () => {
     expect(screen.getByText(/A scheduled call wakes this server every minute/)).toBeInTheDocument();
     // Each instance would keep a count of its own, so no count beats a wrong one.
     expect(screen.queryByText(/checks this run/)).toBeNull();
+    expect(screen.queryByText(/shorter cadence/)).toBeNull();
+  });
+
+  it("says how far apart the calls are on a slower schedule", async () => {
+    const shown = view([row(60)]);
+    setRoutes([
+      {
+        match: "/api/lineage/schedule",
+        method: "GET",
+        body: {
+          ...shown,
+          scheduler: { ...shown.scheduler, external: true, checksRun: null, tickSeconds: 900 },
+        },
+      },
+    ]);
+    render(<ScheduleTable />);
+
+    expect(await screen.findByText("Running")).toBeInTheDocument();
+    expect(
+      screen.getByText(/A scheduled call wakes this server every 15 minutes, and it checks/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/A shorter cadence still waits for the next call/)).toBeInTheDocument();
   });
 
   it("says what is missing when no scheduled call has come in", async () => {
