@@ -51,7 +51,7 @@ Do not set `NEXTAUTH_URL` or `AUTH_URL`, and delete an old one from a project th
 
 Add these to the provider, using your site's production address:
 
-- Microsoft, in the Azure app registration: `https://<your-site>/api/auth/callback/microsoft-entra-id`
+- Microsoft, in the Azure app registration, under the **Web** platform: `https://<your-site>/api/auth/callback/microsoft-entra-id`. Under any other platform Microsoft refuses the client secret, and sign-in fails with `invalid_client` in the logs and "Sign-in failed or was cancelled" on the screen.
 - GitHub, in the OAuth app: `https://<your-site>/api/auth/callback/github`
 
 Preview deployments have addresses of their own, so sign-in works there only if you list those too.
