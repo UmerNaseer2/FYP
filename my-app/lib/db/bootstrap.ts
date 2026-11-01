@@ -1057,6 +1057,34 @@ async function backfillMemberships(defaultId: number): Promise<void> {
 }
 
 /**
+ * Make the indexes sync() wrongly thought were already there.
+ *
+ * To see which indexes a table still needs, sync() lists the indexes of every
+ * table with that name, in any schema. So a table of the same name elsewhere,
+ * holding an index of the same name, counts as having it: Supabase keeps an
+ * auth.identities next to ours, and a project can hold an old copy of these tables
+ * moved aside. Nothing reports it. The first anyone hears is a route failing on an
+ * ON CONFLICT with no unique index to match.
+ *
+ * Only this schema's indexes count here and only what is missing gets made, so a
+ * boot with nothing to do sends the one query.
+ */
+async function addIndexesSyncSkipped(): Promise<void> {
+  const { rows } = await metadataPool.query<{ tablename: string; indexname: string }>(
+    "SELECT tablename, indexname FROM pg_indexes WHERE schemaname = current_schema()"
+  );
+  const here = new Set(rows.map((row) => `${row.tablename}.${row.indexname}`));
+  for (const model of Object.values(sequelize.models)) {
+    for (const index of model.options.indexes ?? []) {
+      if (here.has(`${model.tableName}.${index.name}`)) continue;
+      await sequelize
+        .getQueryInterface()
+        .addIndex(model.tableName, { ...index, fields: index.fields ?? [] });
+    }
+  }
+}
+
+/**
  * Keep Supabase's Data API out of these tables.
  *
  * Supabase serves a database's public schema over the internet to anyone with
@@ -1159,6 +1187,7 @@ async function createEverything(stamp: string | null): Promise<void> {
     // is the only behaviour that is safe to run on someone's live metadata store
     // at the top of a request.
     await sequelize.sync();
+    await addIndexesSyncSkipped();
     await backfillOlderTables();
     await moveToOrganizations(defaultId);
     // Before setUpRoles: the old roles_label_key is unique across every

@@ -1,7 +1,7 @@
 // Setting up the metadata tables, against a real Postgres.
 //
 // Every cold start of the app runs this, and on Supabase and Vercel cold starts are
-// frequent and can arrive together. So it has to hold up in three ways:
+// frequent and can arrive together. So it has to hold up in four ways:
 //
 //  - The lock that makes copies take turns ends with a transaction. A session lock
 //    leaves the pooler's server connection locked with nobody able to unlock it:
@@ -11,6 +11,10 @@
 //    cold start from about 130 statements to a few.
 //  - Anyone holding the public key to Supabase's Data API cannot read these tables,
 //    however the project was set up. Passwords and sign-in records live here.
+//  - An index on a table of the same name in another schema does not stand in for
+//    the app's own, which is what Sequelize's sync() takes it for. A project can
+//    hold such a table: Supabase keeps auth.identities, and an old copy may be
+//    moved aside.
 //
 // Needs a Postgres it may create and drop databases in, runs only when
 // TEST_DATABASE_URL is set (CI sets it, and fails rather than skip without it: see
@@ -509,6 +513,75 @@ describeWithDatabase("setting up the metadata tables on a real database", () => 
           await server.query(`DROP ROLE IF EXISTS ${owner}`);
         }
       });
+    }, SLOW);
+  });
+
+  describe("an index of the same name on a table in another schema", () => {
+    const TRACKING_KEY = "tracked_schemas_connection_id_schema_name_key";
+
+    async function indexesIn(schema: string): Promise<string[]> {
+      const { rows } = await db.query(
+        `SELECT tablename || '.' || indexname AS name
+           FROM pg_indexes WHERE schemaname = $1 ORDER BY 1`,
+        [schema]
+      );
+      return rows.map((row: { name: string }) => row.name);
+    }
+
+    // Tracking a schema relies on this key. Postgres looks for it when planning the
+    // statement, so asking with no rows at all is enough to find it missing. This
+    // is the statement that came back as a 500 on a real Supabase project.
+    async function tryTrackingStatement(): Promise<void> {
+      await db.query(
+        `INSERT INTO tracked_schemas (org_id, connection_id, schema_name, label, environment)
+         SELECT org_id, id, 'shop', 'shop', 'dev' FROM connections WHERE false
+         ON CONFLICT (connection_id, schema_name) DO NOTHING`
+      );
+    }
+
+    it("still makes the app's own, and leaves the other table's alone", async () => {
+      await db.query(`CREATE SCHEMA old_copy`);
+      await db.query(
+        `CREATE TABLE old_copy.tracked_schemas (connection_id integer, schema_name text)`
+      );
+      await db.query(
+        `CREATE UNIQUE INDEX ${TRACKING_KEY} ON old_copy.tracked_schemas (connection_id, schema_name)`
+      );
+
+      await coldStart();
+
+      expect(await indexesIn("public")).toContain(`tracked_schemas.${TRACKING_KEY}`);
+      await expect(tryTrackingStatement()).resolves.toBeUndefined();
+      expect(await indexesIn("old_copy")).toEqual([`tracked_schemas.${TRACKING_KEY}`]);
+    }, SLOW);
+
+    it("builds the whole set again after every table has been moved aside", async () => {
+      await coldStart();
+      const built = await indexesIn("public");
+      expect(built.length).toBeGreaterThan(0);
+
+      // Moved, not copied, so every index keeps its name. Starting over this way
+      // loses nothing, and a boot has to treat the result as an empty database.
+      const { rows } = await db.query(`SELECT tablename FROM pg_tables WHERE schemaname = 'public'`);
+      await db.query(`CREATE SCHEMA moved_aside`);
+      for (const { tablename } of rows as { tablename: string }[]) {
+        await db.query(`ALTER TABLE ${quoteIdent(tablename)} SET SCHEMA moved_aside`);
+      }
+      expect(await indexesIn("public")).toEqual([]);
+
+      await coldStart();
+
+      expect(await indexesIn("public")).toEqual(built);
+      expect(await indexesIn("moved_aside")).toEqual(built);
+      await expect(tryTrackingStatement()).resolves.toBeUndefined();
+    }, SLOW);
+
+    it("has nothing to do on a later boot", async () => {
+      // addIndex has no IF NOT EXISTS, so making one twice would fail the boot.
+      await coldStart();
+      const built = await indexesIn("public");
+      await coldStart();
+      expect(await indexesIn("public")).toEqual(built);
     }, SLOW);
   });
 });
