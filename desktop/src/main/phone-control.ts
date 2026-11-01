@@ -208,6 +208,8 @@ export class PhoneControlActions {
       timer = this.clock.setTimeout(stillRunning, Math.max(0, deadline - this.clock.now()));
       signal.addEventListener("abort", stillRunning, { once: true });
       stopListening = () => signal.removeEventListener("abort", stillRunning);
+      // A listener added to a signal that has already fired never hears it.
+      if (signal.aborted) stillRunning();
     });
     // Whoever is no longer waiting for it must not leave a refusal unhandled.
     ended.catch(() => {});

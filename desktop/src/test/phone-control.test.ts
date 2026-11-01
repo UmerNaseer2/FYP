@@ -202,6 +202,23 @@ async function settle(): Promise<void> {
   for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
+/**
+ * Waits until `ready` says yes, for 2 seconds at the most. A start hashes its challenge
+ * on a worker thread, so no fixed number of turns is sure to be enough on a busy computer.
+ */
+async function waitFor(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error("Expected it within 2 seconds, but it did not happen.");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+/** How many runs this fixture has started. */
+function runsStarted(fixture: Fixture): number {
+  return fixture.routes().filter((route) => route === APPLY).length;
+}
+
 test("refuses everything while Allow control is off, and asks the app nothing", async () => {
   const fixture = new Fixture();
   fixture.allowed = false;
@@ -488,7 +505,7 @@ test("tells a phone to check back when a run takes long, and still writes how it
   const requests = fixture.requests();
 
   const started = requests.deployStart(start(), SIGNAL);
-  await settle();
+  await waitFor(() => runsStarted(fixture) === 1);
   assert.deepEqual(fixture.outcomes(), ["started"]);
   fixture.clock.advance(START_WAIT_MS);
   assert.deepEqual(await started, { status: "running" });
@@ -519,6 +536,7 @@ test("counts the phone's wait from when the request began, not from when the run
   });
   fixture.answers.set(APPLY, () => new Promise<AppAnswer>(() => {}));
   const started = fixture.requests().deployStart(start(), SIGNAL);
+  await waitFor(() => runsStarted(fixture) === 1);
   await settle();
   fixture.clock.advance(1);
   assert.deepEqual(await started, { status: "running" });
@@ -534,7 +552,7 @@ test("keeps a run going when the phone goes away, without leaving a refusal unha
     return new Promise<AppAnswer>((resolve) => { finish = resolve; });
   });
   const started = fixture.requests().deployStart(start(), controller.signal);
-  await settle();
+  await waitFor(() => runsStarted(fixture) === 1);
   controller.abort();
   assert.deepEqual(await started, { status: "running" });
   assert.equal((runSignal as AbortSignal | null)?.aborted, false);
@@ -543,6 +561,18 @@ test("keeps a run going when the phone goes away, without leaving a refusal unha
   finish({ status: 409, json: {} });
   await settle();
   assert.deepEqual(fixture.outcomes(), ["started", "changed"]);
+  assert.equal(fixture.clock.waiting(), 0);
+});
+
+test("answers at once when the phone left just before its run began", async () => {
+  const fixture = new Fixture();
+  const controller = new AbortController();
+  fixture.answers.set(APPLY, () => {
+    controller.abort();
+    return new Promise<AppAnswer>(() => {});
+  });
+  const started = fixture.requests().deployStart(start(), controller.signal);
+  assert.deepEqual(await started, { status: "running" });
   assert.equal(fixture.clock.waiting(), 0);
 });
 
@@ -555,11 +585,11 @@ test("lets a family run again once its last run has ended, and keeps families ap
   const holds = new Fixture();
   holds.answers.set(APPLY, () => new Promise<AppAnswer>(() => {}));
   const first = holds.requests().deployStart(start(), SIGNAL);
-  await settle();
+  await waitFor(() => runsStarted(holds) === 1);
   holds.answers.set(PHONE_ROUTE, planAnswer({ scriptName: "other_script" }));
   const second = holds.requests().deployStart(start({ ...DEPLOY, scriptName: "other_script" }), SIGNAL);
+  await waitFor(() => runsStarted(holds) === 2);
   await settle();
-  assert.deepEqual(holds.routes().filter((route) => route === APPLY), [APPLY, APPLY]);
   holds.clock.advance(START_WAIT_MS);
   assert.deepEqual(await first, { status: "running" });
   assert.deepEqual(await second, { status: "running" });
