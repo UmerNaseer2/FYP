@@ -106,7 +106,43 @@ jobs:
       - name: Fetch PostgreSQL
         run: npm run fetch:postgres
       - name: Test
-        run: npm test
+        run: |
+          # Only someone signed in to GitHub can read a job's log, but anyone
+          # can read the annotations on a run's page. So what failed goes in
+          # annotations. This job has no secrets for a test to print. GitHub
+          # reads a % or a line break in one as part of its own format, so
+          # those are written its way.
+          annotate() {
+            local text
+            text="$(head -c 4000 "$2" 2>&1 || true)"
+            text=${text//'%'/'%25'}
+            text=${text//$'\r'/'%0D'}
+            text=${text//$'\n'/'%0A'}
+            echo "::error title=$1::$text"
+          }
+          set +e
+          npm test 2>&1 | tee /tmp/test-output.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^ *not ok ' /tmp/test-output.txt | cut -c1-200 > /tmp/failed.txt
+            if [ -s /tmp/failed.txt ]; then
+              annotate "Tests that failed" /tmp/failed.txt
+              # Each failure up to its stack, without the lines that only say
+              # where the runner keeps things.
+              awk '
+                /^ *not ok / { on = 1; print substr($0, 1, 200); next }
+                on && /^ *(stack:|\.\.\.)/ { on = 0; next }
+                on && /^ *(---|duration_ms:|type:|location:|failureType:)/ { next }
+                on { print substr($0, 1, 200) }
+              ' /tmp/test-output.txt > /tmp/why.txt
+              annotate "Why they failed" /tmp/why.txt
+            else
+              # No test reported failing, so the build stopped before them.
+              tail -n 30 /tmp/test-output.txt | cut -c1-200 > /tmp/why.txt
+              annotate "npm test stopped before the tests ran" /tmp/why.txt
+            fi
+          fi
+          exit "$status"
         env:
           REQUIRE_DESKTOP_FILE_VALIDATE: "1"
           REQUIRE_TEST_POSTGRES: "1"
