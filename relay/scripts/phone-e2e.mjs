@@ -5,6 +5,8 @@
  * approve and reject requests, turn drift alerts on and off, and forget the
  * computer. A laptop's browser then pairs by typing a short code, which the
  * computer refuses once and allows once, and shows its screens at that width.
+ * The first phone then checks and acknowledges drift under Allow control, and
+ * is refused once it is turned off.
  *
  * The computer is the desktop app's real phone-link code (desktop/out), with
  * a fake web app server and a fake push service. The relay and the phone app
@@ -152,9 +154,9 @@ const LIVE_SQL = `SELECT c.id, c.${LIVE_SQL_WORD}, o.total FROM customers c JOIN
 // What the window sees but a phone never should.
 const LIVE_PRIVATE = ["db.internal.example.test", "bookshop_app_user", "10.20.30.40", "PostgreSQL said something private"];
 const TRACKED = [
-  { id: 11, connectionId: 1, schemaName: "public", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "3", driftStatus: "drifted", driftSummary: LIVE_PRIVATE[3], driftCheckedAt: hoursAgo(2), lastCheckedAt: hoursAgo(0.2) },
-  { id: 12, connectionId: 1, schemaName: "sales", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "7", driftStatus: "in_sync", driftSummary: null, driftCheckedAt: hoursAgo(26), lastCheckedAt: hoursAgo(26) },
-  { id: 13, connectionId: 2, schemaName: "public", label: null, environment: "prod", connectionHost: LIVE_PRIVATE[0], headVersion: null, driftStatus: null, driftSummary: null, driftCheckedAt: null, lastCheckedAt: null },
+  { id: 11, connectionId: 1, schemaName: "public", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "3", driftStatus: "drifted", driftSummary: LIVE_PRIVATE[3], driftCheckedAt: hoursAgo(2), lastCheckedAt: hoursAgo(0.2), driftAcknowledgedAt: null },
+  { id: 12, connectionId: 1, schemaName: "sales", label: null, environment: "dev", connectionHost: LIVE_PRIVATE[0], headVersion: "7", driftStatus: "in_sync", driftSummary: null, driftCheckedAt: hoursAgo(26), lastCheckedAt: hoursAgo(26), driftAcknowledgedAt: null },
+  { id: 13, connectionId: 2, schemaName: "public", label: null, environment: "prod", connectionHost: LIVE_PRIVATE[0], headVersion: null, driftStatus: null, driftSummary: null, driftCheckedAt: null, lastCheckedAt: null, driftAcknowledgedAt: null },
 ];
 const liveSession = (fields) => ({ querySeconds: null, xactSeconds: null, username: LIVE_PRIVATE[1], applicationName: "bookshop-web", clientAddr: LIVE_PRIVATE[2], state: "active", waitingOn: null, query: LIVE_SQL, queryHidden: false, ...fields });
 const activity = () => ({
@@ -274,6 +276,18 @@ async function call(method, target, body) {
       return answer(200, TRACKED);
     case "GET /api/performance/activity":
       return answer(200, activity());
+    case "POST /api/lineage/drift": {
+      const row = TRACKED.find((tracked) => tracked.id === body?.trackedSchemaId);
+      if (row === undefined) return answer(404, { error: "Not found" });
+      row.lastCheckedAt = row.driftCheckedAt = new Date().toISOString();
+      return answer(200, { recorded: false, status: row.driftStatus, summary: LIVE_PRIVATE[3] });
+    }
+    case "POST /api/lineage/acknowledge": {
+      const row = TRACKED.find((tracked) => tracked.id === body?.trackedSchemaId);
+      if (row === undefined) return answer(404, { error: "Not found" });
+      row.driftAcknowledgedAt = new Date().toISOString();
+      return answer(200, { success: true, trackedSchemaId: row.id, status: row.driftStatus, acknowledgedAt: row.driftAcknowledgedAt });
+    }
     case "GET /api/lineage/schemas":
       return answer(200, { schemas: ["public", "sales"] });
     case "GET /api/schema/snapshot":
@@ -1053,6 +1067,84 @@ try {
     expect(problems.length === 0, `phone ${C.label} logged no errors`, problems.slice(0, 8).join(" | "));
   } catch (error) {
     fail("phase C", error.message);
+  }
+
+  // ------------------------------------------------------------ allow control: check and acknowledge drift
+
+  try {
+    await until(() => link.view().phones[0]?.connected === true, 20000, "the first phone to be connected again");
+    const key = link.view().phones[0].key;
+    const row = TRACKED.find((tracked) => tracked.id === 11);
+    const changes = () => served.filter(({ route }) => route === "POST /api/lineage/drift" || route === "POST /api/lineage/acknowledge");
+    const CHECK = "#check-drift-11";
+    const ACKNOWLEDGE = "#ack-drift-11";
+
+    await A.tap("button.tab", "Schemas");
+    await A.waitFor(has("#connection-1"), "the home screen");
+    await A.tap("#connection-1");
+    await A.waitFor(has("#live-status"), "the connection screen");
+    await A.tap("#live-status");
+    await A.waitFor(has("#live-updated"), "the live status screen");
+
+    // Off until Settings on the computer turns it on.
+    expect(link.view().phones[0].control === false, "Allow control starts off for a paired phone");
+    await A.waitFor(hasText("turn on Allow control"), "the phone to say where Allow control is");
+    expect((await A.evaluate(lacks(CHECK))) && (await A.evaluate(lacks(ACKNOWLEDGE))), "with Allow control off the phone shows no button that changes anything");
+    await A.shot("control-off");
+
+    // On, for a role that may not do this.
+    link.allowControl(key);
+    expect(link.view().phones[0].control === true, "Settings can turn Allow control on");
+    await A.waitFor(hasText("may not check or acknowledge drift"), "the phone to say the role may not", 12000);
+    expect(await A.evaluate(lacks(CHECK)), "a role without the permission gets no button either");
+
+    // On, for a role that may.
+    ME.permissions.push("drift:run", "drift:update");
+    await A.waitFor(`${has(CHECK)} && ${has(ACKNOWLEDGE)}`, "the two buttons", 12000);
+    await A.shot("control-on");
+    same(changes().length, 0, "nothing has been changed yet");
+
+    await A.tap(CHECK);
+    await A.waitFor(hasText("no longer matches its baseline"), "the check's result");
+    same(changes().at(-1), { route: "POST /api/lineage/drift", search: "", body: { trackedSchemaId: 11 } }, "Check now goes through the app's own route, with only the schema's number");
+    same(link.view().actions[0].action, "drift-check", "the computer logs the check");
+    same(link.view().actions[0].outcome, "done", "the computer logs that the check worked");
+
+    // Acknowledging takes two taps, and Cancel backs out.
+    await A.tap(ACKNOWLEDGE);
+    await A.waitFor(has("#ack-yes-11"), "the Acknowledge question");
+    expect((await A.text()).includes("The schema stays drifted"), "the question says what acknowledging does not do");
+    await A.shot("control-confirm");
+    await A.tap(".drift-confirm button.secondary", "Cancel");
+    await A.waitFor(has(ACKNOWLEDGE), "the buttons to come back after Cancel");
+    same(changes().length, 1, "cancelling asks the computer nothing");
+    await A.tap(ACKNOWLEDGE);
+    await A.waitFor(has("#ack-yes-11"), "the Acknowledge question again");
+    await A.tap("#ack-yes-11");
+    await A.waitFor(hasText("still shows as drifted"), "the acknowledgement's result");
+    same(changes().at(-1), { route: "POST /api/lineage/acknowledge", search: "", body: { trackedSchemaId: 11 } }, "Acknowledge goes through the app's own route, with only the schema's number");
+    await A.waitFor(`${lacks(ACKNOWLEDGE)} && ${has(CHECK)}`, "the Acknowledge button to leave once it is done", 12000);
+    await A.shot("control-done");
+    same(link.view().actions.slice(0, 2).map((action) => [action.action, action.outcome, action.schema]), [["drift-acknowledge", "done", "public"], ["drift-check", "done", "public"]], "the log has both, newest first");
+    await A.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    await A.shot("control-dark");
+    await A.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+
+    // Turned off with a button still on the phone's screen: the computer is
+    // what decides, so the tap is refused and nothing reaches the app. In one
+    // evaluate, since the screen would take the button away at its next refresh.
+    const before = changes().length;
+    link.turnOffControl(key);
+    await A.evaluate(`document.querySelector(${JSON.stringify(CHECK)}).click()`);
+    await A.waitFor(hasText("Allow control is off for this device"), "the refusal");
+    same(changes().length, before, "the computer refuses once Allow control is off, and the app hears nothing");
+    same(link.view().actions[0].outcome, "control-off", "the computer logs the refused try");
+    await A.waitFor(`${hasText("turn on Allow control")} && ${lacks(CHECK)}`, "the phone to take the button away", 12000);
+    await A.shot("control-refused");
+    const text = await A.text();
+    same(LIVE_PRIVATE.filter((word) => text.includes(word)), [], "the screens with buttons show no address, user name or server words");
+  } catch (error) {
+    fail("allow control", error.message);
   }
 
   // ------------------------------------------------------------ what nobody should see

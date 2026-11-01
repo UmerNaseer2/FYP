@@ -34,6 +34,7 @@
   type PhoneView = import("../shared/ipc").PhoneView;
   type PhoneStatus = import("../shared/ipc").PhoneStatus;
   type PhoneSummary = import("../shared/ipc").PhoneSummary;
+  type PhoneActionRow = import("../shared/ipc").PhoneActionRow;
   type PhoneConnection = import("../shared/ipc").PhoneConnection;
   type PhonePairing = import("../shared/ipc").PhonePairing;
   /** The view while the phone link is open. */
@@ -125,6 +126,8 @@
   };
   const phoneList = element<HTMLDivElement>("phone-phones");
   const noPhones = element<HTMLParagraphElement>("phone-phones-empty");
+  const actionList = element<HTMLDivElement>("phone-actions");
+  const noActions = element<HTMLParagraphElement>("phone-actions-empty");
 
   /** The latest view, or null while the phone link is not open. */
   let current: LinkView | null = null;
@@ -147,6 +150,9 @@
   let confirming: string | null = null;
   /** What the phone rows show now, so that they are built again only when that changes. */
   let phonesShown = "";
+  let actionsShown = "";
+  /** The saved connections' names, once they are listed, so that the action log can say which connection it means. */
+  let connectionNames = new Map<number, string>();
 
   /** Changes an element's text only when it differs, so that a screen reader does not announce the same words again. */
   function setText(target: HTMLElement, text: string): void {
@@ -432,7 +438,9 @@
     connectionsListed = true;
     connectionParts.list.hidden = false;
     connectionParts.problem.hidden = true;
+    connectionNames = new Map(connections.map((connection) => [connection.id, connection.name]));
     showShared();
+    showActions();
   }
 
   function connectionBoxes(choice: ConnectionChoice): HTMLInputElement[] {
@@ -493,13 +501,14 @@
     const pairedOn = new Date(phone.pairedAt).toLocaleDateString(undefined, { dateStyle: "medium" });
     const alerts = phone.alerts ? " Gets drift alerts." : "";
     const approvals = phone.approvals ? " Can approve deploys and rollbacks." : "";
-    if (phone.connected) return `Connected now. Paired on ${pairedOn}.${alerts}${approvals}`;
+    const control = phone.control ? " Can check and acknowledge drift." : "";
+    if (phone.connected) return `Connected now. Paired on ${pairedOn}.${alerts}${approvals}${control}`;
     const lastSeen = new Date(phone.lastSeenAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    return `Last seen ${lastSeen}. Paired on ${pairedOn}.${alerts}${approvals}`;
+    return `Last seen ${lastSeen}. Paired on ${pairedOn}.${alerts}${approvals}${control}`;
   }
 
   /** One of the buttons in a phone's row. Every row has the same buttons, so each one's name says which phone it is for. */
-  function phoneRowButton(phone: PhoneSummary, action: "allow" | "turn-off" | "remove" | "confirm" | "keep", describedBy: string): HTMLButtonElement {
+  function phoneRowButton(phone: PhoneSummary, action: "allow" | "turn-off" | "allow-control" | "turn-off-control" | "remove" | "confirm" | "keep", describedBy: string): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
     button.className = action === "remove" || action === "confirm" ? "button button-bad" : "button";
@@ -517,6 +526,12 @@
       // The phone has no passkey yet, only time to set one up, so this ends that time.
       button.textContent = "Cancel setup";
       button.setAttribute("aria-label", `Cancel setting up approvals on ${phone.name}`);
+    } else if (action === "allow-control") {
+      button.textContent = "Allow control";
+      button.setAttribute("aria-label", `Allow control from ${phone.name}`);
+    } else if (action === "turn-off-control") {
+      button.textContent = "Turn off control";
+      button.setAttribute("aria-label", `Turn off control from ${phone.name}`);
     } else {
       button.textContent = "Remove";
       button.setAttribute("aria-label", `Remove ${phone.name}`);
@@ -563,6 +578,9 @@
       }
       if (phone.approvals || phone.approvalsAllowedUntil !== null) actions.append(phoneRowButton(phone, "turn-off", describedBy));
       else if (current?.enabled === true) actions.append(phoneRowButton(phone, "allow", describedBy));
+      // Turning it off works with the link off too, as turning off approvals does.
+      if (phone.control) actions.append(phoneRowButton(phone, "turn-off-control", detail.id));
+      else if (current?.enabled === true) actions.append(phoneRowButton(phone, "allow-control", detail.id));
       actions.append(phoneRowButton(phone, "remove", detail.id));
     }
     row.append(text, actions);
@@ -597,7 +615,7 @@
     const shown = JSON.stringify([
       confirming,
       current?.enabled,
-      phones.map((phone) => [phone.key, phone.name, phoneDetail(phone), phone.approvals, phone.approvalsAllowedUntil]),
+      phones.map((phone) => [phone.key, phone.name, phoneDetail(phone), phone.approvals, phone.approvalsAllowedUntil, phone.control]),
     ]);
     let target = focusOn;
     if (shown !== phonesShown) {
@@ -612,6 +630,39 @@
     if (button !== null) button.focus();
     else if (codeParts.panel.hidden) pairParts.button.focus();
     else codeParts.cancel.focus();
+  }
+
+  /** One entry of the action log: what was tried, how it went, and from which phone, on what and when. */
+  function actionRow(entry: PhoneActionRow): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.setAttribute("role", "listitem");
+    const text = document.createElement("span");
+    text.className = "choice-text";
+    const title = document.createElement("span");
+    title.className = "choice-name";
+    title.textContent = entry.title;
+    const outcome = document.createElement("span");
+    outcome.className = entry.bad ? "hint phone-action-bad" : "hint";
+    outcome.textContent = entry.outcome;
+    const place = [entry.phone, connectionNames.get(entry.connectionId) ?? `Connection ${entry.connectionId}`, ...(entry.schema === null ? [] : [entry.schema])].join(", ");
+    const detail = document.createElement("span");
+    detail.className = "hint";
+    detail.textContent = `${place}. ${new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`;
+    text.append(title, outcome, detail);
+    row.append(text);
+    return row;
+  }
+
+  /** Lists the action log. Like the phones, it is built again only when what it shows changes, so that it keeps its scrolled place. */
+  function showActions(): void {
+    const actions = current?.actions ?? [];
+    const shown = JSON.stringify([actions, [...connectionNames]]);
+    if (shown === actionsShown) return;
+    actionsShown = shown;
+    actionList.replaceChildren(...actions.map(actionRow));
+    actionList.hidden = actions.length === 0;
+    noActions.hidden = actions.length > 0;
   }
 
   function render(view: PhoneView): void {
@@ -639,6 +690,7 @@
     showPairButton();
     showShared();
     showPhones(view.phones);
+    showActions();
     unavailable.hidden = true;
     content.hidden = false;
     tick();
@@ -696,6 +748,10 @@
         api.allowApprovals(key);
       } else if (button.dataset.action === "turn-off") {
         api.turnOffApprovals(key);
+      } else if (button.dataset.action === "allow-control") {
+        api.allowControl(key);
+      } else if (button.dataset.action === "turn-off-control") {
+        api.turnOffControl(key);
       }
     });
     window.addEventListener("pagehide", () => {

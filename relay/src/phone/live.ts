@@ -5,7 +5,7 @@
  * tests (src/test/phone-live.test.ts) can check every sentence in Node.
  */
 import { countText, dayText } from "./format.js";
-import type { DriftStatus, HealthLevel, LiveActivity, LiveDrift, LiveHealth, LiveProblem, LiveSession, LiveSessionKind } from "../shared/remote/rpc.js";
+import type { DriftStatus, HealthLevel, LiveActivity, LiveControl, LiveDrift, LiveHealth, LiveProblem, LiveSession, LiveSessionKind } from "../shared/remote/rpc.js";
 
 /** What a session is doing, in the words the web app's Performance screen uses. */
 export const KIND_LABELS: Record<LiveSessionKind, string> = {
@@ -145,6 +145,49 @@ const TIME = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digi
 
 export function timeText(time: number): string {
   return TIME.format(time);
+}
+
+/**
+ * What a tracked schema's row may offer. The computer decides again on every
+ * request, so these only keep away buttons that would be refused. Acknowledging
+ * asks for drift nobody has acknowledged yet.
+ */
+export function driftControls(drift: LiveDrift, control: LiveControl | null): { check: boolean; acknowledge: boolean } {
+  return {
+    check: control?.canCheck === true,
+    acknowledge: control?.canAcknowledge === true && drift.status === "drifted" && drift.acknowledgedAt === null,
+  };
+}
+
+/** Why a schema's row has no buttons, when something on the computer could change that. An older computer says nothing, and so does this. */
+export function controlHint(control: LiveControl | null): string | null {
+  if (control === null) return null;
+  if (!control.allowed) return "To check or acknowledge drift from this device, turn on Allow control for it under Paired phones in Schema Studio's Settings on the computer.";
+  if (!control.canCheck && !control.canAcknowledge) return "The role signed in on the computer may not check or acknowledge drift.";
+  return null;
+}
+
+/** What Acknowledge asks before it does anything, since the word could be read as fixing the drift. */
+export const ACKNOWLEDGE_QUESTION = "Mark this drift as seen? The schema stays drifted.";
+
+export type DriftResult = { text: string; tone: "info" | "bad" };
+
+/** How a check from this device went. It stays on screen while the row above it moves on, so it says when. */
+export function checkResultText(status: DriftStatus, at: number): DriftResult {
+  const time = timeText(at);
+  switch (status) {
+    case "in_sync":
+      return { text: `Checked at ${time}: in sync.`, tone: "info" };
+    case "drifted":
+      return { text: `Checked at ${time}: drifted. This schema no longer matches its baseline.`, tone: "bad" };
+    case "unreachable":
+      return { text: `Checked at ${time}: the computer could not reach this database, so nothing was compared.`, tone: "bad" };
+  }
+}
+
+/** How an acknowledgement from this device went. */
+export function acknowledgedText(at: number): DriftResult {
+  return { text: `Acknowledged at ${timeText(at)}. It still shows as drifted until the schema is fixed.`, tone: "info" };
 }
 
 /** Why the activity part is missing. Who to ask comes first when an admin can fix it. */

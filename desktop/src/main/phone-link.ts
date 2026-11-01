@@ -44,10 +44,13 @@ import {
   newPhoneLinkState,
   readConnectionIds,
   withNewPushKey,
+  withPhoneAction,
+  withPhoneControl,
   withPhonePasskey,
   withPhoneSubscription,
   withoutPasskeys,
   type PairedPhone,
+  type PhoneAction,
   type PhoneLinkState,
 } from "../core/phone-link-file";
 import { pushSubject, readPushKey, type PushKey, type PushSubscriptionFields, type PushTransport } from "../core/web-push";
@@ -126,10 +129,13 @@ export type PhoneLinkView = {
   typedCodeLive: boolean;
   /**
    * The paired phones, whether each is connected now, whether it gets drift
-   * alerts, whether it may approve requests, and, while it may set that up,
-   * until when. Where a phone's alerts go, and its passkey, never leave main.
+   * alerts, whether it may approve requests, while it may set that up until
+   * when, and whether Allow control is on for it. Where a phone's alerts go,
+   * and its passkey, never leave main.
    */
-  phones: Array<Omit<PairedPhone, "push" | "passkey"> & { connected: boolean; alerts: boolean; approvals: boolean; approvalsAllowedUntil: number | null }>;
+  phones: Array<Omit<PairedPhone, "push" | "passkey" | "control"> & { connected: boolean; alerts: boolean; approvals: boolean; approvalsAllowedUntil: number | null; control: boolean }>;
+  /** What phones tried to change, newest first. */
+  actions: PhoneAction[];
 };
 
 /** A phone link ready to start, or why there is none, written for a person. */
@@ -366,7 +372,7 @@ export class PhoneLink {
       keepAwake: this.state.keepAwake,
       typedCodeLive: this.host.typedCodeIsGood(),
       // Named one by one, so that where a phone's alerts go, and its passkey, are never passed on.
-      phones: this.state.phones.map(({ key, name, pairedAt, lastSeenAt, push, passkey }) => ({
+      phones: this.state.phones.map(({ key, name, pairedAt, lastSeenAt, push, passkey, control }) => ({
         key,
         name,
         pairedAt,
@@ -375,7 +381,9 @@ export class PhoneLink {
         alerts: push !== undefined,
         approvals: passkey !== undefined,
         approvalsAllowedUntil: this.approvals.allowedUntil(key),
+        control: control !== undefined,
       })),
+      actions: [...this.state.actionLog].reverse(),
     };
   }
 
@@ -528,6 +536,28 @@ export class PhoneLink {
   }
 
   /**
+   * For Settings' "Allow control": the phone with this key may check and
+   * acknowledge drift from now on, until it is turned off. It is the one way
+   * this gets turned on, and a phone cannot ask for it.
+   */
+  allowControl(key: unknown): void {
+    const phone = this.state.phones.find((known) => known.key === key);
+    if (phone === undefined || !this.state.enabled || phone.control !== undefined) return;
+    logInfo(`Allow control was turned on for the phone "${phone.name}".`);
+    this.state = { ...this.state, phones: withPhoneControl(this.state.phones, phone.key, this.now()) };
+    this.saveState();
+  }
+
+  /** For Settings' "Turn off control". It counts at once, since every request reads it, and works with the link off too. */
+  turnOffControl(key: unknown): void {
+    const phone = this.state.phones.find((known) => known.key === key);
+    if (phone === undefined || phone.control === undefined) return;
+    logInfo(`Allow control was turned off for the phone "${phone.name}".`);
+    this.state = { ...this.state, phones: withPhoneControl(this.state.phones, phone.key, null) };
+    this.saveState();
+  }
+
+  /**
    * For Settings' "Turn off approvals": the phone with this key decides
    * nothing from now on, until approvals are set up on it again. Any time it
    * was given to set them up ends too.
@@ -600,7 +630,20 @@ export class PhoneLink {
         set: (subscription) => this.setDriftAlerts(phoneKey, subscription),
       },
       approvals: this.approvals.forPhone(phoneKey),
+      control: {
+        allowed: () => this.state.phones.some((phone) => phone.key === phoneKey && phone.control !== undefined),
+        record: (entry) => this.recordAction(phoneKey, entry),
+      },
     };
+  }
+
+  /** Writes a phone's try in the action log, with its name as it is now. A phone removed while its request ran is still written, as "Phone". */
+  private recordAction(phoneKey: string, entry: Omit<PhoneAction, "at" | "phone">): void {
+    const phone = this.state.phones.find((known) => known.key === phoneKey)?.name ?? "Phone";
+    // Which connection and schema stay out of the log file, as they do for every request (see ask in src/main/phone-requests.ts).
+    logInfo(`The phone "${phone}" tried ${entry.action}: ${entry.outcome}.`);
+    this.state = { ...this.state, actionLog: withPhoneAction(this.state.actionLog, { ...entry, at: this.now(), phone }) };
+    this.saveState();
   }
 
   /**

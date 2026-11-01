@@ -72,6 +72,7 @@ const TRACKED: TrackedSchemaListItem = {
   driftStatus: null,
   driftSummary: null,
   driftCheckedAt: null,
+  driftAcknowledgedAt: null,
   driftIntervalMinutes: 0,
   lastCheckedAt: null,
 };

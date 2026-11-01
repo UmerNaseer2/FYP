@@ -1116,6 +1116,8 @@ export type TrackedSchemaListItem = {
   driftStatus: DriftStatus | null;
   driftSummary: string | null;
   driftCheckedAt: string | null;
+  /** When somebody acknowledged the newest drift check, or null. A later check that writes a row starts again. */
+  driftAcknowledgedAt: string | null;
   /**
    * How often the scheduler re-checks this schema, in minutes; 0 is manual
    * only. Read through normalizeDriftInterval so a value written by an older
@@ -1149,6 +1151,7 @@ type TrackedListRow = {
   drift_status: DriftStatus | null;
   drift_summary: string | null;
   drift_checked_at: string | null;
+  drift_acknowledged_at: string | null;
   last_drift_check_at: string | null;
 };
 
@@ -1180,7 +1183,8 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
       COALESCE(counts.migration_count, 0) AS migration_count,
       drift.status     AS drift_status,
       drift.summary    AS drift_summary,
-      drift.detected_at AS drift_checked_at
+      drift.detected_at AS drift_checked_at,
+      drift.acknowledged_at AS drift_acknowledged_at
     FROM tracked_schemas ts
     LEFT JOIN connections c ON c.id = ts.connection_id AND c.org_id = ts.org_id
     LEFT JOIN LATERAL (
@@ -1196,7 +1200,7 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
       WHERE lm.tracked_schema_id = ts.id AND lm.org_id = ts.org_id
     ) counts ON TRUE
     LEFT JOIN LATERAL (
-      SELECT status, summary, detected_at
+      SELECT status, summary, detected_at, acknowledged_at
       FROM drift_events de
       WHERE de.tracked_schema_id = ts.id AND de.org_id = ts.org_id
       ORDER BY de.detected_at DESC, de.id DESC
@@ -1223,6 +1227,7 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
     driftStatus: r.drift_status,
     driftSummary: r.drift_summary,
     driftCheckedAt: r.drift_checked_at,
+    driftAcknowledgedAt: r.drift_acknowledged_at,
     driftIntervalMinutes: normalizeDriftInterval(r.drift_check_interval_minutes),
     lastCheckedAt: r.last_drift_check_at,
   }));

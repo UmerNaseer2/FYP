@@ -18,6 +18,7 @@ function viewWith(status: PhoneStatus): PhoneView {
     keepAwake: false,
     typedCodeLive: false,
     phones: [],
+    actions: [],
     cannotPair: null,
   };
 }

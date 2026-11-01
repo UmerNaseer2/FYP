@@ -36,7 +36,9 @@ desktop app). With it, the person holding the phone can:
 - approve or reject deploy and rollback requests after reading their exact
   SQL, with a passkey (Face ID, a fingerprint or the phone's screen lock),
   once approvals are allowed for that phone on the computer;
-- get drift alerts, even while the app is closed.
+- get drift alerts, even while the app is closed;
+- check a schema's drift now and acknowledge a drift, once Allow control is
+  on for that phone on the computer, which is off until someone turns it on.
 
 It works only while Schema Studio is running on the computer, because the
 computer answers everything the phone asks. It needs the relay's https://
@@ -129,7 +131,8 @@ read a schema, watch a database's live status, compare two, set up approvals
 with a passkey, approve and reject requests, turn drift alerts on and off, and
 forget the computer. A laptop's browser then pairs by typing a short code,
 which the computer refuses once and allows once, and shows its screens at that
-width. The computer is the desktop app's own phone link code, so compile that
+width. The first phone then checks and acknowledges drift under Allow control,
+and is refused once it is turned off. The computer is the desktop app's own phone link code, so compile that
 first (`npm ci`, then `npm run build:ts`, in `desktop/`). It is not part of
 `npm test` or the GitHub workflow, because it needs Chrome. A picture of each
 screen, light and dark, goes to `out/phone-e2e`. Set `CHROME` to Chrome's

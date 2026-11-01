@@ -1024,6 +1024,26 @@ dl.card {
   text-align: right;
 }
 
+/* One tracked schema: its row, then what this device may do about it. */
+.drift-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.drift-item > .actions,
+.drift-item > .drift-confirm,
+.drift-item > .notice {
+  margin: 0 16px 12px;
+}
+
+.drift-confirm > p {
+  margin: 0 0 8px;
+}
+
+.drift-hint {
+  margin: 12px 0 0;
+}
+
 /*
  * A wide screen, as in a laptop browser: the tabs become a rail down the left, so that the page has its height back, and a screen gets more room.
  * The rail is checked through :has, as the room for the tabs is, so a browser without :has keeps the tabs along the bottom and the page stays whole.

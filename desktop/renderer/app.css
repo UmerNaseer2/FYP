@@ -678,6 +678,16 @@ input {
   justify-content: flex-end;
 }
 
+/* The log scrolls inside its own box, so that its 200 entries do not push the rest of the section away. */
+.phone-actions {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.phone-action-bad {
+  color: var(--bad);
+}
+
 /* In a narrow window the code goes above its text. */
 @media (max-width: 520px) {
   .pairing {

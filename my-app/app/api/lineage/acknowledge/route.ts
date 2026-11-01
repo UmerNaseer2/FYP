@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import pool from "@/lib/version-db";
+import { driftFingerprint } from "@/lib/drift-fingerprint";
 import {
   computeDriftDetail,
   type DriftStatus,
@@ -51,6 +52,10 @@ export async function POST(request: NextRequest) {
   const status: DriftStatus = comp.kind === "unreachable" ? "unreachable" : comp.status;
   const counts = comp.kind === "ok" ? comp.counts : null;
   const snapshotId = comp.expected.snapshotId;
+  // What was acknowledged. Without it the next scheduled check, finding the same
+  // differences, cannot tell they are the same: it writes a new row, and the
+  // acknowledgement is gone within one period of the schedule.
+  const fingerprint = comp.kind === "ok" ? driftFingerprint(comp.report) : null;
 
   // The row copies its org_id from the tracked schema, and only from one in
   // the caller's organization. A schema untracked since the recompute above
@@ -60,8 +65,8 @@ export async function POST(request: NextRequest) {
     const result = await pool.query(
       `INSERT INTO drift_events
          (org_id, tracked_schema_id, status, summary, detail, baseline_snapshot_id,
-          acknowledged_at, source)
-       SELECT org_id, id, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP, 'acknowledged'
+          acknowledged_at, source, fingerprint)
+       SELECT org_id, id, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP, 'acknowledged', $7
          FROM tracked_schemas
         WHERE id = $1 AND org_id = $6`,
       [
@@ -71,6 +76,7 @@ export async function POST(request: NextRequest) {
         counts ? JSON.stringify(counts) : null,
         snapshotId,
         gate.principal.orgId,
+        fingerprint,
       ]
     );
     landed = (result.rowCount ?? 0) > 0;

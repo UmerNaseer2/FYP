@@ -6,14 +6,16 @@
  * the same number, so answers may come back in any order: a comparison can
  * take a while, and a list asked for after it need not wait for it.
  *
- * A phone can look, and change only two things. It may turn its own drift
- * alerts on and off (push.subscribe and push.unsubscribe), and it may approve
- * or reject a deploy or rollback request waiting in the app
- * (approvals.decide), signed with a passkey set up on that phone. The
- * computer answers every request through its own copy
- * of the app, which checks it as it checks anything asked from the app's
- * window, so a phone may do only what the person signed in on the computer
- * may do, and only with the connections chosen for phones in Settings.
+ * A phone can look, and change a few things. It may turn its own drift alerts
+ * on and off (push.subscribe and push.unsubscribe), and it may approve or
+ * reject a deploy or rollback request waiting in the app (approvals.decide),
+ * signed with a passkey set up on that phone. With Allow control turned on for
+ * that phone in Settings, which it is not until the person turns it on, it may
+ * also check a tracked schema's drift now and acknowledge drift (drift.check
+ * and drift.acknowledge). The computer answers every request through its own
+ * copy of the app, which checks it as it checks anything asked from the app's
+ * window, so a phone may do only what the person signed in on the computer may
+ * do, and only with the connections chosen for phones in Settings.
  *
  * Every message is read strictly, except what a successful answer holds:
  *  - the computer refuses anything that is not exactly a request it knows,
@@ -104,6 +106,10 @@ export type PushSubscriptionParams = { endpoint: string; p256dh: string; auth: s
  *  - approvals.decide: approves or rejects one request, signed with the
  *    passkey over that number, the request, the decision and the fingerprint
  *    of the SQL the phone showed.
+ *  - drift.check: checks one tracked schema's drift now, and
+ *  - drift.acknowledge: marks its drift as seen. Both only while Allow control
+ *    is on for this phone in Settings on the computer, which it reads afresh
+ *    each time, and each try is written in the computer's action log.
  */
 export type Request =
   | { id: number; method: "hello" }
@@ -120,7 +126,18 @@ export type Request =
   | { id: number; method: "passkey.begin" }
   | { id: number; method: "passkey.finish"; params: NewPasskeyParams }
   | { id: number; method: "approvals.begin" }
-  | { id: number; method: "approvals.decide"; params: DecideParams };
+  | { id: number; method: "approvals.decide"; params: DecideParams }
+  | { id: number; method: "drift.check"; params: DriftActionParams }
+  | { id: number; method: "drift.acknowledge"; params: DriftActionParams };
+
+/**
+ * Which tracked schema to act on. It names its connection too, so that the
+ * computer can refuse a connection that is not shared before it reads anything.
+ */
+export type DriftActionParams = { connectionId: number; trackedSchemaId: number };
+
+/** What a drift action found. Never the app's summary or report, which can repeat what a server said: the phone words its own sentence from the status. */
+export type DriftActionResult = { status: DriftStatus };
 
 export type Method = Request["method"];
 
@@ -390,6 +407,18 @@ export type LiveDrift = {
   checkedAt: string | null;
   /** The version it should be at, or null when it has none yet. */
   headVersion: string | null;
+  /** When somebody acknowledged the newest check, or null when nobody has, or the computer's app is too old to say. A later check starts again. */
+  acknowledgedAt: string | null;
+};
+
+/** What this phone may change from the live screen. */
+export type LiveControl = {
+  /** Whether Allow control is on for this phone in Settings on the computer. */
+  allowed: boolean;
+  /** Whether it may check a schema's drift now: Allow control is on, and the role signed in on the computer may. */
+  canCheck: boolean;
+  /** Whether it may acknowledge drift: Allow control is on, and the role signed in on the computer may. */
+  canAcknowledge: boolean;
 };
 
 /** Why a part of the live status is missing: this role may not see it, or the database or the app did not answer. */
@@ -408,6 +437,8 @@ export type LiveStatus = {
   health: LiveHealth | null;
   drift: LiveDrift[] | null;
   driftProblem: LiveProblem | null;
+  /** Null when the computer's app is too old to let a phone change anything from here. */
+  control: LiveControl | null;
 };
 
 export type Results = {
@@ -426,6 +457,8 @@ export type Results = {
   "passkey.finish": { passkey: PasskeyState };
   "approvals.begin": DecisionChallenge;
   "approvals.decide": { status: "approved" | "rejected" };
+  "drift.check": DriftActionResult;
+  "drift.acknowledge": DriftActionResult;
 };
 
 /**
@@ -449,6 +482,7 @@ export type Results = {
  *  - already-decided: the request is no longer waiting for a decision.
  *  - own-request: the person signed in on the computer asked for it.
  *  - expired: the one-time number for the decision ran out, or the computer restarted.
+ *  - control-off: Allow control is off for this phone in Settings on the computer.
  *  - failed: anything else.
  */
 export type ErrorCode =
@@ -469,6 +503,7 @@ export type ErrorCode =
   | "already-decided"
   | "own-request"
   | "expired"
+  | "control-off"
   | "failed";
 const ERROR_CODES: readonly ErrorCode[] = [
   "signed-out",
@@ -488,6 +523,7 @@ const ERROR_CODES: readonly ErrorCode[] = [
   "already-decided",
   "own-request",
   "expired",
+  "control-off",
   "failed",
 ];
 
@@ -502,7 +538,7 @@ export type Answer = { id: number; ok: true; result: unknown } | { id: number; o
  */
 export type RequestReading = { ok: true; request: Request } | { ok: false; id: number | null; code: "bad-request" | "unknown-method" };
 
-const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "live.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide"];
+const METHODS: readonly Method[] = ["hello", "connections.list", "schemas.list", "schema.read", "live.read", "compare.run", "push.status", "push.subscribe", "push.unsubscribe", "approvals.list", "approvals.read", "passkey.begin", "passkey.finish", "approvals.begin", "approvals.decide", "drift.check", "drift.acknowledge"];
 
 /** Writes a request. Only its own fields are written, so a SchemaRef that carries more, such as a connection's name, goes out without it. */
 export function writeRequest(request: Request): Bytes {
@@ -541,6 +577,11 @@ export function writeRequest(request: Request): Bytes {
     case "push.subscribe": {
       const { endpoint, p256dh, auth } = request.params;
       return writeJson({ id, method: request.method, params: { endpoint, p256dh, auth } });
+    }
+    case "drift.check":
+    case "drift.acknowledge": {
+      const { connectionId, trackedSchemaId } = request.params;
+      return writeJson({ id, method: request.method, params: { connectionId, trackedSchemaId } });
     }
   }
 }
@@ -606,6 +647,12 @@ function readKnownRequest(id: number, fields: Record<string, unknown>): Request 
       if (!hasExactly(params, "endpoint", "p256dh", "auth") || !isPushField(endpoint) || !isPushField(p256dh) || !isPushField(auth)) return null;
       return { id, method, params: { endpoint, p256dh, auth } };
     }
+    case "drift.check":
+    case "drift.acknowledge": {
+      const { connectionId, trackedSchemaId } = params;
+      if (!hasExactly(params, "connectionId", "trackedSchemaId") || !isPositiveInteger(connectionId) || !isPositiveInteger(trackedSchemaId)) return null;
+      return { id, method, params: { connectionId, trackedSchemaId } };
+    }
     default:
       return null;
   }
@@ -659,6 +706,8 @@ const RESULT_READERS: { [M in Method]: (value: unknown) => Results[M] | null } =
   "passkey.finish": readPasskeyResult,
   "approvals.begin": readDecisionChallenge,
   "approvals.decide": readDecided,
+  "drift.check": readDriftActionResult,
+  "drift.acknowledge": readDriftActionResult,
 };
 
 /** Reads what a successful answer to this kind of request holds, or gives null when it is not that. */
@@ -687,7 +736,20 @@ function readLiveStatus(value: unknown): LiveStatus | null {
   if (driftProblem !== null && !isLiveProblem(driftProblem)) return null;
   // A part is either there or explained, so the phone never has to guess why one is missing.
   if ((activity === null) === (activityProblem === null) || (drift === null) === (driftProblem === null)) return null;
-  return { activity, activityProblem, health, drift, driftProblem };
+  return { activity, activityProblem, health, drift, driftProblem, control: readLiveControl(fields.control) };
+}
+
+/** Not required: a computer whose app is older than the phone app does not send it, and cannot answer drift.check or drift.acknowledge either. */
+function readLiveControl(value: unknown): LiveControl | null {
+  const fields = objectFields(value);
+  if (fields === null) return null;
+  const { allowed, canCheck, canAcknowledge } = fields;
+  return { allowed: allowed === true, canCheck: canCheck === true, canAcknowledge: canAcknowledge === true };
+}
+
+function readDriftActionResult(value: unknown): DriftActionResult | null {
+  const status = objectFields(value)?.status;
+  return isDriftStatus(status) ? { status } : null;
 }
 
 function readLiveActivity(value: unknown): LiveActivity | null {
@@ -728,8 +790,10 @@ function readLiveDrift(value: unknown): LiveDrift | null {
   const fields = objectFields(value);
   if (fields === null) return null;
   const { id, schema, status, checkedAt, headVersion } = fields;
-  if (!isPositiveInteger(id) || typeof schema !== "string" || (status !== null && !isDriftStatus(status)) || !isTextOrNull(checkedAt) || !isTextOrNull(headVersion)) return null;
-  return { id, schema, status, checkedAt, headVersion };
+  // Not required: a computer whose app is older than the phone app does not send it.
+  const acknowledgedAt = fields.acknowledgedAt ?? null;
+  if (!isPositiveInteger(id) || typeof schema !== "string" || (status !== null && !isDriftStatus(status)) || !isTextOrNull(checkedAt) || !isTextOrNull(headVersion) || !isTextOrNull(acknowledgedAt)) return null;
+  return { id, schema, status, checkedAt, headVersion, acknowledgedAt };
 }
 
 function readConnectionList(value: unknown): ConnectionList | null {

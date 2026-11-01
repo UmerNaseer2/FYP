@@ -10,8 +10,8 @@
  * written here rather than in the page, so that the page has no rules of its
  * own to fall out of step with the phone link's.
  */
-import { MAX_PAIRED_PHONES } from "../core/phone-link-file";
-import type { PhoneConnections, PhonePairing, PhoneStatus, PhoneView, SetRelayResult } from "../shared/ipc";
+import { MAX_PAIRED_PHONES, type PhoneAction, type PhoneActionName, type PhoneActionOutcome } from "../core/phone-link-file";
+import type { PhoneActionRow, PhoneConnections, PhonePairing, PhoneStatus, PhoneView, SetRelayResult } from "../shared/ipc";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { readResult } from "../shared/remote/rpc";
 import { showShortCode } from "../shared/remote/short-code";
@@ -59,8 +59,39 @@ export function phoneView(link: PhoneSettingsLink | null, problem: string | null
       alerts: phone.alerts,
       approvals: phone.approvals,
       approvalsAllowedUntil: phone.approvalsAllowedUntil,
+      control: phone.control,
     })),
+    actions: view.actions.map(actionRow),
     cannotPair: pairingProblem(view),
+  };
+}
+
+const ACTION_TITLES: Readonly<Record<PhoneActionName, string>> = {
+  "drift-check": "Check drift now",
+  "drift-acknowledge": "Acknowledge drift",
+};
+
+const ACTION_OUTCOMES: Readonly<Record<PhoneActionOutcome, string>> = {
+  done: "Done.",
+  "control-off": "Refused: Allow control was off.",
+  "signed-out": "Refused: nobody was signed in on the computer.",
+  forbidden: "Refused: the signed-in role may not do this.",
+  "not-shared": "Refused: this connection is not shared with phones.",
+  "not-found": "Refused: that schema is not tracked.",
+  "no-baseline": "This schema has no baseline yet.",
+  unreachable: "The database could not be reached.",
+  failed: "It did not work.",
+};
+
+function actionRow(entry: PhoneAction): PhoneActionRow {
+  return {
+    at: entry.at,
+    phone: entry.phone,
+    title: ACTION_TITLES[entry.action],
+    outcome: ACTION_OUTCOMES[entry.outcome],
+    bad: entry.outcome !== "done",
+    connectionId: entry.connectionId,
+    schema: entry.schema,
   };
 }
 

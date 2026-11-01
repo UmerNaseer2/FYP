@@ -8,9 +8,12 @@ import { BUILD_VERSION } from "./build-info.js";
 import { button, el, envBadge, failed, heading, loading, notice, type Child } from "./dom.js";
 import { accessProblem, CHANGE_LABELS, countText, dayText, foreignKeyText, SEVERITY_LABELS, targetHeadline } from "./format.js";
 import {
+  ACKNOWLEDGE_QUESTION,
   activityProblemText,
   agoText,
+  controlHint,
   driftCheckedText,
+  driftControls,
   driftProblemText,
   driftTag,
   healthSinceText,
@@ -24,13 +27,14 @@ import {
   sessionTimeText,
   timeText,
   transactionText,
+  type DriftResult,
   type Tone,
 } from "./live.js";
 import type { Route } from "./routes.js";
 import type { PairedComputer } from "./store.js";
 import type { ApprovalDecision, ApprovalScript } from "../shared/remote/approval.js";
 import { MAX_COMPARE_TARGETS } from "../shared/remote/rpc.js";
-import type { ApprovalList, ApprovalRead, ApprovalSummary, CompareSummary, HelloResult, LiveActivity, LiveDrift, LiveHealth, LiveSession, LiveStatus, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
+import type { ApprovalList, ApprovalRead, ApprovalSummary, CompareSummary, HelloResult, LiveActivity, LiveControl, LiveDrift, LiveHealth, LiveSession, LiveStatus, SchemaOverview, SharedConnection } from "../shared/remote/rpc.js";
 
 /** Something asked of the computer: still coming, in, or failed with a sentence to show. */
 export type Load<T> = { status: "loading" } | { status: "loaded"; value: T } | { status: "failed"; message: string };
@@ -78,6 +82,10 @@ export type Actions = {
   decide(decision: ApprovalDecision): void;
   turnOnAlerts(): void;
   turnOffAlerts(): void;
+  checkDrift(connectionId: number, id: number): void;
+  /** Asks the question before an acknowledgement, for this tracked schema, or takes it away. */
+  askAcknowledge(id: number | null): void;
+  acknowledgeDrift(connectionId: number, id: number): void;
 };
 
 /** What the Enter a code screen shows. main.ts keeps it, because a screen is built again on every change. */
@@ -261,6 +269,16 @@ export type LiveView = {
   linked: boolean;
   /** Why the last ask failed, when it did. */
   problem: string | null;
+  driftActions: DriftActions;
+};
+
+/** What the drift part is in the middle of. One action runs at a time. */
+export type DriftActions = {
+  running: { id: number; what: "check" | "acknowledge" } | null;
+  /** Which tracked schema's Acknowledge is waiting for its second tap. */
+  confirming: number | null;
+  /** How the last action went, shown under the schema it was for. */
+  result: (DriftResult & { id: number }) | null;
 };
 
 /**
@@ -278,7 +296,7 @@ export function liveScreen(connection: SharedConnection | null, connectionId: nu
   }
   nodes.push(el("p", { class: "hint", id: "live-updated" }, view.linked ? `Updated ${timeText(at)}. Refreshes every 5 seconds while this screen is open.` : `Last updated ${agoText(at, now)}. These numbers are old, because the computer is away.`));
   if (view.problem !== null) nodes.push(notice(`Could not refresh just now. ${view.problem}`, "info"));
-  nodes.push(...activityPart(status, connectionId, openTables, actions), ...healthPart(status.health), ...driftPart(status, now));
+  nodes.push(...activityPart(status, connectionId, openTables, actions), ...healthPart(status.health), ...driftPart(status, connectionId, view, now, actions));
   return nodes;
 }
 
@@ -354,12 +372,55 @@ function healthPart(health: LiveHealth | null): Node[] {
   ];
 }
 
-function driftPart(status: LiveStatus, now: number): Node[] {
+function driftPart(status: LiveStatus, connectionId: number, view: LiveView, now: number, actions: Actions): Node[] {
   const nodes: Node[] = [el("h2", { class: "section" }, "Drift")];
   const { drift, driftProblem } = status;
   if (drift === null) return [...nodes, notice(driftProblem === null ? "Drift is not showing." : driftProblemText(driftProblem), "bad")];
   if (drift.length === 0) return [...nodes, el("p", { class: "muted" }, "No schema on this connection is tracked for drift yet. Track one in Schema Studio on the computer.")];
-  return [...nodes, el("div", { class: "list" }, drift.map((each) => driftRow(each, now)))];
+  const hint = controlHint(status.control);
+  return [
+    ...nodes,
+    el("div", { class: "list" }, drift.map((each) => driftItem(each, status.control, connectionId, view, now, actions))),
+    ...(hint === null ? [] : [el("p", { class: "muted drift-hint" }, hint)]),
+  ];
+}
+
+/** One tracked schema: how it stands, what this device may do about it, and how the last try went. */
+function driftItem(drift: LiveDrift, control: LiveControl | null, connectionId: number, view: LiveView, now: number, actions: Actions): Node {
+  const { result } = view.driftActions;
+  return el(
+    "div",
+    { class: "drift-item" },
+    driftRow(drift, now),
+    view.linked && driftButtons(drift, control, connectionId, view.driftActions, actions),
+    result?.id === drift.id && notice(result.text, result.tone),
+  );
+}
+
+function driftButtons(drift: LiveDrift, control: LiveControl | null, connectionId: number, { running, confirming }: DriftActions, actions: Actions): Node | null {
+  const { check, acknowledge } = driftControls(drift, control);
+  const { id } = drift;
+  if (acknowledge && confirming === id) {
+    return el(
+      "div",
+      { class: "drift-confirm" },
+      el("p", {}, ACKNOWLEDGE_QUESTION),
+      el(
+        "div",
+        { class: "actions" },
+        button("Acknowledge", () => actions.acknowledgeDrift(connectionId, id), { id: `ack-yes-${id}` }),
+        button("Cancel", () => actions.askAcknowledge(null), { class: "secondary" }),
+      ),
+    );
+  }
+  if (!check && !acknowledge) return null;
+  const doing = running?.id === id ? running.what : null;
+  return el(
+    "div",
+    { class: "actions" },
+    check && button(doing === "check" ? "Checking\u{2026}" : "Check now", () => actions.checkDrift(connectionId, id), { class: "secondary", id: `check-drift-${id}`, disabled: running !== null }),
+    acknowledge && button(doing === "acknowledge" ? "Acknowledging\u{2026}" : "Acknowledge", () => actions.askAcknowledge(id), { class: "secondary", id: `ack-drift-${id}`, disabled: running !== null }),
+  );
 }
 
 function driftRow(drift: LiveDrift, now: number): Node {
@@ -369,7 +430,7 @@ function driftRow(drift: LiveDrift, now: number): Node {
     "div",
     { class: "row live-row" },
     el("span", { class: "row-main" }, el("span", { class: "row-title mono" }, drift.schema), checked !== null && el("span", { class: "small muted" }, checked)),
-    el("span", { class: "live-value" }, toneTag(tag.label, tag.tone)),
+    el("span", { class: "live-value" }, toneTag(tag.label, tag.tone), drift.acknowledgedAt !== null && el("span", { class: "small muted" }, "Acknowledged")),
   );
 }
 

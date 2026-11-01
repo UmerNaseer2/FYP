@@ -454,7 +454,7 @@ test("makes new keys and saves them the first time, then keeps them out of the l
   const state = store.last;
   assert.deepEqual(
     { ...state, signingKey: "", staticKey: "", pushKey: "" },
-    { enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, phones: [], signingKey: "", staticKey: "", pushKey: "" },
+    { enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, phones: [], actionLog: [], signingKey: "", staticKey: "", pushKey: "" },
   );
   assert.equal(fromBase64Url(state.signingKey)?.length, 32);
   assert.equal(fromBase64Url(state.staticKey)?.length, 32);
@@ -466,7 +466,7 @@ test("makes new keys and saves them the first time, then keeps them out of the l
   const logged = newLogLines();
   assert.match(logged, /A message with every key in it/);
   assert.ok(keysIn(state).every((key) => !logged.includes(key)), "the keys are not in the log");
-  assert.deepEqual(link.view(), { status: { state: "off" }, enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, typedCodeLive: false, phones: [] });
+  assert.deepEqual(link.view(), { status: { state: "off" }, enabled: false, relayOrigin: null, sharedConnectionIds: [], queryTextConnectionIds: [], keepAwake: false, typedCodeLive: false, phones: [], actions: [] });
 });
 
 test("makes new keys from the random bytes it is given", async () => {
@@ -539,8 +539,8 @@ test("makes a push key for a file with none, saved once, and turns every phone's
     1,
   );
   assert.deepEqual(link.view().phones, [
-    { ...alerted, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
-    { ...quiet, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...alerted, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
+    { ...quiet, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
   ]);
 
   logWarn(`A message with every key in it: ${keysIn(saved).join(" ")}`);
@@ -581,8 +581,8 @@ test("shows which phones get drift alerts, and never where the alerts go", async
   assert.deepEqual(store.saved, []);
   const view = link.view();
   assert.deepEqual(view.phones, [
-    { ...alerted, connected: false, alerts: true, approvals: false, approvalsAllowedUntil: null },
-    { ...quiet, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...alerted, connected: false, alerts: true, approvals: false, approvalsAllowedUntil: null, control: false },
+    { ...quiet, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
   ]);
   const shown = JSON.stringify(view);
   assert.ok([push.endpoint, push.p256dh, push.auth].every((part) => !shown.includes(part)), "the view holds nothing of the subscription");
@@ -788,7 +788,7 @@ test("removes a paired phone by its key, and ignores anything else", async () =>
   assert.equal(store.saved.length, 0);
   link.forgetPhone(old.key);
   assert.deepEqual(store.last.phones, [other]);
-  assert.deepEqual(link.view().phones, [{ ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
+  assert.deepEqual(link.view().phones, [{ ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false }]);
   assert.equal(countLines(newLogLines(), /Removed the phone "Old phone" from the paired phones\./), 1);
 });
 
@@ -850,7 +850,7 @@ test("tells the app once a run of changes is done, never in the middle of one", 
   link.setSharedConnections([4]);
   await settle();
   assert.equal(views.length, 2);
-  assert.deepEqual(views[1], { status: { state: "off" }, enabled: false, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [4], queryTextConnectionIds: [], keepAwake: false, typedCodeLive: false, phones: [] });
+  assert.deepEqual(views[1], { status: { state: "off" }, enabled: false, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [4], queryTextConnectionIds: [], keepAwake: false, typedCodeLive: false, phones: [], actions: [] });
 
   link.setEnabled(true);
   await signIn(opener, link);
@@ -896,8 +896,8 @@ test("pairs a phone through the relay, answers it, and sends it away once it is 
   assert.deepEqual(paired, [saved]);
   assert.deepEqual(store.last.phones, [saved]);
   // It shows as connected once a message from it opens.
-  assert.deepEqual(link.view().phones, [{ ...saved, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
-  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
+  assert.deepEqual(link.view().phones, [{ ...saved, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false }]);
+  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false }]);
 
   // A phone sees only the connections shared with it, and the app is not asked about any other.
   const refused = await ask(phone, socket, 1, { id: 1, method: "schemas.list", params: { connectionId: 3 } });
@@ -905,8 +905,8 @@ test("pairs a phone through the relay, answers it, and sends it away once it is 
   assert.deepEqual(caller.calls, []);
   await settle();
   assert.deepEqual(store.last.phones, [saved]);
-  assert.deepEqual(link.view().phones, [{ ...saved, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
-  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null }]);
+  assert.deepEqual(link.view().phones, [{ ...saved, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false }]);
+  assert.deepEqual(views.at(-1)?.phones, [{ ...saved, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false }]);
 
   link.setSharedConnections([3]);
   caller.answers.set("GET /api/lineage/schemas?connectionId=3", { status: 200, json: { schemas: ["public"] } });
@@ -962,8 +962,8 @@ test("lets a phone paired before back in, notes when it was last seen, and shows
   assert.ok(phone);
   // Seen, and connected, only once a message from it opens.
   assert.deepEqual(link.view().phones, [
-    { ...before, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
-    { ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...before, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
+    { ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
   ]);
   const refused = await ask(phone, socket, 5, { id: 1, method: "schemas.list", params: { connectionId: 3 } });
   assert.deepEqual(refused, readAnswer(writeRefusal(1, "not-shared")));
@@ -971,8 +971,8 @@ test("lets a phone paired before back in, notes when it was last seen, and shows
   assert.deepEqual(store.last.phones, [seen, other]);
   await settle();
   assert.deepEqual(views.at(-1)?.phones, [
-    { ...seen, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null },
-    { ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null },
+    { ...seen, connected: true, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
+    { ...other, connected: false, alerts: false, approvals: false, approvalsAllowedUntil: null, control: false },
   ]);
 });
 
@@ -1373,6 +1373,92 @@ function keptPasskey(): PhonePasskey {
 function allowedUntil(view: PhoneLinkView | undefined): Array<number | null> | undefined {
   return view?.phones.map((phone) => phone.approvalsAllowedUntil);
 }
+
+test("keeps Allow control off until Settings turns it on, saved, and ignores anything else", async () => {
+  const phone = pairedPhone("Test phone");
+  const other = pairedPhone("Other phone");
+  const { link, store, clock, views } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, phones: [phone, other] }));
+  await settle();
+  assert.deepEqual(link.view().phones.map((shown) => shown.control), [false, false]);
+  const shown = views.length;
+  for (const key of ["not a key", 42, undefined]) {
+    link.allowControl(key);
+    link.turnOffControl(key);
+  }
+
+  link.turnOffControl(phone.key);
+  await settle();
+  assert.equal(views.length, shown);
+  assert.equal(store.saved.length, 0);
+  assert.equal(countLines(newLogLines(), /Allow control was/), 0);
+
+  link.allowControl(phone.key);
+  assert.deepEqual(link.view().phones.map((seen) => seen.control), [true, false]);
+  assert.equal(store.saved.at(-1)?.phones[0]?.control, clock.now());
+  assert.equal(store.saved.at(-1)?.phones[1]?.control, undefined);
+  assert.equal(countLines(newLogLines(), /Allow control was turned on for the phone "Test phone"\./), 1);
+  await settle();
+  assert.deepEqual(views.at(-1)?.phones.map((seen) => seen.control), [true, false]);
+
+  // Turning it on twice does not write or log it twice.
+  const saves = store.saved.length;
+  link.allowControl(phone.key);
+  assert.equal(store.saved.length, saves);
+  assert.equal(countLines(newLogLines(), /Allow control was/), 0);
+
+  link.turnOffControl(phone.key);
+  assert.deepEqual(link.view().phones.map((seen) => seen.control), [false, false]);
+  assert.equal(store.saved.at(-1)?.phones[0]?.control, undefined);
+  assert.equal(countLines(newLogLines(), /Allow control was turned off for the phone "Test phone"\./), 1);
+});
+
+test("can turn Allow control off with the phone link off, but cannot turn it on then", async () => {
+  const phone = { ...pairedPhone("Test phone"), control: 1_000 };
+  const other = pairedPhone("Other phone");
+  const { link, store } = await openLink(stateWith({ enabled: false, relayOrigin: RELAY_ORIGIN, phones: [phone, other] }));
+  await settle();
+  link.allowControl(other.key);
+  assert.deepEqual(link.view().phones.map((shown) => shown.control), [true, false]);
+  link.turnOffControl(phone.key);
+  assert.deepEqual(link.view().phones.map((shown) => shown.control), [false, false]);
+  assert.equal(store.saved.at(-1)?.phones[0]?.control, undefined);
+});
+
+test("writes what a phone tried in the saved action log, newest first in the view, and keeps it once the phone is forgotten", async () => {
+  const phoneKey = await generateKeyPair("X25519", false);
+  const phone: PairedPhone = { key: toBase64Url(phoneKey.publicKey), name: "Test phone", pairedAt: 1_600_000_000_000, lastSeenAt: 1_600_000_000_000, control: 1_600_000_000_000 };
+  const state = stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN, sharedConnectionIds: [5], phones: [phone] });
+  const { link, opener, store, caller, clock } = await openLink(state);
+  caller.answers.set("GET /api/lineage", { status: 200, json: [{ id: 9, connectionId: 5, schemaName: "sales", driftStatus: "drifted" }] });
+  caller.answers.set("POST /api/lineage/drift", { status: 200, json: { status: "in_sync" } });
+  caller.answers.set("POST /api/lineage/acknowledge", { status: 403, json: { error: "No." } });
+  link.start();
+  const socket = await signIn(opener, link);
+  const computerKey = await publicKeyOf("X25519", state.staticKey);
+  const { link: connected } = await connectPhone(socket, 5, phoneKey, computerKey, { kind: "session" });
+  assert.ok(connected);
+  assert.deepEqual(await ask(connected, socket, 5, { id: 1, method: "drift.check", params: { connectionId: 5, trackedSchemaId: 9 } }), { id: 1, ok: true, result: { status: "in_sync" } });
+  const at = clock.now();
+  const refused = await ask(connected, socket, 5, { id: 2, method: "drift.acknowledge", params: { connectionId: 5, trackedSchemaId: 9 } });
+  assert.equal(refused?.ok, false);
+  assert.deepEqual(link.view().actions, [
+    { at, phone: "Test phone", action: "drift-acknowledge", connectionId: 5, schema: "sales", outcome: "forbidden" },
+    { at, phone: "Test phone", action: "drift-check", connectionId: 5, schema: "sales", outcome: "done" },
+  ]);
+  assert.equal(store.saved.at(-1)?.actionLog.length, 2);
+  assert.equal(store.saved.at(-1)?.actionLog[0]?.action, "drift-check");
+  const lines = newLogLines();
+  assert.equal(countLines(lines, /The phone "Test phone" tried drift-check: done\./), 1);
+  assert.equal(countLines(lines, /The phone "Test phone" tried drift-acknowledge: forbidden\./), 1);
+
+  // Turned off from the computer, the next try is refused at once and logged too.
+  link.turnOffControl(phone.key);
+  assert.deepEqual(await ask(connected, socket, 5, { id: 3, method: "drift.check", params: { connectionId: 5, trackedSchemaId: 9 } }), readAnswer(writeRefusal(3, "control-off")));
+  assert.equal(link.view().actions[0]?.outcome, "control-off");
+  link.forgetPhone(phone.key);
+  assert.equal(link.view().actions.length, 3);
+  assert.deepEqual(link.view().phones, []);
+});
 
 test("lets a paired phone set up approvals for 5 minutes once Settings allows it, and ignores anything else", async () => {
   const phone = pairedPhone("Test phone");

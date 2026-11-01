@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MAX_PAIRED_PHONES } from "../core/phone-link-file";
+import { MAX_PAIRED_PHONES, type PhoneActionOutcome } from "../core/phone-link-file";
 import type { PhoneLinkView } from "../main/phone-link";
 import {
   CONNECTIONS_FAILED,
@@ -23,8 +23,8 @@ import { pairingQr } from "../main/qr";
 const RELAY = "https://relay.example.com";
 const KEYS_PROBLEM = "The phone link could not open its keys. Schema Studio's log has the details.";
 
-function phone(number: number, connected = false, alerts = false, approvals = false, approvalsAllowedUntil: number | null = null) {
-  return { key: `key-${number}`, name: `Phone ${number}`, pairedAt: 1_000 + number, lastSeenAt: 2_000 + number, connected, alerts, approvals, approvalsAllowedUntil };
+function phone(number: number, connected = false, alerts = false, approvals = false, approvalsAllowedUntil: number | null = null, control = false) {
+  return { key: `key-${number}`, name: `Phone ${number}`, pairedAt: 1_000 + number, lastSeenAt: 2_000 + number, connected, alerts, approvals, approvalsAllowedUntil, control };
 }
 
 /** A phone link that shows the view it is given and notes what Settings asks of it. */
@@ -43,6 +43,7 @@ function fakeLink(
     keepAwake: false,
     typedCodeLive: false,
     phones: [],
+    actions: [],
     ...overrides,
   };
   const link: PhoneSettingsLink = {
@@ -58,6 +59,38 @@ function fakeLink(
   };
   return { link, view, calls };
 }
+
+test("tells Settings about a phone's Allow control", () => {
+  const { link } = fakeLink({ phones: [phone(1), phone(2, false, false, false, null, true)] });
+  const view = phoneView(link, null);
+  assert.ok(view.available);
+  assert.deepEqual(view.phones.map((shown) => shown.control), [false, true]);
+});
+
+test("writes each entry of the action log as a sentence, and marks all but one that worked", () => {
+  const outcomes: [PhoneActionOutcome, string][] = [
+    ["done", "Done."],
+    ["control-off", "Refused: Allow control was off."],
+    ["signed-out", "Refused: nobody was signed in on the computer."],
+    ["forbidden", "Refused: the signed-in role may not do this."],
+    ["not-shared", "Refused: this connection is not shared with phones."],
+    ["not-found", "Refused: that schema is not tracked."],
+    ["no-baseline", "This schema has no baseline yet."],
+    ["unreachable", "The database could not be reached."],
+    ["failed", "It did not work."],
+  ];
+  for (const [outcome, sentence] of outcomes) {
+    const { link } = fakeLink({ actions: [{ at: 5, phone: "Phone 1", action: "drift-check", connectionId: 2, schema: "sales", outcome }] });
+    const view = phoneView(link, null);
+    assert.ok(view.available);
+    assert.deepEqual(view.actions, [{ at: 5, phone: "Phone 1", title: "Check drift now", outcome: sentence, bad: outcome !== "done", connectionId: 2, schema: "sales" }]);
+  }
+  const { link } = fakeLink({ actions: [{ at: 6, phone: "Phone 2", action: "drift-acknowledge", connectionId: 3, schema: null, outcome: "done" }] });
+  const view = phoneView(link, null);
+  assert.ok(view.available);
+  assert.equal(view.actions[0]?.title, "Acknowledge drift");
+  assert.equal(view.actions[0]?.schema, null);
+});
 
 test("says why there is nothing to show before the phone link has opened", () => {
   assert.deepEqual(phoneView(null, null), { available: false, message: NOT_STARTED });
@@ -85,6 +118,7 @@ test("shows only what the page needs, on a copy, with why a phone cannot pair ye
     keepAwake: true,
     typedCodeLive: false,
     phones: [phone(1, true), phone(2, false, true), phone(3, false, false, true), phone(4, false, false, false, 7_000)],
+    actions: [],
     cannotPair: "The phone link is not connected to the relay yet, and a phone pairs through it.",
   });
   assert.notEqual(shown.sharedConnectionIds, view.sharedConnectionIds);

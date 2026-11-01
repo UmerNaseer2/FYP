@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 
+import type { PhoneAction } from "../core/phone-link-file";
 import type { PushSubscriptionFields } from "../core/web-push";
 import { initLog, logFilePaths } from "../main/log";
 import {
@@ -27,6 +28,7 @@ import {
   type PhoneAlerts,
   type PhoneApprovalRequests,
   type Refusal,
+  type PhoneControl,
 } from "../main/phone-requests";
 import { MAX_LIVE_QUERY_LENGTH, MAX_LIVE_SESSIONS, readAnswer, type Answer, type CompareSummary, type LiveStatus, type Request } from "../shared/remote/rpc.js";
 import { newPhone, subscriptionOf } from "./push-phone";
@@ -100,6 +102,18 @@ function fakeAlerts(subscription: PushSubscriptionFields | null = null): PhoneAl
   };
 }
 
+/** A phone's Allow control switch, noting what goes in the action log. */
+function fakeControl(allowed = false): PhoneControl & { entries: Omit<PhoneAction, "at" | "phone">[] } {
+  const entries: Omit<PhoneAction, "at" | "phone">[] = [];
+  return {
+    allowed: () => allowed,
+    record: (entry) => {
+      entries.push(entry);
+    },
+    entries,
+  };
+}
+
 /** A fingerprint of a request's SQL, as the app's server writes one. */
 const FINGERPRINT = "ab".repeat(32);
 
@@ -144,10 +158,10 @@ function fakeApprovals(overrides: Partial<PhoneApprovalRequests> = {}): PhoneApp
 async function answer(
   request: Request,
   call: AppCaller,
-  options: { shared?: readonly number[]; queryText?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; signal?: AbortSignal } = {},
+  options: { shared?: readonly number[]; queryText?: readonly number[]; alerts?: PhoneAlerts; approvals?: PhoneApprovalRequests; control?: PhoneControl; signal?: AbortSignal } = {},
 ): Promise<Answer> {
   const shared = options.shared ?? [1, 2, 3];
-  const requestOptions = { call, sharedConnectionIds: () => shared, queryTextConnectionIds: () => options.queryText ?? [], appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
+  const requestOptions = { call, control: options.control ?? fakeControl(), sharedConnectionIds: () => shared, queryTextConnectionIds: () => options.queryText ?? [], appVersion: "1.2.3", alerts: options.alerts ?? fakeAlerts(), approvals: options.approvals ?? fakeApprovals() };
   const sent = await answerRequest(request, requestOptions, options.signal ?? new AbortController().signal);
   const read = readAnswer(sent);
   assert.ok(read, "a phone can read the answer");
@@ -548,10 +562,11 @@ test("sends a phone live status with only the fields it shows, and only this con
       activityProblem: null,
       health: { since: "2026-10-01T00:00:00.000Z", metrics: [{ label: "Cache hit ratio", display: "99.1%", level: "good", note: "Most reads come from memory." }] },
       drift: [
-        { id: 9, schema: "sales", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001" },
-        { id: 11, schema: "public", status: null, checkedAt: "2026-10-30T08:00:00.000Z", headVersion: null },
+        { id: 9, schema: "sales", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001", acknowledgedAt: null },
+        { id: 11, schema: "public", status: null, checkedAt: "2026-10-30T08:00:00.000Z", headVersion: null, acknowledgedAt: null },
       ],
       driftProblem: null,
+      control: { allowed: false, canCheck: false, canAcknowledge: false },
     },
   });
   const sent = JSON.stringify(read);
@@ -820,10 +835,144 @@ test("fails a request when the app answers with something unexpected, and logs i
   assert.equal(newLogLines(), "");
 });
 
+const CHECK_REQUEST: Request = { id: 40, method: "drift.check", params: { connectionId: 2, trackedSchemaId: 9 } };
+const ACKNOWLEDGE_REQUEST: Request = { id: 41, method: "drift.acknowledge", params: { connectionId: 2, trackedSchemaId: 9 } };
+
+/** Every drift request and the entry it leaves in the action log, for the schema those two name. */
+const DRIFT_ACTIONS = [
+  { request: CHECK_REQUEST, action: "drift-check", route: "POST /api/lineage/drift" },
+  { request: ACKNOWLEDGE_REQUEST, action: "drift-acknowledge", route: "POST /api/lineage/acknowledge" },
+] as const;
+
+test("does a drift action through the route the app's own page uses, naming only the tracked schema, and logs it as done", async () => {
+  for (const { request, action, route } of DRIFT_ACTIONS) {
+    const control = fakeControl(true);
+    const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [route]: ok({ status: "drifted", summary: "Secret name", report: { secret: true } }) });
+    const read = await answer(request, app.call, { control });
+    assert.deepEqual(read, { id: request.id, ok: true, result: { status: "drifted" } });
+    assert.deepEqual(app.calls.at(-1), { method: "POST", path: route.split(" ")[1], body: { trackedSchemaId: 9 } });
+    assert.deepEqual(control.entries, [{ action, connectionId: 2, schema: "sales", outcome: "done" }]);
+  }
+});
+
+test("asks the app nothing for a drift action while Allow control is off, and logs the try", async () => {
+  for (const { request, action } of DRIFT_ACTIONS) {
+    const control = fakeControl(false);
+    const app = fakeApp({});
+    assert.deepEqual(await answer(request, app.call, { control }), refused(request.id, "control-off"));
+    assert.deepEqual(app.calls, []);
+    assert.deepEqual(control.entries, [{ action, connectionId: 2, schema: null, outcome: "control-off" }]);
+  }
+});
+
+test("reads Allow control at every drift action, so turning it off counts at once", async () => {
+  let allowed = true;
+  const entries: unknown[] = [];
+  const app = fakeApp({ "GET /api/lineage": ok(TRACKED), "POST /api/lineage/drift": ok({ status: "in_sync" }) });
+  const control: PhoneControl = { allowed: () => allowed, record: (entry) => void entries.push(entry) };
+  assert.equal((await answer(CHECK_REQUEST, app.call, { control })).ok, true);
+  allowed = false;
+  assert.deepEqual(await answer(CHECK_REQUEST, app.call, { control }), refused(40, "control-off"));
+  assert.equal(entries.length, 2);
+});
+
+test("refuses a drift action on a connection that is not shared before reading anything", async () => {
+  for (const { request, action } of DRIFT_ACTIONS) {
+    const control = fakeControl(true);
+    const app = fakeApp({});
+    assert.deepEqual(await answer(request, app.call, { control, shared: [1, 3] }), refused(request.id, "not-shared"));
+    assert.deepEqual(app.calls, []);
+    assert.deepEqual(control.entries, [{ action, connectionId: 2, schema: null, outcome: "not-shared" }]);
+  }
+});
+
+test("refuses a tracked schema of another connection, so sharing one connection cannot reach a schema of another", async () => {
+  for (const trackedSchemaId of [10, 99]) {
+    const control = fakeControl(true);
+    const app = fakeApp({ "GET /api/lineage": ok(TRACKED) });
+    const request: Request = { id: 42, method: "drift.check", params: { connectionId: 2, trackedSchemaId } };
+    assert.deepEqual(await answer(request, app.call, { control }), refused(42, "not-found"));
+    assert.deepEqual(app.calls.map((call) => call.method), ["GET"]);
+    assert.deepEqual(control.entries, [{ action: "drift-check", connectionId: 2, schema: null, outcome: "not-found" }]);
+  }
+});
+
+test("refuses a drift action with the fixed sentence for each thing the app can answer, and logs each one", async () => {
+  const cases: [AppAnswer | Error, Refusal, string][] = [
+    [{ status: 401, json: { error: "Secret name" } }, "signed-out", "signed-out"],
+    [{ status: 403, json: { error: "Secret name" } }, "forbidden", "forbidden"],
+    [{ status: 404, json: { error: "Secret name" } }, "not-found", "not-found"],
+    [{ status: 409, json: { error: "Secret name" } }, "no-baseline", "no-baseline"],
+    [{ status: 500, json: { error: "Secret name" } }, "failed", "failed"],
+    [{ status: 200, json: { summary: "Secret name" } }, "failed", "failed"],
+    [{ status: 502, json: { error: "Secret name" } }, "unreachable", "unreachable"],
+    [new Error("Secret name"), "no-answer", "failed"],
+  ];
+  for (const [routeAnswer, refusal, outcome] of cases) {
+    const control = fakeControl(true);
+    const app = fakeApp({ "GET /api/lineage": ok(TRACKED), "POST /api/lineage/acknowledge": routeAnswer });
+    const read = await answer(ACKNOWLEDGE_REQUEST, app.call, { control });
+    assert.deepEqual(read, refused(41, refusal), outcome);
+    assert.ok(!JSON.stringify(read).includes("Secret name"));
+    assert.deepEqual(control.entries, [{ action: "drift-acknowledge", connectionId: 2, schema: "sales", outcome }]);
+  }
+});
+
+test("logs a check whose database could not be reached as that, not as done, and still answers its status", async () => {
+  const control = fakeControl(true);
+  const app = fakeApp({ "GET /api/lineage": ok(TRACKED), "POST /api/lineage/drift": ok({ status: "unreachable" }) });
+  assert.deepEqual(await answer(CHECK_REQUEST, app.call, { control }), { id: 40, ok: true, result: { status: "unreachable" } });
+  assert.deepEqual(control.entries, [{ action: "drift-check", connectionId: 2, schema: "sales", outcome: "unreachable" }]);
+});
+
+test("tells a phone what it may do in a live status only when Allow control is on, from what the role may do", async () => {
+  const cases: [string[], { canCheck: boolean; canAcknowledge: boolean }][] = [
+    [[], { canCheck: false, canAcknowledge: false }],
+    [["drift:run"], { canCheck: true, canAcknowledge: false }],
+    [["deploy:run"], { canCheck: true, canAcknowledge: false }],
+    [["drift:update"], { canCheck: false, canAcknowledge: true }],
+    [["drift:run", "drift:update"], { canCheck: true, canAcknowledge: true }],
+  ];
+  for (const [permissions, may] of cases) {
+    const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer(), "GET /api/me": ok(me(permissions)) });
+    const read = await answer(LIVE_REQUEST, app.call, { control: fakeControl(true) });
+    assert.ok(read.ok);
+    assert.deepEqual((read.result as LiveStatus).control, { allowed: true, ...may }, permissions.join());
+  }
+});
+
+test("asks the app nothing about the role in a live status while Allow control is off", async () => {
+  const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer() });
+  const read = await answer(LIVE_REQUEST, app.call, { control: fakeControl(false) });
+  assert.ok(read.ok);
+  assert.deepEqual((read.result as LiveStatus).control, { allowed: false, canCheck: false, canAcknowledge: false });
+  assert.ok(!app.calls.some((call) => call.path === "/api/me"));
+});
+
+test("shows no buttons in a live status when the role cannot be read, and the rest of it still arrives", async () => {
+  for (const failure of [new Error("down"), { status: 500, json: {} }, { status: 200, json: { role: 7 } }]) {
+    const app = fakeApp({ "GET /api/lineage": ok(TRACKED), [ACTIVITY_PATH]: activityAnswer(), "GET /api/me": failure });
+    const read = await answer(LIVE_REQUEST, app.call, { control: fakeControl(true) });
+    assert.ok(read.ok);
+    const live = read.result as LiveStatus;
+    assert.deepEqual(live.control, { allowed: true, canCheck: false, canAcknowledge: false });
+    assert.equal(live.drift?.length, 2);
+  }
+});
+
+test("sends when a drift was acknowledged, and nothing else the app records about it", async () => {
+  const tracked = TRACKED.map((item) => (item.id === 9 ? { ...item, driftAcknowledgedAt: "2026-10-30T09:59:30.000Z", driftSummary: "Secret name" } : item));
+  const app = fakeApp({ "GET /api/lineage": ok(tracked), [ACTIVITY_PATH]: activityAnswer() });
+  const read = await answer(LIVE_REQUEST, app.call);
+  assert.ok(read.ok);
+  assert.equal((read.result as LiveStatus).drift?.[0]?.acknowledgedAt, "2026-10-30T09:59:30.000Z");
+  assert.ok(!JSON.stringify(read).includes("Secret name"));
+});
+
 test("reads which connections are shared at every request, so a change in Settings counts at once", async () => {
   let shared: number[] = [1];
   const app = fakeApp({ "GET /api/lineage/schemas?connectionId=1": ok({ schemas: ["public"] }) });
-  const options = { call: app.call, sharedConnectionIds: () => shared, queryTextConnectionIds: () => [], appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
+  const options = { call: app.call, control: fakeControl(), sharedConnectionIds: () => shared, queryTextConnectionIds: () => [], appVersion: "1.2.3", alerts: fakeAlerts(), approvals: fakeApprovals() };
   const ask = async (id: number) => readAnswer(await answerRequest({ id, method: "schemas.list", params: { connectionId: 1 } }, options, new AbortController().signal));
   assert.deepEqual(await ask(1), { id: 1, ok: true, result: { schemas: ["public"] } });
   shared = [];

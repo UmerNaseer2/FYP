@@ -69,6 +69,8 @@ const METHODS: Method[] = [
   "passkey.finish",
   "approvals.begin",
   "approvals.decide",
+  "drift.check",
+  "drift.acknowledge",
 ];
 
 /** A schema in one of the computer's saved connections. */
@@ -115,6 +117,8 @@ const REQUESTS: Request[] = [
   { id: 11, method: "passkey.finish", params: NEW_PASSKEY },
   { id: 12, method: "approvals.begin" },
   { id: 13, method: "approvals.decide", params: DECIDE },
+  { id: 14, method: "drift.check", params: { connectionId: 7, trackedSchemaId: 9 } },
+  { id: 15, method: "drift.acknowledge", params: { connectionId: 7, trackedSchemaId: 9 } },
 ];
 
 /** A column, as the computer describes it. */
@@ -223,8 +227,9 @@ const LIVE: LiveStatus = {
   },
   activityProblem: null,
   health: { since: "2026-10-01T00:00:00.000Z", metrics: [{ label: "Cache hit ratio", display: "99.1%", level: "good", note: "Most reads come from memory." }] },
-  drift: [{ id: 9, schema: "public", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001" }],
+  drift: [{ id: 9, schema: "public", status: "drifted", checkedAt: "2026-10-30T09:59:00.000Z", headVersion: "20261001", acknowledgedAt: null }],
   driftProblem: null,
+  control: { allowed: true, canCheck: true, canAcknowledge: false },
 };
 
 function liveWith(changes: Record<string, unknown>): unknown {
@@ -257,6 +262,8 @@ const RESULTS: { [M in Method]: Results[M] } = {
   "passkey.finish": { passkey: "ready" },
   "approvals.begin": { nonce: base64Url(32), credentialId: base64Url(16) },
   "approvals.decide": { status: "approved" },
+  "drift.check": { status: "in_sync" },
+  "drift.acknowledge": { status: "drifted" },
 };
 
 /** OVERVIEW with its table changed. */
@@ -341,6 +348,16 @@ test("refuses a request that is not exactly one it knows, and says which one it 
     { id: 5, method: "live.read", params: {} },
     { id: 5, method: "live.read", params: { connectionId: 0 } },
     { id: 5, method: "live.read", params: REF },
+    { id: 5, method: "drift.check" },
+    { id: 5, method: "drift.check", params: { connectionId: 7 } },
+    { id: 5, method: "drift.check", params: { trackedSchemaId: 9 } },
+    { id: 5, method: "drift.check", params: { connectionId: 0, trackedSchemaId: 9 } },
+    { id: 5, method: "drift.check", params: { connectionId: 7, trackedSchemaId: 0 } },
+    { id: 5, method: "drift.check", params: { connectionId: 7, trackedSchemaId: "9" } },
+    { id: 5, method: "drift.check", params: { connectionId: 7, trackedSchemaId: 9, x: 1 } },
+    { id: 5, method: "drift.acknowledge", params: { connectionId: 7 } },
+    { id: 5, method: "drift.acknowledge", params: { connectionId: 7, trackedSchemaId: 1.5 } },
+    { id: 5, method: "drift.acknowledge", params: { connectionId: 7, trackedSchemaId: 9, x: 1 } },
     { id: 5, method: "schema.read", params: { connectionId: 7 } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "" } },
     { id: 5, method: "schema.read", params: { connectionId: 7, schema: "a".repeat(MAX_SCHEMA_NAME_LENGTH + 1) } },
@@ -499,6 +516,7 @@ test("writes each error and reads it back", () => {
     "changed",
     "already-decided",
     "own-request",
+    "control-off",
     "expired",
     "failed",
   ];
@@ -581,6 +599,34 @@ test("reads a live status with no activity or drift when it says why, and with n
     { ...LIVE, health: null },
   ];
   for (const status of lacking) assert.deepEqual(readResult("live.read", status), status);
+});
+
+test("reads a computer that sends no control switch or acknowledgement as an older one that has neither", () => {
+  const { control: _control, ...older } = LIVE;
+  const [first] = LIVE.drift ?? [];
+  assert.ok(first);
+  const { acknowledgedAt: _acknowledged, ...olderDrift } = first;
+  const read = readResult("live.read", { ...older, drift: [olderDrift] });
+  assert.equal(read?.control, null);
+  assert.equal(read?.drift?.[0]?.acknowledgedAt, null);
+});
+
+test("reads a control switch's fields as off unless they say true, so a bad one shows no buttons", () => {
+  const read = readResult("live.read", { ...LIVE, control: { allowed: "yes", canCheck: 1, canAcknowledge: null } });
+  assert.deepEqual(read?.control, { allowed: false, canCheck: false, canAcknowledge: false });
+});
+
+test("reads when a drift was acknowledged, and refuses a time that is not text", () => {
+  const acknowledged = { ...LIVE, drift: [{ ...LIVE.drift?.[0], acknowledgedAt: "2026-10-30T10:01:00.000Z" }] };
+  assert.equal(readResult("live.read", acknowledged)?.drift?.[0]?.acknowledgedAt, "2026-10-30T10:01:00.000Z");
+  assert.equal(readResult("live.read", { ...LIVE, drift: [{ ...LIVE.drift?.[0], acknowledgedAt: 7 }] }), null);
+});
+
+test("reads a drift action's result only when it names a status", () => {
+  for (const method of ["drift.check", "drift.acknowledge"] as const) {
+    for (const status of ["in_sync", "drifted", "unreachable"] as const) assert.deepEqual(readResult(method, { status, extra: "kept out" }), { status }, method);
+    for (const bad of [{}, null, { status: "stale" }, { status: 7 }]) assert.equal(readResult(method, bad), null, method);
+  }
 });
 
 test("reads a computer's hello without canSeeLive as one that cannot show live status yet", () => {

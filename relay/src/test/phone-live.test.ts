@@ -6,9 +6,14 @@ import test from "node:test";
 
 import { dayText } from "../phone/format.js";
 import {
+  ACKNOWLEDGE_QUESTION,
+  acknowledgedText,
   activityProblemText,
   agoText,
+  checkResultText,
+  controlHint,
   driftCheckedText,
+  driftControls,
   driftProblemText,
   driftTag,
   durationText,
@@ -21,7 +26,7 @@ import {
   timeText,
   transactionText,
 } from "../phone/live.js";
-import type { LiveActivity, LiveDrift, LiveSession } from "../shared/remote/rpc.js";
+import type { LiveActivity, LiveControl, LiveDrift, LiveSession } from "../shared/remote/rpc.js";
 
 const NOW = Date.UTC(2026, 9, 30, 12, 0, 0);
 const MINUTE = 60_000;
@@ -46,8 +51,47 @@ function activity(changes: Partial<LiveActivity> = {}): LiveActivity {
   };
 }
 
+const ALLOWED: LiveControl = { allowed: true, canCheck: true, canAcknowledge: true };
+
+test("offers Check now and Acknowledge only for what Allow control and the role allow", () => {
+  const drifted = drift({ status: "drifted" });
+  assert.deepEqual(driftControls(drifted, ALLOWED), { check: true, acknowledge: true });
+  assert.deepEqual(driftControls(drifted, { ...ALLOWED, canCheck: false }), { check: false, acknowledge: true });
+  assert.deepEqual(driftControls(drifted, { ...ALLOWED, canAcknowledge: false }), { check: true, acknowledge: false });
+  assert.deepEqual(driftControls(drifted, { allowed: false, canCheck: false, canAcknowledge: false }), { check: false, acknowledge: false });
+  assert.deepEqual(driftControls(drifted, null), { check: false, acknowledge: false });
+});
+
+test("offers Acknowledge only for drift nobody has acknowledged yet", () => {
+  assert.equal(driftControls(drift({ status: "in_sync" }), ALLOWED).acknowledge, false);
+  assert.equal(driftControls(drift({ status: "unreachable" }), ALLOWED).acknowledge, false);
+  assert.equal(driftControls(drift({ status: null }), ALLOWED).acknowledge, false);
+  assert.equal(driftControls(drift({ status: "drifted", acknowledgedAt: new Date(NOW).toISOString() }), ALLOWED).acknowledge, false);
+  assert.equal(driftControls(drift({ status: "drifted", acknowledgedAt: new Date(NOW).toISOString() }), ALLOWED).check, true);
+});
+
+test("says why there are no buttons, and nothing when there are or the computer is older", () => {
+  assert.equal(controlHint(null), null);
+  assert.equal(controlHint(ALLOWED), null);
+  assert.equal(controlHint({ allowed: true, canCheck: false, canAcknowledge: true }), null);
+  assert.match(controlHint({ allowed: false, canCheck: false, canAcknowledge: false }) ?? "", /turn on Allow control for it under Paired phones/);
+  assert.match(controlHint({ allowed: true, canCheck: false, canAcknowledge: false }) ?? "", /role signed in on the computer may not/);
+});
+
+test("says what a check found, in words that stay true as the row above moves on", () => {
+  const at = timeText(NOW);
+  assert.deepEqual(checkResultText("in_sync", NOW), { text: `Checked at ${at}: in sync.`, tone: "info" });
+  assert.deepEqual(checkResultText("drifted", NOW), { text: `Checked at ${at}: drifted. This schema no longer matches its baseline.`, tone: "bad" });
+  assert.deepEqual(checkResultText("unreachable", NOW), { text: `Checked at ${at}: the computer could not reach this database, so nothing was compared.`, tone: "bad" });
+});
+
+test("says an acknowledgement leaves the schema drifted", () => {
+  assert.deepEqual(acknowledgedText(NOW), { text: `Acknowledged at ${timeText(NOW)}. It still shows as drifted until the schema is fixed.`, tone: "info" });
+  assert.match(ACKNOWLEDGE_QUESTION, /stays drifted/);
+});
+
 function drift(changes: Partial<LiveDrift> = {}): LiveDrift {
-  return { id: 1, schema: "public", status: "in_sync", checkedAt: new Date(NOW - 5 * MINUTE).toISOString(), headVersion: "1.0.0", ...changes };
+  return { id: 1, schema: "public", status: "in_sync", checkedAt: new Date(NOW - 5 * MINUTE).toISOString(), headVersion: "1.0.0", acknowledgedAt: null, ...changes };
 }
 
 test("writes a length of time in the two biggest units it needs, rounded, and says when it is under a second", () => {

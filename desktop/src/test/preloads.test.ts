@@ -173,6 +173,8 @@ test("the Settings page's Phone section gets the phone link's messages, and cann
   phone.forget("key", "extra");
   phone.allowApprovals("key", "extra");
   phone.turnOffApprovals("key", "extra");
+  phone.allowControl("key", "extra");
+  phone.turnOffControl("key", "extra");
   await phone.pair("extra");
   phone.cancelPairing("extra");
   phone.connectNow("extra");
@@ -190,6 +192,8 @@ test("the Settings page's Phone section gets the phone link's messages, and cann
     { kind: "send", channel: PHONE.forget, args: ["key"] },
     { kind: "send", channel: PHONE.allowApprovals, args: ["key"] },
     { kind: "send", channel: PHONE.turnOffApprovals, args: ["key"] },
+    { kind: "send", channel: PHONE.allowControl, args: ["key"] },
+    { kind: "send", channel: PHONE.turnOffControl, args: ["key"] },
     { kind: "invoke", channel: PHONE.pair, args: [] },
     { kind: "send", channel: PHONE.cancelPairing, args: [] },
     { kind: "send", channel: PHONE.connectNow, args: [] },

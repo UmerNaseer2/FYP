@@ -11,14 +11,17 @@
  * is running reaches a phone only when that is turned on for the connection
  * too, because SQL can hold private data.
  *
- * A phone may change only two things. It may turn its own drift alerts on
+ * A phone may change only a few things. It may turn its own drift alerts on
  * and off: push.subscribe turns them on only while the role signed in on the
  * computer may see drift in the app (drift:read), since drift is what they
  * show, and src/main/phone-link.ts checks that again before each alert it
  * sends. push.unsubscribe needs no permission at all: turning alerts off
- * shows a phone nothing. And it may approve or reject a deploy or rollback
+ * shows a phone nothing. It may approve or reject a deploy or rollback
  * request, which src/main/phone-approvals.ts answers: only with a passkey
- * set up on that phone, and only as the person who set it up.
+ * set up on that phone, and only as the person who set it up. And with Allow
+ * control on for that phone, which is read for each request, it may check a
+ * tracked schema's drift now and acknowledge drift. Each such try goes in the
+ * action log on the computer, whether or not it was allowed.
  *
  * Nothing the server says in words reaches a phone. Its error messages can
  * name a database's host or repeat what the database said, so a refusal is
@@ -30,6 +33,7 @@
  * Pure apart from the log: the server is asked through `call`, and a phone's
  * drift alerts are kept through `alerts`, so the tests can play both parts.
  */
+import type { PhoneAction, PhoneActionOutcome } from "../core/phone-link-file";
 import { readPushSubscription, type PushSubscriptionFields } from "../core/web-push";
 import type { Bytes } from "../shared/remote/bytes";
 import { objectFields } from "../shared/remote/json";
@@ -46,9 +50,12 @@ import {
   type ApprovalRead,
   type DecideParams,
   type DecisionChallenge,
+  type DriftActionParams,
+  type DriftActionResult,
   type ErrorCode,
   type HelloResult,
   type LiveActivity,
+  type LiveControl,
   type LiveDrift,
   type LiveHealth,
   type LiveProblem,
@@ -109,14 +116,24 @@ export type RequestOptions = {
   alerts: PhoneAlerts;
   /** The approval requests of the phone that asked. */
   approvals: PhoneApprovalRequests;
+  /** Allow control for the phone that asked, and the log its tries go in. */
+  control: PhoneControl;
+};
+
+/** What the phone link knows about one phone's Allow control. */
+export type PhoneControl = {
+  /** Whether it is on. Read for every request, so turning it off counts at once. */
+  allowed(): boolean;
+  /** Writes one try in the action log, with the time and the phone's name added. */
+  record(entry: Omit<PhoneAction, "at" | "phone">): void;
 };
 
 /**
  * Why the computer answers with an error: the codes rpc.ts gives a phone, and
- * six more that tell the person more than "failed", "bad-request",
+ * seven more that tell the person more than "failed", "bad-request",
  * "forbidden" or "signed-out" alone would.
  */
-export type Refusal = ErrorCode | "access-unknown" | "not-member" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing";
+export type Refusal = ErrorCode | "access-unknown" | "not-member" | "bad-subscription" | "no-answer" | "too-slow" | "sql-missing" | "no-baseline";
 
 /** The code and the sentence each refusal sends: words for the person holding the phone, with nothing from the server in them. */
 export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: string }>> = {
@@ -158,6 +175,8 @@ export const REFUSALS: Readonly<Record<Refusal, { code: ErrorCode; message: stri
   },
   "no-answer": { code: "failed", message: "Schema Studio on the computer did not answer. Try again in a moment." },
   "too-slow": { code: "failed", message: "The computer took too long to answer." },
+  "control-off": { code: "control-off", message: "Allow control is off for this device. Turn it on under Paired phones in Schema Studio's Settings on the computer." },
+  "no-baseline": { code: "failed", message: "This schema has no baseline to compare with yet. Set one in Schema Studio on the computer." },
   "sql-missing": {
     code: "forbidden",
     message: "The computer cannot show the SQL this request runs, so it cannot be approved from a phone. Reject it here, or decide it in Schema Studio on the computer.",
@@ -233,6 +252,10 @@ async function answerOf(request: Request, options: RequestOptions, signal: Abort
       return writeResult(id, "approvals.begin", options.approvals.beginDecision());
     case "approvals.decide":
       return writeResult(id, "approvals.decide", await options.approvals.decide(request.params, signal));
+    case "drift.check":
+      return writeResult(id, "drift.check", await driftAction("drift-check", "/api/lineage/drift", request.params, options, signal));
+    case "drift.acknowledge":
+      return writeResult(id, "drift.acknowledge", await driftAction("drift-acknowledge", "/api/lineage/acknowledge", request.params, options, signal));
   }
 }
 
@@ -403,7 +426,83 @@ async function readLive(connectionId: number, options: RequestOptions, signal: A
     health: activity.value?.health ?? null,
     drift: drift.value,
     driftProblem: drift.problem,
+    control: await liveControl(options, signal),
   };
+}
+
+/**
+ * Which buttons a phone shows, sent with each live status so that they come
+ * and go with a change in Settings. They only save a tap that would be refused:
+ * driftAction checks Allow control again, and the app's routes check the role.
+ * Nothing is asked of the app while Allow control is off, and an answer that
+ * cannot be read just shows no buttons.
+ */
+async function liveControl(options: RequestOptions, signal: AbortSignal): Promise<LiveControl> {
+  if (!options.control.allowed()) return { allowed: false, canCheck: false, canAcknowledge: false };
+  try {
+    const { permissions } = readMe(await ask(options, "GET", "/api/me", undefined, signal, ME_REFUSALS));
+    return { allowed: true, canCheck: permissions.includes("drift:run") || permissions.includes("deploy:run"), canAcknowledge: permissions.includes("drift:update") };
+  } catch (error) {
+    if (!(error instanceof Refused) && !signal.aborted) logWarn("The phone link could not read what the signed-in role may do.", error);
+    return { allowed: true, canCheck: false, canAcknowledge: false };
+  }
+}
+
+/** The word in the action log for a refusal. Any other is written as "failed". */
+const ACTION_OUTCOMES: Readonly<Partial<Record<Refusal, PhoneActionOutcome>>> = {
+  "control-off": "control-off",
+  "signed-out": "signed-out",
+  forbidden: "forbidden",
+  "not-shared": "not-shared",
+  "not-found": "not-found",
+  "no-baseline": "no-baseline",
+  unreachable: "unreachable",
+};
+
+/**
+ * Checks a tracked schema's drift now or acknowledges it, through the route the
+ * app's own page uses, and writes the try in the action log however it goes.
+ *
+ * The order matters. Allow control comes first, so that a phone without it
+ * learns nothing, then whether the connection is shared, and only then is
+ * anything read. The route takes the tracked schema's number alone, so the
+ * schema is looked up first to be sure it belongs to the connection that was
+ * checked: otherwise a phone could name a shared connection and act on a schema
+ * of one that is not. The route checks the role.
+ *
+ * A database that could not be reached is a 200 from the route, with that as
+ * its status, so for a check it is written as what it is rather than as done.
+ */
+async function driftAction(
+  action: "drift-check" | "drift-acknowledge",
+  route: string,
+  { connectionId, trackedSchemaId }: DriftActionParams,
+  options: RequestOptions,
+  signal: AbortSignal,
+): Promise<DriftActionResult> {
+  let schema: string | null = null;
+  const record = (outcome: PhoneActionOutcome): void => options.control.record({ action, connectionId, schema, outcome });
+  try {
+    if (!options.control.allowed()) throw new Refused("control-off");
+    checkShared([connectionId], options);
+    schema = trackedSchemaName(await ask(options, "GET", "/api/lineage", undefined, signal), connectionId, trackedSchemaId);
+    const answer = await ask(options, "POST", route, { trackedSchemaId }, signal, { 409: "no-baseline" });
+    // Read here rather than by writeResult, so that an answer without a status is not written in the log as done.
+    const result = readResult(action === "drift-check" ? "drift.check" : "drift.acknowledge", answer);
+    if (result === null) throw new Refused("failed");
+    record(action === "drift-check" && result.status === "unreachable" ? "unreachable" : "done");
+    return result;
+  } catch (error) {
+    record(error instanceof Refused ? (ACTION_OUTCOMES[error.refusal] ?? "failed") : "failed");
+    throw error;
+  }
+}
+
+/** The name of the tracked schema with this number on this connection, from what GET /api/lineage answered. */
+function trackedSchemaName(json: unknown, connectionId: number, trackedSchemaId: number): string {
+  const item = Array.isArray(json) ? json.map(objectFields).find((fields) => fields?.id === trackedSchemaId && fields.connectionId === connectionId) : undefined;
+  if (typeof item?.schemaName !== "string") throw new Refused("not-found");
+  return item.schemaName;
 }
 
 /** The refusals one part of a live status can answer for. Any other, such as nobody being signed in, is true of the whole request. */
@@ -430,8 +529,8 @@ function driftOf(json: unknown, connectionId: number): LiveDrift[] {
   return json.flatMap((item) => {
     const fields = objectFields(item);
     if (fields === null || fields.connectionId !== connectionId) return [];
-    const { id, schemaName, driftStatus, lastCheckedAt, driftCheckedAt, headVersion } = fields;
-    return [{ id, schema: schemaName, status: driftStatus, checkedAt: lastCheckedAt ?? driftCheckedAt, headVersion } as LiveDrift];
+    const { id, schemaName, driftStatus, lastCheckedAt, driftCheckedAt, headVersion, driftAcknowledgedAt } = fields;
+    return [{ id, schema: schemaName, status: driftStatus, checkedAt: lastCheckedAt ?? driftCheckedAt, headVersion, acknowledgedAt: driftAcknowledgedAt } as LiveDrift];
   });
 }
 

@@ -87,6 +87,8 @@ export type IpcHandlers = {
     forget(key: string): void;
     allowApprovals(key: string): void;
     turnOffApprovals(key: string): void;
+    allowControl(key: string): void;
+    turnOffControl(key: string): void;
     pair(): Promise<PhonePairing>;
     cancelPairing(): void;
     connectNow(): void;
@@ -210,6 +212,12 @@ export function registerIpc(handlers: IpcHandlers): void {
   });
   on(settings, PHONE.turnOffApprovals, (key) => {
     if (typeof key === "string") handlers.phone.turnOffApprovals(key);
+  });
+  on(settings, PHONE.allowControl, (key) => {
+    if (typeof key === "string") handlers.phone.allowControl(key);
+  });
+  on(settings, PHONE.turnOffControl, (key) => {
+    if (typeof key === "string") handlers.phone.turnOffControl(key);
   });
   handle(settings, PHONE.pair, () => handlers.phone.pair());
   on(settings, PHONE.cancelPairing, () => handlers.phone.cancelPairing());

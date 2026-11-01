@@ -20,14 +20,14 @@ import { PhoneConnection, RpcError, type ConnectionState, type EndReason, type R
 import { append, button, el, notice } from "./dom.js";
 import { defaultPhoneName, retryText } from "./format.js";
 import { forgetPairedComputer, loadLastSeen, loadPairedComputer, saveLastSeen, savePairedComputer } from "./idb-store.js";
-import { agoText, offlineText } from "./live.js";
+import { acknowledgedText, agoText, checkResultText, offlineText, type DriftResult } from "./live.js";
 import { HOME, parentOf, readRoute, writeRoute, type Route } from "./routes.js";
 import { readAddressPairing, readScannedText } from "./scan.js";
 import { startScanner } from "./scanner.js";
 import {
   approvalScreen, approvalsScreen, blockedScreen, codeScreen, compareScreen, confirmScreen, connectionScreen, homeScreen,
   liveScreen, pairScreen, scanScreen, schemaScreen, settingsScreen,
-  type Actions, type AlertsView, type CodeForm, type CompareForm, type LiveView, type Load, type ScanUi,
+  type Actions, type AlertsView, type CodeForm, type CompareForm, type DriftActions, type LiveView, type Load, type ScanUi,
 } from "./screens.js";
 import type { PairedComputer } from "./store.js";
 import { approvalChallenge, approvalFingerprint, type ApprovalDecision } from "../shared/remote/approval.js";
@@ -101,6 +101,8 @@ let decidingToken = 0;
 let decidingTimer: number | undefined;
 let alerts: { prepared: Load<AlertsSetup> | null; working: boolean; problem: string | null } = { prepared: null, working: false, problem: null };
 let alertsToken = 0;
+let driftActions: DriftActions = { running: null, confirming: null, result: null };
+let driftActionsToken = 0;
 let flash: string | null = null;
 let forgetting = false;
 let forgetBusy = false;
@@ -139,6 +141,9 @@ const actions: Actions = {
   decide: (decision) => void decide(decision),
   turnOnAlerts: () => void turnOnAlerts(),
   turnOffAlerts: () => void turnOffAlerts(),
+  checkDrift: (connectionId, id) => void runDriftAction("check", connectionId, id),
+  askAcknowledge,
+  acknowledgeDrift: (connectionId, id) => void runDriftAction("acknowledge", connectionId, id),
 };
 
 /** The sentence to show for something that went wrong. Only this app's own words are shown, never a browser's, which are written for developers. */
@@ -414,6 +419,7 @@ function resetScreens(): void {
   resetDeciding();
   alerts = { prepared: null, working: false, problem: null };
   alertsToken += 1;
+  resetDriftActions();
   flash = null;
   forgetting = false;
   lastLive = null;
@@ -952,6 +958,7 @@ function setRoute(next: Route): void {
     codeToken = null;
   }
   if (next.screen !== "approvals") flash = null;
+  if (route.screen === "live" && (next.screen !== "live" || next.connectionId !== route.connectionId)) resetDriftActions();
   if (route.screen === "settings" && next.screen !== "settings") forgetting = false;
   if (route.screen === "approval" && (next.screen !== "approval" || next.approvalId !== route.approvalId)) resetDeciding();
   if (next.screen === "schema" && (route.screen !== "schema" || route.connectionId !== next.connectionId || route.schema !== next.schema)) filter = "";
@@ -1580,6 +1587,52 @@ function liveLoad(connectionId: number): Load<{ status: LiveStatus; at: number }
   );
 }
 
+function resetDriftActions(): void {
+  driftActions = { running: null, confirming: null, result: null };
+  driftActionsToken += 1;
+}
+
+/** The second tap's button takes the place of the first one, and the other way round, so the focus has to be moved across by hand. */
+function askAcknowledge(id: number | null): void {
+  const was = driftActions.confirming;
+  driftActions = { ...driftActions, confirming: id };
+  render();
+  const target = id === null ? `ack-drift-${was}` : `ack-yes-${id}`;
+  document.getElementById(target)?.focus({ preventScroll: true });
+}
+
+/**
+ * Asks the computer to check or acknowledge one schema's drift, once. A failure
+ * is shown, not tried again: only the person knows whether they still want it,
+ * and an answer lost on the way may mean it happened anyway, which the fresh
+ * status then shows.
+ */
+async function runDriftAction(what: "check" | "acknowledge", connectionId: number, id: number): Promise<void> {
+  const owner = session;
+  if (owner === null || driftActions.running !== null) return;
+  driftActionsToken += 1;
+  const token = driftActionsToken;
+  driftActions = { running: { id, what }, confirming: null, result: null };
+  render();
+  const params = { connectionId, trackedSchemaId: id };
+  let result: DriftResult;
+  try {
+    if (what === "check") result = checkResultText((await owner.link.request({ method: "drift.check", params })).status, Date.now());
+    else {
+      await owner.link.request({ method: "drift.acknowledge", params });
+      result = acknowledgedText(Date.now());
+    }
+  } catch (error) {
+    result = { text: errorText(error), tone: "bad" };
+  }
+  if (driftActionsToken !== token) return;
+  driftActions = { running: null, confirming: null, result: { id, ...result } };
+  drop(liveKey(connectionId));
+  render();
+  // The button that was tapped was turned off while this ran, which took the focus away from it.
+  document.getElementById(`check-drift-${id}`)?.focus({ preventScroll: true });
+}
+
 function liveView(connectionId: number): LiveView {
   const load = liveLoad(connectionId);
   if (load?.status === "loaded") lastLive = { connectionId, ...load.value };
@@ -1589,6 +1642,7 @@ function liveView(connectionId: number): LiveView {
     at: kept?.at ?? null,
     linked: session?.state.kind === "ready",
     problem: load?.status === "failed" ? load.message : null,
+    driftActions,
   };
 }
 

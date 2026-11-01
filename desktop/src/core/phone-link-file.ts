@@ -1,8 +1,9 @@
 /**
  * What phone-link.json holds: whether the phone link is on, the relay it goes
  * through, which saved connections phones may see, the phones paired with this
- * computer with the drift alerts each has asked for and the passkey each
- * approves requests with, and the phone link's own keys.
+ * computer with the drift alerts each has asked for, the passkey each approves
+ * requests with and whether Allow control is on for it, the log of what phones
+ * tried to change, and the phone link's own keys.
  *
  *  - signingKey proves to the relay that this is the computer the phones
  *    paired with (src/shared/remote/relay-auth.ts). The relay knows the
@@ -26,7 +27,8 @@
  * on with, until each phone turns them on again. The other fields are checked
  * one by one, and one that cannot be read falls back to its default, as in
  * config.json. Every fallback gives phones less, never more: a phone, a shared
- * connection or a phone's alerts that cannot be read are left out.
+ * connection, a phone's alerts or its Allow control that cannot be read are
+ * left out. An entry of the action log that cannot be read is left out too.
  *
  * The file is kept the way secrets.json is (src/core/secrets-file.ts), locked
  * with a key from the login keyring where there is one.
@@ -42,6 +44,9 @@ import { isUsableKey, MAX_CREDENTIAL_ID_BYTES, type PasskeyKey } from "./webauth
 
 /** The most phones one computer pairs with. The relay lets the same number connect at once (relay/src/room-logic.ts). */
 export const MAX_PAIRED_PHONES = 8;
+
+/** The most entries the action log keeps. The oldest goes first. */
+export const MAX_PHONE_ACTIONS = 200;
 
 /** Where a phone's browser takes drift alerts for it, and the keys to encrypt them for it (src/core/web-push.ts). */
 export type PhoneSubscription = PushSubscriptionFields & {
@@ -76,6 +81,35 @@ export type PairedPhone = {
   push?: PhoneSubscription;
   /** The passkey it approves and rejects requests with. Left out until approvals are set up on it. */
   passkey?: PhonePasskey;
+  /** When Allow control was turned on for it, in milliseconds since 1970. Left out while it is off, which it is until the person turns it on. */
+  control?: number;
+};
+
+/** What a phone tried to change. */
+export type PhoneActionName = "drift-check" | "drift-acknowledge";
+const PHONE_ACTION_NAMES: readonly PhoneActionName[] = ["drift-check", "drift-acknowledge"];
+
+/** How it went, as a fixed word, so that nothing a server said can reach the log. */
+export type PhoneActionOutcome = "done" | "control-off" | "signed-out" | "forbidden" | "not-shared" | "not-found" | "no-baseline" | "unreachable" | "failed";
+const PHONE_ACTION_OUTCOMES: readonly PhoneActionOutcome[] = ["done", "control-off", "signed-out", "forbidden", "not-shared", "not-found", "no-baseline", "unreachable", "failed"];
+
+/**
+ * One try by a phone to change something, refused or not. It is kept on the
+ * computer, because the app's server cannot tell a phone from anything else
+ * that asks through the computer, and on a shared server a header saying which
+ * phone asked could be made up.
+ */
+export type PhoneAction = {
+  /** When it happened, in milliseconds since 1970. */
+  at: number;
+  /** The phone's name at the time, so that the entry still says who after the phone is removed. */
+  phone: string;
+  action: PhoneActionName;
+  /** The saved connection it named, by its number in the app. */
+  connectionId: number;
+  /** The schema it was about, or null when it was refused before the computer looked it up. */
+  schema: string | null;
+  outcome: PhoneActionOutcome;
 };
 
 export type PhoneLinkState = {
@@ -94,6 +128,8 @@ export type PhoneLinkState = {
   /** Whether the computer stays awake for its phones while the link is on. Off until the person turns it on. */
   keepAwake: boolean;
   phones: PairedPhone[];
+  /** What phones tried to change, oldest first, and no more than MAX_PHONE_ACTIONS. */
+  actionLog: PhoneAction[];
   /** The Ed25519 private key the computer signs in to the relay with, as base64url. */
   signingKey: string;
   /** The X25519 private key at the computer's end of every phone's link, as base64url. */
@@ -114,6 +150,7 @@ export function newPhoneLinkState(random: (size: number) => Buffer): PhoneLinkSt
     queryTextConnectionIds: [],
     keepAwake: false,
     phones: [],
+    actionLog: [],
     signingKey: random(KEY_BYTES).toString("base64url"),
     staticKey: random(KEY_BYTES).toString("base64url"),
     pushKey: newPushKey(random),
@@ -173,6 +210,8 @@ function readPhone(value: unknown): PairedPhone | null {
   const push = readSubscription(value.push);
   // So is a passkey, so approvals have to be set up on that phone again.
   const passkey = readPasskey(value.passkey);
+  // And Allow control, which then stays off until the person turns it on again.
+  const control = isTime(value.control) ? value.control : null;
   return {
     key,
     // "Phone" is also the name readOpening gives a phone that sent none.
@@ -181,6 +220,7 @@ function readPhone(value: unknown): PairedPhone | null {
     lastSeenAt: isTime(lastSeenAt) ? lastSeenAt : pairedAt,
     ...(push === null ? {} : { push }),
     ...(passkey === null ? {} : { passkey }),
+    ...(control === null ? {} : { control }),
   };
 }
 
@@ -196,6 +236,20 @@ function readPhones(value: unknown): PairedPhone[] {
   return phones;
 }
 
+function readAction(value: unknown): PhoneAction | null {
+  if (!isRecord(value)) return null;
+  const { at, phone, action, connectionId, schema, outcome } = value;
+  if (!isTime(at) || typeof phone !== "string" || !PHONE_ACTION_NAMES.some((known) => known === action) || !PHONE_ACTION_OUTCOMES.some((known) => known === outcome)) return null;
+  if (typeof connectionId !== "number" || !Number.isSafeInteger(connectionId) || connectionId <= 0 || (schema !== null && typeof schema !== "string")) return null;
+  return { at, phone: cleanDeviceName(phone, "Phone"), action: action as PhoneActionName, connectionId, schema, outcome: outcome as PhoneActionOutcome };
+}
+
+/** The action log's entries that can be read, the newest MAX_PHONE_ACTIONS of them. */
+function readActionLog(value: unknown): PhoneAction[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => readAction(item) ?? []).slice(-MAX_PHONE_ACTIONS);
+}
+
 /** The state read back from phone-link.json, or null when its keys are not what the app wrote. */
 export function parsePhoneLinkState(value: unknown): PhoneLinkState | null {
   if (!isRecord(value)) return null;
@@ -209,6 +263,7 @@ export function parsePhoneLinkState(value: unknown): PhoneLinkState | null {
     queryTextConnectionIds: readConnectionIds(value.queryTextConnectionIds).filter((id) => sharedConnectionIds.includes(id)),
     keepAwake: value.keepAwake === true,
     phones: readPhones(value.phones),
+    actionLog: readActionLog(value.actionLog),
     signingKey,
     staticKey,
     pushKey: isPushKey(pushKey) ? pushKey : null,
@@ -238,14 +293,32 @@ export function withoutPhone(phones: readonly PairedPhone[], key: string): Paire
   return phones.filter((phone) => phone.key !== key);
 }
 
-/** The phone as it is without drift alerts. Its passkey stays, since drift alerts have nothing to do with approvals. */
-function withoutPush({ key, name, pairedAt, lastSeenAt, passkey }: PairedPhone): PairedPhone {
-  return { key, name, pairedAt, lastSeenAt, ...(passkey === undefined ? {} : { passkey }) };
+/** The phone as it is without drift alerts. Its passkey and Allow control stay, since drift alerts have nothing to do with them. */
+function withoutPush({ key, name, pairedAt, lastSeenAt, passkey, control }: PairedPhone): PairedPhone {
+  return { key, name, pairedAt, lastSeenAt, ...(passkey === undefined ? {} : { passkey }), ...(control === undefined ? {} : { control }) };
 }
 
-/** The phone as it is without approvals set up. Its drift alerts stay. */
-function withoutPasskey({ key, name, pairedAt, lastSeenAt, push }: PairedPhone): PairedPhone {
-  return { key, name, pairedAt, lastSeenAt, ...(push === undefined ? {} : { push }) };
+/** The phone as it is without approvals set up. Its drift alerts and Allow control stay. */
+function withoutPasskey({ key, name, pairedAt, lastSeenAt, push, control }: PairedPhone): PairedPhone {
+  return { key, name, pairedAt, lastSeenAt, ...(push === undefined ? {} : { push }), ...(control === undefined ? {} : { control }) };
+}
+
+/** The phone as it is with Allow control off. Its drift alerts and passkey stay. */
+function withoutControl({ key, name, pairedAt, lastSeenAt, push, passkey }: PairedPhone): PairedPhone {
+  return { key, name, pairedAt, lastSeenAt, ...(push === undefined ? {} : { push }), ...(passkey === undefined ? {} : { passkey }) };
+}
+
+/** The phones with this one's Allow control turned on as of `since`, or turned off when it is null. */
+export function withPhoneControl(phones: readonly PairedPhone[], key: string, since: number | null): PairedPhone[] {
+  return phones.map((phone) => {
+    if (phone.key !== key) return phone;
+    return since === null ? withoutControl(phone) : { ...withoutControl(phone), control: since };
+  });
+}
+
+/** The action log with one more entry, losing the oldest once it holds MAX_PHONE_ACTIONS. */
+export function withPhoneAction(log: readonly PhoneAction[], action: PhoneAction): PhoneAction[] {
+  return [...log, action].slice(-MAX_PHONE_ACTIONS);
 }
 
 /** The phones with this one's passkey set to `passkey`, or taken away when it is null. */

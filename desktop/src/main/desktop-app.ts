@@ -459,6 +459,8 @@ export class DesktopApp {
         forget: (key) => this.phoneLink?.forgetPhone(key),
         allowApprovals: (key) => this.phoneLink?.allowApprovals(key),
         turnOffApprovals: (key) => this.phoneLink?.turnOffApprovals(key),
+        allowControl: (key) => this.phoneLink?.allowControl(key),
+        turnOffControl: (key) => this.phoneLink?.turnOffControl(key),
         pair: () => makePairing(this.phoneLink, this.phoneLinkProblem),
         cancelPairing: () => this.phoneLink?.cancelPairing(),
         connectNow: () => this.phoneLink?.connectNow(),

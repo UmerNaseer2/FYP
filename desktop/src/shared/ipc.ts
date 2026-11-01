@@ -89,6 +89,8 @@ export const PHONE = {
   forget: "phone:forget",
   allowApprovals: "phone:allow-approvals",
   turnOffApprovals: "phone:turn-off-approvals",
+  allowControl: "phone:allow-control",
+  turnOffControl: "phone:turn-off-control",
   pair: "phone:pair",
   cancelPairing: "phone:cancel-pairing",
   connectNow: "phone:connect-now",
@@ -194,7 +196,8 @@ export type PhoneStatus =
  * and `alerts` says whether it gets drift alerts (where they go stays in main).
  * `approvals` says whether it has a passkey to approve requests with (the
  * passkey stays in main too), and `approvalsAllowedUntil` until when it may
- * set one up, or null when it may not.
+ * set one up, or null when it may not. `control` says whether Allow control
+ * is on for it.
  */
 export type PhoneSummary = {
   key: string;
@@ -205,6 +208,22 @@ export type PhoneSummary = {
   alerts: boolean;
   approvals: boolean;
   approvalsAllowedUntil: number | null;
+  control: boolean;
+};
+
+/** One try by a phone to change something, as the Phone section lists it. The words are written in main, so that the page has no rules of its own. */
+export type PhoneActionRow = {
+  at: number;
+  /** The phone's name at the time. */
+  phone: string;
+  /** What it tried. */
+  title: string;
+  /** How that went, as a sentence. */
+  outcome: string;
+  /** Whether it did not happen. */
+  bad: boolean;
+  connectionId: number;
+  schema: string | null;
 };
 
 /** What the Phone section shows, or why there is nothing to show yet. */
@@ -224,6 +243,8 @@ export type PhoneView =
       /** Whether a short code on show could still pair a browser. It stops being so once used, as well as when it runs out. */
       typedCodeLive: boolean;
       phones: PhoneSummary[];
+      /** What phones tried to change, newest first. */
+      actions: PhoneActionRow[];
       /** Why a phone cannot pair now, as a sentence for a person, or null when one can. */
       cannotPair: string | null;
     };
@@ -268,6 +289,10 @@ export interface PhoneSettingsApi {
   allowApprovals(key: string): void;
   /** Takes a phone's passkey away, by the phone's key, or ends the time it was given to set one up. */
   turnOffApprovals(key: string): void;
+  /** Lets a phone, by its key, check and acknowledge drift, until it is turned off. */
+  allowControl(key: string): void;
+  /** Takes that away from a phone, by its key. */
+  turnOffControl(key: string): void;
   pair(): Promise<PhonePairing>;
   /** Makes the code on show pair nothing. */
   cancelPairing(): void;

@@ -53,6 +53,7 @@ function tracked(over: Partial<TrackedSchemaListItem> & { id: number }): Tracked
     driftStatus: null,
     driftSummary: null,
     driftCheckedAt: null,
+    driftAcknowledgedAt: null,
     driftIntervalMinutes: 0,
     lastCheckedAt: null,
     ...over,

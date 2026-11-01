@@ -12,12 +12,16 @@ import {
   parsePhoneLinkState,
   withNewPushKey,
   withPairedPhone,
+  withPhoneAction,
+  withPhoneControl,
   withPhonePasskey,
   withPhoneSeen,
   withPhoneSubscription,
   withoutPasskeys,
   withoutPhone,
+  MAX_PHONE_ACTIONS,
   type PairedPhone,
+  type PhoneAction,
   type PhoneLinkState,
   type PhonePasskey,
   type PhoneSubscription,
@@ -60,6 +64,7 @@ function saved(overrides: Record<string, unknown> = {}): Record<string, unknown>
     queryTextConnectionIds: [],
     keepAwake: false,
     phones: [PHONE],
+    actionLog: [],
     signingKey: keyOf(1),
     staticKey: keyOf(2),
     pushKey: keyOf(3),
@@ -82,6 +87,7 @@ test("starts with new keys, the link off, nothing shared and no phones", () => {
     queryTextConnectionIds: [],
     keepAwake: false,
     phones: [],
+    actionLog: [],
     signingKey: keyOf(1),
     staticKey: keyOf(2),
     pushKey: keyOf(3),
@@ -299,6 +305,73 @@ test("writes a state that reads back the same after a phone pairs and turns drif
   assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(next))), next);
   const alerted: PhoneLinkState = { ...next, phones: withPhoneSubscription(paired, keyOf(50), PUSH) };
   assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(alerted))), alerted);
+});
+
+const ACTION: PhoneAction = { at: 1_700_000_000_000, phone: "Test phone", action: "drift-check", connectionId: 3, schema: "sales", outcome: "done" };
+
+test("turns a phone's Allow control on and off, leaving the other phones as they were", () => {
+  const other: PairedPhone = { ...PHONE, key: keyOf(8) };
+  const on = withPhoneControl([PHONE, other], PHONE.key, 7_000);
+  assert.deepEqual(on, [{ ...PHONE, control: 7_000 }, other]);
+  assert.deepEqual(withPhoneControl(on, PHONE.key, null), [PHONE, other]);
+  assert.deepEqual(withPhoneControl([PHONE], keyOf(9), 7_000), [PHONE]);
+});
+
+test("keeps a phone's Allow control through its drift alerts, its passkey and the push key changing", () => {
+  const [on] = withPhoneControl([PHONE], PHONE.key, 7_000);
+  assert.ok(on);
+  const alerted = withPhoneSubscription([on], PHONE.key, PUSH);
+  assert.equal(alerted[0]?.control, 7_000);
+  assert.equal(withPhoneSubscription(alerted, PHONE.key, null)[0]?.control, 7_000);
+  assert.equal(withPhonePasskey([on], PHONE.key, PASSKEY)[0]?.control, 7_000);
+  assert.equal(withPhonePasskey([on], PHONE.key, null)[0]?.control, 7_000);
+  assert.equal(withoutPasskeys([{ ...on, passkey: PASSKEY }])[0]?.control, 7_000);
+  const state: PhoneLinkState = { ...newPhoneLinkState(crypto.randomBytes), phones: [on] };
+  assert.equal(withNewPushKey(state, crypto.randomBytes).phones[0]?.control, 7_000);
+});
+
+test("reads back Allow control and the action log, and turns control off for a value that is not a time", () => {
+  const [on] = withPhoneControl([PHONE], PHONE.key, 7_000);
+  assert.ok(on);
+  const state: PhoneLinkState = { ...newPhoneLinkState(crypto.randomBytes), phones: [on], actionLog: [ACTION] };
+  assert.deepEqual(parsePhoneLinkState(JSON.parse(JSON.stringify(state))), state);
+  for (const control of ["yes", true, -1, 1.5]) {
+    const read = parsePhoneLinkState(saved({ phones: [{ ...PHONE, control }] }));
+    assert.deepEqual(read?.phones, [PHONE], String(control));
+  }
+});
+
+test("reads a file from before the action log as an empty one", () => {
+  assert.deepEqual(parsePhoneLinkState(saved({ actionLog: undefined }))?.actionLog, []);
+  assert.deepEqual(parsePhoneLinkState(saved({ actionLog: "none" }))?.actionLog, []);
+});
+
+test("leaves out action log entries it cannot read, and cleans the device name it keeps", () => {
+  const bad = [
+    null,
+    { ...ACTION, at: "soon" },
+    { ...ACTION, phone: 7 },
+    { ...ACTION, action: "drop-table" },
+    { ...ACTION, connectionId: 0 },
+    { ...ACTION, connectionId: 1.5 },
+    { ...ACTION, schema: 7 },
+    { ...ACTION, outcome: "maybe" },
+  ];
+  assert.deepEqual(parsePhoneLinkState(saved({ actionLog: [...bad, ACTION, { ...ACTION, secret: "kept out", schema: null }] }))?.actionLog, [ACTION, { ...ACTION, schema: null }]);
+  const named = parsePhoneLinkState(saved({ actionLog: [{ ...ACTION, phone: "My" + String.fromCharCode(10) + "phone" }] }))?.actionLog[0]?.phone;
+  assert.equal(named?.includes(String.fromCharCode(10)), false);
+});
+
+test("keeps the newest entries of the action log once it is full, written and read back", () => {
+  let log: PhoneAction[] = [];
+  for (let at = 1; at <= MAX_PHONE_ACTIONS + 3; at++) log = withPhoneAction(log, { ...ACTION, at });
+  assert.equal(log.length, MAX_PHONE_ACTIONS);
+  assert.equal(log[0]?.at, 4);
+  assert.equal(log.at(-1)?.at, MAX_PHONE_ACTIONS + 3);
+  const tooMany = Array.from({ length: MAX_PHONE_ACTIONS + 5 }, (_, index) => ({ ...ACTION, at: index + 1 }));
+  const read = parsePhoneLinkState(saved({ actionLog: tooMany }))?.actionLog;
+  assert.equal(read?.length, MAX_PHONE_ACTIONS);
+  assert.equal(read?.[0]?.at, 6);
 });
 
 test("keeps a phone's passkey when its drift alerts turn on or off, or the push key changes", () => {

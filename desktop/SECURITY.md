@@ -169,6 +169,28 @@ it, and the app trusts it with nothing it carries.
 - Phone names are cleaned and cut at 64 characters before they are shown or
   logged.
 
+### What a phone can change
+
+Without Allow control, a paired phone can only look, and decide approvals as
+the next section says.
+
+- Allow control is a switch per phone, in Settings, then Phone, then Paired
+  phones. It is off until someone turns it on there, and only the computer
+  holds it. Requests read it afresh, so turning it off works at once, with the
+  phone link on or off.
+- With it on, a phone can check a schema's drift now and acknowledge a drift
+  (`driftAction` in `src/main/phone-requests.ts`), on the connections chosen in
+  Settings and for schemas tracked on that connection. There is no other way
+  to change anything from a phone, and no box for free SQL.
+- Those go through the app's own routes as whoever is signed in on the
+  computer, with their permissions. The app's records cannot tell the phone
+  from that person, so a phone with Allow control is as trusted as they are.
+  Turn it on only for a device that person holds.
+- Settings lists what phones tried to change, refused tries included. The last
+  200 tries are kept in `phone-link.json`, and removing a phone leaves its
+  entries there. A phone gets only fixed sentences back, never the app's words
+  about the database.
+
 ### Approvals from a phone
 
 A deploy or rollback request in the web app's approval queue can be approved
@@ -296,6 +318,9 @@ passphrase, the short pairing code, or what a phone asked to compare.
   way the app does. Nothing a desktop app does can stop that.
 - **No login keyring.** Without GNOME Keyring or KWallet (or with only
   `basic_text`), secrets are protected by file permissions alone.
+- **A paired phone can flood the action log.** Every try is written, so a
+  misbehaving phone can push older entries out of the 200 it keeps. Each try is
+  also logged, and removing the phone stops it. It cannot change an entry.
 - **Someone who sees the QR code within its 5 minutes** can pair as a phone
   before the person does. The code works only once, every phone is listed in
   Settings and logged when it pairs, and a phone can be removed at once.
@@ -373,7 +398,8 @@ passphrase, the short pairing code, or what a phone asked to compare.
 
 - A new phone request goes in `METHODS`, is read by the strict request
   reader, checks sharing before it reads anything, refuses with fixed
-  sentences, and logs nothing secret.
+  sentences, and logs nothing secret. A request that changes anything also
+  checks Allow control first, and writes every try in the action log.
 - A new secret is kept by `src/main/secrets.ts`, registered with
   `addLogSecret`, and never sent to a page.
 - A new window is sandboxed with context isolation, its file goes in the

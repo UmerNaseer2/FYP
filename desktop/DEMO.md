@@ -139,7 +139,9 @@ File, then Settings, then Phone:
   look at.
 - Paired phones lists each paired phone, with Allow approvals (so that
   deploy and rollback requests can be approved or rejected from it with a
-  passkey), Turn off approvals, and Remove.
+  passkey), Turn off approvals, Allow control (so that it can check and
+  acknowledge drift), Turn off control, and Remove.
+- What phones tried to change lists every try, refused ones too.
 
 Then, with the phone:
 
@@ -157,6 +159,10 @@ Then, with the phone:
 5. In the phone app's Settings, choose Turn on drift alerts, then make the
    schema change from Drift alerts above. The phone shows the alert too,
    even with the app closed.
+6. On the computer, choose Allow control for the phone. On the phone, open
+   the connection, then Live status, and under Drift choose Check now, then
+   Acknowledge. Settings lists both under What phones tried to change. Choose
+   Turn off control, and the buttons leave the phone within 5 seconds.
 
 Point out that the relay passes on messages it cannot read, that the
 pairing code never reaches the relay, and that a phone can do only what the
