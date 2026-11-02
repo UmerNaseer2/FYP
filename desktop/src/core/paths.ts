@@ -50,6 +50,8 @@ export type AppPaths = {
   restorePendingFile: string;
   /** The paired phones and the phone link's own keys (src/core/phone-link-file.ts). */
   phoneLinkFile: string;
+  /** The web site this computer is linked to and its token (src/core/cloud-agent-file.ts). */
+  cloudLinkFile: string;
   /** Ubuntu's folder of programs to start at sign-in, which other programs share (src/core/autostart.ts). */
   autostartDir: string;
 };
@@ -75,6 +77,7 @@ export function resolveAppPaths(env: Record<string, string | undefined>, home: s
     secretsFile: path.join(data, "secrets.json"),
     restorePendingFile: path.join(data, "restore-pending.json"),
     phoneLinkFile: path.join(config, "phone-link.json"),
+    cloudLinkFile: path.join(config, "cloud-link.json"),
     autostartDir: path.join(configHome, "autostart"),
   };
 }

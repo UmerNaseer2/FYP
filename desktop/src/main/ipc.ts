@@ -17,10 +17,13 @@ import { isThemeChoice } from "../core/config";
 import {
   BACKUP,
   BRIDGE,
+  CLOUD,
   PHONE,
   SETTINGS,
   STARTUP,
   type ChooseBackupResult,
+  type CloudLinkResult,
+  type CloudView,
   type FoundDatabase,
   type PhoneConnections,
   type PhonePairing,
@@ -93,6 +96,13 @@ export type IpcHandlers = {
     cancelPairing(): void;
     connectNow(): void;
     connections(): Promise<PhoneConnections>;
+  };
+  /** The Settings window's Web site section (src/main/cloud-agent.ts). */
+  cloud: {
+    get(): CloudView;
+    link(origin: string): Promise<CloudLinkResult>;
+    cancelLink(): void;
+    unlink(): void;
   };
   /** The Settings window's Backup section. */
   backup: {
@@ -223,6 +233,14 @@ export function registerIpc(handlers: IpcHandlers): void {
   on(settings, PHONE.cancelPairing, () => handlers.phone.cancelPairing());
   on(settings, PHONE.connectNow, () => handlers.phone.connectNow());
   handle(settings, PHONE.connections, () => handlers.phone.connections());
+
+  handle(settings, CLOUD.get, () => handlers.cloud.get());
+  handle(settings, CLOUD.link, (origin) => {
+    if (typeof origin !== "string") throw new Error(REFUSED);
+    return handlers.cloud.link(origin);
+  });
+  on(settings, CLOUD.cancelLink, () => handlers.cloud.cancelLink());
+  on(settings, CLOUD.unlink, () => handlers.cloud.unlink());
 
   handle(settings, BACKUP.save, (passphrase, repeat) => {
     if (typeof passphrase !== "string" || typeof repeat !== "string") throw new Error(REFUSED);

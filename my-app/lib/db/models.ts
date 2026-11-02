@@ -607,6 +607,169 @@ PushKeyRow.init(
 );
 
 /**
+ * A computer linked to a person's account, so that the site can ask it about
+ * databases only it can reach (lib/agent-db.ts). Its token is kept only as a
+ * hash, and leaving the organization ends the link (lib/agent-auth.ts).
+ */
+export class AgentRow extends Model<InferAttributes<AgentRow>, InferCreationAttributes<AgentRow>> {
+  declare id: CreationOptional<number>;
+  declare org_id: number;
+  declare profile_id: number;
+  declare name: string;
+  declare token_hash: string;
+  declare last_seen_at: Date | null;
+  declare created_at: CreationOptional<Date>;
+}
+
+AgentRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "organizations", key: "id" },
+      onDelete: "CASCADE",
+    },
+    profile_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "profiles", key: "id" },
+      onDelete: "CASCADE",
+    },
+    name: { type: DataTypes.TEXT, allowNull: false },
+    token_hash: { type: DataTypes.TEXT, allowNull: false, unique: "agents_token_hash_key" },
+    last_seen_at: { type: DataTypes.DATE, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "agents",
+    indexes: [{ name: "agents_org_id_profile_id_idx", fields: ["org_id", "profile_id"] }],
+  }
+);
+
+/**
+ * A computer waiting for someone to approve it, for ten minutes at most. Its
+ * organization and person are plain numbers rather than foreign keys, because
+ * the row only lives that long and the claim checks them again.
+ */
+export class AgentLinkRow extends Model<
+  InferAttributes<AgentLinkRow>,
+  InferCreationAttributes<AgentLinkRow>
+> {
+  declare id: CreationOptional<number>;
+  declare device_code_hash: string;
+  declare user_code: string;
+  declare computer_name: string;
+  declare expires_at: Date;
+  declare approved_org_id: number | null;
+  declare approved_profile_id: number | null;
+  declare approved_at: Date | null;
+}
+
+AgentLinkRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    device_code_hash: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      unique: "agent_links_device_code_hash_key",
+    },
+    user_code: { type: DataTypes.TEXT, allowNull: false, unique: "agent_links_user_code_key" },
+    computer_name: { type: DataTypes.TEXT, allowNull: false },
+    expires_at: { type: DataTypes.DATE, allowNull: false },
+    approved_org_id: { type: DataTypes.INTEGER, allowNull: true },
+    approved_profile_id: { type: DataTypes.INTEGER, allowNull: true },
+    approved_at: { type: DataTypes.DATE, allowNull: true },
+  },
+  { sequelize, tableName: "agent_links" }
+);
+
+/**
+ * The connections a linked computer shares: a name and an environment, because
+ * that is all a person needs to pick one. Never a host, a user or a password,
+ * which stay on the computer. local_id is the computer's own number for it.
+ */
+export class AgentConnectionRow extends Model<
+  InferAttributes<AgentConnectionRow>,
+  InferCreationAttributes<AgentConnectionRow>
+> {
+  declare id: CreationOptional<number>;
+  declare agent_id: number;
+  declare local_id: number;
+  declare name: string;
+  declare environment: string;
+}
+
+AgentConnectionRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    agent_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "agents", key: "id" },
+      onDelete: "CASCADE",
+    },
+    local_id: { type: DataTypes.INTEGER, allowNull: false },
+    name: { type: DataTypes.TEXT, allowNull: false },
+    environment: { type: DataTypes.TEXT, allowNull: false },
+  },
+  {
+    sequelize,
+    tableName: "agent_connections",
+    indexes: [
+      { name: "agent_connections_agent_local_key", unique: true, fields: ["agent_id", "local_id"] },
+    ],
+  }
+);
+
+/**
+ * A question waiting for a linked computer, and its answer. Short-lived: a sweep
+ * removes each one within about half an hour (sweepAgentRows in lib/agent-db.ts).
+ */
+export class AgentJobRow extends Model<
+  InferAttributes<AgentJobRow>,
+  InferCreationAttributes<AgentJobRow>
+> {
+  declare id: CreationOptional<number>;
+  declare agent_id: number;
+  declare method: string;
+  declare params: unknown;
+  declare status: CreationOptional<string>;
+  declare result: unknown;
+  /** Why it failed, as a word from AGENT_REFUSALS rather than text from the computer. */
+  declare refusal: string | null;
+  declare created_at: CreationOptional<Date>;
+  declare picked_at: Date | null;
+  declare finished_at: Date | null;
+}
+
+AgentJobRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    agent_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "agents", key: "id" },
+      onDelete: "CASCADE",
+    },
+    method: { type: DataTypes.TEXT, allowNull: false },
+    params: { type: DataTypes.JSONB, allowNull: false },
+    status: { type: DataTypes.TEXT, allowNull: false, defaultValue: "queued" },
+    result: { type: DataTypes.JSONB, allowNull: true },
+    refusal: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    picked_at: { type: DataTypes.DATE, allowNull: true },
+    finished_at: { type: DataTypes.DATE, allowNull: true },
+  },
+  {
+    sequelize,
+    tableName: "agent_jobs",
+    indexes: [{ name: "agent_jobs_agent_id_status_idx", fields: ["agent_id", "status"] }],
+  }
+);
+
+/**
  * One row per deployment that has finished setting these tables up, so the rest
  * of that deployment's cold starts can skip it (lib/db/bootstrap.ts). A deployment
  * is the whole app's, not any one organization's.

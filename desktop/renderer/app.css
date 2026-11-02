@@ -417,6 +417,11 @@ input {
   gap: 8px;
 }
 
+/* A button on its own in a group keeps its own width. */
+.group > .button {
+  justify-self: start;
+}
+
 .group-title {
   font-size: 14px;
   font-weight: 700;

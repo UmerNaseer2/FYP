@@ -29,7 +29,7 @@ import { buildDiffDocument, type ChangeRow } from "./compare-export";
 import { countedChanges } from "./compare-export-format";
 import type { ComparisonHistoryView, OutcomeView, SourceView } from "./compare-run";
 import { MAX_COMPARISON_TARGETS } from "./comparison-set-rules";
-import type { Environment } from "./environments";
+import { toEnvironment, type Environment } from "./environments";
 
 // ---------------------------------------------------------------------------
 // The request and the answer, as desktop/src/shared/remote/rpc.ts has them
@@ -110,6 +110,17 @@ const MAX_TABLE_LENGTH = 128;
 const MAX_OBJECT_LENGTH = 160;
 const MAX_DETAIL_LENGTH = 240;
 const MAX_HISTORY_LENGTH = 400;
+const MAX_WORD_LENGTH = 40;
+
+const TARGET_STATUSES: TargetStatus[] = [
+  "compared",
+  "same-as-source",
+  "unreachable",
+  "schema-missing",
+  "duplicate",
+  "no-connection",
+  "failed",
+];
 
 // ---------------------------------------------------------------------------
 // What the phone is told when something could not be compared
@@ -194,6 +205,97 @@ export function readPhoneCompareRequest(
     };
   }
   return { ok: true, data: { source, targets: targets.filter((target) => target !== null) } };
+}
+
+/**
+ * Read a summary that came back from a linked computer, into a clean copy.
+ *
+ * Only the fields above are copied, each tidied and cut as summarizeForPhone
+ * would, so whatever else a computer sent has nowhere to go. Null for anything
+ * that is not a summary. Schema names stay exact, for the reason at the top.
+ */
+export function readCompareSummary(value: unknown): CompareSummary | null {
+  if (!isRecord(value) || !Array.isArray(value.targets)) return null;
+  if (value.targets.length > MAX_COMPARISON_TARGETS) return null;
+  const source = readSide(value.source);
+  if (source === null || !isRecord(value.source)) return null;
+  const targets = value.targets.map(readTargetSummary);
+  if (targets.includes(null)) return null;
+  return {
+    source: { ...source, error: readOptionalText(value.source.error, MAX_HISTORY_LENGTH) },
+    targets: targets.filter((target) => target !== null),
+  };
+}
+
+function readSide(value: unknown): ComparedSide | null {
+  if (!isRecord(value)) return null;
+  const { connectionId, name, environment, schema } = value;
+  if (connectionId !== null && !(typeof connectionId === "number" && Number.isSafeInteger(connectionId))) {
+    return null;
+  }
+  if (typeof name !== "string" || typeof schema !== "string") return null;
+  if (schema.length > MAX_SCHEMA_NAME_LENGTH) return null;
+  return {
+    connectionId,
+    name: clean(name, MAX_NAME_LENGTH),
+    environment: toEnvironment(environment),
+    schema,
+  };
+}
+
+function readTargetSummary(value: unknown): TargetSummary | null {
+  const side = readSide(value);
+  if (side === null || !isRecord(value)) return null;
+  const { status, changes, breaking, manual, moreLines, lines } = value;
+  if (typeof status !== "string" || !TARGET_STATUSES.includes(status as TargetStatus)) return null;
+  if (!isCount(changes) || !isCount(breaking) || !isCount(manual) || !isCount(moreLines)) return null;
+  if (!Array.isArray(lines) || lines.length > MAX_PHONE_LINES) return null;
+  const read = lines.map(readChangeLine);
+  if (read.includes(null)) return null;
+  return {
+    ...side,
+    status: status as TargetStatus,
+    error: readOptionalText(value.error, MAX_HISTORY_LENGTH),
+    changes,
+    breaking,
+    manual,
+    lines: read.filter((line) => line !== null),
+    moreLines,
+    history: readOptionalText(value.history, MAX_HISTORY_LENGTH),
+  };
+}
+
+function readChangeLine(value: unknown): ChangeLine | null {
+  if (!isRecord(value)) return null;
+  const { category, table, object, change, severity, detail, manual } = value;
+  if (
+    typeof category !== "string" ||
+    typeof table !== "string" ||
+    typeof object !== "string" ||
+    typeof change !== "string" ||
+    typeof detail !== "string" ||
+    typeof manual !== "boolean" ||
+    !SEVERITY_ORDER.includes(severity as ChangeRow["severity"])
+  ) {
+    return null;
+  }
+  return {
+    category: clean(category, MAX_WORD_LENGTH) as ChangeLine["category"],
+    table: clean(table, MAX_TABLE_LENGTH),
+    object: clean(object, MAX_OBJECT_LENGTH),
+    change: clean(change, MAX_WORD_LENGTH) as ChangeLine["change"],
+    severity: severity as ChangeRow["severity"],
+    detail: clean(detail, MAX_DETAIL_LENGTH),
+    manual,
+  };
+}
+
+function readOptionalText(value: unknown, max: number): string | null {
+  return typeof value === "string" ? clean(value, max) : null;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function readSchemaRef(value: unknown): SchemaRef | null {

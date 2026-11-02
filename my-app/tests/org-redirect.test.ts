@@ -83,6 +83,11 @@ beforeEach(() => {
 });
 
 describe("redirectToLastOrg", () => {
+  test("keeps a computer's code on the way to the link page", async () => {
+    const to = await whereTo(redirectToLastOrg("link-computer", props(undefined, { code: "BCDF-GHJK" })));
+    expect(to).toBe("/acme/link-computer?code=BCDF-GHJK");
+  });
+
   test("sends someone signed in to the organization they opened last, with the page and query", async () => {
     const to = await whereTo(redirectToLastOrg("compare", props(undefined, { left: "1", right: "2" })));
     expect(to).toBe("/acme/compare?left=1&right=2");
@@ -207,14 +212,24 @@ describe("the old addresses", () => {
       .readdirSync(APP, { withFileTypes: true })
       .filter((entry) => fs.existsSync(path.join(APP, entry.name, "[[...rest]]", "page.tsx")))
       .map((entry) => entry.name);
-    // The phone app lives beside the studio pages, not among them, because it has
-    // no rail. The test above walks only the studio, so the next test covers it.
-    expect(oldAddresses.sort()).toEqual([...studioPages, "phone"].sort());
+    // The phone app and the page for linking a computer live beside the studio
+    // pages, not among them, because neither has a rail. The test above walks only
+    // the studio, so the next test covers them.
+    expect(oldAddresses.sort()).toEqual([...studioPages, "link-computer", "phone"].sort());
   });
 
   test("the phone app has one too, for a link from before organizations came in", async () => {
     const { default: OldAddress } = await import(path.join(APP, "phone", "[[...rest]]", "page.tsx"));
     mockRedirect.mockClear();
     expect(await whereTo(OldAddress(props()))).toBe("/acme/phone");
+  });
+
+  test("a computer's link has one too, and it keeps the code", async () => {
+    // The computer knows no organization, so this is the address it opens.
+    const { default: OldAddress } = await import(path.join(APP, "link-computer", "[[...rest]]", "page.tsx"));
+    mockRedirect.mockClear();
+    expect(await whereTo(OldAddress(props(undefined, { code: "BCDF-GHJK" })))).toBe(
+      "/acme/link-computer?code=BCDF-GHJK"
+    );
   });
 });

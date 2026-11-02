@@ -129,7 +129,7 @@ test("any other page in the main window gets nothing", () => {
 
 test("the Settings page gets its own messages, and no other page gets them", async () => {
   const { exposed, messages } = runPreload("settings-preload.js", "app://schema-studio/settings.html");
-  assert.deepEqual([...exposed.keys()], ["schemaStudioSettings", "schemaStudioPhone", "schemaStudioBackup"]);
+  assert.deepEqual([...exposed.keys()], ["schemaStudioSettings", "schemaStudioPhone", "schemaStudioCloud", "schemaStudioBackup"]);
   const settings = exposed.get("schemaStudioSettings");
   assert.ok(settings);
 

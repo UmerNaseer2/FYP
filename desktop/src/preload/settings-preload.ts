@@ -7,7 +7,8 @@
  * app keeps running with its window closed, starts at sign-in and shows
  * drift alerts, open the logs and close the window. Its Phone section runs
  * the phone link through `window.schemaStudioPhone`, and its Backup section
- * saves and restores backups through `window.schemaStudioBackup`. As in the
+ * saves and restores backups through `window.schemaStudioBackup`, and its Web
+ * site section links this computer through `window.schemaStudioCloud`. As in the
  * main window's preload (app-preload.ts), the main process checks every
  * message again before it acts on it, the message names are repeated here
  * because a sandboxed preload can load nothing but Electron, and the types
@@ -46,6 +47,14 @@
     cancelPairing: "phone:cancel-pairing",
     connectNow: "phone:connect-now",
     connections: "phone:connections",
+  };
+
+  const CLOUD: Ipc["CLOUD"] = {
+    get: "cloud:get",
+    changed: "cloud:changed",
+    link: "cloud:link",
+    cancelLink: "cloud:cancel-link",
+    unlink: "cloud:unlink",
   };
 
   const BACKUP: Ipc["BACKUP"] = {
@@ -93,6 +102,17 @@
       connections: () => ipcRenderer.invoke(PHONE.connections),
     };
     contextBridge.exposeInMainWorld("schemaStudioPhone", phone);
+
+    const cloud: import("../shared/ipc").CloudSettingsApi = {
+      get: () => ipcRenderer.invoke(CLOUD.get),
+      onChange: (listener) => {
+        ipcRenderer.on(CLOUD.changed, (_event, view) => listener(view));
+      },
+      link: (origin) => ipcRenderer.invoke(CLOUD.link, origin),
+      cancelLink: () => ipcRenderer.send(CLOUD.cancelLink),
+      unlink: () => ipcRenderer.send(CLOUD.unlink),
+    };
+    contextBridge.exposeInMainWorld("schemaStudioCloud", cloud);
 
     const backup: import("../shared/ipc").BackupSettingsApi = {
       save: (passphrase, repeat) => ipcRenderer.invoke(BACKUP.save, passphrase, repeat),

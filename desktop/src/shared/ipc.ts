@@ -76,6 +76,15 @@ export const SETTINGS = {
   close: "settings:close",
 } as const;
 
+/** The Settings window's link to a Schema Studio web site. "changed" goes the other way, from the main process to the page. */
+export const CLOUD = {
+  get: "cloud:get",
+  changed: "cloud:changed",
+  link: "cloud:link",
+  cancelLink: "cloud:cancel-link",
+  unlink: "cloud:unlink",
+} as const;
+
 /** The Settings window's Phone section. "changed" and "paired" go the other way, from the main process to the page. */
 export const PHONE = {
   get: "phone:get",
@@ -271,6 +280,29 @@ export type PhoneConnection = { id: number; name: string; environment: "unset" |
 
 /** The saved connections, for the Phone section to choose from, or why they could not be listed. */
 export type PhoneConnections = { ok: true; connections: PhoneConnection[] } | { ok: false; message: string };
+
+/** How this computer's link to a web site stands. */
+export type CloudView =
+  /** canClear: the saved link cannot be read, and unlinking starts again. */
+  | { state: "unavailable"; message: string; canClear: boolean }
+  /** notice: why a link just ended, when it ended by itself. */
+  | { state: "off"; origin: string | null; notice: string | null }
+  /** code: to compare with the one on the site's page. */
+  | { state: "linking"; origin: string; code: string }
+  /** problem: the site cannot be reached just now. The link stays. */
+  | { state: "linked"; origin: string; orgName: string; linkedAt: number; problem: string | null };
+
+export type CloudLinkResult = { ok: true } | { ok: false; message: string };
+
+/** What the Settings preload puts on `window.schemaStudioCloud`, for the Web site section. */
+export interface CloudSettingsApi {
+  get(): Promise<CloudView>;
+  onChange(listener: (view: CloudView) => void): void;
+  /** Asks a site for a code, and opens the person's web browser to approve it. */
+  link(origin: string): Promise<CloudLinkResult>;
+  cancelLink(): void;
+  unlink(): void;
+}
 
 /** What the Settings preload puts on `window.schemaStudioPhone`, for the Phone section. */
 export interface PhoneSettingsApi {

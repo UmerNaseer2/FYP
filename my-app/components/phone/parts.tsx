@@ -15,7 +15,7 @@ export const JSON_HEADERS = { "Content-Type": "application/json" };
 export const UNREACHABLE_TEXT = "The last check could not reach this database.";
 
 const SIGNED_OUT_TEXT = "Your sign-in has ended. Sign out, then sign in again.";
-const OFFLINE_TEXT = "Could not reach the server. Check this device's connection and try again.";
+export const OFFLINE_TEXT = "Could not reach the server. Check this device's connection and try again.";
 
 /**
  * The server's own sentence when it is refusing someone, because those are
@@ -24,7 +24,7 @@ const OFFLINE_TEXT = "Could not reach the server. Check this device's connection
  */
 export async function errorFrom(response: Response, fallback: string): Promise<string> {
   if (response.status === 401) return SIGNED_OUT_TEXT;
-  if (![403, 404, 409, 412].includes(response.status)) return fallback;
+  if (![403, 404, 409, 412, 429].includes(response.status)) return fallback;
   const body = await response.json().catch(() => null);
   return typeof body?.error === "string" ? body.error : fallback;
 }

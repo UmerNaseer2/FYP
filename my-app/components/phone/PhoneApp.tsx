@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui";
-import { BellIcon, ClipboardIcon, DriftIcon, InboxIcon } from "@/components/ui/icons";
+import { BellIcon, ClipboardIcon, CompareIcon, DriftIcon, InboxIcon } from "@/components/ui/icons";
 import { useOrg } from "@/hooks/useOrg";
 import { useRequestCounts } from "@/hooks/useRequestCounts";
 import { useUser } from "@/hooks/useUser";
@@ -12,10 +12,11 @@ import { keepDeviceOnFile, turnAlertsOff } from "@/lib/phone-push-client";
 import { signOutEverywhere } from "@/lib/sign-out";
 import AlertsTab from "./AlertsTab";
 import ApprovalsTab from "./ApprovalsTab";
+import CompareTab from "./CompareTab";
 import DriftTab from "./DriftTab";
 import HistoryTab from "./HistoryTab";
 
-type TabKey = "drift" | "history" | "approvals" | "alerts";
+type TabKey = "drift" | "history" | "approvals" | "compare" | "alerts";
 
 type Tab = { key: TabKey; label: string; icon: ReactNode };
 
@@ -23,6 +24,7 @@ const TABS: Tab[] = [
   { key: "drift", label: "Drift", icon: <DriftIcon className="ico" /> },
   { key: "history", label: "History", icon: <ClipboardIcon className="ico" /> },
   { key: "approvals", label: "Approvals", icon: <InboxIcon className="ico" /> },
+  { key: "compare", label: "Compare", icon: <CompareIcon className="ico" /> },
   { key: "alerts", label: "Alerts", icon: <BellIcon className="ico" /> },
 ];
 
@@ -34,9 +36,11 @@ export default function PhoneApp() {
   const waiting = useRequestCounts(true, pathname);
 
   const canReadDrift = can("drift:read");
-  const tabs = TABS.filter(
-    (entry) => canReadDrift || (entry.key !== "drift" && entry.key !== "history")
-  );
+  const canCompare = can("compare:read");
+  const tabs = TABS.filter((entry) => {
+    if (entry.key === "compare") return canCompare;
+    return canReadDrift || (entry.key !== "drift" && entry.key !== "history");
+  });
   // Read once. An alert's link opens a whole new page, so it starts here again.
   const [tab, setTab] = useState<TabKey>(
     () => tabs.find((entry) => entry.key === params.get("tab"))?.key ?? tabs[0].key
@@ -75,6 +79,7 @@ export default function PhoneApp() {
         {tab === "drift" && <DriftTab />}
         {tab === "history" && <HistoryTab />}
         {tab === "approvals" && <ApprovalsTab />}
+        {tab === "compare" && <CompareTab />}
         {tab === "alerts" && <AlertsTab />}
       </main>
 

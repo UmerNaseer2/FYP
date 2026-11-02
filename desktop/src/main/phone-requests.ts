@@ -361,7 +361,7 @@ function readMe(json: unknown): { me: Record<string, unknown>; permissions: unkn
  * show. They come in the app's order, and a shared connection that has been
  * deleted is simply not there.
  */
-async function listConnections(options: RequestOptions, signal: AbortSignal): Promise<ConnectionList> {
+export async function listConnections(options: Pick<RequestOptions, "call" | "sharedConnectionIds">, signal: AbortSignal): Promise<ConnectionList> {
   const shared = new Set(options.sharedConnectionIds());
   const rows = objectFields(await ask(options, "GET", "/api/connections/phone", undefined, signal))?.connections;
   if (!Array.isArray(rows)) throw new Error("GET /api/connections/phone did not answer with a list of connections.");
@@ -383,7 +383,7 @@ async function listConnections(options: RequestOptions, signal: AbortSignal): Pr
  * a request could not hold (isSchemaName) is left out, so a phone is never
  * shown a schema it cannot ask about.
  */
-async function listSchemas(connectionId: number, options: RequestOptions, signal: AbortSignal): Promise<SchemaList> {
+export async function listSchemas(connectionId: number, options: Pick<RequestOptions, "call" | "sharedConnectionIds">, signal: AbortSignal): Promise<SchemaList> {
   checkShared([connectionId], options);
   const schemas = objectFields(await ask(options, "GET", `/api/lineage/schemas?connectionId=${connectionId}`, undefined, signal))?.schemas;
   if (!Array.isArray(schemas)) throw new Error("GET /api/lineage/schemas did not answer with a list of schemas.");
@@ -639,7 +639,7 @@ function activityOf(json: unknown, queryText: boolean): { activity: LiveActivity
  * /api/compare/phone, which runs the Compare screen's own comparison and
  * answers with the summary rpc.ts describes.
  */
-async function compare(source: SchemaRef, targets: readonly SchemaRef[], options: RequestOptions, signal: AbortSignal): Promise<CompareSummary> {
+export async function compare(source: SchemaRef, targets: readonly SchemaRef[], options: Pick<RequestOptions, "call" | "sharedConnectionIds">, signal: AbortSignal): Promise<CompareSummary> {
   checkShared([source, ...targets].map((ref) => ref.connectionId), options);
   const summary = readResult("compare.run", await ask(options, "POST", "/api/compare/phone", { source, targets }, signal));
   if (summary === null) throw new Error("POST /api/compare/phone answered with a summary the phone link cannot read.");

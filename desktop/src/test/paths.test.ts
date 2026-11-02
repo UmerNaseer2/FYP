@@ -18,6 +18,7 @@ test("puts everything in the usual Ubuntu folders when no XDG folder is set", ()
     secretsFile: "/home/sam/.local/share/schema-studio/secrets.json",
     restorePendingFile: "/home/sam/.local/share/schema-studio/restore-pending.json",
     phoneLinkFile: "/home/sam/.config/schema-studio/phone-link.json",
+    cloudLinkFile: "/home/sam/.config/schema-studio/cloud-link.json",
     autostartDir: "/home/sam/.config/autostart",
   });
 });
@@ -37,6 +38,7 @@ test("follows XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_STATE_HOME", () => {
     secretsFile: "/xdg/data/schema-studio/secrets.json",
     restorePendingFile: "/xdg/data/schema-studio/restore-pending.json",
     phoneLinkFile: "/xdg/config/schema-studio/phone-link.json",
+    cloudLinkFile: "/xdg/config/schema-studio/cloud-link.json",
     autostartDir: "/xdg/config/autostart",
   });
 });

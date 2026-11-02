@@ -154,11 +154,11 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("which tabs someone gets", () => {
-  test("someone who can read drift starts on Drift, and has all four", async () => {
+  test("someone who can read drift starts on Drift, and has all five", async () => {
     setRoutes(usual());
     render(<PhonePage />);
     await screen.findByRole("navigation", { name: "Phone app" });
-    for (const name of ["Drift", "History", "Approvals", "Alerts"]) {
+    for (const name of ["Drift", "History", "Approvals", "Compare", "Alerts"]) {
       expect(bar().getByRole("button", { name })).toBeInTheDocument();
     }
     expect(bar().getByRole("button", { name: "Drift" })).toHaveAttribute("aria-current", "page");

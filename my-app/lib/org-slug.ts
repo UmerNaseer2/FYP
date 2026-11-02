@@ -57,6 +57,7 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   "invite",
   "requests",
   "phone",
+  "link-computer",
   // Kept back for pages to come.
   "invites",
   "new",

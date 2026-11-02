@@ -33,6 +33,15 @@ const EXEMPT: Record<string, string> = {
   "auth/[...nextauth]": "sign-in itself",
   // A scheduled call, with no person behind it to hold a role.
   "internal/drift-tick": "checked against CRON_SECRET instead",
+  // A computer asking to be linked. Nobody is known yet, and all it can do is
+  // wait for someone signed in to say yes on the site.
+  "agent/link": "before anyone is known",
+  "agent/link/claim": "before anyone is known",
+  // A linked computer, with a token rather than a person's session.
+  "agent/jobs/next": "checked against the computer's own token instead",
+  "agent/jobs/[id]": "checked against the computer's own token instead",
+  "agent/connections": "checked against the computer's own token instead",
+  "agent/self": "checked against the computer's own token instead",
 };
 
 /**

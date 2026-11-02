@@ -5,6 +5,7 @@ import { mapWithLimit } from "./concurrency";
 import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
 import { alertDriftChange } from "./push-alerts";
 import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
+import { sweepAgentRows } from "./agent-db";
 import type { DriftSource } from "./drift-source";
 import {
   isDue,
@@ -391,6 +392,11 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
   // A tick that could not tidy up can still do its real job.
   await pruneIfDue().catch((error) => {
     console.error("Drift scheduler — prune failed:", error);
+  });
+  // Every tick rather than once a day: a linked computer's answers are meant to
+  // leave this database soon after they are read.
+  await sweepAgentRows().catch((error) => {
+    console.error("Drift scheduler — agent sweep failed:", error instanceof Error ? error.name : "unknown error");
   });
 
   const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, async (entry) => {

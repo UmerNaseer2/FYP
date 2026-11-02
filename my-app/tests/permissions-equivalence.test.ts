@@ -102,6 +102,13 @@ const ADDED: Record<string, Gate> = {
   "POST /api/phone/push": { kind: "member" },
   "DELETE /api/phone/push": { kind: "member" },
   "POST /api/phone/push/test": { kind: "member" },
+  "GET /api/computers": { kind: "permission", keys: ["compare:read"] },
+  "DELETE /api/computers/[id]": { kind: "permission", keys: ["compare:read"] },
+  "GET /api/computers/link": { kind: "permission", keys: ["compare:read"] },
+  "POST /api/computers/link": { kind: "permission", keys: ["compare:read"] },
+  "DELETE /api/computers/link": { kind: "permission", keys: ["compare:read"] },
+  "POST /api/computers/jobs": { kind: "permission", keys: ["compare:read"] },
+  "GET /api/computers/jobs/[id]": { kind: "permission", keys: ["compare:read"] },
   "GET /api/organizations": { kind: "signed-in" },
   "POST /api/organizations": { kind: "signed-in" },
   // Asking is open to every member. Who may answer is checked inside.
@@ -112,7 +119,16 @@ const ADDED: Record<string, Gate> = {
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */
-const UNGATED = ["GET /api/internal/drift-tick", "GET /api/auth/[...nextauth]", "POST /api/auth/[...nextauth]"];
+const UNGATED = [
+  "POST /api/agent/link",
+  "POST /api/agent/link/claim",
+  "POST /api/agent/jobs/next",
+  "POST /api/agent/jobs/[id]",
+  "PUT /api/agent/connections",
+  "DELETE /api/agent/self",
+  "GET /api/internal/drift-tick",
+  "GET /api/auth/[...nextauth]",
+  "POST /api/auth/[...nextauth]"];
 
 const BELOW: Record<OldRole, OldRole | null> = { viewer: null, editor: "viewer", admin: "editor" };
 

@@ -279,6 +279,17 @@ describe("edge proxy", () => {
 });
 
 describe("isPublicPath", () => {
+  it("opens the routes a linked computer calls, and no others like them", () => {
+    // They check the computer's own token, and it has no cookie to show.
+    for (const open of ["/api/agent/link", "/api/agent/link/claim", "/api/agent/jobs/next", "/api/agent/self"]) {
+      expect(isPublicPath(open)).toBe(true);
+    }
+    // The routes a person calls about their computers must stay behind sign-in.
+    for (const guarded of ["/api/agent", "/api/agents", "/api/agents/link", "/api/computers", "/api/computers/link", "/link-computer"]) {
+      expect(isPublicPath(guarded)).toBe(false);
+    }
+  });
+
   // No reload needed: the list is fixed and no switch reads it.
   it("opens the landing page, and no other page", () => {
     expect(isPublicPath("/")).toBe(true);

@@ -120,12 +120,13 @@ const ORG_TABLES = [
 ];
 // Memberships belong to an organization too, but they came with
 // organizations, so they are not on the bootstrap's list of older tables to
-// move.
-const ORG_SCOPED = [...ORG_TABLES, "memberships"];
+// move. A linked computer belongs to one organization the same way.
+const ORG_SCOPED = [...ORG_TABLES, "memberships", "agents"];
 // A person, and the accounts they sign in with, belong to no organization:
 // one person can be in several. The last two belong to the server: whose turn
 // the drift check is (one tick covers every organization), and which deployments
-// have finished setting up these tables.
+// have finished setting up these tables. A computer's link, connections and
+// questions hang off the computer, or belong to nobody until someone approves.
 const NOT_ORG_SCOPED = [
   "organizations",
   "profiles",
@@ -134,6 +135,9 @@ const NOT_ORG_SCOPED = [
   "metadata_boot_stamps",
   "push_subscriptions",
   "push_keys",
+  "agent_links",
+  "agent_connections",
+  "agent_jobs",
 ];
 
 const VIEWER_PRESET = presetFor("viewer") ?? [];
@@ -774,6 +778,11 @@ async function fillOrganization(
      VALUES ($1, $2, 'editor')`,
     [orgId, profileId]
   );
+  await client.query(
+    `INSERT INTO agents (org_id, profile_id, name, token_hash)
+     VALUES ($1, $2, 'A laptop', $3)`,
+    [orgId, profileId, `hash-of-a-token-${orgId}`]
+  );
 
   const connectionId = await insertId(
     client,
@@ -1208,7 +1217,7 @@ describeWithDatabase("org-migration", () => {
       });
     }, SLOW);
 
-    test("lose a member whose profile is deleted, and nothing else", async () => {
+    test("lose a member whose profile is deleted, their computers, and nothing else", async () => {
       const before = await rowsPerTable(client, probeId);
       await rolledBack(client, async () => {
         await client.query(`DELETE FROM profiles WHERE id = $1`, [
@@ -1219,6 +1228,10 @@ describeWithDatabase("org-migration", () => {
           memberships: {
             ...before.memberships,
             mine: before.memberships.mine - 1,
+          },
+          agents: {
+            ...before.agents,
+            mine: before.agents.mine - 1,
           },
         });
       });

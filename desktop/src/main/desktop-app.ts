@@ -81,6 +81,7 @@ import {
   type RecheckOutcome,
 } from "../core/offline";
 import { displayPath, type AppPaths } from "../core/paths";
+import { parseCloudLinkState, type CloudLinkState } from "../core/cloud-agent-file";
 import { parsePhoneLinkState, type PhoneLinkState } from "../core/phone-link-file";
 import { DB_NAME } from "../core/postgres-files";
 import { ensurePrivateDir, UnsafeDirError } from "../core/private-dir";
@@ -88,6 +89,7 @@ import { newSecretValues, type SecretValues } from "../core/secrets-file";
 import { trayStatus } from "../core/tray-status";
 import { GATE_HEADER } from "../server/desktop-gate";
 import {
+  CLOUD,
   PHONE,
   STARTUP,
   type ChooseBackupResult,
@@ -133,7 +135,9 @@ import { ConfigStore } from "./config-store";
 import { makeDiagnostics } from "./diagnostics";
 import { DriftWatcher } from "./drift-watcher";
 import { findLocalDatabases } from "./finder";
+import { CloudAgent } from "./cloud-agent";
 import { registerIpc } from "./ipc";
+import { SYSTEM_CLOCK } from "./clock";
 import { addLogSecret, logError, logFolder, logInfo, logWarn } from "./log";
 import { buildMenu } from "./menu";
 import { openPhoneLink, type PhoneLink } from "./phone-link";
@@ -174,6 +178,7 @@ const FIRST_CHECK_MS = 20_000;
 const BACKGROUND_CHECK_MS = 30_000;
 /** How long Settings waits for the server to list the saved connections that phones may be shown. */
 const PHONE_CONNECTIONS_MS = 15_000;
+const CLOUD_NOT_READY = "Schema Studio is still starting. Try again in a moment.";
 const PHONE_LINK_FAILED = "The phone link could not start. Schema Studio's log has the details.";
 /** Why a restore cannot finish while phone-link.json is locked: what phones may see has to change with the restore. */
 const PHONE_LINK_LOCKED = `Schema Studio needs the phone link's keys to finish restoring the backup, and they are locked with your login keyring, which did not open. Log out and back in, or unlock the "Login" keyring in Passwords and Keys, then press Try again.`;
@@ -303,6 +308,8 @@ export class DesktopApp {
   private server: RunningServer | null = null;
   /** The phone link, once it has opened and started. */
   private phoneLink: PhoneLink | null = null;
+  /** The link to a Schema Studio web site, once the server is up. Off until the person links this computer. */
+  private cloudAgent: CloudAgent | null = null;
   /** Why the phone link could not open or start, for Settings. */
   private phoneLinkProblem: string | null = null;
   /** The hold that keeps the computer awake for its phones, while there is one. */
@@ -466,6 +473,12 @@ export class DesktopApp {
         connectNow: () => this.phoneLink?.connectNow(),
         connections: () => this.phoneConnections(),
       },
+      cloud: {
+        get: () => this.cloudAgent?.view() ?? { state: "off", origin: null, notice: null },
+        link: async (origin) => this.cloudAgent?.startLink(origin) ?? { ok: false, message: CLOUD_NOT_READY },
+        cancelLink: () => this.cloudAgent?.cancelLink(),
+        unlink: () => this.cloudAgent?.unlink(),
+      },
       backup: {
         save: (passphrase, repeat) => this.saveBackupAs(passphrase, repeat),
         choose: () => this.chooseBackup(),
@@ -581,6 +594,7 @@ export class DesktopApp {
       watcher.start();
       // Never throws: a phone link that cannot start is logged, and the rest of the app carries on without it.
       await this.startPhoneLink();
+      this.startCloudAgent();
     } catch (error) {
       // Quitting stopped the step under way, which is not a failure to report.
       if (signal.aborted) return;
@@ -798,8 +812,42 @@ export class DesktopApp {
     });
   }
 
+  private cloudLinkStore(): ProtectedStore<CloudLinkState> {
+    return new ProtectedStore<CloudLinkState>({
+      file: this.paths.cloudLinkFile,
+      what: "the site link",
+      parse: parseCloudLinkState,
+      allowKeyring: true,
+    });
+  }
+
+  /** Never throws. A site link that cannot start says so in Settings, and the rest of the app carries on. */
+  private startCloudAgent(): void {
+    if (this.quitting) return;
+    this.cloudAgent = new CloudAgent({
+      store: this.cloudLinkStore(),
+      // In memory only, so that the site's calls share no cookies with the app's windows.
+      fetch: (url, init) => session.fromPartition("cloud-agent").fetch(url, init),
+      clock: SYSTEM_CLOCK,
+      call: (method, path, body, signal) => this.callServer(method, path, body, signal),
+      sharedConnectionIds: () => this.phoneLink?.view().sharedConnectionIds ?? [],
+      computerName: os.hostname(),
+      openBrowser: (url) => {
+        shell.openExternal(url).catch((error: unknown) => logWarn("Could not open the site in the web browser.", error));
+      },
+      onChange: () => this.cloudChanged(),
+    });
+    this.cloudAgent.start();
+  }
+
+  /** Tells Settings, if it is open, how the site link stands now. */
+  private cloudChanged(): void {
+    if (this.cloudAgent !== null) liveContents(this.settingsWindow)?.send(CLOUD.changed, this.cloudAgent.view());
+  }
+
   /** Tells Settings, if it is open, and the icon's menu how the phone link stands now. */
   private phoneChanged(): void {
+    this.cloudAgent?.sharedChanged();
     const view = phoneView(this.phoneLink, this.phoneLinkProblem);
     liveContents(this.settingsWindow)?.send(PHONE.changed, view);
     this.tray?.update(trayStatus(view));
@@ -1147,6 +1195,7 @@ export class DesktopApp {
       this.auth?.cancelSignIn();
       // Phones lose the app for now, and connect again once it has started again.
       this.phoneLink?.stop();
+      this.cloudAgent?.stop();
       // Nor is drift told about while the drift log is replaced. It stops at
       // once; a look under way finishes without showing anything.
       void this.driftWatcher?.stop();
@@ -1320,6 +1369,7 @@ export class DesktopApp {
     if (this.recheckTimer !== null) clearInterval(this.recheckTimer);
     this.auth?.cancelSignIn();
     this.phoneLink?.stop();
+    this.cloudAgent?.stop();
     // Never rejects. Waiting for it means a database still starting is known about, and stopped below.
     await this.startupRun;
     // A restore under way finishes first, so that its rows go in whole or not

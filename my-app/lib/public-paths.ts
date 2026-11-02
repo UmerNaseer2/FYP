@@ -6,7 +6,8 @@
  * session, and /login and NextAuth's own routes are left out by the proxy's
  * matcher instead.
  *
- * Exact paths only, no prefixes: "/" here must not open "/studio".
+ * Exact paths only, no prefixes: "/" here must not open "/studio". The one
+ * exception is the folder of routes a linked computer calls (see isPublicPath).
  *
  * Add a page here only when it shows nothing that belongs to an organization
  * or a person. A public page does its own deciding about who is signed in (the
@@ -25,7 +26,13 @@ const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/manifest.webmanifest",
 ]);
 
+const AGENT_ROUTES = "/api/agent/";
+
 /** True for a page that opens without a session. Takes a pathname, no query string. */
 export function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.has(pathname);
+  // A linked computer calls these with its own token and no cookie, and every
+  // route under here checks that token itself (lib/agent-auth.ts), or is one of
+  // the two a computer calls before it has a token. Anything a person's session
+  // opens is under /api/computers instead, so this can never open that.
+  return PUBLIC_PATHS.has(pathname) || pathname.startsWith(AGENT_ROUTES);
 }

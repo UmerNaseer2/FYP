@@ -19,6 +19,7 @@
     <script src="settings.js" defer></script>
     <script src="settings-phone.js" defer></script>
     <script src="settings-backup.js" defer></script>
+    <script src="settings-cloud.js" defer></script>
   </head>
   <body class="settings">
     <main class="settings-main">
@@ -159,6 +160,43 @@
             <h3 id="phone-actions-title" class="subgroup-title">What phones tried to change</h3>
             <div id="phone-actions" class="list phone-actions" role="list" tabindex="0" aria-labelledby="phone-actions-title" hidden></div>
             <p id="phone-actions-empty" class="list row hint">No phone has tried to change anything yet.</p>
+          </div>
+        </section>
+
+        <section id="site-link" class="group" aria-labelledby="site-link-title">
+          <h2 id="site-link-title" class="group-title">Web site</h2>
+          <p class="group-intro">Link this computer to your team's Schema Studio web site, to compare the connections shared above from the site's phone app. Passwords stay on this computer. Answers pass through the site, so they hold connection and schema names and a summary of changes, and never SQL, hosts, database names or rows.</p>
+          <p id="site-link-unavailable" class="banner" role="alert" hidden></p>
+          <button id="site-link-clear" class="button" type="button" hidden>Start again</button>
+          <form id="site-link-form" class="list" aria-label="Link to a web site" novalidate hidden>
+            <div class="row">
+              <label class="row-label" for="site-link-address">Site address</label>
+              <div class="token-entry">
+                <input id="site-link-address" class="input" type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://schema-studio.example.com">
+                <button id="site-link-start" class="button button-primary" type="submit">Link</button>
+              </div>
+              <p class="hint">Your web browser opens the site, where you sign in and approve this computer.</p>
+              <p id="site-link-error" class="field-error" hidden></p>
+              <p id="site-link-notice" class="status" role="status"></p>
+            </div>
+          </form>
+          <div id="site-link-waiting" class="list" hidden>
+            <div class="row">
+              <p class="row-label">Waiting for you to approve this in your web browser</p>
+              <p class="hint">Check that the site shows this code. <span id="site-link-origin-waiting"></span></p>
+              <code id="site-link-code" class="short-code"></code>
+              <div class="token-actions"><button id="site-link-cancel" class="button" type="button">Cancel</button></div>
+            </div>
+          </div>
+          <div id="site-link-linked" class="list" hidden>
+            <div class="row">
+              <div class="token">
+                <span class="token-state"><span id="site-link-dot" class="dot" aria-hidden="true"></span><span id="site-link-state" role="status"></span></span>
+                <span class="token-actions"><button id="site-link-unlink" class="button" type="button">Unlink</button></span>
+              </div>
+              <p id="site-link-where" class="hint"></p>
+              <p id="site-link-problem" class="field-error" hidden></p>
+            </div>
           </div>
         </section>
 
