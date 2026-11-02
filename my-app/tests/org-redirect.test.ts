@@ -207,6 +207,14 @@ describe("the old addresses", () => {
       .readdirSync(APP, { withFileTypes: true })
       .filter((entry) => fs.existsSync(path.join(APP, entry.name, "[[...rest]]", "page.tsx")))
       .map((entry) => entry.name);
-    expect(oldAddresses.sort()).toEqual([...studioPages].sort());
+    // The phone app lives beside the studio pages, not among them, because it has
+    // no rail. The test above walks only the studio, so the next test covers it.
+    expect(oldAddresses.sort()).toEqual([...studioPages, "phone"].sort());
+  });
+
+  test("the phone app has one too, for a link from before organizations came in", async () => {
+    const { default: OldAddress } = await import(path.join(APP, "phone", "[[...rest]]", "page.tsx"));
+    mockRedirect.mockClear();
+    expect(await whereTo(OldAddress(props()))).toBe("/acme/phone");
   });
 });

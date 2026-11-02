@@ -4,7 +4,6 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Button, Card, ConfirmDialog, EmptyState, Pill, Skeleton } from "@/components/ui";
-import type { PillTone } from "@/components/ui/Pill";
 import { Select } from "@/components/ui/Select";
 import { AlertTriangleIcon, InboxIcon } from "@/components/ui/icons";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -16,10 +15,18 @@ import {
   type InboxRequest,
   type RequestAnswer,
   type RequestsPayload,
-  type RequestStatus,
 } from "@/lib/access-requests";
 import { apiFetch } from "@/lib/api-fetch";
 import type { ListedApproval } from "@/lib/approvals-db";
+import {
+  deployHref,
+  describeAsked,
+  formatWhen,
+  ownRunStory,
+  runTarget,
+  runTitle,
+  STATUS_PILLS,
+} from "@/lib/request-wording";
 import {
   ADMIN_ROLE,
   isAdminOnly,
@@ -44,14 +51,6 @@ const SOMETHING_ELSE = "something-else";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-const STATUS_PILLS: Record<RequestStatus, { label: string; tone: PillTone }> = {
-  pending: { label: "Waiting", tone: "pending" },
-  allowed: { label: "Allowed", tone: "sync" },
-  declined: { label: "Declined", tone: "break" },
-  done: { label: "Done", tone: "sync" },
-  withdrawn: { label: "Withdrawn", tone: "neutral" },
-};
-
 /**
  * A role the person asking could move to. `includes` says whether it holds what they
  * asked for, and is null when the roles could not be read, as only an Admin may read them.
@@ -65,23 +64,9 @@ type RoleRow = {
   permissions: PermissionKey[];
 };
 
-function formatWhen(value: string | null): string {
-  if (!value) return "";
-  return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
-
 async function errorFrom(response: Response, fallback: string): Promise<string> {
   const body = await response.json().catch(() => null);
   return typeof body?.error === "string" ? body.error : fallback;
-}
-
-/** The asked-for permission in the grid's own words, with a plain sentence of what it does. */
-function describeAsked(permission: string | null): { title: string; does: string | null } {
-  if (permission === null) return { title: "Something else", does: null };
-  const found = PERMISSIONS.find((entry) => entry.key === permission);
-  return found
-    ? { title: permissionLabel(found.key), does: found.does }
-    : { title: permission, does: null };
 }
 
 function ErrorNote({ children }: { children: ReactNode }) {
@@ -550,29 +535,6 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
   );
 }
 
-function deployHref(run: ListedApproval): string {
-  const query = new URLSearchParams({
-    connection: String(run.connection_id),
-    schema: run.schema_name,
-    script: run.script_name,
-  });
-  // A run's version is picked for the reader. A rollback's is chosen in its own card.
-  if (run.action !== "revert") query.set("version", run.target_version);
-  return `/deploy?${query.toString()}`;
-}
-
-function runTitle(run: ListedApproval): string {
-  // A rollback's target_version is the oldest version it undoes, not the one
-  // the database ends at, so "to" would name the wrong version.
-  return run.action === "revert"
-    ? `Roll back ${run.script_name}, undoing v${run.target_version} and newer`
-    : `Run ${run.script_name} to v${run.target_version}`;
-}
-
-function runTarget(run: ListedApproval): string {
-  return `${run.connection_name ?? "A connection that has been removed"}, schema ${run.schema_name}`;
-}
-
 /** A production run that needs someone. Deciding happens on Deploy, with the SQL in view. */
 function RunRow({ run, kind }: { run: ListedApproval; kind: "approve" | "run" }) {
   const { can } = useUser();
@@ -689,35 +651,6 @@ function OwnRequestRow({
   );
 }
 
-function ownRunStory(run: ListedApproval): { label: string; tone: PillTone; story: string } {
-  const by = run.self_approved ? "you" : run.decided_by ?? "someone";
-  switch (run.status) {
-    case "pending":
-      return {
-        label: "Waiting",
-        tone: "pending",
-        story: "Waiting for a second person. It is on the Requests page of anyone who can approve it.",
-      };
-    case "rejected":
-      return { label: "Rejected", tone: "break", story: `Rejected by ${by}.` };
-    case "used":
-      return { label: "Run", tone: "neutral", story: `Approved by ${by}, and it has been run.` };
-    default:
-      if (run.expires_at && new Date(run.expires_at).getTime() <= Date.now()) {
-        return {
-          label: "Ran out",
-          tone: "neutral",
-          story: `Approved by ${by}, but it was not run in time. Ask again on Deploy to run it.`,
-        };
-      }
-      return {
-        label: "Approved",
-        tone: "sync",
-        story: `Approved by ${by}. Ready to run until ${formatWhen(run.expires_at)}, by anyone who may run a deploy.`,
-      };
-  }
-}
-
 function OwnRunRow({ run, since }: { run: ListedApproval; since: string | null }) {
   const { label, tone, story } = ownRunStory(run);
   return (
@@ -747,6 +680,7 @@ function OwnRunRow({ run, since }: { run: ListedApproval; since: string | null }
 // ---------------------------------------------------------------------------
 
 function RequestsBody() {
+  const orgPath = useOrgHref();
   const { isAdmin } = useUser();
   const [data, setData] = useState<RequestsPayload | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -813,6 +747,13 @@ function RequestsBody() {
             : "Ask here and read the answer here. "}
           The app does not send email, so a number beside Requests in the sidebar is how
           people find out.
+        </p>
+        <p className="text-[13.5px] mt-1.5" style={{ color: "var(--text-2)" }}>
+          Away from a computer?{" "}
+          <Link href={orgPath("/phone")} className="underline underline-offset-2">
+            Open the phone app
+          </Link>
+          , which can alert you when something here needs you.
         </p>
       </header>
 

@@ -207,6 +207,15 @@ export function UsersIcon(props: IconProps) {
   );
 }
 
+export function BellIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8" />
+      <path d="M10.3 21a2 2 0 0 0 3.4 0" />
+    </Svg>
+  );
+}
+
 export function InboxIcon(props: IconProps) {
   return (
     <Svg {...props}>
