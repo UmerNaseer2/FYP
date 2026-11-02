@@ -1,6 +1,6 @@
 # Running Schema Studio on Supabase and Vercel
 
-> **Run on real accounts.** Sections 1 to 5 and 7 have run on a real Supabase project and a real Vercel project, with a real Microsoft sign-in. Section 6 has not, because Swinburne's server still keeps its own database. Section 8 has run in a desktop browser with a real push, but not yet on a real phone.
+> **Run on real accounts.** Sections 1 to 5 and 7 have run on a real Supabase project and a real Vercel project, with a real Microsoft sign-in. Section 6 has not, because Swinburne's server still keeps its own database. Section 8 has run in a desktop browser with a real push, but not yet on a real phone. Section 9 has run against a copy of the site on one computer, with the desktop app's linking code run outside the app, and not yet on Vercel. Section 10 has run on test databases and a real desktop backup, and as a trial into a real Supabase project.
 
 The web app runs on Vercel. Its own data (people, roles, saved connections, history) lives in a Supabase project, used as an ordinary PostgreSQL database. It is the same code as the Docker deployment in [README.md](README.md), set up through environment variables. Sign-in stays with Microsoft (and GitHub if you want it) through NextAuth. Supabase Auth is not used.
 
@@ -133,6 +133,7 @@ Both free plans can run this, with limits worth knowing first.
 - A call every 15 minutes is 2,880 calls a month. At a full second of CPU each, which is an estimate and not a measurement, that is 0.8 hours, a fifth of the allowance.
 - Look at **Usage** in the Vercel dashboard after a day or two. If Active CPU climbs too fast, slow the schedule down and change `DRIFT_CALL_MINUTES` to match.
 - A Docker copy on the same database can run the checker instead (step 6). Leave the `pg_cron` call out, and Vercel spends nothing on it.
+- A linked computer (section 9) asks the site for work every 15 seconds while its desktop app runs. That is 240 calls an hour, or about 57,600 a month for one left on 8 hours a day: under 6% of the call allowance each. A call is a token check and one short query, but its CPU has not been measured, so watch **Usage** once a few computers are linked, and unlink the ones nobody uses.
 
 **Supabase Free**
 
@@ -147,6 +148,7 @@ The site has a phone app of its own at `/phone`, on the same address, for exampl
 | --- | --- |
 | Drift | Each tracked schema's last stored result. Check now and Acknowledge, for people allowed to. |
 | History | What changed lately. |
+| Compare | Compare two schemas on a linked computer (section 9), and unlink a computer. |
 | Approvals | Read a run's SQL, then approve or reject it. Answer access requests. Starting the run stays on the full site. |
 | Alerts | Turn alerts on for this device, and send a test alert. |
 
@@ -162,6 +164,81 @@ Two things to expect:
 
 - From Vercel, a database on a private network cannot be reached, so its drift checks read "The last check could not reach this database." Only databases reachable from the internet get checked from here.
 - This is separate from the phone link in the desktop app, which reaches one running computer through the relay.
+
+## 9. Linked computers
+
+The site cannot reach a database on someone's laptop or office network, and it never holds that database's password. A computer running the desktop app can be linked to the site instead. The phone app's Compare tab can then compare the schemas on that computer's connections, while the passwords stay on the computer.
+
+To link one:
+
+1. In the desktop app, open **Settings**. Under **Phone**, in **Connections phones may see**, choose which connections to share. A connection is not shared until someone says so.
+2. Under **Web site**, type the site's address, for example `https://your-project.vercel.app`, and press **Link**.
+3. The computer's web browser opens the site. Sign in there as usual, check that the site shows the same code as the desktop app, and approve it. The code lasts 10 minutes.
+
+There is nothing to set up on Vercel or Supabase for this.
+
+How it works, and what it means:
+
+- The site cannot call the computer, since most computers sit behind a router. So the computer asks the site for work every 15 seconds, and every 2 seconds for 2 minutes after some arrives. Section 7 says what that costs.
+- Approving gives the computer a token of its own. The site keeps only a hash of it, and the computer never sees anyone's Microsoft sign-in.
+- The computer answers only two kinds of question, listing schemas and comparing them, and both change nothing. It answers as the person signed in to the desktop app, so a role that may not compare is refused the same way as on the computer.
+- The site learns each shared connection's name and environment, and never its host, user, password or database name.
+- Answers pass through the site and its database, so unlike the desktop app's own phone link they are not encrypted end to end. They hold schema names and a summary of the changes, with no SQL, no hosts and no rows. The site deletes them within about 25 minutes.
+- A computer runs at most 3 questions at once, and a question nobody answers is given up on after a few minutes.
+- One person can link up to 10 computers. Linking an 11th unlinks their oldest.
+
+To unlink a computer, press **Unlink** in the desktop app's Settings, or **Unlink this computer** in the phone app's Compare tab, for example when a laptop is lost. The site refuses its token from then on. Removing someone from the organization also ends their computers' links.
+
+## 10. Moving existing data
+
+`my-app/scripts/move-data.cjs` copies one organization at a time into this site's database, from the Docker copy's database, from another site's, or from a backup saved in the desktop app. It only writes to the new database and reads the old one in a read-only transaction, so the old copy keeps working.
+
+**What moves.** The organization with its roles and members, saved connections, tracked schemas with their snapshots and drift history, compare sets and runs, query history, and approvals. People are matched by email address, so someone already on the new site stays one person.
+
+**What stays behind.**
+
+- Passwords of connections to private addresses, because this site cannot reach those databases anyway. Their scheduled drift checks are turned off. Add `--keep-private-passwords` when a Docker copy on that network shares the new database (section 6).
+- Microsoft sign-ins of people new to the site, because a sign-in belongs to one Microsoft directory. Those people sign in again on the new site. Someone from outside the new site's directory cannot, until an admin adds them to it. Add `--same-directory` when both sites sign in through the same directory.
+- Open invites, linked computers, and phones with alerts on. Invite, link and turn those on again.
+
+The tool refuses two databases on different versions of the app. Update the older copy first, and start it once so it updates its tables.
+
+**How to run it.** On a computer that can reach both databases, in the `my-app` folder with its packages installed. The tool takes secrets from the environment only, never from its options. Put them in a file outside the repository, for example `~/move.env`:
+
+```text
+MOVE_FROM_URL=<the old database's address>
+MOVE_FROM_KEY=<the old copy's APP_ENCRYPTION_KEY>
+MOVE_TO_URL=<this site's DATABASE_URL_A>
+MOVE_TO_KEY=<this site's APP_ENCRYPTION_KEY>
+```
+
+A copy that never set `APP_ENCRYPTION_KEY` locks passwords with its `NEXTAUTH_SECRET`, so give that as `MOVE_FROM_NEXTAUTH_SECRET` instead.
+
+Then load the file and list the old database's organizations:
+
+```bash
+set -a; . ~/move.env; set +a; node scripts/move-data.cjs
+```
+
+Try moving one. Without `--apply` it does the whole move and then undoes it, so a trial meets every problem a real move would:
+
+```bash
+node scripts/move-data.cjs --org acme-data
+```
+
+Read the report, then run the same command with `--apply` added. Delete `~/move.env` afterwards.
+
+Other options:
+
+| Option | What it does |
+| --- | --- |
+| `--as <address>` | Gives the organization a different address on the new site, for example when its own is taken there. |
+| `--admin <email>` | Makes this person an admin of the moved organization. |
+| `--backup <file>` | Reads a desktop backup (Settings, **Backup**, **Save a backup**) instead of a database. Put its passphrase in `MOVE_BACKUP_PASSPHRASE`, and leave out `MOVE_FROM_URL` and `MOVE_FROM_KEY`, since the backup holds its own key. It needs the desktop code built first: `npm install` and `npm run build:ts` in `desktop`. |
+| `--keep-private-passwords` | Keeps the passwords of private connections, as above. |
+| `--same-directory` | Keeps Microsoft sign-ins, as above. |
+
+The report holds counts only, never a host, email address, password or key. Afterwards, sign in on the new site and open the organization's address.
 
 ## Known limits
 

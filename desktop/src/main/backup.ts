@@ -26,24 +26,20 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseError, type Client } from "pg";
 
+import { readContents, readStart } from "../core/backup-read";
 import {
   BackupFileError,
-  ChunkOpener,
   ChunkSealer,
-  ContentsReader,
   encodeRecord,
-  HEADER_BYTES,
   newBackupKey,
   newRestoreId,
   openBackupKey,
   parseBackupManifest,
   passphraseProblem,
   readBackupHeader,
-  RecordReader,
   restoreComment,
   restoreIdFromComment,
   type BackupChoices,
-  type BackupItem,
   type BackupManifest,
   type BackupSecrets,
   type BackupSequence,
@@ -55,9 +51,6 @@ import { addLogSecret, logInfo, logWarn } from "./log";
 import { quoteIdent, withClient } from "./postgres";
 import type { ProtectedStore } from "./secrets";
 import { StartupError } from "./startup-error";
-
-/** How much of a backup file is read at a time. */
-const READ_BYTES = 1024 * 1024;
 
 /** Sealed chunks are gathered up and written about this much at a time. */
 const WRITE_BYTES = 1024 * 1024;
@@ -900,51 +893,6 @@ async function openForReading(file: string): Promise<FileHandle> {
     throw error;
   }
   return handle;
-}
-
-/** Reads the start of the file, as much of it as a backup's header takes. */
-async function readStart(handle: FileHandle): Promise<Buffer> {
-  const start = Buffer.alloc(HEADER_BYTES);
-  let filled = 0;
-  while (filled < HEADER_BYTES) {
-    const { bytesRead } = await handle.read(start, filled, HEADER_BYTES - filled, null);
-    if (bytesRead === 0) break;
-    filled += bytesRead;
-  }
-  return start.subarray(0, filled);
-}
-
-/**
- * Reads the rest of the file after its header: opens each chunk, splits the
- * records apart and hands each item to `take`, in order. Gives back the
- * manifest once the whole file is read and every row it promised was there.
- */
-async function readContents(
-  handle: FileHandle,
-  header: Buffer,
-  key: Buffer,
-  appVersion: string,
-  take: (item: BackupItem) => Promise<void>,
-): Promise<BackupManifest> {
-  const opener = new ChunkOpener(key, header);
-  const records = new RecordReader();
-  const contents = new ContentsReader(appVersion);
-  const hand = async (opened: Buffer[]): Promise<void> => {
-    for (const plain of opened) {
-      for (const record of records.push(plain)) await take(contents.read(record));
-    }
-  };
-  for (;;) {
-    // A new buffer for each read: after a short read, which a network drive can give mid-file, the
-    // opener holds on to this buffer until it has a whole chunk, so the next read must not write over it.
-    const buffer = Buffer.allocUnsafe(READ_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, READ_BYTES, null);
-    if (bytesRead === 0) break;
-    await hand(opener.write(buffer.subarray(0, bytesRead)));
-  }
-  await hand([opener.end()]);
-  records.end();
-  return contents.end();
 }
 
 /**

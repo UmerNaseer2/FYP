@@ -3,8 +3,12 @@
 This file says what the desktop app keeps safe, from whom and how, and what
 it does not protect against. It covers the desktop app in `desktop/`, the
 relay in `relay/`, the phone app the relay serves, and the apt source that
-installed copies update from. The web app's own checks (who may do what, and
-the SQL it runs) belong to the web app and are not covered here.
+installed copies update from. It also covers the parts of the shared web site
+(`deploy/SUPABASE-VERCEL.md`) that reach a computer: linking a computer to the
+site, the questions the site's phone app leaves for it, and the tool that
+moves a desktop's or a server's data to the site. The web app's own checks
+(who may do what, and the SQL it runs) belong to the web app and are not
+covered here.
 
 It is written for whoever works on the app next. Many of the checks below
 look like extra code that could be tidied away, so before changing a file
@@ -23,7 +27,9 @@ named here, read what this file says about it.
 - The Microsoft sign-in, which decides who is using the app and what they
   may do.
 - Approval decisions made from a phone.
-- Backup files, which hold all of the above.
+- The token of a computer linked to the web site, which lets whoever holds it
+  read and answer the questions left there for that computer.
+- Backup files, which hold all of the above except that token.
 - The installed program and its updates.
 
 ## Who it guards against, and how
@@ -51,7 +57,8 @@ named here, read what this file says about it.
   and only as a last resort `/tmp/schema-studio-<user id>`
   (`src/core/socket-dir.ts`).
 - Secrets are kept in `secrets.json` (this copy's own keys), `auth.json`
-  (the Microsoft sign-in) and `phone-link.json`, each readable by its owner
+  (the Microsoft sign-in), `phone-link.json` and `cloud-link.json` (the web
+  site link, `src/core/cloud-agent-file.ts`), each readable by its owner
   only (0600), in a folder only its owner can open (0700). Where there is a
   login keyring (GNOME Keyring or KWallet), the contents are also locked with
   it through Electron's safeStorage, so a copy of a file on its own is no use
@@ -281,6 +288,71 @@ keys alone decide nothing:
   push as a drift alert only when it is one it can read, and anything else
   as a fixed notice that it could not read it (`relay/src/phone/sw.ts`).
 
+### A computer linked to the web site
+
+The web site's phone app can compare schemas on a computer the person has
+linked (`src/main/cloud-agent.ts`), while that computer keeps the database
+passwords. The site cannot reach the computer, so the computer asks the site
+for questions.
+
+- Linking works like signing in to a command line tool. The computer asks
+  the site for a code, and opens the person's own browser at the site, where
+  they sign in as usual, check that the site shows the code the computer
+  shows, and approve it. Only a member who may compare can approve. The code
+  lasts 10 minutes (`my-app/lib/agent-rules.ts`). The computer never sees the
+  person's Microsoft sign-in, and the site keeps only a SHA-256 of the
+  computer's token (`my-app/lib/agent-db.ts`).
+- The site's address must be https, apart from this computer's own
+  `localhost` for testing. Its requests use a session with no cookies.
+- The token is kept like the phone link's keys, in `cloud-link.json`, and
+  is never put in a backup, since a restored computer would answer as this
+  one. The token and the codes are added to `redact`, and none of them, nor
+  the site's questions and answers, are logged.
+- A token works only while its person is still a member of the organization
+  they approved it for: the site checks the membership on every call, so
+  removing someone ends their links at once. One person can link at most 10
+  computers, and linking another unlinks their oldest.
+- The site asks a computer only questions from its own person, in the
+  organization they linked it to, and only two kinds: listing schemas and
+  comparing them, which change nothing. The computer checks the kind again
+  (`readCloudJob`), answers only for connections shared in Settings
+  (`checkShared`, the same check the phone link uses), and answers as
+  whoever is signed in on the computer, so a role that may not compare is
+  refused the same way as on the computer itself.
+- The site learns each shared connection's name and environment, never its
+  host, user, password or database name. A refusal is one word, and a local
+  error stays in the computer's log while the site hears only "failed".
+- Answers are at most 1 MB. The site deletes questions and answers within
+  about 25 minutes, when the next question or drift check sweeps them.
+- The computer runs at most 3 questions at once and gives each 150 seconds.
+  Only an answer of 401 ends the link, so a site that is down never makes
+  people link again.
+- Unlinking from the computer's Settings or from the phone app's Compare tab
+  deletes the computer's row on the site, and its token stops working.
+
+### Moving data to the web site
+
+`my-app/scripts/move-data.cjs` copies one organization from a desktop backup,
+a Docker copy's database or another site's database into the web site's
+database.
+
+- It takes database addresses, keys and the backup passphrase from the
+  environment only, so they never sit in shell history or the process list,
+  and it prints counts only: no host, email, password or key.
+- It reads the old database in a read-only transaction, so it cannot change
+  it. Every write to the new database happens in one transaction, which a
+  trial run always undoes, and a real run undoes too unless what landed
+  matches what was read, passwords included.
+- Each saved password is opened with the old key and locked again with the
+  new one. Passwords of connections to private addresses are left behind
+  unless asked for, because the site cannot reach those databases.
+- Backups are read with the desktop's own reader (`src/core/backup-read.ts`),
+  which checks the passphrase and every piece of the file as a restore does,
+  and refuses a backup from another version of the app.
+- Microsoft sign-ins are carried over only when asked, since one belongs to a
+  single Microsoft directory. Invites, linked computers, phones with alerts
+  and the site's push key stay behind.
+
 ### Backup files
 
 - A backup (`src/core/backup-file.ts`) is encrypted with a key that scrypt
@@ -421,6 +493,29 @@ passphrase, the short pairing code, or what a phone asked to compare.
 - **Restoring a backup replaces everything.** A backup made by someone else
   could hold their connections and secrets in place of yours. Restore only
   backups you made yourself.
+- **Answers to the web site are not encrypted end to end.** They pass through
+  the site and its database, which keep them for up to about 25 minutes. They
+  hold schema names and a summary of the changes, with no SQL, hosts or rows,
+  but whoever can read the site's database can read them. The phone link
+  through the relay is the end to end way.
+- **Approving someone else's code.** A person who is tricked into approving a
+  code their own computer did not show links someone else's computer as
+  them. That computer cannot read anything from the site and never gets the
+  person's sign-in, but it can list made-up connections and give made-up
+  answers in that person's Compare tab. Approve only a code your own
+  computer is showing, and unlink anything unknown from the phone app.
+- **A copied token** answers as its computer until that computer is unlinked
+  or its person leaves the organization. Unlink a lost computer from the
+  phone app.
+- **The web site holds everyone's saved connections.** Whoever controls the
+  Vercel project (it holds `APP_ENCRYPTION_KEY`) or the Supabase project (it
+  holds the database) controls the site and can read the passwords it keeps.
+  Keep both accounts locked down, as with the relay's Cloudflare account.
+- **Linked computers cost the site's free plan.** Each one that is on asks
+  every 15 seconds, so many computers left on, or a person linking their 10
+  over and over, spends Vercel's monthly calls faster.
+- **Moving data needs both keys on one computer.** Keep the file that holds
+  them outside the repository and delete it afterwards.
 
 ## When you change the app
 
@@ -437,3 +532,11 @@ passphrase, the short pairing code, or what a phone asked to compare.
   new rules. The same goes for `schema-studio control v1` and what a phone signs
   for a run or a cancel.
 - Anything newly logged goes through `redact`.
+- A new question for linked computers is added on both sides (`readAgentJob`
+  in `my-app/lib/agent-jobs.ts` and `readCloudJob`), changes nothing,
+  checks sharing before it reads anything, and answers with no hosts, SQL or
+  rows, since the site stores what it says.
+- A new table in the web app's database goes in one of the move tool's lists
+  (`ORG_TABLES`, `SPECIAL_TABLES` or `LEFT_BEHIND_TABLES` in
+  `my-app/scripts/move-data.cjs`). A test fails until it does, so a new
+  secret cannot be copied without anyone deciding to.
