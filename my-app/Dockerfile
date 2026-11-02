@@ -61,9 +61,11 @@ RUN groupadd --system --gid 1001 nodejs \
 
 # `output: "standalone"` writes a self-contained server.js plus the subset of
 # node_modules it actually reaches, so the runtime image never sees the full
-# dependency tree. Static assets are not part of it and are copied beside it.
+# dependency tree. Static assets are not part of it and are copied beside it,
+# and so is public/, which holds the phone app's service worker and icons.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
 EXPOSE 3000

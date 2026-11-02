@@ -32,6 +32,9 @@ import type { DriftSource } from "./drift-source";
  * neither see nor stamp another organization's schema.
  */
 
+/** The newest outcome on record for a schema. */
+export type RecordedOutcome = { status: string; fingerprint: string | null };
+
 /** A check that ran, whatever it found. */
 export type DriftRun = {
   trackedSchemaId: number;
@@ -52,6 +55,14 @@ export type DriftRun = {
    * losing an audit row is not worth failing a user's button press over.
    */
   recorded: boolean;
+  /** What was compared this time, in a form that can be matched against another check. Null when nothing was. */
+  fingerprint: string | null;
+  /**
+   * The outcome on record before this check, so a phone alert can say what
+   * changed. Null when this is the first. Undefined when it was not read, which
+   * is every "always" check and any that could not read it.
+   */
+  previous?: RecordedOutcome | null;
 };
 
 /**
@@ -150,8 +161,8 @@ export async function runDriftCheck(
   // comparison to fingerprint, which is every unreachable database.
   const fingerprint = report ? driftFingerprint(report) : null;
 
-  const worthRecording =
-    mode === "always" || (await outcomeChanged(orgId, trackedSchemaId, status, fingerprint));
+  const previous = mode === "always" ? undefined : await previousOutcome(orgId, trackedSchemaId);
+  const worthRecording = mode === "always" || outcomeChanged(previous, status, fingerprint);
   const recorded = worthRecording
     ? await recordDriftEvent({
         orgId,
@@ -176,6 +187,8 @@ export async function runDriftCheck(
       expected: comp.expected,
       checkedAt: new Date().toISOString(),
       recorded,
+      fingerprint,
+      previous,
     },
   };
 }
@@ -222,32 +235,39 @@ async function stampLastChecked(orgId: number, trackedSchemaId: number): Promise
  * Errs towards recording otherwise: if the previous row cannot be read, the row
  * is written. A duplicated "in sync" is noise; a missed change is a bug.
  */
-async function outcomeChanged(
-  orgId: number,
-  trackedSchemaId: number,
+function outcomeChanged(
+  previous: RecordedOutcome | null | undefined,
   status: DriftStatus,
   fingerprint: string | null
-): Promise<boolean> {
+): boolean {
+  if (!previous) return true;
+  if (previous.status !== status) return true;
+  // Same status, and nothing was compared this time — the status is all there
+  // is to go on and it has not moved.
+  if (fingerprint === null) return false;
+  // Same status, and the row to compare against has no fingerprint: record
+  // once, which also leaves one for the next check to match against.
+  if (previous.fingerprint === null) return true;
+  return previous.fingerprint !== fingerprint;
+}
+
+/** The newest outcome on record, null when there is none, undefined when it could not be read. */
+async function previousOutcome(
+  orgId: number,
+  trackedSchemaId: number
+): Promise<RecordedOutcome | null | undefined> {
   try {
-    const previous = await pool.query<{ status: string; fingerprint: string | null }>(
+    const previous = await pool.query<RecordedOutcome>(
       `SELECT status, fingerprint FROM drift_events
         WHERE tracked_schema_id = $1 AND org_id = $2
         ORDER BY detected_at DESC, id DESC
         LIMIT 1`,
       [trackedSchemaId, orgId]
     );
-    if (previous.rows.length === 0) return true;
-    if (previous.rows[0].status !== status) return true;
-    // Same status, and nothing was compared this time — the status is all there
-    // is to go on and it has not moved.
-    if (fingerprint === null) return false;
-    // Same status, and the row to compare against has no fingerprint: record
-    // once, which also leaves one for the next check to match against.
-    if (previous.rows[0].fingerprint === null) return true;
-    return previous.rows[0].fingerprint !== fingerprint;
+    return previous.rows[0] ?? null;
   } catch (error) {
     console.error("Drift — could not read the previous outcome:", error);
-    return true;
+    return undefined;
   }
 }
 

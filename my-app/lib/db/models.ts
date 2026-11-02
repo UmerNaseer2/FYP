@@ -540,6 +540,73 @@ DriftSchedulerState.init(
 );
 
 /**
+ * A device that asked for alerts, as its browser's push service knows it, for
+ * the person who turned them on (lib/push-db.ts). It belongs to a person, not
+ * an organization: which organization's alerts reach it is worked out when one
+ * is sent, from the person's memberships at that moment, so someone removed
+ * from an organization stops hearing from it with nothing to clean up here.
+ */
+export class PushSubscriptionRow extends Model<
+  InferAttributes<PushSubscriptionRow>,
+  InferCreationAttributes<PushSubscriptionRow>
+> {
+  declare id: CreationOptional<number>;
+  declare profile_id: number;
+  declare endpoint: string;
+  declare p256dh: string;
+  declare auth: string;
+  /** Send nothing to this device before then, because its push service asked for a wait. */
+  declare hold_until: Date | null;
+  declare created_at: CreationOptional<Date>;
+}
+
+PushSubscriptionRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    profile_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "profiles", key: "id" },
+      onDelete: "CASCADE",
+    },
+    endpoint: { type: DataTypes.TEXT, allowNull: false, unique: "push_subscriptions_endpoint_key" },
+    p256dh: { type: DataTypes.TEXT, allowNull: false },
+    auth: { type: DataTypes.TEXT, allowNull: false },
+    hold_until: { type: DataTypes.DATE, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "push_subscriptions",
+    indexes: [{ name: "push_subscriptions_profile_id_idx", fields: ["profile_id"] }],
+  }
+);
+
+/**
+ * The server's push key, one row, made the first time it is needed so that
+ * alerts need no setup (lib/push-db.ts). Browsers subscribe with its public
+ * half, so the server cannot change it without every device subscribing again.
+ */
+export class PushKeyRow extends Model<InferAttributes<PushKeyRow>, InferCreationAttributes<PushKeyRow>> {
+  declare name: string;
+  /** Encrypted like a saved database password (lib/secret-store.ts). */
+  declare private_key: string;
+  /** The site's https address, which push services get as a contact. Null until someone subscribes over https. */
+  declare site_origin: string | null;
+  declare created_at: CreationOptional<Date>;
+}
+
+PushKeyRow.init(
+  {
+    name: { type: DataTypes.TEXT, primaryKey: true },
+    private_key: { type: DataTypes.TEXT, allowNull: false },
+    site_origin: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  { sequelize, tableName: "push_keys" }
+);
+
+/**
  * One row per deployment that has finished setting these tables up, so the rest
  * of that deployment's cold starts can skip it (lib/db/bootstrap.ts). A deployment
  * is the whole app's, not any one organization's.

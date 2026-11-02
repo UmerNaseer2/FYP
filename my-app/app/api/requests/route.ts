@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { afterResponse, alertRequestMade } from "@/lib/push-alerts";
 import { requireMember, type Principal } from "@/lib/auth-guard";
 import {
   canAnswerRequests,
@@ -152,6 +153,7 @@ export async function POST(request: NextRequest) {
     if (result.kind === "already") {
       return NextResponse.json({ request: result.request, already: true });
     }
+    afterResponse(() => alertRequestMade(principal, result.request));
     return NextResponse.json({ request: result.request, already: false }, { status: 201 });
   } catch (error) {
     console.error("Could not save a request:", error);

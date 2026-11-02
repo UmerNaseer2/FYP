@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { afterResponse, alertRunWaiting } from "@/lib/push-alerts";
 import { requirePermission } from "@/lib/auth-guard";
 import {
   createApprovalRequest,
@@ -206,6 +207,7 @@ export async function POST(request: NextRequest) {
       // deleted one gets, so this cannot be used to learn which ids exist.
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
     }
+    afterResponse(() => alertRunWaiting(gate.principal, approval));
     return NextResponse.json({ approval });
   } catch (error) {
     console.error("Approvals — request failed:", error);

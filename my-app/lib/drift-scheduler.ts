@@ -3,6 +3,7 @@ import { after } from "next/server";
 import pool, { syncMetadataTables } from "./version-db";
 import { mapWithLimit } from "./concurrency";
 import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
+import { alertDriftChange } from "./push-alerts";
 import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
 import type { DriftSource } from "./drift-source";
 import {
@@ -401,6 +402,8 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
       "scheduled",
       "on_change"
     );
+    // Only scheduled checks alert: someone who presses Check now is looking at the answer.
+    if (result.ok) await alertDriftChange(entry.orgId, result.run);
     return result.ok ? result.run.status : `problem:${result.problem.kind}`;
   });
 

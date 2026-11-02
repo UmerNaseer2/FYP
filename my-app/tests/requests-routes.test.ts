@@ -40,6 +40,14 @@ jest.mock("../lib/approvals-db", () => ({
     principal.bypass || !principal.orgTwoPersonRule,
 }));
 
+// Alerts are looked at in tests/push-alerts.test.ts. Here only: are they sent?
+jest.mock("../lib/push-alerts", () => ({
+  afterResponse: (task: () => Promise<void>) => void task(),
+  alertRequestMade: jest.fn(async () => undefined),
+  alertRequestAnswered: jest.fn(async () => undefined),
+}));
+
+import * as pushAlerts from "../lib/push-alerts";
 import * as requestsDb from "../lib/access-requests-db";
 import * as approvalsDb from "../lib/approvals-db";
 import { GET, POST } from "../app/api/requests/route";
@@ -301,6 +309,7 @@ describe("POST /api/requests", () => {
       permission: "deploy:run",
       message: "for the release",
     });
+    expect(pushAlerts.alertRequestMade).toHaveBeenCalledTimes(1);
   });
 
   it("stores an empty reason as nothing", async () => {
@@ -321,6 +330,8 @@ describe("POST /api/requests", () => {
     const response = await POST(postRequest({ permission: "deploy:run", message: "" }));
     expect(response.status).toBe(200);
     expect((await response.json()).already).toBe(true);
+    // They have already been told about this one.
+    expect(pushAlerts.alertRequestMade).not.toHaveBeenCalled();
   });
 
   it("says how to go on once too many are waiting", async () => {
@@ -455,6 +466,7 @@ describe("PATCH /api/requests/[id]", () => {
       const response = await patch("5", { action: "answer", answer, note: "  Sorted.  " });
       expect(response.status).toBe(200);
       expect(db.answerAccessRequest).toHaveBeenCalledWith(TEST_ORG.id, 5, answer, "admin@test", "Sorted.");
+      expect(pushAlerts.alertRequestAnswered).toHaveBeenCalledTimes(1);
     });
 
     it("stores an empty note as nothing", async () => {

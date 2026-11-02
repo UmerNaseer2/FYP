@@ -106,6 +106,10 @@ const mockCheck = jest.fn<Promise<{ ok: true; run: { status: string } }>, unknow
 jest.mock("../lib/drift-runner", () => ({
   runDriftCheck: (...args: unknown[]) => mockCheck(...args),
 }));
+const mockAlert = jest.fn(async (..._args: unknown[]) => undefined);
+jest.mock("../lib/push-alerts", () => ({
+  alertDriftChange: (...args: unknown[]) => mockAlert(...args),
+}));
 jest.mock("../lib/schema-metrics", () => ({
   pruneSchemaMetrics: async () => 0,
   METRIC_RETENTION_DAYS: 90,
@@ -146,6 +150,7 @@ beforeEach(() => {
   mockDb.connected = 0;
   mockCheck.mockClear();
   mockAfter.mockClear();
+  mockAlert.mockClear();
   delete process.env.VERCEL;
   delete process.env.DRIFT_SCHEDULER;
   jest.spyOn(console, "error").mockImplementation(() => undefined);
@@ -192,6 +197,17 @@ describe("a tick nobody else is running", () => {
     // The tick reads schemas from every organization, so nothing else tells the
     // check whose rows it may read and write.
     expect(mockCheck.mock.calls[0]).toEqual([3, 1, "scheduled", "on_change"]);
+  });
+
+  it("passes each check's outcome to the phone alerts, in that organization", async () => {
+    await runSchedulerTick(NOW);
+    expect(mockAlert.mock.calls).toEqual([[3, { status: "in_sync" }]]);
+  });
+
+  it("has nothing to alert about when a check could not run", async () => {
+    mockCheck.mockRejectedValueOnce(new Error("metadata database went away"));
+    await runSchedulerTick(NOW);
+    expect(mockAlert).not.toHaveBeenCalled();
   });
 
   it("gives the lease back under the name it took it", async () => {

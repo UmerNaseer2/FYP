@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { afterResponse, alertRequestAnswered } from "@/lib/push-alerts";
 import { requireMember } from "@/lib/auth-guard";
 import {
   canAnswerRequests,
@@ -91,6 +92,7 @@ export async function PATCH(
       note === "" ? null : note
     );
     if (!answered) return NextResponse.json({ error: ALREADY }, { status: 409 });
+    afterResponse(() => alertRequestAnswered(principal, answered));
     return NextResponse.json({ request: answered });
   } catch (error) {
     console.error("Could not update a request:", error);

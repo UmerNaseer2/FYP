@@ -288,6 +288,16 @@ describe("isPublicPath", () => {
     }
   });
 
+  it("opens the installable app's two files and nothing beside them", () => {
+    // A browser fetches both without any cookie, so a redirect to sign-in would
+    // stop the app installing and alerts registering. Neither holds anything private.
+    expect(isPublicPath("/sw.js")).toBe(true);
+    expect(isPublicPath("/manifest.webmanifest")).toBe(true);
+    for (const guarded of ["/sw.js/x", "/sw", "/phone", "/manifest.webmanifest/x", "/org/sw.js"]) {
+      expect(isPublicPath(guarded)).toBe(false);
+    }
+  });
+
   it("opens the scheduled call's own path and nothing beside it", () => {
     // Its route checks the shared secret, so this one exact path is safe to open.
     expect(isPublicPath("/api/internal/drift-tick")).toBe(true);

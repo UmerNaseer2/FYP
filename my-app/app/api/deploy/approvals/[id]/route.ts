@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { afterResponse, alertRunDecided } from "@/lib/push-alerts";
 import { requirePermission } from "@/lib/auth-guard";
 import {
   approverKey,
@@ -153,6 +154,7 @@ export async function POST(
       );
     }
 
+    afterResponse(() => alertRunDecided(gate.principal, decided));
     return NextResponse.json({ approval: decided });
   } catch (error) {
     console.error("Approvals — decision failed:", error);

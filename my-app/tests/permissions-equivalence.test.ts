@@ -98,6 +98,10 @@ const ADDED: Record<string, Gate> = {
   "GET /api/me/approver": { kind: "member" },
   "GET /api/me/view-as": { kind: "member" },
   "POST /api/me/view-as": { kind: "member" },
+  "GET /api/phone/push": { kind: "member" },
+  "POST /api/phone/push": { kind: "member" },
+  "DELETE /api/phone/push": { kind: "member" },
+  "POST /api/phone/push/test": { kind: "member" },
   "GET /api/organizations": { kind: "signed-in" },
   "POST /api/organizations": { kind: "signed-in" },
   // Asking is open to every member. Who may answer is checked inside.

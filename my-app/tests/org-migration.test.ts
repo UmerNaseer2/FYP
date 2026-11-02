@@ -132,6 +132,8 @@ const NOT_ORG_SCOPED = [
   "identities",
   "drift_scheduler_state",
   "metadata_boot_stamps",
+  "push_subscriptions",
+  "push_keys",
 ];
 
 const VIEWER_PRESET = presetFor("viewer") ?? [];
