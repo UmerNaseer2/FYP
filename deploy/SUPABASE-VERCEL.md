@@ -1,6 +1,6 @@
 # Running Schema Studio on Supabase and Vercel
 
-> **Half run on real accounts.** The database side of this guide has run on a real Supabase project through its transaction pooler. Vercel has not, so expect to correct a step or two there the first time through.
+> **Run on real accounts.** Sections 1 to 5 and 7 have run on a real Supabase project and a real Vercel project, with a real Microsoft sign-in. Section 6 has not, because Swinburne's server still keeps its own database. Section 8 has run in a desktop browser with a real push, but not yet on a real phone.
 
 The web app runs on Vercel. Its own data (people, roles, saved connections, history) lives in a Supabase project, used as an ordinary PostgreSQL database. It is the same code as the Docker deployment in [README.md](README.md), set up through environment variables. Sign-in stays with Microsoft (and GitHub if you want it) through NextAuth. Supabase Auth is not used.
 
@@ -138,6 +138,30 @@ Both free plans can run this, with limits worth knowing first.
 
 - You get two free projects, each with 500 MB of database size and a fixed 2 GB disk.
 - A project without enough database activity over a week gets paused, and that stops sign-in, the app and the scheduled calls together. Supabase emails a warning first, and you restore the project from its dashboard. Its documentation says a few requests a day are typically enough. The scheduled calls read the database, so they should count, but nobody has yet watched this over a week.
+
+## 8. The phone app
+
+The site has a phone app of its own at `/phone`, on the same address, for example `https://your-project.vercel.app/phone`. It reads from the database in Supabase, so it keeps working with every computer off. Sign in with the same Microsoft account as the full site. The way in from the full site is the link on the Requests page.
+
+| Tab | What it does |
+| --- | --- |
+| Drift | Each tracked schema's last stored result. Check now and Acknowledge, for people allowed to. |
+| History | What changed lately. |
+| Approvals | Read a run's SQL, then approve or reject it. Answer access requests. Starting the run stays on the full site. |
+| Alerts | Turn alerts on for this device, and send a test alert. |
+
+There is nothing to set up on Vercel or Supabase. The app makes its own push key the first time someone turns alerts on and keeps it encrypted in the database.
+
+To use it on a phone:
+
+1. Open the address and sign in. Sign in at the production address only, as in section 3.
+2. Add it to the Home Screen. On an iPhone or iPad, in Safari, tap Share, then Add to Home Screen, and open it from there. iOS only shows alerts from the Home Screen, from iOS 16.4 on. On Android, in Chrome, open the menu and choose Add to Home screen.
+3. Open Alerts, tap Turn on, allow notifications, then tap Send a test alert.
+
+Two things to expect:
+
+- From Vercel, a database on a private network cannot be reached, so its drift checks read "The last check could not reach this database." Only databases reachable from the internet get checked from here.
+- This is separate from the phone link in the desktop app, which reaches one running computer through the relay.
 
 ## Known limits
 
