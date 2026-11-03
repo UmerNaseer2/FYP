@@ -4,6 +4,7 @@ import {
   randomBytes,
   scryptSync,
 } from "node:crypto";
+import { isPlaceholderSecret, PLACEHOLDER_SECRETS } from "./placeholder-secrets";
 
 /**
  * Encryption at rest for saved database credentials.
@@ -72,9 +73,12 @@ function resolveKey(): ResolvedKey {
   }
 
   // Fall back to deriving from NEXTAUTH_SECRET so a project that has already
-  // configured auth gets encryption without a second secret to manage.
+  // configured auth gets encryption without a second secret to manage. Not
+  // from a placeholder written in this repository: anyone could derive that
+  // key too, so "encrypted" would be a promise with nothing behind it.
   const nextAuthSecret = (process.env.NEXTAUTH_SECRET ?? "").trim();
-  if (nextAuthSecret) {
+  const placeholder = isPlaceholderSecret(nextAuthSecret);
+  if (nextAuthSecret && !placeholder) {
     cached = {
       key: scryptSync(nextAuthSecret, DERIVATION_SALT, KEY_BYTES),
       source: "derived",
@@ -85,7 +89,10 @@ function resolveKey(): ResolvedKey {
   if (!warned) {
     warned = true;
     console.warn(
-      "[secret-store] No APP_ENCRYPTION_KEY and no NEXTAUTH_SECRET — saved database " +
+      (placeholder
+        ? "[secret-store] No APP_ENCRYPTION_KEY, and NEXTAUTH_SECRET is the example value from " +
+          "docker-compose.yml, which anyone can read, so no key is made from it. Saved database "
+        : "[secret-store] No APP_ENCRYPTION_KEY and no NEXTAUTH_SECRET — saved database ") +
         "credentials will be stored in PLAIN TEXT. Set APP_ENCRYPTION_KEY (32 bytes, hex or base64) " +
         "in .env.local to turn encryption on; existing rows upgrade the next time they are saved."
     );
@@ -149,12 +156,6 @@ export function decryptSecret(stored: string | null | undefined): string | null 
   if (!isEncrypted(stored)) return stored;
 
   const { key, source } = resolveKey();
-  if (!key) {
-    throw new Error(
-      "This connection's credentials are encrypted but no encryption key is configured. " +
-        "Set APP_ENCRYPTION_KEY in .env.local to the key they were saved with."
-    );
-  }
 
   const parts = stored.split(":");
   // enc : v1 : iv : tag : ciphertext
@@ -170,16 +171,52 @@ export function decryptSecret(stored: string | null | undefined): string | null 
     throw new Error("Stored credential is malformed (bad IV length).");
   }
 
+  if (key) {
+    const plain = openWith(key, iv, tag, ciphertext);
+    if (plain !== null) return plain;
+  }
+
+  // A value saved while NEXTAUTH_SECRET was a placeholder was locked with a
+  // key anyone can derive. Reading it back gives away no secrecy it ever had,
+  // and keeps those connections working now that no key is made from the
+  // placeholder. Saving the password again stores it under this server's own
+  // key, or as typed when there is none.
+  for (const legacy of placeholderKeys()) {
+    const plain = openWith(legacy, iv, tag, ciphertext);
+    if (plain !== null) return plain;
+  }
+
+  if (!key) {
+    throw new Error(
+      "This connection's credentials are encrypted but no encryption key is configured. " +
+        "Set APP_ENCRYPTION_KEY in .env.local to the key they were saved with."
+    );
+  }
+  throw new Error(
+    `Could not decrypt a stored credential with the current key (source: ${source}). ` +
+      "The key has probably changed since the connection was saved — re-enter its password."
+  );
+}
+
+/** The plain text, or null when `key` is not the one the value was locked with. */
+function openWith(key: Buffer, iv: Buffer, tag: Buffer, ciphertext: Buffer): string | null {
   try {
     const decipher = createDecipheriv(ALGORITHM, key, iv);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
   } catch {
-    throw new Error(
-      `Could not decrypt a stored credential with the current key (source: ${source}). ` +
-        "The key has probably changed since the connection was saved — re-enter its password."
-    );
+    return null;
   }
+}
+
+let legacyKeys: Buffer[] | null = null;
+
+/** The keys the placeholders derive, made once (scrypt is slow on purpose). */
+function placeholderKeys(): Buffer[] {
+  if (!legacyKeys) {
+    legacyKeys = PLACEHOLDER_SECRETS.map((secret) => scryptSync(secret, DERIVATION_SALT, KEY_BYTES));
+  }
+  return legacyKeys;
 }
 
 /**

@@ -121,53 +121,47 @@ const TABLE_MATCH_POSSIBLE_THRESHOLD = 55;
 const COLUMN_MATCH_ACCEPT_THRESHOLD = 50;
 const COLUMN_MATCH_POSSIBLE_THRESHOLD = 40;
 
-// Minimum table-name similarity required to AUTO-ACCEPT a non-exact table match.
-// Structural signals alone (columns 55 + constraints 15) can clear the 70-point
-// accept threshold with near-zero name similarity, which auto-emitted a false
-// `ALTER TABLE … RENAME TO` for two unrelated tables (issue #7). Below the floor a
-// structurally-similar pair is demoted to a review candidate instead of an
-// automatic rename. NOTE: stringSimilarity is edit-distance (Levenshtein) based,
-// so an affix rename (users → application_users) scores far below this even though
-// it's a real rename — tableNameRenameGuard handles that via substring containment.
-const TABLE_NAME_SIMILARITY_FLOOR = 0.3;
-
-// Guard deciding whether a structurally-matched table pair may be AUTO-ACCEPTED as
-// a rename. Passes when the names are edit-distance-similar OR when one name is a
-// non-trivial substring of the other (affix rename). Failing pairs are surfaced as
-// review candidates instead of being auto-renamed OR silently dropped to
-// create+drop — the latter would be destructive data loss on apply.
-function tableNameRenameGuard(a: string, b: string): boolean {
-  return nameRenameGuard(a, b, TABLE_NAME_SIMILARITY_FLOOR);
-}
-
-// The same floor for columns, set much higher. Two columns of the same type in
-// the same position inside one table score 45 of 60 on structure alone, which
-// clears the 50-point accept threshold with almost no name agreement — so
-// billing_address and shipping_address were auto-renamed into each other. No
-// row is lost, but every billing address is now filed as a shipping address,
-// which is worse than losing it: nothing says anything went wrong.
+// Minimum name similarity required to AUTO-ACCEPT a guessed rename, for tables
+// and columns alike. The structure decides which pair is the best match, but it
+// cannot tell a rename from two different things that happen to look the same:
+// a table's columns and constraints alone clear the 70-point accept threshold
+// with near-zero name agreement (issue #7), and two columns of the same type in
+// the same position score 45 of 60, past the 50-point column threshold. An
+// auto-accepted rename is the one migration mistake nothing downstream catches:
+// no row is lost and no statement fails, the data is simply filed under the
+// wrong name. So only a name that is nearly the same may be renamed without a
+// person looking.
 //
-// It has to sit above the edit-distance similarity of the near-miss pairs a
-// schema really does contain — billing_address/shipping_address is 0.69,
-// created_at/updated_at 0.6, first_name/last_name 0.56 — while still passing
-// the typo and abbreviation renames (usr_id → user_id is 0.83). Anything below
-// it is offered as a rename candidate to confirm by hand instead, and if it
-// really is not a rename the column is added and dropped, both of which are
-// marked destructive and so stopped by safe mode.
-const COLUMN_NAME_SIMILARITY_FLOOR = 0.8;
+// The similarity is edit-distance based (stringSimilarity), and 0.84 works out
+// as: names of six characters or fewer must match exactly (apart from a plural,
+// see below), names of seven to twelve may differ by one character, names of
+// thirteen to eighteen by two, and so on. That passes typo and abbreviation
+// fixes (usr_id → user_id 0.86, custmer → customer 0.88, customer_nm →
+// customer_name 0.85) and stops the pairs that only look alike: sizes/sites
+// (0.8) and roles/notes (0.6) are different tables, billing_address/
+// shipping_address (0.75), created_at/updated_at and first_name/last_name
+// (both 0.7) are different columns.
+//
+// One name containing the other used to count as a rename too (users →
+// application_users). It no longer does, because a qualifier usually changes
+// the meaning: customer → customer_archive is a different table, address →
+// shipping_address a different column, and treating them as renames moved the
+// real rows under the new name and left the original created empty.
+//
+// A pair that fails this is not lost. It is offered as a rename candidate to
+// confirm by hand, and until then the script creates the new table or column
+// and drops the old one, and the drop is marked destructive, so safe mode
+// holds it back and the old data stays where it is.
+const NAME_SIMILARITY_FLOOR = 0.84;
 
-function columnNameRenameGuard(a: string, b: string): boolean {
-  return nameRenameGuard(a, b, COLUMN_NAME_SIMILARITY_FLOOR);
-}
-
-/** Shared by both: one name contains the other, or they are alike enough. */
-function nameRenameGuard(a: string, b: string, floor: number): boolean {
+/** Whether a structurally matched pair may be renamed without review. */
+function nameRenameGuard(a: string, b: string): boolean {
   const na = normalizeSimilarityText(a);
   const nb = normalizeSimilarityText(b);
-  const shorter = na.length <= nb.length ? na : nb;
-  const longer = na.length <= nb.length ? nb : na;
-  if (shorter.length >= 4 && longer.includes(shorter)) return true;
-  return stringSimilarity(a, b) >= floor;
+  // Singular and plural of the same word (user → users) is the commonest real
+  // table rename, but at 0.8 it falls just short of the floor.
+  if (na + "s" === nb || nb + "s" === na) return true;
+  return stringSimilarity(na, nb) >= NAME_SIMILARITY_FLOOR;
 }
 
 // --- Derived totals (computed once, reused everywhere) ----------------------
@@ -1345,9 +1339,9 @@ function getBestMatches<TLeft, TRight>(
   getLeftName: (value: TLeft) => string,
   getRightName: (value: TRight) => string,
   // Optional extra gate a pair must pass to be AUTO-ACCEPTED (not just clear the
-  // score threshold). Used for tables to require a minimum name similarity, so a
-  // pair that is structurally alike but has unrelated names is surfaced as a
-  // rename *candidate* for review instead of being silently auto-renamed
+  // score threshold). Tables and columns both use it to require nearly the same
+  // name, so a pair that is structurally alike but differently named is surfaced
+  // as a rename *candidate* for review instead of being silently auto-renamed
   // (issue #7). A pair that clears the score but fails this guard falls through
   // to the `possible` bucket.
   acceptGuard?: (left: TLeft, right: TRight) => boolean
@@ -1507,9 +1501,9 @@ function compareColumns(
     "column",
     (col) => col.name,
     (col) => col.name,
-    // Auto-accept a rename only when the names agree; otherwise it is a
-    // candidate to confirm by hand (see COLUMN_NAME_SIMILARITY_FLOOR).
-    (leftColumn, rightColumn) => columnNameRenameGuard(leftColumn.name, rightColumn.name)
+    // Auto-accept a rename only when the names are nearly the same; otherwise
+    // it is a candidate to confirm by hand (see NAME_SIMILARITY_FLOOR).
+    (leftColumn, rightColumn) => nameRenameGuard(leftColumn.name, rightColumn.name)
   );
 
   for (const match of similarityResults.accepted) {
@@ -2820,9 +2814,9 @@ export function compareSchemas(left: SchemaSnapshot, right: SchemaSnapshot): Com
     "table",
     (t) => t.name,
     (t) => t.name,
-    // Auto-accept a rename only when the names are alike or one contains the
-    // other; otherwise surface it as a review candidate (issue #7).
-    (leftTable, rightTable) => tableNameRenameGuard(leftTable.name, rightTable.name)
+    // Auto-accept a rename only when the names are nearly the same; otherwise
+    // surface it as a review candidate (issue #7, see NAME_SIMILARITY_FLOOR).
+    (leftTable, rightTable) => nameRenameGuard(leftTable.name, rightTable.name)
   );
 
   for (const match of similarityResults.accepted) {

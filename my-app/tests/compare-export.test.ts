@@ -79,7 +79,28 @@ describe("documentToMarkdown — headline", () => {
 // Each pair is source first, target second — the way the Compare screen asks.
 const scenarios: { name: string; source: ReturnType<typeof schema>; target: ReturnType<typeof schema> }[] = [
   {
+    // A plural is near enough the same name to be renamed without asking.
     name: "a table renamed and nothing else",
+    source: schema([
+      table("app_users", [
+        column("id", { nullable: false }),
+        column("email", { typeDisplay: "text" }),
+        column("created_at", { typeDisplay: "timestamptz" }),
+        column("full_name", { typeDisplay: "text" }),
+      ]),
+    ]),
+    target: schema([
+      table("app_user", [
+        column("id", { nullable: false }),
+        column("email", { typeDisplay: "text" }),
+        column("created_at", { typeDisplay: "timestamptz" }),
+        column("full_name", { typeDisplay: "text" }),
+      ]),
+    ]),
+  },
+  {
+    // A prefix is not, so this pair is only suggested.
+    name: "a table that may have been renamed",
     source: schema([
       table("app_users", [
         column("id", { nullable: false }),

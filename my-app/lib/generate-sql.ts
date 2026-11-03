@@ -481,11 +481,26 @@ function nonFkConstraints(
 function rebuiltComputedColumns(match: TableMatch): Set<string> {
   const names = new Set<string>();
   for (const col of match.columnMatches) {
+    if (stopsComputingInPlace(col)) continue;
     const before = describeComputed(col.right);
     const after = describeComputed(col.left);
     if (before !== null && after !== null && before !== after) names.add(col.left.name);
   }
   return names;
+}
+
+/**
+ * A STORED computed column in the target that the source has as an ordinary
+ * column. ALTER COLUMN ... DROP EXPRESSION (PostgreSQL 13 and up) turns it into
+ * an ordinary column and keeps every value it holds, so it is not rebuilt.
+ * Rebuilding it, the way every other change of a computed column is handled,
+ * dropped those values and brought the column back empty.
+ *
+ * A VIRTUAL one (PostgreSQL 18) holds no values to keep, and DROP EXPRESSION
+ * refuses it, so it is still rebuilt.
+ */
+function stopsComputingInPlace(col: TableMatch["columnMatches"][number]): boolean {
+  return col.left.generated === null && col.right.generated?.storage === "STORED";
 }
 
 /**
@@ -805,10 +820,19 @@ function tableIndexQuery(tableName: string, indexName: string): string {
   );
 }
 
+// Put text on one line before it goes into a `--` comment. PostgreSQL ends a
+// `--` comment at a line break (\n or \r), and names come from the databases
+// being compared: a table called `x<newline>DROP TABLE customers;` would
+// otherwise start a new line that is not a comment, and that line would run.
+// A quoted name, an enum label or a default can all hold a line break.
+function oneLine(text: string): string {
+  return text.replace(/[\r\n]+/g, " ");
+}
+
 /** A `-- MANUAL:` line: inert when run, but still visible in the script. */
 function manualNote(text: string, description: string, tableName: string): SqlStatement {
   return objectStatement({
-    sql: `-- MANUAL: ${text}`,
+    sql: `-- MANUAL: ${oneLine(text)}`,
     description,
     kind: "MANUAL",
     severity: "info",
@@ -3283,15 +3307,32 @@ function alterStatementsForMatch(
     const rightNorm = normalizeType(colMatch.right.typeDisplay);
 
     // ── A GENERATED ALWAYS AS (…) clause appearing, going, or changing ──────
-    // There is no ALTER for this. PostgreSQL cannot turn a stored column into a
-    // computed one or back, and SET EXPRESSION only exists from version 17, so
-    // the portable answer for all three directions is to rebuild the column.
-    // It runs before everything else this loop emits and then skips the rest:
+    // One direction has an ALTER: a STORED computed column becoming ordinary
+    // (stopsComputingInPlace). For the rest there is none that works
+    // everywhere. PostgreSQL cannot turn an ordinary column into a computed
+    // one, and SET EXPRESSION only exists from version 17, so the portable
+    // answer is to rebuild the column. The rebuild runs before everything else
+    // this loop emits and then skips the rest:
     // a SET DEFAULT or a SET NOT NULL aimed at a column that is about to be
     // dropped is at best wasted and at worst rejected.
     const leftComputed = describeComputed(colMatch.left);
     const rightComputed = describeComputed(colMatch.right);
-    if (leftComputed !== null && rightComputed !== null && leftComputed !== rightComputed) {
+    if (stopsComputingInPlace(colMatch)) {
+      // The values stay where they are. What follows in this loop then
+      // compares the two columns like any others: a type, a default or a
+      // NOT NULL the source has is applied to the now ordinary column.
+      // IF EXISTS makes a second run a no-op once the column is ordinary.
+      stmts.push({
+        sql: `ALTER TABLE ${q(tName)} ALTER COLUMN ${q(colName)} DROP EXPRESSION IF EXISTS;`,
+        description:
+          `Stop computing "${colName}" in "${tName}": it becomes an ordinary column and ` +
+          "keeps the values it holds (needs PostgreSQL 13 or later)",
+        kind: "ALTER_COLUMN_DEFAULT",
+        severity: computedChangeSeverity(),
+        tableName: tName,
+        destructive: false,
+      });
+    } else if (leftComputed !== null && rightComputed !== null && leftComputed !== rightComputed) {
       // Name them. "CASCADE takes any view built on it" tells the reader a rule;
       // this tells them which of their views it is about to remove, and the
       // caller has already queued the source's copy of each for rebuild.
@@ -3307,6 +3348,11 @@ function alterStatementsForMatch(
       // plain data loss — the new expression is not going to reproduce what was
       // in those rows. That one has to be armed like any other destructive drop.
       const dropsStoredValues = !colMatch.right.generated;
+      // A VIRTUAL column turning ordinary (STORED ones stop computing in place,
+      // above). Its values were worked out on every read, and the rebuilt
+      // column starts with its default or NULL, so the values the target's
+      // users saw are gone even though no stored data was.
+      const losesComputedValues = !dropsStoredValues && !colMatch.left.generated;
       stmts.push({
         sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(colName)} CASCADE;`,
         description:
@@ -3315,11 +3361,14 @@ function alterStatementsForMatch(
           `CASCADE takes any index or view built on it${cascadeNote}` +
           (dropsStoredValues
             ? `; the values in "${colName}" are stored data and the new expression does not bring them back`
-            : ""),
+            : losesComputedValues
+              ? `; "${colName}" comes back as an ordinary column holding its default or NULL, ` +
+                "not the values it used to compute"
+              : ""),
         kind: "DROP_COLUMN",
         severity: computedChangeSeverity(),
         tableName: tName,
-        destructive: dropsStoredValues,
+        destructive: dropsStoredValues || losesComputedValues,
       });
       // Same shape as the add-column section above: NOT NULL with no default is
       // the one thing PostgreSQL cannot add to a table that already has rows,
@@ -3642,7 +3691,9 @@ function alterStatementsForMatch(
         stmts.push(
           prefix === null
             ? {
-                sql: `-- MANUAL: set ${step.clause} on the sequence behind "${colName}" in "${tName}" by hand; its name could not be read from the default ${rightDefault}.`,
+                sql: oneLine(
+                  `-- MANUAL: set ${step.clause} on the sequence behind "${colName}" in "${tName}" by hand; its name could not be read from the default ${rightDefault}.`,
+                ),
                 description: `"${colName}" needs ${step.clause} set on its sequence by hand`,
                 kind: "ALTER_SEQUENCE",
                 severity: "info",
@@ -3685,7 +3736,9 @@ function alterStatementsForMatch(
       const sequenceName = nextvalSequenceName(leftDefault);
       if (sequenceName === null) {
         stmts.push({
-          sql: `-- MANUAL: "${colName}" in "${tName}" has the default ${leftDefault}, which could not be read as a sequence; set it by hand.`,
+          sql: oneLine(
+            `-- MANUAL: "${colName}" in "${tName}" has the default ${leftDefault}, which could not be read as a sequence; set it by hand.`,
+          ),
           description: `"${colName}" needs its default set manually`,
           kind: "ALTER_COLUMN_DEFAULT",
           severity: "info",
@@ -4243,9 +4296,10 @@ export function generateMigration(
 }
 
 // Prefix every line of a statement with "-- " so it is inert when executed.
+// PostgreSQL also ends a comment at a lone \r, so that counts as a new line too.
 function commentOut(sql: string): string {
   return sql
-    .split("\n")
+    .split(/\r\n|\r|\n/)
     .map((line) => `-- ${line}`)
     .join("\n");
 }
@@ -4327,7 +4381,7 @@ export function renderMigrationScript(script: MigrationScript): string {
 
   const header = [
     `-- ================================================================`,
-    `-- Migration: ${script.sourceSchema}  →  ${script.targetSchema}`,
+    `-- Migration: ${oneLine(script.sourceSchema)}  →  ${oneLine(script.targetSchema)}`,
     `-- Direction: modifies the RIGHT/TARGET schema to match the LEFT/SOURCE schema`,
     `-- Statements: ${script.statements.length}  (${runsLabel}${breaking} breaking · ${safe} safe · ${info} info)`,
     // Machine-readable, and the only accurate grading of this script that
@@ -4390,7 +4444,7 @@ export function renderMigrationScript(script: MigrationScript): string {
       const muted = (stmt.destructive || stmt.needsArmedDrop === true) && !script.allowDataLoss;
       const tag = muted ? "NOT EXECUTED — " : "";
       return (
-        `-- [${tag}${stmt.severity.toUpperCase()}] ${stmt.description}\n` +
+        `-- [${tag}${stmt.severity.toUpperCase()}] ${oneLine(stmt.description)}\n` +
         (muted ? commentOut(stmt.sql) : stmt.sql)
       );
     })
@@ -4763,7 +4817,8 @@ export function generateRollback(
 function commentList(items: string[], indent: string): string[] {
   const lines: string[] = [];
   let current = "";
-  for (const item of items) {
+  for (const name of items) {
+    const item = oneLine(name);
     const next = current ? `${current}, ${item}` : item;
     if (next.length > 64 && current) {
       lines.push(`${indent}${current}`);
@@ -4818,8 +4873,8 @@ export function renderRollbackScript(script: RollbackScript): string {
   const header = [
     `-- ================================================================`,
     `-- ROLLBACK (down script)`,
-    `-- Undoes the migration ${script.sourceSchema}  →  ${script.targetSchema}`,
-    `-- Runs against: ${script.targetSchema}`,
+    `-- Undoes the migration ${oneLine(script.sourceSchema)}  →  ${oneLine(script.targetSchema)}`,
+    `-- Runs against: ${oneLine(script.targetSchema)}`,
     `-- Statements: ${script.statements.length}  (${breaking} breaking · ${safe} safe · ${info} info)`,
   ];
 
@@ -4903,7 +4958,7 @@ export function renderRollbackScript(script: RollbackScript): string {
       `-- TYPE RESTORED, VALUES NOT. The migration's cast on these columns could`,
       `-- not be undone — the down script gives each column its old type back,`,
       `-- holding whatever the cast left behind:`,
-      ...script.truncatingTypeChanges.map((label) => `--     ${label}`),
+      ...script.truncatingTypeChanges.map((label) => `--     ${oneLine(label)}`),
     );
   }
 
@@ -4914,7 +4969,7 @@ export function renderRollbackScript(script: RollbackScript): string {
       `-- default, and there is no value to give rows that already exist — so on`,
       `-- a non-empty table each comes back nullable and prints the ALTER to run`,
       `-- after you backfill it:`,
-      ...script.nullableOnRestore.map((label) => `--     ${label}`),
+      ...script.nullableOnRestore.map((label) => `--     ${oneLine(label)}`),
     );
   }
 
@@ -4936,7 +4991,7 @@ export function renderRollbackScript(script: RollbackScript): string {
   );
 
   const body = script.statements
-    .map((stmt) => `-- [${stmt.severity.toUpperCase()}] ${stmt.description}\n${stmt.sql}`)
+    .map((stmt) => `-- [${stmt.severity.toUpperCase()}] ${oneLine(stmt.description)}\n${stmt.sql}`)
     .join("\n\n");
 
   return `${header.join("\n")}\n\n${body}`;

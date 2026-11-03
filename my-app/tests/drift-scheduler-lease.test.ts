@@ -305,6 +305,128 @@ describe("keeping the lease during a long tick", () => {
   });
 });
 
+describe("a check that never answers", () => {
+  // A target database that stops answering mid-check (a dropped network, a
+  // frozen server) never sends statement_timeout's error, so the check waits on
+  // its socket for ever. The tick used to wait with it: `busy` stayed set, so
+  // every later tick here skipped, and the lease kept being renewed, so every
+  // other copy of the app skipped too. Nothing was checked again anywhere.
+  //
+  // Timers are faked so the time limit can pass without waiting for it.
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ["nextTick", "queueMicrotask", "setImmediate", "Date"] });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /** CHECK_TIME_LIMIT_MS in lib/drift-scheduler. */
+  const LIMIT_MS = 90_000;
+
+  /** Lets a tick get as far as it can on promises alone. */
+  async function settle() {
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  /** A check that hangs until the test says how it ends. */
+  function hangingCheck() {
+    const ending = {
+      answer: (_value: { ok: true; run: { status: string } }) => undefined as void,
+      fail: (_error: Error) => undefined as void,
+    };
+    mockCheck.mockImplementationOnce(
+      () =>
+        new Promise((resolve, reject) => {
+          ending.answer = resolve;
+          ending.fail = reject;
+        })
+    );
+    return ending;
+  }
+
+  it("stops waiting at the time limit, and not before", async () => {
+    hangingCheck();
+    let finished = false;
+    const tick = runSchedulerTick(NOW).then((report) => {
+      finished = true;
+      return report;
+    });
+    await settle();
+    await jest.advanceTimersByTimeAsync(LIMIT_MS - 1);
+    expect(finished).toBe(false);
+
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await tick).toEqual({ kind: "by_org", byOrg: new Map([[3, "Checked 1 · 1 timed out."]]) });
+    expect(mockAlert).not.toHaveBeenCalled();
+  });
+
+  it("gives the lease back and lets the next tick run", async () => {
+    hangingCheck();
+    const tick = runSchedulerTick(NOW);
+    await settle();
+    await jest.advanceTimersByTimeAsync(LIMIT_MS);
+    await tick;
+
+    // Every other copy of the app can take the next tick...
+    expect(mockDb.row?.holder).toBeNull();
+    expect(mockDb.row?.lastReport).toEqual({
+      kind: "by_org",
+      byOrg: { "3": "Checked 1 · 1 timed out." },
+    });
+    // ...and so can this one, instead of "the previous tick was still running".
+    const next = await runSchedulerTick(new Date(NOW.getTime() + 60_000));
+    expect(next).toEqual({ kind: "by_org", byOrg: new Map([[3, "Checked 1."]]) });
+    expect(mockCheck).toHaveBeenCalledTimes(2);
+    // Neither the lease's renewing nor either tick's time limit is left running.
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("leaves no timer behind when the check answers in time", async () => {
+    await runSchedulerTick(NOW);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("still fails the tick when the check fails in time", async () => {
+    mockCheck.mockRejectedValueOnce(new Error("metadata database went away"));
+    const report = await runSchedulerTick(NOW);
+    expect(report).toEqual({ kind: "shared", line: expect.stringContaining("Tick failed") });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("logs a late failure instead of crashing, and keeps its error out of every line", async () => {
+    const ending = hangingCheck();
+    const tick = runSchedulerTick(NOW);
+    await settle();
+    await jest.advanceTimersByTimeAsync(LIMIT_MS);
+    await tick;
+
+    // The error can come from any organization's database, its host and all.
+    ending.fail(new Error("could not reach db.org-five.internal"));
+    await settle();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("failed after the tick stopped waiting"),
+      "could not reach db.org-five.internal"
+    );
+    for (const orgId of [3, 5]) {
+      expect((await driftSchedulerStatus(orgId)).lastTickSummary).not.toContain("org-five");
+    }
+  });
+
+  it("still sends the alert for a late answer", async () => {
+    // The check carried on and recorded what it found, so the phone should hear
+    // about it, even though the tick's line could not wait for it.
+    const ending = hangingCheck();
+    const tick = runSchedulerTick(NOW);
+    await settle();
+    await jest.advanceTimersByTimeAsync(LIMIT_MS);
+    await tick;
+
+    ending.answer({ ok: true, run: { status: "drifted" } });
+    await settle();
+    expect(mockAlert.mock.calls).toEqual([[3, { status: "drifted" }]]);
+  });
+});
+
 describe("what each organization is told about a tick", () => {
   // One tick checks every organization's due schemas together. A line or a
   // count that added them up would tell each organization how much drift and

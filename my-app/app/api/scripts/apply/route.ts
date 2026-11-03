@@ -17,12 +17,18 @@ import {
   extractEnumAddValues,
   hasExecutableSql,
 } from "@/lib/sql-guard";
+import {
+  ScriptEndedTransactionError,
+  currentTransactionId,
+  readStringsTheStandardWay,
+} from "@/lib/script-transaction";
 import { lockScriptFamilies, lockScriptVersion } from "@/lib/family-lock";
 import { findTrackedSchema, recordAppliedMigrationToLineage, type DriftStatus } from "@/lib/lineage-db";
 import { loudestChangeLevel, type ScriptChangeType } from "@/lib/change-type";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { checkApplications, readAppliesToHeader } from "@/lib/application-targeting";
 import { readApplications } from "@/lib/application-read";
+import { configIdentity, findProductionTwin, twinBlockReason } from "@/lib/environment-guard";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
 import { registryRoot } from "@/lib/registry-paths";
 import {
@@ -621,7 +627,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       return answerBeforeRun(
         {
           error:
-            `sql_content must not contain COMMIT or ROLLBACK statements${at}. ` +
+            `sql_content must not contain COMMIT, END or ROLLBACK statements, or change ` +
+            `standard_conforming_strings${at}. ` +
             "The apply route wraps the run in its own transaction automatically.",
         },
         { status: 400 }
@@ -634,7 +641,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       return answerBeforeRun(
         {
           error:
-            `down_sql must not contain COMMIT or ROLLBACK statements${at}. ` +
+            `down_sql must not contain COMMIT, END or ROLLBACK statements, or change ` +
+            `standard_conforming_strings${at}. ` +
             "The revert runs it in its own transaction.",
         },
         { status: 400 }
@@ -919,6 +927,31 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       { status: 500 }
     );
   }
+  // A second saved connection to a production database, labelled anything
+  // else, must not be the way round the label (see lib/environment-guard).
+  // Refused outright rather than treated as production, because the screens
+  // decide what to ask for from the label: fixing the label is what makes
+  // them ask. A failed read stops the run, like the tracked-schema read in 4b.
+  if (!isProduction(targetEnvironment)) {
+    let twin: Awaited<ReturnType<typeof findProductionTwin>>;
+    try {
+      twin = await findProductionTwin(orgId, connectionId, configIdentity(targetConfig));
+    } catch (error) {
+      console.error("Apply — could not check for a production connection to the same database:", error);
+      return answerBeforeRun(
+        {
+          error:
+            "Could not check whether another saved connection labels this database " +
+            "Production, so nothing ran. Try again in a moment.",
+        },
+        { status: 503 }
+      );
+    }
+    if (twin) {
+      return answerBeforeRun({ error: twinBlockReason(twin.name), environment: "prod" }, { status: 409 });
+    }
+  }
+
   const targetPool = getPoolForConfig(targetConfig);
 
   // ─── 4c. Production needs a second person, not a second checkbox ──────────
@@ -1019,6 +1052,13 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   }
 
   // ─── 6. Connect to the target database ───────────────────────────────────
+  //
+  // Every release of this connection below is release(true), which closes it
+  // instead of handing it back to the pool. The scripts it runs are written by
+  // people, and a plain SET in one (not SET LOCAL) outlives the transaction:
+  // search_path, role, a timeout or standard_conforming_strings would sit on
+  // the pooled connection and change what the next deploy or compare does.
+  // A deploy is rare, so a fresh connection for the next one costs nothing.
   let client;
   try {
     client = await targetPool.connect();
@@ -1057,7 +1097,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       [schemaName]
     );
     if (exists.rows.length === 0) {
-      client.release();
+      client.release(true);
       await releaseClaimedApproval();
       return answerBeforeRun(
         {
@@ -1080,7 +1120,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — could not check the target schema:", message);
-    client.release();
+    client.release(true);
     await releaseClaimedApproval();
     return answerBeforeRun(
       {
@@ -1123,7 +1163,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     for (const job of queue) {
       const verdict = checkApplications(readAppliesToHeader(job.sqlContent), applications);
       if (verdict.allowed) continue;
-      client.release();
+      client.release(true);
       await releaseClaimedApproval();
       return answerBeforeRun(
         {
@@ -1145,7 +1185,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       ? await checkAgainstLedger(client, quotedSchema, queue)
       : null;
     if (problem) {
-      client.release();
+      client.release(true);
       await releaseClaimedApproval();
       return answerBeforeRun(
         {
@@ -1161,7 +1201,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — could not read the versions already applied:", message);
-    client.release();
+    client.release(true);
     await releaseClaimedApproval();
     return answerBeforeRun(
       {
@@ -1194,6 +1234,9 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
   // Set in the catch below: the COMMIT threw and the server never said
   // whether it landed. The finally block reads it to decide the approval.
   let commitOutcomeUnknown = false;
+  // Set in the catch below: a script ended the run's transaction itself, so
+  // part of it may be committed. Like an unknown COMMIT, the approval stays spent.
+  let scriptEndedTransaction = false;
   // The enum additions step 7 actually ran and committed. Only the ones whose
   // type already existed are hoisted, so this is shorter than what the scripts
   // ask for whenever a run creates a type and extends it in the same breath.
@@ -1260,6 +1303,12 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     await client.query(
       `SET LOCAL search_path TO ${quotedSchema}`
     );
+
+    // Make the server read strings the way lib/sql-guard did when it checked
+    // the scripts, then note which transaction this is. Each script is checked
+    // against that id after it runs: see lib/script-transaction.
+    await readStringsTheStandardWay(client);
+    const runTransactionId = await currentTransactionId(client);
 
     // A dry run may be rehearsing against a schema that has never been deployed
     // to, where script_patch does not exist yet: a real apply would have created
@@ -1399,6 +1448,15 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
         | PgExecResult[];
       const statements = Array.isArray(execution) ? execution.length : 1;
 
+      // The script passed the COMMIT check, but if it still ended the run's
+      // transaction, the connection is now in a different one, or in none.
+      if ((await currentTransactionId(client)) !== runTransactionId) {
+        throw new ScriptEndedTransactionError(
+          `${scriptLabel(job.scriptName, job.version)} ended this run's transaction itself ` +
+            `(with a COMMIT, END or ROLLBACK the script check did not recognise).`
+        );
+      }
+
       if (dryRun) {
         outcomes.push({
           script_name: job.scriptName,
@@ -1451,7 +1509,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     if (dryRun) {
       await client.query("ROLLBACK");
       transactionStarted = false;
-      client.release();
+      client.release(true);
       clientReleased = true;
 
       const totalStatements = outcomes.reduce((sum, o) => sum + (o.statements ?? 0), 0);
@@ -1491,7 +1549,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // Release the target-pool connection BEFORE the lineage advance below: that
     // step re-introspects the target (drawing its own connection), so holding this
     // one meanwhile needlessly occupies a slot on the max-4 pool.
-    client.release();
+    client.release(true);
     clientReleased = true;
 
     // ─── 9. Advance lineage for TRACKED schemas (issue #12) ──────────────────
@@ -1621,6 +1679,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // The other half of the same question: the COMMIT threw and the server DID
     // answer, so it refused the commit and rolled the run back itself.
     const commitRefused = commitAttempted && !runCommitted && !commitOutcomeUnknown;
+    scriptEndedTransaction = error instanceof ScriptEndedTransactionError;
     // Only ROLLBACK if we actually issued a BEGIN — otherwise the database
     // is not in a transaction and ROLLBACK would just log a warning.
     if (transactionStarted) {
@@ -1636,6 +1695,31 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
       dryRun ? "Apply — dry run failed:" : "Apply — script execution failed:",
       message
     );
+
+    // The script committed part of itself, so "nothing was applied" may be
+    // false and re-running it could apply that part twice.
+    if (scriptEndedTransaction) {
+      return NextResponse.json(
+        {
+          success: false,
+          dryRun,
+          outcomeUnknown: true,
+          schema: schemaName,
+          results: queue.map((job) => ({
+            script_name: job.scriptName,
+            version: job.version,
+            status: "unknown" as const,
+            error: "A script ended the run's transaction itself.",
+          })),
+          error:
+            `${message} Anything it ran before that point may already be committed to ` +
+            `schema "${schemaName}"${dryRun ? ", even though this was a dry run" : ""}, and ` +
+            `the script_patch table has no row for it. Do not re-run this. Compare the ` +
+            `schema to see what changed, and take the COMMIT, END or ROLLBACK out of the script.`,
+        },
+        { status: 500 }
+      );
+    }
 
     if (commitOutcomeUnknown) {
       return NextResponse.json(
@@ -1794,7 +1878,7 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // Always release — whether we succeeded, failed, or hit the 409 branch —
     // unless the success path already released it before the lineage advance.
     // Without this the pool eventually runs out of connections and hangs.
-    if (!clientReleased) client.release();
+    if (!clientReleased) client.release(true);
     // Every exit from here that is not a commit rolled the whole run back, so
     // the approval was not spent. Hand it back rather than making the second
     // person read the same migrations again.
@@ -1808,7 +1892,9 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // A COMMIT the server REFUSED is not that case: it rolled the run back and
     // said so, so the approval was not spent and goes back like any other
     // failure. Hence commitOutcomeUnknown here rather than commitAttempted.
-    if (!runCommitted && !commitOutcomeUnknown) await releaseClaimedApproval();
+    if (!runCommitted && !commitOutcomeUnknown && !scriptEndedTransaction) {
+      await releaseClaimedApproval();
+    }
   }
 }
 

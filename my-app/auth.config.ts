@@ -2,6 +2,7 @@ import type { NextAuthConfig, Profile } from "next-auth";
 import type { CredentialsConfig } from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
+import { isPlaceholderSecret } from "./lib/placeholder-secrets";
 
 /**
  * The edge-safe half of the NextAuth configuration.
@@ -87,8 +88,13 @@ export const desktopConfigured =
  * simply never set it answered 500 to /api/auth/session on every single page
  * load. Nothing broke visibly, because the bypass supplies its own principal,
  * but the console filled with errors that had nothing to do with the page.
+ *
+ * The placeholder docker-compose.yml used to fill in does not count: it is
+ * written in this repository, so anyone could sign a session cookie with it
+ * and be let in as whoever they liked (lib/placeholder-secrets.ts).
  */
-export const secretConfigured = Boolean(process.env.NEXTAUTH_SECRET);
+export const secretConfigured =
+  Boolean(process.env.NEXTAUTH_SECRET) && !isPlaceholderSecret(process.env.NEXTAUTH_SECRET);
 
 /**
  * True when a real sign-in could actually complete: somewhere to sign in to

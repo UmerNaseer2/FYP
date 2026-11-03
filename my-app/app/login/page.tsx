@@ -384,7 +384,9 @@ export default function LoginPage() {
                         <div style={{ color: "var(--text-2)" }}>
                           This server has no sign-in credentials, so there is
                           nothing to sign in against. Whoever runs it needs to
-                          set NEXTAUTH_SECRET, plus AZURE_AD_CLIENT_ID,
+                          set NEXTAUTH_SECRET to a random value of its own
+                          (the example in docker-compose.yml does not count),
+                          plus AZURE_AD_CLIENT_ID,
                           AZURE_AD_CLIENT_SECRET and AZURE_AD_TENANT_ID for
                           Microsoft or GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET
                           for GitHub, then restart.

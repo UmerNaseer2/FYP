@@ -38,8 +38,9 @@ import {
  *     where it can be unit-tested without waiting fifteen minutes. Everything
  *     here is I/O and guards.
  *   • Every tick is bounded: at most MAX_PER_TICK schemas, at most
- *     CHECK_CONCURRENCY at a time. A backlog drains over several ticks rather
- *     than opening thirty connections to other people's databases at once.
+ *     CHECK_CONCURRENCY at a time, each waited on for at most
+ *     CHECK_TIME_LIMIT_MS. A backlog drains over several ticks rather than
+ *     opening thirty connections to other people's databases at once.
  *   • It never throws. A tick that fails logs and the next one tries again;
  *     a scheduler that can kill the server is worse than no scheduler.
  *   • One loop serves every organization. It reads every organization's
@@ -70,6 +71,34 @@ const MAX_PER_TICK = 6;
  * invisible to.
  */
 const CHECK_CONCURRENCY = 2;
+
+/**
+ * How long a tick waits for one check before it stops waiting and moves on.
+ *
+ * A check that never came back used to stop the schedule everywhere. The tick
+ * waiting for it never ended, so `busy` stayed set and every later tick on this
+ * copy skipped, and its lease kept being renewed, so every other copy skipped
+ * too. A target database that stops answering mid-check does exactly that:
+ * statement_timeout is enforced by the server, and a frozen server or a dropped
+ * network never sends the error back.
+ *
+ * Ninety seconds. A healthy check takes a few seconds, and lib/postgres gives
+ * up on a connection after ten and on any one catalog query after thirty, so a
+ * check still going after ninety is almost always waiting on a socket that will
+ * not answer. It also fits the worst tick inside a serverless host's limit:
+ * MAX_PER_TICK checks, CHECK_CONCURRENCY at a time, is three rounds, and three
+ * rounds of ninety seconds end inside the drift-tick route's 300-second
+ * maxDuration, so even a tick in which every check hangs gives its lease back
+ * and writes its line. LEASE_SECONDS needs no such fit, because the lease is
+ * renewed for as long as the tick works.
+ *
+ * Getting it wrong costs little: a check the tick stops waiting for is not
+ * cancelled, and still records what it finds (see withinCheckLimit).
+ */
+const CHECK_TIME_LIMIT_MS = 90_000;
+
+/** The outcome a tick line counts for a check it stopped waiting for. */
+const TIMED_OUT = "problem:timed_out";
 
 /**
  * How often the monitoring readings are pruned.
@@ -399,19 +428,9 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
     console.error("Drift scheduler — agent sweep failed:", error instanceof Error ? error.name : "unknown error");
   });
 
-  const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, async (entry) => {
-    // "on_change" so a quarter-hourly "still fine" does not push a day of
-    // real events out of the audit feed. The check is still stamped.
-    const result = await runDriftCheck(
-      entry.orgId,
-      entry.trackedSchemaId,
-      "scheduled",
-      "on_change"
-    );
-    // Only scheduled checks alert: someone who presses Check now is looking at the answer.
-    if (result.ok) await alertDriftChange(entry.orgId, result.run);
-    return result.ok ? result.run.status : `problem:${result.problem.kind}`;
-  });
+  const outcomes = await mapWithLimit(due, CHECK_CONCURRENCY, (entry) =>
+    withinCheckLimit(entry, checkOne(entry))
+  );
 
   const checked = due.map((entry, index) => ({ entry, outcome: outcomes[index] }));
   for (const { entry } of checked) {
@@ -430,6 +449,60 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
     );
   }
   return { kind: "by_org", byOrg };
+}
+
+/** One scheduled check and its phone alert, as the outcome a tick line counts. */
+async function checkOne(entry: ScheduledSchema): Promise<string> {
+  // "on_change" so a quarter-hourly "still fine" does not push a day of
+  // real events out of the audit feed. The check is still stamped.
+  const result = await runDriftCheck(entry.orgId, entry.trackedSchemaId, "scheduled", "on_change");
+  // Only scheduled checks alert: someone who presses Check now is looking at the answer.
+  if (result.ok) await alertDriftChange(entry.orgId, result.run);
+  return result.ok ? result.run.status : `problem:${result.problem.kind}`;
+}
+
+/**
+ * Wait for one check, but for no longer than CHECK_TIME_LIMIT_MS.
+ *
+ * When the limit passes the check is not cancelled, because nothing can cancel
+ * a query that is waiting on a socket. It carries on by itself: if it does
+ * finish, it still stamps and records what it found and sends its alert, and
+ * only this tick's line misses it. A failure that late has no tick left to
+ * fail, so it goes to the server's log instead of becoming an unhandled
+ * rejection.
+ *
+ * A check that fails inside the limit still rejects, as it always did, so the
+ * tick reads as failed.
+ */
+async function withinCheckLimit(entry: ScheduledSchema, check: Promise<string>): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), CHECK_TIME_LIMIT_MS);
+    // Same reason as the loop's timer: this must not hold a process open.
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([check, limit]);
+    if (outcome !== null) return outcome;
+  } finally {
+    // A check that answered in time leaves no timer behind.
+    clearTimeout(timer);
+  }
+
+  // Only the server's log says which check it was. The tick's line for this
+  // organization just counts it, and no other organization's line mentions it.
+  console.error(
+    `Drift scheduler — tracked schema ${entry.trackedSchemaId} (organization ${entry.orgId}) ` +
+      `was still being checked after ${CHECK_TIME_LIMIT_MS / 1000}s, so the tick stopped waiting for it.`
+  );
+  check.catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `Drift scheduler — tracked schema ${entry.trackedSchemaId} (organization ${entry.orgId}) failed after the tick stopped waiting:`,
+      message
+    );
+  });
+  return TIMED_OUT;
 }
 
 /**
@@ -458,10 +531,17 @@ function orgTickLine(
   const count = (outcome: string) => checked.filter((item) => item.outcome === outcome).length;
   const drifted = count("drifted");
   const unreachable = count("unreachable");
-  const problems = checked.filter((item) => item.outcome.startsWith("problem:")).length;
+  // Counted apart from the other problems: "could not run" points at the
+  // tracked schema, and a timed-out check points at a database that stopped
+  // answering.
+  const timedOut = count(TIMED_OUT);
+  const problems = checked.filter(
+    (item) => item.outcome.startsWith("problem:") && item.outcome !== TIMED_OUT
+  ).length;
   const parts = [`Checked ${checked.length}`];
   if (drifted > 0) parts.push(`${drifted} drifted`);
   if (unreachable > 0) parts.push(`${unreachable} unreachable`);
+  if (timedOut > 0) parts.push(`${timedOut} timed out`);
   if (problems > 0) parts.push(`${problems} could not run`);
   if (waiting > 0) parts.push(`${waiting} more waiting for the next tick`);
   return `${parts.join(" · ")}.`;

@@ -76,6 +76,29 @@ const IDLE_TIMEOUT_MS = 30_000;
 const INTROSPECTION_TIMEOUT_MS = 30_000;
 
 /**
+ * How long a connection may sit with nothing arriving before the operating
+ * system starts asking whether the database at the other end is still there.
+ *
+ * statement_timeout is enforced by the server, so a server that stops answering
+ * (frozen, powered off, or cut off by a dropped network) never sends the error,
+ * and pg puts no limit of its own on the wait. Without TCP keepalive the socket
+ * stays open for ever, and so does whatever is waiting on it: one such database
+ * once stopped every scheduled drift check. With it, the operating system
+ * notices the silence, closes the socket, and pg reports an ordinary error.
+ *
+ * Ten seconds of quiet before the first probe, because a probe is an empty
+ * packet and costs nothing. How soon a dead peer is noticed after that is up to
+ * the operating system. It is a backstop, not a time limit: a machine that is
+ * still up answers the probes even while the database on it is stuck, which is
+ * why lib/drift-scheduler also stops waiting for a slow check.
+ *
+ * There is deliberately no pool-wide query_timeout. These pools also run
+ * migrations (app/api/scripts/apply), and a migration that rewrites a big table
+ * can honestly take longer than any limit picked here.
+ */
+const KEEPALIVE_INITIAL_DELAY_MS = 10_000;
+
+/**
  * The pool for a host this server refuses to dial.
  *
  * Every caller borrows a connection first — or calls query(), which borrows one
@@ -127,6 +150,8 @@ export function getPoolForConfig(cfg: ClientConfig): Pool {
       max: POOL_MAX,
       connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
       idleTimeoutMillis: IDLE_TIMEOUT_MS,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
     });
     // A pool with no 'error' listener crashes the process when an idle
     // connection drops — and hosted databases drop idle connections routinely.

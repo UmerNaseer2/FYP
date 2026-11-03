@@ -380,6 +380,9 @@ describe("generateMigration — rebuilding a generated column", () => {
   const gen = (expression: string) => ({
     generated: { storage: "STORED" as const, expression },
   });
+  const virtual = (expression: string) => ({
+    generated: { storage: "VIRTUAL" as const, expression },
+  });
 
   /** A table whose "total" is computed in the source and computed differently, or not at all, in the target. */
   function totals(
@@ -423,9 +426,11 @@ describe("generateMigration — rebuilding a generated column", () => {
   it("adds a NOT NULL rebuild as nullable and puts NOT NULL back after", () => {
     // ADD COLUMN … NOT NULL with no default is refused outright on a table that
     // already has rows, and one refused statement aborts the whole script.
+    // A VIRTUAL column is the one that still rebuilds into an ordinary column
+    // (a STORED one stops computing in place, below).
     const { source, target } = totals(
       { nullable: false, generated: null },
-      { nullable: false, ...gen("qty * 2") }
+      { nullable: false, ...virtual("qty * 2") }
     );
     const sql = statementsThatRun(migration(source, target, { allowDataLoss: true })).map(
       (s) => s.sql
@@ -434,6 +439,63 @@ describe("generateMigration — rebuilding a generated column", () => {
     expect(added).toBeGreaterThan(-1);
     expect(sql[added]).not.toContain("NOT NULL");
     expect(sql[added + 1]).toContain('ALTER COLUMN "total" SET NOT NULL');
+  });
+
+  it("stops computing a STORED column in place, keeping its values", () => {
+    // The target computes "total"; the source has it as an ordinary column.
+    // DROP EXPRESSION keeps every value the column holds. The rebuild this
+    // used to get dropped them and brought the column back empty.
+    const { source, target } = totals({ generated: null }, gen("qty * 2"));
+    const script = migration(source, target);
+    const sql = statementsThatRun(script).map((s) => s.sql);
+    expect(sql).toContain('ALTER TABLE "invoices" ALTER COLUMN "total" DROP EXPRESSION IF EXISTS;');
+    expect(script.statements.some((s) => s.kind === "DROP_COLUMN" || s.kind === "ADD_COLUMN")).toBe(false);
+    expect(script.statements.every((s) => !s.destructive)).toBe(true);
+    expect(renderMigrationScript(script)).not.toContain("CASCADE");
+  });
+
+  it("then applies the source's type, default and NOT NULL to the now ordinary column", () => {
+    const { source, target } = totals(
+      { typeDisplay: "numeric(12,2)", nullable: false, columnDefault: "0", generated: null },
+      { typeDisplay: "numeric", nullable: true, ...gen("qty * 2") }
+    );
+    const sql = statementsThatRun(migration(source, target, { allowDataLoss: true })).map((s) => s.sql);
+    const stop = sql.findIndex((text) => /DROP EXPRESSION/.test(text));
+    const after = (pattern: RegExp) => sql.findIndex((text) => pattern.test(text));
+    expect(stop).toBeGreaterThan(-1);
+    expect(after(/ALTER COLUMN "total" TYPE numeric\(12,2\)/)).toBeGreaterThan(stop);
+    expect(after(/ALTER COLUMN "total" SET DEFAULT 0/)).toBeGreaterThan(stop);
+    expect(after(/ALTER COLUMN "total" SET NOT NULL/)).toBeGreaterThan(stop);
+  });
+
+  it("leaves an index on a column that stops computing in place alone", () => {
+    const index: IndexSnapshot = {
+      name: "invoices_total_idx",
+      definition: 'CREATE INDEX invoices_total_idx ON public.invoices USING btree (total)',
+      normalizedDefinition: "create index invoices_total_idx on invoices using btree (total)",
+      columns: ["total"],
+      isUnique: false,
+      method: "btree",
+      predicate: null,
+    };
+    const { source, target } = totals({ generated: null }, gen("qty * 2"), { indexes: [index] });
+    target.tables[0].indexes = [index];
+    const sql = renderMigrationScript(migration(source, target));
+    expect(sql).toContain("DROP EXPRESSION");
+    expect(sql).not.toContain("CREATE INDEX");
+  });
+
+  it("arms the rebuild of a VIRTUAL column that becomes ordinary, and says the values go", () => {
+    // A VIRTUAL column holds nothing to keep, and DROP EXPRESSION refuses it,
+    // so it is rebuilt. The rebuilt column holds its default or NULL, not the
+    // values the target's users saw, so it is held back like a data loss.
+    const { source, target } = totals({ generated: null }, virtual("qty * 2"));
+    const script = migration(source, target);
+    const drop = script.statements.find((s) => s.kind === "DROP_COLUMN");
+    expect(drop?.destructive).toBe(true);
+    expect(drop?.description).toContain("not the values it used to compute");
+    expect(statementsThatRun(script)).not.toContain(drop);
+    expect(renderMigrationScript(script)).not.toContain("DROP EXPRESSION");
   });
 
   it("puts back the index CASCADE took with the column", () => {
@@ -1281,6 +1343,40 @@ describe("generateMigration — safe to run twice, the harder cases", () => {
     expect(report.matchedTables.map((match) => match.exact)).toEqual([false]);
     const sql = renderMigrationScript(generateMigration(report, {}));
     expect(sql).toContain('ALTER TABLE IF EXISTS "customers" RENAME TO "customer";');
+  });
+
+  // A pair whose names only share a word is offered for review, not renamed.
+  // What the script then does with it is the safe path: build what the source
+  // wants, and hold back the drop of what the target has, so no row moves under
+  // the wrong name and none is thrown away until someone arms the drop.
+  it("creates the table and holds back the drop when the names only share a word", () => {
+    const columns = [
+      column("id", { nullable: false }),
+      column("email", { typeDisplay: "text" }),
+      column("created_at", { typeDisplay: "timestamptz" }),
+    ];
+    const script = migration(
+      schema([table("customer", columns)]),
+      schema([table("customer_archive", columns)])
+    );
+    const kinds = script.statements.map((s) => `${s.kind} ${s.tableName}${s.destructive ? " (destructive)" : ""}`);
+    expect(kinds).not.toContainEqual(expect.stringMatching(/^RENAME_TABLE/));
+    expect(kinds).toContain("CREATE_TABLE customer");
+    expect(kinds).toContain("DROP_TABLE customer_archive (destructive)");
+    // Safe mode is the default, and the drop is not among what runs.
+    expect(statementsThatRun(script).map((s) => s.kind)).not.toContain("DROP_TABLE");
+  });
+
+  it("adds the column and holds back the drop when the names only share a word", () => {
+    const script = migration(
+      schema([table("orders", [column("id"), column("shipping_address", { typeDisplay: "text" })])]),
+      schema([table("orders", [column("id"), column("address", { typeDisplay: "text" })])])
+    );
+    const kinds = script.statements.map((s) => `${s.kind} ${s.tableName}${s.destructive ? " (destructive)" : ""}`);
+    expect(kinds).not.toContainEqual(expect.stringMatching(/^RENAME_COLUMN/));
+    expect(kinds).toContain("ADD_COLUMN orders");
+    expect(kinds).toContain("DROP_COLUMN orders (destructive)");
+    expect(statementsThatRun(script).map((s) => s.kind)).not.toContain("DROP_COLUMN");
   });
 
   it("turns a serial column into an identity column once, and skips both steps after", () => {

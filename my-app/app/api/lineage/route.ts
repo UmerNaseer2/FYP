@@ -6,6 +6,12 @@ import {
   type TrackedSchemaListItem,
 } from "@/lib/lineage-db";
 import { ENVIRONMENTS, toEnvironment } from "@/lib/environments";
+import { hasPermission } from "@/lib/permissions";
+import {
+  UNLABEL_PRODUCTION_PERMISSION,
+  lowersProduction,
+  unlabelRefusal,
+} from "@/lib/environment-guard";
 
 // Re-export so existing callers can keep importing the list item type from here.
 export type { TrackedSchemaListItem };
@@ -71,6 +77,24 @@ export async function PATCH(request: NextRequest) {
       );
     }
     const environment = toEnvironment(raw);
+
+    // Taking the Production label off needs the permission that gives
+    // approvals, the same rule as a connection's label (lib/environment-guard).
+    // Asked only when the caller lacks it, so an Admin's edit costs no extra
+    // read. A schema that is not tracked falls through to the 404 below.
+    if (!hasPermission(gate.principal, UNLABEL_PRODUCTION_PERMISSION)) {
+      const current = await pool.query<{ schema_name: string; environment: string }>(
+        `SELECT schema_name, environment FROM tracked_schemas WHERE id = $1 AND org_id = $2`,
+        [id, gate.principal.orgId]
+      );
+      const row = current.rows?.[0];
+      if (row && lowersProduction(toEnvironment(row.environment), environment)) {
+        return NextResponse.json(
+          { error: unlabelRefusal(`schema "${row.schema_name}"`) },
+          { status: 403 }
+        );
+      }
+    }
 
     // Another organization's schema reads as not tracked, the same answer an
     // untracked one gets, so this cannot be used to learn which ids exist.

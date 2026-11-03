@@ -18,9 +18,13 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      # Published so you can point psql at it while the stack is running. Drop
-      # this line if you would rather it stayed inside the compose network.
-      - "${POSTGRES_PORT:-5433}:5432"
+      # Published so you can point psql at it while the stack is running, on
+      # this machine only (127.0.0.1): the password above is the example one,
+      # and this database holds every saved connection. To reach it from other
+      # machines, change POSTGRES_PASSWORD first, then set POSTGRES_PORT=5433.
+      # Drop these lines if you would rather it stayed inside the compose
+      # network.
+      - "${POSTGRES_PORT:-127.0.0.1:5433}:5432"
     healthcheck:
       # The app creates its tables on first use, so it must not start until the
       # server is actually accepting connections — not merely running.
@@ -51,10 +55,16 @@ services:
       # because the postgres image serves no SSL, and the app only turns SSL
       # off by itself for localhost (see lib/db/metadata-ssl.ts).
       DATABASE_URL_A: postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}?sslmode=disable
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-before-anyone-else-uses-this}
-      # Optional. Set to a 32-byte base64 or hex key to encrypt stored
-      # connection passwords at rest; without it they are stored as typed and
-      # the Connections screen says so.
+      # Signs the session cookie when real sign-in is on. Set your own,
+      # `openssl rand -hex 32`, before turning the bypass off: with none the
+      # app will not sign anyone in. There is no default on purpose. One
+      # written here would be the same for every copy, so anyone could sign a
+      # cookie with it, and the app now refuses the one this file used to have.
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      # Optional. Set to a 32-byte base64 or hex key (`openssl rand -hex 32`)
+      # to encrypt stored connection passwords at rest; without it (and
+      # without a NEXTAUTH_SECRET of your own) they are stored as typed and the
+      # Connections screen says so.
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       # Optional. Needed only by the Script Editor's push/pull to the GitHub
       # script registry; the rest of the app works without them.
@@ -72,7 +82,11 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${APP_PORT:-3000}:3000"
+      # This machine only (127.0.0.1) by default, because with the bypass above
+      # anyone who can open the page acts as an admin. To open it to other
+      # machines, turn the bypass off and set up sign-in first, then set
+      # APP_PORT=3000, or put a proxy in front as deploy/README.md describes.
+      - "${APP_PORT:-127.0.0.1:3000}:3000"
     restart: unless-stopped
     # Compose Watch: rebuild the app image and swap the container whenever a
     # source file under my-app/ changes. It is OFF until you ask for it, with

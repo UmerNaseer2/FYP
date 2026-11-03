@@ -15,10 +15,12 @@ import {
 } from "@/lib/connection-validate";
 import { TEST_ORG } from "./helpers/principals";
 
+// The role the gate hands the route. Editor unless a test says otherwise.
+let mockRole: "viewer" | "editor" | "admin" = "editor";
 jest.mock("../lib/auth-guard", () => ({
   requirePermission: async () => ({
     ok: true,
-    principal: require("./helpers/principals").principalFor("editor"),
+    principal: require("./helpers/principals").principalFor(mockRole),
   }),
 }));
 
@@ -386,5 +388,98 @@ describe("connections inside the caller's organization", () => {
     expect(result.status).toBe(200);
     expect(mockDependents).toHaveBeenCalledWith(TEST_ORG.id, 4);
     expect(statements(/DELETE FROM connections/)[0][1]).toEqual([4, TEST_ORG.id]);
+  });
+});
+
+// The Production label is what makes a deploy wait for an approval. An editor
+// who could take it off could relabel production "dev", run a script with no
+// approval and put the label back, so taking it off (or deleting a connection
+// that carries it) needs the permission that approves production deploys.
+describe("taking the Production label off a connection", () => {
+  let infoSpy: jest.SpyInstance;
+
+  function setUpLabelled(environment: string) {
+    mockDependents.mockClear();
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockImplementation(async (text: string) => {
+      if (/SELECT password, connection_string/.test(text)) {
+        return { rows: [{ ...SAVED, name: "Production", environment }] };
+      }
+      if (/SELECT name, environment FROM connections/.test(text)) {
+        return { rows: [{ name: "Production", environment }] };
+      }
+      if (/RETURNING/.test(text)) return { rows: [{ id: 4, name: "Production" }] };
+      return { rows: [], rowCount: 1 };
+    });
+  }
+
+  async function remove(body: Record<string, unknown>) {
+    const request = new NextRequest("http://localhost:3000/api/connections", {
+      method: "DELETE",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const response = await DELETE(request);
+    return { status: response.status, body: await response.json() };
+  }
+
+  const deleted = () => mockPoolQuery.mock.calls.some(([text]) => /DELETE FROM connections/.test(text));
+
+  beforeEach(() => {
+    infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    mockRole = "editor";
+    infoSpy.mockRestore();
+  });
+
+  it("refuses an editor who relabels a production connection dev, and saves nothing", async () => {
+    setUpLabelled("prod");
+    const result = await put({ ...EDIT, environment: "dev" });
+    expect(result.status).toBe(403);
+    expect(result.body.error).toMatch(/take the Production label off connection "Production"/);
+    expect(updated()).toBe(false);
+  });
+
+  it("refuses staging as much as dev", async () => {
+    setUpLabelled("prod");
+    const result = await put({ ...EDIT, environment: "staging" });
+    expect(result.status).toBe(403);
+    expect(updated()).toBe(false);
+  });
+
+  it("lets an admin take the label off, and logs who did", async () => {
+    mockRole = "admin";
+    setUpLabelled("prod");
+    const result = await put({ ...EDIT, environment: "dev" });
+    expect(result.status).toBe(200);
+    expect(updated()).toBe(true);
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringMatching(/relabelled from prod to dev by admin@test/));
+  });
+
+  it("lets an editor put the label on, or keep it", async () => {
+    setUpLabelled("dev");
+    expect((await put({ ...EDIT, environment: "prod" })).status).toBe(200);
+    setUpLabelled("prod");
+    expect((await put({ ...EDIT, environment: "prod" })).status).toBe(200);
+    expect(infoSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses an editor who deletes a production connection, and deletes nothing", async () => {
+    setUpLabelled("prod");
+    const result = await remove({ id: 4, confirm: true });
+    expect(result.status).toBe(403);
+    expect(result.body.error).toMatch(/delete connection "Production", which is labelled Production/);
+    expect(deleted()).toBe(false);
+    expect(mockDependents).not.toHaveBeenCalled();
+  });
+
+  it("lets an editor delete a dev connection, and an admin a production one", async () => {
+    setUpLabelled("dev");
+    expect((await remove({ id: 4 })).status).toBe(200);
+    mockRole = "admin";
+    setUpLabelled("prod");
+    expect((await remove({ id: 4 })).status).toBe(200);
+    expect(deleted()).toBe(true);
   });
 });

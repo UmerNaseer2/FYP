@@ -4,6 +4,13 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getConnectionDependents } from "@/lib/lineage-db";
 import { checkConnectionTarget } from "@/lib/connection-config";
 import { encryptSecret } from "@/lib/secret-store";
+import { hasPermission } from "@/lib/permissions";
+import { toEnvironment } from "@/lib/environments";
+import {
+  UNLABEL_PRODUCTION_PERMISSION,
+  lowersProduction,
+  unlabelRefusal,
+} from "@/lib/environment-guard";
 import {
   REENTER_PASSWORD_MESSAGE,
   savedPasswordWouldMove,
@@ -223,8 +230,11 @@ export async function PUT(request: NextRequest) {
       username: string;
       ssl: boolean | null;
       ssl_mode: string | null;
+      name: string;
+      environment: string | null;
     }>(
-      `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode
+      `SELECT password, connection_string, host, port, database_name, username, ssl, ssl_mode,
+              name, environment
          FROM connections WHERE id = $1 AND org_id = $2`,
       [id, gate.principal.orgId]
     );
@@ -232,6 +242,23 @@ export async function PUT(request: NextRequest) {
     // deleted one gets, so this cannot be used to learn which ids exist.
     if (existing.rows.length === 0) {
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
+    }
+
+    // Taking the Production label off is what would let a deploy skip its
+    // approval, so it needs the permission that gives approvals. See
+    // lib/environment-guard.
+    const environmentBefore = toEnvironment(existing.rows[0].environment);
+    if (lowersProduction(environmentBefore, value.environment)) {
+      if (!hasPermission(gate.principal, UNLABEL_PRODUCTION_PERMISSION)) {
+        return NextResponse.json(
+          { error: unlabelRefusal(`connection "${existing.rows[0].name}"`) },
+          { status: 403 }
+        );
+      }
+      console.info(
+        `Connection ${id} ("${existing.rows[0].name}") in organization ${gate.principal.orgId} ` +
+          `relabelled from prod to ${value.environment} by ${gate.principal.email}.`
+      );
     }
 
     // These stay encrypted — we only need to know whether they are non-empty.
@@ -411,14 +438,27 @@ export async function DELETE(request: NextRequest) {
   try {
     await syncMetadataTables();
 
-    const existing = await pool.query<{ name: string }>(
-      `SELECT name FROM connections WHERE id = $1 AND org_id = $2`,
+    const existing = await pool.query<{ name: string; environment: string | null }>(
+      `SELECT name, environment FROM connections WHERE id = $1 AND org_id = $2`,
       [id, gate.principal.orgId]
     );
     // Another organization's connection reads as missing, the same answer a
     // deleted one gets, so this cannot be used to learn which ids exist.
     if (existing.rows.length === 0) {
       return NextResponse.json({ error: "Connection not found." }, { status: 404 });
+    }
+
+    // Deleting a production connection and saving the database again as "dev"
+    // would take the label off as surely as editing it, so it needs the same
+    // permission. See lib/environment-guard.
+    if (
+      toEnvironment(existing.rows[0].environment) === "prod" &&
+      !hasPermission(gate.principal, UNLABEL_PRODUCTION_PERMISSION)
+    ) {
+      return NextResponse.json(
+        { error: unlabelRefusal(`connection "${existing.rows[0].name}"`, "delete") },
+        { status: 403 }
+      );
     }
 
     // tracked_schemas deliberately has no foreign key to connections (see the

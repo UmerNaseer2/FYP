@@ -147,6 +147,75 @@ describe("compareSchemas — table matching", () => {
 });
 
 /**
+ * Which table pairs may be renamed without a human looking.
+ *
+ * Two tables with the same columns clear the accept threshold on structure
+ * alone, so the name is the only thing that can tell a rename from two
+ * different tables. A wrong rename moves the real rows under the other name,
+ * and the table the source expects is then created empty.
+ */
+describe("compareSchemas — table renames", () => {
+  /** One table on each side, with the same columns and different names. */
+  function sameShape(leftName: string, rightName: string) {
+    const columns = [
+      column("id", { nullable: false, typeDisplay: "integer" }),
+      column("name", { typeDisplay: "text" }),
+      column("created_at", { typeDisplay: "timestamptz" }),
+    ];
+    const report = compareSchemas(
+      schema([table(leftName, columns)]),
+      schema([table(rightName, columns)])
+    );
+    return {
+      renamed: report.matchedTables
+        .filter((match) => !match.exact)
+        .map((match) => `${match.right.name} → ${match.left.name}`),
+      candidates: report.possibleTableMatches.map((c) => `${c.rightName} → ${c.leftName}`),
+      created: report.tablesOnlyInA.map((t) => t.name),
+      dropped: report.tablesOnlyInB.map((t) => t.name),
+    };
+  }
+
+  it("does not rename customer_archive into customer on its own", () => {
+    // Offered for review instead, and left as a create and a drop. The drop is
+    // destructive, so safe mode holds it back and the archive keeps its rows.
+    expect(sameShape("customer", "customer_archive")).toEqual({
+      renamed: [],
+      candidates: ["customer_archive → customer"],
+      created: ["customer"],
+      dropped: ["customer_archive"],
+    });
+    // The other way round too.
+    expect(sameShape("customer_archive", "customer").renamed).toEqual([]);
+  });
+
+  it("offers a table whose new name adds a prefix for review instead of renaming it", () => {
+    const result = sameShape("application_users", "users");
+    expect(result.renamed).toEqual([]);
+    expect(result.candidates).toEqual(["users → application_users"]);
+  });
+
+  it("does not rename between short names that are only spelt alike", () => {
+    // roles/notes is two letters apart and sizes/sites one, out of five.
+    for (const [left, right] of [
+      ["roles", "notes"],
+      ["sizes", "sites"],
+    ]) {
+      const result = sameShape(left, right);
+      expect(result.renamed).toEqual([]);
+      expect(result.candidates).toEqual([`${right} → ${left}`]);
+    }
+  });
+
+  it("still renames a table whose name is a correction or a plural of the old one", () => {
+    expect(sameShape("customer", "custmer").renamed).toEqual(["custmer → customer"]);
+    expect(sameShape("users", "user").renamed).toEqual(["user → users"]);
+    expect(sameShape("user", "users").renamed).toEqual(["users → user"]);
+    expect(sameShape("user_id_map", "usr_id_map").renamed).toEqual(["usr_id_map → user_id_map"]);
+  });
+});
+
+/**
  * Which column pairs may be renamed without a human looking.
  *
  * Two columns of the same type in the same position inside one table score 45
@@ -180,8 +249,9 @@ describe("compareSchemas — column renames", () => {
   it("does not rename billing_address into shipping_address on its own", () => {
     const result = withLastColumn("shipping_address", "billing_address");
     expect(result.renamed).toEqual([]);
-    // Offered for review instead, and left as an add and a drop — both of which
-    // are marked destructive, so safe mode stops the script before either runs.
+    // Offered for review instead, and left as an add and a drop. The drop is
+    // marked destructive, so safe mode holds it back and the old column keeps
+    // its data.
     expect(result.candidates).toEqual(["billing_address → shipping_address"]);
     expect(result.added).toEqual(["shipping_address"]);
     expect(result.dropped).toEqual(["billing_address"]);
@@ -201,12 +271,34 @@ describe("compareSchemas — column renames", () => {
   it("still renames a column whose name is a correction of the old one", () => {
     expect(withLastColumn("user_id", "usr_id").renamed).toEqual(["usr_id → user_id"]);
     expect(withLastColumn("address", "adress").renamed).toEqual(["adress → address"]);
+    expect(withLastColumn("customer", "custmer").renamed).toEqual(["custmer → customer"]);
   });
 
-  it("still renames a column the new name spells out", () => {
-    // The old name inside the new one is the commonest real rename there is.
-    expect(withLastColumn("email_address", "email").renamed).toEqual(["email → email_address"]);
-    expect(withLastColumn("description", "descr").renamed).toEqual(["descr → description"]);
+  it("does not rename address into shipping_address on its own", () => {
+    // The old name inside the new one used to count as a rename. But a word
+    // added in front usually changes what the column holds: every plain
+    // address would have been filed as a shipping address.
+    expect(withLastColumn("shipping_address", "address")).toEqual({
+      renamed: [],
+      candidates: ["address → shipping_address"],
+      added: ["shipping_address"],
+      dropped: ["address"],
+    });
+    // The other way round too.
+    expect(withLastColumn("address", "shipping_address").renamed).toEqual([]);
+  });
+
+  it("offers a column the new name spells out for review instead of renaming it", () => {
+    // These are probably real renames, but the name alone cannot tell them from
+    // address → shipping_address, so a person is asked rather than guessed for.
+    for (const [left, right] of [
+      ["email_address", "email"],
+      ["description", "descr"],
+    ]) {
+      const result = withLastColumn(left, right);
+      expect(result.renamed).toEqual([]);
+      expect(result.candidates).toEqual([`${right} → ${left}`]);
+    }
   });
 
   it("reports the match as a share of what a column can score", () => {

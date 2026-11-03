@@ -42,6 +42,33 @@ describe("containsTransactionControl", () => {
     ).toBe(false);
   });
 
+  it("catches every spelling of END, not only the listed ones", () => {
+    // END AND NO CHAIN is a plain COMMIT, and so is END WORK AND CHAIN (which
+    // also opens a new transaction). The old check knew only END, END WORK
+    // and END TRANSACTION.
+    expect(containsTransactionControl("CREATE TABLE t (id int); END AND NO CHAIN;")).toBe(true);
+    expect(containsTransactionControl("END WORK AND CHAIN;")).toBe(true);
+    expect(containsTransactionControl("END TRANSACTION AND NO CHAIN")).toBe(true);
+    expect(containsTransactionControl("SELECT 1;\n  end\tand no chain;")).toBe(true);
+    // A column or table whose name starts with "end" is not END.
+    expect(containsTransactionControl("ALTER TABLE t ADD COLUMN end_date date;")).toBe(false);
+  });
+
+  it("refuses a script that changes how strings are read", () => {
+    // With standard_conforming_strings off, '\'' is a whole string to the
+    // server and an unfinished one to the mask, so the COMMIT below would be
+    // hidden from the check while PostgreSQL ran it.
+    const sneaky = "SET standard_conforming_strings = off; SELECT '\\''; COMMIT; SELECT '';";
+    expect(containsTransactionControl(sneaky)).toBe(true);
+    expect(containsTransactionControl("SET LOCAL standard_conforming_strings TO off;")).toBe(true);
+    expect(
+      containsTransactionControl(`SET "standard_conforming_strings" = off;`)
+    ).toBe(true);
+    expect(
+      containsTransactionControl("SELECT set_config('standard_conforming_strings', 'off', false);")
+    ).toBe(true);
+  });
+
   it("lets an ordinary migration through", () => {
     expect(
       containsTransactionControl(

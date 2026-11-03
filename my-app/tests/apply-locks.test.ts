@@ -28,7 +28,11 @@ let mockClient: FakeClient;
 jest.mock("../lib/postgres", () => ({
   getPoolForConfig: () => ({ connect: async () => mockClient }),
 }));
-jest.mock("../lib/connection-config", () => ({ buildPgConfig: () => ({}) }));
+// An empty config by default: no host, so the twin lookup below asks nothing.
+const mockBuildPgConfig = jest.fn<Record<string, unknown>, unknown[]>(() => ({}));
+jest.mock("../lib/connection-config", () => ({
+  buildPgConfig: (...args: unknown[]) => mockBuildPgConfig(...args),
+}));
 jest.mock("../lib/lineage-db", () => ({
   findTrackedSchema: async () => null,
   recordAppliedMigrationToLineage: async () => ({ advanced: false }),
@@ -117,6 +121,8 @@ beforeEach(() => {
   mockClaim.mockReset();
   mockClaim.mockResolvedValue(null);
   mockReleaseApproval.mockClear();
+  mockBuildPgConfig.mockReset();
+  mockBuildPgConfig.mockImplementation(() => ({}));
   mockClient = createFakeClient(target());
   consoleSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
   logSpy = jest.spyOn(console, "log").mockImplementation(() => undefined);
@@ -321,4 +327,108 @@ it("still says the outcome is unknown when the COMMIT does not report back", asy
   // migrations that may already be applied under a screen that has just said
   // it does not know.
   expect(mockReleaseApproval).not.toHaveBeenCalled();
+});
+
+// ─── A script that ended the run's transaction ─────────────────────────────
+// lib/sql-guard refuses COMMIT, END and ROLLBACK before anything runs. If a
+// spelling ever gets past it, the route still notices, because the id of the
+// transaction it is in changes, and it must not then say "nothing was applied".
+
+/** txid_current answers "100" the first time it is asked and "101" after that. */
+function transactionEndsAfterFirstRead(): FakeStep[] {
+  let reads = 0;
+  return [
+    { match: /txid_current/, when: () => reads++ === 0, rows: [{ xid: "100" }] },
+    { match: /txid_current/, rows: [{ xid: "101" }] },
+  ];
+}
+
+it("says the outcome is unknown when a script ends the run's transaction", async () => {
+  mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+  mockClaim.mockResolvedValue({ id: 9 });
+  mockClient = createFakeClient(target(transactionEndsAfterFirstRead()));
+  const res = await apply({ ...RUN, acknowledgeProduction: true });
+
+  expect(res.status).toBe(500);
+  expect(res.body.outcomeUnknown).toBe(true);
+  expect(String(res.body.error)).toContain("ended this run's transaction");
+  expect(String(res.body.error)).toContain("may already be committed");
+  expect(String(res.body.error)).not.toContain("nothing was applied");
+  expect((res.body.results as { status: string }[]).map((row) => row.status)).toEqual([
+    "unknown",
+    "unknown",
+  ]);
+  // The second script never ran, no ledger row was written, and no COMMIT was sent.
+  const texts = queryTexts(mockClient);
+  expect(texts).not.toContain("CREATE TABLE a (id int);");
+  expect(texts.some((text) => /INSERT INTO "sales"\.script_patch/.test(text))).toBe(false);
+  expect(texts).not.toContain("COMMIT");
+  // Part of the run may have landed, so the approval stays spent.
+  expect(mockReleaseApproval).not.toHaveBeenCalled();
+});
+
+it("fixes how strings are read before the first script, and never pools the connection", async () => {
+  const res = await apply(RUN);
+  expect(res.status).toBe(200);
+  const texts = queryTexts(mockClient);
+  const fix = texts.indexOf("SET LOCAL standard_conforming_strings = on");
+  expect(fix).toBeGreaterThan(texts.indexOf("BEGIN"));
+  expect(fix).toBeLessThan(texts.indexOf("CREATE TABLE b (id int);"));
+  // A plain SET in a script outlives the transaction, so the connection is
+  // closed after the run rather than handed to the next request.
+  expect(mockClient.releasedWith).toBe(true);
+  expect(mockClient.releaseCount).toBe(1);
+});
+
+// ─── A second connection to a production database ─────────────────────────
+// Saving the production database again as a "dev" connection would skip the
+// approval as surely as relabelling it. The run counts as one against
+// production when another saved connection reaches the same database and is
+// labelled Production.
+
+describe("a dev connection that reaches a production database", () => {
+  /** The configs carry real hosts, and the lookup finds `twin`. */
+  function savedAlsoAs(twin: Record<string, unknown> | Error) {
+    mockBuildPgConfig.mockImplementation((input) => {
+      const { host, port, database } = input as Record<string, unknown>;
+      return { host, port, database };
+    });
+    mockPoolQuery.mockImplementation(async (text: unknown) => {
+      if (/environment = 'prod'/.test(String(text))) {
+        if (twin instanceof Error) throw twin;
+        return { rows: [twin] };
+      }
+      return { rows: [connectionRow("dev")] };
+    });
+  }
+  const twinRow = (over: Record<string, unknown> = {}) => ({
+    id: 8, name: "Sales (prod)", ...connectionRow("prod"), host: "DB.test", ...over,
+  });
+
+  it("refuses the run and opens nothing on the target", async () => {
+    savedAlsoAs(twinRow());
+    const res = await apply(RUN);
+    expect(res.status).toBe(409);
+    expect(res.body.environment).toBe("prod");
+    expect(res.body.error).toMatch(/"Sales \(prod\)", reaches the same database/);
+    expect(queryTexts(mockClient)).toEqual([]);
+    expect(mockClaim).not.toHaveBeenCalled();
+  });
+
+  it("refuses a dry run too, since the label is wrong either way", async () => {
+    savedAlsoAs(twinRow());
+    expect((await apply({ ...RUN, dryRun: true })).status).toBe(409);
+  });
+
+  it("runs when the production connection reaches another database", async () => {
+    savedAlsoAs(twinRow({ database_name: "billing" }));
+    expect((await apply(RUN)).status).toBe(200);
+  });
+
+  it("refuses with 503 when the lookup fails, running nothing", async () => {
+    savedAlsoAs(new Error("metadata database went away"));
+    const res = await apply(RUN);
+    expect(res.status).toBe(503);
+    expect(queryTexts(mockClient)).toEqual([]);
+  });
 });

@@ -712,6 +712,35 @@ describe("failures", () => {
     expect(mockClient.releasedWith).toBe(true);
   });
 
+  it("says the outcome is unknown when a down script ends the transaction", async () => {
+    mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
+    mockClaim.mockResolvedValue({ id: 42 });
+    // txid_current answers "100" before the down script and "101" after it,
+    // which is what a COMMIT inside the script that lib/sql-guard missed
+    // would look like.
+    let reads = 0;
+    mockClient = createFakeClient(
+      ledger({
+        first: [
+          { match: /txid_current/, when: () => reads++ === 0, rows: [{ xid: "100" }] },
+          { match: /txid_current/, rows: [{ xid: "101" }] },
+        ],
+      })
+    );
+    const res = await revert({ ...BASE, versions: ["3.0.0", "2.0.0"], acknowledgeProduction: true });
+    expect(res.status).toBe(500);
+    expect(res.body.outcomeUnknown).toBe(true);
+    expect(String(res.body.error)).toContain("ended the rollback's transaction");
+    expect(String(res.body.error)).toContain("may already be committed");
+    expect(String(res.body.error)).not.toContain("nothing was changed");
+    // The older version's down script never ran, and no COMMIT was sent.
+    expect(ran(mockClient, "DROP TABLE t2;")).toBe(false);
+    expect(count(mockClient, "COMMIT")).toBe(0);
+    expect(mockRelease).not.toHaveBeenCalled();
+    expect(mockRecordLineage).not.toHaveBeenCalled();
+    expect(mockClient.releasedWith).toBe(true);
+  });
+
   it("says the server undid the rollback when it refuses the COMMIT", async () => {
     mockPoolQuery.mockResolvedValue({ rows: [connectionRow("prod")] });
     mockClaim.mockResolvedValue({ id: 42 });
@@ -744,8 +773,9 @@ describe("failures", () => {
     // Nothing landed, so the approval goes back and the baseline does not move.
     expect(mockRelease).toHaveBeenCalledWith(TEST_ORG.id, 42);
     expect(mockRecordLineage).not.toHaveBeenCalled();
-    // A refusal leaves a perfectly good connection: it goes back to the pool.
-    expect(mockClient.releasedWith).toBeUndefined();
+    // The connection is closed rather than pooled, as after every run: a plain
+    // SET in the down script would otherwise outlive the transaction.
+    expect(mockClient.releasedWith).toBe(true);
     expect(mockClient.listenersAtRelease).toBe(0);
   });
 });
@@ -823,5 +853,52 @@ describe("another organization's connection", () => {
     expect(mockBuildPgConfig).not.toHaveBeenCalled();
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockClient.queries).toEqual([]);
+  });
+});
+
+// Saving the production database again as a "dev" connection would skip the
+// rollback's approval as surely as relabelling it (lib/environment-guard).
+describe("a dev connection that reaches a production database", () => {
+  function savedAlsoAs(twin: Record<string, unknown> | Error) {
+    mockBuildPgConfig.mockImplementation((input) => {
+      const { host, port, database } = input as Record<string, unknown>;
+      return { host, port, database };
+    });
+    mockPoolQuery.mockImplementation(async (...args: unknown[]) => {
+      if (/environment = 'prod'/.test(String(args[0]))) {
+        if (twin instanceof Error) throw twin;
+        return { rows: [twin] };
+      }
+      return { rows: [connectionRow("dev")] };
+    });
+  }
+  const twinRow = (over: Record<string, unknown> = {}) => ({
+    id: 8, ...connectionRow("prod"), name: "Sales (prod)", host: "DB.test", ...over,
+  });
+
+  afterEach(() => {
+    mockBuildPgConfig.mockImplementation(() => ({}));
+  });
+
+  it("refuses the rollback and opens nothing on the target", async () => {
+    savedAlsoAs(twinRow());
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(409);
+    expect(res.body.environment).toBe("prod");
+    expect(res.body.error).toMatch(/"Sales \(prod\)", reaches the same database/);
+    expect(queryTexts(mockClient)).toEqual([]);
+    expect(mockClaim).not.toHaveBeenCalled();
+  });
+
+  it("runs when the production connection reaches another database", async () => {
+    savedAlsoAs(twinRow({ database_name: "billing" }));
+    expect((await revert({ ...BASE, versions: ["3.0.0"] })).status).toBe(200);
+  });
+
+  it("refuses with 503 when the lookup fails", async () => {
+    savedAlsoAs(new Error("metadata database went away"));
+    const res = await revert({ ...BASE, versions: ["3.0.0"] });
+    expect(res.status).toBe(503);
+    expect(queryTexts(mockClient)).toEqual([]);
   });
 });

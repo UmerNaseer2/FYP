@@ -371,6 +371,24 @@ describe("the sign-in the server offers", () => {
     expect(config.authUsable).toBe(false);
   });
 
+  it.each([
+    ["as written", "change-me-before-anyone-else-uses-this"],
+    ["with stray spaces", "  change-me-before-anyone-else-uses-this "],
+  ])("is not usable with the placeholder secret docker-compose.yml used to fill in, %s", async (_, secret) => {
+    // That value is in the repository, so anyone could sign a session cookie
+    // with it and be let in as whoever they named.
+    setEnv({
+      AZURE_AD_CLIENT_ID: CLIENT,
+      AZURE_AD_CLIENT_SECRET: "a-client-secret-for-the-browser",
+      AZURE_AD_TENANT_ID: TENANT,
+      NEXTAUTH_SECRET: secret,
+    });
+    const config = await loadAuthConfig();
+    expect(config.entraConfigured).toBe(true);
+    expect(config.secretConfigured).toBe(false);
+    expect(config.authUsable).toBe(false);
+  });
+
   it("leaves the browser sign-in as it was everywhere else", async () => {
     setEnv({
       AZURE_AD_CLIENT_ID: CLIENT,

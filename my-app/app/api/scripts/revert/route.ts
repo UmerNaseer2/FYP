@@ -9,6 +9,11 @@ import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { containsTransactionControl } from "@/lib/sql-guard";
+import {
+  ScriptEndedTransactionError,
+  currentTransactionId,
+  readStringsTheStandardWay,
+} from "@/lib/script-transaction";
 import { compareVersions, isValidSemver, normalizeVersion } from "@/lib/script-status";
 import {
   checkNewestFirst,
@@ -23,6 +28,7 @@ import { analyseRunRisk } from "@/lib/deploy-risk";
 import { claimApproval, releaseApproval } from "@/lib/approvals-db";
 import { commitOutcomeIsUnknown, describeCommitError } from "@/lib/commit-outcome";
 import { findTrackedSchema, recordAppliedMigrationToLineage } from "@/lib/lineage-db";
+import { configIdentity, findProductionTwin, twinBlockReason } from "@/lib/environment-guard";
 import {
   isProduction,
   louderEnvironment,
@@ -393,6 +399,23 @@ export async function POST(request: NextRequest) {
     return fail(500, { error: `Nothing was run. ${UNREADABLE_CREDENTIALS_MESSAGE}` });
   }
 
+  // The same check as the apply route: another saved connection to this
+  // database labelled Production makes this one count as production.
+  if (!isProduction(targetEnvironment)) {
+    let twin: Awaited<ReturnType<typeof findProductionTwin>>;
+    try {
+      twin = await findProductionTwin(gate.principal.orgId, connectionId, configIdentity(targetConfig));
+    } catch (error) {
+      console.error("Revert — could not check for a production connection to the same database:", error);
+      return fail(503, {
+        error:
+          "Could not check whether another saved connection labels this database " +
+          "Production, so nothing was run. Try again in a moment.",
+      });
+    }
+    if (twin) return fail(409, { error: twinBlockReason(twin.name), environment: "prod" });
+  }
+
   let connected: PoolClient;
   try {
     connected = await getPoolForConfig(targetConfig).connect();
@@ -428,9 +451,6 @@ export async function POST(request: NextRequest) {
 
   let transactionStarted = false;
   let clientReleased = false;
-  // A connection whose COMMIT or ROLLBACK failed is in an unknown state; it is
-  // destroyed rather than handed back to the pool for the next request.
-  let brokenConnection = false;
   // Approval bookkeeping: a claimed approval goes back to "approved" unless a
   // COMMIT was attempted. Once COMMIT was sent, the rollback may have taken
   // effect, and the approval must not be spent a second time.
@@ -485,6 +505,11 @@ export async function POST(request: NextRequest) {
     // unqualified DROP of a relation missing from the target must no-op, not
     // fall through and hit public's same-named table.
     await client.query(`SET LOCAL search_path TO ${quotedSchema}`);
+
+    // Read strings the way lib/sql-guard did, and note which transaction this
+    // is, so a down script that ends it is noticed. See lib/script-transaction.
+    await readStringsTheStandardWay(client);
+    const runTransactionId = await currentTransactionId(client);
 
     // ─── 7. Ledger checks ──────────────────────────────────────────────────
     // 7a. A schema with no script_patch has had nothing applied by this tool.
@@ -794,6 +819,12 @@ export async function POST(request: NextRequest) {
     for (const step of plan) {
       runningVersion = step.row.version;
       await client.query(step.sql);
+      if ((await currentTransactionId(client)) !== runTransactionId) {
+        throw new ScriptEndedTransactionError(
+          `The down script for ${vLabel(step.row.version)} ended the rollback's transaction ` +
+            `itself (with a COMMIT, END or ROLLBACK the script check did not recognise).`
+        );
+      }
 
       await client.query(
         `INSERT INTO ${quotedSchema}.script_patch_reverted
@@ -877,9 +908,6 @@ export async function POST(request: NextRequest) {
       transactionStarted = false;
       if (commitOutcomeIsUnknown(commitError)) {
         commitOutcomeUnknown = true;
-        // The connection is the thing in doubt, so it must not go back to the
-        // pool for the next request to pick up.
-        brokenConnection = true;
         console.error("Revert — COMMIT failed, outcome unknown:", commitError);
         return fail(500, {
           outcomeUnknown: true,
@@ -913,7 +941,9 @@ export async function POST(request: NextRequest) {
     // its own connection. The notice listener comes off first: the client goes
     // back to a pool, and the listener must not follow it to the next request.
     client.off("notice", onNotice);
-    client.release();
+    // Closed, not pooled: the down script may have run a plain SET, which
+    // outlives the transaction. See step 6 of the apply route.
+    client.release(true);
     clientReleased = true;
 
     // A rollback changes the live structure as much as a deploy does, so a
@@ -971,7 +1001,6 @@ export async function POST(request: NextRequest) {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
-        brokenConnection = true;
         console.error("Revert — ROLLBACK itself failed:", rollbackError);
       }
       transactionStarted = false;
@@ -980,6 +1009,20 @@ export async function POST(request: NextRequest) {
     const message = error instanceof Error ? error.message : String(error);
     const pgCode = (error as { code?: string }).code;
     console.error("Revert — rollback failed:", message);
+
+    // Part of the down script may be committed, so "nothing was changed" may
+    // be false. Like a COMMIT that never reported back, the approval stays spent.
+    if (error instanceof ScriptEndedTransactionError) {
+      commitOutcomeUnknown = true;
+      return fail(500, {
+        outcomeUnknown: true,
+        error:
+          `${message} Anything it ran before that point may already be committed to ` +
+          `schema "${schemaName}"${dryRun ? ", even though this was a dry run" : ""}, and ` +
+          `the ledger was not updated. Do not run this again. Compare the schema to see ` +
+          `what changed, and take the COMMIT, END or ROLLBACK out of the down script.`,
+      });
+    }
 
     // A lock timeout is not a broken rollback, and "canceling statement due to
     // lock timeout" does not tell the operator that trying again is the fix.
@@ -1016,7 +1059,9 @@ export async function POST(request: NextRequest) {
     }
     if (!clientReleased) {
       client.off("notice", onNotice);
-      client.release(brokenConnection || undefined);
+      // Always closed, for the reason at step 14, and also when its ROLLBACK
+      // failed and it may still be inside the transaction.
+      client.release(true);
     }
   }
 }

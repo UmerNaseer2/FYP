@@ -247,8 +247,16 @@ export function maskNonCode(
  * would break the apply route's outer transaction wrapper (committing partial DDL
  * with no ledger row, or aborting it), so they are rejected up front.
  *
- * Covers COMMIT, ROLLBACK, and their SQL synonyms: ABORT (= ROLLBACK), END /
- * END TRANSACTION / END WORK (= COMMIT), and PREPARE TRANSACTION.
+ * Covers COMMIT, ROLLBACK, and their SQL synonyms: ABORT (= ROLLBACK), END in
+ * every spelling PostgreSQL accepts (END, END WORK, END TRANSACTION, END AND
+ * NO CHAIN, and so on, all = COMMIT), and PREPARE TRANSACTION.
+ *
+ * It also refuses any mention of standard_conforming_strings. With that
+ * setting off, PostgreSQL reads a backslash inside an ordinary '' string as an
+ * escape, so `'\''` is a whole string to the server and an unfinished one to
+ * maskNonCode below. A script that turns it off could then hide a COMMIT in
+ * what this check takes for a string. Nothing a migration needs depends on it,
+ * so the name alone is enough to refuse, wherever it appears.
  *
  * The scan runs on the masked copy, so none of these count:
  *   - a word in a comment, of either kind
@@ -258,16 +266,23 @@ export function maskNonCode(
  *   - a word used as a quoted identifier, e.g. a column called "commit"
  */
 export function containsTransactionControl(sql: string): boolean {
+  // Read on the raw text, so a quoted name or a set_config('...') string that
+  // spells it is caught too. A comment that mentions it is refused as well;
+  // that costs nothing, and the rule stays one line.
+  if (/standard_conforming_strings/i.test(sql)) return true;
+
   const stripped = maskNonCode(sql);
 
   // COMMIT / ROLLBACK / ABORT as standalone words — none is a normal identifier,
   // and ABORT is a ROLLBACK synonym.
   if (/\b(COMMIT|ROLLBACK|ABORT)\b/i.test(stripped)) return true;
-  // END / END TRANSACTION / END WORK is a COMMIT synonym, but END also closes a
-  // CASE expression (and a PL/pgSQL block, already masked above). Only flag END
-  // at a STATEMENT boundary — start of script or right after a `;` — never
-  // mid-expression, so `CASE ... END` is not a false positive.
-  if (/(?:^|;)\s*END(?:\s+(?:TRANSACTION|WORK))?\s*(?:;|$)/i.test(stripped)) return true;
+  // END is a COMMIT synonym, but END also closes a CASE expression (and a
+  // PL/pgSQL block, already masked above). Only flag END at a STATEMENT
+  // boundary — start of script or right after a `;` — never mid-expression, so
+  // `CASE ... END` is not a false positive. Whatever follows it does not
+  // matter: no statement other than this COMMIT starts with END, and listing
+  // the spellings let `END AND NO CHAIN;` through.
+  if (/(?:^|;)\s*END\b/i.test(stripped)) return true;
   // PREPARE TRANSACTION commits work into a prepared transaction.
   if (/(?:^|;)\s*PREPARE\s+TRANSACTION\b/i.test(stripped)) return true;
   return false;
