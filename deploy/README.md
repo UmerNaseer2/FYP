@@ -1,9 +1,13 @@
 # Running Schema Studio on a server, kept up to date by itself
 
-Once this is set up, every push to `main` that passes CI goes live on the
-server by itself, usually within ten minutes: CI takes about two, the server
-checks GitHub every five, and the rebuild takes a minute or two. Nobody has
-to log in.
+Once this is set up, every signed push to `main` that passes CI goes live on
+the server by itself, usually within ten minutes: CI takes about two, the
+server checks GitHub every five, and the rebuild takes a minute or two. Nobody
+has to log in.
+
+Then lock the server down with [HARDENING.md](HARDENING.md): security
+updates, an account of its own for the app, a firewall, and the list of keys
+whose signed commits it deploys.
 
 To run it on Vercel with its data in Supabase instead, see
 [SUPABASE-VERCEL.md](SUPABASE-VERCEL.md).
@@ -11,7 +15,8 @@ To run it on Vercel with its data in Supabase instead, see
 How it works: the server cannot be reached from GitHub (only through
 Splashtop), so GitHub cannot push to it. Instead the server asks. cron runs
 [`auto-update.sh`](auto-update.sh) every five minutes. When `main` on GitHub
-has a new commit and CI passed on it, the script pulls it, rebuilds the app
+has a new commit, signed with a trusted key, and CI passed on it, the script
+pulls it, rebuilds the app
 container and waits for it to be healthy. Swapping the new container in takes
 the app offline for about a second. If anything goes wrong, the old version
 keeps running and the log says what happened. The database keeps its data
@@ -176,6 +181,11 @@ It should print `Up to date at` and a commit id.
 
 ## 7. Turn it on
 
+The updater deploys only commits signed with a key listed in
+`/etc/schema-studio/allowed_signers`. Make that file first, with step 3 of
+[HARDENING.md](HARDENING.md). The rest of that guide replaces this cron line
+with a timer under an account of its own.
+
 ```bash
 (crontab -l 2>/dev/null; echo "*/5 * * * * $HOME/FYP/deploy/auto-update.sh >> $HOME/schema-studio-deploy.log 2>&1") | crontab -
 ```
@@ -189,6 +199,9 @@ crontab -l
 The line should be there exactly once.
 
 ## Watching it
+
+After [HARDENING.md](HARDENING.md), the log is in the system journal, and the
+commands below change as its step 4 lists.
 
 ```bash
 tail -f ~/schema-studio-deploy.log
@@ -211,6 +224,8 @@ When the log says something else:
 
 | The log says | What to do |
 | --- | --- |
+| `Not deploying ...: there is no list of trusted signing keys` | Make it, with step 3 of [HARDENING.md](HARDENING.md). |
+| `Skipping ...: it is not signed with a key listed in ...` | The commit was not signed with your key: made on another computer, or on GitHub's website. Push a signed commit after it. An empty one is enough. |
 | `Skipping ...: CI failed on it` | Fix the code on your computer and push again. |
 | `Deploy of ... failed (try 1 of 3)` | Nothing yet. The old version is still running, and the next run tries again. The reason is at the end of `deploy/last-build.log`. |
 | `Skipping ...: it failed to deploy 3 times` | Read the end of `deploy/last-build.log`. Fix it and push, or if the cause has passed (say Docker Hub was down), push again as below. |

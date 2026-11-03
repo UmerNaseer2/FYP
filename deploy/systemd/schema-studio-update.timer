@@ -1,0 +1,11 @@
+# Starts schema-studio-update.service every five minutes, like the cron line
+# in deploy/README.md. A run still going when the next is due is left alone.
+
+[Unit]
+Description=Check GitHub for a new Schema Studio commit every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+
+[Install]
+WantedBy=timers.target

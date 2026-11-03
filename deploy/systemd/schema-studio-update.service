@@ -1,0 +1,22 @@
+# Runs deploy/auto-update.sh once, as the schemastudio account.
+# schema-studio-update.timer starts it every five minutes.
+# deploy/HARDENING.md (step 4) copies both files to /etc/systemd/system/.
+#
+# Its output goes to the system journal. To watch it:
+#   sudo journalctl -t schema-studio-update -f
+
+[Unit]
+Description=Schema Studio: deploy the newest signed commit on main
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=schemastudio
+Group=schemastudio
+ExecStart=/srv/schema-studio/deploy/auto-update.sh
+SyslogIdentifier=schema-studio-update
+# /snap/bin in case Docker came as a snap.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+# A full rebuild takes a few minutes. Stop a run that hangs.
+TimeoutStartSec=45min

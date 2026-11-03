@@ -2,28 +2,38 @@
 #
 # Keeps the Schema Studio running on this server in step with GitHub.
 #
-# cron runs this every five minutes (deploy/README.md has the line). Most runs
-# find nothing new and exit without a word. When `main` on GitHub has a commit
-# this copy does not:
+# A timer runs this every five minutes (deploy/HARDENING.md sets it up; a cron
+# line in deploy/README.md does the same). Most runs find nothing new and exit
+# without a word. When `main` on GitHub has a commit this copy does not:
 #
-#   1. It waits until GitHub's CI has passed on that commit, and skips the
+#   1. It checks the commit is signed with a key listed in
+#      /etc/schema-studio/allowed_signers, and skips the commit if not. Someone
+#      who gets push access to GitHub, with a stolen password or token, can
+#      push code but cannot sign it, so it never reaches the server.
+#   2. It waits until GitHub's CI has passed on that commit, and skips the
 #      commit if CI failed. A push that breaks the build or the tests never
 #      reaches the server.
-#   2. It moves this copy to that commit. If someone edited files here by hand,
+#   3. It moves this copy to that commit. If someone edited files here by hand,
 #      it stops and says so instead: the edit would be built into the app, and
 #      the server would run code that is not on GitHub.
-#   3. It rebuilds the app and swaps it in with docker compose. If the build
-#      fails, the old app keeps running and the commit is tried again on the
-#      next run, three tries in all. The database keeps its data throughout.
-#   4. It waits for the new app to report healthy, then deletes the old image
+#   4. It rebuilds the app on the newest base image, so security fixes in it
+#      arrive with each deploy, and swaps it in with docker compose. If the
+#      build fails, the old app keeps running and the commit is tried again on
+#      the next run, three tries in all. The database keeps its data throughout.
+#   5. It waits for the new app to report healthy, then deletes the old image
 #      the rebuild left behind, so the disk does not slowly fill up.
 #
-# Each event is one timestamped line on stdout (cron sends it to the log file).
-# The full build output of the latest deploy is in deploy/last-build.log.
+# Each event is one timestamped line on stdout (the timer sends it to the
+# system journal, cron to the log file). The full build output of the latest
+# deploy is in deploy/last-build.log.
 #
-# Optional settings, put in front of the command in the crontab line:
-#   DEPLOY_BRANCH=main   the branch to follow
-#   DEPLOY_SKIP_CI=1     deploy without waiting for CI (not recommended)
+# Optional settings, put in front of the command in the crontab line, or as
+# Environment= lines in the service file:
+#   DEPLOY_BRANCH=main            the branch to follow
+#   DEPLOY_SIGNERS_FILE=<path>    the list of trusted signing keys, if not in
+#                                 /etc/schema-studio/allowed_signers
+#   DEPLOY_UNSIGNED=1             deploy unsigned commits too (not recommended)
+#   DEPLOY_SKIP_CI=1              deploy without waiting for CI (not recommended)
 
 set -euo pipefail
 
@@ -112,6 +122,26 @@ fi
 if grep -q "^Skipping $short" "$SKIP_FILE" 2>/dev/null; then
   if [ -t 1 ]; then cat "$SKIP_FILE"; fi
   exit 0
+fi
+
+# Only commits signed with a trusted key are deployed. The list of keys sits
+# outside this folder and belongs to root, so nothing pushed to GitHub can
+# change it. Signing a commit approves it and everything before it.
+SIGNERS_FILE="${DEPLOY_SIGNERS_FILE:-/etc/schema-studio/allowed_signers}"
+if [ "${DEPLOY_UNSIGNED:-}" != "1" ]; then
+  if [ ! -s "$SIGNERS_FILE" ]; then
+    log_once "Not deploying $short: there is no list of trusted signing keys at $SIGNERS_FILE. Step 3 of deploy/HARDENING.md makes it."
+    exit 1
+  fi
+  # git asks ssh-keygen to check the signature.
+  if ! command -v ssh-keygen > /dev/null; then
+    log_once "Not deploying $short: ssh-keygen is missing, and git needs it to check signatures. It comes with the openssh-client package."
+    exit 1
+  fi
+  if ! git -c gpg.ssh.allowedSignersFile="$SIGNERS_FILE" verify-commit "$remote_sha" > /dev/null 2>&1; then
+    skip "it is not signed with a key listed in $SIGNERS_FILE. Sign your commits and push again (deploy/HARDENING.md, step 3)."
+    exit 0
+  fi
 fi
 
 # A hand edit here would be built into the app, so the server would run code
@@ -216,12 +246,19 @@ deploy_failed() {
 }
 
 # Build first, then swap. A failed build never touches the running app.
-if ! docker compose build > "$BUILD_LOG" 2>&1; then
+# --pull fetches the newest node base image, so its security fixes reach the
+# server with the next deploy. If Docker Hub cannot be reached, build on the
+# copy already here rather than fail.
+if ! { docker compose build --pull > "$BUILD_LOG" 2>&1 \
+  || docker compose build >> "$BUILD_LOG" 2>&1; }; then
   deploy_failed "The build failed, so the previous version is still running."
 fi
+# The same for the database: a newer postgres 17 image has its security fixes.
+# Minor versions keep the data format, so the volume works with it as is.
+docker compose pull --quiet db >> "$BUILD_LOG" 2>&1 || true
 # compose replaces the app container with the new build. It recreates the
-# database container only if its settings in docker-compose.yml changed, and
-# the data lives in a volume, so it is kept either way.
+# database container only if its image or its settings in docker-compose.yml
+# changed, and the data lives in a volume, so it is kept either way.
 if ! docker compose up -d >> "$BUILD_LOG" 2>&1; then
   deploy_failed "It built but would not start. 'docker compose ps' shows what is running."
 fi
