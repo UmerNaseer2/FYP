@@ -4,9 +4,11 @@ import { hasPermission, refusalMessage } from "@/lib/permissions";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
 import {
+  REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
   parsePort,
   savedPasswordWouldMove,
+  tlsWouldWeaken,
   sslModeFromLegacyBoolean,
   toSslMode,
   type SslMode,
@@ -156,6 +158,16 @@ async function keptCredentials(
       ? storedConnString
       : typedConnString;
 
+  const savedMode = saved.ssl_mode ? toSslMode(saved.ssl_mode) : sslModeFromLegacyBoolean(saved.ssl);
+
+  // A kept connection string carries the saved password inside it, and the
+  // TLS mode on screen decides how it travels, so it may not get weaker.
+  const keepsSavedConnString =
+    !body.clear_connection_string && typedConnString === "" && storedConnString !== "";
+  if (keepsSavedConnString && tlsWouldWeaken(savedMode, sslMode)) {
+    return { ok: false, status: 400, error: REENTER_CONNECTION_STRING_MESSAGE };
+  }
+
   // Only when the loose fields are what will be dialled: a connection string
   // decides the destination itself and carries its own password.
   const keepsSavedPassword = typedPassword === "" && storedPassword !== "";
@@ -165,7 +177,7 @@ async function keptCredentials(
         host: String(saved.host ?? ""),
         port: Number(saved.port),
         username: String(saved.username ?? ""),
-        sslMode: saved.ssl_mode ? toSslMode(saved.ssl_mode) : sslModeFromLegacyBoolean(saved.ssl),
+        sslMode: savedMode,
       },
       {
         host: String(body.host ?? ""),

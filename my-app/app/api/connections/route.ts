@@ -12,8 +12,10 @@ import {
   unlabelRefusal,
 } from "@/lib/environment-guard";
 import {
+  REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
   savedPasswordWouldMove,
+  tlsWouldWeaken,
   sslModeFromLegacyBoolean,
   sslModeUsesTls,
   summariseErrors,
@@ -325,6 +327,25 @@ export async function PUT(request: NextRequest) {
       if (moved) {
         return NextResponse.json(
           { error: REENTER_PASSWORD_MESSAGE, errors: { password: REENTER_PASSWORD_MESSAGE } },
+          { status: 400 }
+        );
+      }
+    }
+
+    // A kept connection string carries the saved password inside it, and the
+    // TLS mode on screen decides how it travels. So it may not travel less
+    // protected than before, the same rule the loose fields follow above.
+    const keepsSavedConnString =
+      !clearConnectionString && value.connection_string === "" && storedConnString !== "";
+    if (keepsSavedConnString) {
+      const saved = existing.rows[0];
+      const savedMode = saved.ssl_mode ? toSslMode(saved.ssl_mode) : sslModeFromLegacyBoolean(saved.ssl);
+      if (tlsWouldWeaken(savedMode, value.ssl_mode)) {
+        return NextResponse.json(
+          {
+            error: REENTER_CONNECTION_STRING_MESSAGE,
+            errors: { connection_string: REENTER_CONNECTION_STRING_MESSAGE },
+          },
           { status: 400 }
         );
       }

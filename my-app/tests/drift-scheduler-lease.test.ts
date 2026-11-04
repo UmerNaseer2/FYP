@@ -375,10 +375,28 @@ describe("a check that never answers", () => {
     });
     // ...and so can this one, instead of "the previous tick was still running".
     const next = await runSchedulerTick(new Date(NOW.getTime() + 60_000));
-    expect(next).toEqual({ kind: "by_org", byOrg: new Map([[3, "Checked 1."]]) });
-    expect(mockCheck).toHaveBeenCalledTimes(2);
+    expect(next.kind).toBe("by_org");
     // Neither the lease's renewing nor either tick's time limit is left running.
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("does not start a second check on a schema whose first is still going", async () => {
+    // Each stuck check holds a connection to the hung server. Starting one more
+    // every tick would pile them up until the pool ran dry.
+    const ending = hangingCheck();
+    const tick = runSchedulerTick(NOW);
+    await settle();
+    await jest.advanceTimersByTimeAsync(LIMIT_MS);
+    await tick;
+
+    await runSchedulerTick(new Date(NOW.getTime() + 60_000));
+    expect(mockCheck).toHaveBeenCalledTimes(1);
+
+    // Once the stuck check ends, the schema is checked again as usual.
+    ending.answer({ ok: true, run: { status: "in_sync" } });
+    await settle();
+    await runSchedulerTick(new Date(NOW.getTime() + 120_000));
+    expect(mockCheck).toHaveBeenCalledTimes(2);
   });
 
   it("leaves no timer behind when the check answers in time", async () => {

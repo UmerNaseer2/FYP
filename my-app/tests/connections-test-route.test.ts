@@ -12,7 +12,7 @@
 // dialled.
 import { NextRequest } from "next/server";
 import { TEST_ORG } from "./helpers/principals";
-import { REENTER_PASSWORD_MESSAGE } from "@/lib/connection-validate";
+import { REENTER_CONNECTION_STRING_MESSAGE, REENTER_PASSWORD_MESSAGE } from "@/lib/connection-validate";
 
 /** The permissions the caller's role holds; each test can change them. */
 let mockPermissions: string[] = ["connections:create", "connections:update"];
@@ -179,6 +179,17 @@ test("a blank connection string on an edit tests the saved one with the SSL mode
   const input = dialled();
   expect(input.connectionString).toBe(STORED_URI);
   expect(input.sslMode).toBe("verify-full");
+});
+
+test("refuses to send a kept connection string over weaker TLS, dialling nothing", async () => {
+  // The saved string carries its own password, so turning TLS down would send
+  // that password less protected than the user agreed to when saving it.
+  const result = await runTest(
+    fieldsEdit({ id: 5, clear_connection_string: false, host: "hosted.example.test", ssl: false, ssl_mode: "disable" })
+  );
+  expect(result.status).toBe(400);
+  expect(result.body.error).toBe(REENTER_CONNECTION_STRING_MESSAGE);
+  expect(mockRunConnectionTest).not.toHaveBeenCalled();
 });
 
 test("Fields mode drops the saved connection string, as Save does", async () => {

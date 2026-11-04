@@ -90,3 +90,21 @@ it("leaves a schema that is not tracked to the usual not-found answer", async ()
   mockPoolQuery.mockResolvedValue({ rows: [] });
   expect((await relabel("dev")).status).toBe(404);
 });
+
+it("refuses when the schema became Production between the read and the write", async () => {
+  // The read saw dev; by the time the UPDATE ran, someone had set prod, so its
+  // own check matched no row.
+  mockPoolQuery.mockReset();
+  mockPoolQuery.mockImplementation(async (text: unknown) => {
+    if (/^\s*SELECT schema_name, environment FROM tracked_schemas/.test(String(text))) {
+      return { rows: [{ schema_name: "sales", environment: "dev" }] };
+    }
+    return { rows: [] };
+  });
+  const result = await relabel("staging");
+  expect(result.status).toBe(403);
+  expect(result.body.error).toMatch(/schema "sales"/);
+  const [text, values] = updates()[0];
+  expect(String(text)).toMatch(/environment IS DISTINCT FROM 'prod'/);
+  expect(values).toEqual(["staging", 5, TEST_ORG.id, false]);
+});

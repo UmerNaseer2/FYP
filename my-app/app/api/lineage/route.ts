@@ -82,12 +82,15 @@ export async function PATCH(request: NextRequest) {
     // approvals, the same rule as a connection's label (lib/environment-guard).
     // Asked only when the caller lacks it, so an Admin's edit costs no extra
     // read. A schema that is not tracked falls through to the 404 below.
-    if (!hasPermission(gate.principal, UNLABEL_PRODUCTION_PERMISSION)) {
+    const mayUnlabel = hasPermission(gate.principal, UNLABEL_PRODUCTION_PERMISSION);
+    let schemaName: string | null = null;
+    if (!mayUnlabel) {
       const current = await pool.query<{ schema_name: string; environment: string }>(
         `SELECT schema_name, environment FROM tracked_schemas WHERE id = $1 AND org_id = $2`,
         [id, gate.principal.orgId]
       );
       const row = current.rows?.[0];
+      schemaName = row?.schema_name ?? null;
       if (row && lowersProduction(toEnvironment(row.environment), environment)) {
         return NextResponse.json(
           { error: unlabelRefusal(`schema "${row.schema_name}"`) },
@@ -98,11 +101,20 @@ export async function PATCH(request: NextRequest) {
 
     // Another organization's schema reads as not tracked, the same answer an
     // untracked one gets, so this cannot be used to learn which ids exist.
+    // The UPDATE checks the rule again ($4 = may take Production off), because
+    // someone may have labelled the schema Production since the read above.
     const result = await pool.query<{ id: number; environment: string }>(
-      `UPDATE tracked_schemas SET environment = $1 WHERE id = $2 AND org_id = $3
+      `UPDATE tracked_schemas SET environment = $1
+        WHERE id = $2 AND org_id = $3
+          AND ($4::boolean OR environment IS DISTINCT FROM 'prod' OR $1 = 'prod')
        RETURNING id, environment`,
-      [environment, id, gate.principal.orgId]
+      [environment, id, gate.principal.orgId, mayUnlabel]
     );
+    // The read above found the schema, so a missed UPDATE means it became
+    // Production in between.
+    if (result.rows.length === 0 && schemaName !== null) {
+      return NextResponse.json({ error: unlabelRefusal(`schema "${schemaName}"`) }, { status: 403 });
+    }
     if (result.rows.length === 0) {
       return NextResponse.json(
         { error: "That schema is not tracked." },

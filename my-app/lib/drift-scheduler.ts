@@ -203,6 +203,12 @@ type SchedulerState = {
   ticks: number;
   /** Checks the loop has run since the process started, per organization. */
   checksRunByOrg: Map<number, number>;
+  /**
+   * Schemas whose check outran CHECK_TIME_LIMIT_MS and is still going. A tick
+   * skips them, so a schema on a hung server does not gain one more stuck
+   * check (and one more pooled connection) every tick.
+   */
+  stillRunning: Set<number>;
   stoppedReason: string | null;
 };
 
@@ -225,6 +231,7 @@ function state(): SchedulerState {
       busy: false,
       ticks: 0,
       checksRunByOrg: new Map(),
+      stillRunning: new Set(),
       stoppedReason: null,
     };
   }
@@ -233,6 +240,7 @@ function state(): SchedulerState {
   // copy of this file can lack a field added since. Fill those in rather than
   // break the schedule screen until the next restart.
   s.checksRunByOrg ??= new Map();
+  s.stillRunning ??= new Set();
   return s;
 }
 
@@ -417,7 +425,9 @@ async function checkWhatIsDue(now: Date): Promise<TickReport> {
 async function checkUnderLease(now: Date): Promise<TickReport> {
   const s = state();
   const entries = await loadEntries();
-  const due = selectDue(entries, now, MAX_PER_TICK, earlyMs());
+  // A schema whose last check is still running is left for a later tick.
+  const free = entries.filter((entry) => !s.stillRunning.has(entry.trackedSchemaId));
+  const due = selectDue(free, now, MAX_PER_TICK, earlyMs());
   // A tick that could not tidy up can still do its real job.
   await pruneIfDue().catch((error) => {
     console.error("Drift scheduler — prune failed:", error);
@@ -495,13 +505,17 @@ async function withinCheckLimit(entry: ScheduledSchema, check: Promise<string>):
     `Drift scheduler — tracked schema ${entry.trackedSchemaId} (organization ${entry.orgId}) ` +
       `was still being checked after ${CHECK_TIME_LIMIT_MS / 1000}s, so the tick stopped waiting for it.`
   );
-  check.catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      `Drift scheduler — tracked schema ${entry.trackedSchemaId} (organization ${entry.orgId}) failed after the tick stopped waiting:`,
-      message
-    );
-  });
+  const running = state().stillRunning;
+  running.add(entry.trackedSchemaId);
+  check
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `Drift scheduler — tracked schema ${entry.trackedSchemaId} (organization ${entry.orgId}) failed after the tick stopped waiting:`,
+        message
+      );
+    })
+    .finally(() => running.delete(entry.trackedSchemaId));
   return TIMED_OUT;
 }
 

@@ -166,6 +166,16 @@ export function sslModeUsesTls(mode: SslMode): boolean {
 /** How well each mode protects a password on its way to the server, weakest first. */
 const SSL_STRENGTH: Record<SslMode, number> = { disable: 0, require: 1, "verify-full": 2 };
 
+/**
+ * Would moving from `before` to `after` protect a password less on its way to
+ * the server? Used for a kept password and for a kept connection string: the
+ * string carries its own password, and the TLS mode on screen decides how it
+ * travels, whatever sslmode the string itself says.
+ */
+export function tlsWouldWeaken(before: SslMode, after: SslMode): boolean {
+  return SSL_STRENGTH[after] < SSL_STRENGTH[before];
+}
+
 /** The parts of a saved connection that decide who receives its password. */
 export type PasswordDestination = {
   host: string;
@@ -205,9 +215,14 @@ export function savedPasswordWouldMove(
     !sameHost ||
     Number(before.port) !== Number(after.port) ||
     before.username.trim() !== after.username.trim() ||
-    SSL_STRENGTH[after.sslMode] < SSL_STRENGTH[before.sslMode]
+    tlsWouldWeaken(before.sslMode, after.sslMode)
   );
 }
+
+/** The message for an edit that keeps a saved connection string over weaker TLS. */
+export const REENTER_CONNECTION_STRING_MESSAGE =
+  "You made TLS weaker for this connection. Enter the connection string again to save it, " +
+  "so the password inside the saved one is never sent less protected than before.";
 
 /** The message for an edit that savedPasswordWouldMove refuses. */
 export const REENTER_PASSWORD_MESSAGE =

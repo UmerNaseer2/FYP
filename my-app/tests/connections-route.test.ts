@@ -9,6 +9,7 @@
 // The metadata database and the auth gate are stand-ins. Nothing is dialled.
 import { NextRequest } from "next/server";
 import {
+  REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
   savedPasswordWouldMove,
   type PasswordDestination,
@@ -167,6 +168,19 @@ describe("PUT /api/connections — a kept password stays where it was", () => {
     setUp({ ...SAVED, password: null, connection_string: "enc:v1:saved-uri" });
     const result = await put({ ...EDIT, host: "somewhere-else.example.com" });
     expect(result.status).toBe(200);
+  });
+
+  it("refuses weaker TLS on a kept connection string, and saves nothing", async () => {
+    setUp({ ...SAVED, password: null, connection_string: "enc:v1:saved-uri" });
+    const result = await put({ ...EDIT, ssl_mode: "disable" });
+    expect(result.status).toBe(400);
+    expect(result.body.errors.connection_string).toBe(REENTER_CONNECTION_STRING_MESSAGE);
+    expect(updated()).toBe(false);
+  });
+
+  it("saves a kept connection string when TLS stays as strong or gets stronger", async () => {
+    setUp({ ...SAVED, password: null, connection_string: "enc:v1:saved-uri", ssl_mode: "require" });
+    expect((await put({ ...EDIT, ssl_mode: "verify-full" })).status).toBe(200);
   });
 
   it("reads a legacy row's TLS setting from the old boolean", async () => {
