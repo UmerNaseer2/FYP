@@ -14,7 +14,7 @@
  * The screens are built in screens.ts. This file decides which one shows,
  * with what, and what each button does.
  */
-import { DECIDED_TEXT, decisionChoices, passkeyErrorText, type Choices } from "./approvals.js";
+import { approvalsDue, DECIDED_TEXT, decisionChoices, passkeyErrorText, type Choices } from "./approvals.js";
 import { readTypedCode, type CodeOutcome } from "./code-entry.js";
 import { PhoneConnection, RpcError, type ConnectionState, type EndReason, type RpcErrorCode } from "./connection.js";
 import { CANCEL_LOST_TEXT, mayCancel, mayControl, RUN_LOST_TEXT, signedTicks, stepOf, UPDATE_TEXT } from "./deploy.js";
@@ -132,6 +132,8 @@ let tabsKey: string | null = null;
 let hiddenAt: number | null = null;
 let lastLive: { connectionId: number; status: LiveStatus; at: number } | null = null;
 let liveAnsweredAt = 0;
+/** When the computer last answered with the list of requests, for refreshApprovals. */
+let approvalsAnsweredAt: number | null = null;
 let liveAge: string | null = null;
 let lastSeen: number | null = null;
 let savedSeen: number | null = null;
@@ -323,7 +325,11 @@ function schemasLoad(connectionId: number): Load<string[]> | undefined {
 
 /** The deploy and rollback requests waiting for a decision, and whether this phone may decide them. */
 function approvalsLoad(): Load<ApprovalList> | undefined {
-  return need("approvals", (link) => link.request({ method: "approvals.list" }));
+  return need("approvals", (link) =>
+    link.request({ method: "approvals.list" }).finally(() => {
+      approvalsAnsweredAt = Date.now();
+    }),
+  );
 }
 
 /** Holds a pairing code the phone just read, for the person to confirm with a name for the phone. */
@@ -2002,6 +2008,29 @@ function refreshLive(): void {
   liveLoad(route.connectionId);
 }
 
+/**
+ * Asks for the list of requests again while the tabs show and the app can be
+ * seen, half a minute after the last answer. The computer does not say when
+ * a request is made, so this is how a new one reaches the Requests tab and
+ * its count. The old list stays on screen until the new one comes.
+ */
+function refreshApprovals(): void {
+  if (session === null) return;
+  const entry = session.answers.get("approvals");
+  if (entry === undefined) return;
+  const due = approvalsDue({
+    tabsShown: pending === null && blocked === null && tabOf(route.screen) !== null,
+    visible: document.visibilityState === "visible",
+    linked: session.state.kind === "ready",
+    asking: entry.load.status === "loading" || session.asking.has("approvals"),
+    answeredAt: approvalsAnsweredAt,
+    now: Date.now(),
+  });
+  if (!due) return;
+  entry.generation = -1;
+  approvalsLoad();
+}
+
 /** Keeps "Last updated 5 minutes ago" true while the computer is away, rebuilding the screen only when those words change. */
 function ageLive(): void {
   if (lastLive === null) return;
@@ -2032,6 +2061,7 @@ function tick(): void {
   else if (session?.state.kind === "retrying" || session?.state.kind === "waiting") renderStatus();
   if (session !== null) noteSeen(session);
   refreshLive();
+  refreshApprovals();
 }
 
 /** Starts the app: checks the browser can run it, reads the saved pairing, and shows the first screen. */

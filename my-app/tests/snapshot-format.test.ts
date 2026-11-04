@@ -149,7 +149,7 @@ describe("snapshotFormatGap", () => {
 describe("SNAPSHOT_FORMAT_HISTORY", () => {
   it("documents every version up to the one this build writes", () => {
     const versions = SNAPSHOT_FORMAT_HISTORY.map((entry) => entry.version);
-    expect(versions).toEqual([1, 2, 3, 4]);
+    expect(versions).toEqual([1, 2, 3, 4, 5]);
     expect(versions[versions.length - 1]).toBe(SNAPSHOT_FORMAT_VERSION);
   });
 });

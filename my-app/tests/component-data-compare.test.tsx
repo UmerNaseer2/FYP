@@ -490,6 +490,20 @@ describe("the rows that differ", () => {
     expect(screen.getByText(/past the first 2,000 rows/)).toBeInTheDocument();
   });
 
+  it("shows a sampled table's own note, such as a key held twice", () => {
+    // The checksums differ only because the target holds id 2 twice. No row
+    // can be listed, so the note is the whole answer and must not be dropped.
+    render(
+      <DataCompare
+        result={differing(
+          aSample({ note: "On the target, 1 id value appears more than once (2)." })
+        )}
+      />
+    );
+
+    expect(screen.getByText(/appears more than once \(2\)/)).toBeInTheDocument();
+  });
+
   it("draws nothing at all when there is nothing to say", () => {
     const { container } = render(<DataCompare result={differing(aSample())} />);
 

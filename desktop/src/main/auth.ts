@@ -94,6 +94,13 @@ export class Auth {
   private readonly client: PublicClientApplication | null;
   /** The sign-in under way, which Cancel stops. */
   private attempt: AbortController | null = null;
+  /**
+   * Sign-ins whose browser code is being traded for tokens right now. MSAL
+   * saves the new sign-in just before it hands the tokens back, so a Cancel
+   * pressed while Microsoft is answering has to stop that save in the cache
+   * plugin.
+   */
+  private readonly trading = new Set<AbortSignal>();
 
   constructor(options: AuthOptions) {
     this.options = options;
@@ -111,9 +118,9 @@ export class Auth {
     const cachePlugin: ICachePlugin = {
       beforeCacheAccess: async (context: TokenCacheContext) => {
         try {
-          // "{}" rather than nothing when no sign-in is saved: it empties
-          // what MSAL holds, so memory always matches auth.json and nothing
-          // is left behind after a sign-out.
+          // "{}" when no sign-in is saved. This adds to what MSAL holds in
+          // memory and does not empty it, so sign-out removes each account
+          // itself and a cancelled sign-in calls clearCache.
           context.tokenCache.deserialize(this.state.msalCache ?? "{}");
         } catch (error) {
           logWarn("The saved Microsoft sign-in could not be read, so it was forgotten.", error);
@@ -128,6 +135,9 @@ export class Auth {
       },
       afterCacheAccess: async (context: TokenCacheContext) => {
         if (!context.cacheHasChanged) return;
+        // A sign-in cancelled while its code was being traded keeps nothing
+        // (runSignIn then clears what MSAL holds in memory).
+        for (const signal of this.trading) if (signal.aborted) return;
         this.state.msalCache = context.tokenCache.serialize();
         this.persist();
       },
@@ -233,6 +243,7 @@ export class Auth {
 
     const loopback = await LoopbackServer.open(state);
     try {
+      if (signal.aborted) return this.cancelled();
       const { redirectUri } = loopback;
 
       let url: string;
@@ -281,6 +292,8 @@ export class Auth {
         }
         throw error;
       }
+      // The browser may have come back in the same moment as Cancel.
+      if (signal.aborted) return this.cancelled();
 
       if (result.kind === "error") {
         const described = describeAuthError({ error: result.error, description: result.description });
@@ -291,6 +304,7 @@ export class Auth {
       }
 
       let tokens: AuthenticationResult;
+      this.trading.add(signal);
       try {
         // MSAL checks that the answer's state is this sign-in's, and that
         // the ID token carries this sign-in's nonce (taken from the request).
@@ -303,6 +317,18 @@ export class Auth {
         loopback.finish("failed");
         this.options.focusWindow();
         return this.exchangeFailed(error, before);
+      } finally {
+        this.trading.delete(signal);
+      }
+      // Cancel, or a newer sign-in, came while Microsoft was answering. The
+      // cache plugin saved nothing, and closing the local address tells the
+      // browser tab it did not finish.
+      if (signal.aborted) {
+        // MSAL still holds the new sign-in in memory. Clearing it makes MSAL
+        // load auth.json again at its next use, so the person stays signed out.
+        client.clearCache();
+        logInfo("The Microsoft sign-in was cancelled in Schema Studio.");
+        return this.cancelled();
       }
 
       loopback.finish("signed-in");

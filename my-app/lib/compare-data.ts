@@ -227,11 +227,49 @@ async function sampleDifferences(
   const toDigests = (rows: Record<string, string | null>[]): KeyedDigest[] =>
     rows.map((row) => ({ key: keyOf(row, width), digest: row.digest ?? "" }));
 
+  // Where the check stops. A side whose read came back full stopped at its own
+  // last key and read nothing past it. The other side may have read further: a
+  // target missing 100 rows reaches 100 keys deeper into the table. Those deeper
+  // keys were never read on the first side, so pairing them would call them
+  // missing when they were simply not read. Only keys both reads covered count.
+  const leftDigests = toDigests(left.rows);
+  const rightDigests = toDigests(right.rows);
+  const cutoff = lastKeyBothSidesRead(leftDigests, rightDigests);
+  const upToCutoff = (rows: KeyedDigest[]): KeyedDigest[] =>
+    cutoff === null ? rows : rows.filter((row) => compareKeys(row.key, cutoff) <= 0);
+  const leftChecked = upToCutoff(leftDigests);
+  const rightChecked = upToCutoff(rightDigests);
+
+  // A key that appears twice on one side cannot be paired one to one. The key
+  // comes from the SOURCE's constraints and the target may not enforce them, so
+  // the target can hold the same id twice. findMismatchedRows keeps rows in a
+  // map by key, where a second copy silently replaces the first, so duplicated
+  // keys are taken out of the pairing and reported in the note instead.
+  const leftDuplicates = duplicatedKeys(leftChecked);
+  const rightDuplicates = duplicatedKeys(rightChecked);
+  const duplicated = new Set(
+    [...leftDuplicates, ...rightDuplicates].map((key) => JSON.stringify(key)),
+  );
+  const pairable = (rows: KeyedDigest[]): KeyedDigest[] =>
+    rows.filter((row) => !duplicated.has(JSON.stringify(row.key)));
+
   const found = findMismatchedRows(
-    toDigests(left.rows),
-    toDigests(right.rows),
+    pairable(leftChecked),
+    pairable(rightChecked),
     SAMPLE_ROW_LIMIT,
   );
+
+  const notes: string[] = [];
+  if (cutoff !== null) {
+    notes.push(
+      `Both sides were checked up to ${plan.keyColumns.join(", ")} = ${keyText(cutoff)}, ` +
+        `the last key both reads reached (keys sort as text, so 100 comes before 20).`,
+    );
+  }
+  const sourceDuplicatesNote = duplicatesNote("source", leftDuplicates, plan.keyColumns);
+  if (sourceDuplicatesNote) notes.push(sourceDuplicatesNote);
+  const targetDuplicatesNote = duplicatesNote("target", rightDuplicates, plan.keyColumns);
+  if (targetDuplicatesNote) notes.push(targetDuplicatesNote);
   const scanned = SAMPLE_SCAN_ROWS;
   // Exactly the limit means the read stopped at the cut-off, so there is very
   // likely more past it. Fewer means the whole table was covered.
@@ -294,7 +332,87 @@ async function sampleDifferences(
     };
   });
 
-  return { keyColumns: plan.keyColumns, rows, more: found.more, scanned, partial, status: "sampled", note: null };
+  return {
+    keyColumns: plan.keyColumns,
+    rows,
+    more: found.more,
+    scanned,
+    partial,
+    status: "sampled",
+    note: notes.length > 0 ? notes.join(" ") : null,
+  };
+}
+
+/**
+ * Compare two key texts the way the digest read's ORDER BY ... COLLATE "C"
+ * does: byte by byte over the UTF-8 encoding. A plain JavaScript `<` compares
+ * UTF-16 code units, which disagrees with byte order for some characters.
+ */
+function compareKeyText(a: string, b: string): number {
+  return Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
+
+/** Compare two keys column by column, in the order the digest read sorts them. */
+function compareKeys(a: string[], b: string[]): number {
+  for (let i = 0; i < a.length; i++) {
+    const order = compareKeyText(a[i], b[i]);
+    if (order !== 0) return order;
+  }
+  return 0;
+}
+
+/**
+ * The last key BOTH digest reads covered, or null when neither read was cut off.
+ *
+ * Only a read that came back full (SAMPLE_SCAN_ROWS rows) was cut off, and its
+ * last row is its highest key because the read is ordered by key. When both were
+ * cut off, the lower of the two last keys is the one both sides got to.
+ */
+function lastKeyBothSidesRead(left: KeyedDigest[], right: KeyedDigest[]): string[] | null {
+  let cutoff: string[] | null = null;
+  for (const rows of [left, right]) {
+    if (rows.length < SAMPLE_SCAN_ROWS) continue;
+    const last = rows[rows.length - 1].key;
+    if (cutoff === null || compareKeys(last, cutoff) < 0) cutoff = last;
+  }
+  return cutoff;
+}
+
+/** The keys that appear more than once in one side's rows, each listed once. */
+function duplicatedKeys(rows: KeyedDigest[]): string[][] {
+  const seen = new Set<string>();
+  const listed = new Set<string>();
+  const out: string[][] = [];
+  for (const row of rows) {
+    const id = JSON.stringify(row.key);
+    if (seen.has(id) && !listed.has(id)) {
+      listed.add(id);
+      out.push(row.key);
+    }
+    seen.add(id);
+  }
+  return out;
+}
+
+/** A key as a reader sees it: `5`, or `(7, 12)` for a key of two columns. */
+function keyText(key: string[]): string {
+  return key.length === 1 ? key[0] : `(${key.join(", ")})`;
+}
+
+/** The sentence naming the keys one side holds more than once, or null for none. */
+function duplicatesNote(
+  side: "source" | "target",
+  keys: string[][],
+  keyColumns: string[],
+): string | null {
+  if (keys.length === 0) return null;
+  const shown = keys.slice(0, 5).map(keyText).join("; ");
+  const more = keys.length > 5 ? `, and ${keys.length - 5} more` : "";
+  return (
+    `On the ${side}, ${keys.length} ${keyColumns.join(", ")} ` +
+    `${keys.length === 1 ? "value appears" : "values appear"} more than once (${shown}${more}). ` +
+    `Those rows cannot be paired one to one, so they are not in the list of differing rows.`
+  );
 }
 
 /** The row count alone, for a table only one side has. */

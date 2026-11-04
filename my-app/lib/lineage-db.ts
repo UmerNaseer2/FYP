@@ -1,6 +1,7 @@
 import type { ClientConfig } from "pg";
 import {
   fetchSchemaSnapshot,
+  withCurrentNormalization,
   withoutToolTables,
   type SchemaSnapshot,
 } from "./postgres";
@@ -807,7 +808,7 @@ export async function computeDriftDetail(
     [trackedSchemaId, orgId]
   );
   if (head.rows.length > 0) {
-    expected = withoutToolTables(head.rows[0].snapshot);
+    expected = withoutToolTables(withCurrentNormalization(head.rows[0].snapshot));
     ref.version = head.rows[0].version;
     ref.seq = head.rows[0].seq;
     ref.snapshotId = head.rows[0].id;
@@ -823,7 +824,7 @@ export async function computeDriftDetail(
       [trackedSchemaId, orgId]
     );
     if (latest.rows.length > 0) {
-      expected = withoutToolTables(latest.rows[0].snapshot);
+      expected = withoutToolTables(withCurrentNormalization(latest.rows[0].snapshot));
       ref.snapshotId = latest.rows[0].id;
       ref.format = snapshotFormatGap(latest.rows[0].snapshot);
     }

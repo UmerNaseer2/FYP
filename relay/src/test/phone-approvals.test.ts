@@ -8,6 +8,8 @@ import test from "node:test";
 
 import {
   ACTION_LABELS,
+  APPROVALS_EVERY_MS,
+  approvalsDue,
   DECIDED_TEXT,
   decisionChoices,
   passkeyErrorText,
@@ -161,4 +163,19 @@ test("explains a passkey the browser would not make or use, without the browser'
   }
   assert.equal(passkeyErrorText("UnknownError", "create"), "This device could not make a passkey. Try again.");
   assert.equal(passkeyErrorText("", "get"), "This device could not use its passkey. Try again.");
+});
+
+test("the list of requests is asked for again every half minute while it shows, so a new request appears without a reload", () => {
+  const shown = { tabsShown: true, visible: true, linked: true, asking: false, answeredAt: 1_000, now: 1_000 };
+  assert.equal(APPROVALS_EVERY_MS, 30_000);
+  assert.equal(approvalsDue(shown), false, "not straight after an answer");
+  assert.equal(approvalsDue({ ...shown, now: 1_000 + 29_999 }), false);
+  assert.equal(approvalsDue({ ...shown, now: 1_000 + 30_000 }), true, "half a minute after the last answer");
+  // Nothing is asked for when it would not be seen, or could not be answered.
+  const later = { ...shown, now: 1_000 + 60_000 };
+  assert.equal(approvalsDue({ ...later, tabsShown: false }), false, "no tabs, so no count to keep true");
+  assert.equal(approvalsDue({ ...later, visible: false }), false, "the page is hidden");
+  assert.equal(approvalsDue({ ...later, linked: false }), false, "the link to the computer is down");
+  assert.equal(approvalsDue({ ...later, asking: true }), false, "the list is already on its way");
+  assert.equal(approvalsDue({ ...later, answeredAt: null }), false, "the screen asks for the first list itself");
 });

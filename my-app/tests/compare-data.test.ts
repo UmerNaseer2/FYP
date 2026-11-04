@@ -513,3 +513,149 @@ describe("a compare limited to some tables", () => {
 function digestless(): FakeStep {
   return { match: /AS digest/, rows: [] };
 }
+
+/**
+ * The digest read takes the first SAMPLE_SCAN_ROWS rows per side, ordered by
+ * the key's text in byte order. When one side is missing rows, its read reaches
+ * further into the table than the other's, and the keys past the other side's
+ * last key were simply not read there. They must not be called missing.
+ */
+describe("a sample that stops at a different key on each side", () => {
+  /**
+   * One side's digest read for the given ids, the way the database returns it:
+   * sorted as text (JavaScript's default sort is byte order for ASCII digits)
+   * and cut at the scan limit.
+   */
+  const digestRead = (ids: number[]): FakeStep => ({
+    match: /AS digest/,
+    rows: ids
+      .map(String)
+      .sort()
+      .slice(0, 2000)
+      .map((id) => ({ k0: id, digest: "same" })),
+  });
+  const range = (from: number, to: number): number[] =>
+    Array.from({ length: to - from + 1 }, (_, i) => from + i);
+  /** The 2,000th id of 1..2500 in text order, where the source's read stops. */
+  const sourceLastKey = range(1, 2500).map(String).sort()[1999];
+
+  it("does not report rows past the shorter read as missing", async () => {
+    // Ids 101..200 are missing from the target, so the target's read reaches
+    // 100 keys past the source's last one.
+    const missing = new Set(range(101, 200).map(String));
+    const source = range(1, 2500);
+    const target = source.filter((id) => !missing.has(String(id)));
+
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [...checksum(2500, "abc"), digestRead(source)],
+      [...checksum(2400, "zzz"), digestRead(target)],
+    );
+
+    const sample = result.tables[0].sample;
+    expect(sample?.status).toBe("sampled");
+    expect(sample?.partial).toBe(true);
+    // Every reported row is one the target really lacks, and none of them lies
+    // past the source's last key.
+    expect(sample?.rows.length).toBeGreaterThan(0);
+    for (const row of sample?.rows ?? []) {
+      expect(row.kind).toBe("sourceOnly");
+      expect(missing.has(row.key[0])).toBe(true);
+      expect(Buffer.compare(Buffer.from(row.key[0]), Buffer.from(sourceLastKey))).toBeLessThanOrEqual(0);
+    }
+    // And it says where the check stopped.
+    expect(sample?.note).toContain(`checked up to id = ${sourceLastKey}`);
+  });
+
+  it("lists only the real differences when there are few of them", async () => {
+    // Three missing rows fit in the list together with any false ones, so a
+    // read that judged keys past the cut-off would show them here. Id 0 is a
+    // real target-only row inside the part both reads covered and stays listed.
+    const source = range(1, 2500);
+    const target = [0, ...source.filter((id) => id < 101 || id > 103)];
+
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [...checksum(2500, "abc"), digestRead(source)],
+      [...checksum(2498, "zzz"), digestRead(target)],
+    );
+
+    expect(result.tables[0].sample?.rows).toEqual([
+      { key: ["101"], kind: "sourceOnly", differences: [] },
+      { key: ["102"], kind: "sourceOnly", differences: [] },
+      { key: ["103"], kind: "sourceOnly", differences: [] },
+      { key: ["0"], kind: "targetOnly", differences: [] },
+    ]);
+    expect(result.tables[0].sample?.more).toBe(false);
+  });
+
+  it("adds no note when both tables were read in full", async () => {
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [...checksum(2, "abc"), digestRead([1, 2])],
+      [...checksum(1, "zzz"), digestRead([1])],
+    );
+
+    expect(result.tables[0].sample?.rows).toEqual([
+      { key: ["2"], kind: "sourceOnly", differences: [] },
+    ]);
+    expect(result.tables[0].sample?.note).toBeNull();
+  });
+});
+
+/**
+ * The key is picked from the SOURCE's constraints. The target may not enforce
+ * them, so it can hold the same key twice, and a map by key would quietly keep
+ * one copy and drop the other.
+ */
+describe("a key the target holds more than once", () => {
+  const digest = (rows: Record<string, string>[]): FakeStep => ({
+    match: /AS digest/,
+    rows,
+  });
+
+  it("reports the duplicate even when both copies match the source", async () => {
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [
+        ...checksum(3, "abc"),
+        digest([{ k0: "1", digest: "a" }, { k0: "2", digest: "b" }, { k0: "3", digest: "c" }]),
+      ],
+      [
+        ...checksum(4, "zzz"),
+        digest([
+          { k0: "1", digest: "a" },
+          { k0: "2", digest: "b" },
+          { k0: "2", digest: "b" },
+          { k0: "3", digest: "c" },
+        ]),
+      ],
+    );
+
+    const sample = result.tables[0].sample;
+    expect(result.tables[0].status).toBe("different");
+    expect(sample?.rows).toEqual([]);
+    expect(sample?.note).toContain("On the target, 1 id value appears more than once (2).");
+  });
+
+  it("does not pair the source row with one copy and call it changed", async () => {
+    // With a map by key, the second copy replaced the first and the row was
+    // listed as changed against whichever copy happened to come last.
+    const result = await run(
+      reportWithOneMatch({ shared: ["id", "total"] }),
+      [...checksum(2, "abc"), digest([{ k0: "1", digest: "a" }, { k0: "2", digest: "b" }])],
+      [
+        ...checksum(3, "zzz"),
+        digest([
+          { k0: "1", digest: "a" },
+          { k0: "2", digest: "b" },
+          { k0: "2", digest: "x" },
+        ]),
+      ],
+    );
+
+    const sample = result.tables[0].sample;
+    expect(sample?.rows).toEqual([]);
+    expect(sample?.note).toContain("more than once (2)");
+  });
+});

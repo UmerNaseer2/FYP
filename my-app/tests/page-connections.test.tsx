@@ -453,6 +453,66 @@ describe("the add drawer", () => {
   });
 });
 
+describe("testing an edit before it is saved", () => {
+  // Save keeps the saved password when its box is left blank, and the saved
+  // connection string when that box is left blank. Test has to check the same
+  // thing, so it sends what Save would send plus the row's id, and the route
+  // fills the blanks in from that row. It is never the row's own test-saved,
+  // which would ignore what was just changed on screen, the SSL mode included.
+  async function editAndTest(saved: ReturnType<typeof conn>) {
+    setRoutes([
+      {
+        match: /\/api\/connections\/test$/,
+        method: "POST",
+        body: {
+          ok: true,
+          version: "PostgreSQL 17.2",
+          schemaCount: 1,
+          schemas: ["public"],
+          latencyMs: 8,
+          ssl: true,
+        },
+      },
+      { match: "/api/connections", method: "GET", body: [saved] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(within(rowFor(String(saved.name))).getByRole("button", { name: /Edit/ }));
+    fireEvent.click(screen.getByRole("radio", { name: "Verify full" }));
+    fireEvent.click(screen.getByRole("button", { name: /Test now/ }));
+    await screen.findByText(/Connected\. Found/);
+
+    expect(fetchCalls.filter((c) => c.url.includes("/test-saved"))).toHaveLength(0);
+    const tests = fetchCalls.filter((c) => /\/api\/connections\/test$/.test(c.url));
+    expect(tests).toHaveLength(1);
+    return JSON.parse(tests[0].body ?? "{}");
+  }
+
+  it("sends the row's id and a blank password, with the SSL mode on screen", async () => {
+    const sent = await editAndTest(conn({ id: 3, name: "Orders DB" }));
+    expect(sent).toMatchObject({
+      id: 3,
+      password: "",
+      host: "db.internal",
+      username: "app",
+      ssl_mode: "verify-full",
+      clear_connection_string: true,
+    });
+  });
+
+  it("sends the row's id and a blank connection string for a URI connection", async () => {
+    const sent = await editAndTest(
+      conn({ id: 6, name: "Hosted DB", has_connection_string: true })
+    );
+    expect(sent).toMatchObject({
+      id: 6,
+      connection_string: "",
+      ssl_mode: "verify-full",
+      clear_connection_string: false,
+    });
+  });
+});
+
 describe("for a role that may not add, change or delete connections", () => {
   /** Why each button is off, in the words the page uses. */
   const refusal = {

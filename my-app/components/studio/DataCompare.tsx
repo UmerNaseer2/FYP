@@ -119,7 +119,11 @@ function CellValue({ value }: { value: string | null }) {
  */
 function SampleRows({ sample }: { sample: RowSample }) {
   const note = describeSample(sample);
-  if (sample.rows.length === 0 && !note) return null;
+  // describeSample states the scan's bounds and passes `note` on only for an
+  // unavailable sample. A sampled one can carry a note of its own (where the
+  // check stopped, or keys one side holds twice), so it is shown here too.
+  const sampledNote = sample.status === "sampled" ? sample.note : null;
+  if (sample.rows.length === 0 && !note && !sampledNote) return null;
 
   return (
     <div className="sample-rows">
@@ -156,6 +160,7 @@ function SampleRows({ sample }: { sample: RowSample }) {
         </div>
       ))}
       {note && <div className="sample-rows__note">{note}</div>}
+      {sampledNote && <div className="sample-rows__note">{sampledNote}</div>}
     </div>
   );
 }

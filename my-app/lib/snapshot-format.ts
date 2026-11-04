@@ -35,7 +35,7 @@
  * row to SNAPSHOT_FORMAT_HISTORY saying what changed. Do not bump it for a bug
  * fix that leaves the shape alone.
  */
-export const SNAPSHOT_FORMAT_VERSION = 4;
+export const SNAPSHOT_FORMAT_VERSION = 5;
 
 /**
  * What each version of the capture added, newest last.
@@ -54,6 +54,12 @@ export const SNAPSHOT_FORMAT_HISTORY: ReadonlyArray<{
   { version: 2, adds: "indexes, triggers, views, sequences, types and routines" },
   { version: 3, adds: "collations, extensions, grants, row-level security and partitioning" },
   { version: 4, adds: "the format stamp itself" },
+  {
+    version: 5,
+    adds:
+      "definitions that keep the spaces inside strings, quoted names, comments and function bodies " +
+      "(older baselines are brought up to this rule when read, by withCurrentNormalization in lib/postgres.ts)",
+  },
 ];
 
 /**

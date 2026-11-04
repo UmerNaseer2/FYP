@@ -21,7 +21,10 @@
 #      build fails, the old app keeps running and the commit is tried again on
 #      the next run, three tries in all. The database keeps its data throughout.
 #   5. It waits for the new app to report healthy, then deletes the old image
-#      the rebuild left behind, so the disk does not slowly fill up.
+#      the rebuild left behind, so the disk does not slowly fill up. If the new
+#      app is not healthy within three minutes, it puts the old image back and
+#      skips the commit until the next push, so the server is never left on a
+#      broken version and does not rebuild it every five minutes.
 #
 # Each event is one timestamped line on stdout (the timer sends it to the
 # system journal, cron to the log file). The full build output of the latest
@@ -114,8 +117,8 @@ if [ "$local_sha" = "$remote_sha" ]; then
   exit 0
 fi
 
-# A commit already skipped (CI failed on it, or it failed to deploy three
-# times) stays skipped until a newer push, so don't ask GitHub about it again
+# A commit already skipped (CI failed on it, it failed to deploy three times,
+# or it never got healthy) stays skipped until a newer push, so don't ask GitHub about it again
 # every five minutes. The skip is kept in a file of its own because
 # .deploy-state changes with every new message: a network outage would wipe
 # it, and the commit would be built all over again.
@@ -245,6 +248,46 @@ deploy_failed() {
   exit 1
 }
 
+# The Dockerfile's healthcheck loads /login every 30 seconds. This gives the
+# app up to three minutes to say healthy, and prints what it said last.
+wait_for_health() {
+  local id state=starting
+  id="$(docker compose ps -q app 2>/dev/null || true)"
+  for _ in $(seq 1 36); do
+    state="$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null || echo missing)"
+    if [ "$state" = healthy ]; then break; fi
+    sleep 5
+  done
+  echo "$state"
+}
+
+# Remember the image the app runs on now, so it can be put back if the new
+# version will not start or never gets healthy. The rebuild takes its name
+# away but does not delete it: only the prune at the very end does that, after
+# a healthy deploy. On the first deploy no app is running, so there is none.
+old_image=""
+app_image=""
+old_app_id="$(docker compose ps -q app 2>/dev/null || true)"
+if [ -n "$old_app_id" ]; then
+  old_image="$(docker inspect -f '{{.Image}}' "$old_app_id" 2>/dev/null || true)"
+  app_image="$(docker inspect -f '{{.Config.Image}}' "$old_app_id" 2>/dev/null || true)"
+fi
+
+# Gives the remembered image its name back and starts the app on it again,
+# without building anything. Logs how that went.
+restore_previous() {
+  if [ -z "$old_image" ] || [ -z "$app_image" ]; then
+    log "No earlier version of the app was running, so there is none to put back."
+    return
+  fi
+  if docker tag "$old_image" "$app_image" >> "$BUILD_LOG" 2>&1 \
+    && docker compose up -d --no-build --force-recreate app >> "$BUILD_LOG" 2>&1; then
+    log "Put the previous version (${local_sha:0:7}) back. The app is '$(wait_for_health)'."
+  else
+    log "Could not put the previous version (${local_sha:0:7}) back. 'docker compose ps' shows what is running."
+  fi
+}
+
 # Build first, then swap. A failed build never touches the running app.
 # --pull fetches the newest node base image, so its security fixes reach the
 # server with the next deploy. If Docker Hub cannot be reached, build on the
@@ -260,23 +303,25 @@ docker compose pull --quiet db >> "$BUILD_LOG" 2>&1 || true
 # database container only if its image or its settings in docker-compose.yml
 # changed, and the data lives in a volume, so it is kept either way.
 if ! docker compose up -d >> "$BUILD_LOG" 2>&1; then
-  deploy_failed "It built but would not start. 'docker compose ps' shows what is running."
+  restore_previous
+  deploy_failed "It built but would not start."
 fi
 
-# The Dockerfile's healthcheck loads /login every 30 seconds. Give it up to
-# three minutes to say healthy.
-app_id="$(docker compose ps -q app)"
-health="starting"
-for _ in $(seq 1 36); do
-  health="$(docker inspect -f '{{.State.Health.Status}}' "$app_id" 2>/dev/null || echo missing)"
-  if [ "$health" = healthy ]; then break; fi
-  sleep 5
-done
-if [ "$health" = healthy ]; then
-  log "Deployed $short. The app is up and healthy."
-else
-  log "Deployed $short, but the app is '$health' after 3 minutes. See: docker compose logs app"
+# A new version that starts but never gets healthy is not marked deployed.
+# Its log goes into deploy/last-build.log, the previous version is put back,
+# and the commit is skipped at once: it started, so the build is fine and the
+# fault is almost always in the code, and trying again would only take the
+# app down for another three minutes. The next push is tried as usual.
+health="$(wait_for_health)"
+if [ "$health" != healthy ]; then
+  log "$short started, but the app is '$health' after 3 minutes, so it is not kept."
+  docker compose logs --no-color --tail 300 app >> "$BUILD_LOG" 2>&1 || true
+  git reset --quiet --keep "$local_sha"
+  restore_previous
+  skip "the app was '$health' 3 minutes after it started. Its log is at the end of deploy/last-build.log."
+  exit 1
 fi
+log "Deployed $short. The app is up and healthy."
 echo "Deployed $short" > "$STATE_FILE"
 
 # Each rebuild leaves the previous app image behind with no name. Remove those,

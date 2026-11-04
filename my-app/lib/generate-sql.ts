@@ -3059,7 +3059,9 @@ type InboundForeignKey = {
    * that point — but there is nothing left to put it back on.
    */
   survives: boolean;
-  /** The ADD that puts it back, with the referenced table under its new name. */
+  /** The referenced columns under the names they carry once renames have run. */
+  referencedColumnsAfterRename: string[];
+  /** The ADD that puts it back, with tables and columns under their new names. */
   definition: string;
 };
 
@@ -3079,6 +3081,17 @@ function inboundForeignKeysByTable(
   // What each matched table is called before and after the rename phase.
   const renamedTo = new Map<string, string>();
   for (const match of report.matchedTables) renamedTo.set(match.right.name, match.left.name);
+  // The same for each matched table's columns, keyed by the table's name in
+  // the target. A key put back after a drop has to name the columns as they
+  // are called by then, on both its own table and the one it points at.
+  const columnsRenamedTo = new Map<string, Map<string, string>>();
+  for (const match of report.matchedTables) {
+    const names = new Map<string, string>();
+    for (const col of match.columnMatches) names.set(col.right.name, col.left.name);
+    columnsRenamedTo.set(match.right.name, names);
+  }
+  const afterRename = (tableName: string, columns: string[]): string[] =>
+    columns.map((name) => columnsRenamedTo.get(tableName)?.get(name) ?? name);
 
   const owners: { table: TableSnapshot; survives: boolean; handled: Set<string> }[] = [
     ...report.matchedTables.map((match) => ({
@@ -3102,14 +3115,21 @@ function inboundForeignKeysByTable(
       const referenced = fk.referencedTable;
       if (!referenced || !renamedTo.has(referenced)) continue;
       if (owner.handled.has(fk.name)) continue;
+      const referencedColumnsAfterRename = afterRename(referenced, fk.referencedColumns);
       const entry: InboundForeignKey = {
         tableName: renamedTo.get(owner.table.name) ?? owner.table.name,
         fk,
         survives: owner.survives,
-        // The referenced table may be mid-rename, so the key cannot go back
-        // verbatim — it would name a table that no longer exists.
+        referencedColumnsAfterRename,
+        // The tables and columns may be mid-rename, so the key cannot go back
+        // verbatim: it would name a table or column that no longer exists.
         definition: buildFkDef(
-          { ...fk, referencedTable: renamedTo.get(referenced) ?? referenced },
+          {
+            ...fk,
+            columns: afterRename(owner.table.name, fk.columns),
+            referencedTable: renamedTo.get(referenced) ?? referenced,
+            referencedColumns: referencedColumnsAfterRename,
+          },
           targetSchema
         ),
       };
@@ -3154,6 +3174,45 @@ function sourceKeepsKeyFor(match: TableMatch, columns: string[]): boolean {
 /** Two column lists naming the same columns, order and all. */
 function sameColumnList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+/**
+ * One name for an inbound key. Constraint names are only unique within their
+ * own table, so two tables can each have a key called "fk_product".
+ */
+function inboundKeyId(entry: InboundForeignKey): string {
+  return JSON.stringify([entry.tableName, entry.fk.name]);
+}
+
+/** The DROP that takes an inbound key off before something it depends on goes. */
+function dropInboundKeyStatement(
+  entry: InboundForeignKey,
+  reason: string,
+  destructive: boolean
+): SqlStatement {
+  return {
+    sql: `ALTER TABLE ${q(entry.tableName)} DROP CONSTRAINT IF EXISTS ${q(entry.fk.name)};`,
+    description: `Drop FK "${entry.fk.name}" from "${entry.tableName}" — ${reason}`,
+    kind: "DROP_CONSTRAINT",
+    severity: constraintChangeSeverity("FOREIGN KEY", "drop"),
+    tableName: entry.tableName,
+    destructive,
+  };
+}
+
+/** The ADD that puts an inbound key back once what it points at is back. */
+function restoreInboundKeyStatement(entry: InboundForeignKey): SqlStatement {
+  return {
+    sql: onlyIfMissing(
+      tableConstraintQuery(entry.tableName, entry.fk.name),
+      `ALTER TABLE ${q(entry.tableName)} ADD CONSTRAINT ${q(entry.fk.name)} ${entry.definition};`
+    ),
+    description: `Put FK "${entry.fk.name}" on "${entry.tableName}" back`,
+    kind: "ADD_CONSTRAINT",
+    severity: constraintChangeSeverity("FOREIGN KEY", "add"),
+    tableName: entry.tableName,
+    destructive: false,
+  };
 }
 
 /**
@@ -3299,6 +3358,11 @@ function alterStatementsForMatch(
     stmts.push(...tunedSerial.after);
   }
 
+  // A key on another table may be holding a column or a key of this one in
+  // place, and the same key can be holding two of them. Dropped once, put back
+  // once, whether a column rebuild below or a key drop further down finds it.
+  const clearedInbound = new Set<string>();
+
   // ── c. Type, nullability and default changes on matched columns ──────────
   for (const colMatch of match.columnMatches) {
     // After the rename step above, this column is now called colMatch.left.name in B.
@@ -3353,6 +3417,29 @@ function alterStatementsForMatch(
       // column starts with its default or NULL, so the values the target's
       // users saw are gone even though no stored data was.
       const losesComputedValues = !dropsStoredValues && !colMatch.left.generated;
+      // Keys on OTHER tables that point at this column. The CASCADE drops them
+      // too, without naming them, and a key identical in both schemas is in no
+      // diff, so nothing put it back: the other table quietly stopped checking
+      // its rows. Each comes off by name here, so the script says so, and goes
+      // back on at the very end, once the column and its key are back; putting
+      // it back also checks that the rows still point at something.
+      // The drop is held back exactly when the column drop is, so safe mode
+      // never takes a key off a column it leaves standing.
+      for (const entry of inboundFks) {
+        if (!entry.fk.referencedColumns.includes(colMatch.right.name)) continue;
+        if (clearedInbound.has(inboundKeyId(entry))) continue;
+        clearedInbound.add(inboundKeyId(entry));
+        stmts.push(
+          dropInboundKeyStatement(
+            entry,
+            `it points at "${colName}" on "${tName}", which is about to be rebuilt`,
+            dropsStoredValues || losesComputedValues
+          )
+        );
+        if (entry.survives && sourceKeepsKeyFor(match, entry.referencedColumnsAfterRename)) {
+          fkStmts.push(restoreInboundKeyStatement(entry));
+        }
+      }
       stmts.push({
         sql: `ALTER TABLE ${q(tName)} DROP COLUMN IF EXISTS ${q(colName)} CASCADE;`,
         description:
@@ -3843,41 +3930,25 @@ function alterStatementsForMatch(
   const dropFksFirst = toDrop.filter((d) => d.kind === "FOREIGN KEY");
   const dropRest = toDrop.filter((d) => d.kind !== "FOREIGN KEY");
 
-  // A key elsewhere may be holding one of these in place, and the same key can
-  // be holding two of them. Dropped once, put back once.
-  const clearedInbound = new Set<string>();
   for (const diff of [...dropFksFirst, ...dropRest]) {
     const constraintName = diff.rightName ?? "";
     if (!constraintName) continue;
     if (diff.kind === "PRIMARY KEY" || diff.kind === "UNIQUE") {
       for (const entry of dependentsOnKey(match, constraintName, inboundFks)) {
-        if (clearedInbound.has(entry.fk.name)) continue;
-        clearedInbound.add(entry.fk.name);
-        stmts.push({
-          sql: `ALTER TABLE ${q(entry.tableName)} DROP CONSTRAINT IF EXISTS ${q(entry.fk.name)};`,
-          description:
-            `Drop FK "${entry.fk.name}" from "${entry.tableName}" — it depends on ` +
-            `${diff.kind} "${constraintName}" on "${tName}", which is about to go`,
-          kind: "DROP_CONSTRAINT",
-          severity: constraintChangeSeverity("FOREIGN KEY", "drop"),
-          tableName: entry.tableName,
-          destructive: false,
-        });
+        if (clearedInbound.has(inboundKeyId(entry))) continue;
+        clearedInbound.add(inboundKeyId(entry));
+        stmts.push(
+          dropInboundKeyStatement(
+            entry,
+            `it depends on ${diff.kind} "${constraintName}" on "${tName}", which is about to go`,
+            false
+          )
+        );
         // Only worth putting back if there will be something to point at: the
         // source has to keep a key over the same columns. When it does not, the
         // reference is gone for good and the description above is the warning.
-        if (entry.survives && sourceKeepsKeyFor(match, entry.fk.referencedColumns)) {
-          fkStmts.push({
-            sql: onlyIfMissing(
-              tableConstraintQuery(entry.tableName, entry.fk.name),
-              `ALTER TABLE ${q(entry.tableName)} ADD CONSTRAINT ${q(entry.fk.name)} ${entry.definition};`
-            ),
-            description: `Put FK "${entry.fk.name}" on "${entry.tableName}" back`,
-            kind: "ADD_CONSTRAINT",
-            severity: constraintChangeSeverity("FOREIGN KEY", "add"),
-            tableName: entry.tableName,
-            destructive: false,
-          });
+        if (entry.survives && sourceKeepsKeyFor(match, entry.referencedColumnsAfterRename)) {
+          fkStmts.push(restoreInboundKeyStatement(entry));
         }
       }
     }

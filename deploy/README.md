@@ -19,8 +19,10 @@ has a new commit, signed with a trusted key, and CI passed on it, the script
 pulls it, rebuilds the app
 container and waits for it to be healthy. Swapping the new container in takes
 the app offline for about a second. If anything goes wrong, the old version
-keeps running and the log says what happened. The database keeps its data
-throughout.
+keeps running and the log says what happened. If the new version starts but
+is not healthy within three minutes, the script puts the old version back and
+does not try that commit again until the next push. The database keeps its
+data throughout.
 
 All commands below are run on the server, in its terminal. If Splashtop shows
 only a black screen, ask IT for SSH access: every step works the same over
@@ -231,7 +233,8 @@ When the log says something else:
 | `Skipping ...: it failed to deploy 3 times` | Read the end of `deploy/last-build.log`. Fix it and push, or if the cause has passed (say Docker Hub was down), push again as below. |
 | `Not deploying ...: files were changed by hand` | In `~/FYP`, run `git checkout -- .` to undo them. |
 | `Could not reach GitHub` or `Could not ask GitHub about CI` | Nothing, unless it lasts for hours. The network was down, or GitHub's limit of 60 questions an hour from one address was used up (everyone on the campus connection shares it). It asks again by itself, and `Reached GitHub again` says when the network is back. |
-| `the app is 'unhealthy' after 3 minutes` | The new version started but is not answering. `docker compose logs app` shows why. Push a fix, or revert the commit on GitHub. |
+| `Skipping ...: the app was 'unhealthy' 3 minutes after it started` | The new version started but did not answer, so it was not kept. The line before says whether the old version was put back and is healthy. The new version's own log is at the end of `deploy/last-build.log`. Push a fix. |
+| `Could not put the previous version (...) back` | The app may be down. `docker compose ps` and `docker compose logs app` show what is running. `docker compose up -d --build` rebuilds and starts the version this copy is back on. |
 
 A skipped commit stays skipped, even if you re-run its CI on GitHub and it
 passes. To deploy it anyway, push again. An empty commit is enough:
@@ -239,8 +242,9 @@ passes. To deploy it anyway, push again. An empty commit is enough:
 the note that marks it skipped with `rm ~/FYP/.deploy-skipped`, and the next
 run tries it again.
 
-To undo a bad deploy, revert the commit on GitHub. The server follows `main`,
-so it takes the revert like any other push.
+A new version that is healthy but wrong in some other way stays live. To undo
+it, revert the commit on GitHub. The server follows `main`, so it takes the
+revert like any other push.
 
 ## Turning it off
 

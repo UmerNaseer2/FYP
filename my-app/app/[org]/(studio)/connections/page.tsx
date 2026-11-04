@@ -468,8 +468,7 @@ export default function ConnectionsPage() {
     };
   }
 
-  // Apply a test-endpoint response to the drawer's result panel (shared by the
-  // "test these fields" and "test the saved connection" paths below).
+  // Apply a test-endpoint response to the drawer's result panel.
   function applyDrawerTestResult(data: {
     ok?: boolean;
     version?: string;
@@ -502,27 +501,10 @@ export default function ConnectionsPage() {
 
   // ——— Test (in drawer) ———
   async function runDrawerTest() {
-    // URI mode with a blank field:
-    if (fieldMode === "uri" && !form.uri.trim()) {
-      // On EDIT the stored connection string is never echoed back, so test the
-      // saved credentials by id — this is the documented "leave blank to keep
-      // the stored connection string" path, and clicking Test should exercise
-      // the real connection, not a blank one.
-      if (editingId !== null) {
-        setDrawerTest({ kind: "loading" });
-        try {
-          const res = await apiFetch("/api/connections/test-saved", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: editingId }),
-          });
-          applyDrawerTestResult(await res.json());
-        } catch {
-          setDrawerTest({ kind: "err", error: "Could not run the test.", sslRequired: false, detail: "" });
-        }
-        return;
-      }
-      // On a NEW connection there's nothing to test yet.
+    // URI mode with a blank field on a NEW connection: nothing to test yet.
+    // (On edit a blank field keeps the saved connection string, which the
+    // test route fills in below, the same way Save keeps it.)
+    if (fieldMode === "uri" && !form.uri.trim() && editingId === null) {
       setDrawerTest({
         kind: "err",
         error: "Paste a connection string first.",
@@ -532,8 +514,8 @@ export default function ConnectionsPage() {
       return;
     }
 
-    // URI typed but not parseable (form.uri is non-blank here).
-    if (fieldMode === "uri" && !parsePostgresUri(form.uri)) {
+    // URI typed but not parseable.
+    if (fieldMode === "uri" && form.uri.trim() && !parsePostgresUri(form.uri)) {
       setDrawerTest({
         kind: "err",
         error: "That connection string doesn't look valid.",
@@ -544,7 +526,11 @@ export default function ConnectionsPage() {
     }
 
     setDrawerTest({ kind: "loading" });
-    const payload = buildPayload();
+    // Exactly what Save sends, plus the row's id while editing. A blank
+    // password or connection string then means "keep the saved one", and the
+    // route fills it in from that row, so Test checks what Save would store,
+    // SSL mode included.
+    const payload = { ...buildPayload(), id: editingId ?? undefined };
     try {
       const res = await apiFetch("/api/connections/test", {
         method: "POST",

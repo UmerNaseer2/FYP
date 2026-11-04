@@ -118,3 +118,32 @@ export function passkeyErrorText(name: string, kind: "create" | "get"): string {
       return kind === "create" ? "This device could not make a passkey. Try again." : "This device could not use its passkey. Try again.";
   }
 }
+
+/**
+ * How long the phone waits after the computer's last list of requests before
+ * it asks for it again. The computer does not say when a request is made, so
+ * without this a list asked for once would never show a newer request.
+ */
+export const APPROVALS_EVERY_MS = 30_000;
+
+/** What the phone knows when it decides whether to ask for the list of requests again. */
+export type ApprovalsCheck = {
+  /** True while the tabs show: the Requests tab counts the waiting requests on every tab. */
+  tabsShown: boolean;
+  /** True while the page can be seen. A hidden page asks for nothing. */
+  visible: boolean;
+  /** True while the link to the computer is open. */
+  linked: boolean;
+  /** True while the list is already on its way. */
+  asking: boolean;
+  /** When the last list arrived, or null before the first one, which the screen asks for itself. */
+  answeredAt: number | null;
+  now: number;
+};
+
+/** True when the phone should ask the computer for the list of requests again. */
+export function approvalsDue(check: ApprovalsCheck): boolean {
+  if (!check.tabsShown || !check.visible || !check.linked || check.asking) return false;
+  if (check.answeredAt === null) return false;
+  return check.now - check.answeredAt >= APPROVALS_EVERY_MS;
+}
