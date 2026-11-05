@@ -49,6 +49,12 @@ RUN npm run build
 FROM node:22-slim AS runner
 WORKDIR /app
 
+# Says on the image whether its sign-in bypass is on (see the build stage), so
+# a look at the image tells without starting it: deploy/export-image.sh
+# refuses to hand over one that has it on.
+ARG NEXT_PUBLIC_AUTH_BYPASS="false"
+LABEL org.schema-studio.sign-in-bypass="$NEXT_PUBLIC_AUTH_BYPASS"
+
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000

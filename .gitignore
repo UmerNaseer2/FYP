@@ -35,3 +35,5 @@ docs/**/*Agreement*.pdf
 /.deploy-refreshed
 /deploy/last-build.log
 /backups/
+# deploy/export-image.sh's saved copies of the app's image, to hand over.
+/images/

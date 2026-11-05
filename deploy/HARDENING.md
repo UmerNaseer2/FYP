@@ -20,8 +20,8 @@ it by itself after ten minutes.
 
 Every command runs on the server unless it says "on your own computer".
 
-Before a disk image of the server is taken, see [IMAGE.md](IMAGE.md) for
-what it holds and what to clean up first.
+Before a disk image of the server is taken, see [DISK-IMAGE.md](DISK-IMAGE.md)
+for what it holds and what to clean up first.
 
 ## 0. Before you start
 

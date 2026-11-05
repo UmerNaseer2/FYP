@@ -9,9 +9,11 @@ Then lock the server down with [HARDENING.md](HARDENING.md): security
 updates, an account of its own for the app, a firewall, and the list of keys
 whose signed commits it deploys.
 
-Before anyone takes a disk image of the server, read [IMAGE.md](IMAGE.md):
-the image holds every secret on the server, and every copy of it keeps
-updating itself.
+Before anyone takes a disk image of the server, read
+[DISK-IMAGE.md](DISK-IMAGE.md): the image holds every secret on the server,
+and every copy of it keeps updating itself. To hand over only the app, as a
+container image with no secrets or data in it, see
+[CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
 
 To run it on Vercel with its data in Supabase instead, see
 [SUPABASE-VERCEL.md](SUPABASE-VERCEL.md).

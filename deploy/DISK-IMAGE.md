@@ -7,6 +7,9 @@ database. This guide says what the image holds, what to clean up before it is
 taken, what to change on this server after, and what to know on a copy that
 runs somewhere else.
 
+To hand over only the app, without the server's secrets or data, a container
+image is enough: see [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
+
 Every command runs on the server, in the folder this repo is in, `~/FYP`.
 After step 4 of [HARDENING.md](HARDENING.md), the folder is
 `/srv/schema-studio`, and the commands that work in it run as the app's own

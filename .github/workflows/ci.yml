@@ -5,7 +5,9 @@
 #   expects: it lints, it type-checks, its tests pass, and it builds.
 # - stack starts the app the way the server runs it, from docker-compose.yml
 #   with the sign-in bypass off, then saves a copy of its database with
-#   deploy/backup.sh and puts it back.
+#   deploy/backup.sh and puts it back. Last, it saves the app's image to a
+#   file with deploy/export-image.sh, starts the app again from that file
+#   alone, and checks the script refuses an image with the bypass on.
 #
 # deploy/auto-update.sh deploys a commit to the server only after this whole
 # workflow has passed, so a stack that would not start never reaches it.
@@ -193,6 +195,63 @@ jobs:
         run: |
           docker compose up -d --no-build --wait --wait-timeout 180
           curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
+
+      # deploy/export-image.sh saves the running app's image as one file, the
+      # way the server hands it over (deploy/CONTAINER-IMAGE.md).
+      - name: Save the app's image with deploy/export-image.sh
+        run: |
+          ./deploy/export-image.sh
+          ls -l images
+          # It let go of the lock it held while saving.
+          [ ! -d .deploy.lock ]
+          cd images
+          sha256sum -c ./*.sha256
+
+      # The file alone is enough: with the image deleted, the app comes back
+      # from the file and still finds its data, which lives in its own volume.
+      - name: The saved image runs on its own
+        run: |
+          tag="schema-studio-app:$(git rev-parse --short=12 HEAD)"
+          docker compose rm --stop --force app
+          docker image rm schema-studio-app
+          for name in schema-studio-app "$tag"; do
+            if docker image inspect "$name" > /dev/null 2>&1; then
+              echo "$name is still here."
+              exit 1
+            fi
+          done
+          docker load -i images/schema-studio-app-*.tar.gz
+          docker tag "$tag" schema-studio-app
+          docker compose up -d --no-build --wait --wait-timeout 180
+          curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
+          [ "$(docker image inspect -f '{{index .Config.Labels "org.schema-studio.sign-in-bypass"}}' schema-studio-app)" = false ]
+          [ "$(docker image inspect -f '{{.Config.User}}' schema-studio-app)" = nextjs ]
+          note="$(echo "select string_agg(note, ', ') from ci_check" | sql)"
+          echo "ci_check holds: $note"
+          [ "$note" = "in the copy" ]
+
+      # Images that differ only in their label stand in for one built with
+      # the bypass on and one built before the label existed. Each must be
+      # refused, leaving no file behind and the lock free.
+      - name: The script refuses an image with the bypass on
+        run: |
+          tag="schema-studio-app:$(git rev-parse --short=12 HEAD)"
+          refused() {
+            printf 'FROM %s\nLABEL org.schema-studio.sign-in-bypass="%s"\n' "$tag" "$1" | docker build --quiet --tag schema-studio-app -
+            docker compose up -d --no-build --no-deps --force-recreate app
+            if out="$(./deploy/export-image.sh 2>&1)"; then
+              echo "It saved an image labelled '$1'."
+              return 1
+            fi
+            echo "$out"
+            echo "$out" | grep -q "$2"
+            [ ! -d .deploy.lock ]
+          }
+          refused true "set to 'true'"
+          refused "" "built before"
+          [ "$(ls -1 images | wc -l)" -eq 2 ]
+          docker tag "$tag" schema-studio-app
+          docker compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout 180 app
 
       - name: Show the containers and their logs
         if: failure()
