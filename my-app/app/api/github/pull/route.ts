@@ -24,17 +24,16 @@
 // Responses:
 //   200 { ok: true, scripts: GitHubScript[], warnings: string[] }
 //   500 { ok: false, code: "github_unconfigured", error }
+//   503 { ok: false, code: "github_settings_unavailable", error }  the settings could not be read
 //   502 { ok: false, code, error }  code: github_unreachable | token_rejected |
 //       github_forbidden | github_rate_limited | repo_not_found | github_down | github_error
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
+import { githubConfigFor } from "@/lib/github-config";
 import {
   contentsPathUrl,
   GITHUB_TIMEOUT_MS,
-  GITHUB_UNCONFIGURED_CODE,
-  githubConfig,
   githubFetch,
-  githubNotConfiguredMessage,
   logGitHubAnswer,
   repoUrl,
   type GitHubConfig,
@@ -266,12 +265,11 @@ export async function GET() {
   const gate = await requirePermission("scripts:read", "deploy:read");
   if (!gate.ok) return gate.response;
 
-  // The GitHub settings, read now rather than when the module loads. The
-  // message names missing keys, never values.
-  const config = githubConfig();
-  if (!config.ok) {
-    return fail(500, GITHUB_UNCONFIGURED_CODE, githubNotConfiguredMessage(config.missing));
-  }
+  // The organization's GitHub settings (lib/github-config.ts), read now
+  // rather than when the module loads. The message names missing keys, never
+  // values, and never the token.
+  const config = await githubConfigFor(gate.principal);
+  if (!config.ok) return fail(config.status, config.code, config.message);
 
   // 1. The organization's root folder: one folder per database. "" (the
   //    repository root) for the default organization, orgs/<id> otherwise.
@@ -302,7 +300,7 @@ export async function GET() {
     return fail(
       502,
       "github_error",
-      `GitHub's answer for ${top} was not a list of folders, so the registry could not be read. Try again; if it keeps happening, ask whoever runs the server to check GITHUB_REPO_OWNER and GITHUB_REPO_NAME.`,
+      `GitHub's answer for ${top} was not a list of folders, so the registry could not be read. Try again; if it keeps happening, ask an admin to check the repository on the Admin screen, under GitHub.`,
     );
   }
 

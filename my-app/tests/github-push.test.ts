@@ -27,6 +27,22 @@ jest.mock("../lib/auth-guard", () => ({
   requirePermission: () => mockRequirePermission(),
 }));
 
+// Each organization's own GitHub settings (lib/org-github-store.ts) are kept
+// in the metadata database, which these tests do not have. Organization 12 has
+// settings of its own: the server's repository, with a token of its own. No
+// other organization has any, so the default one falls back to the server's
+// keys and any other has no GitHub at all (lib/github-config.ts).
+const ORG_TOKEN = "org-token-not-real";
+function savedSettings(orgId: number): unknown {
+  return orgId === 12
+    ? { owner: "acme", repo: "registry", token: ORG_TOKEN, updatedBy: "admin@test", updatedAt: new Date(0) }
+    : null;
+}
+const mockReadOrgGitHub = jest.fn();
+jest.mock("../lib/org-github-store", () => ({
+  readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
+}));
+
 type RouteModule = typeof import("../app/api/github/push/route");
 let POST: RouteModule["POST"];
 
@@ -108,6 +124,7 @@ async function push(body: unknown): Promise<{ status: number; body: Record<strin
   const text = await res.text();
   // Whatever happens, the token never reaches the browser.
   expect(text).not.toContain(FAKE_TOKEN);
+  expect(text).not.toContain(ORG_TOKEN);
   return { status: res.status, body: JSON.parse(text) as Record<string, unknown> };
 }
 
@@ -128,6 +145,7 @@ beforeEach(() => {
   unexpected = [];
   answers = {};
   mockRequirePermission.mockClear();
+  mockReadOrgGitHub.mockReset().mockImplementation(async (orgId: number) => savedSettings(orgId));
   // The route logs GitHub's raw answers; keep the test output clean.
   const spy = jest.spyOn(console, "error").mockImplementation(() => {});
   restoreConsole = () => spy.mockRestore();
@@ -738,6 +756,10 @@ describe("POST /api/github/push, organizations", () => {
       `PUT ${orgFile("v1.2.0.sql")}`,
       `PUT ${orgFile("v1.2.0.down.sql")}`,
     ]);
+    // With the organization's own token, never the server's.
+    for (const call of calls) {
+      expect((call.init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${ORG_TOKEN}`);
+    }
   });
 
   it("removes a leftover rollback from that organization's folder", async () => {
@@ -802,6 +824,18 @@ describe("POST /api/github/push, organizations", () => {
     const { status, body } = await push({ ...BASE, database_name: "orgs", schema_name: "5" });
     expect(status).toBe(200);
     expect(body.paths).toEqual({ migration: "orgs/12/orgs/5/orders_fix/v1.2.0.sql", rollback: null });
+  });
+
+  it("writes nothing for an organization with no GitHub settings, and never borrows the server's", async () => {
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("editor", { orgId: 13, orgSlug: "gamma", orgName: "Gamma", orgIsDefault: false }),
+    }));
+    const { status, body } = await push(BASE);
+    expect(status).toBe(500);
+    expect(body.code).toBe("github_unconfigured");
+    expect(body.error).toContain("on the Admin screen, under GitHub");
+    expect(calls).toEqual([]);
   });
 });
 

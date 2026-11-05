@@ -190,7 +190,7 @@ describe("when the editor cannot do its job", () => {
     await pickTarget("add_invoices");
     writeSql("SQL", ADDS_A_COLUMN);
 
-    expect(await screen.findByText(/Set GITHUB_REPO_OWNER/)).toBeInTheDocument();
+    expect(await screen.findByText(/on the Admin screen, under GitHub/)).toBeInTheDocument();
     expect(
       screen.getByText(/The next version can't be worked out until the GitHub registry is configured/)
     ).toBeInTheDocument();
@@ -220,7 +220,7 @@ describe("when the editor cannot do its job", () => {
       writeSql("SQL", ADDS_A_COLUMN);
 
       expect(await screen.findByText(/The GitHub registry is not set up yet/)).toBeInTheDocument();
-      expect(screen.queryByText(/Set GITHUB_REPO_OWNER/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/on the Admin screen, under GitHub/)).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
       expect(bridge.openSettings).toHaveBeenCalledTimes(1);
     } finally {

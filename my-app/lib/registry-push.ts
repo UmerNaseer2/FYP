@@ -535,16 +535,16 @@ export function githubErrorCode(status: number): GitHubErrorCode {
  */
 export function describeGitHubFailure(status: number, action: string): string {
   if (status === 401) {
-    return `GitHub did not accept the server's access token while trying to ${action}; it may have expired or been revoked. Ask whoever runs the server to replace GITHUB_PAT, then try again.`;
+    return `GitHub did not accept the access token while trying to ${action}; it may have expired or been revoked. An admin can save a new one on the Admin screen, under GitHub, or, where the organization uses the server's own settings, whoever runs the server can replace GITHUB_PAT. Then try again.`;
   }
   if (status === 403) {
-    return `GitHub refused to let the server ${action}: the access token has no permission for the registry repository, or the server has used up its GitHub requests for now. Wait a few minutes and try again; if it keeps happening, ask whoever runs the server to check the token's access.`;
+    return `GitHub refused to let the server ${action}: the access token has no permission for the registry repository, or the server has used up its GitHub requests for now. Wait a few minutes and try again; if it keeps happening, ask an admin to check the token's access on the Admin screen, under GitHub.`;
   }
   if (status === 429) {
     return `GitHub is limiting how many requests the server can make, so it could not ${action}. Wait a minute and try again.`;
   }
   if (status === 404) {
-    return `GitHub could not find the registry repository while trying to ${action}, or the access token cannot see it. Ask whoever runs the server to check GITHUB_REPO_OWNER and GITHUB_REPO_NAME, and that GITHUB_PAT has access to that repository.`;
+    return `GitHub could not find the registry repository while trying to ${action}, or the access token cannot see it. An admin can check the repository and its token on the Admin screen, under GitHub, or, where the organization uses the server's own settings, whoever runs the server can check GITHUB_REPO_OWNER and GITHUB_REPO_NAME, and that GITHUB_PAT has access to that repository.`;
   }
   if (status === 409 || status === 422) {
     return `The registry repository changed while the server was trying to ${action}: someone else saved a file there at the same moment. Reload the versions and try again.`;
@@ -552,7 +552,7 @@ export function describeGitHubFailure(status: number, action: string): string {
   if (status >= 500 && status <= 599) {
     return `GitHub is having problems right now (error ${status}), so the server could not ${action}. Try again in a few minutes.`;
   }
-  return `GitHub answered with an unexpected error (${status}) while the server was trying to ${action}. Try again; if it keeps happening, ask whoever runs the server to check the GitHub settings.`;
+  return `GitHub answered with an unexpected error (${status}) while the server was trying to ${action}. Try again; if it keeps happening, ask an admin to check the GitHub settings on the Admin screen.`;
 }
 
 // ── The push preview both screens show ──────────────────────────────────────

@@ -1,6 +1,8 @@
 import pool, { syncMetadataTables } from "./version-db";
 import type { MetadataClient } from "./db/sequelize";
 import { seedBuiltInRoles } from "./db/bootstrap";
+import type { RepositoryName } from "./github-settings";
+import { saveOrgGitHubIn } from "./org-github-store";
 import { ORG_SLUG_PATTERN, isOrgSlug } from "./org-slug";
 import { ADMIN_ROLE } from "./permissions";
 import { logRoleChanges } from "./roles-db";
@@ -266,7 +268,9 @@ export type Created =
   /** Another organization holds the slug already. */
   | { kind: "taken" }
   /** The profile is gone: somebody deleted it after this person signed in. */
-  | { kind: "no-profile" };
+  | { kind: "no-profile" }
+  /** A GitHub token was given, and the server has no key to store it safely with. */
+  | { kind: "no-key" };
 
 /**
  * Make an organization with this person as its Admin, and note it as the one
@@ -282,6 +286,12 @@ export type Created =
  * index, not by a check one of them could slip past: the second insert waits
  * for the first, then gives way, and that person hears the address is taken.
  *
+ * `github` is the repository and access token for its scripts, when the
+ * person gave them on the form. They are saved in the same transaction
+ * (lib/org-github-store.ts), with change log lines naming this person, so a
+ * new organization either has them or does not exist. The caller has already
+ * asked GitHub whether the token opens the repository (lib/github-check.ts).
+ *
  * The slug must already have passed isOrgSlug, and the name the rules in
  * lib/new-organization.ts. A slug that has not is a mistake in the caller,
  * and is thrown rather than stored: a reserved word would take an address the
@@ -289,7 +299,8 @@ export type Created =
  */
 export async function createOrganization(
   profileId: number,
-  organization: { slug: string; name: string }
+  organization: { slug: string; name: string },
+  github?: RepositoryName & { token: string }
 ): Promise<Created> {
   if (!isOrgSlug(organization.slug)) {
     throw new Error(`"${organization.slug}" is not an address an organization may have.`);
@@ -298,7 +309,7 @@ export async function createOrganization(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const created = await createIn(client, profileId, organization);
+    const created = await createIn(client, profileId, organization, github);
     await client.query(created.kind === "ok" ? "COMMIT" : "ROLLBACK");
     return created;
   } catch (error) {
@@ -315,17 +326,19 @@ export async function createOrganization(
 async function createIn(
   client: MetadataClient,
   profileId: number,
-  { slug, name }: { slug: string; name: string }
+  { slug, name }: { slug: string; name: string },
+  github: (RepositoryName & { token: string }) | undefined
 ): Promise<Created> {
   // The lock the UPDATE at the end would take, taken now. It keeps the
   // profile from being deleted before the membership that names it is
   // written, and it lines up two organizations made by one person at the same
   // moment (a double click) instead of letting them trip over each other.
-  const profile = await client.query(
-    `SELECT id FROM profiles WHERE id = $1 FOR NO KEY UPDATE`,
+  const profile = await client.query<{ email: string }>(
+    `SELECT email FROM profiles WHERE id = $1 FOR NO KEY UPDATE`,
     [profileId]
   );
-  if (profile.rows.length === 0) return { kind: "no-profile" };
+  const person = profile.rows[0];
+  if (!person) return { kind: "no-profile" };
 
   const inserted = await client.query<Organization>(
     `INSERT INTO organizations (slug, name) VALUES ($1, $2)
@@ -347,6 +360,20 @@ async function createIn(
     profileId,
     created.id,
   ]);
+
+  if (github) {
+    // Saved as the new Admin, which is what the change log shows.
+    const saved = await saveOrgGitHubIn(client, created.id, github, {
+      email: person.email,
+      role: ADMIN_ROLE,
+    });
+    if (saved.kind === "no-key") return { kind: "no-key" };
+    if (saved.kind !== "ok") {
+      // A token was given, and the organization was made a moment ago in
+      // this same transaction, so neither of the others can happen.
+      throw new Error(`Could not save the new organization's GitHub settings (${saved.kind}).`);
+    }
+  }
   return { kind: "ok", organization: created };
 }
 

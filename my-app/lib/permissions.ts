@@ -239,6 +239,19 @@ export const FEATURES = [
       delete: { does: "delete the organization", from: "admin" },
     },
   },
+  // Not admin-only, so an Admin can let another role look after the
+  // repository and its token. The token itself is never shown to anyone, even
+  // with Read: Read only says which repository is used and whether a token is
+  // saved.
+  {
+    key: "github",
+    label: "GitHub registry",
+    description: "The GitHub repository this organization keeps its scripts in, and the access token the app uses for it.",
+    actions: {
+      read: { does: "see which GitHub repository the organization uses", from: "admin" },
+      update: { does: "change the GitHub repository or its access token", from: "admin" },
+    },
+  },
 ] as const satisfies readonly FeatureSpec[];
 
 type Feature = (typeof FEATURES)[number];
@@ -498,11 +511,13 @@ export function withToggled(
  * joining by one, and someone being removed. They sit in the same log because
  * each one decides who holds a role, which is what the log is for.
  *
- * The last two are about the organization itself: renaming it, and switching
- * its two-person rule. They sit here because this log is the one record of
- * who changed what in an organization, and both change what its members see
- * and may do. Their rows name the admin role, since only an Admin can do
- * either and the column needs a role.
+ * The last three are about the organization itself: renaming it, switching
+ * its two-person rule, and changing the GitHub repository or token its
+ * scripts are kept with. They sit here because this log is the one record of
+ * who changed what in an organization, and each changes what its members see
+ * and may do. Their rows name a role only because the column needs one: the
+ * admin role for the first two, which only an Admin can do, and the role of
+ * whoever saved the GitHub settings for the last.
  *
  * The database holds this list as a CHECK (lib/db/bootstrap.ts), which every
  * start widens to match, so a kind can be added here and nowhere else. Taking
@@ -521,6 +536,7 @@ export const ROLE_CHANGE_KINDS = [
   "remove",
   "rename-organization",
   "two-person-rule",
+  "github-settings",
 ] as const;
 export type RoleChangeKind = (typeof ROLE_CHANGE_KINDS)[number];
 

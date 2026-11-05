@@ -6,6 +6,8 @@
  * each role can do, makes and deletes custom roles, and lists who changed
  * what, and the folding guide above both that explains how to use them. What
  * the invitation panel itself does is tests/component-invite-panel.test.tsx.
+ * The Organization tab and the GitHub tab (where the organization's scripts
+ * are kept, and the access token for them) are at the end.
  *
  * This is the first suite in the project that renders a page rather than
  * calling a function, so it is also the one that proves the setup works at all
@@ -42,6 +44,7 @@ jest.mock("../lib/auth-mode", () => ({
 import AdminPage from "@/app/[org]/(studio)/admin/page";
 import { ROLES_CHANGED_EVENT } from "@/components/studio/ViewAsSwitcher";
 import { resetUserCache } from "@/hooks/useUser";
+import type { GitHubSettingsView } from "@/lib/github-settings";
 import type { InviteListing } from "@/lib/invites";
 import {
   ACTIONS,
@@ -1159,5 +1162,248 @@ describe("the Organization tab", () => {
     await screen.findByText("ada@example.com");
     expect(screen.queryByRole("tab", { name: "Organization" })).not.toBeInTheDocument();
     expect(fetchCalls.some((c) => c.url.includes("/api/admin/organization"))).toBe(false);
+  });
+});
+
+describe("the GitHub tab", () => {
+  // Made up for these tests. Not a real token.
+  const TOKEN = "github_pat_not_real_0003_abcdefghij";
+  /** Nothing saved for this organization yet, opened by an Admin. */
+  const NOT_CONNECTED: GitHubSettingsView = {
+    source: "none",
+    repository: null,
+    folder: "",
+    tokenUnreadable: false,
+    updatedBy: null,
+    updatedAt: null,
+    serverFallback: true,
+    cannotSave: null,
+    canUpdate: true,
+  };
+  /** Saved for this organization, by someone who is not in the Users list. */
+  const CONNECTED: GitHubSettingsView = {
+    ...NOT_CONNECTED,
+    source: "organization",
+    repository: "acme/schema-scripts",
+    updatedBy: "owner@example.com",
+    updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  };
+
+  // What GET /api/admin/github answers. A save or a removal below changes it,
+  // so the load after it shows what the server kept.
+  let githubView: GitHubSettingsView = NOT_CONNECTED;
+  const githubGet = (): FetchRoute => ({ match: "/api/admin/github", method: "GET", body: () => githubView });
+  const githubGets = () => fetchCalls.filter((c) => c.url.includes("/api/admin/github") && c.method === "GET").length;
+  const panel = () => screen.getByRole("tabpanel", { name: "GitHub" });
+
+  /** Open the page as an admin, then the GitHub tab, and wait for it to load. */
+  async function openGitHubTab(view: GitHubSettingsView, ...more: FetchRoute[]) {
+    githubView = view;
+    setRoutes([invitesRoute(), listRoute(), githubGet(), ...more]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    // Hidden, the tab loads nothing.
+    expect(githubGets()).toBe(0);
+    fireEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+    await screen.findByRole("heading", { name: "Where scripts are kept" });
+  }
+
+  function fillIn(repository: string, token: string) {
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: repository } });
+    fireEvent.change(screen.getByLabelText("Access token"), { target: { value: token } });
+  }
+
+  it("connects a repository, says GitHub accepted it, empties the token box and loads again", async () => {
+    await openGitHubTab(NOT_CONNECTED, {
+      match: "/api/admin/github",
+      method: "PUT",
+      body: () => {
+        githubView = CONNECTED;
+        return { saved: true, changed: true, repository: "acme/schema-scripts" };
+      },
+    });
+    expect(within(panel()).getByText(/^Not connected\./)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connect a repository" })).toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+
+    // Pasted from the browser, with spaces around the token.
+    fillIn("https://github.com/acme/schema-scripts", `  ${TOKEN} `);
+    fireEvent.click(within(panel()).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Saved. GitHub accepted the token for acme/schema-scripts.")).toBeInTheDocument();
+    expect(JSON.parse(lastCall("PUT")?.body ?? "null")).toEqual({
+      repository: "https://github.com/acme/schema-scripts",
+      token: TOKEN,
+    });
+    expect(screen.getByLabelText("Access token")).toHaveValue("");
+    expect(await within(panel()).findByText("acme/schema-scripts")).toBeInTheDocument();
+    expect(githubGets()).toBe(2);
+    expect(within(panel()).getByText(/^Saved by owner@example\.com, /)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Change the repository or token" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Repository")).toHaveValue("acme/schema-scripts");
+  });
+
+  it("keeps the saved token when its box is left blank, and says when nothing changed", async () => {
+    await openGitHubTab(CONNECTED, {
+      match: "/api/admin/github",
+      method: "PUT",
+      body: { saved: true, changed: false, repository: "acme/schema-scripts" },
+    });
+    expect(screen.getByLabelText("Repository")).toHaveValue("acme/schema-scripts");
+    expect(screen.getByLabelText("Access token")).toHaveAttribute("placeholder", "Leave blank to keep the saved token");
+
+    fireEvent.click(within(panel()).getByRole("button", { name: "Save" }));
+
+    expect(
+      await screen.findByText("Nothing changed. GitHub still accepts the saved token for acme/schema-scripts.")
+    ).toBeInTheDocument();
+    expect(JSON.parse(lastCall("PUT")?.body ?? "null")).toEqual({ repository: "acme/schema-scripts" });
+  });
+
+  it("shows a token that was turned down under its box, until the box changes", async () => {
+    await openGitHubTab(NOT_CONNECTED, {
+      match: "/api/admin/github",
+      method: "PUT",
+      status: 400,
+      body: { error: "GitHub did not accept that token.", field: "token" },
+    });
+    fillIn("acme/schema-scripts", TOKEN);
+    fireEvent.click(within(panel()).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("GitHub did not accept that token.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Access token")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Repository")).not.toHaveAttribute("aria-invalid");
+    expect(within(panel()).queryByRole("alert")).not.toBeInTheDocument();
+    expect(within(panel()).queryByRole("status")).not.toBeInTheDocument();
+    // What was typed stays, to fix and try again.
+    expect(screen.getByLabelText("Access token")).toHaveValue(TOKEN);
+
+    fireEvent.change(screen.getByLabelText("Access token"), { target: { value: TOKEN + "1" } });
+    expect(screen.queryByText("GitHub did not accept that token.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Access token")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("shows a repository that was turned down under its box", async () => {
+    await openGitHubTab(NOT_CONNECTED, {
+      match: "/api/admin/github",
+      method: "PUT",
+      status: 404,
+      body: { error: "GitHub has no repository acme/schema-scripts that this token can open.", field: "repository" },
+    });
+    fillIn("acme/schema-scripts", TOKEN);
+    fireEvent.click(within(panel()).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(/has no repository acme\/schema-scripts/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Repository")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Access token")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("shows a refusal that names no box above the form, as a save that failed", async () => {
+    await openGitHubTab(NOT_CONNECTED, {
+      match: "/api/admin/github",
+      method: "PUT",
+      status: 503,
+      body: { error: "Could not save the GitHub settings. The app's database may be unreachable." },
+    });
+    fillIn("acme/schema-scripts", TOKEN);
+    fireEvent.click(within(panel()).getByRole("button", { name: "Save" }));
+
+    const alert = await within(panel()).findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't save");
+    expect(alert).toHaveTextContent("The app's database may be unreachable.");
+    expect(screen.getByLabelText("Access token")).toHaveValue(TOKEN);
+  });
+
+  it("asks before removing the settings, then removes them and loads again", async () => {
+    await openGitHubTab(CONNECTED, {
+      match: "/api/admin/github",
+      method: "DELETE",
+      body: () => {
+        githubView = { ...NOT_CONNECTED, source: "server" };
+        return { removed: true };
+      },
+    });
+
+    fireEvent.click(within(panel()).getByRole("button", { name: "Remove" }));
+    // Cancelling sends nothing.
+    confirmIn("Remove the GitHub settings?", "Cancel");
+    expect(lastCall("DELETE")).toBeUndefined();
+
+    fireEvent.click(within(panel()).getByRole("button", { name: "Remove" }));
+    // The default organization goes back to what the app was set up with.
+    expect(screen.getByRole("dialog", { name: "Remove the GitHub settings?" })).toHaveTextContent(
+      /goes back to the GitHub settings the app was set up with/
+    );
+    confirmIn("Remove the GitHub settings?", "Remove");
+
+    expect(
+      await screen.findByText("Removed. The scripts already in the repository are still there.")
+    ).toBeInTheDocument();
+    expect(lastCall("DELETE")).toBeDefined();
+    expect(await within(panel()).findByText(/uses the GitHub settings the app was set up with/)).toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  });
+
+  it("says another organization has no GitHub once its settings are removed", async () => {
+    await openGitHubTab({ ...CONNECTED, serverFallback: false });
+    fireEvent.click(within(panel()).getByRole("button", { name: "Remove" }));
+    expect(screen.getByRole("dialog", { name: "Remove the GitHub settings?" })).toHaveTextContent(
+      /can't be pushed or pulled until new ones are saved/
+    );
+  });
+
+  it("warns when the saved token can't be read, and doesn't offer to keep it", async () => {
+    await openGitHubTab({ ...CONNECTED, tokenUnreadable: true });
+    expect(within(panel()).getByText("The saved token can't be read")).toBeInTheDocument();
+    expect(screen.getByLabelText("Access token")).toHaveAttribute("placeholder", "github_pat_...");
+  });
+
+  it("says why the settings can't be changed here, and draws no form", async () => {
+    const reason = "This server has no encryption key, so it can't keep an access token safe and won't save one.";
+    await openGitHubTab({ ...NOT_CONNECTED, cannotSave: reason });
+    expect(within(panel()).getByText("These settings can't be changed here")).toBeInTheDocument();
+    expect(within(panel()).getByText(reason)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+    expect(within(panel()).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("opens straight onto GitHub for a role that may only see it, read-only", async () => {
+    setUser("editor", [...(presetFor("editor") ?? []), "github:read"]);
+    githubView = { ...CONNECTED, canUpdate: false };
+    setRoutes([githubGet()]);
+    render(<AdminPage />);
+
+    expect(await screen.findByText("acme/schema-scripts")).toBeInTheDocument();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["GitHub"]);
+    expect(screen.getByText("You can see these settings but not change them")).toBeInTheDocument();
+    expect(
+      screen.getByText(/^Your role \(Editor\) can't change the GitHub repository or its access token\./)
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Making an access token" })).not.toBeInTheDocument();
+  });
+
+  it("says so when the settings could not be loaded", async () => {
+    setRoutes([
+      invitesRoute(),
+      listRoute(),
+      { match: "/api/admin/github", method: "GET", status: 503, body: { error: "Could not read the GitHub settings." } },
+    ]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    fireEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+
+    const alert = await within(panel()).findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load the GitHub settings");
+    expect(alert).toHaveTextContent("Could not read the GitHub settings.");
+  });
+
+  it("is not a tab for someone who may manage people but not see the GitHub settings", async () => {
+    setUser("editor", [...(presetFor("editor") ?? []), "users:read"]);
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+    await screen.findByText("ada@example.com");
+    expect(screen.queryByRole("tab", { name: "GitHub" })).not.toBeInTheDocument();
+    expect(fetchCalls.some((c) => c.url.includes("/api/admin/github"))).toBe(false);
   });
 });

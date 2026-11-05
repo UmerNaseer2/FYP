@@ -42,9 +42,9 @@
 // commit message — is imported from the same place both use.
 
 import { stampChangeType, type ScriptChangeType } from "@/lib/change-type";
+import { githubConfigFor } from "@/lib/github-config";
 import {
   contentsFileUrl,
-  githubConfig,
   githubFetch,
   listFamilyFiles,
   logGitHubAnswer,
@@ -53,8 +53,10 @@ import {
 import {
   familyFolderPath,
   migrationFileName,
+  registryRoot,
   reservedFolderProblem,
   rollbackFileName,
+  type RegistryOwner,
 } from "@/lib/registry-paths";
 import type { ArchivedVersion } from "@/lib/registry-report";
 import {
@@ -194,14 +196,15 @@ function toBase64(text: string): string {
 
 /**
  * Record every version a committed run applied, skipping the ones the registry
- * already has. `root` is the organization's folder in the registry, from
- * registryRoot in lib/registry-paths ("" for the default organization): the
- * run belongs to the organization whose connection it ran on, so its versions
- * go in that organization's folder.
+ * already has. `owner` is the organization the run belongs to (the one whose
+ * connection it ran on): its versions go in that organization's repository
+ * (lib/github-config.ts) and its folder there (registryRoot in
+ * lib/registry-paths, "" for the default organization).
  *
- * Returns null when GitHub is not configured — there is no registry to fall
- * behind, so nothing was attempted and nothing is worth reporting. Otherwise
- * one entry per version, in the order they ran.
+ * Returns null when GitHub is not set up for that organization, or its
+ * settings could not be read: there is no registry to fall behind, so nothing
+ * was attempted and nothing is worth reporting. Otherwise one entry per
+ * version, in the order they ran.
  *
  * NEVER THROWS, and never reports a problem the caller must handle. Every
  * caller reaches this after COMMIT: the database has already changed, and a
@@ -214,16 +217,18 @@ function toBase64(text: string): string {
  * always there.
  */
 export async function archiveAppliedVersions(input: {
-  root: string;
+  owner: RegistryOwner;
   database: string;
   schema: string;
   versions: ReadonlyArray<AppliedVersion>;
 }): Promise<ArchivedVersion[] | null> {
-  const config = githubConfig();
+  // githubConfigFor never throws, so neither does this.
+  const config = await githubConfigFor(input.owner);
   if (!config.ok) return null;
   if (input.versions.length === 0) return [];
 
-  const { root, database, schema } = input;
+  const { database, schema } = input;
+  const root = registryRoot(input.owner);
 
   // A database named "orgs" with an all-digit schema would write into another
   // organization's folder, so the push route refuses it and so does this.

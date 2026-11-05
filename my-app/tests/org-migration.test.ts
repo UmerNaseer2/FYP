@@ -43,6 +43,10 @@
 //     left out of the default one.
 //   - The lookups the gates make on every request, and the changes the Roles
 //     tab makes, only ever see and touch the organization they are asked about.
+//   - An organization's GitHub settings (lib/org-github-store.ts) are saved
+//     with it or on their own, with the token locked with the server's key and
+//     every change logged. A server without a key saves no token, and makes no
+//     organization that was given one.
 //
 // tests/fixtures/pre-org-schema.sql is the schema of a database from before
 // organizations, with no rows in it; seedLegacyRows below fills it.
@@ -64,7 +68,7 @@
 //     npx jest tests/org-migration.test.ts
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "node:crypto";
+import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "pg";
 import {
   ADMIN_ROLE,
@@ -120,8 +124,9 @@ const ORG_TABLES = [
 ];
 // Memberships belong to an organization too, but they came with
 // organizations, so they are not on the bootstrap's list of older tables to
-// move. A linked computer belongs to one organization the same way.
-const ORG_SCOPED = [...ORG_TABLES, "memberships", "agents"];
+// move. A linked computer belongs to one organization the same way, and so do
+// its GitHub repository and access token.
+const ORG_SCOPED = [...ORG_TABLES, "memberships", "agents", "organization_github"];
 // A person, and the accounts they sign in with, belong to no organization:
 // one person can be in several. The last two belong to the server: whose turn
 // the drift check is (one tick covers every organization), and which deployments
@@ -782,6 +787,12 @@ async function fillOrganization(
     `INSERT INTO agents (org_id, profile_id, name, token_hash)
      VALUES ($1, $2, 'A laptop', $3)`,
     [orgId, profileId, `hash-of-a-token-${orgId}`]
+  );
+  await client.query(
+    `INSERT INTO organization_github
+       (org_id, repo_owner, repo_name, token, updated_by)
+     VALUES ($1, 'probe', 'probe-scripts', 'not-a-real-token', $2)`,
+    [orgId, `member-${orgId}@example.invalid`]
   );
 
   const connectionId = await insertId(
@@ -2544,6 +2555,208 @@ describeWithDatabase("org-migration", () => {
       if (!fallback) throw new Error("No default organization.");
       expect(await app.orgs.deleteOrganization(fallback.id, fallback.name)).toEqual({ kind: "default" });
       expect(await app.orgs.findDefaultOrganization()).toEqual(fallback);
+    }, SLOW);
+  });
+
+  describe("an organization's GitHub settings", () => {
+    // Made up for these tests: this server's key, and tokens that open nothing.
+    const KEY = "0123456789abcdef".repeat(4);
+    const TOKEN = "github_pat_not_real_0001_abcdefghij";
+    const NEW_TOKEN = "github_pat_not_real_0002_klmnopqrst";
+    const SCRIPTS = { owner: "acme", repo: "schema-scripts" };
+    const ED = { email: "ed@example.invalid", role: ADMIN_ROLE };
+    const FAY = { email: "fay@example.invalid", role: ADMIN_ROLE };
+    const KEY_NAMES = ["APP_ENCRYPTION_KEY", "NEXTAUTH_SECRET"] as const;
+    const savedKeys = Object.fromEntries(KEY_NAMES.map((name) => [name, process.env[name]]));
+
+    let url = "";
+    let app: RequestApp;
+    let store: typeof import("@/lib/org-github-store");
+    let client: Client;
+    let edId = 0;
+
+    beforeAll(async () => {
+      url = await freshDatabase("github");
+      // Before the modules load: the key is read once, on first use.
+      process.env.APP_ENCRYPTION_KEY = KEY;
+      delete process.env.NEXTAUTH_SECRET;
+      app = await loadRequestApp(url);
+      store = await import("@/lib/org-github-store");
+      await app.syncMetadataTables();
+      client = await connectTo(url);
+      edId = await signedIn(app, github(101, ED.email));
+    }, SLOW);
+
+    afterAll(async () => {
+      await client?.end();
+      await app?.close();
+      for (const name of KEY_NAMES) {
+        if (savedKeys[name] === undefined) delete process.env[name];
+        else process.env[name] = savedKeys[name];
+      }
+    }, SLOW);
+
+    async function made(slug: string, settings?: typeof SCRIPTS & { token: string }): Promise<number> {
+      const created = settings
+        ? await app.orgs.createOrganization(edId, { slug, name: slug }, settings)
+        : await app.orgs.createOrganization(edId, { slug, name: slug });
+      if (created.kind !== "ok") throw new Error(`Making ${slug} was refused: ${created.kind}.`);
+      return created.organization.id;
+    }
+
+    // The row as it is stored, token and all.
+    async function rowOf(orgId: number) {
+      const { rows } = await client.query(
+        `SELECT repo_owner, repo_name, token, updated_by FROM organization_github WHERE org_id = $1`,
+        [orgId]
+      );
+      return rows[0] ?? null;
+    }
+
+    async function logOf(orgId: number) {
+      const { rows } = await client.query(
+        `SELECT role, kind, subject, detail, actor FROM role_changes
+          WHERE org_id = $1 AND kind = 'github-settings' ORDER BY id`,
+        [orgId]
+      );
+      return rows;
+    }
+
+    // Every row that making an organization writes, counted.
+    async function counts() {
+      const { rows } = await client.query(
+        `SELECT (SELECT count(*) FROM organizations)::int AS organizations,
+                (SELECT count(*) FROM roles)::int AS roles,
+                (SELECT count(*) FROM memberships)::int AS memberships,
+                (SELECT count(*) FROM organization_github)::int AS github,
+                (SELECT count(*) FROM role_changes)::int AS log`
+      );
+      return rows[0];
+    }
+
+    // A token saved by a server with another key, which this one can't open.
+    function lockedWithAnotherKey(plain: string): string {
+      const iv = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", randomBytes(32), iv);
+      const sealed = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+      return ["enc:v1", iv.toString("base64"), cipher.getAuthTag().toString("base64"), sealed.toString("base64")].join(":");
+    }
+
+    function logLine(who: { email: string; role: string }, subject: string, detail: string) {
+      return { role: who.role, kind: "github-settings", subject, detail, actor: who.email };
+    }
+
+    test("makes it with its repository and token, the token locked, logged as its new Admin", async () => {
+      const id = await made("acme-git", { ...SCRIPTS, token: TOKEN });
+
+      const row = await rowOf(id);
+      expect(row).toEqual({
+        repo_owner: "acme",
+        repo_name: "schema-scripts",
+        token: expect.stringMatching(/^enc:v1:/),
+        updated_by: ED.email,
+      });
+      expect(row.token).not.toContain(TOKEN);
+      expect(await store.readOrgGitHub(id)).toEqual({
+        ...SCRIPTS,
+        token: TOKEN,
+        updatedBy: ED.email,
+        updatedAt: expect.any(Date),
+      });
+      expect(await logOf(id)).toEqual([
+        logLine(ED, "acme/schema-scripts", "repository"),
+        logLine(ED, "acme/schema-scripts", "token"),
+      ]);
+      expect(await membershipsOf(client, id)).toEqual({ [ED.email]: "admin" });
+    }, SLOW);
+
+    test("makes one without, which has none until an Admin saves some", async () => {
+      const id = await made("no-git-yet");
+      expect(await rowOf(id)).toBeNull();
+      expect(await store.readOrgGitHub(id)).toBeNull();
+      expect(await logOf(id)).toEqual([]);
+    }, SLOW);
+
+    test("keeps the saved token when only the repository changes, and logs only what changed", async () => {
+      const id = await made("keep-token", { ...SCRIPTS, token: TOKEN });
+      const locked = (await rowOf(id)).token;
+
+      const moved = { owner: "acme", repo: "other-scripts", token: null };
+      expect(await store.saveOrgGitHub(id, moved, FAY)).toEqual({ kind: "ok", changed: true });
+      expect(await rowOf(id)).toEqual({
+        repo_owner: "acme",
+        repo_name: "other-scripts",
+        token: locked,
+        updated_by: FAY.email,
+      });
+      // The same again changes nothing, so it logs nothing.
+      expect(await store.saveOrgGitHub(id, moved, FAY)).toEqual({ kind: "ok", changed: false });
+      // A new token for the same repository logs the token alone.
+      expect(await store.saveOrgGitHub(id, { ...moved, token: NEW_TOKEN }, FAY)).toEqual({
+        kind: "ok",
+        changed: true,
+      });
+      expect((await store.readOrgGitHub(id))?.token).toBe(NEW_TOKEN);
+      expect((await logOf(id)).slice(2)).toEqual([
+        logLine(FAY, "acme/other-scripts", "repository"),
+        logLine(FAY, "acme/other-scripts", "token"),
+      ]);
+    }, SLOW);
+
+    test("won't keep a token there is none of, or one this server can't open", async () => {
+      const id = await made("token-trouble");
+      const keep = { ...SCRIPTS, token: null };
+      expect(await store.saveOrgGitHub(id, keep, ED)).toEqual({ kind: "no-token" });
+      expect(await rowOf(id)).toBeNull();
+
+      await client.query(
+        `INSERT INTO organization_github (org_id, repo_owner, repo_name, token, updated_by)
+         VALUES ($1, 'acme', 'schema-scripts', $2, $3)`,
+        [id, lockedWithAnotherKey(TOKEN), ED.email]
+      );
+      expect(await store.readOrgGitHub(id)).toMatchObject({ ...SCRIPTS, token: null });
+      expect(await store.saveOrgGitHub(id, { ...keep, repo: "other-scripts" }, ED)).toEqual({ kind: "no-token" });
+      expect(await rowOf(id)).toMatchObject({ repo_name: "schema-scripts" });
+
+      // Pasting the token again mends it.
+      expect(await store.saveOrgGitHub(id, { ...SCRIPTS, token: TOKEN }, ED)).toEqual({ kind: "ok", changed: true });
+      expect((await store.readOrgGitHub(id))?.token).toBe(TOKEN);
+      expect(await logOf(id)).toEqual([logLine(ED, "acme/schema-scripts", "token")]);
+    }, SLOW);
+
+    test("answers not-found for an organization that is gone", async () => {
+      expect(await store.saveOrgGitHub(999_999, { ...SCRIPTS, token: TOKEN }, ED)).toEqual({ kind: "not-found" });
+    }, SLOW);
+
+    test("forgets the settings, token and all, logs it once, and keeps the organization", async () => {
+      const id = await made("forget-git", { ...SCRIPTS, token: TOKEN });
+      expect(await store.removeOrgGitHub(id, FAY)).toEqual({ removed: true });
+      expect(await rowOf(id)).toBeNull();
+      expect(await store.removeOrgGitHub(id, FAY)).toEqual({ removed: false });
+      expect(await logOf(id)).toEqual([
+        logLine(ED, "acme/schema-scripts", "repository"),
+        logLine(ED, "acme/schema-scripts", "token"),
+        logLine(FAY, "acme/schema-scripts", "removed"),
+      ]);
+      expect(await membershipsOf(client, id)).toEqual({ [ED.email]: "admin" });
+    }, SLOW);
+
+    // Last in this block, because it loads the app again without a key.
+    test("makes nothing at all when the server has no key to lock the token with", async () => {
+      delete process.env.APP_ENCRYPTION_KEY;
+      const warned = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const keyless = await loadRequestApp(url);
+      try {
+        const before = await counts();
+        expect(
+          await keyless.orgs.createOrganization(edId, { slug: "no-key-org", name: "No Key" }, { ...SCRIPTS, token: TOKEN })
+        ).toEqual({ kind: "no-key" });
+        expect(await counts()).toEqual(before);
+        expect(await keyless.orgs.findOrganization("no-key-org")).toBeNull();
+      } finally {
+        await keyless.close();
+        warned.mockRestore();
+      }
     }, SLOW);
   });
 });

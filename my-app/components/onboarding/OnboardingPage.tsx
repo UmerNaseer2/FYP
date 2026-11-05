@@ -7,6 +7,7 @@ import { OnboardingFrame, initialOf } from "@/components/onboarding/OnboardingFr
 import { AlertCircleIcon, ChevronRightIcon, PlusIcon, RefreshIcon } from "@/components/ui/icons";
 import { errorFrom, jsonOf } from "@/lib/api-answer";
 import { apiFetch } from "@/lib/api-fetch";
+import { readGitHubPair, repositoryLabel } from "@/lib/github-settings";
 import { cleanOrgName, orgNameProblem, orgSlugProblem, suggestSlug } from "@/lib/new-organization";
 import { isOrgListing, type OrgSummary } from "@/lib/organization-list";
 
@@ -23,10 +24,20 @@ type Loaded =
  */
 type Failed = { state: "failed"; message: string; signedOut: boolean };
 
+/** The box a refusal is about, or null for one that is about none of them. */
+type Field = "name" | "slug" | "repository" | "token";
+
 /** What POST /api/organizations did with the form. */
 type Made =
   | { ok: true }
-  | { ok: false; field: "name" | "slug" | null; message: string; signedOut: boolean };
+  | { ok: false; field: Field | null; message: string; signedOut: boolean };
+
+/** What the form sends: the name and address, and the GitHub pair when there is one. */
+type NewOrganization = { name: string; slug: string; repository?: string; token?: string };
+
+function fieldOf(value: unknown): Field | null {
+  return value === "name" || value === "slug" || value === "repository" || value === "token" ? value : null;
+}
 
 /** Where a 401 sends someone: sign in, then straight back to this page. */
 const SIGN_IN_AGAIN = "/login?callbackUrl=/onboarding";
@@ -58,13 +69,13 @@ async function readOrganizations(): Promise<Exclude<Loaded, { state: "loading" }
   return { state: "ready", organizations: body.organizations, canCreate: body.canCreate };
 }
 
-async function postOrganization(name: string, slug: string): Promise<Made> {
+async function postOrganization(fields: NewOrganization): Promise<Made> {
   let response: Response;
   try {
     response = await apiFetch("/api/organizations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, slug }),
+      body: JSON.stringify(fields),
     });
   } catch {
     return { ok: false, field: null, message: UNREACHABLE, signedOut: false };
@@ -74,7 +85,7 @@ async function postOrganization(name: string, slug: string): Promise<Made> {
   const field = (body as { field?: unknown } | null)?.field;
   return {
     ok: false,
-    field: field === "name" || field === "slug" ? field : null,
+    field: fieldOf(field),
     message: errorFrom(body) ?? `Could not create the organization (HTTP ${response.status}).`,
     signedOut: response.status === 401,
   };
@@ -94,6 +105,14 @@ async function postOrganization(name: string, slug: string): Promise<Made> {
  * is sent, in the same words the route would use. The route still has the
  * last say: an address someone else took a moment ago is only found out
  * there, and its answer names the field, so it lands under the right box.
+ *
+ * "Connect GitHub" is optional and starts closed. Opened, it takes the
+ * repository the organization's scripts are kept in and an access token for
+ * it, both or neither, read with the same rules as the GitHub tab on the
+ * Admin screen (lib/github-settings.ts). The route asks GitHub before it
+ * creates anything, so a token that can't open the repository is turned down
+ * under its box and no organization is made. Closed, the boxes keep what was
+ * typed in them, and none of it is sent.
  *
  * `demo` is the bypass, where nobody is signed in. Then there is no Sign out,
  * and the server lists every organization and offers no form.
@@ -122,8 +141,16 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
   const [submitting, setSubmitting] = useState<"creating" | "opening" | null>(null);
   /** The route's refusal of the last try, until the box it is about changes. */
   const [refusal, setRefusal] = useState<Extract<Made, { ok: false }> | null>(null);
+  /** Whether "Connect GitHub" is open. */
+  const [githubOpen, setGithubOpen] = useState(false);
+  const [repository, setRepository] = useState("");
+  const [token, setToken] = useState("");
+  /** Whether Create has been pressed since "Connect GitHub" was opened. */
+  const [githubChecked, setGithubChecked] = useState(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const slugInput = useRef<HTMLInputElement>(null);
+  const repositoryInput = useRef<HTMLInputElement>(null);
+  const tokenInput = useRef<HTMLInputElement>(null);
 
   // Each state is set only once the answer is in, so a slow answer to an
   // earlier attempt can never land on top of a later one.
@@ -155,6 +182,22 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
     refusal?.field === "name" ? refusal.message : attempted || name !== "" ? nameRule : null;
   const slugProblem =
     refusal?.field === "slug" ? refusal.message : attempted || slugLeft ? slugRule : null;
+  // The pair's problems wait for Create: half of a pair is a problem only
+  // until the other half is typed.
+  const github = githubOpen ? readGitHubPair(repository, token) : ({ kind: "none" } as const);
+  const githubRule = github.kind === "problem" ? github : null;
+  const repositoryProblem =
+    refusal?.field === "repository"
+      ? refusal.message
+      : githubChecked && githubRule?.field === "repository"
+        ? githubRule.message
+        : null;
+  const tokenProblem =
+    refusal?.field === "token"
+      ? refusal.message
+      : githubChecked && githubRule?.field === "token"
+        ? githubRule.message
+        : null;
   const banner = refusal && refusal.field === null ? refusal : null;
 
   function changeName(value: string) {
@@ -174,10 +217,23 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
     if (refusal?.field === "slug") setRefusal(null);
   }
 
+  /** Either GitHub box changing can fix what GitHub said about the pair. */
+  function changeGitHub(set: (value: string) => void, value: string) {
+    set(value);
+    if (refusal?.field === "repository" || refusal?.field === "token") setRefusal(null);
+  }
+
+  function toggleGitHub() {
+    setGithubOpen((open) => !open);
+    setGithubChecked(false);
+    if (refusal?.field === "repository" || refusal?.field === "token") setRefusal(null);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting) return;
     setAttempted(true);
+    setGithubChecked(githubOpen);
     setRefusal(null);
     if (nameRule) {
       nameInput.current?.focus();
@@ -187,9 +243,22 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
       slugInput.current?.focus();
       return;
     }
+    if (githubRule) {
+      (githubRule.field === "repository" ? repositoryInput : tokenInput).current?.focus();
+      return;
+    }
 
     setSubmitting("creating");
-    const made = await postOrganization(cleanName, trimmedSlug);
+    const made = await postOrganization(
+      github.kind === "ok"
+        ? {
+            name: cleanName,
+            slug: trimmedSlug,
+            repository: repositoryLabel(github.settings),
+            token: github.settings.token,
+          }
+        : { name: cleanName, slug: trimmedSlug }
+    );
     if (made.ok) {
       // The route stored exactly the address that was sent, so the page goes
       // there without needing to trust anything in the answer. The button
@@ -205,6 +274,8 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
     // drawn them editable again.
     if (made.field === "name") nameInput.current?.focus();
     if (made.field === "slug") slugInput.current?.focus();
+    if (made.field === "repository") repositoryInput.current?.focus();
+    if (made.field === "token") tokenInput.current?.focus();
   }
 
   return (
@@ -334,6 +405,92 @@ export function OnboardingPage({ demo }: { demo: boolean }) {
                 </p>
               )}
             </div>
+
+            <div className="onb-field">
+              <button
+                type="button"
+                className="flink self-start inline-flex items-center gap-1.5 text-[13px]"
+                aria-expanded={githubOpen}
+                aria-controls="org-github"
+                onClick={toggleGitHub}
+                disabled={submitting !== null}
+              >
+                <ChevronRightIcon
+                  size={13}
+                  style={{ transform: githubOpen ? "rotate(90deg)" : undefined, transition: "transform .15s" }}
+                />
+                <span>Connect GitHub (optional)</span>
+              </button>
+              {githubOpen && (
+                <p id="org-github" className="help">
+                  {"Where this organization's scripts are kept. You can add or change it later on the Admin screen, under GitHub."}
+                </p>
+              )}
+            </div>
+
+            {githubOpen && (
+              <>
+                <div className="onb-field">
+                  <label className="label" htmlFor="org-repository">
+                    Repository
+                  </label>
+                  <input
+                    ref={repositoryInput}
+                    id="org-repository"
+                    className="input mono"
+                    value={repository}
+                    onChange={(event) => changeGitHub(setRepository, event.target.value)}
+                    readOnly={submitting !== null}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    placeholder="acme/schema-scripts"
+                    aria-invalid={repositoryProblem ? true : undefined}
+                    aria-describedby={
+                      repositoryProblem ? "org-repository-help org-repository-problem" : "org-repository-help"
+                    }
+                  />
+                  <p id="org-repository-help" className="help">
+                    Type it as owner/name, or paste its address from GitHub.
+                  </p>
+                  {repositoryProblem && (
+                    <p id="org-repository-problem" className="field-problem">
+                      {repositoryProblem}
+                    </p>
+                  )}
+                </div>
+
+                <div className="onb-field">
+                  <label className="label" htmlFor="org-token">
+                    Access token
+                  </label>
+                  <input
+                    ref={tokenInput}
+                    id="org-token"
+                    type="password"
+                    className="input mono"
+                    value={token}
+                    onChange={(event) => changeGitHub(setToken, event.target.value)}
+                    readOnly={submitting !== null}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    placeholder="github_pat_..."
+                    aria-invalid={tokenProblem ? true : undefined}
+                    aria-describedby={tokenProblem ? "org-token-help org-token-problem" : "org-token-help"}
+                  />
+                  <p id="org-token-help" className="help">
+                    A fine-grained token with Contents set to Read and write on that repository. It is stored
+                    encrypted and is never shown again.
+                  </p>
+                  {tokenProblem && (
+                    <p id="org-token-problem" className="field-problem">
+                      {tokenProblem}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
 
             {banner && (
               <div className="banner" role="alert">

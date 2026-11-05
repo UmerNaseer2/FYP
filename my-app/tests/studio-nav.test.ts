@@ -138,7 +138,7 @@ describe("the list of screens", () => {
   test("keeps Admin the only row with anything admin-only on it", () => {
     // Roles & permissions and Organization are admin-only, and both live on
     // the Admin screen. Another role reaches that screen only through a
-    // Users box an Admin ticked for it.
+    // Users or GitHub registry box an Admin ticked for it.
     const withAdminOnly = NAV_ITEMS.filter((item) =>
       featuresOf(item).some((feature) => isAdminOnly(readKeyOf(feature)))
     );
@@ -147,6 +147,7 @@ describe("the list of screens", () => {
       "users",
       "roles",
       "organization",
+      "github",
     ]);
   });
 

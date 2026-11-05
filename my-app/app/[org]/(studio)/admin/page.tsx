@@ -9,27 +9,30 @@ import { InfoIcon } from "@/components/ui/icons";
 import { UsersTab } from "@/components/admin/UsersTab";
 import { RolesTab } from "@/components/admin/RolesTab";
 import { OrganizationTab } from "@/components/admin/OrganizationTab";
+import { GitHubTab } from "@/components/admin/GitHubTab";
 import { PermissionsGuide } from "@/components/admin/PermissionsGuide";
 
 /**
  * The Admin screen: who is in this organization (Users), what each role can do
- * in it (Roles & permissions), and the organization itself (Organization: its
- * name, its two-person rule, deleting it). Each tab lives in its own file
+ * in it (Roles & permissions), the organization itself (Organization: its
+ * name, its two-person rule, deleting it), and where its scripts are kept
+ * (GitHub: the repository and its access token). Each tab lives in its own file
  * under components/admin, and this page only decides which tabs to show.
  *
  * A tab shows only for someone allowed to read it. Out of the box that is the
- * admin role alone for all three, so an admin sees every tab and nobody else
+ * admin role alone for all four, so an admin sees every tab and nobody else
  * gets this far: the layout's AuthGuard turns everyone else away first. Users
- * is not admin-only, though, so an Admin can make a role that sees that tab
- * alone.
+ * and GitHub are not admin-only, though, so an Admin can make a role that
+ * sees one or both of those tabs alone.
  */
 
-type Tab = "users" | "roles" | "organization";
+type Tab = "users" | "roles" | "organization" | "github";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "users", label: "Users" },
   { key: "roles", label: "Roles & permissions" },
   { key: "organization", label: "Organization" },
+  { key: "github", label: "GitHub" },
 ];
 
 export default function AdminPage() {
@@ -56,6 +59,7 @@ export default function AdminPage() {
     users: can("users:read"),
     roles: can("roles:read"),
     organization: can("organization:read"),
+    github: can("github:read"),
   };
   const tabs = TABS.filter((t) => allowed[t.key]);
   // A tab that was picked and then taken away (the role changed while the
@@ -76,7 +80,8 @@ export default function AdminPage() {
 
       {tab === null ? (
         // Only a fallback: the layout's <AuthGuard feature={["users", "roles",
-        // "organization"]}> is what really turns away a role that may read no tab.
+        // "organization", "github"]}> is what really turns away a role that may
+        // read no tab.
         <div className="role-note mt-6">
           <InfoIcon size={15} className="ico" />
           <div>
@@ -127,8 +132,10 @@ export default function AdminPage() {
                 <UsersTab active={tab === "users"} />
               ) : t.key === "roles" ? (
                 <RolesTab active={tab === "roles"} />
-              ) : (
+              ) : t.key === "organization" ? (
                 <OrganizationTab active={tab === "organization"} />
+              ) : (
+                <GitHubTab active={tab === "github"} />
               )}
             </section>
           ))}

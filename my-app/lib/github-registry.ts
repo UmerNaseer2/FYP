@@ -76,10 +76,14 @@ export function githubNotConfiguredMessage(missing: ReadonlyArray<string>): stri
     );
   }
 
+  // Only the default organization ever reads the server's keys (see
+  // lib/github-config.ts), and an admin of it can also save settings of its
+  // own on the Admin screen, which take the keys' place.
   const which = missing.length > 0 ? ` Missing now: ${missing.join(", ")}.` : "";
   return (
-    `GitHub is not set up on the server: GITHUB_REPO_OWNER, GITHUB_REPO_NAME and GITHUB_PAT must be set.${which} ` +
-    `Nothing was read from or written to GitHub. Ask whoever runs the server to set them and restart it.`
+    `GitHub is not set up for this organization yet. Nothing was read from or written to GitHub. ` +
+    `An admin can add the repository and an access token on the Admin screen, under GitHub, or whoever ` +
+    `runs the server can set GITHUB_REPO_OWNER, GITHUB_REPO_NAME and GITHUB_PAT and restart it.${which}`
   );
 }
 

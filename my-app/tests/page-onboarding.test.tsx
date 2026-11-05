@@ -18,6 +18,11 @@
  *     often Create is pressed, and the studio of the new organization opened.
  *     A refusal lands under the box it names, or above the button when it
  *     names none.
+ *   - Connect GitHub: optional and closed at first, so a new organization
+ *     needs no repository. Opened, the repository and the token go together
+ *     or not at all, and half of the pair is only a problem once Create is
+ *     pressed. What GitHub turns down lands under the box it names. Closed
+ *     again, nothing typed in it is sent.
  *   - The demo (sign-in switched off): no Sign out, and no form.
  *
  * The server half, which forwards the desktop app to /studio, is in
@@ -34,6 +39,7 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("../lib/sign-out", () => ({ signOutEverywhere: jest.fn(() => Promise.resolve()) }));
 
 import { OnboardingPage } from "@/components/onboarding/OnboardingPage";
+import { REPOSITORY_WITHOUT_TOKEN, TOKEN_WITHOUT_REPOSITORY } from "@/lib/github-settings";
 import { signOutEverywhere } from "@/lib/sign-out";
 import {
   fetchCalls,
@@ -403,6 +409,149 @@ describe("creating an organization", () => {
       "href",
       SIGN_IN_AGAIN
     );
+  });
+});
+
+describe("connecting GitHub while creating", () => {
+  // Made up for these tests. It is not a real token.
+  const TOKEN = "github_pat_not_real_0004_abcdefghij";
+  const toggle = () => screen.getByRole("button", { name: "Connect GitHub (optional)" });
+  const repositoryBox = () => screen.getByLabelText("Repository") as HTMLInputElement;
+  const tokenBox = () => screen.getByLabelText("Access token") as HTMLInputElement;
+
+  /** The form with a name typed and Connect GitHub opened. */
+  async function openWithGitHub(...routes: FetchRoute[]) {
+    await open([listing([]), ...routes]);
+    typeName("Acme");
+    fireEvent.click(toggle());
+  }
+
+  function fillIn(repository: string, token: string) {
+    fireEvent.change(repositoryBox(), { target: { value: repository } });
+    fireEvent.change(tokenBox(), { target: { value: token } });
+  }
+
+  test("starts closed, and Create then sends only the name and address", async () => {
+    await open([listing([]), creating(201, { organization: ACME })]);
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Repository")).toBeNull();
+    expect(screen.queryByLabelText("Access token")).toBeNull();
+
+    typeName("Acme");
+    fireEvent.click(createButton());
+    await screen.findByText("Opening…");
+    expect(posted()).toEqual([{ name: "Acme", slug: "acme" }]);
+  });
+
+  test("opened, sends the repository as owner/name and the token trimmed, then opens the new studio", async () => {
+    await openWithGitHub(creating(201, { organization: ACME }));
+    expect(toggle()).toHaveAttribute("aria-expanded", "true");
+    expect(toggle()).toHaveAttribute("aria-controls", "org-github");
+    expect(tokenBox()).toHaveAttribute("type", "password");
+
+    fillIn("https://github.com/acme/schema-scripts", ` ${TOKEN} `);
+    fireEvent.click(createButton());
+
+    await screen.findByText("Opening…");
+    expect(posted()).toEqual([
+      { name: "Acme", slug: "acme", repository: "acme/schema-scripts", token: TOKEN },
+    ]);
+    expect(routerCalls.push).toEqual(["/acme/studio"]);
+  });
+
+  test("keeps the GitHub boxes read-only, and the toggle shut, while the request is out", async () => {
+    await openWithGitHub(creating(201, { organization: ACME }));
+    const release = holdNext(LIST, "POST");
+    fillIn("acme/schema-scripts", TOKEN);
+    fireEvent.click(createButton());
+
+    expect(await screen.findByText("Creating…")).toBeInTheDocument();
+    expect(repositoryBox()).toHaveAttribute("readonly");
+    expect(tokenBox()).toHaveAttribute("readonly");
+    expect(toggle()).toBeDisabled();
+
+    await act(async () => release());
+    expect(await screen.findByText("Opening…")).toBeInTheDocument();
+  });
+
+  test("a repository with no token is said under the token box once Create is pressed, and nothing is sent", async () => {
+    await openWithGitHub();
+    fireEvent.change(repositoryBox(), { target: { value: "acme/schema-scripts" } });
+    // Half of the pair is only a problem once Create is pressed: the token may be on its way.
+    expect(screen.queryByText(REPOSITORY_WITHOUT_TOKEN)).toBeNull();
+
+    fireEvent.click(createButton());
+    expect(screen.getByText(REPOSITORY_WITHOUT_TOKEN)).toHaveAttribute("id", "org-token-problem");
+    expect(tokenBox()).toHaveAttribute("aria-invalid", "true");
+    expect(tokenBox()).toHaveAttribute("aria-describedby", "org-token-help org-token-problem");
+    expect(tokenBox()).toHaveFocus();
+    expect(posted()).toEqual([]);
+
+    fireEvent.change(tokenBox(), { target: { value: TOKEN } });
+    expect(screen.queryByText(REPOSITORY_WITHOUT_TOKEN)).toBeNull();
+    expect(tokenBox()).not.toHaveAttribute("aria-invalid");
+  });
+
+  test("a token with no repository is said under the repository box, which gets the cursor", async () => {
+    await openWithGitHub();
+    fireEvent.change(tokenBox(), { target: { value: TOKEN } });
+    fireEvent.click(createButton());
+
+    expect(screen.getByText(TOKEN_WITHOUT_REPOSITORY)).toHaveAttribute("id", "org-repository-problem");
+    expect(repositoryBox()).toHaveAttribute("aria-invalid", "true");
+    expect(repositoryBox()).toHaveFocus();
+    expect(posted()).toEqual([]);
+  });
+
+  test.each([
+    ["GitHub turning the token down", 400, "token", "GitHub did not accept that access token. Nothing was saved."],
+    ["a server with no encryption key", 503, "token", "This server has no encryption key, so it won't save a token."],
+    ["GitHub not finding the repository", 400, "repository", "GitHub could not find that repository. Nothing was saved."],
+  ] as const)(
+    "%s is said under the box it names, which gets the cursor, until either box changes",
+    async (_, status, field, refused) => {
+      await openWithGitHub(creating(status, { error: refused, field }));
+      fillIn("acme/schema-scripts", TOKEN);
+      fireEvent.click(createButton());
+
+      expect(await screen.findByText(refused)).toHaveAttribute("id", `org-${field}-problem`);
+      const named = field === "token" ? tokenBox() : repositoryBox();
+      const other = field === "token" ? repositoryBox() : tokenBox();
+      expect(named).toHaveFocus();
+      expect(named).toHaveAttribute("aria-invalid", "true");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(createButton()).toBeEnabled();
+
+      // Either half of the pair can be what was wrong, so changing either one clears it.
+      fireEvent.change(other, { target: { value: `${other.value}x` } });
+      expect(screen.queryByText(refused)).toBeNull();
+    }
+  );
+
+  test("GitHub out of reach is said above the button, with both boxes kept", async () => {
+    const unreachable =
+      "The server could not reach GitHub to check the repository and token. Nothing was saved. Try again in a moment.";
+    await openWithGitHub(creating(502, { error: unreachable, field: null }));
+    fillIn("acme/schema-scripts", TOKEN);
+    fireEvent.click(createButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(unreachable);
+    expect(repositoryBox()).toHaveValue("acme/schema-scripts");
+    expect(tokenBox()).toHaveValue(TOKEN);
+    expect(createButton()).toBeEnabled();
+  });
+
+  test("closed again, sends only the name and address, whatever was typed in it", async () => {
+    await openWithGitHub(creating(201, { organization: ACME }));
+    // Half a pair, which would stop Create if the boxes were still open.
+    fireEvent.change(repositoryBox(), { target: { value: "acme/schema-scripts" } });
+    fireEvent.click(toggle());
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Repository")).toBeNull();
+
+    fireEvent.click(createButton());
+    await screen.findByText("Opening…");
+    expect(posted()).toEqual([{ name: "Acme", slug: "acme" }]);
   });
 });
 

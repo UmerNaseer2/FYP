@@ -649,6 +649,45 @@ AgentRow.init(
 );
 
 /**
+ * The GitHub repository an organization keeps its scripts in, and the access
+ * token the app uses for it (lib/org-github-store.ts). One row per
+ * organization at most, set on the Admin screen or when the organization is
+ * made. The token is encrypted with the server's key (lib/secret-store.ts) and
+ * never leaves the server: the screens only learn whether one is saved.
+ */
+export class OrganizationGitHubRow extends Model<
+  InferAttributes<OrganizationGitHubRow>,
+  InferCreationAttributes<OrganizationGitHubRow>
+> {
+  declare org_id: number;
+  declare repo_owner: string;
+  declare repo_name: string;
+  /** Encrypted, in the "enc:v1:" envelope. */
+  declare token: string;
+  /** The email address of who saved it last. */
+  declare updated_by: string;
+  declare updated_at: CreationOptional<Date>;
+}
+
+OrganizationGitHubRow.init(
+  {
+    org_id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      allowNull: false,
+      references: { model: "organizations", key: "id" },
+      onDelete: "CASCADE",
+    },
+    repo_owner: { type: DataTypes.TEXT, allowNull: false },
+    repo_name: { type: DataTypes.TEXT, allowNull: false },
+    token: { type: DataTypes.TEXT, allowNull: false },
+    updated_by: { type: DataTypes.TEXT, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  { sequelize, tableName: "organization_github" }
+);
+
+/**
  * A computer waiting for someone to approve it, for ten minutes at most. Its
  * organization and person are plain numbers rather than foreign keys, because
  * the row only lives that long and the claim checks them again.

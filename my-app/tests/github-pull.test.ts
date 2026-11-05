@@ -18,6 +18,22 @@ jest.mock("../lib/auth-guard", () => ({
   requirePermission: () => mockRequirePermission(),
 }));
 
+// Each organization's own GitHub settings (lib/org-github-store.ts) are kept
+// in the metadata database, which these tests do not have. Organization 12 has
+// settings of its own: the server's repository, with a token of its own. No
+// other organization has any, so the default one falls back to the server's
+// keys and any other has no GitHub at all (lib/github-config.ts).
+const ORG_TOKEN = "org-token-not-real";
+function savedSettings(orgId: number): unknown {
+  return orgId === 12
+    ? { owner: "acme", repo: "registry", token: ORG_TOKEN, updatedBy: "admin@test", updatedAt: new Date(0) }
+    : null;
+}
+const mockReadOrgGitHub = jest.fn();
+jest.mock("../lib/org-github-store", () => ({
+  readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
+}));
+
 type RouteModule = typeof import("../app/api/github/pull/route");
 let GET: RouteModule["GET"];
 
@@ -85,6 +101,7 @@ async function pull(): Promise<{ status: number; body: Record<string, unknown> }
   // The token never reaches the browser, and neither do raw download
   // addresses (for a private repository they carry their own access).
   expect(text).not.toContain(FAKE_TOKEN);
+  expect(text).not.toContain(ORG_TOKEN);
   expect(text).not.toContain("raw.example.test");
   return { status: res.status, body: JSON.parse(text) as Record<string, unknown> };
 }
@@ -104,6 +121,7 @@ beforeEach(() => {
   unexpected = [];
   answers = {};
   mockRequirePermission.mockClear();
+  mockReadOrgGitHub.mockReset().mockImplementation(async (orgId: number) => savedSettings(orgId));
   const spy = jest.spyOn(console, "error").mockImplementation(() => {});
   restoreConsole = () => spy.mockRestore();
 
@@ -375,6 +393,11 @@ describe("GET /api/github/pull, organizations", () => {
     ]);
     expect(body.warnings).toEqual([]);
     expect(calls[0].url).toBe(`${ROOT}/orgs/12`);
+    // Every GitHub call carries the organization's own token, never the
+    // server's. (A file's download address carries its own access instead.)
+    for (const call of calls.filter((each) => each.url.startsWith(REPO))) {
+      expect((call.init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${ORG_TOKEN}`);
+    }
   });
 
   it("answers an empty list when that organization has saved nothing yet", async () => {
@@ -413,5 +436,42 @@ describe("GET /api/github/pull, organizations", () => {
     ]);
     expect(calls.map((call) => call.url)).not.toContain(`${ROOT}/orgs/12`);
     expect(calls.map((call) => call.url)).not.toContain(`${ROOT}/orgs/5`);
+  });
+
+  it("reads an organization's own repository, with its own token", async () => {
+    const OWN = "https://api.github.com/repos/beta/scripts";
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("viewer", { orgId: 14, orgSlug: "beta", orgName: "Beta", orgIsDefault: false }),
+    }));
+    mockReadOrgGitHub.mockImplementation(async (orgId: number) =>
+      orgId === 14
+        ? { owner: "beta", repo: "scripts", token: ORG_TOKEN, updatedBy: "admin@test", updatedAt: new Date(0) }
+        : null,
+    );
+    answers[`${OWN}/contents/orgs/14`] = () => json(404, { message: "Not Found" });
+    answers[OWN] = () => json(200, { full_name: "beta/scripts" });
+
+    const { status, body } = await pull();
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true, scripts: [], warnings: [] });
+    expect(calls.map((call) => call.url)).toEqual([`${OWN}/contents/orgs/14`, OWN]);
+    // With the organization's own token, never the server's.
+    for (const call of calls) {
+      expect((call.init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${ORG_TOKEN}`);
+    }
+  });
+
+  it("reads nothing for an organization with no GitHub settings, and never borrows the server's", async () => {
+    mockRequirePermission.mockImplementationOnce(async () => ({
+      ok: true,
+      principal: principalFor("viewer", { orgId: 13, orgSlug: "gamma", orgName: "Gamma", orgIsDefault: false }),
+    }));
+    const { status, body } = await pull();
+    expect(status).toBe(500);
+    expect(body.code).toBe("github_unconfigured");
+    expect(body.error).toContain("on the Admin screen, under GitHub");
+    expect(body.error).not.toContain("GITHUB_PAT");
+    expect(calls).toEqual([]);
   });
 });

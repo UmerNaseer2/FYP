@@ -16,16 +16,12 @@
 //   200 { ok: true, versions: string[], highest: string | null }
 //   400 { ok: false, error }            a missing or unusable database, schema or script
 //   500 { ok: false, code: "github_unconfigured", error }   (the same code as push and pull)
+//   503 { ok: false, code: "github_settings_unavailable", error }   the settings could not be read
 //   502 { ok: false, code, error }      GitHub could not be read
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
-import {
-  familyVersions,
-  GITHUB_UNCONFIGURED_CODE,
-  githubConfig,
-  githubNotConfiguredMessage,
-  listFamilyFiles,
-} from "@/lib/github-registry";
+import { githubConfigFor } from "@/lib/github-config";
+import { familyVersions, listFamilyFiles } from "@/lib/github-registry";
 import { registryRoot, reservedFolderProblem } from "@/lib/registry-paths";
 import { familyPathProblem } from "@/lib/registry-push";
 import { highestVersion } from "@/lib/script-status";
@@ -55,12 +51,9 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const config = githubConfig();
+  const config = await githubConfigFor(gate.principal);
   if (!config.ok) {
-    return NextResponse.json(
-      { ok: false, code: GITHUB_UNCONFIGURED_CODE, error: githubNotConfiguredMessage(config.missing) },
-      { status: 500 },
-    );
+    return NextResponse.json({ ok: false, code: config.code, error: config.message }, { status: config.status });
   }
 
   const listing = await listFamilyFiles(config, root, database, schema, script);

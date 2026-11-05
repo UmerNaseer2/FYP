@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSignedIn } from "@/lib/auth-guard";
+import { checkRepositoryAccess } from "@/lib/github-check";
+import { readGitHubPair } from "@/lib/github-settings";
 import { createOrganization, listMemberships, listOrganizations } from "@/lib/orgs-db";
 import { cleanOrgName, orgNameProblem, orgSlugProblem } from "@/lib/new-organization";
+import { encryptionKeySource } from "@/lib/secret-store";
 
 /**
  * The caller's organizations, and a way to make a new one.
@@ -26,6 +29,13 @@ import { cleanOrgName, orgNameProblem, orgSlugProblem } from "@/lib/new-organiza
  *   sees. A second one would have nowhere to show.
  * - The bypass, where nobody is signed in. An organization needs a person to
  *   be its first Admin, and the demo user is not one.
+ *
+ * The body may also hold `repository` and `token`: the GitHub repository
+ * the organization keeps its scripts in, and an access token for it. Both or
+ * neither. GitHub is asked first whether the token opens the repository, and
+ * nothing is made when it does not. They can be added or changed later on
+ * the Admin screen (app/api/admin/github/route.ts), and the token is never
+ * sent back.
  *
  * A taken address is a 409, which does tell the caller that an organization
  * with that address exists. There is no way around that without making
@@ -96,8 +106,34 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: slugProblem, field: "slug" }, { status: 400 });
   }
 
+  for (const key of ["repository", "token"] as const) {
+    const value = fields[key];
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      return NextResponse.json({ error: "Send the repository and token as text.", field: key }, { status: 400 });
+    }
+  }
+  const github = readGitHubPair(
+    typeof fields.repository === "string" ? fields.repository : "",
+    typeof fields.token === "string" ? fields.token : ""
+  );
+  if (github.kind === "problem") {
+    return NextResponse.json({ error: github.message, field: github.field }, { status: 400 });
+  }
+  if (github.kind === "ok") {
+    if (encryptionKeySource() === "none") {
+      return NextResponse.json({ error: NO_KEY, field: "token" }, { status: 503 });
+    }
+    const check = await checkRepositoryAccess(github.settings);
+    if (!check.ok) {
+      return NextResponse.json({ error: check.error, field: check.field }, { status: check.status });
+    }
+  }
+
   try {
-    const created = await createOrganization(caller.profileId, { slug, name });
+    const created =
+      github.kind === "ok"
+        ? await createOrganization(caller.profileId, { slug, name }, github.settings)
+        : await createOrganization(caller.profileId, { slug, name });
     if (created.kind === "taken") {
       return NextResponse.json(
         { error: "That address is taken. Pick another.", field: "slug" },
@@ -109,6 +145,9 @@ export async function POST(request: NextRequest) {
       // makes them a new one.
       return NextResponse.json({ error: "Sign in again to continue." }, { status: 401 });
     }
+    if (created.kind === "no-key") {
+      return NextResponse.json({ error: NO_KEY, field: "token" }, { status: 503 });
+    }
     const { organization } = created;
     return NextResponse.json(
       { organization: { slug: organization.slug, name: organization.name } },
@@ -119,6 +158,11 @@ export async function POST(request: NextRequest) {
     return unavailable("Could not make the organization.");
   }
 }
+
+const NO_KEY =
+  "This server has no encryption key, so it can't keep an access token safe. Clear the repository " +
+  "and token to make the organization without GitHub for now. Whoever runs the server can set " +
+  "APP_ENCRYPTION_KEY and restart it.";
 
 /** The desktop app starts this server with SCHEMA_STUDIO_DESKTOP=1 (see auth.config.ts). */
 function onDesktop(): boolean {

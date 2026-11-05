@@ -117,6 +117,9 @@ const LEFT_BEHIND_TABLES = [
   "agent_connections",
   "agent_jobs",
   "invites",
+  // The GitHub access token is locked with the old site's key, so an Admin
+  // adds the repository and token again on the new site.
+  "organization_github",
 ];
 
 /** A new person's columns. Their old `role` stays behind: the column's default is the safe start. */

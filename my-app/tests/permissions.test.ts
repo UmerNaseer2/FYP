@@ -87,6 +87,8 @@ const AGREED_GRID: Record<string, "viewer" | "editor" | "admin"> = {
   "organization:read": "admin",
   "organization:update": "admin",
   "organization:delete": "admin",
+  "github:read": "admin",
+  "github:update": "admin",
 };
 
 describe("the catalogue", () => {
@@ -152,9 +154,11 @@ describe("the catalogue", () => {
 describe("presetFor", () => {
   test("starts Viewer able to read every feature but the people in it and the admin-only ones", () => {
     // Users is open to any role an Admin ticks it for, but a new Viewer is
-    // not shown who else belongs and under which address.
+    // not shown who else belongs and under which address. GitHub registry is
+    // open the same way, but a new Viewer is not shown which repository the
+    // organization keeps its scripts in either.
     const expected = FEATURES.filter((f) => !("adminOnly" in f && f.adminOnly))
-      .filter((f) => f.key !== "users")
+      .filter((f) => f.key !== "users" && f.key !== "github")
       .map((f) => readKeyOf(f.key));
     expect(presetFor("viewer")).toEqual(expected);
     expect(presetFor("editor")).not.toContain("users:read");

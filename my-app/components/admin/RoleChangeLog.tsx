@@ -82,8 +82,8 @@ function sentenceFor(change: RoleChange): string {
       // The role they had when they were removed, so the line still says what
       // was taken away once their row is gone from the Users tab.
       return `removed ${change.subject ?? "someone"} (${role})`;
-    // The two below are about the organization, not a role. Their rows name
-    // the admin role only because every row names one.
+    // The ones below are about the organization, not a role. Their rows name
+    // the role of the person who made the change only because every row names one.
     case "rename-organization":
       // subject is the new name and detail the old one.
       return change.detail
@@ -93,6 +93,13 @@ function sentenceFor(change: RoleChange): string {
       return change.detail === "off"
         ? "switched the two-person rule off, so people can approve their own production deploys"
         : "switched the two-person rule on, so production deploys wait for a second person";
+    case "github-settings": {
+      // subject is the repository as owner/name, and detail what was saved.
+      const repository = change.subject ?? "a repository";
+      if (change.detail === "token") return `saved a new GitHub access token for ${repository}`;
+      if (change.detail === "removed") return `removed the GitHub settings for ${repository}`;
+      return `pointed the organization at the GitHub repository ${repository}`;
+    }
     default:
       // "assign": a role given to someone, by an Admin on the Users tab.
       return (

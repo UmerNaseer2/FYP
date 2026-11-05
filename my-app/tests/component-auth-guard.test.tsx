@@ -185,10 +185,11 @@ describe("signed in", () => {
     expect(screen.queryByText(/Ask an admin to allow/)).toBeNull();
   });
 
-  it("on the Admin screen, sends them after the one box the grid offers", () => {
-    // Users is not admin-only, so an Admin can let a role in that way.
+  it("on the Admin screen, sends them after the first box the grid offers", () => {
+    // Users and GitHub registry are not admin-only, so an Admin can let a role
+    // in either way. The first one is asked for.
     setUser("viewer");
-    show(["users", "roles", "organization"]);
+    show(["users", "roles", "organization", "github"]);
 
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
     expect(screen.getByText(/You are signed in as/)).toHaveTextContent(

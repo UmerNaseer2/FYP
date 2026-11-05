@@ -14,8 +14,8 @@
 //   - making, deleting and giving out a role each read as a sentence;
 //   - so do inviting someone, cancelling an invitation and joining by one,
 //     for an address and for a link alike;
-//   - and removing someone, renaming the organization and switching its
-//     two-person rule.
+//   - and removing someone, renaming the organization, switching its
+//     two-person rule and changing where its scripts are kept on GitHub.
 //
 // The lines as the Admin page draws them: tests/page-admin.test.tsx.
 import { describeRoleChanges, type LogEntry } from "@/components/admin/RoleChangeLog";
@@ -282,6 +282,21 @@ describe("someone removed, and the organization changed", () => {
       "the two-person rule switched on",
       { kind: "two-person-rule", detail: "on", ...admin },
       "switched the two-person rule on, so production deploys wait for a second person",
+    ],
+    [
+      "the GitHub repository changed",
+      { kind: "github-settings", subject: "acme/schema-scripts", detail: "repository", ...admin },
+      "pointed the organization at the GitHub repository acme/schema-scripts",
+    ],
+    [
+      "a new GitHub access token saved",
+      { kind: "github-settings", subject: "acme/schema-scripts", detail: "token", ...admin },
+      "saved a new GitHub access token for acme/schema-scripts",
+    ],
+    [
+      "the GitHub settings removed",
+      { kind: "github-settings", subject: "acme/schema-scripts", detail: "removed", ...admin },
+      "removed the GitHub settings for acme/schema-scripts",
     ],
   ])("%s", (_name, over, text) => {
     expect(describeRoleChanges([row({ id: 7, ...over })])).toEqual([line({ id: 7, text })]);

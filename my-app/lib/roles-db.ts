@@ -93,6 +93,8 @@ export type RoleChange = {
    *   remove       null: the row's role is the one they held
    *   rename-organization  the name the organization had before
    *   two-person-rule      "on" or "off": what the rule was switched to
+   *   github-settings      "repository", "token" or "removed": what was saved;
+   *                        the subject is the repository, as owner/name
    */
   detail: string | null;
   actor: string;

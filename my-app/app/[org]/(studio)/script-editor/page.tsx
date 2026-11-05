@@ -239,8 +239,8 @@ export default function ScriptEditorPage() {
   // Folders or files the pull could not read. The rest is still listed.
   const [pullWarnings, setPullWarnings] = useState<string[]>([]);
   const [githubError, setGithubError] = useState("");
-  // The pull's error code. "github_unconfigured" means GitHub is not set up on
-  // this server: read from the code rather than the wording of the message.
+  // The pull's error code. "github_unconfigured" means GitHub is not set up for
+  // this organization: read from the code rather than the wording of the message.
   const [pullCode, setPullCode] = useState<string | null>(null);
   // Inside the desktop app the GitHub details are filled in on its Settings
   // window rather than in a file, so the "not set up" message offers to open it.
@@ -1211,9 +1211,10 @@ export default function ScriptEditorPage() {
                   </>
                 ) : githubUnconfigured ? (
                   <>
-                    The GitHub registry is not configured, so nothing can be listed and
-                    nothing can be saved. Set GITHUB_REPO_OWNER, GITHUB_REPO_NAME and
-                    GITHUB_PAT, then reload.
+                    The GitHub registry is not set up for this organization, so nothing
+                    can be listed and nothing can be saved. An admin can add the
+                    repository and an access token on the Admin screen, under GitHub,
+                    then reload this page.
                   </>
                 ) : (
                   <>

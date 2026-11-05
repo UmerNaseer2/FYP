@@ -47,19 +47,18 @@
 //   409 version_exists | version_not_newer      also carry highest_version and suggested
 //   409 push_in_progress | github_conflict | not_a_folder | rollback_exists
 //   500 github_unconfigured
+//   503 github_settings_unavailable              the organization's settings could not be read
 //   502 token_rejected | github_forbidden | github_rate_limited | repo_not_found |
 //       github_down | github_error | github_unreachable | outcome_unknown
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
+import { githubConfigFor } from "@/lib/github-config";
 import { MAX_CHANGE_NOTE_LENGTH, stampChangeNote } from "@/lib/change-note";
 import { stampChangeType, type ScriptChangeType } from "@/lib/change-type";
 import {
   contentsFileUrl,
   decodeContentsFile,
-  GITHUB_UNCONFIGURED_CODE,
-  githubConfig,
   githubFetch,
-  githubNotConfiguredMessage,
   listFamilyFiles,
   logGitHubAnswer,
   type FamilyListing,
@@ -399,7 +398,7 @@ async function pushNewVersion(config: GitHubConfig, input: NormalPush, files: Re
     return fail(
       502,
       "github_error",
-      `GitHub refused to save v${version} of "${scriptName}" (status 422). ${NOTHING_SAVED} Try again; if it keeps happening, ask whoever runs the server to check the GitHub settings.`,
+      `GitHub refused to save v${version} of "${scriptName}" (status 422). ${NOTHING_SAVED} Try again; if it keeps happening, ask an admin to check the GitHub settings on the Admin screen.`,
     );
   }
   if (!upRes.ok) {
@@ -555,7 +554,7 @@ async function attachRollback(config: GitHubConfig, input: AttachPush, files: Re
       return fail(
         502,
         "github_error",
-        `GitHub refused to save the rollback for v${version} of "${scriptName}" (status 422). ${NOTHING_SAVED} Try again; if it keeps happening, ask whoever runs the server to check the GitHub settings.`,
+        `GitHub refused to save the rollback for v${version} of "${scriptName}" (status 422). ${NOTHING_SAVED} Try again; if it keeps happening, ask an admin to check the GitHub settings on the Admin screen.`,
       );
     }
     return fail(
@@ -579,13 +578,12 @@ export async function POST(req: NextRequest) {
   const gate = await requirePermission("scripts:create");
   if (!gate.ok) return gate.response;
 
-  // 2. The GitHub settings, read now rather than when the module loads, so a
-  //    changed setting is picked up (and a test can fake it). The message
-  //    names missing keys, never values.
-  const config = githubConfig();
-  if (!config.ok) {
-    return fail(500, GITHUB_UNCONFIGURED_CODE, githubNotConfiguredMessage(config.missing));
-  }
+  // 2. The organization's GitHub settings (lib/github-config.ts), read now
+  //    rather than when the module loads, so a changed setting is picked up
+  //    (and a test can fake it). The message names missing keys, never
+  //    values, and never the token.
+  const config = await githubConfigFor(gate.principal);
+  if (!config.ok) return fail(config.status, config.code, config.message);
 
   // 3. The whole request is checked before GitHub is contacted.
   let raw: unknown;

@@ -30,7 +30,6 @@ import { checkApplications, readAppliesToHeader } from "@/lib/application-target
 import { readApplications } from "@/lib/application-read";
 import { configIdentity, findProductionTwin, twinBlockReason } from "@/lib/environment-guard";
 import { archiveAppliedVersions, type ArchivedVersion } from "@/lib/registry-archive";
-import { registryRoot } from "@/lib/registry-paths";
 import {
   analyseRunRisk,
   checkForwardOnly,
@@ -1606,14 +1605,14 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     // transaction has committed, so a registry that could not be written is
     // something to TELL the user about, never a reason to report a successful
     // deploy as a failure. archiveAppliedVersions never throws and never
-    // refuses; it answers null when GitHub is not configured at all.
+    // refuses; it answers null when GitHub is not set up for the organization.
     let archived: ArchivedVersion[] | null = null;
     try {
       archived = await archiveAppliedVersions({
         // The run's organization is the caller's: the connection was looked
         // up with orgId above, so its versions go in that organization's
-        // folder of the registry.
-        root: registryRoot(gate.principal),
+        // repository and its folder there.
+        owner: gate.principal,
         database: connRow.database_name,
         schema: schemaName,
         versions: queue.map((job) => ({

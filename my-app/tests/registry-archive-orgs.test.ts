@@ -8,12 +8,30 @@
 // wrong organization's folder fails the test.
 import { archiveAppliedVersions, type AppliedVersion } from "@/lib/registry-archive";
 
+// Each organization's own GitHub settings (lib/org-github-store.ts) are kept
+// in the metadata database, which these tests do not have. Organization 12 has
+// the server's repository with a token of its own; no other organization has
+// settings, so the default one uses the server's keys.
+const ORG_TOKEN = "org-token-not-real";
+const mockReadOrgGitHub = jest.fn(
+  async (orgId: number): Promise<unknown> =>
+    orgId === 12
+      ? { owner: "acme", repo: "registry", token: ORG_TOKEN, updatedBy: "admin@test", updatedAt: new Date(0) }
+      : null,
+);
+jest.mock("../lib/org-github-store", () => ({
+  readOrgGitHub: (orgId: number) => mockReadOrgGitHub(orgId),
+}));
+
+const ORG_12 = { orgId: 12, orgIsDefault: false };
+const DEFAULT_ORG = { orgId: 1, orgIsDefault: true };
+
 const REPO = "https://api.github.com/repos/acme/registry";
 const ENV_KEYS = ["GITHUB_PAT", "GITHUB_REPO_OWNER", "GITHUB_REPO_NAME"] as const;
 let savedEnv: Record<string, string | undefined> = {};
 const realFetch = global.fetch;
 
-type Call = { method: string; url: string };
+type Call = { method: string; url: string; token: string | null };
 let calls: Call[] = [];
 let unexpected: string[] = [];
 let answers: Record<string, () => Response> = {};
@@ -44,7 +62,8 @@ beforeEach(() => {
   global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const key = `${(init?.method ?? "GET").toUpperCase()} ${url}`;
-    calls.push({ method: (init?.method ?? "GET").toUpperCase(), url });
+    const auth = (init?.headers as Record<string, string> | undefined)?.Authorization ?? null;
+    calls.push({ method: (init?.method ?? "GET").toUpperCase(), url, token: auth });
     const answer = answers[key];
     if (!answer) {
       // Fail closed: an address the test did not name is never fetched.
@@ -74,7 +93,7 @@ describe("archiveAppliedVersions, organization folders", () => {
     answers[`PUT ${folder}/v1.0.0.down.sql`] = () => json(201, { content: { name: "v1.0.0.down.sql" } });
 
     const result = await archiveAppliedVersions({
-      root: "orgs/12",
+      owner: ORG_12,
       database: "db",
       schema: "public",
       versions: [APPLIED],
@@ -93,13 +112,15 @@ describe("archiveAppliedVersions, organization folders", () => {
       `${folder}/v1.0.0.sql`,
       `${folder}/v1.0.0.down.sql`,
     ]);
+    // With the organization's own token, never the server's.
+    expect(calls.map((call) => call.token)).toEqual(calls.map(() => `Bearer ${ORG_TOKEN}`));
   });
 
   it("names the organization's path for a version its folder already has", async () => {
     answers[`GET ${REPO}/contents/orgs/12/db/public/orders_fix`] = () =>
       json(200, [{ name: "v1.0.0.sql", sha: "a", type: "file" }]);
     const result = await archiveAppliedVersions({
-      root: "orgs/12",
+      owner: ORG_12,
       database: "db",
       schema: "public",
       versions: [APPLIED],
@@ -114,13 +135,13 @@ describe("archiveAppliedVersions, organization folders", () => {
   it("keeps the default organization's versions at the repository root", async () => {
     answers[`GET ${REPO}/contents/db/public/orders_fix`] = () =>
       json(200, [{ name: "v1.0.0.sql", sha: "a", type: "file" }]);
-    const result = await archiveAppliedVersions({ root: "", database: "db", schema: "public", versions: [APPLIED] });
+    const result = await archiveAppliedVersions({ owner: DEFAULT_ORG, database: "db", schema: "public", versions: [APPLIED] });
     expect(result?.[0]).toMatchObject({ status: "already-saved", path: "db/public/orders_fix/v1.0.0.sql" });
   });
 
   it("records nothing for a default-organization path inside another organization's folder", async () => {
     const result = await archiveAppliedVersions({
-      root: "",
+      owner: DEFAULT_ORG,
       database: "orgs",
       schema: "12",
       versions: [APPLIED, { ...APPLIED, version: "1.1.0" }],
@@ -132,6 +153,17 @@ describe("archiveAppliedVersions, organization folders", () => {
     expect(result?.[0].reason).toContain("another organization's scripts");
     expect(result?.[0].reason).toContain("The migration itself is applied and safe.");
     expect(result?.[0].reason).not.toContain("try again");
+    expect(calls).toEqual([]);
+  });
+
+  it("records nothing for an organization with no GitHub settings, and never borrows the server's", async () => {
+    const result = await archiveAppliedVersions({
+      owner: { orgId: 13, orgIsDefault: false },
+      database: "db",
+      schema: "public",
+      versions: [APPLIED],
+    });
+    expect(result).toBeNull();
     expect(calls).toEqual([]);
   });
 });
