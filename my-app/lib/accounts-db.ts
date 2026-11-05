@@ -272,10 +272,13 @@ async function settle(
   }
 
   // 4. Someone new. The unique index is on lower(email), so a row written by
-  // hand in capitals was still found in step 3.
+  // hand in capitals was still found in step 3. The address has a second
+  // unique rule, the column's own (profiles_email_key), and a sign-in at the
+  // same moment can meet either one first. ON CONFLICT names no index, so a
+  // conflict on any of them gives way instead of failing.
   const created = await client.query<{ id: number; email: string }>(
     `INSERT INTO profiles (email, name, last_seen_at) VALUES ($1, $2, now())
-     ON CONFLICT ((lower(email))) DO NOTHING
+     ON CONFLICT DO NOTHING
      RETURNING id, email`,
     [who.email, who.name]
   );
