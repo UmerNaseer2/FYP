@@ -114,6 +114,13 @@ services:
       # "true" only when the registration takes accounts from any directory.
       # Leave it unset for one that takes its own directory only.
       AZURE_AD_ANY_ACCOUNT: ${AZURE_AD_ANY_ACCOUNT:-}
+      # The address people open the app at, with no path. Sign-in builds the
+      # address Microsoft (or GitHub) sends people back to from it, because
+      # inside the container the app sees only 0.0.0.0, never the address
+      # typed into the browser. The default suits APP_PORT's default. With
+      # another port, or a public https link, set AUTH_URL in .env to match
+      # (deploy/README.md, "Before the link is made public").
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
       # Optional. Sign-in with GitHub as well, from a GitHub OAuth app whose
       # callback URL is http://localhost:3000/api/auth/callback/github.
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
@@ -132,7 +139,8 @@ services:
       # This machine only (127.0.0.1) by default. Open it as
       # http://localhost:3000, not 127.0.0.1: Microsoft accepts a plain http
       # sign-in address only for localhost, and it must match the redirect
-      # URI exactly. Other machines need an https link through a proxy, as
+      # URI exactly. Another port here needs the same port in AUTH_URL above.
+      # Other machines need an https link through a proxy, as
       # deploy/README.md describes.
       - "${APP_PORT:-127.0.0.1:3000}:3000"
     restart: unless-stopped

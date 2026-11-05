@@ -238,13 +238,22 @@ Both `app` and `db` should say `healthy`.
 
 If `up` stops with "port is already allocated", another program on the server
 already uses that port. In `.env`, change the port it names (`3000` to `3001`,
-or `5433` to `5434`), then run `docker compose up -d` again.
+or `5433` to `5434`), then run `docker compose up -d` again. A new app port
+also needs `AUTH_URL=http://localhost:3001` (with that port) in `.env`, and
+the same address in the Entra redirect URI and in the browser.
 
 ### The first sign-in makes the admin
 
 Open http://localhost:3000 in the server's browser, exactly that, not
-127.0.0.1: Microsoft sends you back to the address the sign-in started from,
-and only the localhost one is on its list. Choose Continue with Microsoft.
+127.0.0.1: Microsoft sends you back to the address in `AUTH_URL`, which
+docker-compose.yml sets to http://localhost:3000, and the sign-in must start
+from that same address. Choose Continue with Microsoft.
+
+If Microsoft answers with a redirect URI error instead, its message names the
+address the app asked for. That must be `AUTH_URL` followed by
+`/api/auth/callback/microsoft-entra-id`, and it must be on the registration's
+Web platform. An address with `0.0.0.0` in it means `AUTH_URL` is missing:
+inside its container the app sees only `0.0.0.0`.
 
 The first person from the registration's directory to sign in becomes the
 Admin of the default organization, so make that you. Everyone after that gets
@@ -394,20 +403,22 @@ so the nightly copies of the database go on.
 
 Sign-in is already on, so a public link lets in only people who sign in.
 Microsoft needs the link to be `https`, because it accepts plain `http` only
-for localhost. IT's proxy must also tell the app the link is `https`, with
-the `X-Forwarded-Proto: https` header. Most proxies send it by default.
-Without it, Microsoft rejects the sign-in with a redirect URI error. Once IT
-has made the link:
+for localhost. The app cannot see the link from inside its container, so
+`AUTH_URL` tells it. Without that, Microsoft rejects the sign-in with a
+redirect URI error. Once IT has made the link:
 
 1. In the Entra app registration, under Authentication, add
    `https://<the link>/api/auth/callback/microsoft-entra-id` to the Web
    platform, beside the localhost one.
-2. If IT's proxy runs on another machine, the app must listen beyond this
+2. In `.env`, add `AUTH_URL=https://<the link>`, written exactly as people
+   will open it, with no path and no `/` at the end. From then on sign-in
+   works only from that address, not from http://localhost:3000.
+3. If IT's proxy runs on another machine, the app must listen beyond this
    one: in `.env`, change `APP_PORT=127.0.0.1:3000` to `APP_PORT=3000`, and
    give the app's port a firewall rule like the one in step 5.2 of
    [HARDENING.md](HARDENING.md), so that only the proxy reaches it. If the
    proxy runs on this server, leave the line as it is.
-3. Leave `ALLOW_PRIVATE_DB_HOSTS` off, so the public app cannot be pointed at
+4. Leave `ALLOW_PRIVATE_DB_HOSTS` off, so the public app cannot be pointed at
    machines inside the campus network.
-4. Run `docker compose up -d`. The sign-in settings are read when the app
+5. Run `docker compose up -d`. The sign-in settings are read when the app
    starts, so no rebuild is needed.

@@ -156,6 +156,10 @@ With plain `docker run`, Portainer or Kubernetes instead, the container needs:
   for Microsoft sign-in, with the redirect URI
   `<the address>/api/auth/callback/microsoft-entra-id` on the registration's
   Web platform.
+- `AUTH_URL`: that address, such as `http://localhost:3000` or
+  `https://<the link>`, with no path. Sign-in builds Microsoft's return
+  address from it, because inside the container the app sees only
+  `0.0.0.0`. Compose sets `http://localhost:3000` by itself.
 - Port 3000 published, with `https` in front of it for any address but
   localhost (see "Before the link is made public" in README.md).
 

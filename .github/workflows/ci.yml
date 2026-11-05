@@ -121,6 +121,8 @@ jobs:
 
       # Fresh secrets for this run only, made the way deploy/README.md (step 4)
       # makes the server's, so none is written in the repo or in the log.
+      # The made-up AZURE_AD_ values turn Microsoft sign-in on, as on the
+      # server. Nothing in this job reaches Microsoft.
       #
       # `sql` runs the SQL it reads in the stack's database and prints bare
       # values. The later steps use it to look at the data.
@@ -131,6 +133,9 @@ jobs:
           POSTGRES_PASSWORD=$(openssl rand -hex 24)
           NEXTAUTH_SECRET=$(openssl rand -hex 32)
           APP_ENCRYPTION_KEY=$(openssl rand -hex 32)
+          AZURE_AD_CLIENT_ID=00000000-0000-0000-0000-000000000001
+          AZURE_AD_CLIENT_SECRET=$(openssl rand -hex 20)
+          AZURE_AD_TENANT_ID=00000000-0000-0000-0000-000000000002
           EOF
           chmod 600 .env
           mkdir -p "$RUNNER_TEMP/bin"
@@ -149,6 +154,19 @@ jobs:
 
       - name: The sign-in page answers
         run: curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
+
+      # Inside its container the app sees only its own 0.0.0.0, so the
+      # address Microsoft sends people back to comes from AUTH_URL, which
+      # compose sets to http://localhost:3000. A signed-out visitor goes to
+      # the sign-in page at that address too.
+      - name: Sign-in uses the localhost address
+        run: |
+          providers="$(curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3000/api/auth/providers)"
+          echo "$providers"
+          echo "$providers" | grep -qF '"callbackUrl":"http://localhost:3000/api/auth/callback/microsoft-entra-id"'
+          to="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{redirect_url}' http://127.0.0.1:3000/admin)"
+          echo "/admin sends a signed-out visitor to $to"
+          [ "$to" = "http://localhost:3000/login?callbackUrl=%2Fadmin" ]
 
       # The drift scheduler's first round, straight after start-up, makes the
       # app's tables. Wait for them, so the copy below holds a real database.
