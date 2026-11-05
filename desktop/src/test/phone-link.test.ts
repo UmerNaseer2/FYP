@@ -26,7 +26,7 @@ import {
   type PhoneLinkStore,
   type PhoneLinkView,
 } from "../main/phone-link";
-import { FIRST_WAIT_MS, type OpenSocket, type RelaySocket, type SocketEvents } from "../main/phone-relay";
+import { FIRST_WAIT_MS, PROBE_WITHIN_MS, type OpenSocket, type RelaySocket, type SocketEvents } from "../main/phone-relay";
 import { writeRefusal, type AppAnswer, type AppCaller } from "../main/phone-requests";
 import type { LoadResult, Protection } from "../main/secrets";
 import { approvalChallenge, approvalFingerprint, type ApprovalScript } from "../shared/remote/approval.js";
@@ -44,7 +44,7 @@ import {
   type OpeningAnswer,
 } from "../shared/remote/pairing.js";
 import { CHALLENGE_BYTES, desktopIdFor } from "../shared/remote/relay-auth.js";
-import { CLOSE_REPLACED, addChannel, readChannel, readControl, relaySocketUrl, writeControl } from "../shared/remote/relay-protocol.js";
+import { CLOSE_REPLACED, PING, addChannel, readChannel, readControl, relaySocketUrl, writeControl } from "../shared/remote/relay-protocol.js";
 import { readAnswer, readResult, writeRequest, type Answer, type Request } from "../shared/remote/rpc.js";
 import { makeCodeKeys, openCodeBox, readShortCode, showShortCode } from "../shared/remote/short-code.js";
 import { decrypt, newPhone, subscriptionOf, type Phone } from "./push-phone";
@@ -834,6 +834,23 @@ test("connects at once for Connect now, and takes the place back after another c
   link.connectNow();
   assert.equal(opener.sockets.length, 3);
   assert.deepEqual(link.status(), { state: "connecting" });
+});
+
+test("checks the connection to the relay at once when asked to, and connects again if it has died", async () => {
+  const { link, opener, clock } = await openLink(stateWith({ enabled: true, relayOrigin: RELAY_ORIGIN }));
+  // Nothing to check before the phone link starts, or before it is signed in.
+  link.checkNow();
+  link.start();
+  link.checkNow();
+  assert.deepEqual(link.status(), { state: "connecting" });
+  const socket = await signIn(opener, link);
+  link.checkNow();
+  assert.deepEqual(socket.take(), [PING]);
+  clock.advance(PROBE_WITHIN_MS);
+  const status = link.status();
+  assert.ok(status.state === "waiting" && status.reason === "The relay stopped answering.", status.state);
+  clock.advance(FIRST_WAIT_MS);
+  assert.equal(opener.sockets.length, 2);
 });
 
 test("tells the app once a run of changes is done, never in the middle of one", async () => {

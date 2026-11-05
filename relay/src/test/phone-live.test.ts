@@ -187,10 +187,10 @@ test("writes a time of day with its seconds, since the screen moves every few se
 });
 
 test("tells the person what to do about each problem, and repeats no server's words", () => {
-  assert.match(activityProblemText("forbidden"), /Ask an admin for Performance: Read\.$/);
+  assert.match(activityProblemText("forbidden"), /Ask an admin to turn on "Open the Performance screen" for your role\.$/);
   assert.match(activityProblemText("unreachable"), /could not reach this database/);
   assert.match(activityProblemText("failed"), /could not read this database's activity/);
-  assert.match(driftProblemText("forbidden"), /Ask an admin for Drift: Read\.$/);
+  assert.match(driftProblemText("forbidden"), /Ask an admin to turn on "See tracked schemas and their drift" for your role\.$/);
   assert.equal(driftProblemText("unreachable"), driftProblemText("failed"));
 });
 

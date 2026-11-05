@@ -194,7 +194,7 @@ export function acknowledgedText(at: number): DriftResult {
 export function activityProblemText(problem: LiveProblem): string {
   switch (problem) {
     case "forbidden":
-      return "Your role can't see what this database is doing. Ask an admin for Performance: Read.";
+      return "Your role can't see what this database is doing. Ask an admin to turn on \"Open the Performance screen\" for your role.";
     case "unreachable":
       return "Schema Studio could not reach this database, so its activity can't show. It may be down, or its connection details may have changed.";
     case "failed":
@@ -206,7 +206,7 @@ export function activityProblemText(problem: LiveProblem): string {
 export function driftProblemText(problem: LiveProblem): string {
   switch (problem) {
     case "forbidden":
-      return "Your role can't see drift. Ask an admin for Drift: Read.";
+      return "Your role can't see drift. Ask an admin to turn on \"See tracked schemas and their drift\" for your role.";
     case "unreachable":
     case "failed":
       return "The computer could not read the drift results just now.";

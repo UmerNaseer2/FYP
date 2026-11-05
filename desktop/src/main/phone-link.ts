@@ -600,6 +600,15 @@ export class PhoneLink {
   }
 
   /**
+   * For when the computer wakes from sleep: checks at once that the
+   * connection to the relay still works, and connects again if it died
+   * while the computer slept.
+   */
+  checkNow(): void {
+    this.connection?.relay.checkNow();
+  }
+
+  /**
    * Sends drift alerts to each phone that turned them on, for the app's drift
    * watcher. Alerts that come while others are being sent wait, and go
    * together in one message once those have gone, so phones get them in

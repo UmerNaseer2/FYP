@@ -18,6 +18,7 @@ import {
   MAX_QUEUED_BYTES,
   MAX_WAIT_MS,
   PING_EVERY_MS,
+  PROBE_WITHIN_MS,
   PhoneRelay,
   SEND_BURST,
   SEND_PER_SECOND,
@@ -119,6 +120,16 @@ class FakeClock implements Clock {
       running.run();
     }
     this.time = end;
+  }
+
+  /**
+   * The computer sleeps for this long. The time of day moves on, but no
+   * timer runs, and each still has as long to go as before: the real timers
+   * do not count the time asleep either.
+   */
+  sleep(ms: number): void {
+    this.time += ms;
+    for (const entry of this.timers) entry.at += ms;
   }
 }
 
@@ -313,6 +324,14 @@ async function signIn(setup: SetUp): Promise<FakeSocket> {
   assert.deepEqual(setup.relay.status(), { state: "connected" });
   socket.take();
   return socket;
+}
+
+/** Lets this much time pass on a connection whose relay answers each ping, as a working one does, so that only what the test does next can end it. */
+function answerPingsFor(setup: SetUp, socket: FakeSocket, ms: number): void {
+  for (let left = ms; left > 0; left -= PING_EVERY_MS) {
+    setup.clock.advance(Math.min(left, PING_EVERY_MS));
+    if (socket.take().includes(PING)) socket.text(PONG);
+  }
 }
 
 test("signs in to the computer's room when the relay asks, and counts as connected once the relay says so", async () => {
@@ -525,6 +544,77 @@ test("pings the relay, and counts the connection as lost once the relay has been
   assert.equal(opener.sockets.length, 2);
 });
 
+test("does not count the connection as lost just because the computer slept, when the relay answered the last ping", async () => {
+  const setup = await setUp();
+  const { relay, opener, clock } = setup;
+  relay.start();
+  const socket = await signIn(setup);
+  clock.advance(PING_EVERY_MS);
+  assert.deepEqual(socket.take(), [PING]);
+  socket.text(PONG);
+
+  // Asleep for far longer than SILENT_FOR_MS. The relay answered the last ping before it, so the pings carry on.
+  clock.sleep(10 * SILENT_FOR_MS);
+  clock.advance(PING_EVERY_MS);
+  assert.deepEqual(socket.take(), [PING]);
+  assert.deepEqual(relay.status(), { state: "connected" });
+
+  // A relay that does not answer that ping is still noticed. It has been silent for long enough already, so the one
+  // ping going unanswered is enough.
+  clock.advance(PING_EVERY_MS);
+  assert.deepEqual(socket.take(), []);
+  assert.deepEqual(relay.status(), { state: "waiting", retryAt: clock.time + FIRST_WAIT_MS, reason: "The relay stopped answering." });
+  clock.advance(FIRST_WAIT_MS);
+  assert.equal(opener.sockets.length, 2);
+});
+
+test("checks the connection at once when asked to, and lets it go when the relay does not answer in time", async () => {
+  const setup = await setUp();
+  const { relay, opener, clock, phones } = setup;
+  // Only while connected: not before start(), and not while connecting.
+  relay.checkNow();
+  relay.start();
+  relay.checkNow();
+  assert.deepEqual(opener.latest.sent, []);
+  assert.deepEqual(relay.status(), { state: "connecting" });
+
+  const socket = await signIn(setup);
+  relay.checkNow();
+  // One check at a time.
+  relay.checkNow();
+  assert.deepEqual(socket.take(), [PING]);
+  // Anything heard from the relay answers it, a phone's message as much as a pong.
+  socket.binary(frame(7, 1));
+  clock.advance(PROBE_WITHIN_MS);
+  assert.deepEqual(relay.status(), { state: "connected" });
+  assert.deepEqual(socket.take(), []);
+  phones.take();
+
+  // Checked again just after a ping, so that no ping falls due while the check waits.
+  clock.advance(PING_EVERY_MS - PROBE_WITHIN_MS);
+  assert.deepEqual(socket.take(), [PING]);
+  socket.text(PONG);
+  relay.checkNow();
+  assert.deepEqual(socket.take(), [PING]);
+  clock.advance(PROBE_WITHIN_MS - 1);
+  assert.deepEqual(relay.status(), { state: "connected" });
+  clock.advance(1);
+  assert.deepEqual(socket.closedWith, [1000]);
+  assert.deepEqual(phones.take(), ["dropAll"]);
+  assert.deepEqual(relay.status(), { state: "waiting", retryAt: clock.time + FIRST_WAIT_MS, reason: "The relay stopped answering." });
+  assert.match(newLogLines(), /The relay stopped answering\. The phone link tries again in 1 second\./);
+
+  // Nothing to check while waiting, and stopping lets go of a check that waits.
+  relay.checkNow();
+  clock.advance(FIRST_WAIT_MS);
+  assert.equal(opener.sockets.length, 2);
+  const next = await signIn(setup);
+  relay.checkNow();
+  assert.deepEqual(next.take(), [PING]);
+  relay.stop();
+  assert.equal(clock.pending, 0);
+});
+
 test("gives up on a connection that is not signed in in time, and tries again", async () => {
   const { relay, opener, clock, statuses } = await setUp();
   relay.start();
@@ -588,15 +678,13 @@ test("waits longer after each failure in a row, and from the shortest wait again
   // Logged once, not once for each failure.
   assert.equal(countLines(newLogLines(), /The relay could not be reached\./), 1);
 
-  await signIn(setup);
-  clock.advance(STEADY_MS);
+  answerPingsFor(setup, await signIn(setup), STEADY_MS);
   opener.latest.end(1006);
   assert.deepEqual(relay.status(), { state: "waiting", retryAt: clock.time + FIRST_WAIT_MS, reason: "The connection to the relay closed." });
 
   // A connection that drops sooner is one more failure in the run.
   clock.advance(FIRST_WAIT_MS);
-  await signIn(setup);
-  clock.advance(STEADY_MS - 1);
+  answerPingsFor(setup, await signIn(setup), STEADY_MS - 1);
   opener.latest.end(1006);
   assert.deepEqual(relay.status(), {
     state: "waiting",
@@ -707,6 +795,12 @@ test("waits longest after the relay refuses the sign-in or says that too much wa
     opener.latest.open();
     opener.latest.end(code);
     assert.deepEqual(relay.status(), { state: "waiting", retryAt: clock.time + wait, reason }, `after close code ${code}`);
+    // The code goes in the log, but not in what Settings shows.
+    const seconds = wait / 1000;
+    assert.ok(
+      newLogLines().includes(`${reason} The close code was ${code}. The phone link tries again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`),
+      `the log after close code ${code}`,
+    );
   }
 });
 

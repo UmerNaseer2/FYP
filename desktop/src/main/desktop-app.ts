@@ -401,8 +401,12 @@ export class DesktopApp {
       void this.recheckNow();
       // A wait to try the relay again does not count the time asleep, and
       // the network may well be back by now. Trying at once gets paired
-      // phones back sooner.
-      if (this.phoneLink?.status().state === "waiting") this.phoneLink.connectNow();
+      // phones back sooner. A connection that looks fine may have died while
+      // the computer slept, and nothing says so until the next ping, so it
+      // is checked at once.
+      const relayState = this.phoneLink?.status().state;
+      if (relayState === "waiting") this.phoneLink?.connectNow();
+      else if (relayState === "connected") this.phoneLink?.checkNow();
     });
     app.on("child-process-gone", (_event, details) => {
       if (details.reason !== "clean-exit") logWarn(`A ${details.type} process stopped (${details.reason}).`);

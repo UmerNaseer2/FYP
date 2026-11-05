@@ -41,16 +41,25 @@ import {
 import { SYSTEM_CLOCK, type Clock } from "./clock";
 import { logInfo, logWarn } from "./log";
 
-/** How often the computer pings the relay, so that an idle connection stays open and a lost one is noticed. */
-export const PING_EVERY_MS = 30_000;
+/**
+ * How often the computer pings the relay, so that an idle connection stays
+ * open and a lost one is noticed. A connection can die without a word, and
+ * often only the next ping finds out, so this is also about how long the
+ * phones can be cut off before the computer connects again. The relay
+ * answers a ping without waking the computer's room, so pings cost next to
+ * nothing.
+ */
+export const PING_EVERY_MS = 15_000;
 
 /**
  * How long the relay may stay silent before the connection counts as lost.
  * It is checked as each ping falls due, so it takes two pings that go
- * unanswered, and a lost connection is noticed within about a minute and a
- * half.
+ * unanswered, and a lost connection is noticed within about 45 seconds.
  */
-export const SILENT_FOR_MS = 70_000;
+export const SILENT_FOR_MS = 35_000;
+
+/** How long the relay has to answer checkNow() before the connection counts as lost. A working connection answers within a second. */
+export const PROBE_WITHIN_MS = 8_000;
 
 /** How long the relay has to let the computer sign in, counted from when the connection starts. */
 export const SIGN_IN_WITHIN_MS = 30_000;
@@ -174,12 +183,16 @@ type Connection = {
   signedInAt: number | null;
   /** When the relay was last heard from, for noticing a connection that has gone quiet. */
   heardAt: number;
+  /** When the last ping went, so that only silence after a ping that went unanswered counts. */
+  pingSentAt: number;
   /** Whether a message the phone link could not use has been logged already. */
   ignored: boolean;
   /** Ends a connection that is not signed in within SIGN_IN_WITHIN_MS. */
   signInTimer: unknown;
   /** Sends the next ping. */
   pingTimer: unknown;
+  /** Lets the connection go when the ping checkNow() sent is not answered in time. Null while no check waits. */
+  probeTimer: unknown;
   /** Sends what is waiting once the pacing allows. Null while nothing waits for it. */
   pumpTimer: unknown;
   /** What is waiting to go, oldest first. */
@@ -298,6 +311,24 @@ export class PhoneRelay {
   }
 
   /**
+   * Checks at once that the connection still works, for when the computer
+   * wakes from sleep: a connection can die while the computer sleeps, and
+   * nothing says so until the next ping. A connection that does not answer
+   * within PROBE_WITHIN_MS counts as lost, and the phone link connects
+   * again. It does nothing unless connected, or while a check already waits.
+   */
+  checkNow(): void {
+    const connection = this.connection;
+    if (connection === null || connection.signedInAt === null || connection.probeTimer !== null) return;
+    // Set before the ping goes, so that a ping that fails clears the timer along with the connection.
+    connection.probeTimer = this.clock.setTimeout(() => {
+      connection.probeTimer = null;
+      this.lose(connection, "The relay stopped answering.");
+    }, PROBE_WITHIN_MS);
+    this.ping(connection);
+  }
+
+  /**
    * Sends a message to the phone on this channel, after whatever was sent
    * before it. Nothing goes while the computer is not signed in: its phones
    * went with the last connection.
@@ -357,9 +388,11 @@ export class PhoneRelay {
       answered: false,
       signedInAt: null,
       heardAt: now,
+      pingSentAt: now,
       ignored: false,
       signInTimer: null,
       pingTimer: null,
+      probeTimer: null,
       pumpTimer: null,
       queue: [],
       queuedBytes: 0,
@@ -380,26 +413,46 @@ export class PhoneRelay {
     connection.heardAt = this.clock.now();
     // Set before the first ping goes, so that a ping that fails clears the timer along with the connection.
     this.schedulePing(connection);
-    this.transmit(connection, PING);
+    this.ping(connection);
   }
 
-  /** Sends the next ping when it falls due, unless the relay has been silent for too long by then. */
+  /**
+   * Sends the next ping when it falls due, unless the relay has been silent
+   * for too long by then. Silence counts only once a ping has gone
+   * unanswered: the time of day moves on while the computer sleeps, but this
+   * timer does not count that time, so it can fall due just after the
+   * computer wakes, long after the relay was last heard from.
+   */
   private schedulePing(connection: Connection): void {
     connection.pingTimer = this.clock.setTimeout(() => {
       if (this.connection !== connection) return;
-      if (this.clock.now() - connection.heardAt >= SILENT_FOR_MS) {
+      if (this.clock.now() - connection.heardAt >= SILENT_FOR_MS && connection.heardAt < connection.pingSentAt) {
         this.lose(connection, "The relay stopped answering.");
         return;
       }
       this.schedulePing(connection);
-      this.transmit(connection, PING);
+      this.ping(connection);
     }, PING_EVERY_MS);
+  }
+
+  /** Pings the relay, and notes when. */
+  private ping(connection: Connection): void {
+    connection.pingSentAt = this.clock.now();
+    this.transmit(connection, PING);
+  }
+
+  /** Notes that the relay was heard from, which shows that the connection still works and answers a check that waits. */
+  private heard(connection: Connection): void {
+    connection.heardAt = this.clock.now();
+    if (connection.probeTimer === null) return;
+    this.clock.clearTimeout(connection.probeTimer);
+    connection.probeTimer = null;
   }
 
   /** A message from the relay itself: the sign-in, or a phone coming or going. */
   private whenText(connection: Connection, text: string): void {
     if (this.connection !== connection) return;
-    connection.heardAt = this.clock.now();
+    this.heard(connection);
     const control = readControl(text);
     if (control === null) {
       this.ignore(connection);
@@ -434,7 +487,7 @@ export class PhoneRelay {
         else this.options.phones.closed(control.channel);
         return;
       case "pong":
-        // It only shows that the relay is still there, which heardAt has noted already.
+        // It only shows that the relay is still there, which heard() has noted already.
         return;
       default:
         // The relay sends a computer nothing else. A ping is not answered either: the relay closes the
@@ -469,7 +522,7 @@ export class PhoneRelay {
   /** A message from a phone, with its channel in front. */
   private whenBinary(connection: Connection, data: Bytes): void {
     if (this.connection !== connection) return;
-    connection.heardAt = this.clock.now();
+    this.heard(connection);
     const frame = connection.signedInAt === null ? null : readChannel(data);
     if (frame === null) this.ignore(connection);
     else this.options.phones.received(frame.channel, frame.message);
@@ -501,7 +554,13 @@ export class PhoneRelay {
       return;
     }
     // A refused sign-in, or too much sent at once, would only happen again straight away, so those wait longest.
-    this.lose(connection, closeReason(code, connection.opened), code === CLOSE_SIGN_IN_FAILED || code === CLOSE_TOO_FAST);
+    // The code goes in the log only, for finding out later why connections were lost.
+    this.lose(
+      connection,
+      closeReason(code, connection.opened),
+      code === CLOSE_SIGN_IN_FAILED || code === CLOSE_TOO_FAST,
+      `The close code was ${code}.`,
+    );
   }
 
   /** Lets go of the connection: stops its timers, drops what was waiting to go, and closes the socket. */
@@ -511,6 +570,7 @@ export class PhoneRelay {
     this.connection = null;
     this.clock.clearTimeout(connection.signInTimer);
     this.clock.clearTimeout(connection.pingTimer);
+    this.clock.clearTimeout(connection.probeTimer);
     this.clock.clearTimeout(connection.pumpTimer);
     connection.queue = [];
     connection.queuedBytes = 0;
@@ -524,11 +584,14 @@ export class PhoneRelay {
     }
   }
 
-  /** Lets go of a connection that was lost, or never made, and connects again after a wait. */
-  private lose(connection: Connection, reason: string, longWait = false): void {
+  /**
+   * Lets go of a connection that was lost, or never made, and connects again
+   * after a wait. The note, if any, goes in the log after the reason.
+   */
+  private lose(connection: Connection, reason: string, longWait = false, note?: string): void {
     if (this.connection !== connection) return;
     this.release(connection);
-    this.waitToRetry(connection.signedInAt, reason, longWait);
+    this.waitToRetry(connection.signedInAt, reason, longWait, note);
   }
 
   /**
@@ -536,7 +599,7 @@ export class PhoneRelay {
    * MAX_WAIT_MS. Each wait is cut by up to half at random, so that computers
    * that lost the relay together do not all come back at the same moment.
    */
-  private waitToRetry(signedInAt: number | null, reason: string, longWait: boolean): void {
+  private waitToRetry(signedInAt: number | null, reason: string, longWait: boolean, note?: string): void {
     if (!this.running) return;
     const now = this.clock.now();
     // A connection that stayed up for a while was not part of a run of failures.
@@ -548,7 +611,8 @@ export class PhoneRelay {
     if (reason !== this.lastProblem) {
       this.lastProblem = reason;
       const seconds = Math.ceil(delay / 1000);
-      logWarn(`${reason} The phone link tries again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`);
+      const said = note === undefined ? reason : `${reason} ${note}`;
+      logWarn(`${said} The phone link tries again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`);
     }
     this.setStatus({ state: "waiting", retryAt: now + delay, reason });
   }
