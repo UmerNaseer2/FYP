@@ -3,10 +3,26 @@
 #   docker compose up --build
 #   open http://localhost:3000
 #
+# Sign-in is on: the app asks everyone for a Microsoft (or GitHub) account, so
+# it needs NEXTAUTH_SECRET and the AZURE_AD_* keys under `app` below, in a
+# .env file beside this one (deploy/README.md, step 4). For a quick look on
+# your own machine without them, turn the test bypass on for that build:
+#
+#   NEXT_PUBLIC_AUTH_BYPASS=true docker compose up --build
+#
 # `db` here is the app's OWN store — the saved connections, the lineage and the
 # drift history. It is not a database you compare; those are reached over the
 # network from whatever you register on the Connections screen, and they can be
 # anywhere, including on the host (use host.docker.internal as the hostname).
+
+# Docker keeps what each container prints in a file on the server. Without a
+# cap that file grows for as long as the container runs. This keeps three
+# files of 10 MB at most per container, dropping the oldest first.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   db:
@@ -36,18 +52,30 @@ services:
     # below. Without this the app would come back alone, unable to load or
     # save anything.
     restart: unless-stopped
+    # no-new-privileges: nothing in the container can gain more rights than it
+    # started with, say through a setuid program. The database keeps Docker's
+    # usual capabilities, because its start-up script needs them to set up the
+    # data folder and switch to the postgres user.
+    security_opt:
+      - no-new-privileges:true
+    # Caps on memory and on processes, so a runaway query hits this
+    # container's limit, not the whole server. To raise the memory cap, set
+    # DB_MEMORY_LIMIT in .env (2g, say) and run `docker compose up -d`.
+    mem_limit: ${DB_MEMORY_LIMIT:-1g}
+    pids_limit: 200
+    logging: *logging
 
   app:
     build:
       context: ./my-app
       args:
-        # Inlined into the browser bundle at build time — see the Dockerfile,
-        # whose own default is "false". THIS LINE is what turns the bypass on:
-        # compose is the one-command demo everybody runs first, and asking for
-        # Microsoft credentials before you can see the app would make it useless
-        # for that. Put NEXT_PUBLIC_AUTH_BYPASS=false in a .env beside this file
-        # (or export it) and rebuild to require a real sign-in.
-        NEXT_PUBLIC_AUTH_BYPASS: ${NEXT_PUBLIC_AUTH_BYPASS:-true}
+        # The sign-in bypass, baked into the browser bundle at build time, so
+        # changing it needs a rebuild (`docker compose up -d --build`), not
+        # just a restart. Off by default, like the Dockerfile's own default:
+        # everyone signs in. Set it to true only for a quick look on your own
+        # machine, never on a server other people can reach, because with it
+        # on anyone who can open the page is let in as an admin.
+        NEXT_PUBLIC_AUTH_BYPASS: ${NEXT_PUBLIC_AUTH_BYPASS:-false}
     environment:
       # The container talks to the database over the compose network, so the
       # host is the service name and the port is the container's own 5432 —
@@ -55,39 +83,73 @@ services:
       # because the postgres image serves no SSL, and the app only turns SSL
       # off by itself for localhost (see lib/db/metadata-ssl.ts).
       DATABASE_URL_A: postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}?sslmode=disable
-      # Signs the session cookie when real sign-in is on. Set your own,
-      # `openssl rand -hex 32`, before turning the bypass off: with none the
-      # app will not sign anyone in. There is no default on purpose. One
-      # written here would be the same for every copy, so anyone could sign a
-      # cookie with it, and the app now refuses the one this file used to have.
+      # Signs the session cookie. Set your own, `openssl rand -hex 32`: with
+      # none the app will not sign anyone in. There is no default on purpose.
+      # One written here would be the same for every copy, so anyone could
+      # sign a cookie with it, and the app refuses the one this file used to
+      # have.
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
       # Optional. Set to a 32-byte base64 or hex key (`openssl rand -hex 32`)
-      # to encrypt stored connection passwords at rest; without it (and
-      # without a NEXTAUTH_SECRET of your own) they are stored as typed and the
-      # Connections screen says so.
+      # to encrypt stored connection passwords and each organization's GitHub
+      # access token at rest. Without it the key is derived from
+      # NEXTAUTH_SECRET. With neither, connection passwords are stored as
+      # typed (the Connections screen says so) and no GitHub token is saved.
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
-      # Optional. Needed only by the Script Editor's push/pull to the GitHub
-      # script registry; the rest of the app works without them.
+      # Optional. The default organization's GitHub script registry, for the
+      # Script Editor's push and pull, until an admin saves a repository and
+      # token for it on the Admin screen, under GitHub. Other organizations
+      # save their own there and never use these. The rest of the app works
+      # without them.
       GITHUB_PAT: ${GITHUB_PAT:-}
       GITHUB_REPO_OWNER: ${GITHUB_REPO_OWNER:-}
       GITHUB_REPO_NAME: ${GITHUB_REPO_NAME:-}
-      # Optional. Entra ID sign-in; leave unset to run with the bypass.
+      # Microsoft Entra ID sign-in. All three come from the app registration
+      # in the Azure portal, and the registration needs the redirect URI
+      # http://localhost:3000/api/auth/callback/microsoft-entra-id under its
+      # Web platform (or the https one of a public link). See
+      # deploy/README.md, step 4.
       AZURE_AD_CLIENT_ID: ${AZURE_AD_CLIENT_ID:-}
       AZURE_AD_CLIENT_SECRET: ${AZURE_AD_CLIENT_SECRET:-}
       AZURE_AD_TENANT_ID: ${AZURE_AD_TENANT_ID:-}
+      # "true" only when the registration takes accounts from any directory.
+      # Leave it unset for one that takes its own directory only.
+      AZURE_AD_ANY_ACCOUNT: ${AZURE_AD_ANY_ACCOUNT:-}
+      # Optional. Sign-in with GitHub as well, from a GitHub OAuth app whose
+      # callback URL is http://localhost:3000/api/auth/callback/github.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       # A container reaching a database on the host machine needs a private
       # address to be allowed. Off by default — see lib/connection-config.ts.
       ALLOW_PRIVATE_DB_HOSTS: ${ALLOW_PRIVATE_DB_HOSTS:-}
+      # The app checks the tracked databases for drift on a timer of its own.
+      # `off` stops that, for a copy that should not touch any database by
+      # itself (a demo, or a second copy of this server).
+      DRIFT_SCHEDULER: ${DRIFT_SCHEDULER:-}
     depends_on:
       db:
         condition: service_healthy
     ports:
-      # This machine only (127.0.0.1) by default, because with the bypass above
-      # anyone who can open the page acts as an admin. To open it to other
-      # machines, turn the bypass off and set up sign-in first, then set
-      # APP_PORT=3000, or put a proxy in front as deploy/README.md describes.
+      # This machine only (127.0.0.1) by default. Open it as
+      # http://localhost:3000, not 127.0.0.1: Microsoft accepts a plain http
+      # sign-in address only for localhost, and it must match the redirect
+      # URI exactly. Other machines need an https link through a proxy, as
+      # deploy/README.md describes.
       - "${APP_PORT:-127.0.0.1:3000}:3000"
     restart: unless-stopped
+    # The app runs as an ordinary user (see the Dockerfile) on port 3000, so it
+    # needs none of the extra rights Docker gives a container by default.
+    # cap_drop takes them all away, and no-new-privileges stops it from
+    # getting any back.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Caps on memory and on processes, as for db. If the app is ever stopped
+    # for running out of memory, set APP_MEMORY_LIMIT in .env (4g, say) and
+    # run `docker compose up -d`.
+    mem_limit: ${APP_MEMORY_LIMIT:-2g}
+    pids_limit: 200
+    logging: *logging
     # Compose Watch: rebuild the app image and swap the container whenever a
     # source file under my-app/ changes. It is OFF until you ask for it, with
     # `docker compose up --watch`, `docker compose watch`, or `w` in the menu

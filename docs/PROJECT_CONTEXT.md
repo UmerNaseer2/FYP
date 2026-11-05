@@ -166,21 +166,23 @@ export const BYPASS_AUTH: boolean = BYPASS_ON.has(bypassSetting);
 
 An allow-list: only those spellings turn the bypass on, and everything else —
 a typo, an empty string, the variable not being set at all — leaves real
-authentication enforced. It reads as ON in this checkout because `.env.local`
-and `docker-compose.yml` both set it explicitly, deliberately, so the tool can
-be worked on without a Microsoft tenant. While on, every gate returns a
-hardcoded admin principal, or the role picked in View as on the studio rail,
-and the edge lets everything through.
+authentication enforced. It reads as ON in a local development checkout,
+because `.env.local` sets it explicitly, deliberately, so the tool can be
+worked on without a Microsoft tenant. `docker-compose.yml` leaves it off
+unless asked (`NEXT_PUBLIC_AUTH_BYPASS=true docker compose up --build`), so
+the server image and the Vercel deployment make everyone sign in. While on, every
+gate returns a hardcoded admin principal, or the role picked in View as on the
+studio rail, and the edge lets everything through.
 
-That is a known, intentional development setting, not a defect. The four secrets
-that would let it be switched off — `AZURE_AD_CLIENT_ID`, `AZURE_AD_CLIENT_SECRET`,
-`AZURE_AD_TENANT_ID`, `NEXTAUTH_SECRET` — are not yet provisioned. Note the
-consequence: removing the line *today* locks everyone out rather than turning
-sign-in on, because `authUsable` in `auth.config.ts` is false without those
-secrets. That is the intended reading of the default rather than an oversight —
-an app nobody can get into is a five-minute fix, and an app everybody can get
-into is not something you find out about at all. Also note `NEXT_PUBLIC_*` is
-inlined at build time, so changing it needs a rebuild, not a restart.
+That is a known, intentional development setting, not a defect. With it off,
+sign-in needs `NEXTAUTH_SECRET` plus either the three `AZURE_AD_*` keys or
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`. Without them `authUsable` in
+`auth.config.ts` is false and the login page says single sign-on is not set
+up, so a missing key locks everyone out rather than letting everyone in. That
+is the intended reading of the default rather than an oversight: an app nobody
+can get into is a five-minute fix, and an app everybody can get into is not
+something you find out about at all. Also note `NEXT_PUBLIC_*` is inlined at
+build time, so changing it needs a rebuild, not a restart.
 
 **Review the code behind the switch, not the switch's current position.**
 
@@ -285,7 +287,8 @@ routes, 13 page routes plus the 404, one proxy.
   (Postgres 17 on `localhost:5433`). The app creates its ten tables itself on
   first use. The hosted Supabase project it once pointed at has been deleted, and
   nothing saved there survives.
-- **The auth bypass is ON** — see section 6.
+- **The auth bypass is ON in local development only** (`.env.local`). The
+  server image and Vercel make everyone sign in. See section 6.
 - **`checkConnectableHost` judges the literal host only.** It normalises
   IPv4-mapped IPv6 and bare 32-bit integers first, so `::ffff:127.0.0.1` and
   `2130706433` are caught, but a public name that resolves to a private address

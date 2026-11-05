@@ -20,6 +20,9 @@ it by itself after ten minutes.
 
 Every command runs on the server unless it says "on your own computer".
 
+Before a disk image of the server is taken, see [IMAGE.md](IMAGE.md) for
+what it holds and what to clean up first.
+
 ## 0. Before you start
 
 The server must already run the updater that checks signatures. It arrives
@@ -87,7 +90,7 @@ The next day, check it ran:
 sudo tail -n 5 /var/log/unattended-upgrades/unattended-upgrades.log
 ```
 
-Three things the automatic updates do not cover:
+Two things the automatic updates do not cover:
 
 - **Restarts.** A new kernel takes effect only after a restart, and the
   server does not restart by itself. Keep it that way until IT confirms
@@ -99,10 +102,10 @@ Three things the automatic updates do not cover:
   Ubuntu's own package and is covered). Ask IT whether they update it.
   Updating Docker restarts it, which takes the app and Portainer offline for
   a moment.
-- **The app's containers.** The updater now fetches the newest `node` and
-  `postgres` images whenever it deploys, so their fixes arrive with your next
-  push. If nobody pushes for a month, push an empty commit to fetch them:
-  `git commit --allow-empty -m "Refresh base images"`.
+
+The app's containers are the updater's job instead: it fetches the newest
+`node` and `postgres` images whenever it deploys, and once a week at night
+even when nobody pushes (README.md, How it works).
 
 ## 3. Deploy only commits signed with your key
 
@@ -176,17 +179,17 @@ account, `schemastudio`, that nobody can log in as. A systemd timer then runs
 the updater as that account, instead of cron. The app may go offline for
 about a minute, in step 4.4.
 
-### 4.1 Stop the old updater
+### 4.1 Stop the old cron lines
 
 ```text
-crontab -l | grep -v auto-update.sh | crontab -
+crontab -l | grep -v -e auto-update.sh -e backup.sh | crontab -
 crontab -l
 ls ~/FYP/.deploy.lock
 ```
 
-The second command should no longer list `auto-update.sh`, and the third
-should say `No such file or directory`. If the lock is there, a deploy is
-running: wait five minutes and check again.
+The second command should no longer list `auto-update.sh` or `backup.sh`,
+and the third should say `No such file or directory`. If the lock is there, a
+deploy or a backup is running: wait five minutes and check again.
 
 ### 4.2 Make the account
 
@@ -230,18 +233,27 @@ sudo -u schemastudio ./deploy/auto-update.sh
 
 It should print `Up to date at` and a commit id.
 
-### 4.5 Turn on the timer
+### 4.5 Turn on the timers
 
 ```text
-sudo cp deploy/systemd/schema-studio-update.service deploy/systemd/schema-studio-update.timer /etc/systemd/system/
+sudo cp deploy/systemd/schema-studio-*.service deploy/systemd/schema-studio-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now schema-studio-update.timer
-systemctl list-timers schema-studio-update.timer
+sudo systemctl enable --now schema-studio-update.timer schema-studio-backup.timer
+systemctl list-timers 'schema-studio-*'
 ```
 
-The last command shows when it runs next. The files are copied, not linked,
-so a commit cannot change how the updater runs. If a later commit changes
-them, copy them again.
+The last command shows when each runs next: the updater within five minutes,
+the backup at 02:30. The files are copied, not linked, so a commit cannot
+change how they run. If a later commit changes them, copy them again.
+
+Save a copy of the database now, to see the backup works as the new account:
+
+```text
+sudo systemctl start schema-studio-backup.service
+sudo journalctl -t schema-studio-backup -n 3
+```
+
+The last line should say `Saved backups/schema-studio-` and the date.
 
 ### 4.6 Take Docker away from the everyday login
 
@@ -263,8 +275,11 @@ Docker as this login, ask them before you run it.
 | `git ...` | `sudo -u schemastudio git ...`, in `/srv/schema-studio` |
 | `./deploy/auto-update.sh` | `sudo -u schemastudio ./deploy/auto-update.sh` |
 | Turning it off with `crontab -e` | `sudo systemctl disable --now schema-studio-update.timer` |
+| `~/schema-studio-backup.log` | `sudo journalctl -t schema-studio-backup` |
+| `./deploy/backup.sh` | `sudo systemctl start schema-studio-backup.service` |
 
-The old log, `~/schema-studio-deploy.log`, is no longer written to.
+The old logs, `~/schema-studio-deploy.log` and `~/schema-studio-backup.log`,
+are no longer written to.
 
 ## 5. Firewall
 
@@ -415,6 +430,8 @@ The steps above are what the shared login can do. These need IT:
   signed, unsigned and wrongly signed commits. The firewall rules and the
   systemd files were not run on Ubuntu before this guide was written. Every
   step says what it should print, so a difference shows up right away.
-- The containers run with Docker's default limits: no cap on memory or CPU,
-  and a writable file system. Tightening those needs a test on a machine with
-  Docker first.
+- The containers have caps on memory and on the number of processes, cannot
+  gain new rights, and keep at most 30 MB of their own logs, and the app's
+  container drops all of Docker's extra rights. Their file systems are still
+  writable. CI starts the whole stack in Docker on every push, with these
+  settings, so one that Docker refuses fails CI before it reaches the server.

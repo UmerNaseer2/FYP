@@ -1,0 +1,13 @@
+# Starts schema-studio-backup.service every night at 02:30 by the server's
+# clock, before the 03:00 restart that deploy/HARDENING.md (section 6) asks IT
+# about. If the server was off at 02:30, it runs once soon after it is back.
+
+[Unit]
+Description=Save a copy of the Schema Studio database every night
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

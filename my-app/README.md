@@ -49,20 +49,29 @@ no local Node and creates the metadata database for you:
 docker compose up --build
 ```
 
+That build asks everyone to sign in, so it needs `NEXTAUTH_SECRET` and the
+three `AZURE_AD_*` keys in a `.env` beside `docker-compose.yml` (see
+[deploy/README.md](../deploy/README.md), step 4). For a quick look on your own
+machine without them, turn the test bypass on for that build:
+
+```bash
+NEXT_PUBLIC_AUTH_BYPASS=true docker compose up --build
+```
+
 Create `my-app/.env.local` (git-ignored, never commit it):
 
 | Key | Purpose | Required |
 | --- | --- | --- |
 | `DATABASE_URL_A` | The tool's own metadata database: connections, lineage, snapshots | yes |
-| `GITHUB_PAT` | Personal access token with `contents:write` on the script registry repo | yes, for push/pull |
-| `GITHUB_REPO_OWNER` | Owner of the registry repo | yes, for push/pull |
-| `GITHUB_REPO_NAME` | Name of the registry repo | yes, for push/pull |
-| `AZURE_AD_CLIENT_ID` | Microsoft Entra app registration | not yet set — see §5 |
-| `AZURE_AD_CLIENT_SECRET` | Microsoft Entra app secret | not yet set — see §5 |
-| `AZURE_AD_TENANT_ID` | Microsoft Entra tenant | not yet set — see §5 |
-| `NEXTAUTH_SECRET` | Session encryption key | not yet set — see §5 |
+| `GITHUB_PAT` | Personal access token with `contents:write` on the script registry repo, used by the default organization until an admin saves one on the Admin screen, under GitHub | for push/pull |
+| `GITHUB_REPO_OWNER` | Owner of the registry repo, the same way | for push/pull |
+| `GITHUB_REPO_NAME` | Name of the registry repo, the same way | for push/pull |
+| `AZURE_AD_CLIENT_ID` | Microsoft Entra app registration | for real sign-in, see §5 |
+| `AZURE_AD_CLIENT_SECRET` | Microsoft Entra app secret | for real sign-in, see §5 |
+| `AZURE_AD_TENANT_ID` | Microsoft Entra tenant | for real sign-in, see §5 |
+| `NEXTAUTH_SECRET` | Session encryption key | for real sign-in, see §5 |
 | `DRIFT_SCHEDULER` | `off` stops the background drift loop; anything else leaves it on | no, defaults to on |
-| `APP_ENCRYPTION_KEY` | Encrypts saved database passwords at rest. With neither this nor `NEXTAUTH_SECRET` set, passwords are stored as plain text and the server only logs a warning | no, but set it |
+| `APP_ENCRYPTION_KEY` | Encrypts saved database passwords and each organization's GitHub access token at rest. With neither this nor `NEXTAUTH_SECRET` set, passwords are stored as plain text, the server only logs a warning, and no GitHub token can be saved | no, but set it |
 | `ALLOW_PRIVATE_DB_HOSTS` | `true` lets a production deployment dial loopback, unix sockets and RFC1918 addresses. Off, those are refused in production only, so local development still works | no, defaults to off |
 | `NEXT_PUBLIC_AUTH_BYPASS` | `true` (or `1`/`yes`/`on`, any case) skips login and signs you in as admin, or as the role picked in View as. Read at BUILD time, not run time — see §5 | no, defaults to real sign-in |
 
@@ -394,9 +403,11 @@ Some of those are new enough to say where they live:
 
 ### Switched off or incomplete
 
-- **Authentication can be bypassed for testing, and is here.**
-  `.env.local` and `docker-compose.yml` both set `NEXT_PUBLIC_AUTH_BYPASS=true`,
-  so `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
+- **Authentication can be bypassed for testing, and is in local development.**
+  `.env.local.example` sets `NEXT_PUBLIC_AUTH_BYPASS=true`, and
+  `docker-compose.yml` does only when asked
+  (`NEXT_PUBLIC_AUTH_BYPASS=true docker compose up --build`). With it on,
+  `lib/auth-mode.ts` reports the bypass as on and both the UI guard and
   `lib/auth-guard.ts` let every request through as an admin, or as the role
   picked in View as (below). The wiring underneath is complete: every API route
   except the NextAuth handler itself opens with `requirePermission` or

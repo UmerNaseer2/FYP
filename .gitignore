@@ -26,9 +26,12 @@ docs/**/*Agreement*.pdf
 .env
 
 # What deploy/auto-update.sh leaves behind on the server: its lock, the last
-# thing it reported, the commit it gave up on, and the output of the latest
-# build.
+# thing it reported, the commit it gave up on, when it last looked for newer
+# base images, and the output of the latest build. And deploy/backup.sh's
+# copies of the database, which hold everything the app knows.
 /.deploy.lock/
 /.deploy-state
 /.deploy-skipped
+/.deploy-refreshed
 /deploy/last-build.log
+/backups/

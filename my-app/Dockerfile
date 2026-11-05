@@ -32,8 +32,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # the bypass on has it on, and `docker run -e NEXT_PUBLIC_AUTH_BYPASS=false`
 # against it does nothing at all. The default is off, which means real sign-in:
 # an image somebody builds straight from this file is not one that lets anybody
-# in. Build with `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true` for a testing image
-# — which is exactly what docker-compose.yml does.
+# in. Build with `--build-arg NEXT_PUBLIC_AUTH_BYPASS=true` for a testing image,
+# as `NEXT_PUBLIC_AUTH_BYPASS=true docker compose up --build` does.
 ARG NEXT_PUBLIC_AUTH_BYPASS="false"
 ENV NEXT_PUBLIC_AUTH_BYPASS=$NEXT_PUBLIC_AUTH_BYPASS
 

@@ -1,11 +1,17 @@
-# Continuous integration.
+# Continuous integration. Two jobs, side by side:
 #
-# Runs the same four commands a developer runs before pushing, in the same
-# order, so a green tick here means the branch is in the state the repo expects:
-# it lints, it type-checks, its tests pass, and it builds.
+# - check runs the same four commands a developer runs before pushing, in the
+#   same order, so a green tick means the branch is in the state the repo
+#   expects: it lints, it type-checks, its tests pass, and it builds.
+# - stack starts the app the way the server runs it, from docker-compose.yml
+#   with the sign-in bypass off, then saves a copy of its database with
+#   deploy/backup.sh and puts it back.
 #
-# The app lives in my-app/, not at the repository root, so every step sets its
-# working directory and the npm cache is keyed on my-app/package-lock.json.
+# deploy/auto-update.sh deploys a commit to the server only after this whole
+# workflow has passed, so a stack that would not start never reaches it.
+#
+# The app lives in my-app/, not at the repository root, so every step of the
+# check job runs there and the npm cache is keyed on my-app/package-lock.json.
 
 name: CI
 
@@ -99,3 +105,97 @@ jobs:
           # production credential sitting in a build log.
           DATABASE_URL_A: postgres://ci:ci@127.0.0.1:5432/ci
           NEXTAUTH_SECRET: ci-build-only-not-a-real-secret
+
+  stack:
+    name: Docker stack, backup and restore
+    runs-on: ubuntu-latest
+    # Building the image takes a few minutes. A container that never turns
+    # healthy stops the run here rather than after GitHub's six hours.
+    timeout-minutes: 30
+
+    # No working directory: docker-compose.yml is at the repository root.
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fresh secrets for this run only, made the way deploy/README.md (step 4)
+      # makes the server's, so none is written in the repo or in the log.
+      #
+      # `sql` runs the SQL it reads in the stack's database and prints bare
+      # values. The later steps use it to look at the data.
+      - name: Write .env and a SQL helper
+        run: |
+          cat > .env <<EOF
+          COMPOSE_PROJECT_NAME=schema-studio
+          POSTGRES_PASSWORD=$(openssl rand -hex 24)
+          NEXTAUTH_SECRET=$(openssl rand -hex 32)
+          APP_ENCRYPTION_KEY=$(openssl rand -hex 32)
+          EOF
+          chmod 600 .env
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/sql" <<'SH'
+          #!/bin/sh
+          exec docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -A -t -v ON_ERROR_STOP=1'
+          SH
+          chmod +x "$RUNNER_TEMP/bin/sql"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Builds the app's image from my-app/Dockerfile and starts it beside its
+      # database. --wait returns once both report healthy, which for the app
+      # means its sign-in page answers.
+      - name: Build and start
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: The sign-in page answers
+        run: curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
+
+      # The drift scheduler's first round, straight after start-up, makes the
+      # app's tables. Wait for them, so the copy below holds a real database.
+      - name: The app made its tables
+        run: |
+          for try in $(seq 1 30); do
+            tables="$(echo "select count(*) from information_schema.tables where table_schema = 'public'" | sql)"
+            [ "$tables" -gt 0 ] && break
+            sleep 2
+          done
+          echo "The app's database has $tables tables."
+          [ "$tables" -gt 0 ]
+
+      # A row written just before the copy. The restore must bring it back.
+      - name: Save a copy with deploy/backup.sh
+        run: |
+          echo "create table ci_check (note text); insert into ci_check values ('in the copy');" | sql
+          ./deploy/backup.sh
+          ls -l backups
+          file="$(ls -1t backups/*.dump | head -n 1)"
+          docker compose exec -T db pg_restore --list < "$file" | head
+          # Only the account that made them may read the copies.
+          [ "$(stat -c %a backups)" = 700 ]
+          [ "$(stat -c %a "$file")" = 600 ]
+
+      - name: Change the data after the copy
+        run: echo "delete from ci_check; insert into ci_check values ('after the copy');" | sql
+
+      # The steps written at the top of deploy/backup.sh, on the newest copy.
+      - name: Put the copy back
+        run: |
+          file="$(ls -1t backups/*.dump | head -n 1)"
+          docker compose stop app
+          docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --single-transaction' < "$file"
+          docker compose start app
+
+      - name: The data is back as it was
+        run: |
+          note="$(echo "select string_agg(note, ', ') from ci_check" | sql)"
+          echo "ci_check holds: $note"
+          [ "$note" = "in the copy" ]
+
+      - name: The app is healthy again
+        run: |
+          docker compose up -d --no-build --wait --wait-timeout 180
+          curl --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:3000/login
+
+      - name: Show the containers and their logs
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail 200

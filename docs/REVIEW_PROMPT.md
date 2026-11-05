@@ -34,11 +34,11 @@ would be better spent elsewhere.
 
 **1. The authentication bypass.** `my-app/lib/auth-mode.ts` sets `BYPASS_AUTH`
 from an allow-list — `true`, `1`, `yes`, `on`, and nothing else — and this
-checkout turns it ON explicitly, in `.env.local` and in `docker-compose.yml`.
+checkout turns it ON explicitly for local development, in `.env.local`
+(`docker-compose.yml` only when asked, and the server image and Vercel never).
 While on, every route gate returns a hardcoded admin principal and the edge
-proxy passes everything through. **This is a deliberate development setting** —
-the Microsoft Entra credentials have not been provisioned yet, so the
-alternative is that the app cannot be run at all.
+proxy passes everything through. **This is a deliberate development setting**,
+so the tool can be worked on without a Microsoft tenant.
 
 Review the authorisation code **behind** the switch, on the assumption that the
 switch is off and the credentials exist. The role model, the gate design in
