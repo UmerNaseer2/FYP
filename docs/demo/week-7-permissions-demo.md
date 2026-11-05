@@ -1,5 +1,11 @@
 # Week 7 demo: roles and permissions
 
+> Since 2026-11-05 the Roles & permissions tab shows each permission as a plain
+> sentence, grouped under its sidebar screen, instead of a grid of Create, Read,
+> Update and Delete boxes. This script describes the week 7 grid and is kept as
+> a record of that demo. Section 11 of the user manual describes the tab as it
+> is now.
+
 The client asked (feedback F3) for an admin to decide, for each role and each
 feature, which of create, read, update and delete that role may do. This script
 walks through that in about ten minutes. Every quoted string below is what the
@@ -79,28 +85,32 @@ create and read, but not update or delete.
    for the whole page rather than on every row:
 
    > Your role (QA Lead) can't edit or test a saved connection. Ask an admin to
-   > allow "Connections: Update" for this role.
+   > turn on "Edit or test a saved connection" for this role.
    >
-   > Your role (QA Lead) can't delete a connection. Ask an admin to allow
-   > "Connections: Delete" for this role.
+   > Your role (QA Lead) can't delete a connection. Ask an admin to turn on
+   > "Delete a connection" for this role.
+
+   The words in quotes are the line's name on Admin > Roles & permissions, so
+   the admin finds the very line to turn on.
 
 4. Open Deploy and pick a connection under Target. The line under it reads:
 
    > Running migrations against "(the connection's name)" needs a role that may
-   > run deployments, and yours ("QA Lead") may not. Ask an admin to allow
-   > "Deploy: Run" for your role.
+   > run deployments, and yours ("QA Lead") may not. Ask an admin to turn on
+   > "Apply or revert migrations" for your role.
 
 5. Optional: set View as to Viewer, open Connections, and point at "Add
    connection", switched off, with the note `Your role (Viewer) can't add a
-   connection. Ask an admin to allow "Connections: Create" for this role.`
+   connection. Ask an admin to turn on "Add a connection" for this role.`
 6. Set View as back to "Admin (everything)". The page reloads and Admin is back
    in the sidebar.
 
 ## 4. Recent changes (1 minute)
 
 1. Open Admin > Roles & permissions and scroll to "Recent changes".
-2. The newest line is the save, "changed what QA Lead can do", with "Gave:
-   Connections: Create" and "Took away: Visualizer: Read" under it. The line
+2. The newest line is the save, "changed what QA Lead can do", with
+   `Turned on “Add a connection”` and `Turned off “Open the schema visualizer”`
+   under it. The line
    below it is "created QA Lead (copied from Viewer)". Each line names who did
    it and when.
 
@@ -130,7 +140,7 @@ against should never be written to by mistake.
    SQL, for up to 7 days.
 
 Say: with real sign-in, the person who asked cannot approve their own request.
-Approving needs "Approvals: Approve", which only Admin has out of the box, and
+Approving needs "Approve production runs", which only Admin has out of the box, and
 an admin can give it to another role.
 
 ## Clean up

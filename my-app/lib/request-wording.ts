@@ -21,7 +21,10 @@ export function formatWhen(value: string | null): string {
   return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/** The asked-for permission in the grid's own words, with a plain sentence of what it does. */
+/**
+ * The asked-for permission by its line on the Roles & permissions tab (the
+ * title), with a plain sentence of what it does.
+ */
 export function describeAsked(permission: string | null): { title: string; does: string | null } {
   if (permission === null) return { title: "Something else", does: null };
   const found = PERMISSIONS.find((entry) => entry.key === permission);

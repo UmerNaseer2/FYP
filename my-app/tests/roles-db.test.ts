@@ -410,7 +410,7 @@ describe("setRolePermissions", () => {
       "a permission only admin may hold",
       "editor",
       ["deploy:run", "roles:update"],
-      '"Roles & permissions: Update" can only belong to the admin role.',
+      '"Change what a role can do" can only belong to the admin role.',
     ],
   ])("refuses %s before taking a connection", async (_name, role, keys, error) => {
     expect(await setRolePermissions(ORG, role, keys, ACTOR)).toEqual({

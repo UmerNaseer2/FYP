@@ -12,7 +12,7 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { REQUESTS_CHANGED_EVENT, type InboxRequest, type RequestsPayload } from "@/lib/access-requests";
 import type { ListedApproval } from "@/lib/approvals-db";
-import { PERMISSIONS, permissionLabel, type PermissionKey } from "@/lib/permissions";
+import { permissionLabel, type PermissionKey } from "@/lib/permissions";
 import {
   fetchCalls,
   render,
@@ -138,10 +138,9 @@ async function pick(box: string, option: string | RegExp) {
   fireEvent.click(await screen.findByRole("option", { name: option }));
 }
 
-/** The label one permission has in the list of things to ask for. */
+/** The label one permission has in the list of things to ask for: its line on the Roles tab. */
 function optionFor(key: PermissionKey): string {
-  const entry = PERMISSIONS.find((permission) => permission.key === key);
-  return `${permissionLabel(key)} (${entry?.does})`;
+  return permissionLabel(key);
 }
 
 beforeEach(() => resetPageState());
@@ -435,7 +434,6 @@ describe("answering", () => {
     );
     expect(await screen.findByText(permissionLabel("deploy:run"))).toBeInTheDocument();
     expect(screen.getByText("For the release.")).toBeInTheDocument();
-    expect(screen.getByText(/Would let them/)).toBeInTheDocument();
     expect(screen.getByText(/Carol Reader \(carol@example\.com\), currently Viewer/)).toBeInTheDocument();
   });
 
@@ -546,7 +544,7 @@ describe("answering", () => {
     fireEvent.click(await screen.findByRole("combobox", { name: "New role for Carol Reader" }));
     fireEvent.click(await screen.findByRole("option", { name: "Helper" }));
 
-    expect(screen.getByText(/^Helper does not include Deploy: Run/)).toBeInTheDocument();
+    expect(screen.getByText(/^Helper does not include "Apply or revert migrations"/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Change role and allow" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Change role" }));
 

@@ -482,7 +482,7 @@ describe("for a role that may not run a check", () => {
   // The server's own words for a viewer, which has neither box on a new install.
   const RUN_REFUSAL =
     "Your role (Viewer) can't run a drift check. " +
-    'Ask an admin to allow "Drift tracking: Run" for this role.';
+    'Ask an admin to turn on "Run a drift check" for this role.';
 
   test("stays on screen, switched off, and says why beside itself", () => {
     setUser("viewer");

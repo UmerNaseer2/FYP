@@ -298,16 +298,16 @@ describe("canHandOut", () => {
 describe("refusalMessage", () => {
   test("names the box an admin has to tick", () => {
     expect(refusalMessage("Viewer", "connections:create")).toBe(
-      'Your role (Viewer) can\'t add a connection. Ask an admin to allow "Connections: Create" for this role.'
+      'Your role (Viewer) can\'t add a connection. Ask an admin to turn on "Add a connection" for this role.'
     );
     expect(refusalMessage("QA Lead", "alert_thresholds:update")).toBe(
-      'Your role (QA Lead) can\'t change alert thresholds. Ask an admin to allow "Alert thresholds: Update" for this role.'
+      'Your role (QA Lead) can\'t change alert thresholds. Ask an admin to turn on "Change alert thresholds" for this role.'
     );
   });
 
   test("sends someone to ask for a Users box, which any role can be given", () => {
     expect(refusalMessage("Editor", "users:read")).toBe(
-      'Your role (Editor) can\'t see the user list. Ask an admin to allow "Users: Read" for this role.'
+      'Your role (Editor) can\'t see the user list. Ask an admin to turn on "See the user list" for this role.'
     );
   });
 
@@ -366,11 +366,17 @@ describe("withToggled, the admin grid's checkbox rule", () => {
 });
 
 describe("the small helpers", () => {
-  test("permissionLabel names a box the way the grid does", () => {
-    expect(permissionLabel("connections:create")).toBe("Connections: Create");
-    expect(permissionLabel("roles:read")).toBe("Roles & permissions: Read");
-    expect(permissionLabel("approvals:approve")).toBe("Approvals: Approve");
+  test("permissionLabel names a permission by its line on the Roles & permissions tab", () => {
+    expect(permissionLabel("connections:create")).toBe("Add a connection");
+    expect(permissionLabel("roles:read")).toBe("See roles and permissions");
+    expect(permissionLabel("approvals:approve")).toBe("Approve production runs");
     expect(permissionLabel("nope:read" as PermissionKey)).toBe("nope:read");
+  });
+
+  test("no two lines share a name, so a refusal or a request points at exactly one", () => {
+    const names = PERMISSIONS.map((permission) => permissionLabel(permission.key));
+    expect(new Set(names).size).toBe(PERMISSIONS.length);
+    for (const name of names) expect(name).toMatch(/^[A-Z]/);
   });
 
   test("isPermissionKey accepts exactly the catalogue's spelling", () => {

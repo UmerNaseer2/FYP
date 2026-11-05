@@ -74,10 +74,10 @@ const EDITOR = principalFor("editor");
 
 const NO_CREATE =
   "Your role (Set tidier) can't save a new comparison set. " +
-  `Ask an admin to allow "Comparison sets: Create" for this role.`;
+  `Ask an admin to turn on "Save a new comparison set" for this role.`;
 const NO_UPDATE =
   "Your role (Set keeper) can't overwrite a saved comparison set. " +
-  `Ask an admin to allow "Comparison sets: Update" for this role.`;
+  `Ask an admin to turn on "Overwrite a saved comparison set" for this role.`;
 const OR_A_NEW_NAME = " Or save it under a new name.";
 
 /** What the Compare screen sends to save "Nightly": one source, one target. */
@@ -312,7 +312,7 @@ describe("a name that is taken rewrites that set", () => {
       ok: false,
       error:
         "Your role (Viewer) can't overwrite a saved comparison set. " +
-        `Ask an admin to allow "Comparison sets: Update" for this role.`,
+        `Ask an admin to turn on "Overwrite a saved comparison set" for this role.`,
       conflict: false,
       refused: true,
     });

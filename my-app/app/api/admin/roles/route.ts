@@ -15,8 +15,9 @@ import {
  * on the Admin screen.
  *
  * Each method has its own permission under Roles & permissions (Read, Create,
- * Update, Delete). They are admin-only boxes, so the grid never offers them to
- * another role: a role that could change roles could make itself an admin.
+ * Update, Delete). They are admin-only, so the Roles & permissions tab never
+ * offers them to another role: a role that could change roles could make
+ * itself an admin.
  *
  * The rules themselves (a name already taken, a role still in use, Admin can't
  * be edited) live in lib/roles-db.ts. It answers `{ ok: false, status, error }`
@@ -91,13 +92,13 @@ export async function POST(request: NextRequest) {
   const description = body.description ?? "";
   if (typeof description !== "string") return badRequest("The description must be text.");
 
-  // No role to copy (left out, null, or the picker's empty choice) starts the
-  // new role with nothing ticked.
+  // No role to copy (left out, null, or the picker's "Nothing turned on")
+  // starts the new role with nothing turned on.
   let copyFrom: string | null = null;
   if (body.copyFrom !== undefined && body.copyFrom !== null && body.copyFrom !== "") {
     copyFrom = parseRole(body.copyFrom);
     if (copyFrom === null) {
-      return badRequest("Pick a role to copy, or none to start with nothing ticked.");
+      return badRequest("Pick a role to copy, or start with nothing turned on.");
     }
   }
 

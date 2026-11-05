@@ -365,7 +365,7 @@ describe("saving", () => {
         // page loaded, so the screen still thought it could save.
         body: {
           error:
-            "Your role (Editor) can't change alert thresholds. Ask an admin to allow \"Alert thresholds: Update\" for this role.",
+            "Your role (Editor) can't change alert thresholds. Ask an admin to turn on \"Change alert thresholds\" for this role.",
         },
       },
     ]);
@@ -379,7 +379,7 @@ describe("saving", () => {
     expect(screen.getByText("The thresholds were not saved")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Your role (Editor) can't change alert thresholds. Ask an admin to allow \"Alert thresholds: Update\" for this role."
+        "Your role (Editor) can't change alert thresholds. Ask an admin to turn on \"Change alert thresholds\" for this role."
       )
     ).toBeInTheDocument();
     expect(box("Query slower than")).toHaveValue(250);
@@ -424,7 +424,7 @@ describe("who may see and change them", () => {
     expect(
       screen.getByText(/Changing what the app alerts on changes it for everybody/)
     ).toHaveTextContent(
-      'Your role (Viewer) can\'t change alert thresholds. Ask an admin to allow "Alert thresholds: Update" for this role.'
+      'Your role (Viewer) can\'t change alert thresholds. Ask an admin to turn on "Change alert thresholds" for this role.'
     );
   });
 
@@ -454,7 +454,7 @@ describe("who may see and change them", () => {
     expect(screen.getByText("You can't see the alert thresholds")).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Your role (Analyst) can\'t see alert thresholds. Ask an admin to allow "Alert thresholds: Read" for this role.'
+        'Your role (Analyst) can\'t see alert thresholds. Ask an admin to turn on "See alert thresholds" for this role.'
       )
     ).toBeInTheDocument();
     expect(fetchCalls).toHaveLength(0);

@@ -130,7 +130,7 @@ describe("executeRefusal", () => {
   test("a role that may not deploy is told which box to ask for", () => {
     const message = executeRefusal("Prod EU", "Viewer", "editor");
     expect(message).toContain('"Viewer"');
-    expect(message).toContain('"Deploy: Run"');
+    expect(message).toContain('"Apply or revert migrations"');
   });
 
   test("the read-only sentence never offers a role or a box to go and ask for", () => {
@@ -145,7 +145,7 @@ describe("executeRefusal", () => {
       expect(message).not.toContain(`"${BUILT_IN_ROLE_INFO[role].label}"`);
     }
     expect(message).not.toMatch(/ask an admin/i);
-    expect(message).not.toContain("Deploy: Run");
+    expect(message).not.toContain("Apply or revert migrations");
     expect(message).toMatch(/setting/i);
   });
 

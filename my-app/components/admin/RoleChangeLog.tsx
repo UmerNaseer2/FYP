@@ -1,6 +1,7 @@
 "use client";
 
-import { isPermissionKey, permissionLabel } from "@/lib/permissions";
+import { isPermissionKey } from "@/lib/permissions";
+import { joinList, lineName } from "@/lib/role-summary";
 import type { RoleChange } from "@/lib/roles-db";
 import { timeAgo } from "@/lib/time-ago";
 
@@ -8,12 +9,14 @@ import { timeAgo } from "@/lib/time-ago";
  * "Recent changes" on the Roles & permissions tab: who changed which role,
  * and when.
  *
- * The database keeps one row per box ticked or unticked (lib/roles-db.ts says
- * why). Read back one by one, a single save of six boxes would be six lines
- * saying almost the same thing, so the rows of one save are put back together
- * here into one line with the boxes listed under it. The rows of one save are
- * easy to find: one transaction writes them all, so they share the role, the
- * person and the timestamp, and they sit next to each other in the log.
+ * The database keeps one row per permission turned on or off (lib/roles-db.ts
+ * says why). Read back one by one, a single save that changes six of them
+ * would be six entries saying almost the same thing, so the rows of one save
+ * are put back together here into one entry that names what it turned on and
+ * off, by the names the tab's lines have ("Add a connection"). The rows of
+ * one save are easy to find: one transaction writes them all, so they share
+ * the role, the person and the timestamp, and they sit next to each other in
+ * the log.
  */
 
 /** One line of the log as the screen shows it. */
@@ -24,10 +27,10 @@ export type LogEntry = {
   createdAt: string;
   /** What the actor did. Follows their name: "changed what Editor can do". */
   text: string;
-  /** Boxes ticked, as "Connections: Create". */
-  gave: string[];
-  /** Boxes unticked. */
-  tookAway: string[];
+  /** What a save turned on, by the names the tab's lines have: "Add a connection". */
+  turnedOn: string[];
+  /** What a save turned off. */
+  turnedOff: string[];
 };
 
 function roleName(change: RoleChange): string {
@@ -35,10 +38,18 @@ function roleName(change: RoleChange): string {
   return change.roleLabel ?? `${change.role} (deleted)`;
 }
 
-function boxName(change: RoleChange): string {
+function lineOf(change: RoleChange): string {
   const key = `${change.feature}:${change.action}`;
   // A permission this build no longer has still gets a readable name.
-  return isPermissionKey(key) ? permissionLabel(key) : `${change.feature}: ${change.action}`;
+  return isPermissionKey(key) ? lineName(key) : `${change.feature}: ${change.action}`;
+}
+
+/** “Add a connection” and “Delete a connection”, every name shown. */
+function quotedList(names: readonly string[]): string {
+  return joinList(
+    names.map((name) => `“${name}”`),
+    names.length
+  );
 }
 
 function lowerFirst(text: string): string {
@@ -125,17 +136,17 @@ export function describeRoleChanges(changes: readonly RoleChange[]): LogEntry[] 
           actor: change.actor,
           createdAt: change.createdAt,
           text: `changed what ${roleName(change)} can do`,
-          gave: [],
-          tookAway: [],
+          turnedOn: [],
+          turnedOff: [],
         });
         openSave = save;
       }
       const entry = entries[entries.length - 1];
       // Newest first means the save's own rows arrive back to front, so each
-      // box goes in at the start to keep the order they were written in.
+      // name goes in at the start to keep the order they were written in.
       if (change.kind === "reset") entry.text = `reset ${roleName(change)} to its defaults`;
-      else if (change.kind === "grant") entry.gave.unshift(boxName(change));
-      else entry.tookAway.unshift(boxName(change));
+      else if (change.kind === "grant") entry.turnedOn.unshift(lineOf(change));
+      else entry.turnedOff.unshift(lineOf(change));
       continue;
     }
 
@@ -146,8 +157,8 @@ export function describeRoleChanges(changes: readonly RoleChange[]): LogEntry[] 
       actor: change.actor,
       createdAt: change.createdAt,
       text: sentenceFor(change),
-      gave: [],
-      tookAway: [],
+      turnedOn: [],
+      turnedOff: [],
     });
   }
 
@@ -159,9 +170,9 @@ export function RoleChangeLog({ changes }: { changes: readonly RoleChange[] }) {
   if (entries.length === 0) {
     return (
       <p className="help">
-        Nothing has been changed yet. Every role made or deleted, every box ticked or unticked,
-        every role given to someone and every invitation made, cancelled or taken is listed
-        here, with who did it.
+        Nothing has been changed yet. Roles made or deleted, lines turned on or off, roles
+        given to people, invitations, people removed and changes to the organization all show
+        here, with who made them.
       </p>
     );
   }
@@ -172,9 +183,11 @@ export function RoleChangeLog({ changes }: { changes: readonly RoleChange[] }) {
           <div className="text-[13px]">
             <span className="font-medium">{entry.actor}</span> {entry.text}
           </div>
-          {entry.gave.length > 0 && <div className="help">Gave: {entry.gave.join(", ")}</div>}
-          {entry.tookAway.length > 0 && (
-            <div className="help">Took away: {entry.tookAway.join(", ")}</div>
+          {entry.turnedOn.length > 0 && (
+            <div className="help">Turned on {quotedList(entry.turnedOn)}</div>
+          )}
+          {entry.turnedOff.length > 0 && (
+            <div className="help">Turned off {quotedList(entry.turnedOff)}</div>
           )}
           <time
             className="help"

@@ -99,7 +99,7 @@ const OK: FetchRoute = {
 /** Why a role without Drift tracking: Update may not relabel, in the server's words. */
 const updateRefusal = (role: string) =>
   `Your role (${role}) can't change schedules, environments and baselines, or acknowledge ` +
-  `drift. Ask an admin to allow "Drift tracking: Update" for this role.`;
+  `drift. Ask an admin to turn on "Change schedules, environments and baselines, or acknowledge drift" for this role.`;
 
 // Two refusals, in the exact words the server sends them. The first is what an
 // editor meets when an admin took Drift tracking: Update away from their role

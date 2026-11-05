@@ -277,7 +277,7 @@ describe("who may clear a request", () => {
     const panel = show({ mayApprove: false, roleLabel: "Editor", pending: row() });
 
     expect(panel).toHaveTextContent(
-      `Your role (Editor) can't clear a production run. Ask an admin to allow "Approvals: Approve" for this role.`
+      `Your role (Editor) can't clear a production run. Ask an admin to turn on "Approve production runs" for this role.`
     );
     expect(screen.queryByRole("button", { name: /^Approve/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
@@ -364,7 +364,7 @@ describe("who may ask for one", () => {
 
     expect(screen.getByText("Needs a second person")).toBeInTheDocument();
     expect(panel).toHaveTextContent(
-      `Your role (Viewer) can't request a production approval. Ask an admin to allow "Approvals: Create" for this role.`
+      `Your role (Viewer) can't request a production approval. Ask an admin to turn on "Request a production approval" for this role.`
     );
     expect(screen.queryByRole("button", { name: /^Request approval/ })).not.toBeInTheDocument();
     // The note would only ever be sent along with a request this role cannot make.

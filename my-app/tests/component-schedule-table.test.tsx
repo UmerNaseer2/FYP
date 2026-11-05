@@ -315,7 +315,7 @@ describe("for a role that may not change a cadence", () => {
   const NOTE = "You can see this schedule, but not change it";
   const REFUSAL =
     "Your role (Viewer) can't change schedules, environments and baselines, or acknowledge " +
-    'drift. Ask an admin to allow "Drift tracking: Update" for this role.';
+    'drift. Ask an admin to turn on "Change schedules, environments and baselines, or acknowledge drift" for this role.';
 
   it("shows the schedule, with the menus off and the reason said once above them", async () => {
     setUser("viewer");

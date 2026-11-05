@@ -139,7 +139,7 @@ export function executeRefusal(
   }
   return (
     `Running migrations against "${connectionName}" needs a role that may run ` +
-    `deployments, and yours ("${roleLabel}") may not. Ask an admin to allow ` +
+    `deployments, and yours ("${roleLabel}") may not. Ask an admin to turn on ` +
     `"${permissionLabel("deploy:run")}" for your role.`
   );
 }

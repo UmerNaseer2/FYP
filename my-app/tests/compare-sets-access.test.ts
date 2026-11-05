@@ -132,7 +132,7 @@ const COMPARER = principalFor("viewer", {
 });
 const MAY_NOT_OPEN_SETS =
   "Your role (Comparer) can't open saved comparison sets. " +
-  `Ask an admin to allow "Comparison sets: Read" for this role.`;
+  `Ask an admin to turn on "Open saved comparison sets" for this role.`;
 
 type Screen = {
   kind: string;

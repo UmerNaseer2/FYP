@@ -12,7 +12,7 @@ import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
 /**
  * The Organization tab on the Admin screen: the organization's name, its
  * two-person rule, and deleting it. Only the admin role has the Organization
- * boxes (lib/permissions.ts), and app/api/admin/organization/route.ts checks
+ * permissions (lib/permissions.ts), and app/api/admin/organization/route.ts checks
  * them again on every request.
  *
  * Renaming keeps the address. Links people saved still work, and the address

@@ -57,8 +57,8 @@ type Answers = {
   /** The roles table, as name to label. Defaults to the three built-in roles. */
   roles?: Record<string, string>;
   /**
-   * The boxes ticked for each role, as the roles lookup reads them. A role
-   * left out has none. Admin can do everything whatever is ticked.
+   * The permissions each role has turned on, as the roles lookup reads them.
+   * A role left out has none. Admin can do everything whatever it has.
    */
   granted?: Record<string, string[]>;
   /**

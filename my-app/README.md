@@ -197,7 +197,7 @@ my-app/
 | `lib/db/models.ts` | Every metadata table as a Sequelize model — the list in §4 is described from this file |
 | `lib/db/bootstrap.ts` | `syncMetadataTables()` — creates the tables once per process |
 | `lib/version-db.ts` | Re-exports the metadata pool; profile lookup and upsert |
-| `lib/permissions.ts` | The permission catalogue: every feature and the boxes it has, what Viewer and Editor start with, the grid's tick rule and the refusal sentence. Pure |
+| `lib/permissions.ts` | The permission catalogue: every feature and its permissions, what Viewer and Editor start with, the rule that turning a permission on also turns on its feature's Read, and the refusal sentence. Pure |
 | `lib/roles-db.ts` | `roles`, `role_permissions` and `role_changes`: what a role may do, making, editing and deleting roles, and the change log |
 | `lib/auth-guard.ts` | `requirePermission()` and `requireSignedIn()`, the gate every route opens with, and the View as role while the bypass is on |
 | `lib/script-status.ts` | Pending / applied / superseded classification against the ledger |
@@ -205,7 +205,7 @@ my-app/
 | `lib/version-detection.ts` | Change-level severity, plus detecting an existing version table in a target |
 | `lib/connection-config.ts` | Builds a `pg` config from a saved row; host allow-list check |
 | `lib/parse-uri.ts` | `postgres://` URI parsing |
-| `lib/connection-access.ts` | Who may execute against a connection on top of "Deploy: Run", and why "none" is not the weakest rank. Pure |
+| `lib/connection-access.ts` | Who may execute against a connection on top of "Apply or revert migrations" (`deploy:run`), and why "none" is not the weakest rank. Pure |
 | `lib/dialects.ts` | What the app knows about each engine, and which ones are actually implemented. Pure |
 | `lib/comparison-history.ts` | Diffs this comparison against the last one of the same pair. Pure |
 | `lib/comparison-history-db.ts` | `comparison_runs`: stores a run, reads the previous one |
@@ -245,10 +245,10 @@ run. The single exception is `auth/[...nextauth]`, which *is* the sign-in
 endpoint and cannot require a session to reach.
 
 Two suites keep this honest. `tests/permissions-coverage.test.ts` fails when a
-route has no gate, or when a box on the grid is checked by no route at all.
-`tests/permissions-equivalence.test.ts` holds every route that existed before
-the grid to the role it needed then: out of the box, that role still gets in and
-the role below it still does not.
+route has no gate, or when a permission an admin can turn on is checked by no
+route at all. `tests/permissions-equivalence.test.ts` holds every route that
+existed before per-feature permissions to the role it needed then: out of the
+box, that role still gets in and the role below it still does not.
 
 ### How the comparison engine works
 
@@ -288,8 +288,8 @@ trusting this table to be complete:
 | `drift_events` | Detected drift, plus acknowledgement state |
 | `profiles` | Signed-in users and their role; the first to sign in becomes `admin` |
 | `roles` | Every role: the three built in, which can't be deleted, and any an admin makes |
-| `role_permissions` | The boxes each role has ticked, one row per box. Admin has none stored: it can always do everything |
-| `role_changes` | The Recent changes list on the Roles & permissions tab: boxes ticked and unticked, roles made, reset, deleted and given to people |
+| `role_permissions` | The permissions each role has turned on, one row each. Admin has none stored: it can always do everything |
+| `role_changes` | The Recent changes list on the Roles & permissions tab: permissions turned on and off, roles made, reset, deleted and given to people, invitations, people removed, and changes to the organization and its GitHub settings |
 | `comparison_sets` | A saved source schema plus its list of targets |
 | `comparison_set_targets` | One target of a saved set, in a fixed slot |
 | `deploy_approvals` | Approval requests, decisions, and the two-person record |
@@ -375,7 +375,7 @@ Some of those are new enough to say where they live:
   feature 1.2 asks for. A role says what a person may do anywhere; it cannot say
   that the same editor is trusted on dev and not on the reference schema, and
   the environment label is only a warning. So running anything needs the
-  "Deploy: Run" box first, and then the connection's own setting on top: anyone
+  "Apply or revert migrations" permission (`deploy:run`) first, and then the connection's own setting on top: anyone
   whose role may run deployments (the default), the Admin role only, or nobody.
   `lib/connection-access.ts` holds the rule, the setting is a `<select>` on
   Connections, and both executing routes (`scripts/apply`, `scripts/revert`)

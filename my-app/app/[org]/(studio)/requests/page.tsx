@@ -153,7 +153,7 @@ function AskForm({ onSent }: { onSent: () => void }) {
   const options = [
     ...askable.map((entry) => ({
       value: entry.key as string,
-      label: `${permissionLabel(entry.key)} (${entry.does})`,
+      label: permissionLabel(entry.key),
     })),
     { value: SOMETHING_ELSE, label: "Something else" },
   ];
@@ -422,11 +422,6 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
         <span className="text-[13.5px] font-semibold">{asked.title}</span>
         <Pill tone="pending">Request</Pill>
       </div>
-      {asked.does && (
-        <div className="text-[13px] mt-0.5" style={{ color: "var(--text-2)" }}>
-          {`Would let them ${asked.does}.`}
-        </div>
-      )}
       {request.message && (
         <p className="text-[13px] mt-2 whitespace-pre-wrap break-words">{request.message}</p>
       )}
@@ -497,7 +492,7 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
           {moving && !moving.includes && (
             <p className="text-[12px] w-full" style={{ color: "var(--text-3)" }}>
               {moving.includes === false
-                ? `${moving.roleLabel} does not include ${asked.title}, so this is marked as done, not allowed.`
+                ? `${moving.roleLabel} does not include "${asked.title}", so this is marked as done, not allowed.`
                 : "This also marks the request as done."}
             </p>
           )}

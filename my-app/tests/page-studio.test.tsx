@@ -97,13 +97,13 @@ function baseRoutes(tracked: TrackedSchemaListItem[] = []) {
 const refusal = {
   create: (role: string) =>
     `Your role (${role}) can't track a schema. ` +
-    `Ask an admin to allow "Drift tracking: Create" for this role.`,
+    `Ask an admin to turn on "Track a schema" for this role.`,
   run: (role: string) =>
     `Your role (${role}) can't run a drift check. ` +
-    `Ask an admin to allow "Drift tracking: Run" for this role.`,
+    `Ask an admin to turn on "Run a drift check" for this role.`,
   delete: (role: string) =>
     `Your role (${role}) can't stop tracking a schema. ` +
-    `Ask an admin to allow "Drift tracking: Delete" for this role.`,
+    `Ask an admin to turn on "Stop tracking a schema" for this role.`,
 };
 
 /** Open the drawer and wait for the connection list to arrive in it. */

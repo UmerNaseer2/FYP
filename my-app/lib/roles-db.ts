@@ -424,7 +424,7 @@ async function insertPermissionRows(
 }
 
 /**
- * Store a role's new permissions and log one row per box that changed.
+ * Store a role's new permissions and log one row per permission that changed.
  *
  * Shared by setRolePermissions and resetRolePermissions, which differ only in
  * where the new set comes from and whether a `reset` row heads the log.
@@ -481,7 +481,7 @@ async function writeRolePermissions(
 
     // The log compares what the role could DO before and after, not the raw
     // rows, so tidying a stale row or adding a Read the role already had
-    // through another box is not reported as a decision nobody made.
+    // through another permission is not reported as a decision nobody made.
     const before = effectivePermissions(role, stored);
     const beforeSet = new Set<string>(before);
     const entries: RoleChangeEntry[] = [
@@ -523,7 +523,7 @@ function grantOrRevoke(
  * What is stored is the set with every Read it implies added
  * (effectivePermissions), so the table always says what the role can really
  * do. Admin is refused: it can do everything by definition, and letting its
- * boxes be unticked could lock every admin out of this screen.
+ * permissions be turned off could lock every admin out of this screen.
  */
 export async function setRolePermissions(
   orgId: number,

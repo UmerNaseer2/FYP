@@ -164,7 +164,7 @@ describe("running the query", () => {
     expect(measure).toBeDisabled();
     expect(
       screen.getByText(
-        /Your role \(Viewer\) can't measure a query on a live database\. Ask an admin to allow "Performance: Run" for this role\. You can still analyse it/
+        /Your role \(Viewer\) can't measure a query on a live database\. Ask an admin to turn on "Measure a query on a live database" for this role\. You can still analyse it/
       )
     ).toBeInTheDocument();
 

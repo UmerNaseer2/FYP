@@ -14,8 +14,8 @@ import { timeAgo } from "@/lib/time-ago";
 /**
  * The GitHub tab on the Admin screen: the repository this organization keeps
  * its scripts in, and the access token the app uses for it. Out of the box
- * only the admin role has the GitHub registry boxes (lib/permissions.ts), and
- * app/api/admin/github/route.ts checks them again on every request.
+ * only the admin role has the GitHub registry permissions (lib/permissions.ts),
+ * and app/api/admin/github/route.ts checks them again on every request.
  *
  * The token never comes back to the browser, not even for an Admin: the route
  * only says whether one is saved and still readable. So the token box always

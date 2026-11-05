@@ -518,13 +518,13 @@ describe("for a role that may not add, change or delete connections", () => {
   const refusal = {
     create: (role: string) =>
       `Your role (${role}) can't add a connection. ` +
-      `Ask an admin to allow "Connections: Create" for this role.`,
+      `Ask an admin to turn on "Add a connection" for this role.`,
     update: (role: string) =>
       `Your role (${role}) can't edit or test a saved connection. ` +
-      `Ask an admin to allow "Connections: Update" for this role.`,
+      `Ask an admin to turn on "Edit or test a saved connection" for this role.`,
     delete: (role: string) =>
       `Your role (${role}) can't delete a connection. ` +
-      `Ask an admin to allow "Connections: Delete" for this role.`,
+      `Ask an admin to turn on "Delete a connection" for this role.`,
   };
 
   /** The four buttons a row and the header offer, found the way a reader would. */

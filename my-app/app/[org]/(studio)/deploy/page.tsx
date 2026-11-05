@@ -53,7 +53,7 @@ import { Select } from "@/components/ui/Select";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
 import { ExecuteRolePill } from "@/components/ui/ExecuteRolePill";
 import { canExecute, executeRefusal, toExecuteRole } from "@/lib/connection-access";
-import { refusalMessage } from "@/lib/permissions";
+import { permissionLabel, refusalMessage } from "@/lib/permissions";
 import {
   isProduction,
   louderEnvironment,
@@ -4194,7 +4194,7 @@ function DeployBody() {
                           <ChecklistItem ok={false}>
                             {targetExecuteRole === "admin"
                               ? `Execution · admins only · your role is ${roleLabel}`
-                              : `Execution · needs Deploy: Run · ${roleLabel} does not have it`}
+                              : `Execution · needs "${permissionLabel("deploy:run")}" · ${roleLabel} does not have it`}
                           </ChecklistItem>
                         ) : targetExecuteRole === "admin" ? (
                           <ChecklistItem ok>Execution · admins only · you qualify</ChecklistItem>

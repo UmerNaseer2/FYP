@@ -2,10 +2,11 @@
 
 /**
  * The admin screen: the Users tab, which says who has which role, removes
- * people and offers invitations, the Roles & permissions tab, which says what
- * each role can do, makes and deletes custom roles, and lists who changed
- * what, and the folding guide above both that explains how to use them. What
- * the invitation panel itself does is tests/component-invite-panel.test.tsx.
+ * people and offers invitations, and the Roles & permissions tab, which says
+ * in plain sentences what each role can do, compares the roles side by side,
+ * makes and deletes custom roles, lists who changed what, and starts with
+ * three short steps that say how to use it. What the invitation panel itself
+ * does is tests/component-invite-panel.test.tsx.
  * The Organization tab and the GitHub tab (where the organization's scripts
  * are kept, and the access token for them) are at the end.
  *
@@ -47,14 +48,13 @@ import { resetUserCache } from "@/hooks/useUser";
 import type { GitHubSettingsView } from "@/lib/github-settings";
 import type { InviteListing } from "@/lib/invites";
 import {
-  ACTIONS,
-  ACTION_LABELS,
   ALL_PERMISSIONS,
   BUILT_IN_ROLE_INFO,
   presetFor,
   withToggled,
   type PermissionKey,
 } from "@/lib/permissions";
+import { ADMIN_COPY_NOTE, ADMIN_ONLY_LINE, ADMIN_ONLY_TABS } from "@/lib/role-summary";
 import type { RoleChange, RoleSummary } from "@/lib/roles-db";
 import {
   fetchCalls,
@@ -110,9 +110,9 @@ const NO_INVITING: InviteListing = { invites: [], canInvite: false };
 
 /**
  * The three built-in roles, one person each, and a custom one nobody has yet.
- * Editor is one box short of its defaults (Deploy: Run), so Reset has
- * something to put back. Made fresh for every test, because the routes below
- * change it.
+ * Editor is one line short of its defaults (Apply or revert migrations), so
+ * Reset has something to put back. Made fresh for every test, because the
+ * routes below change it.
  */
 function freshRoles(): RoleSummary[] {
   return [
@@ -170,7 +170,7 @@ const rolesGetRoute: FetchRoute = {
 };
 
 // Keeps the whole set it was sent, or the defaults for a reset, and says how
-// many boxes that changed, as PUT /api/admin/roles does.
+// many permissions that changed, as PUT /api/admin/roles does.
 const rolesPutRoute: FetchRoute = {
   match: "/api/admin/roles",
   method: "PUT",
@@ -205,7 +205,7 @@ async function openRolesTab() {
   render(<AdminPage />);
   await screen.findByText("ada@example.com");
   fireEvent.click(screen.getByRole("tab", { name: "Roles & permissions" }));
-  await screen.findByRole("button", { name: "Viewer, 1 person" });
+  await screen.findByRole("button", { name: "Viewer, Read-only, 1 person" });
 }
 
 /**
@@ -234,9 +234,6 @@ beforeEach(() => {
   roleRows = freshRoles();
   changeRows = [];
   rolesAnnounced.mockClear();
-  // The guide remembers being folded in localStorage, and jsdom keeps it for
-  // the whole file, so one test folding it would fold it for the next.
-  window.localStorage.clear();
 });
 afterEach(() => cleanup());
 
@@ -279,8 +276,8 @@ describe("the Users tab", () => {
     // Nor offering tabs it would then refuse: only its own short note.
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     expect(screen.getByText("You can't manage users or roles")).toBeInTheDocument();
-    // Nor a guide to tabs it does not show.
-    expect(screen.queryByText("How roles and permissions work")).not.toBeInTheDocument();
+    // Nor the steps for a tab it does not show.
+    expect(screen.queryByRole("list", { name: "How to set up a role" })).not.toBeInTheDocument();
   });
 
   it("leaves your own row read-only", async () => {
@@ -466,7 +463,7 @@ describe("the Users tab", () => {
   });
 
   it("offers someone who manages people only the roles theirs can hand out", async () => {
-    // An Editor given every Users box: they can do less than an Admin, so
+    // An Editor given every Users permission: they can do less than an Admin, so
     // Admin is out of reach, and so is everyone who has it.
     setUser("editor", [...(presetFor("editor") ?? []), "users:read", "users:create", "users:update", "users:delete"]);
     setRoutes([
@@ -585,7 +582,7 @@ describe("the Roles & permissions tab", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Roles & permissions" }));
     // Viewer is first, so it is the one on screen.
-    expect(await screen.findByRole("button", { name: "Viewer, 1 person" })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: "Viewer, Read-only, 1 person" })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
@@ -602,40 +599,41 @@ describe("the Roles & permissions tab", () => {
     expect(screen.getByText(/Nothing has been changed yet/)).toBeInTheDocument();
   });
 
-  it("saves ticked boxes only when asked, then shows what the server kept", async () => {
+  it("saves ticked lines only when asked, then shows what the server kept", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
 
-    const box = screen.getByRole("checkbox", { name: "Connections: Create" });
+    const box = screen.getByRole("checkbox", { name: "Add a connection" });
     expect(box).not.toBeChecked();
     fireEvent.click(box);
 
-    // Ticked on the screen, marked as unsaved on the chip and in the bar,
-    // and nothing sent yet.
+    // Ticked on the screen, marked as unsaved on the card, said in words in
+    // the save bar, and nothing sent yet. Adding a connection changes
+    // something, so the card no longer says Read-only either.
     expect(box).toBeChecked();
     expect(
-      screen.getByRole("button", { name: "Viewer, 1 person, unsaved changes" })
+      screen.getByRole("button", { name: "Viewer, Can change things, 1 person, unsaved changes" })
     ).toBeInTheDocument();
-    expect(screen.getByText("1 unsaved change to Viewer")).toBeInTheDocument();
+    expect(screen.getByText("Viewer will be able to add a connection.")).toBeInTheDocument();
     expect(fetchCalls.some((c) => c.method === "PUT")).toBe(false);
 
     // Withheld, so the wait is something the test can look at.
     const release = holdNext("/api/admin/roles", "PUT");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
-    // No box can change while a save is on its way.
+    // No line can change while a save is on its way.
     expect(box).toBeDisabled();
     release();
 
     expect(await screen.findByText(/Saved 1 change to Viewer/)).toBeInTheDocument();
-    // The whole set the role should have, not only the box that changed.
+    // The whole set the role should have, not only the line that changed.
     expect(lastCall("PUT")?.body).toBe(
       JSON.stringify({
         role: "viewer",
         permissions: withToggled(presetFor("viewer") ?? [], "connections:create", true),
       })
     );
-    expect(screen.queryByText(/unsaved changes? to/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
     expect(box).toBeChecked();
 
     // And the list is read again, because counts and the log change with a save.
@@ -645,7 +643,7 @@ describe("the Roles & permissions tab", () => {
     expect(box).toBeChecked();
   });
 
-  it("keeps the unsaved boxes when the server refuses the save", async () => {
+  it("keeps the unsaved lines when the server refuses the save", async () => {
     const refused =
       "Could not save the role's permissions. " +
       "The app's database may be unreachable. Try again in a moment.";
@@ -654,37 +652,44 @@ describe("the Roles & permissions tab", () => {
     );
     await openRolesTab();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Connections: Create" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add a connection" }));
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(refused);
     await flushAsync();
     // Still ticked and still waiting to be saved, so trying again is one click.
-    expect(screen.getByText("1 unsaved change to Viewer")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Connections: Create" })).toBeChecked();
+    expect(screen.getByText("Viewer will be able to add a connection.")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Add a connection" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
   });
 
-  it("keeps each role's unsaved boxes apart, through a visit to the Users tab", async () => {
+  it("keeps each role's unsaved lines apart, through a visit to the Users tab", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
-    fireEvent.click(screen.getByRole("button", { name: "QA Lead, 0 people" }));
+    fireEvent.click(screen.getByRole("button", { name: "QA Lead, Read-only, 0 people" }));
 
-    // Update can't be reached without opening Connections, so Read comes with it.
-    fireEvent.click(screen.getByRole("checkbox", { name: "Connections: Update" }));
-    expect(screen.getByRole("checkbox", { name: "Connections: Read" })).toBeChecked();
-    expect(screen.getByText("2 unsaved changes to QA Lead")).toBeInTheDocument();
+    // Editing a connection can't be reached without seeing them, so the see
+    // line comes with it.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Edit or test a saved connection" }));
+    expect(screen.getByRole("checkbox", { name: "See saved connections" })).toBeChecked();
+    expect(
+      screen.getByText(
+        "QA Lead will be able to see saved connections and edit or test a saved connection."
+      )
+    ).toBeInTheDocument();
 
-    // Unticking Read clears the row, which here puts the role back as it was
-    // saved, so there is nothing left to save.
-    fireEvent.click(screen.getByRole("checkbox", { name: "Connections: Read" }));
-    expect(screen.getByRole("checkbox", { name: "Connections: Update" })).not.toBeChecked();
-    expect(screen.queryByText(/unsaved changes? to/)).not.toBeInTheDocument();
+    // Unticking the see line clears the line under it, which here puts the
+    // role back as it was saved, so there is nothing left to save.
+    fireEvent.click(screen.getByRole("checkbox", { name: "See saved connections" }));
+    expect(
+      screen.getByRole("checkbox", { name: "Edit or test a saved connection" })
+    ).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
 
-    // A box ticked on QA Lead is not shown as unsaved on Editor...
-    fireEvent.click(screen.getByRole("checkbox", { name: "Compare: Read" }));
-    fireEvent.click(screen.getByRole("button", { name: "Editor, 1 person" }));
-    expect(screen.queryByText(/unsaved changes? to/)).not.toBeInTheDocument();
+    // A line ticked on QA Lead is not shown as unsaved on Editor...
+    fireEvent.click(screen.getByRole("checkbox", { name: "Compare schemas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Editor, Can change things, 1 person" }));
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
 
     // ...and is still there after the other tab, and the reload coming back.
     fireEvent.click(screen.getByRole("tab", { name: "Users" }));
@@ -692,48 +697,58 @@ describe("the Roles & permissions tab", () => {
     await waitFor(() => expect(rolesGets()).toBe(2));
     await flushAsync();
 
-    fireEvent.click(screen.getByRole("button", { name: "QA Lead, 0 people, unsaved changes" }));
-    expect(screen.getByText("1 unsaved change to QA Lead")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Compare: Read" })).toBeChecked();
+    fireEvent.click(
+      screen.getByRole("button", { name: "QA Lead, Read-only, 0 people, unsaved changes" })
+    );
+    expect(screen.getByText("QA Lead will be able to compare schemas.")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Compare schemas" })).toBeChecked();
 
-    // Discard puts the saved boxes back without asking the server anything.
+    // Discard puts the saved lines back without asking the server anything.
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    expect(screen.getByRole("checkbox", { name: "Compare: Read" })).not.toBeChecked();
-    expect(screen.queryByText(/unsaved changes? to/)).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Compare schemas" })).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
     expect(fetchCalls.some((c) => c.method === "PUT")).toBe(false);
   });
 
-  it("shows Admin with every box ticked and none of them changeable", async () => {
+  it("shows Admin with every line on and none of them changeable", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
-    fireEvent.click(screen.getByRole("button", { name: "Admin, 1 person" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin, Everything, always, 1 person" }));
 
     expect(screen.getByText("Admin can always do everything")).toBeInTheDocument();
-    const box = screen.getByRole("checkbox", { name: "Connections: Create" });
+    const box = screen.getByRole("checkbox", { name: "Add a connection" });
     expect(box).toBeChecked();
     expect(box).toBeDisabled();
-    // Including the rows only Admin can have.
-    expect(screen.getByRole("checkbox", { name: "Roles & permissions: Update" })).toBeChecked();
+    // Including the lines only Admin can have.
+    expect(screen.getByRole("checkbox", { name: "Change what a role can do" })).toBeChecked();
+    // And yes to all four questions at a glance.
+    expect(
+      within(screen.getByRole("group", { name: "At a glance" }))
+        .getAllByRole("definition")
+        .map((value) => value.textContent)
+    ).toEqual(["Yes", "Yes, where the connection allows", "Yes", "Yes"]);
     // Admin is built in and has nowhere else to be, so neither button is offered.
     expect(screen.queryByRole("button", { name: "Reset to default" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete role" })).not.toBeInTheDocument();
   });
 
-  it("offers no boxes for roles or the organization on any other role, but does for Users", async () => {
+  it("offers no lines for roles or the organization on any other role, but does for Users", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
 
-    // Roles & permissions and Organization: one cell each saying why, instead
-    // of boxes the server would refuse to save.
-    expect(screen.getAllByText("Admins only")).toHaveLength(2);
+    // Roles & permissions and Organization: one locked line saying why,
+    // instead of lines the server would refuse to save.
+    expect(screen.getAllByText(ADMIN_ONLY_LINE)).toHaveLength(1);
     expect(
-      screen.queryByRole("checkbox", { name: "Roles & permissions: Read" })
+      screen.queryByRole("checkbox", { name: "See roles and permissions" })
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Organization: Read" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: "See the organization's settings" })
+    ).not.toBeInTheDocument();
     // Managing people can be handed to any role. The rank rule on the server
     // keeps them from handing out more than their own role can do.
-    expect(screen.getByRole("checkbox", { name: "Users: Read" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Users: Create" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "See the user list" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Invite someone" })).toBeInTheDocument();
   });
 
   it("puts a built-in role back to its defaults once confirmed", async () => {
@@ -742,15 +757,19 @@ describe("the Roles & permissions tab", () => {
     // Viewer is already where a new install puts it.
     expect(screen.getByRole("button", { name: "Reset to default" })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Editor, 1 person" }));
-    expect(screen.getByRole("checkbox", { name: "Deploy: Run" })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Editor, Can change things, 1 person" }));
+    expect(screen.getByRole("checkbox", { name: "Apply or revert migrations" })).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Reset to default" }));
     confirmIn("Reset Editor to its defaults?", "Reset");
 
     expect(await screen.findByText("Put Editor back to its defaults.")).toBeInTheDocument();
     // The server works out the defaults, so the page only asks for them.
     expect(lastCall("PUT")?.body).toBe(JSON.stringify({ role: "editor", reset: true }));
-    expect(screen.getByRole("checkbox", { name: "Deploy: Run" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Apply or revert migrations" })).toBeChecked();
+    // The card's summary follows what was put back.
+    expect(
+      screen.getByRole("button", { name: "Editor, Can run migrations, 1 person" })
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset to default" })).toBeDisabled();
     await flushAsync();
   });
@@ -803,11 +822,10 @@ describe("the Roles & permissions tab", () => {
     expect(lastCall("POST")?.body).toBe(
       JSON.stringify({ label: "Release Manager", description: "", copyFrom: "viewer" })
     );
-    // And it is the role on screen, ready for its boxes to be changed.
-    expect(screen.getByRole("button", { name: "Release Manager, 0 people" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
+    // And it is the role on screen, ready for its lines to be changed.
+    expect(
+      screen.getByRole("button", { name: "Release Manager, Read-only, 0 people" })
+    ).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("heading", { name: "Release Manager" })).toBeInTheDocument();
     // View as on the rail is told, so it can offer the new role straight away.
     expect(rolesAnnounced).toHaveBeenCalledTimes(1);
@@ -820,14 +838,14 @@ describe("the Roles & permissions tab", () => {
       rolesRoutes({ match: "/api/admin/roles", method: "DELETE", status: 409, body: { error: held } })
     );
     await openRolesTab();
-    fireEvent.click(screen.getByRole("button", { name: "QA Lead, 0 people" }));
+    fireEvent.click(screen.getByRole("button", { name: "QA Lead, Read-only, 0 people" }));
 
     // Someone was given the role after this page loaded: the server has the
     // last word, and the role stays.
     fireEvent.click(screen.getByRole("button", { name: "Delete role" }));
     confirmIn("Delete QA Lead?", "Delete role");
     expect(await screen.findByRole("alert")).toHaveTextContent(held);
-    expect(screen.getByRole("button", { name: "QA Lead, 0 people" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "QA Lead, Read-only, 0 people" })).toBeInTheDocument();
     await flushAsync();
     expect(rolesAnnounced).not.toHaveBeenCalled();
 
@@ -846,9 +864,9 @@ describe("the Roles & permissions tab", () => {
 
     expect(await screen.findByText("Deleted QA Lead.")).toBeInTheDocument();
     expect(lastCall("DELETE")?.body).toBe(JSON.stringify({ role: "qa-lead" }));
-    // Gone from the chips, and the page falls back to the first role.
+    // Gone from the cards, and the page falls back to the first role.
     expect(screen.queryByRole("button", { name: /QA Lead/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Viewer, 1 person" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Viewer, Read-only, 1 person" })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
@@ -861,7 +879,7 @@ describe("the Roles & permissions tab", () => {
     roleRows[3].userCount = 2;
     setRoutes(rolesRoutes());
     await openRolesTab();
-    fireEvent.click(screen.getByRole("button", { name: "QA Lead, 2 people" }));
+    fireEvent.click(screen.getByRole("button", { name: "QA Lead, Read-only, 2 people" }));
 
     expect(screen.getByRole("button", { name: "Delete role" })).toBeDisabled();
     expect(
@@ -914,7 +932,7 @@ describe("the Roles & permissions tab", () => {
     await openRolesTab();
 
     expect(screen.getByText("changed what Editor can do")).toBeInTheDocument();
-    expect(screen.getByText("Gave: Connections: Create")).toBeInTheDocument();
+    expect(screen.getByText("Turned on “Add a connection”")).toBeInTheDocument();
     expect(
       screen.getByText("gave grace@example.com the Editor role, instead of Viewer")
     ).toBeInTheDocument();
@@ -942,98 +960,244 @@ describe("the Roles & permissions tab", () => {
 
     setRoutes(rolesRoutes());
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("button", { name: "Viewer, 1 person" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Viewer, Read-only, 1 person" })).toBeInTheDocument();
     expect(screen.queryByText(/Couldn.t load roles/)).not.toBeInTheDocument();
+  });
+
+  it("sums each role up on its card and at a glance, and both follow the ticks", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+
+    // What each role adds up to, worked out from its lines, and who has it.
+    expect(
+      within(screen.getByRole("group", { name: "Roles" }))
+        .getAllByRole("button")
+        .map((card) => card.getAttribute("aria-label"))
+    ).toEqual([
+      "Viewer, Read-only, 1 person",
+      "Editor, Can change things, 1 person",
+      "Admin, Everything, always, 1 person",
+      "QA Lead, Read-only, 0 people",
+    ]);
+    const atAGlance = () => within(screen.getByRole("group", { name: "At a glance" }));
+    const answers = () => atAGlance().getAllByRole("definition").map((value) => value.textContent);
+    expect(atAGlance().getAllByRole("term").map((term) => term.textContent)).toEqual([
+      "Changes things",
+      "Runs migrations",
+      "Approves production",
+      "Manages people",
+    ]);
+    expect(answers()).toEqual(["No", "No", "No", "No"]);
+
+    // Unsaved ticks count straight away: on the card, at a glance, and in
+    // the save bar's sentences.
+    fireEvent.click(screen.getByRole("button", { name: "Editor, Can change things, 1 person" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Apply or revert migrations" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Compare schemas" }));
+    expect(
+      screen.getByRole("button", { name: "Editor, Can run migrations, 1 person, unsaved changes" })
+    ).toBeInTheDocument();
+    expect(answers()).toEqual(["Yes", "Yes, where the connection allows", "No", "No"]);
+    expect(
+      screen.getByText("Editor will be able to apply or revert migrations.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Editor will no longer be able to compare schemas.")
+    ).toBeInTheDocument();
+  });
+
+  it("says when a tick also turned on the line it needs, and Undo takes both back", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+    fireEvent.click(screen.getByRole("button", { name: "QA Lead, Read-only, 0 people" }));
+
+    const update = screen.getByRole("checkbox", { name: "Edit or test a saved connection" });
+    fireEvent.click(update);
+    expect(screen.getByRole("checkbox", { name: "See saved connections" })).toBeChecked();
+    // Said under the feature rather than done without a word, and read out
+    // as it appears.
+    const note =
+      "Also turned on “See saved connections”, because “Edit or test a saved connection” needs it.";
+    expect(screen.getByText(note, { selector: ".perm-hint__text" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("group", { name: "What QA Lead can do" })).getByRole("status")
+    ).toHaveTextContent(note);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(update).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "See saved connections" })).not.toBeChecked();
+    // The Undo button goes with the note, so focus goes back to the line
+    // that was clicked.
+    expect(update).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+  });
+
+  it("says which lines went with an unticked see line, and Undo puts them all back", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+    fireEvent.click(screen.getByRole("button", { name: "QA Lead, Read-only, 0 people" }));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Edit or test a saved connection" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add a connection" }));
+    const see = screen.getByRole("checkbox", { name: "See saved connections" });
+    fireEvent.click(see);
+
+    expect(screen.getByRole("checkbox", { name: "Add a connection" })).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Edit or test a saved connection" })
+    ).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "Also turned off “Add a connection” and “Edit or test a saved connection”, " +
+          "because they need “See saved connections”.",
+        { selector: ".perm-hint__text" }
+      )
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(see).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Add a connection" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Edit or test a saved connection" })).toBeChecked();
+    expect(see).toHaveFocus();
+    // In the order the lines are on screen, the see line first.
+    expect(
+      screen.getByText(
+        "QA Lead will be able to see saved connections, add a connection and " +
+          "edit or test a saved connection."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("tags the lines that write to a database, touch a live one or approve production", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+
+    // The tag is part of what a screen reader hears for the line, not only a color.
+    expect(
+      screen.getByRole("checkbox", { name: "Apply or revert migrations" })
+    ).toHaveAccessibleDescription(/Writes to a database/);
+    expect(
+      screen.getByRole("checkbox", { name: "Approve production runs" })
+    ).toHaveAccessibleDescription(/Production/);
+    expect(
+      screen.getByRole("checkbox", { name: "Cancel a stuck query on a live database" })
+    ).toHaveAccessibleDescription(/Live database/);
+    expect(
+      screen.getByRole("checkbox", { name: "Measure a query on a live database" })
+    ).toHaveAccessibleDescription(/Live database/);
+    expect(screen.getAllByText("Live database")).toHaveLength(2);
+  });
+
+  it("compares every role side by side, from what is saved", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+
+    /** One line of the comparison: what each role says, in the cards' order. */
+    function compareRow(name: string) {
+      const table = screen.getByRole("region", { name: "Compare roles" });
+      const header = within(table).getByRole("rowheader", { name });
+      return within(header.closest("tr") as HTMLElement)
+        .getAllByRole("cell")
+        .map((cell) => cell.textContent?.trim());
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare roles" }));
+    expect(
+      within(screen.getByRole("region", { name: "Compare roles" }))
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent)
+    ).toEqual(["What it allows", "Viewer", "Editor", "Admin", "QA Lead"]);
+    expect(compareRow("Add a connection")).toEqual(["No", "Yes", "Yes", "No"]);
+    // The admin-only lines are one row, and only Admin has it.
+    expect(compareRow(ADMIN_ONLY_TABS)).toEqual(["No", "No", "Yes", "No"]);
+    // No card is the one on screen while the roles are compared.
+    expect(screen.getByRole("button", { name: "Viewer, Read-only, 1 person" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+    expect(
+      screen.queryByText("Shows what is saved. Unsaved changes count once they are saved.")
+    ).not.toBeInTheDocument();
+
+    // Picking a card goes back to that role's lines.
+    fireEvent.click(screen.getByRole("button", { name: "Viewer, Read-only, 1 person" }));
+    expect(screen.queryByRole("region", { name: "Compare roles" })).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "What Viewer can do" })).toBeInTheDocument();
+
+    // An unsaved tick stays out of the comparison, and the comparison says so.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add a connection" }));
+    fireEvent.click(screen.getByRole("button", { name: "Compare roles" }));
+    expect(
+      screen.getByText("Shows what is saved. Unsaved changes count once they are saved.")
+    ).toBeInTheDocument();
+    expect(compareRow("Add a connection")).toEqual(["No", "Yes", "Yes", "No"]);
+  });
+
+  it("says what a copy of Admin leaves out, only while Admin is the one copied", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+    fireEvent.click(screen.getByRole("button", { name: "New role" }));
+    expect(screen.queryByText(ADMIN_COPY_NOTE)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Start from" }));
+    fireEvent.click(screen.getByRole("option", { name: "A copy of Admin" }));
+    expect(screen.getByText(ADMIN_COPY_NOTE)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Start from" }));
+    fireEvent.click(screen.getByRole("option", { name: "A copy of Viewer" }));
+    expect(screen.queryByText(ADMIN_COPY_NOTE)).not.toBeInTheDocument();
+  });
+
+  it("goes to the people who have a role, on the Users tab", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "See them on the Users tab" }));
+    const usersTab = screen.getByRole("tab", { name: "Users" });
+    expect(usersTab).toHaveAttribute("aria-selected", "true");
+    // Focus lands on the tab, where the list starts.
+    expect(usersTab).toHaveFocus();
+    expect(screen.getByText("ada@example.com")).toBeVisible();
+
+    // Nobody has QA Lead, so there is nobody to go and see.
+    fireEvent.click(screen.getByRole("tab", { name: "Roles & permissions" }));
+    await waitFor(() => expect(rolesGets()).toBe(2));
+    await flushAsync();
+    fireEvent.click(screen.getByRole("button", { name: "QA Lead, Read-only, 0 people" }));
+    expect(
+      screen.queryByRole("button", { name: "See them on the Users tab" })
+    ).not.toBeInTheDocument();
   });
 });
 
-describe("the guide above the tabs", () => {
-  /** The folding panel, found by the words on its header. */
-  function guide(): HTMLDetailsElement {
-    const panel = screen.getByText("How roles and permissions work").closest("details");
-    if (!panel) throw new Error("The guide is not a <details>");
-    return panel;
-  }
-
-  /** The numbered steps, the first of the guide's two lists. */
+describe("the steps at the top of the Roles & permissions tab", () => {
+  /** The numbered steps, in order. */
   function steps(): HTMLElement[] {
-    const [numbered] = within(guide()).getAllByRole("list");
-    return within(numbered).getAllByRole("listitem");
-  }
-
-  /**
-   * Fold or unfold it as a click on its header does in a browser. jsdom does
-   * not fold a <details> on a click, so this does both halves itself: flip
-   * `open`, then fire the toggle event the browser fires after it.
-   */
-  function setOpen(panel: HTMLDetailsElement, open: boolean) {
-    panel.open = open;
-    fireEvent(panel, new Event("toggle"));
-  }
-
-  async function openPage() {
-    render(<AdminPage />);
-    await screen.findByText("ada@example.com");
-  }
-
-  it("starts folded on the first visit, holding the steps and a line for every box", async () => {
-    setRoutes([invitesRoute(), listRoute()]);
-    await openPage();
-
-    expect(guide().open).toBe(false);
-    // Named and ordered as the grid's columns are, so the guide and the grid
-    // never call the same box two different things.
-    expect(within(guide()).getAllByRole("term").map((term) => term.textContent)).toEqual(
-      ACTIONS.map((action) => ACTION_LABELS[action])
+    return within(screen.getByRole("list", { name: "How to set up a role" })).getAllByRole(
+      "listitem"
     );
+  }
+
+  it("says how to set up a role in three steps", async () => {
+    setRoutes(rolesRoutes());
+    await openRolesTab();
+
     // With real sign-in there is no View as on the sidebar, so no step for it.
-    expect(steps()).toHaveLength(4);
-    expect(within(guide()).queryByText("View as")).not.toBeInTheDocument();
-  });
-
-  it("stays open once opened, and folded once folded again", async () => {
-    setRoutes([invitesRoute(), listRoute()]);
-    await openPage();
-    setOpen(guide(), true);
-    cleanup();
-
-    // The next visit, in the same browser.
-    await openPage();
-    expect(guide().open).toBe(true);
-    setOpen(guide(), false);
-    cleanup();
-
-    await openPage();
-    expect(guide().open).toBe(false);
+    expect(steps().map((step) => step.textContent)).toEqual([
+      "Pick a role, or make a new one.",
+      "Turn on what it may do, then press Save changes.",
+      "Give it to people on the Users tab.",
+    ]);
   });
 
   it("adds a step for View as while sign-in is off for testing", async () => {
     mockBypass = true;
-    setRoutes([invitesRoute(), listRoute()]);
-    await openPage();
+    setRoutes(rolesRoutes());
+    await openRolesTab();
 
-    expect(steps()).toHaveLength(5);
-    expect(within(steps()[4]).getByText("View as")).toBeInTheDocument();
-  });
-
-  it("still folds and unfolds when the browser keeps nothing", async () => {
-    // What a private window that blocks storage does: every touch throws.
-    const refuse = () => {
-      throw new DOMException("The operation is insecure.", "SecurityError");
-    };
-    const spies = (["getItem", "setItem", "removeItem"] as const).map((method) =>
-      jest.spyOn(Storage.prototype, method).mockImplementation(refuse)
-    );
-    try {
-      setRoutes([invitesRoute(), listRoute()]);
-      await openPage();
-      expect(guide().open).toBe(false);
-
-      setOpen(guide(), true);
-      expect(guide().open).toBe(true);
-    } finally {
-      spies.forEach((spy) => spy.mockRestore());
-    }
+    expect(steps()).toHaveLength(4);
+    expect(within(steps()[3]).getByText("View as")).toBeInTheDocument();
   });
 });
 

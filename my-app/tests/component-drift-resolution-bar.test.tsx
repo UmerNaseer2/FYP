@@ -72,10 +72,10 @@ const drifted = (onDone: () => void = jest.fn()) => (
 // The server's own words, for whichever role is signed in.
 const updateRefusal = (role: string) =>
   `Your role (${role}) can't change schedules, environments and baselines, or acknowledge ` +
-  `drift. Ask an admin to allow "Drift tracking: Update" for this role.`;
+  `drift. Ask an admin to turn on "Change schedules, environments and baselines, or acknowledge drift" for this role.`;
 const runRefusal = (role: string) =>
   `Your role (${role}) can't run a drift check. ` +
-  `Ask an admin to allow "Drift tracking: Run" for this role.`;
+  `Ask an admin to turn on "Run a drift check" for this role.`;
 
 describe("drift resolution bar", () => {
   it("offers all four actions on a drifted schema", () => {

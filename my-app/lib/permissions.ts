@@ -20,23 +20,50 @@
 // up its new permissions on the next boot (see setUpRoles in bootstrap.ts), and
 // tests/permissions-coverage.test.ts fails until a route asks for it.
 //
-// Pure: no database, no React, no next-auth. The routes, the session, the admin
-// grid and the tests all import it, and the route tests replace lib/auth-guard
-// with a stand-in, so anything they need has to live somewhere that is not
-// replaced.
+// Pure: no database, no React, no next-auth. The routes, the session, the
+// Roles & permissions tab and the tests all import it, and the route tests
+// replace lib/auth-guard with a stand-in, so anything they need has to live
+// somewhere that is not replaced.
 // ---------------------------------------------------------------------------
 
-/** The verbs a permission can grant, in the order the admin grid shows them. */
+/**
+ * The verbs a permission can grant. Each feature's permissions are listed in
+ * this order. People never see these words: a permission is named by its line
+ * on the Roles & permissions tab (permissionLabel).
+ */
 export const ACTIONS = ["create", "read", "update", "delete", "run", "approve"] as const;
 export type Action = (typeof ACTIONS)[number];
 
-export const ACTION_LABELS: Record<Action, string> = {
-  create: "Create",
-  read: "Read",
-  update: "Update",
-  delete: "Delete",
-  run: "Run",
-  approve: "Approve",
+/**
+ * The sidebar's screens, in the sidebar's order (components/studio/nav.tsx).
+ * The Roles & permissions tab lists each permission under the screen it is
+ * used on, so the names there are the ones people already see. Requests has
+ * no permission of its own, so it is not here.
+ */
+export const SCREENS = [
+  "Dashboard",
+  "Compare & Author",
+  "Script Editor",
+  "Deploy",
+  "Version Sync",
+  "Drift",
+  "Performance",
+  "Visualizer",
+  "Connections",
+  "Admin",
+] as const;
+export type Screen = (typeof SCREENS)[number];
+
+/**
+ * Why a permission deserves a second look before it is turned on. The Roles &
+ * permissions tab shows a tag with these words beside it.
+ */
+export type Risk = "database" | "live" | "production";
+
+export const RISK_LABELS: Record<Risk, string> = {
+  database: "Writes to a database",
+  live: "Live database",
+  production: "Production",
 };
 
 /**
@@ -48,15 +75,27 @@ export const ACTION_LABELS: Record<Action, string> = {
 type StartsWith = "viewer" | "editor" | "admin";
 
 type ActionSpec = {
-  /** What the permission lets someone do. Finishes "Your role can't ...". */
+  /**
+   * What the permission lets someone do. Finishes "Your role can't ...", and
+   * with a capital letter it is the line the Roles & permissions tab shows.
+   */
   does: string;
   from: StartsWith;
+  /** A tag for the ones that can change or block a real database. */
+  risk?: Risk;
+  /** A rule that is easy to miss, shown under the line in small print. */
+  note?: string;
 };
 
 type FeatureSpec = {
   key: string;
   label: string;
-  /** One line under the feature's name on the admin grid. */
+  /** The sidebar screen it is used on, which the tab groups it under. */
+  screen: Screen;
+  /**
+   * What the feature covers, in a sentence. The catalogue's own note: the
+   * Roles & permissions tab shows each action's `does` line instead.
+   */
   description: string;
   /**
    * Only the admin role can do these, and they cannot be given to another
@@ -85,6 +124,7 @@ export const FEATURES = [
   {
     key: "dashboard",
     label: "Dashboard",
+    screen: "Dashboard",
     description: "The overview of tracked schemas and their drift.",
     actions: {
       read: { does: "open the dashboard", from: "viewer" },
@@ -93,6 +133,7 @@ export const FEATURES = [
   {
     key: "connections",
     label: "Connections",
+    screen: "Connections",
     description: "Saved database connections and their credentials.",
     actions: {
       create: { does: "add a connection", from: "editor" },
@@ -104,6 +145,7 @@ export const FEATURES = [
   {
     key: "compare",
     label: "Compare",
+    screen: "Compare & Author",
     description: "Comparing two schemas and reading the differences.",
     actions: {
       read: { does: "compare schemas", from: "viewer" },
@@ -112,6 +154,7 @@ export const FEATURES = [
   {
     key: "comparison_sets",
     label: "Comparison sets",
+    screen: "Compare & Author",
     description: "Saved source and target pairs on the Compare screen.",
     actions: {
       create: { does: "save a new comparison set", from: "editor" },
@@ -123,6 +166,7 @@ export const FEATURES = [
   {
     key: "scripts",
     label: "Scripts",
+    screen: "Script Editor",
     description: "The Script Editor and the script registry on GitHub.",
     actions: {
       create: { does: "save scripts to the registry", from: "editor" },
@@ -132,37 +176,49 @@ export const FEATURES = [
   {
     key: "deploy",
     label: "Deploy",
+    screen: "Deploy",
     description:
       "Running migrations against a database. Each connection can still forbid it.",
     actions: {
       read: { does: "see deployments", from: "viewer" },
-      run: { does: "apply or revert migrations", from: "editor" },
+      run: {
+        does: "apply or revert migrations",
+        from: "editor",
+        risk: "database",
+        note: "Each connection can still say no in its own setting.",
+      },
     },
   },
   {
     key: "approvals",
     label: "Approvals",
+    screen: "Deploy",
     description: "The second person a production run needs.",
     actions: {
       create: { does: "request a production approval", from: "editor" },
       read: { does: "see production approvals", from: "viewer" },
-      approve: { does: "approve production runs", from: "admin" },
+      approve: { does: "approve production runs", from: "admin", risk: "production" },
     },
   },
   {
     key: "version_sync",
     label: "Version Sync",
+    screen: "Version Sync",
     description:
-      "Promoting a schema from one environment to the next. Promoting runs a deployment, so it also needs Deploy: Run.",
+      "Promoting a schema from one environment to the next. Promoting runs a deployment, so it also needs Apply or revert migrations, under Deploy.",
     actions: {
-      read: { does: "open Version Sync", from: "viewer" },
+      read: {
+        does: "open Version Sync",
+        from: "viewer",
+        note: "Promoting also needs Apply or revert migrations, under Deploy.",
+      },
     },
   },
   {
     key: "drift",
     label: "Drift tracking",
-    description:
-      "Tracked schemas, their baselines and the checks that watch them. A role with Deploy: Run can also run a check, because Deploy runs one straight after a migration.",
+    screen: "Drift",
+    description: "Tracked schemas, their baselines and the checks that watch them.",
     actions: {
       create: { does: "track a schema", from: "editor" },
       read: { does: "see tracked schemas and their drift", from: "viewer" },
@@ -171,22 +227,28 @@ export const FEATURES = [
         from: "editor",
       },
       delete: { does: "stop tracking a schema", from: "editor" },
-      run: { does: "run a drift check", from: "editor" },
+      run: {
+        does: "run a drift check",
+        from: "editor",
+        note: "A role that can apply or revert migrations can run a check too, because Deploy runs one straight after each migration.",
+      },
     },
   },
   {
     key: "performance",
     label: "Performance",
+    screen: "Performance",
     description: "Query analysis, live activity and trends.",
     actions: {
       read: { does: "open the Performance screen", from: "viewer" },
-      update: { does: "cancel a stuck query on a live database", from: "editor" },
-      run: { does: "measure a query on a live database", from: "editor" },
+      update: { does: "cancel a stuck query on a live database", from: "editor", risk: "live" },
+      run: { does: "measure a query on a live database", from: "editor", risk: "live" },
     },
   },
   {
     key: "alert_thresholds",
     label: "Alert thresholds",
+    screen: "Performance",
     description: "The limits that raise a performance alert, on the Performance screen.",
     actions: {
       read: { does: "see alert thresholds", from: "viewer" },
@@ -196,6 +258,7 @@ export const FEATURES = [
   {
     key: "visualizer",
     label: "Visualizer",
+    screen: "Visualizer",
     description: "The schema diagram.",
     actions: {
       read: { does: "open the schema visualizer", from: "viewer" },
@@ -208,6 +271,7 @@ export const FEATURES = [
   {
     key: "users",
     label: "Users",
+    screen: "Admin",
     description: "Who belongs to this organization, who has been invited, and which role each person has.",
     actions: {
       create: { does: "invite someone", from: "admin" },
@@ -219,6 +283,7 @@ export const FEATURES = [
   {
     key: "roles",
     label: "Roles & permissions",
+    screen: "Admin",
     description: "The roles themselves and what each one can do.",
     adminOnly: true,
     actions: {
@@ -231,6 +296,7 @@ export const FEATURES = [
   {
     key: "organization",
     label: "Organization",
+    screen: "Admin",
     description: "The organization's name, its two-person rule for production, and deleting it.",
     adminOnly: true,
     actions: {
@@ -246,6 +312,7 @@ export const FEATURES = [
   {
     key: "github",
     label: "GitHub registry",
+    screen: "Admin",
     description: "The GitHub repository this organization keeps its scripts in, and the access token the app uses for it.",
     actions: {
       read: { does: "see which GitHub repository the organization uses", from: "admin" },
@@ -267,7 +334,7 @@ type KeysOf<F> = F extends { key: infer K extends string; actions: infer A }
   : never;
 export type PermissionKey = KeysOf<Feature>;
 
-/** One permission, with everything the grid and the error messages need. */
+/** One permission, with everything the Roles & permissions tab and the error messages need. */
 export type Permission = {
   key: PermissionKey;
   feature: FeatureKey;
@@ -275,6 +342,9 @@ export type Permission = {
   does: string;
   from: StartsWith;
   adminOnly: boolean;
+  screen: Screen;
+  risk: Risk | null;
+  note: string | null;
 };
 
 /** Every permission, feature by feature, each feature's actions in ACTIONS order. */
@@ -291,6 +361,9 @@ export const PERMISSIONS: readonly Permission[] = (FEATURES as readonly FeatureS
           does: spec.does,
           from: spec.from,
           adminOnly: feature.adminOnly === true,
+          screen: feature.screen,
+          risk: spec.risk ?? null,
+          note: spec.note ?? null,
         },
       ];
     })
@@ -299,16 +372,13 @@ export const PERMISSIONS: readonly Permission[] = (FEATURES as readonly FeatureS
 export const ALL_PERMISSIONS: readonly PermissionKey[] = PERMISSIONS.map((p) => p.key);
 
 const BY_KEY = new Map<string, Permission>(PERMISSIONS.map((p) => [p.key, p]));
-const FEATURE_BY_KEY = new Map<string, FeatureSpec>(
-  (FEATURES as readonly FeatureSpec[]).map((f) => [f.key, f])
-);
 
 /** Narrow a string from the database or a request body to a known permission. */
 export function isPermissionKey(value: unknown): value is PermissionKey {
   return typeof value === "string" && BY_KEY.has(value);
 }
 
-/** True for Users and Roles & permissions, which only the admin role can touch. */
+/** True for Roles & permissions and Organization, which only the admin role can touch. */
 export function isAdminOnly(key: PermissionKey): boolean {
   return BY_KEY.get(key)?.adminOnly === true;
 }
@@ -318,12 +388,18 @@ export function readKeyOf(feature: FeatureKey): PermissionKey {
   return `${feature}:read` as PermissionKey;
 }
 
-/** "Connections: Create", the way the admin grid names a permission. */
+/**
+ * "Add a connection": a permission's name, which is the line it has on the
+ * Roles & permissions tab. Refusals, access requests, alerts and the role
+ * change log all name a permission this way, so whoever reads one can find
+ * the very line to turn on. Every line's words are different, which
+ * tests/permissions.test.ts checks. A key this build no longer has (an old
+ * row) comes back as it is, so nothing is ever hidden.
+ */
 export function permissionLabel(key: PermissionKey): string {
   const permission = BY_KEY.get(key);
   if (!permission) return key;
-  const feature = FEATURE_BY_KEY.get(permission.feature);
-  return `${feature?.label ?? permission.feature}: ${ACTION_LABELS[permission.action]}`;
+  return permission.does.charAt(0).toUpperCase() + permission.does.slice(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +466,8 @@ export function presetFor(role: string): readonly PermissionKey[] | null {
  * Three rules are applied here rather than trusted to whatever wrote the rows:
  *
  *   - The admin role can do everything, whatever is stored. Otherwise one
- *     unticked box could lock every admin out of the screen that ticks it back.
+ *     permission turned off could lock every admin out of the screen that
+ *     turns it back on.
  *   - Admin-only permissions are never held by another role, even when a row
  *     says so.
  *   - Any action on a feature brings that feature's Read with it.
@@ -458,9 +535,10 @@ export function canHandOut(holder: PermissionHolder, permissions: readonly strin
 /**
  * Why a request was refused, addressed to the person who made it.
  *
- * It names the permission in the words the admin grid uses, so whoever reads
- * it can ask for exactly the right box to be ticked instead of "more access".
- * The admin-only ones say so, because asking for them would be pointless.
+ * It says what was refused with the same `does` words the Roles & permissions
+ * tab shows, and names the line on that tab to turn on, so whoever reads it
+ * can ask for exactly that line instead of "more access". The admin-only ones
+ * say so, because asking for them would be pointless.
  */
 export function refusalMessage(roleLabel: string, key: PermissionKey): string {
   const permission = BY_KEY.get(key);
@@ -470,16 +548,18 @@ export function refusalMessage(roleLabel: string, key: PermissionKey): string {
   }
   return (
     `Your role (${roleLabel}) can't ${permission.does}. ` +
-    `Ask an admin to allow "${permissionLabel(key)}" for this role.`
+    `Ask an admin to turn on "${permissionLabel(key)}" for this role.`
   );
 }
 
 /**
- * The admin grid's checkbox rule, here so it can be tested without a screen.
+ * The Roles & permissions tab's tick rule, here so it can be tested without a
+ * screen.
  *
  * Ticking anything on a feature ticks its Read too. Unticking Read clears the
  * rest of that feature, because without Read the others could never be
- * reached. Returned in catalogue order so two equal sets compare equal.
+ * reached. The tab says so each time it happens, with an Undo. Returned in
+ * catalogue order so two equal sets compare equal.
  */
 export function withToggled(
   current: readonly string[],
@@ -502,9 +582,9 @@ export function withToggled(
 }
 
 /**
- * What the role change log records (the `role_changes` table). One row per box
- * ticked or unticked, so the log reads as a list of decisions rather than a
- * before-and-after blob nobody can diff by eye.
+ * What the role change log records (the `role_changes` table). One row per
+ * permission turned on or off, so the log reads as a list of decisions rather
+ * than a before-and-after blob nobody can diff by eye.
  *
  * Some are about people rather than permissions: someone inviting a person
  * into a role (or making a link that does), cancelling an invitation, someone

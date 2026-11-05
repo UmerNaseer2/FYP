@@ -1,16 +1,17 @@
 // role-change-log: the "Recent changes" list on the Roles & permissions tab
 // (components/admin/RoleChangeLog.tsx), as describeRoleChanges words it.
 //
-// The database keeps one row per box ticked or unticked, and hands them back
+// The database keeps one row per line turned on or off, and hands them back
 // newest first (listRoleChanges in lib/roles-db.ts). The screen puts the rows
 // of one save back into one line, so these tests give it rows the way the
 // database does and check that:
 //
-//   - one save is one line, its boxes listed in the order they were written;
+//   - one save is one entry, naming what it turned on and off, by the names
+//     the tab's lines have, in the order they were written;
 //   - a reset says so, and still lists what it changed;
 //   - saves stay apart when the role, the person or the time differs, and a
 //     row of any other kind ends a save, even one written at the same time;
-//   - a deleted role and a box this build no longer has still read;
+//   - a deleted role and a permission this build no longer has still read;
 //   - making, deleting and giving out a role each read as a sentence;
 //   - so do inviting someone, cancelling an invitation and joining by one,
 //     for an address and for a link alike;
@@ -43,8 +44,8 @@ function row(over: Partial<RoleChange> & Pick<RoleChange, "kind">): RoleChange {
   };
 }
 
-/** A box ticked (grant) or unticked (revoke), named by its key. */
-function box(
+/** A line turned on (grant) or off (revoke), named by its key. */
+function toggled(
   id: number,
   kind: "grant" | "revoke",
   key: string,
@@ -54,48 +55,48 @@ function box(
   return row({ id, kind, feature, action, ...over });
 }
 
-/** A line of the log, by default Ada's at SAVED_AT with no boxes. */
+/** An entry of the log, by default Ada's at SAVED_AT, turning nothing on or off. */
 function line(over: Partial<LogEntry> & Pick<LogEntry, "id" | "text">): LogEntry {
-  return { actor: ADA, createdAt: SAVED_AT, gave: [], tookAway: [], ...over };
+  return { actor: ADA, createdAt: SAVED_AT, turnedOn: [], turnedOff: [], ...over };
 }
 
 test("an empty log is no lines", () => {
   expect(describeRoleChanges([])).toEqual([]);
 });
 
-describe("a save of the grid", () => {
-  test("is one line, with its boxes in the order they were written", () => {
+describe("a save of a role's lines", () => {
+  test("is one entry, naming its lines in the order they were written", () => {
     // Written as 11 to 14 by one transaction, read back newest first.
     const rows = [
-      box(14, "revoke", "comparison_sets:delete"),
-      box(13, "revoke", "connections:delete"),
-      box(12, "grant", "connections:update"),
-      box(11, "grant", "connections:create"),
+      toggled(14, "revoke", "comparison_sets:delete"),
+      toggled(13, "revoke", "connections:delete"),
+      toggled(12, "grant", "connections:update"),
+      toggled(11, "grant", "connections:create"),
     ];
     expect(describeRoleChanges(rows)).toEqual([
       line({
         id: 14,
         text: EDITOR,
-        gave: ["Connections: Create", "Connections: Update"],
-        tookAway: ["Connections: Delete", "Comparison sets: Delete"],
+        turnedOn: ["Add a connection", "Edit or test a saved connection"],
+        turnedOff: ["Delete a connection", "Delete a comparison set"],
       }),
     ]);
   });
 
   test("that puts a role back to its defaults says so, and lists what that changed", () => {
-    // resetRolePermissions writes the boxes first and the reset row last, so
+    // resetRolePermissions writes the lines first and the reset row last, so
     // the reset row is the newest, and comes first.
     const rows = [
       row({ id: 23, kind: "reset" }),
-      box(22, "revoke", "deploy:run"),
-      box(21, "grant", "drift:run"),
+      toggled(22, "revoke", "deploy:run"),
+      toggled(21, "grant", "drift:run"),
     ];
     expect(describeRoleChanges(rows)).toEqual([
       line({
         id: 23,
         text: "reset Editor to its defaults",
-        gave: ["Drift tracking: Run"],
-        tookAway: ["Deploy: Run"],
+        turnedOn: ["Run a drift check"],
+        turnedOff: ["Apply or revert migrations"],
       }),
     ]);
   });
@@ -103,29 +104,29 @@ describe("a save of the grid", () => {
   test("stays apart from the next when the person, the time or the role differs", () => {
     // Each row differs from the one after it in exactly one of the three.
     const rows = [
-      box(33, "grant", "connections:create", { actor: BOB, createdAt: LATER }),
-      box(32, "grant", "connections:update", { createdAt: LATER }),
-      box(31, "grant", "drift:create"),
-      box(30, "grant", "drift:update", { role: "viewer", roleLabel: "Viewer" }),
+      toggled(33, "grant", "connections:create", { actor: BOB, createdAt: LATER }),
+      toggled(32, "grant", "connections:update", { createdAt: LATER }),
+      toggled(31, "grant", "drift:create"),
+      toggled(30, "grant", "drift:update", { role: "viewer", roleLabel: "Viewer" }),
     ];
     expect(describeRoleChanges(rows)).toEqual([
-      line({ id: 33, actor: BOB, createdAt: LATER, text: EDITOR, gave: ["Connections: Create"] }),
-      line({ id: 32, createdAt: LATER, text: EDITOR, gave: ["Connections: Update"] }),
-      line({ id: 31, text: EDITOR, gave: ["Drift tracking: Create"] }),
-      line({ id: 30, text: "changed what Viewer can do", gave: ["Drift tracking: Update"] }),
+      line({ id: 33, actor: BOB, createdAt: LATER, text: EDITOR, turnedOn: ["Add a connection"] }),
+      line({ id: 32, createdAt: LATER, text: EDITOR, turnedOn: ["Edit or test a saved connection"] }),
+      line({ id: 31, text: EDITOR, turnedOn: ["Track a schema"] }),
+      line({ id: 30, text: "changed what Viewer can do", turnedOn: ["Change schedules, environments and baselines, or acknowledge drift"] }),
     ]);
   });
 
   test("is ended by a row of any other kind, even one written at the same time", () => {
     const rows = [
-      box(42, "grant", "connections:create"),
+      toggled(42, "grant", "connections:create"),
       row({ id: 41, kind: "assign", subject: "grace@example.com", detail: "Viewer" }),
-      box(40, "grant", "connections:update"),
+      toggled(40, "grant", "connections:update"),
     ];
     expect(describeRoleChanges(rows)).toEqual([
-      line({ id: 42, text: EDITOR, gave: ["Connections: Create"] }),
+      line({ id: 42, text: EDITOR, turnedOn: ["Add a connection"] }),
       line({ id: 41, text: "gave grace@example.com the Editor role, instead of Viewer" }),
-      line({ id: 40, text: EDITOR, gave: ["Connections: Update"] }),
+      line({ id: 40, text: EDITOR, turnedOn: ["Edit or test a saved connection"] }),
     ]);
   });
 });
@@ -134,21 +135,21 @@ describe("names that have gone since", () => {
   test("a deleted role is named by its key", () => {
     const gone = { role: "qa-lead", roleLabel: null };
     const rows = [
-      box(52, "grant", "drift:read", gone),
+      toggled(52, "grant", "drift:read", gone),
       row({ id: 51, kind: "assign", subject: "grace@example.com", ...gone }),
     ];
     expect(describeRoleChanges(rows)).toEqual([
-      line({ id: 52, text: "changed what qa-lead (deleted) can do", gave: ["Drift tracking: Read"] }),
+      line({ id: 52, text: "changed what qa-lead (deleted) can do", turnedOn: ["See tracked schemas and their drift"] }),
       line({ id: 51, text: "gave grace@example.com the qa-lead (deleted) role" }),
     ]);
   });
 
-  test("a box this build no longer has is named by its parts", () => {
+  test("a permission this build no longer has is named by its parts", () => {
     // A log keeps what it was given, so a key a later build drops, or a whole
     // feature it drops, still has to read as something.
-    const rows = [box(62, "grant", "version_sync:create"), box(61, "revoke", "reports:export")];
+    const rows = [toggled(62, "grant", "version_sync:create"), toggled(61, "revoke", "reports:export")];
     expect(describeRoleChanges(rows)).toEqual([
-      line({ id: 62, text: EDITOR, gave: ["version_sync: create"], tookAway: ["reports: export"] }),
+      line({ id: 62, text: EDITOR, turnedOn: ["version_sync: create"], turnedOff: ["reports: export"] }),
     ]);
   });
 });
@@ -246,20 +247,20 @@ describe("an invitation made, cancelled or taken", () => {
   });
 
   test("an invitation between two saves at the same moment keeps them apart", () => {
-    // Inviting someone and saving the grid are separate requests, so their
+    // Inviting someone and saving a role are separate requests, so their
     // rows never share a timestamp in practice. These do anyway, to show the
-    // line breaks on the kind of row and not only on the time: the boxes
-    // either side must not end up on one line, nor the older box under the
+    // entry breaks on the kind of row and not only on the time: the lines
+    // either side must not end up in one entry, nor the older one under the
     // invitation.
     const rows = [
-      box(4, "grant", "drift:read"),
+      toggled(4, "grant", "drift:read"),
       row({ id: 3, kind: "invite", subject: "grace@example.com" }),
-      box(2, "revoke", "drift:create"),
+      toggled(2, "revoke", "drift:create"),
     ];
     expect(describeRoleChanges(rows)).toEqual([
-      line({ id: 4, text: EDITOR, gave: ["Drift tracking: Read"] }),
+      line({ id: 4, text: EDITOR, turnedOn: ["See tracked schemas and their drift"] }),
       line({ id: 3, text: "invited grace@example.com as Editor" }),
-      line({ id: 2, text: EDITOR, tookAway: ["Drift tracking: Create"] }),
+      line({ id: 2, text: EDITOR, turnedOff: ["Track a schema"] }),
     ]);
   });
 });

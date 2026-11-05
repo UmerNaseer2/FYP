@@ -138,8 +138,8 @@ export default function AuthGuard({
     );
   }
 
-  // The box to ask for: the first one the grid offers. A page behind only
-  // admin-only features (none today) has nothing to ask for.
+  // The line to ask for: the first one that opens this page. A page behind
+  // only admin-only features (none today) has nothing to ask for.
   const askFor = [first, ...rest].find((key) => !isAdminOnly(key));
 
   if (!open && !can(first, ...rest)) {
@@ -152,7 +152,7 @@ export default function AuthGuard({
             : `You are signed in as ${user.email || "an unknown account"}. ` +
               (askFor === undefined
                 ? "Only admins can open it."
-                : `Ask an admin to allow "${permissionLabel(askFor)}" for your role, then reload.`)}
+                : `Ask an admin to turn on "${permissionLabel(askFor)}" for your role, then reload.`)}
           {askFor !== undefined && <AskAdmin permission={askFor} />}
         </div>
       </div>

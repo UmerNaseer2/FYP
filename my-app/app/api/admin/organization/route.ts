@@ -6,8 +6,8 @@ import { deleteOrganization, updateOrganization } from "@/lib/orgs-db";
 
 /**
  * The caller's organization itself, from the Organization tab on the Admin
- * screen. All three need an Organization box, which only the admin role has
- * (lib/permissions.ts), so nobody can rename, loosen or delete an
+ * screen. All three need an Organization permission, which only the admin
+ * role has (lib/permissions.ts), so nobody can rename, loosen or delete an
  * organization from a role an Admin made.
  *
  * GET says its name, its address and whether its two-person rule is on.

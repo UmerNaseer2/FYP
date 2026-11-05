@@ -80,7 +80,7 @@ export function UsersTab({ active }: { active: boolean }) {
   // said which roles exist and which of them this person may hand out. Custom
   // roles come from the server with the list. Until then the defaults stand
   // in for what each role can do, which is only a guess, but the server
-  // checks the real boxes whatever is picked.
+  // checks what the role really may do, whatever is picked.
   const builtInOptions: RoleOption[] = BUILT_IN_ROLES.map((name) => ({
     name,
     label: BUILT_IN_ROLE_INFO[name].label,

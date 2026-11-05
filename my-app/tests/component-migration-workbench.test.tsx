@@ -127,7 +127,7 @@ const bodyOf = (index: number) => JSON.parse(fetchCalls[index].body ?? "{}");
 const pushesSent = () => fetchCalls.filter((call) => call.url.includes("/api/github/push")).length;
 /** What a role without "Scripts: Create" is told, word for word. */
 const pushRefusal = (label: string) =>
-  `Your role (${label}) can't save scripts to the registry. Ask an admin to allow "Scripts: Create" for this role.`;
+  `Your role (${label}) can't save scripts to the registry. Ask an admin to turn on "Save scripts to the registry" for this role.`;
 
 function show(over: Partial<Props> = {}) {
   return render(<MigrationWorkbench {...BASE} {...over} />);

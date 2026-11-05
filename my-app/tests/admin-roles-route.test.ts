@@ -190,7 +190,7 @@ describe("GET: the roles and the change log", () => {
 });
 
 describe("POST: making a role", () => {
-  const COPY_REFUSED = "Pick a role to copy, or none to start with nothing ticked.";
+  const COPY_REFUSED = "Pick a role to copy, or start with nothing turned on.";
 
   test.each([
     ["text that is not JSON", "label=QA Lead", "Expected a JSON body."],
@@ -220,7 +220,7 @@ describe("POST: making a role", () => {
     ["left out", {}],
     ["null", { copyFrom: null }],
     ["the picker's empty choice", { copyFrom: "" }],
-  ])("starts the role with nothing ticked when the role to copy is %s", async (_name, extra) => {
+  ])("starts the role with nothing turned on when the role to copy is %s", async (_name, extra) => {
     mockRolesDb.createRole.mockResolvedValue({ ok: true, role: QA_LEAD });
 
     await POST(json("POST", { label: "QA Lead", ...extra }));

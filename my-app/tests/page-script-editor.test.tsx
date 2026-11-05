@@ -604,7 +604,7 @@ describe("for a role that may not save scripts", () => {
   // Saving a version and adding a rollback to one are both "Scripts: Create"
   // on the Roles tab. The suite runs as an admin unless a case says otherwise.
   const saveRefusal = (label: string) =>
-    `Your role (${label}) can't save scripts to the registry. Ask an admin to allow "Scripts: Create" for this role.`;
+    `Your role (${label}) can't save scripts to the registry. Ask an admin to turn on "Save scripts to the registry" for this role.`;
 
   it("names the box Save needs before anything about the script", async () => {
     // The rollback is missing too, but writing one would leave Save just as

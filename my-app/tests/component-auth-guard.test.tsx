@@ -166,7 +166,7 @@ describe("signed in", () => {
     const hint = screen.getByText(/You are signed in as/);
     expect(hint).toHaveTextContent("You are signed in as auditor@example.com.");
     expect(hint).toHaveTextContent(
-      'Ask an admin to allow "Connections: Read" for your role, then reload.'
+      'Ask an admin to turn on "See saved connections" for your role, then reload.'
     );
   });
 
@@ -182,7 +182,7 @@ describe("signed in", () => {
     expect(screen.getByText(/You are signed in as/)).toHaveTextContent(
       "Only admins can open it."
     );
-    expect(screen.queryByText(/Ask an admin to allow/)).toBeNull();
+    expect(screen.queryByText(/Ask an admin to turn on/)).toBeNull();
   });
 
   it("on the Admin screen, sends them after the first box the grid offers", () => {
@@ -193,7 +193,7 @@ describe("signed in", () => {
 
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
     expect(screen.getByText(/You are signed in as/)).toHaveTextContent(
-      'Ask an admin to allow "Users: Read" for your role, then reload.'
+      'Ask an admin to turn on "See the user list" for your role, then reload.'
     );
   });
 

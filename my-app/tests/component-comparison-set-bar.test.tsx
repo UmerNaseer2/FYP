@@ -252,7 +252,7 @@ describe("when Save is off", () => {
     show();
 
     const refusal =
-      'Your role (Viewer) can\'t save a new comparison set. Ask an admin to allow "Comparison sets: Create" for this role.';
+      'Your role (Viewer) can\'t save a new comparison set. Ask an admin to turn on "Save a new comparison set" for this role.';
     expect(saveButton()).toBeDisabled();
     expect(saveButton()).toHaveAttribute("title", refusal);
     expect(nameBox()).toBeDisabled();
@@ -765,9 +765,9 @@ describe("a role an admin has given only some of the boxes", () => {
     ]);
 
   const overwriteRefusal = (label: string) =>
-    `Your role (${label}) can't overwrite a saved comparison set. Ask an admin to allow "Comparison sets: Update" for this role.`;
+    `Your role (${label}) can't overwrite a saved comparison set. Ask an admin to turn on "Overwrite a saved comparison set" for this role.`;
   const createRefusal = (label: string) =>
-    `Your role (${label}) can't save a new comparison set. Ask an admin to allow "Comparison sets: Create" for this role.`;
+    `Your role (${label}) can't save a new comparison set. Ask an admin to turn on "Save a new comparison set" for this role.`;
 
   it("lets a role that may only create sets save a new one", async () => {
     creator();

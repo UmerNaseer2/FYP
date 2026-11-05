@@ -121,16 +121,19 @@ page.tsx  ──fetch──▶  app/api/**/route.ts
 ## 6. Authorisation
 
 Roles with per-feature permissions. `my-app/lib/permissions.ts` lists every
-feature and the boxes it has (Create, Read, Update, Delete, and Run or Approve
-where a feature has them), 35 in all. What each role may do is stored in the
-database (`roles`, `role_permissions`), edited box by box on the Admin screen,
-and logged in `role_changes`. Three roles are built in and can't be deleted:
-Viewer and Editor start with the boxes that reproduce the old
-`viewer` < `editor` ladder, and Admin can always do everything, so its boxes
-are neither stored nor editable. An admin can add roles of their own. A
-person's role is on the `profiles` table, and the role and its boxes are re-read
-from the database on **every** session read (`my-app/auth.ts`), so a change
-takes effect on the next request rather than at the next sign-in.
+feature and its permissions (Create, Read, Update, Delete, and Run or Approve
+where a feature has them), 42 in all across 16 features. What each role may do
+is stored in the database (`roles`, `role_permissions`), turned on and off on
+the Admin screen's Roles & permissions tab, where each permission is a plain
+sentence such as "Add a connection" grouped under its sidebar screen, and
+logged in `role_changes`. Three roles are built in and can't be deleted: Viewer
+and Editor start with the permissions that reproduce the old
+`viewer` < `editor` ladder, and Admin can always do everything, so its
+permissions are neither stored nor editable. An admin can add roles of their
+own. A person's role is on the `profiles` table, and the role and its
+permissions are re-read from the database on **every** session read
+(`my-app/auth.ts`), so a change takes effect on the next request rather than
+at the next sign-in.
 
 Enforced at three layers that share one source of truth:
 
@@ -140,20 +143,22 @@ Enforced at three layers that share one source of truth:
   carries the response, forgetting to check `gate.ok` is a *type error*, not a
   silent hole. **38 of the 39 route files call a gate**:
   `requirePermission(...keys)`, which passes when the role has any one of the
-  boxes named, or `requireSignedIn()` for `me` and `me/view-as`, which every
+  permissions named, or `requireSignedIn()` for `me` and `me/view-as`, which every
   role needs. The exception is `app/api/auth/[...nextauth]/route.ts`, which must
   stay open for sign-in. `my-app/tests/permissions-coverage.test.ts` fails if a
-  new route forgets its gate or a box on the grid is checked by no route.
+  new route forgets its gate or a permission is checked by no route.
 - **Client** — `components/AuthGuard.tsx`, whose own header comment states it
   "is a convenience, not a security boundary". Believe the comment.
 
-Some routes ask for a second box mid-handler. `/api/performance/analyze` needs
-Performance: Read to read a query plan and Performance: Run to actually execute
-the query under `EXPLAIN ANALYZE`. Saving a comparison set needs Create for a
-new name and Update for a name already taken. `/api/compare` leaves the saved
-sets out unless the role has Comparison sets: Read. `scripts/apply` and
-`scripts/revert` need Deploy: Run and then the connection's own setting
-(`my-app/lib/connection-access.ts`).
+Some routes ask for a second permission mid-handler (below, Feature: Action is
+shorthand for a permission key; the app itself names each one by its line on the
+Roles & permissions tab, `permissionLabel` in `my-app/lib/permissions.ts`).
+`/api/performance/analyze` needs Performance: Read to read a query plan and
+Performance: Run to actually execute the query under `EXPLAIN ANALYZE`. Saving a
+comparison set needs Create for a new name and Update for a name already taken.
+`/api/compare` leaves the saved sets out unless the role has Comparison sets:
+Read. `scripts/apply` and `scripts/revert` need Deploy: Run and then the
+connection's own setting (`my-app/lib/connection-access.ts`).
 
 ### The bypass switch — read this before filing an auth finding
 

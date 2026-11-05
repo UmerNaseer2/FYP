@@ -310,7 +310,7 @@ describe("who is allowed to run anything here", () => {
     expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
     expect(
       screen.getByText(
-        `Your role (Deployer) can't see production approvals. Ask an admin to allow "Approvals: Read" for this role.`
+        `Your role (Deployer) can't see production approvals. Ask an admin to turn on "See production approvals" for this role.`
       )
     ).toBeInTheDocument();
     expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);

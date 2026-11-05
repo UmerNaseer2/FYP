@@ -286,7 +286,7 @@ export function ApprovalPanel({
     `${action === "revert" ? "rollback" : "run"}. ` +
     (bypass
       ? switchBack
-      : `Ask an admin to allow "${permissionLabel("approvals:approve")}" for this role.`);
+      : `Ask an admin to turn on "${permissionLabel("approvals:approve")}" for this role.`);
   const requestRefusal = bypass
     ? `Your role (${roleLabel}) can't request a production approval. ${switchBack}`
     : refusalMessage(roleLabel, "approvals:create");

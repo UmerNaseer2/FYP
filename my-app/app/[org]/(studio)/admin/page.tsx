@@ -10,7 +10,6 @@ import { UsersTab } from "@/components/admin/UsersTab";
 import { RolesTab } from "@/components/admin/RolesTab";
 import { OrganizationTab } from "@/components/admin/OrganizationTab";
 import { GitHubTab } from "@/components/admin/GitHubTab";
-import { PermissionsGuide } from "@/components/admin/PermissionsGuide";
 
 /**
  * The Admin screen: who is in this organization (Users), what each role can do
@@ -66,6 +65,13 @@ export default function AdminPage() {
   // page was open) falls back to the first one still allowed.
   const tab = picked && allowed[picked] ? picked : (tabs[0]?.key ?? null);
 
+  // "See them on the Users tab" on the Roles tab. Focus goes to the Users tab
+  // itself, so keyboard and screen reader users land where the list starts.
+  function showUsers() {
+    setPicked("users");
+    document.getElementById("admin-tab-users")?.focus();
+  }
+
   return (
     <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
       <header>
@@ -94,10 +100,6 @@ export default function AdminPage() {
         </div>
       ) : (
         <>
-          {/* Above the tabs, because it explains both: Roles & permissions
-              says what a role may do, and Users gives it to people. */}
-          <PermissionsGuide showViewAs={bypass} />
-
           <div className="seg mt-6" role="tablist" aria-label="Admin sections">
             {tabs.map((t) => (
               <button
@@ -116,7 +118,7 @@ export default function AdminPage() {
           </div>
 
           {/* Every tab stays mounted and a hidden one is only hidden, so a
-              half-ticked grid or a half-filled form is still there when the
+              half-changed list or a half-filled form is still there when the
               person comes back. `active` tells a tab when it is on screen, so
               it loads then and not while hidden. */}
           {tabs.map((t) => (
@@ -131,7 +133,11 @@ export default function AdminPage() {
               {t.key === "users" ? (
                 <UsersTab active={tab === "users"} />
               ) : t.key === "roles" ? (
-                <RolesTab active={tab === "roles"} />
+                <RolesTab
+                  active={tab === "roles"}
+                  showViewAs={bypass}
+                  onShowUsers={allowed.users ? showUsers : undefined}
+                />
               ) : t.key === "organization" ? (
                 <OrganizationTab active={tab === "organization"} />
               ) : (

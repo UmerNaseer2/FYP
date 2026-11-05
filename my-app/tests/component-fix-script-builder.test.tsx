@@ -485,7 +485,7 @@ describe("who is offered a migration at all", () => {
     expect(screen.queryByRole("button", { name: "Save as a migration" })).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        'Your role (Viewer) can\'t save scripts to the registry. Ask an admin to allow "Scripts: Create" for this role. Copy or download the script instead.'
+        'Your role (Viewer) can\'t save scripts to the registry. Ask an admin to turn on "Save scripts to the registry" for this role. Copy or download the script instead.'
       )
     ).toBeInTheDocument();
   });

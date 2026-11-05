@@ -355,7 +355,7 @@ describe("who may replay", () => {
     expect(await screen.findByText("You can read this list, but not replay it")).toBeInTheDocument();
     expect(
       screen.getByText(
-        `Your role (Viewer) can't apply or revert migrations. Ask an admin to allow "Deploy: Run" for this role.`
+        `Your role (Viewer) can't apply or revert migrations. Ask an admin to turn on "Apply or revert migrations" for this role.`
       )
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Run / })).not.toBeInTheDocument();
@@ -376,7 +376,7 @@ describe("who may replay", () => {
     expect(await screen.findByText("Approval state unknown")).toBeInTheDocument();
     expect(
       screen.getByText(
-        `Your role (Deployer) can't see production approvals. Ask an admin to allow "Approvals: Read" for this role.`
+        `Your role (Deployer) can't see production approvals. Ask an admin to turn on "See production approvals" for this role.`
       )
     ).toBeInTheDocument();
     expect(fetchCalls.some((call) => call.url.includes("/api/deploy/approvals"))).toBe(false);
