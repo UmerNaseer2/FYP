@@ -973,6 +973,12 @@ function DeployBody() {
   const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [preflightError, setPreflightError] = useState<string | null>(null);
+  // A ticket number for the newest read of the target: one for the ledger, one
+  // for the drift check. Changing the target takes a new ticket, so an answer
+  // still on its way for the old target is dropped when it lands, instead of
+  // being shown under the new target's name.
+  const preflightSeq = useRef(0);
+  const driftSeq = useRef(0);
   const [targetVersion, setTargetVersion] = useState<string>("");
   /**
    * What has been ATTEMPTED against this schema, successful or not (spec 07 —
@@ -2054,6 +2060,9 @@ function DeployBody() {
   // server exempts it: a rehearsal writes nothing, and charging a second person
   // for a rehearsal would make the careful path the expensive one.
   const deployBlocked = runBlocked || (targetIsProduction && !approvedRun);
+  // The target pickers hold still while a rollback runs: its outcome, and the
+  // ledger it reads afterwards, belong to the target it was started on.
+  const targetLocked = rollbackBusy !== null;
 
   // ── The selection, by name ───────────────────────────────────────────────
   // Deploy and Dry run start scriptsUpToTarget: the range the last "Run …"
@@ -2154,6 +2163,8 @@ function DeployBody() {
   // Resolves true when the ledger was read, so a caller can say whether the
   // page now shows the target as it is.
   async function runPreflightCheck(id: string, sch: string, group: string): Promise<boolean> {
+    const ticket = ++preflightSeq.current;
+    const current = () => ticket === preflightSeq.current;
     setPreflightLoading(true);
     setPreflightError(null);
     try {
@@ -2167,6 +2178,8 @@ function DeployBody() {
         }),
       });
       const data = (await res.json()) as PreflightResult & { error?: string };
+      // The target changed, or a newer read started, while this one was out.
+      if (!current()) return false;
       if (!res.ok) {
         setPreflightError(data.error ?? "Pre-flight check failed.");
         setPreflightResult(null);
@@ -2178,15 +2191,28 @@ function DeployBody() {
       // too, and that is the one case the ledger itself has nothing to say
       // about. Not awaited — a slow or unreachable metadata read must not hold
       // up the pre-flight answer the buttons depend on.
-      void loadAttempts(id, sch);
+      void loadAttempts(id, sch, ticket);
       return true;
     } catch {
+      if (!current()) return false;
       setPreflightError("Network error during pre-flight check.");
       setPreflightResult(null);
       return false;
     } finally {
-      setPreflightLoading(false);
+      // Whoever took the newer ticket owns the spinner now.
+      if (current()) setPreflightLoading(false);
     }
+  }
+
+  // Drop the pre-flight answer when the target changes. The new ticket also
+  // makes a read still on its way for the old target land nowhere: it would
+  // fill in the old target's ledger under the new target's name, and its
+  // spinner would keep "Check database" disabled until it came back.
+  function forgetPreflight() {
+    preflightSeq.current += 1;
+    setPreflightLoading(false);
+    setPreflightResult(null);
+    setPreflightError(null);
   }
 
   // The deploy audit trail for the chosen schema. Failures are swallowed on
@@ -2194,15 +2220,18 @@ function DeployBody() {
   // is briefly unreachable must not put an error banner over a deploy screen
   // that is otherwise working. An empty list reads as "nothing recorded", which
   // is what the reader would conclude from an error anyway.
-  async function loadAttempts(id: string, sch: string): Promise<void> {
+  // `ticket` is the read it came with, so a list for an old target is dropped.
+  async function loadAttempts(id: string, sch: string, ticket: number): Promise<void> {
     try {
       const res = await apiFetch(
         `/api/scripts/attempts?connectionId=${Number(id)}&schema=${encodeURIComponent(sch || "public")}`,
         { cache: "no-store" }
       );
       const data = (await res.json()) as { attempts?: DeployAttemptRow[] };
+      if (ticket !== preflightSeq.current) return;
       setAttempts(res.ok && Array.isArray(data.attempts) ? data.attempts : []);
     } catch {
+      if (ticket !== preflightSeq.current) return;
       setAttempts([]);
     }
   }
@@ -2373,9 +2402,10 @@ function DeployBody() {
   // production rollback spends one). Resolves true when the ledger was read.
   async function refreshAfterRollback(): Promise<boolean> {
     setApprovalReloadKey((reload) => reload + 1);
-    const read = await runPreflightCheck(connectionId, schema, scriptGroup);
+    // Both checks start now, while this is still the target on screen, so a
+    // target picked during the read drops both answers (see preflightSeq).
     void runDriftCheck(connectionId, schema);
-    return read;
+    return runPreflightCheck(connectionId, schema, scriptGroup);
   }
 
   // ── Approvals ────────────────────────────────────────────────────────────
@@ -2513,6 +2543,9 @@ function DeployBody() {
   }
 
   function resetDrift() {
+    // As forgetPreflight does for the ledger: a check still on its way for the
+    // old target must not report on the new one.
+    driftSeq.current += 1;
     setDriftPhase("idle");
     setDriftResult(null);
     setDriftError(null);
@@ -2534,6 +2567,10 @@ function DeployBody() {
       resetDrift();
       return;
     }
+    // A ticket, as runPreflightCheck takes one. After every wait, an answer
+    // for a target no longer on screen, or older than a newer check, stops.
+    const ticket = ++driftSeq.current;
+    const current = () => ticket === driftSeq.current;
     setDriftPhase("loading");
     setDriftError(null);
     setDriftResult(null);
@@ -2545,6 +2582,7 @@ function DeployBody() {
         `/api/lineage/lookup?connectionId=${encodeURIComponent(id)}&schemaName=${encodeURIComponent(sch)}`,
         { cache: "no-store" }
       );
+      if (!current()) return;
       // A failed lookup must not read as "not tracked" — that answer skips the
       // drift pre-check and leaves the environment label unset, so a dead
       // metadata database would quietly remove both warnings.
@@ -2560,6 +2598,8 @@ function DeployBody() {
         /** The last drift result on record, which the apply route holds a run to. */
         driftStatus?: DriftResult["status"] | null;
       };
+      // Above all here: the old target's label must not land on the new one.
+      if (!current()) return;
       // Worth keeping even when the drift check itself can't run: the warning
       // above the Deploy button needs this, and an untracked schema simply has
       // no label of its own to add.
@@ -2577,6 +2617,7 @@ function DeployBody() {
         body: JSON.stringify({ trackedSchemaId: lookup.trackedSchemaId }),
       });
       const data = (await driftRes.json()) as DriftResult & { error?: string };
+      if (!current()) return;
       if (!driftRes.ok || !data.status) {
         setDriftError(data.error ?? "Drift check failed.");
         setDriftPhase("error");
@@ -2585,6 +2626,7 @@ function DeployBody() {
       setDriftResult(data);
       setDriftPhase("ready");
     } catch {
+      if (!current()) return;
       setDriftError("Network error during the drift check.");
       setDriftPhase("error");
     }
@@ -2603,8 +2645,11 @@ function DeployBody() {
     setStage(1);
     setPreflightResult(null);
     setTargetVersion("");
-    await runPreflightCheck(connectionId, schema, scriptGroup);
+    // The drift check starts first, while this is still the target on screen:
+    // started after the await, it would read whatever target was clicked when
+    // the button was, and take a ticket newer than any change since.
     void runDriftCheck(connectionId, schema);
+    await runPreflightCheck(connectionId, schema, scriptGroup);
   }
 
   function resetRun() {
@@ -2874,10 +2919,11 @@ function DeployBody() {
 
     // Always re-read the ledger so the current version reflects what is really
     // applied — a dry run should leave it exactly where it was, and this is what
-    // proves that on screen rather than asserting it.
-    await runPreflightCheck(connectionId, schema, scriptGroup);
-    // Re-run the drift check so the Verify step reflects the post-deploy state.
+    // proves that on screen rather than asserting it. The drift check is re-run
+    // so the Verify step reflects the post-deploy state, and starts first for
+    // the reason handlePreflight gives.
     void runDriftCheck(connectionId, schema);
+    await runPreflightCheck(connectionId, schema, scriptGroup);
     // A real run spends its approval. Re-read them so the panel says so rather
     // than still offering a green light that the server would now refuse.
     setApprovalReloadKey((key) => key + 1);
@@ -3072,6 +3118,7 @@ function DeployBody() {
                   className="mt-1"
                   ariaLabel="Connection"
                   value={connectionId}
+                  disabled={targetLocked}
                   placeholder="Select a connection…"
                   options={connections.map((c) => ({
                     value: String(c.id),
@@ -3082,9 +3129,8 @@ function DeployBody() {
                     setConnectionId(value);
                     setSchema("");
                     setScriptGroup("");
-                    setPreflightResult(null);
+                    forgetPreflight();
                     setAttempts([]);
-                    setPreflightError(null);
                     setTargetVersion("");
                     resetRun();
                     resetDrift();
@@ -3158,7 +3204,7 @@ function DeployBody() {
                   className="mt-1"
                   ariaLabel="Schema"
                   value={schema}
-                  disabled={schemasLoading || !connectionId}
+                  disabled={schemasLoading || !connectionId || targetLocked}
                   placeholder={
                     !connectionId
                       ? "Select a connection first"
@@ -3171,9 +3217,8 @@ function DeployBody() {
                     forgetLink();
                     setSchema(value);
                     setScriptGroup("");
-                    setPreflightResult(null);
+                    forgetPreflight();
                     setAttempts([]);
-                    setPreflightError(null);
                     setTargetVersion("");
                     resetRun();
                     resetDrift();
@@ -3190,14 +3235,13 @@ function DeployBody() {
                   className="mt-1"
                   ariaLabel="Script group"
                   value={scriptGroup}
-                  disabled={!schema}
+                  disabled={!schema || targetLocked}
                   placeholder={!schema ? "Select a schema first" : "Select a script group…"}
                   options={schemaScriptNames.map((name) => ({ value: name, label: name }))}
                   onChange={(value) => {
                     forgetLink();
                     setScriptGroup(value);
-                    setPreflightResult(null);
-                    setPreflightError(null);
+                    forgetPreflight();
                     setTargetVersion("");
                     resetRun();
                     resetDrift();

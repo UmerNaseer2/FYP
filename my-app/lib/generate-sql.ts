@@ -1615,6 +1615,116 @@ function createTypeStatement(type: TypeSnapshot): SqlStatement | null {
   });
 }
 
+/** The diff kinds that describe a type in pg_type, as the compare engine names them. */
+const TYPE_DIFF_KINDS = new Set<string>(["ENUM", "DOMAIN", "COMPOSITE TYPE", "RANGE TYPE"]);
+
+/**
+ * The names a type is built from: a domain's base type, a range's subtype and
+ * each composite field's type.
+ *
+ * Read as identifier tokens rather than parsed, because format_type spells
+ * them every way there is: `mood[]`, `"Mood"`, `character varying(20)`. A word
+ * that only looks like one of the schema's type names ("time" in
+ * `time with time zone`) can at worst ask for an order nothing needed.
+ */
+function typeNamesUsedBy(type: TypeSnapshot): Set<string> {
+  const parts = type.baseType === null ? [] : [type.baseType];
+  for (const attribute of type.attributes) {
+    // "field type": drop the field's own name, which is not a type.
+    parts.push(attribute.replace(/^("(?:[^"]|"")*"|\S+)\s+/, ""));
+  }
+  const names = new Set<string>();
+  for (const part of parts) {
+    for (const match of part.matchAll(/"((?:[^"]|"")*)"|([A-Za-z_][A-Za-z0-9_$]*)/g)) {
+      // format_type leaves a name unquoted only when it is already lower case.
+      names.add(match[1] !== undefined ? match[1].replace(/""/g, '"') : match[2].toLowerCase());
+    }
+  }
+  return names;
+}
+
+/**
+ * `diffs` in an order where each type comes after the types it is built from,
+ * or with `dependentsFirst`, after the types built from it. Otherwise the order
+ * they arrived in. A loop (which PostgreSQL itself would refuse) is broken
+ * wherever it is found rather than reported.
+ */
+function typesInDependencyOrder(
+  diffs: ObjectDiff[],
+  types: TypeSnapshot[] | undefined,
+  dependentsFirst: boolean
+): ObjectDiff[] {
+  // By position, not by name, so that every diff comes out exactly once.
+  const indexByName = new Map<string, number>();
+  diffs.forEach((diff, index) => {
+    if (!indexByName.has(diff.name)) indexByName.set(diff.name, index);
+  });
+  const mustComeFirst: number[][] = diffs.map(() => []);
+  diffs.forEach((diff, index) => {
+    const type = findByName(types, diff.name);
+    if (!type) return;
+    for (const used of typeNamesUsedBy(type)) {
+      const other = indexByName.get(used);
+      if (other === undefined || other === index) continue;
+      if (dependentsFirst) mustComeFirst[other].push(index);
+      else mustComeFirst[index].push(other);
+    }
+  });
+
+  const ordered: ObjectDiff[] = [];
+  const placed = new Set<number>();
+  const visiting = new Set<number>();
+  function place(index: number): void {
+    if (placed.has(index) || visiting.has(index)) return;
+    visiting.add(index);
+    for (const first of mustComeFirst[index]) place(first);
+    visiting.delete(index);
+    placed.add(index);
+    ordered.push(diffs[index]);
+  }
+  diffs.forEach((_, index) => place(index));
+  return ordered;
+}
+
+/**
+ * The comparison's diffs with the type diffs among them reordered so each
+ * statement can run when it is reached.
+ *
+ * The comparison sorts its diffs by kind and then by name, so every composite
+ * type came before every domain, and every domain before every enum and range.
+ * CREATE DOMAIN, CREATE TYPE ... AS (...) and CREATE TYPE ... AS RANGE all need
+ * the types they name to exist already, so a new domain over a new enum was
+ * created first, and the migration stopped on `type "mood" does not exist`.
+ * Drops need the mirror image: DROP TYPE carries no CASCADE, so a type can go
+ * only once nothing built on it is left, or the rollback stops instead.
+ *
+ * Only the type diffs move, and only into places type diffs already held, so
+ * everything else keeps its order.
+ */
+function withTypesInDependencyOrder(
+  diffs: ObjectDiff[],
+  sourceTypes: TypeSnapshot[] | undefined,
+  targetTypes: TypeSnapshot[] | undefined
+): ObjectDiff[] {
+  const isType = (diff: ObjectDiff) => TYPE_DIFF_KINDS.has(diff.kind);
+  // What gets created or changed is read off the source, what gets dropped off
+  // the target. The two lists go to different phases, so they sort separately.
+  const queue = [
+    ...typesInDependencyOrder(
+      diffs.filter((diff) => isType(diff) && diff.status !== "onlyB"),
+      sourceTypes,
+      false
+    ),
+    ...typesInDependencyOrder(
+      diffs.filter((diff) => isType(diff) && diff.status === "onlyB"),
+      targetTypes,
+      true
+    ),
+  ];
+  let next = 0;
+  return diffs.map((diff) => (isType(diff) ? queue[next++] : diff));
+}
+
 function dropTypeStatement(type: TypeSnapshot): SqlStatement {
   const isDomain = type.kind === "DOMAIN";
   return objectStatement({
@@ -2495,7 +2605,11 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
     if (statement.destructive) heldBackViewDrops.add(view.name);
   }
 
-  for (const diff of report.objectDiffs) {
+  for (const diff of withTypesInDependencyOrder(
+    report.objectDiffs,
+    report.left.types,
+    report.right.types
+  )) {
     if (diff.kind === "INDEX" || diff.kind === "TRIGGER") {
       // Only a view puts these in the schema-scoped list; a table's ride on its
       // own match, which the loop above has already dealt with.
@@ -2881,6 +2995,18 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
   // ── Ownership and grants ──────────────────────────────────────────────────
   // Last, because it is the first pass that can tell whether the object each
   // entry describes is really going to exist in the shape the source recorded.
+  //
+  // A view rebuilt above starts again from nothing: DROP VIEW takes its owner
+  // and its grants with it, and CREATE VIEW makes it owned by whoever runs the
+  // script, granted to nobody. So for those views the target's old grants are
+  // no guide, and every grant the source has is written out as if the view
+  // were new. Comparing against the target instead skipped exactly the grants
+  // both sides shared, which is how a rebuilt view lost every reader.
+  const isRebuiltView = (privilege: PrivilegeSnapshot) =>
+    (privilege.objectKind === "VIEW" ||
+      privilege.objectKind === "MATERIALIZED VIEW") &&
+    rebuiltViews.has(privilege.objectName);
+  const privilegesWritten = new Set<string>();
   for (const diff of privilegeDiffs) {
     // Privilege entries are keyed by kind and name together, and the diff
     // carries them already joined, so look them up by the same joined string
@@ -2890,17 +3016,40 @@ function objectPhases(report: CompareReport, appliesToSchema: string): ObjectPha
     // has and the source does not, because the object it belongs to is one this
     // script is already dropping.
     if (!source) continue;
-    const target = findPrivilege(report.right.privileges, diff.name);
+    privilegesWritten.add(diff.name);
+    const target =
+      diff.status === "onlyA" || isRebuiltView(source)
+        ? null
+        : findPrivilege(report.right.privileges, diff.name);
     phases.privileges.push(
       ...privilegeStatements(
         source,
-        diff.status === "onlyA" ? null : target,
+        target,
         appliesToSchema,
         // Only a view or a materialized view is ever dropped and put back, so
         // only those two can be sitting there in the old shape.
         (source.objectKind === "VIEW" ||
           source.objectKind === "MATERIALIZED VIEW") &&
           heldBackViewDrops.has(source.objectName)
+      )
+    );
+  }
+  // ...and a rebuilt view whose owner and grants were the same on both sides,
+  // which is the usual case, has no diff at all. Without this it came back
+  // owned by the person who ran the script and readable by nobody else.
+  for (const view of viewsToCreate) {
+    const key = `${view.materialized ? "materialized view" : "view"} ${view.name}`;
+    if (privilegesWritten.has(key)) continue;
+    const source = findPrivilege(report.left.privileges, key);
+    // No entry means the source snapshot never recorded privileges, so there
+    // is nothing to put back.
+    if (!source) continue;
+    phases.privileges.push(
+      ...privilegeStatements(
+        source,
+        null,
+        appliesToSchema,
+        heldBackViewDrops.has(view.name)
       )
     );
   }

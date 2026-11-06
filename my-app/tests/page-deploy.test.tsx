@@ -785,3 +785,121 @@ describe("arriving from a link on the Requests page", () => {
     expect(reads()).toHaveLength(0);
   });
 });
+
+describe("picking another target while the first is still being read", () => {
+  // Every answer this page shows belongs to one target. One still on its way
+  // when the reader picks another target used to land anyway: it filled in
+  // the new target's card with the old target's ledger, and its spinner kept
+  // "Check database" disabled for a read nobody wanted any more.
+
+  /** Prod is a version further on, so the two ledgers differ in what is left to run. */
+  const prodPreflight = {
+    ...preflight(),
+    currentVersion: "1.0.1",
+    timeline: [
+      ...preflight().timeline,
+      {
+        version: "1.0.1",
+        title: "invoices",
+        change_type: "additive",
+        applied_at: "2026-01-02T09:00:00.000Z",
+      },
+    ],
+    message: "Target is at v1.0.1.",
+  };
+  const byConnection: FetchRoute = {
+    match: "/api/scripts/preflight",
+    method: "POST",
+    body: (_url: string, init?: RequestInit) =>
+      (JSON.parse(String(init?.body)) as { connectionId: number }).connectionId === 2
+        ? prodPreflight
+        : preflight(),
+  };
+
+  async function readTarget(connection: RegExp) {
+    await pick("Connection", connection);
+    await pick("Schema", "public");
+    await pick("Script group", "invoices");
+    const check = await screen.findByRole("button", { name: "Check database" });
+    await waitFor(() => expect(check).toBeEnabled());
+    fireEvent.click(check);
+  }
+
+  it("drops the old target's ledger when it lands", async () => {
+    setRoutes(baseRoutes());
+    render(<DeployPage />);
+
+    const release = holdNext("/api/scripts/preflight", "POST");
+    await readTarget(/Dev box/);
+    await screen.findByRole("button", { name: "Checking…" });
+
+    await pick("Connection", /Prod box/);
+    // The spinner went with the read, so the new target can be read at once.
+    expect(screen.queryByRole("button", { name: "Checking…" })).not.toBeInTheDocument();
+
+    release();
+    await flushAsync();
+    expect(screen.queryByText("reachable")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Run all/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the new target's ledger when the old one lands after it", async () => {
+    setRoutes([byConnection, ...baseRoutes()]);
+    render(<DeployPage />);
+
+    const releaseDev = holdNext("/api/scripts/preflight", "POST");
+    await readTarget(/Dev box/);
+    await screen.findByRole("button", { name: "Checking…" });
+
+    await readTarget(/Prod box/);
+    // The version timeline's count: Prod has one version left, Dev two.
+    await screen.findByText("1 pending", undefined, { timeout: 3000 });
+
+    releaseDev();
+    await flushAsync();
+    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    expect(screen.queryByText("2 pending")).not.toBeInTheDocument();
+  });
+
+  it("drops the old target's drift report when it lands", async () => {
+    setRoutes([
+      // Only Dev is tracked, so only Dev has a drift report to give.
+      {
+        match: "/api/lineage/lookup",
+        body: (url: string) =>
+          url.includes("connectionId=1")
+            ? { tracked: true, trackedSchemaId: 7, environment: "dev" }
+            : { tracked: false },
+      },
+      {
+        match: "/api/lineage/drift",
+        method: "POST",
+        body: {
+          status: "drifted",
+          summary: "2 tables differ from the snapshot.",
+          counts: null,
+          expectedVersion: "1.0.0",
+          checkedAt: "2026-01-03T09:00:00.000Z",
+        },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<DeployPage />);
+
+    const releaseDrift = holdNext("/api/lineage/drift", "POST");
+    await readTarget(/Dev box/);
+    await waitFor(() =>
+      expect(fetchCalls.some((c) => c.url.includes("/api/lineage/drift"))).toBe(true)
+    );
+
+    await readTarget(/Prod box/);
+    fireEvent.click(await screen.findByRole("button", { name: "Run all (2)…" }, { timeout: 3000 }));
+
+    releaseDrift();
+    await flushAsync();
+    expect(screen.queryByText("The target has drifted")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: "I have read the drift and mean to run anyway." })
+    ).not.toBeInTheDocument();
+  });
+});

@@ -954,9 +954,19 @@ export class DesktopApp {
     opened.secrets = secrets;
     addLogSecret(secrets.nextauthSecret);
     this.unsharePhoneConnections();
-    // The backup's GitHub registry goes with its token. ConfigStore logs a
-    // failure to save, and the registry in use then stays.
-    this.config.save({ ...this.config.get(), github: pending.config.github });
+    // The backup's GitHub registry goes with its token. Carrying on after a
+    // failed save would leave the backup's token aimed at this computer's
+    // registry, and the restore file, which is the only other copy of the
+    // backup's settings, is removed once this returns. Stopping keeps it for
+    // the next start.
+    if (!this.config.save({ ...this.config.get(), github: pending.config.github })) {
+      throw new StartupError(
+        FINISH_RESTORE_TITLE,
+        `Schema Studio could not save the backup's settings in ${displayPath(this.paths.configFile, this.home)}. Check that there is space on the disk, then press Try again.`,
+      );
+    }
+    // The theme only changes how the windows look, so a failed save of it
+    // (which ConfigStore logs) is no reason to stop the restore.
     this.setTheme(pending.config.theme);
     // The restored rows hold the people of the computer the backup came
     // from, so everyone signs in again. Nothing the pages kept from before

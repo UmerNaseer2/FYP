@@ -7,6 +7,7 @@
  * costs nothing.
  */
 import { readPairedComputer, type PairedComputer } from "./store.js";
+import { withinTime, type TimeLimit } from "./within-time.js";
 
 const DATABASE = "schema-studio-phone";
 const DATABASE_VERSION = 1;
@@ -16,6 +17,7 @@ const LAST_SEEN = "last-seen";
 /** How long the storage has to answer before the app says so, since a stuck browser never answers at all. */
 const WITHIN_MS = 10_000;
 const TOO_SLOW = "The phone's storage did not answer in time. Reload the page to try again.";
+const LIMIT: TimeLimit = { ms: WITHIN_MS, tooSlow: TOO_SLOW };
 
 let opening: Promise<IDBDatabase> | null = null;
 
@@ -25,14 +27,6 @@ function storageError(error: unknown): Error {
     return new Error("The phone is out of space for the app's data. Free some space, then try again.");
   }
   return new Error("The phone could not use the app's storage. Check that the browser is not in private browsing, then try again.");
-}
-
-/** `promise`, or a failure once WITHIN_MS have gone by. */
-function withinTime<T>(promise: Promise<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(TOO_SLOW)), WITHIN_MS);
-    promise.then(resolve, reject).finally(() => clearTimeout(timer));
-  });
 }
 
 /** The open database, opened once and again only after it fails or another tab upgrades it. */
@@ -52,6 +46,7 @@ function database(): Promise<IDBDatabase> {
       };
       request.onerror = () => reject(storageError(request.error));
     }),
+    LIMIT,
   );
   opening = attempt;
   attempt.catch(() => {
@@ -63,20 +58,34 @@ function database(): Promise<IDBDatabase> {
 /** Runs `use` in a transaction, with what its request gave once the transaction is done. */
 async function inStore(mode: IDBTransactionMode, use: (store: IDBObjectStore) => IDBRequest): Promise<unknown> {
   const db = await database();
-  return withinTime(
-    new Promise<unknown>((resolve, reject) => {
+  let transaction: IDBTransaction;
+  let request: IDBRequest;
+  try {
+    transaction = db.transaction(STORE, mode);
+    // put() throws at once for a value the browser cannot store, so it is inside the try too.
+    request = use(transaction.objectStore(STORE));
+  } catch (error) {
+    throw storageError(error);
+  }
+  const done = new Promise<unknown>((resolve, reject) => {
+    transaction.oncomplete = () => resolve(request.result);
+    transaction.onerror = () => reject(storageError(transaction.error ?? request.error));
+    transaction.onabort = () => reject(storageError(transaction.error ?? request.error));
+  });
+  return withinTime(done, {
+    ...LIMIT,
+    // Work that is too slow is undone, so a save the phone said failed
+    // cannot land later. abort() throws once the browser is writing the
+    // transaction, which then finishes either way, so it is waited for.
+    takeBack: () => {
       try {
-        const transaction = db.transaction(STORE, mode);
-        // put() throws at once for a value the browser cannot store, so it is inside the try too.
-        const request = use(transaction.objectStore(STORE));
-        transaction.oncomplete = () => resolve(request.result);
-        transaction.onerror = () => reject(storageError(transaction.error ?? request.error));
-        transaction.onabort = () => reject(storageError(transaction.error ?? request.error));
-      } catch (error) {
-        reject(storageError(error));
+        transaction.abort();
+        return true;
+      } catch {
+        return false;
       }
-    }),
-  );
+    },
+  });
 }
 
 /** The computer this phone is paired with, or null when there is none. */
