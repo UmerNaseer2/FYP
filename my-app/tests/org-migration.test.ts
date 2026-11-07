@@ -126,7 +126,17 @@ const ORG_TABLES = [
 // organizations, so they are not on the bootstrap's list of older tables to
 // move. A linked computer belongs to one organization the same way, and so do
 // its GitHub repository and access token.
-const ORG_SCOPED = [...ORG_TABLES, "memberships", "agents", "organization_github"];
+// The AI switch, the AI usage log and the saved AI answers are each one
+// organization's too.
+const ORG_SCOPED = [
+  ...ORG_TABLES,
+  "memberships",
+  "agents",
+  "organization_github",
+  "organization_ai",
+  "ai_calls",
+  "ai_results",
+];
 // A person, and the accounts they sign in with, belong to no organization:
 // one person can be in several. The last two belong to the server: whose turn
 // the drift check is (one tick covers every organization), and which deployments

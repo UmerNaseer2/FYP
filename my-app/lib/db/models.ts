@@ -688,6 +688,161 @@ OrganizationGitHubRow.init(
 );
 
 /**
+ * Whether an organization lets its people use AI assistance, and which of the
+ * AI features are on (lib/ai/settings.ts). One row per organization at most;
+ * no row means AI is off, which is the starting point for every organization.
+ * Only schema structure is ever sent to the AI service, never rows.
+ */
+export class OrganizationAiRow extends Model<
+  InferAttributes<OrganizationAiRow>,
+  InferCreationAttributes<OrganizationAiRow>
+> {
+  declare org_id: number;
+  declare enabled: CreationOptional<boolean>;
+  /** Feature name to on or off, for the features an Admin switched off: { "schema-chat": false }. */
+  declare features: CreationOptional<Record<string, boolean>>;
+  declare updated_by: string;
+  declare updated_at: CreationOptional<Date>;
+}
+
+OrganizationAiRow.init(
+  {
+    org_id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      allowNull: false,
+      references: { model: "organizations", key: "id" },
+      onDelete: "CASCADE",
+    },
+    enabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    features: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+    updated_by: { type: DataTypes.TEXT, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  { sequelize, tableName: "organization_ai" }
+);
+
+/**
+ * One call to the AI service, or one answer served from the cache: who asked,
+ * for which feature, which model answered, the tokens it took and how long, and
+ * how it ended. Never the prompt or the answer: those can name the schema, and
+ * this table is for counting. The Admin screen's usage card and the daily limit
+ * read it.
+ */
+export class AiCallRow extends Model<InferAttributes<AiCallRow>, InferCreationAttributes<AiCallRow>> {
+  declare id: CreationOptional<number>;
+  declare org_id: number;
+  declare actor: string;
+  declare feature: string;
+  declare provider: string;
+  declare model: string;
+  declare prompt_version: number;
+  declare input_tokens: CreationOptional<number>;
+  declare output_tokens: CreationOptional<number>;
+  declare cached_tokens: CreationOptional<number>;
+  /** True when the service gave no token counts and the numbers are length / 4. */
+  declare estimated: CreationOptional<boolean>;
+  declare ms: CreationOptional<number>;
+  declare retries: CreationOptional<number>;
+  /** ok | invalid_output | failed_check | rate_limited | timeout | provider_error | limit_reached */
+  declare outcome: string;
+  declare cache_hit: CreationOptional<boolean>;
+  /** Thumbs up (1) or down (-1) from the person who asked, or null. */
+  declare rating: CreationOptional<number | null>;
+  declare created_at: CreationOptional<Date>;
+}
+
+export const AI_CALL_OUTCOMES = [
+  "ok",
+  "invalid_output",
+  "failed_check",
+  "rate_limited",
+  "timeout",
+  "provider_error",
+  "limit_reached",
+] as const;
+
+AiCallRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "organizations", key: "id" },
+      onDelete: "CASCADE",
+    },
+    actor: { type: DataTypes.TEXT, allowNull: false },
+    feature: { type: DataTypes.TEXT, allowNull: false },
+    provider: { type: DataTypes.TEXT, allowNull: false },
+    model: { type: DataTypes.TEXT, allowNull: false },
+    prompt_version: { type: DataTypes.INTEGER, allowNull: false },
+    input_tokens: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    output_tokens: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    cached_tokens: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    estimated: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    ms: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    retries: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    outcome: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      validate: { isIn: [[...AI_CALL_OUTCOMES]] },
+    },
+    cache_hit: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    rating: { type: DataTypes.SMALLINT, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "ai_calls",
+    indexes: [{ name: "ai_calls_org_id_created_at_idx", fields: ["org_id", "created_at"] }],
+  }
+);
+
+/**
+ * A checked AI answer kept for reuse, so asking the same question about the
+ * same schemas twice costs nothing. The key is a hash of the feature, its
+ * prompt version and what was asked, so a changed schema or a reworded prompt
+ * misses. Rows older than a week are deleted as new ones are written.
+ */
+export class AiResultRow extends Model<InferAttributes<AiResultRow>, InferCreationAttributes<AiResultRow>> {
+  declare id: CreationOptional<number>;
+  declare org_id: number;
+  declare feature: string;
+  declare cache_key: string;
+  declare model: string;
+  declare answer: unknown;
+  declare created_at: CreationOptional<Date>;
+}
+
+AiResultRow.init(
+  {
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    org_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: { model: "organizations", key: "id" },
+      onDelete: "CASCADE",
+    },
+    feature: { type: DataTypes.TEXT, allowNull: false },
+    cache_key: { type: DataTypes.TEXT, allowNull: false },
+    model: { type: DataTypes.TEXT, allowNull: false },
+    answer: { type: DataTypes.JSONB, allowNull: false },
+    created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+  },
+  {
+    sequelize,
+    tableName: "ai_results",
+    indexes: [
+      {
+        name: "ai_results_org_id_feature_cache_key_key",
+        unique: true,
+        fields: ["org_id", "feature", "cache_key"],
+      },
+    ],
+  }
+);
+
+/**
  * A computer waiting for someone to approve it, for ten minutes at most. Its
  * organization and person are plain numbers rather than foreign keys, because
  * the row only lives that long and the claim checks them again.

@@ -10,12 +10,14 @@ import { UsersTab } from "@/components/admin/UsersTab";
 import { RolesTab } from "@/components/admin/RolesTab";
 import { OrganizationTab } from "@/components/admin/OrganizationTab";
 import { GitHubTab } from "@/components/admin/GitHubTab";
+import { AiTab } from "@/components/admin/AiTab";
 
 /**
  * The Admin screen: who is in this organization (Users), what each role can do
  * in it (Roles & permissions), the organization itself (Organization: its
  * name, its two-person rule, deleting it), and where its scripts are kept
- * (GitHub: the repository and its access token). Each tab lives in its own file
+ * (GitHub: the repository and its access token), and whether AI assistance
+ * is on (AI). Each tab lives in its own file
  * under components/admin, and this page only decides which tabs to show.
  *
  * A tab shows only for someone allowed to read it. Out of the box that is the
@@ -25,13 +27,14 @@ import { GitHubTab } from "@/components/admin/GitHubTab";
  * sees one or both of those tabs alone.
  */
 
-type Tab = "users" | "roles" | "organization" | "github";
+type Tab = "users" | "roles" | "organization" | "github" | "ai";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "users", label: "Users" },
   { key: "roles", label: "Roles & permissions" },
   { key: "organization", label: "Organization" },
   { key: "github", label: "GitHub" },
+  { key: "ai", label: "AI" },
 ];
 
 export default function AdminPage() {
@@ -59,6 +62,8 @@ export default function AdminPage() {
     roles: can("roles:read"),
     organization: can("organization:read"),
     github: can("github:read"),
+    // The org-wide AI switch is one of the organization's settings.
+    ai: can("organization:read"),
   };
   const tabs = TABS.filter((t) => allowed[t.key]);
   // A tab that was picked and then taken away (the role changed while the
@@ -140,8 +145,10 @@ export default function AdminPage() {
                 />
               ) : t.key === "organization" ? (
                 <OrganizationTab active={tab === "organization"} />
-              ) : (
+              ) : t.key === "github" ? (
                 <GitHubTab active={tab === "github"} />
+              ) : (
+                <AiTab active={tab === "ai"} />
               )}
             </section>
           ))}

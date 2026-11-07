@@ -111,6 +111,14 @@ function sentenceFor(change: RoleChange): string {
       if (change.detail === "removed") return `removed the GitHub settings for ${repository}`;
       return `pointed the organization at the GitHub repository ${repository}`;
     }
+    case "ai-settings":
+      // No subject: AI assistance as a whole. A subject: one AI feature.
+      if (!change.subject) {
+        return change.detail === "off"
+          ? "switched AI assistance off for the organization"
+          : "switched AI assistance on, so schema structure can be sent to the AI service";
+      }
+      return `switched the AI feature ${change.subject} ${change.detail === "off" ? "off" : "on"}`;
     default:
       // "assign": a role given to someone, by an Admin on the Users tab.
       return (

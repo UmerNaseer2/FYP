@@ -1,7 +1,7 @@
 import { sequelize, metadataPool, type MetadataClient } from "./sequelize";
 // Importing the models also registers every one of them with `sequelize`,
 // which is what sync() below creates.
-import { Organization } from "./models";
+import { AI_CALL_OUTCOMES, Organization } from "./models";
 import { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "../environments";
 import { DEFAULT_DRIFT_INTERVAL_MINUTES } from "../drift-schedule";
 import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
@@ -295,6 +295,10 @@ async function addConstraints(): Promise<void> {
     "deploy_attempts_outcome_check",
     "outcome IN ('applied', 'failed', 'refused', 'unknown')"
   );
+  // The AI usage card and the daily limit count by outcome, so each row is one
+  // of the outcomes they know. The list lives next to the model.
+  await addListCheck("ai_calls", "ai_calls_outcome_check", "outcome", AI_CALL_OUTCOMES);
+  await addCheckConstraint("ai_calls", "ai_calls_rating_check", "rating IS NULL OR rating IN (-1, 1)");
   // Only the two routes that spend approvals: the apply route ('deploy') and
   // the revert route ('revert').
   await addCheckConstraint(

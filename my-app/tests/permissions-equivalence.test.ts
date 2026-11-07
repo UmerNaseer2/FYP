@@ -119,6 +119,11 @@ const ADDED: Record<string, Gate> = {
   "POST /api/requests": { kind: "member" },
   "PATCH /api/requests/[id]": { kind: "member" },
   "POST /api/requests/seen": { kind: "member" },
+  // AI assistance: using it, and the Admin screen's AI tab.
+  "GET /api/ai/status": { kind: "permission", keys: ["ai:read"] },
+  "POST /api/ai/rate": { kind: "permission", keys: ["ai:read"] },
+  "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
+  "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */

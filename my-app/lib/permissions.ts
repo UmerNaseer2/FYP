@@ -50,6 +50,10 @@ export const SCREENS = [
   "Performance",
   "Visualizer",
   "Connections",
+  // Not a sidebar screen: AI help shows up inside Compare, Deploy, Drift and
+  // the Script Editor. One permission covers it everywhere, so it gets its own
+  // group in the Roles & permissions tab rather than being split across them.
+  "AI assistance",
   "Admin",
 ] as const;
 export type Screen = (typeof SCREENS)[number];
@@ -317,6 +321,20 @@ export const FEATURES = [
     actions: {
       read: { does: "see which GitHub repository the organization uses", from: "admin" },
       update: { does: "change the GitHub repository or its access token", from: "admin" },
+    },
+  },
+  // Only Read, because every AI feature only explains or drafts: what it
+  // drafts still goes through the permission that applies it (scripts:create
+  // to save a script, deploy:run to run one). An Admin also has to switch AI
+  // on for the whole organization in Admin, AI before anyone can use it.
+  {
+    key: "ai",
+    label: "AI assistance",
+    screen: "AI assistance",
+    description:
+      "Summaries, reviews, drift explanations, SQL drafts and schema chat from the AI service, where an Admin has switched it on.",
+    actions: {
+      read: { does: "use AI assistance", from: "editor" },
     },
   },
 ] as const satisfies readonly FeatureSpec[];
@@ -617,6 +635,7 @@ export const ROLE_CHANGE_KINDS = [
   "rename-organization",
   "two-person-rule",
   "github-settings",
+  "ai-settings",
 ] as const;
 export type RoleChangeKind = (typeof ROLE_CHANGE_KINDS)[number];
 

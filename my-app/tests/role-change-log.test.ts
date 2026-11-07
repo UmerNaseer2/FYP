@@ -299,6 +299,26 @@ describe("someone removed, and the organization changed", () => {
       { kind: "github-settings", subject: "acme/schema-scripts", detail: "removed", ...admin },
       "removed the GitHub settings for acme/schema-scripts",
     ],
+    [
+      "AI assistance switched on",
+      { kind: "ai-settings", detail: "on", ...admin },
+      "switched AI assistance on, so schema structure can be sent to the AI service",
+    ],
+    [
+      "AI assistance switched off",
+      { kind: "ai-settings", detail: "off", ...admin },
+      "switched AI assistance off for the organization",
+    ],
+    [
+      "one AI feature switched off",
+      { kind: "ai-settings", subject: "Schema chat", detail: "off", ...admin },
+      "switched the AI feature Schema chat off",
+    ],
+    [
+      "one AI feature switched on",
+      { kind: "ai-settings", subject: "Explain drift", detail: "on", ...admin },
+      "switched the AI feature Explain drift on",
+    ],
   ])("%s", (_name, over, text) => {
     expect(describeRoleChanges([row({ id: 7, ...over })])).toEqual([line({ id: 7, text })]);
   });

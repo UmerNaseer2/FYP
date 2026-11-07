@@ -104,6 +104,7 @@ const ALLOWED: Record<string, string> = {
   [path.join("lib", "api-fetch.ts")]: "the wrapper itself",
   [path.join("lib", "github-registry.ts")]: "the server's own calls to GitHub",
   [path.join("lib", "push-send.ts")]: "the server's own calls to browsers' push services",
+  [path.join("lib", "ai", "openai-compatible.ts")]: "the server's own calls to the AI service",
   [path.join("app", "login", "page.tsx")]:
     "the sign-in page reads NextAuth's providers, which belong to no organization",
 };
