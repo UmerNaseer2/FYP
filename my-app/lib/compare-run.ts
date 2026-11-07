@@ -240,10 +240,11 @@ export type CompareScreen =
       dataTables: string[];
       /**
        * Whether somebody actually asked for this comparison: `run=1`, which
-       * the Compare button, a saved set and the links from the dashboard,
-       * Drift and a schema's page all send. False on a bare /compare and after
-       * Add target or Remove — the pickers changed, nobody pressed Compare,
-       * and `outcomes` is deliberately empty.
+       * the Compare button and a saved set send. False on a bare /compare,
+       * after Add target or Remove, and on a link that names only the target
+       * (the dashboard, Drift and a schema's page): the pickers changed or
+       * were filled in, nobody chose both sides, and `outcomes` is
+       * deliberately empty.
        */
       asked: boolean;
       /**
@@ -1046,8 +1047,6 @@ export async function runComparison(
   // `left*` / `right*` pair is still honoured so links written before the
   // rename keep working.
   // -------------------------------------------------------------------------
-  const defaultConnectionId = String(savedConnections[0].id);
-
   // `?set=<id>` opens a saved comparison. It only seeds the pickers: the moment
   // the form is submitted the selects send real values, and those win. A set
   // that kept overriding them would make the page impossible to edit — you
@@ -1076,20 +1075,35 @@ export async function runComparison(
   // setsRefusal as the reason instead.
   const setNotFound = requestedSetId !== "" && activeSet === null;
 
-  // Did anybody actually ask for this comparison?
-  //
-  // A migration generated for a pair nobody chose reads as a recommendation, so
-  // only `run=1` runs one. The Compare button sends it, and so do saved-set
-  // links and the links from the dashboard, Drift and a schema's page. Add
-  // target and Remove do not: they change the pickers, and nobody has pressed
-  // Compare on the result yet.
-  const asked =
-    pickValue(params.run, "") === "1" && !(setNotFound && !hasExplicitTargets);
-
   // The source as the URL names it. Present but empty means the picker was
   // submitted with nothing chosen, and that stays "no source" — it is not
   // quietly replaced with the first connection.
   const requestedSource = firstParam(params.sourceConnection ?? params.leftConnection);
+
+  // Did anybody actually ask for this comparison?
+  //
+  // A migration generated for a pair nobody chose reads as a recommendation, so
+  // only `run=1` runs one. The Compare button sends it, and so do saved-set
+  // links. Add target and Remove do not: they change the pickers, and nobody
+  // has pressed Compare on the result yet. Nor does a link that names only the
+  // target (Drift, the dashboard and a schema's page send those): the source
+  // would be a default nobody picked, so even an old bookmark of one that
+  // still carries run=1 only fills the pickers.
+  const asked =
+    pickValue(params.run, "") === "1" &&
+    !(setNotFound && !hasExplicitTargets) &&
+    (requestedSource !== undefined || activeSet !== null);
+
+  // The source a link that names none starts on: the first connection by name,
+  // unless that is the very database the link names as the target. Comparing
+  // a schema with itself shows no differences, which reads as "nothing to do".
+  const firstRequestedTarget = requestedTargetConnections[0];
+  const defaultConnectionId = String(
+    (
+      savedConnections.find((connection) => String(connection.id) !== firstRequestedTarget) ??
+      savedConnections[0]
+    ).id,
+  );
   const sourceConnectionId =
     requestedSource ??
     (activeSet

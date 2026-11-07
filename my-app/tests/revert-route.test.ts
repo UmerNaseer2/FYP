@@ -539,7 +539,11 @@ describe("a batch rollback", () => {
     expect(mockRecordLineage.mock.calls[0][0]).toMatchObject({
       connectionId: 7,
       schemaName: "sales",
+      // The bump is graded from the structure the rollback left. The loudest
+      // stored level is only the fallback when HEAD has no snapshot, because
+      // a stored level describes the forward change, not its undo.
       changeLevel: "breaking",
+      levelFromStructure: true,
       name: "Revert orders_fix v3.0.0, v2.0.0",
     });
 

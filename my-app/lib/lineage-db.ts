@@ -9,7 +9,7 @@ import { buildPgConfig } from "./connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "./secret-store";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
-import type { ChangeLevel } from "./version-detection";
+import { summarizeStructuralSeverity, type ChangeLevel } from "./version-detection";
 import { listSetNamesUsingConnection } from "./comparison-sets";
 import pool, { syncMetadataTables } from "./version-db";
 import { toEnvironment, type Environment } from "./environments";
@@ -201,6 +201,24 @@ export async function findTrackedSchema(
 }
 
 /**
+ * How far the structure moved from the lineage HEAD to what is live now, graded
+ * as a lineage bump.
+ *
+ * The live structure goes on the LEFT. compareSchemas describes the migration
+ * that would make its right side match its left, so with live on the left a
+ * column added since HEAD reads as "add a column" (additive) and a column
+ * dropped since HEAD reads as "drop a column" (breaking). The other way round
+ * graded every change as its own undo: adding a table bumped the major version
+ * and dropping one bumped only the minor.
+ *
+ * The stored HEAD is brought to this build's definition rule first, as the
+ * drift check does, so an old baseline is not counted as changed.
+ */
+export function structuralChangeLevel(head: SchemaSnapshot, live: SchemaSnapshot): ChangeLevel {
+  return summarizeStructuralSeverity(compareSchemas(live, withCurrentNormalization(head))).level;
+}
+
+/**
  * Advance a tracked schema's lineage after a sanctioned deploy/apply.
  *
  * Without this, a migration applied through the tool's own pipeline writes only
@@ -222,10 +240,18 @@ export async function recordAppliedMigrationToLineage(params: {
   schemaName: string;
   targetConfig: ClientConfig;
   changeLevel: ChangeLevel;
+  /**
+   * Grade the bump from how the structure moved since the lineage HEAD, and
+   * use `changeLevel` only when HEAD has no snapshot to compare with. A
+   * rollback needs this: the level stored on a script describes the forward
+   * change, and undoing it is the opposite change (undoing an added column
+   * drops it, which is breaking).
+   */
+  levelFromStructure?: boolean;
   name: string;
   sqlRef: string | null;
 }): Promise<{ advanced: boolean; reason?: string; seq?: number; version?: string }> {
-  const { orgId, connectionId, schemaName, targetConfig, changeLevel, name, sqlRef } = params;
+  const { orgId, connectionId, schemaName, targetConfig, name, sqlRef } = params;
   await syncMetadataTables();
 
   // Only tracked schemas have a lineage to advance. Cheap metadata lookup first,
@@ -262,13 +288,30 @@ export async function recordAppliedMigrationToLineage(params: {
     }
     const tableCount = live.data.tables.length;
 
-    const head = await client.query<{ version: string | null; seq: number | null }>(
-      `SELECT version, seq FROM lineage_migrations
-       WHERE tracked_schema_id = $1 AND org_id = $2 ORDER BY seq DESC LIMIT 1`,
+    // The HEAD's snapshot comes along only when the bump is graded from it,
+    // since a stored snapshot can be large and a deploy has no use for it.
+    const head = await client.query<{
+      version: string | null;
+      seq: number | null;
+      snapshot: SchemaSnapshot | null;
+    }>(
+      params.levelFromStructure
+        ? `SELECT lm.version, lm.seq, s.snapshot
+             FROM lineage_migrations lm
+             LEFT JOIN snapshots s ON s.id = lm.snapshot_id AND s.org_id = lm.org_id
+            WHERE lm.tracked_schema_id = $1 AND lm.org_id = $2
+            ORDER BY lm.seq DESC LIMIT 1`
+        : `SELECT version, seq FROM lineage_migrations
+           WHERE tracked_schema_id = $1 AND org_id = $2 ORDER BY seq DESC LIMIT 1`,
       [trackedSchemaId, orgId]
     );
     const headVersion = head.rows[0]?.version ?? null;
     const headSeq = head.rows[0]?.seq ?? 0;
+    const headSnapshot = head.rows[0]?.snapshot ?? null;
+    const changeLevel =
+      params.levelFromStructure && headSnapshot
+        ? structuralChangeLevel(headSnapshot, live.data)
+        : params.changeLevel;
     const nextSeq = headSeq + 1;
     const nextVersion = getNextLineageVersion(headVersion, changeLevel);
 

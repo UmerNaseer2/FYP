@@ -948,9 +948,13 @@ export async function POST(request: NextRequest) {
 
     // A rollback changes the live structure as much as a deploy does, so a
     // tracked baseline moves with it — otherwise the next drift check reports
-    // our own rollback as drift. One lineage entry for the whole batch, at the
-    // loudest level among the versions undone. Best-effort: the rollback is
-    // already committed, so a bookkeeping failure must not fail the response.
+    // our own rollback as drift. One lineage entry for the whole batch. Its
+    // bump is graded from the structure itself: the level stored on each
+    // version describes the forward change, and undoing it is the opposite one
+    // (undoing an added column drops it). The loudest stored level is only the
+    // fallback for a lineage HEAD with no snapshot to compare with.
+    // Best-effort: the rollback is already committed, so a bookkeeping failure
+    // must not fail the response.
     let lineageNote = "";
     try {
       const lineage = await recordAppliedMigrationToLineage({
@@ -959,6 +963,7 @@ export async function POST(request: NextRequest) {
         schemaName,
         targetConfig,
         changeLevel: loudestChangeLevel(plan.map((step) => asChangeLevel(step.row.change_type))),
+        levelFromStructure: true,
         name: `Revert ${name} ${undone.map(vLabel).join(", ")}`,
         sqlRef: null,
       });

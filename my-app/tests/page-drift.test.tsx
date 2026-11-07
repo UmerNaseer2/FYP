@@ -343,11 +343,12 @@ describe("where the report on screen came from", () => {
 
     // The page builds this address once and hands it to the resolution bar,
     // which draws it as given, so the organization has to be in it already.
-    const href = "/test-org/compare?rightConnection=1&rightSchema=schema_1&run=1";
-    expect(await screen.findByRole("link", { name: /Open in Compare/ })).toHaveAttribute(
-      "href",
-      href
-    );
+    // It names only the target and carries no run=1: the source is for the
+    // reader to pick, so Compare fills in this schema and waits.
+    const href = "/test-org/compare?targetConnection=1&targetSchema=schema_1";
+    expect(
+      await screen.findByRole("link", { name: /Compare with another database/ })
+    ).toHaveAttribute("href", href);
     expect(screen.getByRole("link", { name: /Author a migration/ })).toHaveAttribute("href", href);
   });
 
@@ -363,7 +364,10 @@ describe("where the report on screen came from", () => {
     expect(await screen.findByText("Connection removed")).toBeInTheDocument();
     // Compare needs a connection to open against, so the link is withheld
     // rather than offered and then failing.
-    expect(screen.queryByRole("link", { name: /Open in Compare/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Compare with another database/ })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Author a migration/ })).not.toBeInTheDocument();
   });
 
   it("warns before the resolution buttons when the schema is production", async () => {
@@ -379,6 +383,43 @@ describe("where the report on screen came from", () => {
     // schema's baseline, and on production that accepts an outside change as
     // the new truth.
     expect(await screen.findByText("This is a production schema.")).toBeInTheDocument();
+  });
+});
+
+describe("the schema picker after a fix", () => {
+  it("reads the list again, and keeps the fixed schema on screen", async () => {
+    // Two drifted schemas and no schema in the URL, so the page opens on the
+    // first. The picker's list was read once, so after a fix it still called
+    // the schema drifted while the hero beside it said in sync.
+    setRoutes(
+      routesFor(
+        [tracked({ id: 1, driftStatus: "drifted" }), tracked({ id: 2, driftStatus: "drifted" })],
+        detail({ trackedSchemaId: 1, state: "drifted", report: emptyReport() })
+      )
+    );
+    render(<DriftPage />);
+    const acknowledge = await screen.findByRole("button", { name: /Acknowledge/ });
+
+    // What the server says once schema 1 is fixed. Schema 2 now has the worst
+    // drift, so a page that picked again would move to it.
+    setRoutes([
+      ...routesFor(
+        [tracked({ id: 1, driftStatus: "in_sync" }), tracked({ id: 2, driftStatus: "drifted" })],
+        detail({ trackedSchemaId: 1, state: "in_sync" })
+      ),
+      { match: "/api/lineage/acknowledge", method: "POST", body: { success: true } },
+    ]);
+    fireEvent.click(acknowledge);
+
+    const listReads = () => fetchCalls.filter((c) => /\/api\/lineage$/.test(c.url));
+    await waitFor(() => expect(listReads()).toHaveLength(2));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Select a tracked schema").textContent).toContain("● in sync")
+    );
+    const detailReads = fetchCalls
+      .filter((c) => c.url.includes("/api/lineage/drift"))
+      .map((c) => c.url.split("?")[1]);
+    expect(detailReads).toEqual(["trackedSchemaId=1", "trackedSchemaId=1"]);
   });
 });
 

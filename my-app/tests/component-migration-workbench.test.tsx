@@ -1158,11 +1158,18 @@ describe("what the editor reports about the script", () => {
     expect(screen.getByText("Edited")).toBeInTheDocument();
   });
 
-  it("lists what the generator left out", async () => {
-    show({ warnings: ["orders exists only in the target and is not dropped."] });
+  it("lists the generator's notes on the migration, and only on the Migration tab", async () => {
+    // Some notes are about statements the script keeps, so the heading must not
+    // say they were left out.
+    show({ warnings: ["This script grants to \"reporter\"."] });
     await versionReady();
 
-    expect(screen.getByText("Not included in this migration (1)")).toBeInTheDocument();
-    expect(screen.getByText("orders exists only in the target and is not dropped.")).toBeInTheDocument();
+    expect(screen.getByText("Notes on this migration (1)")).toBeInTheDocument();
+    expect(screen.getByText("This script grants to \"reporter\".")).toBeInTheDocument();
+    expect(screen.queryByText(/Not included in this migration/)).not.toBeInTheDocument();
+
+    // The Rollback tab has its own list; the migration's notes do not describe it.
+    fireEvent.click(screen.getByRole("tab", { name: "Rollback" }));
+    expect(screen.queryByText("Notes on this migration (1)")).not.toBeInTheDocument();
   });
 });

@@ -192,9 +192,11 @@ export default function SchemaDetailPage({
   const headSummary = headNode?.snapshot ?? null;
 
   // The compare deep-link only makes sense while the connection still exists.
+  // It fills in this schema as the target and leaves the source to the reader,
+  // so it does not run a comparison against a source nobody chose.
   const compareHref = detail.connection
     ? orgPath(
-        `/compare?rightConnection=${detail.connection.id}&rightSchema=${encodeURIComponent(detail.schemaName)}&run=1`
+        `/compare?targetConnection=${detail.connection.id}&targetSchema=${encodeURIComponent(detail.schemaName)}`
       )
     : null;
 
@@ -351,7 +353,7 @@ export default function SchemaDetailPage({
           </div>
           {compareHref && (
             <Link href={compareHref} className="btn btn-secondary btn-sm">
-              <CompareIcon size={13} /> Open in Compare
+              <CompareIcon size={13} /> Compare with another database
             </Link>
           )}
         </div>
@@ -437,7 +439,7 @@ function DriftBanner({
                   className="btn btn-secondary btn-sm"
                   title="Opens Compare with this database as the target. Compare works on two live databases — the expected snapshot is not one of them."
                 >
-                  <CompareIcon size={13} /> Open in Compare
+                  <CompareIcon size={13} /> Compare with another database
                 </Link>
               )}
               <RecheckDriftButton

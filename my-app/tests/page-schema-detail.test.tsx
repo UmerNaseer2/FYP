@@ -193,6 +193,34 @@ describe("a tracked schema's header", () => {
     expect(screen.getByText("2 columns added outside the app.")).toBeInTheDocument();
   });
 
+  it("offers Compare with this schema as the target, and does not run it", async () => {
+    // Compare needs a source as well, and only the reader knows which one.
+    // These links used to carry run=1, so Compare ran at once against
+    // whichever connection came first and drew a migration for a pair nobody
+    // chose (or, with only this one, compared the schema with itself).
+    setRoutes([
+      {
+        match: "/api/lineage/7",
+        body: detail({
+          drift: {
+            status: "drifted",
+            summary: null,
+            detail: null,
+            detectedAt: "2026-05-02T10:00:00.000Z",
+          },
+        }),
+      },
+    ]);
+    show("7");
+
+    // One beside the lineage and one in the drift note.
+    const links = await screen.findAllByRole("link", { name: /Compare with another database/ });
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/test-org/compare?targetConnection=3&targetSchema=shop_dev",
+      "/test-org/compare?targetConnection=3&targetSchema=shop_dev",
+    ]);
+  });
+
   it("does not offer Compare once the connection has been deleted", async () => {
     // Compare runs against two live databases. With the connection gone there
     // is no live database on this side at all, so the link would open a screen
@@ -201,7 +229,9 @@ describe("a tracked schema's header", () => {
     show("7");
 
     expect(await screen.findByText("Connection removed")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Open in Compare/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Compare with another database/ })
+    ).not.toBeInTheDocument();
   });
 
   it("asks for a first check rather than claiming to be in sync", async () => {

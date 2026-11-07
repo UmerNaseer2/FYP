@@ -1069,7 +1069,7 @@ function SchemaCard({
         {!connectionGone && (
           <Link
             href={orgPath(
-              `/compare?rightConnection=${item.connectionId}&rightSchema=${encodeURIComponent(item.schemaName)}&run=1`
+              `/compare?targetConnection=${item.connectionId}&targetSchema=${encodeURIComponent(item.schemaName)}`
             )}
             className="btn btn-ghost btn-sm"
           >

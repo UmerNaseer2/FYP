@@ -926,14 +926,18 @@ export function MigrationWorkbench({
                   </div>
                 )}
 
-                {/* Generator warnings (e.g. tables/columns only in target — not dropped) */}
-                {warnings.length > 0 && (
+                {/* The generator's notes on the migration. Some are about statements
+                    it left out (a drop held back by safe mode), and some are about
+                    statements it kept (grants to roles, owners, enum values), so the
+                    heading names neither. They describe the migration, not the
+                    rollback, which has its own list on the Rollback tab. */}
+                {!showingDown && warnings.length > 0 && (
                   <div className="warn-inline mt-3" style={{ flexDirection: "column", gap: 6 }}>
                     <div className="flex items-center gap-2">
                       <span className="ico">
                         <AlertTriangleIcon size={14} />
                       </span>
-                      <b>Not included in this migration ({warnings.length})</b>
+                      <b>Notes on this migration ({warnings.length})</b>
                     </div>
                     <ul className="space-y-1 mt-1" style={{ paddingLeft: 22 }}>
                       {warnings.map((w) => (

@@ -785,6 +785,11 @@ export function summarizeStructuralSeverity(report: CompareReport): {
   // breaking pushed a plain "we added a table" migration to a major bump.
   const dropsTables = report.tablesOnlyInB.length > 0;
 
+  // The same goes for columns. A column only the target has is one the sync
+  // drops (the migration generator marks that DROP COLUMN as breaking too), and
+  // it was graded "additive" because it only showed up as a changed table.
+  const dropsColumns = report.matchedTables.some((table) => table.columnsOnlyInB.length > 0);
+
   // Severity now travels with the change itself (lib/compare.ts decides it, and
   // the migration generator grades its statements with the same rule). This used
   // to match on the prose instead, and matched the wrong half of it: the
@@ -804,17 +809,22 @@ export function summarizeStructuralSeverity(report: CompareReport): {
     ...report.matchedTables.flatMap((table) => table.objectDiffs),
   ].some((diff) => diff.status === "onlyB");
 
-  if (dropsTables || hasBreakingColumnChanges || dropsObjects) {
+  if (dropsTables || dropsColumns || hasBreakingColumnChanges || dropsObjects) {
     return {
       level: "breaking",
       summary: "Structural comparison detected breaking changes.",
     };
   }
 
+  // A new view, routine or type adds to the schema the way a new table does.
+  // Those are in neither count below, so they used to grade as a patch.
+  const addsObjects = report.objectDiffs.some((diff) => diff.status === "onlyA");
+
   if (
     report.tablesOnlyInA.length > 0 ||
     report.summary.changedTables > 0 ||
-    report.summary.changedConstraints > 0
+    report.summary.changedConstraints > 0 ||
+    addsObjects
   ) {
     return {
       level: "additive",

@@ -215,36 +215,52 @@ function Shell({
 function useTrackedSchemas(): {
   tracked: TrackedSchemaListItem[] | null;
   failed: boolean;
+  /** Read the list again, keeping the one on screen until the new one lands. */
+  reload: () => void;
 } {
   const [tracked, setTracked] = useState<TrackedSchemaListItem[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // Counts the reads asked for. The list carries each schema's drift status,
+  // which a fix on the detail tab changes, so the tab asks for a new read.
+  const [reads, setReads] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      let data: unknown = null;
       try {
         const res = await apiFetch("/api/lineage");
-        const data = res.ok ? await res.json() : null;
-        if (cancelled) return;
-        setTracked(Array.isArray(data) ? data : []);
-        setFailed(!Array.isArray(data));
+        data = res.ok ? await res.json() : null;
       } catch {
-        if (cancelled) return;
+        data = null;
+      }
+      if (cancelled) return;
+      if (Array.isArray(data)) {
+        setTracked(data);
+        setFailed(false);
+      } else if (reads === 0) {
         setTracked([]);
         setFailed(true);
       }
+      // A failed re-read keeps the list already on screen: the fix itself
+      // went through, and only the statuses in the picker are out of date.
     }
     void load();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reads]);
 
-  return { tracked, failed };
+  const reload = useCallback(() => setReads((count) => count + 1), []);
+  return { tracked, failed, reload };
 }
 
 function DetailContent({ schema }: { schema: string | undefined }) {
-  const { tracked, failed } = useTrackedSchemas();
+  const { tracked, failed, reload } = useTrackedSchemas();
+  // The schema on screen when the list was last read again. With no schema in
+  // the URL the page shows the one with the worst drift, and right after that
+  // one is fixed it no longer is, so the page would jump to another schema.
+  const [kept, setKept] = useState<number | null>(null);
 
   if (tracked === null) return <ContentSkeleton tab="detail" />;
   if (failed) return <ListUnreadable />;
@@ -254,9 +270,15 @@ function DetailContent({ schema }: { schema: string | undefined }) {
   const byPriority = [...tracked].sort(
     (a, b) => sortPriority(a.driftStatus) - sortPriority(b.driftStatus)
   );
-  const requested = schema ? Number(schema) : NaN;
+  const requested = schema ? Number(schema) : kept;
   const selected = tracked.find((t) => t.id === requested) ?? byPriority[0];
-  return <DetailTab tracked={byPriority} selectedId={selected.id} />;
+
+  // After a fix the picker's statuses are out of date: read the list again.
+  const listChanged = () => {
+    setKept(selected.id);
+    reload();
+  };
+  return <DetailTab tracked={byPriority} selectedId={selected.id} onListChanged={listChanged} />;
 }
 
 function AuditContent() {
@@ -406,9 +428,12 @@ function Tab({
 function DetailTab({
   tracked,
   selectedId,
+  onListChanged,
 }: {
   tracked: TrackedSchemaListItem[];
   selectedId: number;
+  /** A fix changed this schema's drift status, which the picker shows too. */
+  onListChanged: () => void;
 }) {
   const orgPath = useOrgHref();
   const [view, setView] = useState<DriftDetailView | null>(null);
@@ -491,9 +516,12 @@ function DetailTab({
     driftStatus: t.driftStatus,
   }));
 
+  // Fills in this live schema as Compare's target and leaves the source for
+  // the reader to choose. It does not run: a source picked by default would
+  // put a migration for a pair nobody chose on the screen.
   const compareHref = view.connection
     ? orgPath(
-        `/compare?rightConnection=${view.connection.id}&rightSchema=${encodeURIComponent(view.schemaName)}&run=1`
+        `/compare?targetConnection=${view.connection.id}&targetSchema=${encodeURIComponent(view.schemaName)}`
       )
     : null;
 
@@ -575,7 +603,14 @@ function DetailTab({
       )}
 
       {/* Status hero (state-aware) */}
-      <DriftHero view={view} compareHref={compareHref} onResolved={() => void load()} />
+      <DriftHero
+        view={view}
+        compareHref={compareHref}
+        onResolved={() => {
+          void load();
+          onListChanged();
+        }}
+      />
 
       {/* Delta counts — only when we actually computed a comparison */}
       {view.counts && <CountTiles counts={view.counts} report={view.report} />}
@@ -593,7 +628,7 @@ function DetailTab({
           </div>
           {compareHref && (
             <Link href={compareHref} className="btn btn-secondary btn-sm">
-              <CompareIcon size={13} /> Open in Compare
+              <CompareIcon size={13} /> Compare with another database
             </Link>
           )}
         </div>

@@ -16,7 +16,9 @@
 // Nothing here reaches a database: the metadata pool and the live-schema read
 // are both stand-ins.
 import { NextRequest } from "next/server";
-import { createFakeClient, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
+import type { SchemaSnapshot } from "../lib/postgres";
+import { createFakeClient, queriesMatching, queryTexts, type FakeClient, type FakeStep } from "./helpers/fake-pg";
+import { column, schema, table } from "./helpers/snapshots";
 
 /** The lineage head each of the two reads reports, and the order they ran in. */
 let headBeforeRead: number | null = null;
@@ -44,7 +46,7 @@ jest.mock("../lib/postgres", () => ({
   ...jest.requireActual("../lib/postgres"),
   fetchSchemaSnapshot: async () => {
     mockRecord("read the live schema");
-    return { ok: true, data: { database: "app", schema: "public", tables: [] } };
+    return { ok: true, data: mockShapes.live };
   },
 }));
 
@@ -85,6 +87,11 @@ const mockHeads = {
     return headBeforeRead;
   },
 };
+/** What the live read returns, and the snapshot stored on the lineage head. */
+const mockShapes: { live: SchemaSnapshot; head: SchemaSnapshot | null } = {
+  live: { database: "app", schema: "public", tables: [] },
+  head: null,
+};
 function mockRecord(step: string) {
   callOrder.push(step);
 }
@@ -95,7 +102,7 @@ function mockClient(): FakeClient {
       rows:
         headUnderLock === null
           ? []
-          : [{ version: `1.${headUnderLock}.0`, seq: headUnderLock, snapshot: null }],
+          : [{ version: `1.${headUnderLock}.0`, seq: headUnderLock, snapshot: mockShapes.head }],
     },
     { match: /INSERT INTO snapshots/, rows: [{ id: 99 }] },
   ];
@@ -112,6 +119,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   callOrder = [];
+  mockShapes.live = { database: "app", schema: "public", tables: [] };
+  mockShapes.head = null;
 });
 
 /** Re-baseline tracked schema 7, with the two head reads answering as set. */
@@ -200,5 +209,59 @@ describe("a re-baseline nobody raced", () => {
     expect(sent.some((q) => /INSERT INTO snapshots/.test(q))).toBe(true);
     expect(sent.some((q) => /INSERT INTO lineage_migrations/.test(q))).toBe(true);
     expect(sent.some((q) => /INSERT INTO drift_events/.test(q))).toBe(true);
+  });
+});
+
+describe("the version a re-baseline gets", () => {
+  // The lineage head is 1.3.0 and stored the orders table with two columns.
+  const orders = (cols: string[]) => table("orders", cols.map((name) => column(name)));
+  const shop = (...tables: ReturnType<typeof orders>[]) => schema(tables);
+
+  /** The level and version bound into the new lineage row. */
+  function recordedBump(): unknown[] | undefined {
+    const [insert] = queriesMatching(client, /INSERT INTO lineage_migrations/);
+    // Bound as $3 (change_level) and $4 (version).
+    return insert.values?.slice(2, 4);
+  }
+
+  it("bumps the minor version when somebody added a column", async () => {
+    // Compared the other way round, the added column read as one a sync
+    // would drop, and this got a major bump.
+    mockShapes.head = shop(orders(["id", "total"]));
+    mockShapes.live = shop(orders(["id", "total", "note"]));
+    const { status, body } = await rebaseline(3, 3);
+
+    expect(status).toBe(200);
+    expect(body.changeLevel).toBe("additive");
+    expect(body.version).toBe("1.4.0");
+    expect(recordedBump()).toEqual(["additive", "1.4.0"]);
+  });
+
+  it("bumps the major version when somebody dropped a column", async () => {
+    mockShapes.head = shop(orders(["id", "total"]));
+    mockShapes.live = shop(orders(["id"]));
+    const { body } = await rebaseline(3, 3);
+
+    expect(body.changeLevel).toBe("breaking");
+    expect(body.version).toBe("2.0.0");
+    expect(recordedBump()).toEqual(["breaking", "2.0.0"]);
+  });
+
+  it("bumps the major version when somebody dropped a table", async () => {
+    mockShapes.head = shop(orders(["id"]), table("refunds", [column("id")]));
+    mockShapes.live = shop(orders(["id"]));
+    const { body } = await rebaseline(3, 3);
+
+    expect(body.changeLevel).toBe("breaking");
+    expect(body.version).toBe("2.0.0");
+  });
+
+  it("bumps the minor version when somebody added a table", async () => {
+    mockShapes.head = shop(orders(["id"]));
+    mockShapes.live = shop(orders(["id"]), table("refunds", [column("id")]));
+    const { body } = await rebaseline(3, 3);
+
+    expect(body.changeLevel).toBe("additive");
+    expect(body.version).toBe("1.4.0");
   });
 });

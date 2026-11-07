@@ -3,12 +3,11 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
-import { fetchSchemaSnapshot, withCurrentNormalization, type SchemaSnapshot } from "@/lib/postgres";
-import { compareSchemas } from "@/lib/compare";
-import { summarizeStructuralSeverity } from "@/lib/version-detection";
+import { fetchSchemaSnapshot, type SchemaSnapshot } from "@/lib/postgres";
 import {
   getNextLineageVersion,
   buildDriftSummary,
+  structuralChangeLevel,
 } from "@/lib/lineage-db";
 
 /**
@@ -200,12 +199,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Infer the bump from how the live structure differs from the previous HEAD.
-    // The stored HEAD is brought to this build's definition rule first, as the
-    // drift check does, so an old baseline is not counted as changed.
-    const changeLevel = headSnapshot
-      ? summarizeStructuralSeverity(compareSchemas(withCurrentNormalization(headSnapshot), live.data)).level
-      : "additive";
+    // Infer the bump from how the live structure moved since the previous HEAD
+    // (structuralChangeLevel says why the comparison runs from live to HEAD).
+    const changeLevel = headSnapshot ? structuralChangeLevel(headSnapshot, live.data) : "additive";
     const nextSeq = headSeq + 1;
     const nextVersion = getNextLineageVersion(headVersion, changeLevel);
 
