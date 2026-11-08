@@ -272,7 +272,9 @@ publishes, and from which tags.
 
 1. Raise `version` in `desktop/package.json` (the first release can keep
    2.0.0). It must be three plain numbers like 2.1.0, and newer than the
-   latest release.
+   latest release. Raise it to the same number in `my-app/package.json` and
+   `my-app/lib/app-version.ts` (the version the screens show), since a web
+   test fails while the three disagree.
 2. Commit and push it, and wait for the desktop workflow to pass.
 3. Tag that commit with `desktop-v` and the version, and push the tag:
 

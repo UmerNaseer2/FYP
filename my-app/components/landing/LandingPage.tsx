@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { APP_VERSION } from "@/lib/app-version";
 import {
   CompareIcon,
   DeployIcon,
@@ -119,7 +120,7 @@ export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, d
             </div>
             <div className="leading-tight">
               <div className="font-semibold text-[13.5px]">Schema Studio</div>
-              <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>v2.0.0</div>
+              <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>v{APP_VERSION}</div>
             </div>
           </div>
           <LandingThemeToggle />
@@ -241,7 +242,7 @@ export function LandingPage({ createAccountHref, logInHref, encryptsPasswords, d
       <footer className="landing-footer">
         <div className="landing-wrap landing-footer__inner">
           <span>Schema Studio</span>
-          <span className="mono">v2.0.0</span>
+          <span className="mono">v{APP_VERSION}</span>
         </div>
       </footer>
     </div>

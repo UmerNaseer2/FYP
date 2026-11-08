@@ -232,9 +232,16 @@ describe("for a role that may not track, check or stop tracking", () => {
     expect(untrack).toBeDisabled();
     expect(untrack).toHaveAttribute("title", refusal.delete("Viewer"));
 
-    // Once each. The buttons carry them too, but as tooltips, not as text.
+    // Said once, as one sentence rather than a paragraph per button. The
+    // buttons keep their own reasons, as tooltips.
+    expect(
+      screen.getAllByText(
+        `Your role (Viewer) can't track a schema, run a drift check, or stop tracking a schema. ` +
+          `Ask an admin to turn on "Track a schema", "Run a drift check", and "Stop tracking a schema" for this role.`
+      )
+    ).toHaveLength(1);
     for (const reason of [refusal.create, refusal.run, refusal.delete]) {
-      expect(screen.getAllByText(reason("Viewer"))).toHaveLength(1);
+      expect(screen.queryByText(reason("Viewer"))).toBeNull();
     }
   });
 
@@ -280,8 +287,12 @@ describe("for a role that may not track, check or stop tracking", () => {
     const check = await screen.findByRole("button", { name: /Check drift/ });
     expect(check).toBeEnabled();
     expect(check).not.toHaveAttribute("title");
-    expect(screen.getByText(refusal.create("Watcher"))).toBeInTheDocument();
-    expect(screen.getByText(refusal.delete("Watcher"))).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Your role (Watcher) can't track a schema or stop tracking a schema. ` +
+          `Ask an admin to turn on "Track a schema" and "Stop tracking a schema" for this role.`
+      )
+    ).toBeInTheDocument();
     expect(screen.queryByText(/run a drift check/)).toBeNull();
 
     fireEvent.click(check);

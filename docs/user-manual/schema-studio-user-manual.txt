@@ -1088,4 +1088,4 @@ For more help, contact your system administrator. Developers: the code is
 described in docs/PROJECT_CONTEXT.md, and docs/README.md says which document to
 trust when two of them disagree.
 
-Last updated: 2026-10-17 · Schema Studio v2.2.0
+Last updated: 2026-11-05 · Manual version 2.3.0

@@ -32,6 +32,7 @@ import {
   presetFor,
   readKeyOf,
   refusalMessage,
+  refusalMessageForAll,
   roleKeyFrom,
   withToggled,
   type PermissionHolder,
@@ -324,6 +325,50 @@ describe("refusalMessage", () => {
   test("still reads for a key the catalogue does not know", () => {
     expect(refusalMessage("Viewer", "nope:read" as PermissionKey)).toBe(
       "Your role (Viewer) can't do that."
+    );
+  });
+});
+
+describe("refusalMessageForAll, several refusals as one sentence", () => {
+  test("is refusalMessage itself for one key", () => {
+    expect(refusalMessageForAll("Viewer", ["connections:create"])).toBe(
+      refusalMessage("Viewer", "connections:create")
+    );
+  });
+
+  test("joins two with or, and names both lines to turn on", () => {
+    expect(refusalMessageForAll("Watcher", ["drift:create", "drift:delete"])).toBe(
+      "Your role (Watcher) can't track a schema or stop tracking a schema. " +
+        'Ask an admin to turn on "Track a schema" and "Stop tracking a schema" for this role.'
+    );
+  });
+
+  test("keeps an item with an or of its own whole", () => {
+    expect(refusalMessageForAll("Viewer", ["connections:update", "connections:delete"])).toBe(
+      "Your role (Viewer) can't edit or test a saved connection, or delete a connection. " +
+        'Ask an admin to turn on "Edit or test a saved connection" and "Delete a connection" for this role.'
+    );
+  });
+
+  test("puts a comma before the last of three", () => {
+    expect(
+      refusalMessageForAll("Viewer", ["connections:create", "connections:update", "connections:delete"])
+    ).toBe(
+      "Your role (Viewer) can't add a connection, edit or test a saved connection, or delete a connection. " +
+        'Ask an admin to turn on "Add a connection", "Edit or test a saved connection", and "Delete a connection" for this role.'
+    );
+  });
+
+  test("gives each its own sentence when one is admin-only", () => {
+    // "Ask an admin to turn on" would be wrong for a line no role can be given.
+    expect(refusalMessageForAll("Editor", ["connections:create", "roles:update"])).toBe(
+      `${refusalMessage("Editor", "connections:create")} ${refusalMessage("Editor", "roles:update")}`
+    );
+  });
+
+  test("and when one has commas of its own, which a list would blur", () => {
+    expect(refusalMessageForAll("Viewer", ["drift:create", "drift:update"])).toBe(
+      `${refusalMessage("Viewer", "drift:create")} ${refusalMessage("Viewer", "drift:update")}`
     );
   });
 });

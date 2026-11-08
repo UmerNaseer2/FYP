@@ -16,6 +16,7 @@ import { toEnvironment, type Environment } from "./environments";
 import { snapshotFormatGap, type SnapshotFormatGap } from "./snapshot-format";
 import { normalizeDriftInterval } from "./drift-schedule";
 import { toDriftSource, type DriftSource } from "./drift-source";
+import { countOf } from "./plural";
 
 /**
  * Phase 6 metadata store — "schema lineage".
@@ -759,12 +760,18 @@ export function buildDriftSummary(version: string | null, counts: DriftCounts): 
       ? `In sync with v${version} — no structural drift.`
       : "In sync — no structural drift.";
   }
+  // Counted properly, as the rest of the interface is: this line is shown on
+  // the Drift and Lineage screens, where "1 table(s) added" read as unfinished.
   const parts: string[] = [];
-  if (counts.tablesAdded) parts.push(`${counts.tablesAdded} table(s) added`);
-  if (counts.tablesRemoved) parts.push(`${counts.tablesRemoved} table(s) removed`);
-  if (counts.tablesChanged) parts.push(`${counts.tablesChanged} table(s) changed`);
-  if (counts.constraintsChanged) parts.push(`${counts.constraintsChanged} constraint(s) changed`);
-  if (objectsChanged) parts.push(`${objectsChanged} view/function/grant change(s)`);
+  if (counts.tablesAdded) parts.push(`${countOf(counts.tablesAdded, "table")} added`);
+  if (counts.tablesRemoved) parts.push(`${countOf(counts.tablesRemoved, "table")} removed`);
+  if (counts.tablesChanged) parts.push(`${countOf(counts.tablesChanged, "table")} changed`);
+  if (counts.constraintsChanged) {
+    parts.push(`${countOf(counts.constraintsChanged, "constraint")} changed`);
+  }
+  // Not "view/function/grant": the count covers sequences, types and
+  // extensions too.
+  if (objectsChanged) parts.push(countOf(objectsChanged, "other object change"));
   return `Drift vs v${version ?? "?"}: ${parts.join(", ")}.`;
 }
 

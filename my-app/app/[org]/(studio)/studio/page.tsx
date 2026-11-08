@@ -31,7 +31,7 @@ import { useNow } from "@/hooks/useNow";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
 import { describeCadence } from "@/lib/drift-schedule";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
 import { displayVersion } from "@/lib/version-timeline";
 import {
   DashboardIcon,
@@ -442,13 +442,16 @@ export default function DashboardPage() {
     </Button>
   );
 
-  // Why buttons on this page are off for this role. The card buttons only
-  // count once there are cards to press them on.
-  const roleNotes = [
-    trackRefusal,
-    total > 0 ? checkRefusal : null,
-    total > 0 ? untrackRefusal : null,
-  ].filter((note): note is string => note !== null);
+  // Why buttons on this page are off for this role, in one sentence rather
+  // than a paragraph per button. The card buttons only count once there are
+  // cards to press them on. A single refusal opens Requests with it picked.
+  // A check is allowed by Drift: Run or Deploy: Run (useDriftCheckRefusal),
+  // and its refusal names the Drift one.
+  const refusedKeys: PermissionKey[] = [];
+  if (trackRefusal) refusedKeys.push("drift:create");
+  if (total > 0 && checkRefusal) refusedKeys.push("drift:run");
+  if (total > 0 && untrackRefusal) refusedKeys.push("drift:delete");
+  const roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
 
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
@@ -475,15 +478,13 @@ export default function DashboardPage() {
       </header>
 
       {/* Said once for the page rather than under every card's buttons. */}
-      {roleNotes.length > 0 && (
+      {roleNote && (
         <div className="role-note">
           <InfoIcon size={15} className="ico" />
-          <div className="body space-y-0.5">
-            {roleNotes.map((note) => (
-              <p key={note}>{note}</p>
-            ))}
+          <div className="body">
             <p>
-              <AskAdmin />
+              {roleNote}
+              <AskAdmin permission={refusedKeys.length === 1 ? refusedKeys[0] : undefined} />
             </p>
           </div>
         </div>

@@ -175,7 +175,7 @@ describe("the rail when it is open", () => {
 
   test("heads the list rather than leaving the rows loose", () => {
     renderRail();
-    expect(screen.getByText("Workspace")).not.toHaveClass("sr-only");
+    expect(screen.getByText("Menu")).not.toHaveClass("sr-only");
   });
 });
 
@@ -208,7 +208,7 @@ describe("the rail when it is collapsed", () => {
 
   test("takes the heading out of sight the same way", () => {
     renderRail({ collapsed: true });
-    expect(screen.getByText("Workspace")).toHaveClass("sr-only");
+    expect(screen.getByText("Menu")).toHaveClass("sr-only");
   });
 
   test("keeps sign out reachable", () => {

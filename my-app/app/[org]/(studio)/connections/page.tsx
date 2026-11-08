@@ -5,7 +5,7 @@ import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
-import { parsePostgresUri, uriToFields } from "@/lib/parse-uri";
+import { hasPostgresScheme, parsePostgresUri, uriToFields } from "@/lib/parse-uri";
 import { APPLIES_TO_HEADER_KEY } from "@/lib/application-targeting";
 import {
   DEFAULT_SSL_MODE,
@@ -36,7 +36,7 @@ import {
   toExecuteRole,
   type ExecuteRole,
 } from "@/lib/connection-access";
-import { refusalMessage } from "@/lib/permissions";
+import { refusalMessage, refusalMessageForAll, type PermissionKey } from "@/lib/permissions";
 import Link from "next/link";
 import {
   LogoIcon,
@@ -115,7 +115,9 @@ type RowResult =
   | { status: "err"; error: string; testedAt: string | null };
 
 type FieldMode = "uri" | "fields";
-type Filter = "all" | "local" | "online" | "ssl" | Environment;
+// "remote" is any host other than this computer. It was labelled "Online",
+// which read as "reachable right now", a question the Test button answers.
+type Filter = "all" | "local" | "remote" | "ssl" | Environment;
 
 type DrawerTest =
   | { kind: "idle" }
@@ -140,6 +142,23 @@ const EMPTY_FORM = {
 function isLocalHost(host: string): boolean {
   const h = (host ?? "").toLowerCase().trim();
   return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
+// The string the Local quick start fills in. Hosted clears it, but keeps one
+// the person pasted.
+const LOCAL_QUICK_START_URI = "postgres://postgres@localhost:5432/postgres";
+
+/**
+ * `base`, or `base 2`, `base 3` and so on when a saved connection already has
+ * that name, so two quick starts don't leave two rows nobody can tell apart
+ * in the lists and pickers.
+ */
+function unusedName(base: string, taken: readonly string[]): string {
+  const names = new Set(taken.map((name) => name.trim().toLowerCase()));
+  if (!names.has(base.toLowerCase())) return base;
+  let n = 2;
+  while (names.has(`${base} ${n}`.toLowerCase())) n++;
+  return `${base} ${n}`;
 }
 
 /** The TLS setting for a saved row: ssl_mode when present, else the old boolean. */
@@ -346,6 +365,8 @@ export default function ConnectionsPage() {
     const hasUri = Boolean(conn.has_connection_string);
     setEditingId(conn.id);
     fieldsFilledFrom.current = "";
+    // The saved name is the person's own, so a quick start press keeps it.
+    pickedName.current = null;
     setForm({
       name: conn.name ?? "",
       uri: "", // never prefilled (it embeds the password); blank keeps the stored one
@@ -367,11 +388,21 @@ export default function ConnectionsPage() {
   }
 
   function quickStart(kind: "local" | "hosted") {
+    // A name the person typed stays. One a pill or the finder filled in
+    // follows the latest press: Local then Hosted used to leave a hosted
+    // database named "Local Postgres".
+    const previousPick = pickedName.current;
+    const name = unusedName(
+      kind === "local" ? "Local Postgres" : "Hosted Postgres",
+      connections.filter((c) => c.id !== editingId).map((c) => c.name ?? "")
+    );
+    pickedName.current = name;
+    const nameFor = (current: string) => (!current || current === previousPick ? name : current);
     if (kind === "local") {
       setForm((f) => ({
         ...f,
-        uri: "postgres://postgres@localhost:5432/postgres",
-        name: f.name || "Local Postgres",
+        uri: LOCAL_QUICK_START_URI,
+        name: nameFor(f.name),
         sslMode: "disable",
         // A loopback Postgres is a development database by definition. Hosted
         // is left unlabelled on purpose — only the user knows which it is.
@@ -382,12 +413,19 @@ export default function ConnectionsPage() {
       // "parsed ok" from the panel below — which reads as approval of an
       // address that does not exist. The input's own placeholder shows the
       // shape instead.
-      setForm((f) => ({
-        ...f,
-        uri: "",
-        name: f.name || "Hosted Postgres",
-        sslMode: "require",
-      }));
+      setForm((f) => {
+        // Still what the Local pill filled in: its string and its "dev" label
+        // describe a database on this computer, so they go. A string the
+        // person pasted, and a label they picked, stay.
+        const fromLocalPill = f.uri.trim() === LOCAL_QUICK_START_URI;
+        return {
+          ...f,
+          uri: fromLocalPill ? "" : f.uri,
+          name: nameFor(f.name),
+          sslMode: "require",
+          environment: fromLocalPill && f.environment === "dev" ? DEFAULT_ENVIRONMENT : f.environment,
+        };
+      });
     }
     setFieldMode("uri");
     setDrawerTest({ kind: "idle" });
@@ -518,7 +556,9 @@ export default function ConnectionsPage() {
     if (fieldMode === "uri" && form.uri.trim() && !parsePostgresUri(form.uri)) {
       setDrawerTest({
         kind: "err",
-        error: "That connection string doesn't look valid.",
+        error: hasPostgresScheme(form.uri)
+          ? "That connection string doesn't look valid."
+          : "A connection string starts with postgres:// or postgresql://.",
         sslRequired: false,
         detail: "",
       });
@@ -742,7 +782,7 @@ export default function ConnectionsPage() {
   // ——— Derived view data ———
   const visible = connections.filter((c) => {
     if (filter === "local") return isLocalHost(c.host);
-    if (filter === "online") return !isLocalHost(c.host);
+    if (filter === "remote") return !isLocalHost(c.host);
     if (filter === "ssl") return sslModeUsesTls(connSslMode(c));
     if ((ENVIRONMENTS as readonly string[]).includes(filter)) {
       return connEnvironment(c) === filter;
@@ -764,7 +804,7 @@ export default function ConnectionsPage() {
     : [{ environment: null, rows: visible }];
 
   const localCount = connections.filter((c) => isLocalHost(c.host)).length;
-  const onlineCount = connections.length - localCount;
+  const remoteCount = connections.length - localCount;
   const sslCount = connections.filter((c) => sslModeUsesTls(connSslMode(c))).length;
   const envCount = (environment: Environment) =>
     connections.filter((c) => connEnvironment(c) === environment).length;
@@ -803,13 +843,15 @@ export default function ConnectionsPage() {
    */
   const noCountsToShow = loadError !== null || connections.length === 0;
 
-  // Why buttons on this page are off for this role. The row buttons only
-  // count once there are rows to press them on.
-  const roleNotes = [
-    createRefusal,
-    connections.length > 0 ? updateRefusal : null,
-    connections.length > 0 ? deleteRefusal : null,
-  ].filter((note): note is string => note !== null);
+  // Why buttons on this page are off for this role, in one sentence: a
+  // Viewer is refused all three, and three paragraphs that differ by a few
+  // words read as a wall. The row buttons only count once there are rows to
+  // press them on. A single refusal opens Requests with it already picked.
+  const refusedKeys: PermissionKey[] = [];
+  if (createRefusal) refusedKeys.push("connections:create");
+  if (connections.length > 0 && updateRefusal) refusedKeys.push("connections:update");
+  if (connections.length > 0 && deleteRefusal) refusedKeys.push("connections:delete");
+  const roleNote = refusedKeys.length > 0 ? refusalMessageForAll(roleLabel, refusedKeys) : null;
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
@@ -876,16 +918,14 @@ export default function ConnectionsPage() {
       </section>
 
       {/* Said once for the page rather than on every row's buttons. */}
-      {roleNotes.length > 0 && (
+      {roleNote && (
         <section className="px-8 pt-4 pb-2">
           <div className="role-note">
             <InfoIcon size={15} className="ico" />
-            <div className="body space-y-0.5">
-              {roleNotes.map((note) => (
-                <p key={note}>{note}</p>
-              ))}
+            <div className="body">
               <p>
-                <AskAdmin />
+                {roleNote}
+                <AskAdmin permission={refusedKeys.length === 1 ? refusedKeys[0] : undefined} />
               </p>
             </div>
           </div>
@@ -901,8 +941,8 @@ export default function ConnectionsPage() {
         <FilterPill active={filter === "local"} onClick={() => setFilter("local")} count={localCount}>
           Local
         </FilterPill>
-        <FilterPill active={filter === "online"} onClick={() => setFilter("online")} count={onlineCount}>
-          Online
+        <FilterPill active={filter === "remote"} onClick={() => setFilter("remote")} count={remoteCount}>
+          Remote
         </FilterPill>
         <span className="hsep mx-1.5" />
         <FilterPill active={filter === "ssl"} onClick={() => setFilter("ssl")} count={sslCount}>
@@ -1104,7 +1144,7 @@ export default function ConnectionsPage() {
                                 ) : (
                                   <span className="pill pill-brand">
                                     <span className="dot" />
-                                    Online
+                                    Remote
                                   </span>
                                 )}
                               </div>
@@ -1301,8 +1341,8 @@ export default function ConnectionsPage() {
               </button>
             </div>
             <div className="help mt-2">
-              Pre-fills the SSL mode each one needs. Hosted leaves the connection
-              string to you — paste your own below.
+              Fills in a name and the SSL mode each one needs. Hosted leaves the
+              connection string to you, so paste your own below.
             </div>
           </div>
 
@@ -1718,7 +1758,7 @@ export default function ConnectionsPage() {
 
         <div className="drawer-footer">
           <div className="text-[11.5px] mono" style={{ color: "var(--text-3)" }}>
-            credentials stored for this workspace
+            credentials stored for this organization
           </div>
           <div className="flex items-center gap-2">
             <button className="btn btn-ghost btn-sm" onClick={() => setDrawerOpen(false)} type="button">
@@ -1970,7 +2010,13 @@ function UriPreview({ uri }: { uri: string }) {
   // field the user has already filled tells them the opposite of what happened,
   // and Test then calls the same string invalid.
   const empty = !uri.trim();
-  const status = empty ? "awaiting input" : parsed ? "parsed ok" : "doesn't look valid";
+  const status = empty
+    ? "awaiting input"
+    : parsed
+      ? "parsed ok"
+      : hasPostgresScheme(uri)
+        ? "doesn't look valid"
+        : "needs postgres://";
   return (
     <div className="panel p-3">
       <div className="flex items-center justify-between mb-2">

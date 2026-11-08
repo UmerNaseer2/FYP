@@ -1,4 +1,4 @@
-import { parsePostgresUri } from "./parse-uri";
+import { hasPostgresScheme, parsePostgresUri } from "./parse-uri";
 import { ENVIRONMENTS, toEnvironment, type Environment } from "./environments";
 import { toExecuteRole, type ExecuteRole } from "./connection-access";
 import {
@@ -325,8 +325,9 @@ export function validateConnection(
         // The URL parser rejects an out-of-range port outright, which would
         // otherwise surface as a vague "doesn't parse". Name the real cause.
         const portish = connection_string.match(/:(\d+)(?:[/?]|$)/);
-        errors.connection_string =
-          portish && parsePort(portish[1]) === null
+        errors.connection_string = !hasPostgresScheme(connection_string)
+          ? "A connection string starts with postgres:// or postgresql://."
+          : portish && parsePort(portish[1]) === null
             ? `The URI's port must be between ${PORT_MIN} and ${PORT_MAX}.`
             : "That doesn't parse as a postgres:// URI.";
       } else if (parsed.host === MISSING || !isValidHost(parsed.host)) {

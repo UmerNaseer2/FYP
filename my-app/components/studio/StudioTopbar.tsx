@@ -1,7 +1,10 @@
+"use client";
+
 import { ChevronRightIcon, MenuIcon } from "@/components/ui/icons";
+import { useOrg } from "@/hooks/useOrg";
 
 type StudioTopbarProps = {
-  /** Current screen name, shown after "Workspace ›" in the breadcrumb. */
+  /** Current screen name, shown after the organization's name in the breadcrumb. */
   breadcrumbScreen: string;
   /** Show the hamburger that opens the mobile nav drawer. */
   showMenu?: boolean;
@@ -14,6 +17,12 @@ type StudioTopbarProps = {
  * actions in the page body, so the top bar stays intentionally minimal.
  */
 export function StudioTopbar({ breadcrumbScreen, showMenu = false, onMenuClick }: StudioTopbarProps) {
+  // The breadcrumb starts with the organization the page is open in, so
+  // someone who belongs to two can see which one they are working in. Every
+  // studio page has one (app/[org]/layout.tsx); without one, as in a component
+  // test, the screen name stands alone.
+  const orgName = useOrg()?.name ?? null;
+
   return (
     <div
       className="topbar h-14 px-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-none"
@@ -28,12 +37,17 @@ export function StudioTopbar({ breadcrumbScreen, showMenu = false, onMenuClick }
           <MenuIcon size={18} />
         </button>
       )}
-      {/* Breadcrumb — reflects the active route. "Workspace ›" hides on phones. */}
+      {/* Breadcrumb: the organization, then the active screen. On phones the
+          organization half hides (.crumb-org in globals.css) to save room. */}
       <nav className="flex items-center gap-2 text-[13px] min-w-0" style={{ color: "var(--text-2)" }}>
-        <span className="crumb-workspace" style={{ color: "var(--text-3)" }}>
-          Workspace
-        </span>
-        <ChevronRightIcon size={12} className="crumb-workspace" />
+        {orgName && (
+          <>
+            <span className="crumb-org truncate max-w-[16rem]" style={{ color: "var(--text-3)" }} title={orgName}>
+              {orgName}
+            </span>
+            <ChevronRightIcon size={12} className="crumb-org flex-none" />
+          </>
+        )}
         <span className="font-medium truncate" style={{ color: "var(--text)" }}>
           {breadcrumbScreen}
         </span>

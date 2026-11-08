@@ -5,7 +5,7 @@ how to drive the finished app. They are kept here
 so anyone reviewing the code — a marker, a teammate, an AI reviewer — can read
 the requirements without being handed a separate folder.
 
-Unit COS40005, Swinburne University of Technology Sarawak.
+Units COS40005 and COS40006, Swinburne University of Technology Sarawak.
 Team: Umer Naseer, Frandya Meidy F., Cindy Wong IY. Supervisor: Jason Thomas Chew.
 
 ## What is here

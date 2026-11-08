@@ -211,6 +211,46 @@ describe("the rest of the object lines", () => {
     expect(lineFor("recalc(integer)")).toHaveTextContent("only in source — created");
   });
 
+  it("says a sequence, enum or domain is altered in place, and how a routine goes", () => {
+    // These all said "replaced". ALTER SEQUENCE, ALTER TYPE ... ADD VALUE and
+    // ALTER DOMAIN change the object where it stands, and a routine whose
+    // return type moved is dropped before it is created again.
+    const changed = (
+      kind: ObjectDiff["kind"],
+      name: string,
+      extra: Partial<ObjectDiff> = {}
+    ): ObjectDiff => ({
+      kind,
+      name,
+      status: "changedDefinition",
+      summary: `${name} differs.`,
+      leftDefinition: "new",
+      rightDefinition: "old",
+      severity: "safe",
+      ...extra,
+    });
+    render(
+      <DiffReport
+        report={report([
+          changed("SEQUENCE", "order_seq"),
+          changed("ENUM", "order_status"),
+          changed("DOMAIN", "email_address"),
+          changed("FUNCTION", "recalc(integer)"),
+          changed("FUNCTION", "total(integer)", { replaceNeedsDrop: true }),
+        ])}
+        allowDataLoss={false}
+      />
+    );
+
+    for (const name of ["order_seq", "order_status", "email_address"]) {
+      expect(lineFor(name)).toHaveTextContent("definition changed — altered in place");
+    }
+    expect(lineFor("recalc(integer)")).toHaveTextContent("definition changed — replaced");
+    expect(lineFor("total(integer)")).toHaveTextContent(
+      "definition changed — dropped and recreated"
+    );
+  });
+
   it("says schemas are in sync when there is nothing to report", () => {
     render(<DiffReport report={report([])} allowDataLoss={false} />);
     expect(screen.getByText("Schemas are in sync")).toBeInTheDocument();

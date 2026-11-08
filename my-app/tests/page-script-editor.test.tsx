@@ -173,6 +173,27 @@ describe("when the editor cannot do its job", () => {
     );
   });
 
+  it("says the registry is missing too, before any connection is saved", async () => {
+    // With no connections the pickers, and the registry message under them,
+    // are not on screen. Adding a connection and coming back used to be the
+    // first time the person heard that the registry was missing as well.
+    setRoutes([
+      { match: "/api/connections", body: [] },
+      {
+        match: "/api/github/pull",
+        status: 500,
+        body: { error: "GitHub is not configured.", code: "github_unconfigured" },
+      },
+      ...baseRoutes(),
+    ]);
+    render(<ScriptEditorPage />);
+
+    expect(await screen.findByText(/Saving also needs the GitHub registry/)).toHaveTextContent(
+      /an admin adds it on the Admin screen, under GitHub\.$/
+    );
+    expect(screen.getByText("Add a connection first")).toBeInTheDocument();
+  });
+
   it("says a registry that is not set up cannot be saved to either", async () => {
     // Read from the pull's CODE, not the wording of its message: without the
     // three settings the save would fail the same way the listing did, so the

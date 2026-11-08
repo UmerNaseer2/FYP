@@ -1524,8 +1524,8 @@ summary.obj-header::-webkit-details-marker { display:none; }
 }
 
 @media (max-width: 640px) {
-  /* Topbar: drop the "Workspace ›" prefix on phones to save room. */
-  .crumb-workspace { display:none; }
+  /* Topbar: drop the organization half of the breadcrumb on phones to save room. */
+  .crumb-org { display:none; }
 
   /* Compare saved-set bar, source bar + summary strip stack. */
   .set-bar__side--end { margin-left:0; }

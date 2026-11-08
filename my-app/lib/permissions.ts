@@ -553,6 +553,41 @@ export function refusalMessage(roleLabel: string, key: PermissionKey): string {
 }
 
 /**
+ * Several refusals on one page as one sentence, so a role refused three
+ * buttons reads one notice instead of three paragraphs that differ by a few
+ * words: "Your role (Viewer) can't add a connection, edit or test a saved
+ * connection, or delete a connection. Ask an admin to turn on ...".
+ *
+ * One key is refusalMessage itself. When a key is unknown or admin-only, or
+ * its words hold a comma of their own, one sentence would say the wrong thing
+ * or read ambiguously, so each key gets its own sentence instead.
+ */
+export function refusalMessageForAll(roleLabel: string, keys: readonly PermissionKey[]): string {
+  const permissions = keys.flatMap((key) => {
+    const permission = BY_KEY.get(key);
+    return permission && !permission.adminOnly && !permission.does.includes(",") ? [permission] : [];
+  });
+  if (keys.length < 2 || permissions.length < keys.length) {
+    return keys.map((key) => refusalMessage(roleLabel, key)).join(" ");
+  }
+  return (
+    `Your role (${roleLabel}) can't ${wordList(permissions.map((p) => p.does), "or")}. ` +
+    `Ask an admin to turn on ${wordList(keys.map((key) => `"${permissionLabel(key)}"`), "and")} for this role.`
+  );
+}
+
+/**
+ * "a or b", and "a, b, or c" from three on. Two get the comma as well when one
+ * holds the joining word itself, so "edit or test a saved connection, or
+ * delete a connection" keeps its first item whole.
+ */
+function wordList(items: readonly string[], word: "and" | "or"): string {
+  const needsComma = items.length > 2 || items.some((item) => item.includes(` ${word} `));
+  if (!needsComma) return items.join(` ${word} `);
+  return `${items.slice(0, -1).join(", ")}, ${word} ${items[items.length - 1]}`;
+}
+
+/**
  * The Roles & permissions tab's tick rule, here so it can be tested without a
  * screen.
  *

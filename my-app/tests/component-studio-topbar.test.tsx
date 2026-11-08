@@ -16,17 +16,27 @@
  * What is NOT here:
  *  - Who decides the screen name or when the menu shows:
  *    tests/component-studio-shell.test.tsx, which owns both.
- *  - That "Workspace ›" disappears on a narrow window. That is a CSS rule
- *    hung on the crumb-workspace class and jsdom applies no stylesheet, so
- *    what is asserted is that the class is on both halves of the crumb — the
- *    word and the chevron after it — because hiding one without the other
- *    leaves a stray arrow pointing at nothing.
+ *  - That the organization half disappears on a narrow window. That is a CSS
+ *    rule hung on the crumb-org class and jsdom applies no stylesheet, so what
+ *    is asserted is that the class is on both halves of the crumb (the name and
+ *    the chevron after it), because hiding one without the other leaves a stray
+ *    arrow pointing at nothing.
  */
 
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 
+import { OrgProvider } from "@/components/OrgProvider";
 import { StudioTopbar } from "@/components/studio/StudioTopbar";
+
+/** The bar as every studio page draws it: inside an organization. */
+function renderInOrg(screenName: string) {
+  return render(
+    <OrgProvider slug="acme" name="Acme Ltd">
+      <StudioTopbar breadcrumbScreen={screenName} />
+    </OrgProvider>
+  );
+}
 
 describe("the breadcrumb", () => {
   test("says which screen you are on", () => {
@@ -34,23 +44,32 @@ describe("the breadcrumb", () => {
     expect(screen.getByText("Version Sync")).toBeInTheDocument();
   });
 
-  test("puts it under the workspace rather than on its own", () => {
-    render(<StudioTopbar breadcrumbScreen="Drift" />);
-    expect(screen.getByRole("navigation")).toHaveTextContent("Workspace");
+  test("puts it under the organization the page is open in", () => {
+    // It said "Workspace" in every organization, a word the studio uses
+    // nowhere else, so someone in two could not tell which one they were in.
+    renderInOrg("Drift");
+    expect(screen.getByRole("navigation")).toHaveTextContent("Acme Ltd");
     expect(screen.getByRole("navigation")).toHaveTextContent("Drift");
+    expect(screen.getByRole("navigation")).not.toHaveTextContent("Workspace");
   });
 
-  test("marks the workspace half so a narrow window can drop it whole", () => {
+  test("is the screen name alone outside every organization", () => {
     const { container } = render(<StudioTopbar breadcrumbScreen="Drift" />);
-    const dropped = container.querySelectorAll(".crumb-workspace");
+    expect(screen.getByRole("navigation")).toHaveTextContent(/^Drift$/);
+    expect(container.querySelectorAll(".crumb-org")).toHaveLength(0);
+  });
+
+  test("marks the organization half so a narrow window can drop it whole", () => {
+    const { container } = renderInOrg("Drift");
+    const dropped = container.querySelectorAll(".crumb-org");
     expect(dropped).toHaveLength(2);
-    expect(dropped[0]).toHaveTextContent("Workspace");
+    expect(dropped[0]).toHaveTextContent("Acme Ltd");
   });
 
   test("leaves the screen name itself alone, whatever the width", () => {
     // The screen you are on is the one thing the bar cannot afford to hide.
-    render(<StudioTopbar breadcrumbScreen="Drift" />);
-    expect(screen.getByText("Drift")).not.toHaveClass("crumb-workspace");
+    renderInOrg("Drift");
+    expect(screen.getByText("Drift")).not.toHaveClass("crumb-org");
   });
 });
 

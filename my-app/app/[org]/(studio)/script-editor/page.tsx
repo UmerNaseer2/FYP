@@ -1041,7 +1041,17 @@ export default function ScriptEditorPage() {
             <EmptyState
               icon={<EditIcon size={22} />}
               title="Add a connection first"
-              description="The editor needs a saved PostgreSQL connection to know the target database and read its applied versions."
+              description={
+                // Said here as well, because the message under the pickers is
+                // not on screen yet: somebody who adds a connection and comes
+                // back should not find a second thing missing only then.
+                "The editor needs a saved PostgreSQL connection to know the target database and read its applied versions." +
+                (!githubUnconfigured
+                  ? ""
+                  : desktop
+                    ? " Saving also needs the GitHub registry, which is not set up yet: add it in Settings."
+                    : " Saving also needs the GitHub registry, which is not set up for this organization yet: an admin adds it on the Admin screen, under GitHub.")
+              }
               actions={
                 <Link href={orgPath("/connections")} className="btn btn-primary btn-sm">
                   <ConnectionsIcon size={14} />
@@ -1219,8 +1229,8 @@ export default function ScriptEditorPage() {
                 ) : (
                   <>
                     {githubError}{" "}
-                    Existing families can&apos;t be listed, but you can still add a new
-                    one.
+                    Existing script groups can&apos;t be listed, but you can still add a
+                    new one.
                   </>
                 )}
               </p>

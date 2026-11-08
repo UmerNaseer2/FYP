@@ -14,13 +14,22 @@ export type ParsedUri = {
   sslmode: string | null;
 };
 
+/** Whether a string starts with `postgres://` or `postgresql://`. */
+export function hasPostgresScheme(raw: string): boolean {
+  return /^postgres(ql)?:\/\//i.test((raw ?? "").trim());
+}
+
 /**
  * Parse a `postgres://` / `postgresql://` URI into its visible parts. Returns
- * `null` when the string is empty or not a valid URL. Never throws.
+ * `null` when the string is empty, has another scheme, or is not a valid URL.
+ * Never throws.
  */
 export function parsePostgresUri(raw: string): ParsedUri | null {
   const value = (raw ?? "").trim();
-  if (!value) return null;
+  // The URL parser takes any scheme, so "mysql://host/db" or
+  // "https://example.com" used to come back parsed, and the drawer said
+  // "parsed ok" about an address this app cannot use.
+  if (!hasPostgresScheme(value)) return null;
 
   try {
     // Swap the scheme so the built-in URL parser accepts it, then read parts.
@@ -58,7 +67,7 @@ export type UriFields = {
  */
 export function uriToFields(raw: string): UriFields | null {
   const value = (raw ?? "").trim();
-  if (!/^postgres(ql)?:\/\//i.test(value)) return null;
+  if (!hasPostgresScheme(value)) return null;
 
   try {
     const url = new URL(value.replace(/^postgres(ql)?:/i, "http:"));

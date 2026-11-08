@@ -4456,23 +4456,43 @@ export function generateMigration(
   warnings.push(...objects.warnings);
 
   // Roles are cluster-wide, and the snapshot records one schema. So the script
-  // can name a role the target server has never heard of, and GRANT fails on a
-  // role that does not exist rather than creating one. Said once here, because
-  // saying it on every GRANT would bury the statements themselves.
-  const namedRoles = new Set<string>();
+  // can name a role the target server has never heard of, and GRANT or OWNER
+  // TO fails on a role that does not exist rather than creating one. Said once
+  // here, because saying it on every statement would bury the statements
+  // themselves.
+  //
+  // Only the roles the source names count. A REVOKE takes a privilege off a
+  // role the target's own snapshot listed, so that role is there. It used to
+  // be listed anyway, and an owner change was listed as a grant: a script that
+  // only moved an owner said "This script grants to".
+  const grantedTo = new Set<string>();
+  const ownedBy = new Set<string>();
   for (const statement of objects.privileges) {
-    const match = /(?:TO|FROM) (?:PUBLIC|"((?:[^"]|"")+)")/.exec(statement.sql);
-    if (match?.[1]) namedRoles.add(match[1].replace(/""/g, '"'));
+    const into =
+      statement.kind === "GRANT" ? grantedTo : statement.kind === "ALTER_OWNER" ? ownedBy : null;
+    if (!into) continue;
+    // The role is always last, so the match is anchored at the end: a quoted
+    // object name earlier in the statement can hold " TO " as well.
+    const match = / TO (?:PUBLIC|"((?:[^"]|"")+)")(?: WITH GRANT OPTION)?;$/.exec(statement.sql);
+    if (match?.[1]) into.add(match[1].replace(/""/g, '"'));
   }
-  if (namedRoles.size > 0) {
-    const listed = [...namedRoles].sort().map((r) => `"${r}"`).join(", ");
+  const roleList = (roles: Set<string>) =>
+    [...roles].sort().map((r) => `"${r}"`).join(", ");
+  const roleActions = [
+    grantedTo.size > 0 ? `grants to ${roleList(grantedTo)}` : "",
+    ownedBy.size > 0 ? `sets the owner to ${roleList(ownedBy)}` : "",
+  ].filter(Boolean);
+  if (roleActions.length > 0) {
     warnings.push(
-      `This script grants to ${listed}. Roles belong to the whole server, not ` +
-        "to a schema, so a snapshot cannot tell whether the target has them — " +
-        "CREATE ROLE any that are missing before running it, or the GRANT fails.",
+      `This script ${roleActions.join(" and ")}. Roles belong to the whole ` +
+        "server, not to a schema, so a snapshot cannot tell whether the target " +
+        "has them. CREATE ROLE any that are missing before running it, or the " +
+        "statements that name them fail.",
     );
   }
-  if (objects.privileges.length > 0) {
+  // Only when there is an OWNER TO to point at. A script that only grants or
+  // revokes on objects already there changes no owner.
+  if (objects.privileges.some((statement) => statement.kind === "ALTER_OWNER")) {
     warnings.push(
       "Everything this script creates is owned by whoever runs it until the " +
         "ALTER ... OWNER TO statements near the end move it. Running it as a " +

@@ -202,9 +202,9 @@ const hamburger = () => screen.queryByRole("button", { name: "Open navigation" }
 
 describe("a window with room for the rail", () => {
   test("puts the rail, the bar and the page on screen together", () => {
-    renderShell();
+    renderShell({}, "acme");
     expect(rail()).toBeInTheDocument();
-    expect(screen.getByRole("navigation")).toHaveTextContent("Workspace");
+    expect(screen.getByRole("navigation")).toHaveTextContent("acme");
     expect(screen.getByRole("main")).toHaveTextContent("The page itself");
   });
 

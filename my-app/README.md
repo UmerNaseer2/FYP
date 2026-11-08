@@ -551,15 +551,21 @@ Fonts are Geist Sans and Geist Mono via `next/font`, exposed as
 
 ## 7. Repository conventions
 
-- `main` is the trunk. `Umer-dev`, `Cindy-dev`, `mei-dev`, `G-DEV` and `test`
-  are the per-person branches. Work lands on `Umer-dev` first; the others are
-  fast-forwarded to match, so every branch holds the same tree.
-- This README is the main tracked document, and the only one describing the app
-  itself. The repository also tracks a root `README.md` and three files under
-  `docs/` (`PROJECT_CONTEXT.md`, `README.md`, `REVIEW_PROMPT.md`). Working notes,
-  reviews and generated reports go in `my-app/docs/`, which is git-ignored.
-- The full FYP-B review — subsystem maps, the spec trace, 54 findings, the market
-  comparison against fourteen commercial tools, and the roadmap — is at
-  `my-app/docs/schema-studio-fyp-b-review.html`. Open it in a browser.
+- `main` is the trunk. Work lands there, and both the Swinburne test server
+  (which takes only signed commits that pass CI) and the Vercel project deploy
+  from it. The per-person branches (`Umer-dev`, `Cindy-dev`, `mei-dev`, `G-DEV`
+  and `test`) and the older work branches are not kept level with it, so
+  compare one with `main` before working from it.
+- This README describes the web app. The other tracked guides sit beside what
+  they cover: `deploy/` (running it on a server, the container and disk images,
+  hardening, and Supabase with Vercel), `desktop/` (the Ubuntu app, its security
+  notes and a demo script) and `relay/` (the phone relay and the phone app). The
+  root `README.md` points to each of them, and `docs/` holds the coursework
+  documents, the project context, a demo script and the user manual.
+- Working notes, reviews and generated reports go in `my-app/docs/`, which git
+  ignores, so they stay on the machine that wrote them. The FYP-B review
+  (`schema-studio-fyp-b-review.html`, with the subsystem maps, the spec trace,
+  54 findings, the market comparison against fourteen commercial tools, and the
+  roadmap) is one of them. Open it in a browser.
 - Never commit `.env.local`. Repository history was purged of leaked credentials
   on 11 June 2026; the affected tokens still need rotating.

@@ -221,6 +221,19 @@ describe("validateConnection — connection string form", () => {
     expect(result.errors.connection_string).toContain("postgres://");
   });
 
+  it("names the scheme when the string is for another kind of database", () => {
+    // It used to pass, and a mysql:// address was saved as a connection.
+    const result = validateConnection({
+      ...base,
+      connection_string: "mysql://alice@db.example.com/shop",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.connection_string).toBe(
+      "A connection string starts with postgres:// or postgresql://."
+    );
+  });
+
   it("rejects a connection string longer than the column", () => {
     const result = validateConnection({
       ...base,
@@ -281,6 +294,17 @@ describe("parsePostgresUri", () => {
   it("returns null rather than throwing on junk", () => {
     expect(parsePostgresUri("")).toBeNull();
     expect(parsePostgresUri("not a uri at all")).toBeNull();
+  });
+
+  it("returns null for a URL with another scheme", () => {
+    // The URL parser takes any scheme, so these used to come back parsed and
+    // the drawer said "parsed ok" about an address the app cannot dial.
+    expect(parsePostgresUri("mysql://app@db.example.com/shop")).toBeNull();
+    expect(parsePostgresUri("https://db.example.com/shop")).toBeNull();
+  });
+
+  it("reads the scheme in any case", () => {
+    expect(parsePostgresUri("POSTGRES://app@db.example.com/shop")?.host).toBe("db.example.com");
   });
 });
 

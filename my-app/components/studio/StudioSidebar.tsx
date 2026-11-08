@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { LogoIcon, ChevronLeftIcon, SunIcon, MoonIcon, SignOutIcon } from "@/components/ui/icons";
 import { Pill } from "@/components/ui/Pill";
+import { APP_VERSION } from "@/lib/app-version";
 import { BUILT_IN_ROLE_INFO, isBuiltInRole } from "@/lib/permissions";
 import type { NavItem } from "./nav";
 
@@ -122,7 +123,7 @@ export function StudioSidebar({
             <div className="leading-tight">
               <div className="font-semibold text-[13.5px]">Schema Studio</div>
               <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
-                v2.0.0
+                v{APP_VERSION}
               </div>
             </div>
             <button
@@ -139,7 +140,7 @@ export function StudioSidebar({
 
       {/* Nav */}
       <div className="p-3">
-        <div className={`section-title px-2 mb-1 ${labelHidden}`}>Workspace</div>
+        <div className={`section-title px-2 mb-1 ${labelHidden}`}>Menu</div>
         <div className="space-y-0.5">
           {items.map((item) => {
             const active = item.href === activeHref;

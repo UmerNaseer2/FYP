@@ -9,6 +9,7 @@ import {
   type DesktopBridge,
   type DesktopSignInResult,
 } from "@/lib/desktop-bridge";
+import { APP_VERSION } from "@/lib/app-version";
 import { safeCallbackUrl, wantsAccountPicker } from "@/lib/callback-url";
 import {
   LogoIcon,
@@ -301,7 +302,7 @@ export default function LoginPage() {
           <div className="leading-tight">
             <div className="font-semibold text-[13.5px]">Schema Studio</div>
             <div className="text-[11px] mono" style={{ color: "var(--text-3)" }}>
-              v2.0.0
+              v{APP_VERSION}
             </div>
           </div>
         </div>
@@ -328,7 +329,7 @@ export default function LoginPage() {
             </span>
             <span className="pill pill-neutral">
               <span className="dot" style={{ background: "var(--text-3)" }} />
-              <span className="mono">v2.0.0</span>
+              <span className="mono">v{APP_VERSION}</span>
             </span>
           </div>
 
@@ -572,7 +573,7 @@ export default function LoginPage() {
                 className="inline-block w-1.5 h-1.5 rounded-full"
                 style={{ background: "var(--sync)" }}
               />
-              <span>v2.0.0</span>
+              <span>v{APP_VERSION}</span>
             </div>
           </div>
         </div>

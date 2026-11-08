@@ -288,6 +288,28 @@ describe("what the screen says about each connection's health", () => {
   });
 });
 
+describe("where each database is", () => {
+  it("labels a database on another computer Remote, not Online", async () => {
+    // "Online" read as "reachable right now", which the Test button answers.
+    setRoutes([
+      {
+        match: "/api/connections",
+        body: [
+          conn({ id: 1, name: "Shop", host: "db.shop.test" }),
+          conn({ id: 2, name: "Laptop", host: "localhost" }),
+        ],
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    expect(rowFor("Shop")).toHaveTextContent("Remote");
+    expect(rowFor("Laptop")).toHaveTextContent("Local");
+    expect(screen.getByRole("button", { name: /^Remote/ })).toBeInTheDocument();
+    expect(screen.queryByText("Online")).not.toBeInTheDocument();
+  });
+});
+
 describe("deleting a connection other things are using", () => {
   const IN_USE = {
     needsConfirmation: true,
@@ -451,6 +473,44 @@ describe("the add drawer", () => {
     fireEvent.click(drawer.getByRole("button", { name: "Fields" }));
     expect(hostBox()).toHaveValue("other.shop.test");
   });
+
+  it("names a quick start after the latest pill, and keeps what the person typed", async () => {
+    const drawer = await openAdd();
+    const nameBox = () => drawer.getByPlaceholderText("e.g. Staging — Neon");
+    const uriBox = () => drawer.getByPlaceholderText(URI_PLACEHOLDER);
+    const checked = (label: string) =>
+      drawer.getByRole("radio", { name: label }).getAttribute("aria-checked");
+
+    // Local then Hosted used to leave a hosted database named "Local
+    // Postgres", labelled Dev.
+    fireEvent.click(drawer.getByRole("button", { name: "Local Postgres" }));
+    expect(nameBox()).toHaveValue("Local Postgres");
+    expect(checked("Dev")).toBe("true");
+    fireEvent.click(drawer.getByRole("button", { name: /^Hosted/ }));
+    expect(nameBox()).toHaveValue("Hosted Postgres");
+    expect(uriBox()).toHaveValue("");
+    expect(checked("Unlabelled")).toBe("true");
+
+    // Hosted used to wipe a pasted string as well. A typed name stays too.
+    fireEvent.change(uriBox(), { target: { value: "postgres://app@db.shop.test:5432/shop" } });
+    fireEvent.change(nameBox(), { target: { value: "Shop" } });
+    fireEvent.click(drawer.getByRole("button", { name: /^Hosted/ }));
+    expect(uriBox()).toHaveValue("postgres://app@db.shop.test:5432/shop");
+    expect(nameBox()).toHaveValue("Shop");
+  });
+
+  it("numbers a quick start name a saved connection already has", async () => {
+    setRoutes([
+      { match: "/api/connections", body: [conn({ id: 1, name: "Local Postgres", host: "localhost" })] },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: /^Add connection/ }));
+    const drawer = within(document.querySelector(".drawer") as HTMLElement);
+
+    fireEvent.click(drawer.getByRole("button", { name: "Local Postgres" }));
+    expect(drawer.getByPlaceholderText("e.g. Staging — Neon")).toHaveValue("Local Postgres 2");
+  });
 });
 
 describe("testing an edit before it is saved", () => {
@@ -556,9 +616,16 @@ describe("for a role that may not add, change or delete connections", () => {
     expect(remove).toBeDisabled();
     expect(remove).toHaveAttribute("title", refusal.delete("Viewer"));
 
-    // Once each. The buttons carry them too, but as tooltips, not as text.
+    // Said once, as one sentence: three paragraphs that differed by a few
+    // words read as a wall. The buttons keep their own reasons, as tooltips.
+    expect(
+      screen.getAllByText(
+        `Your role (Viewer) can't add a connection, edit or test a saved connection, or delete a connection. ` +
+          `Ask an admin to turn on "Add a connection", "Edit or test a saved connection", and "Delete a connection" for this role.`
+      )
+    ).toHaveLength(1);
     for (const reason of [refusal.create, refusal.update, refusal.delete]) {
-      expect(screen.getAllByText(reason("Viewer"))).toHaveLength(1);
+      expect(screen.queryByText(reason("Viewer"))).toBeNull();
     }
   });
 
@@ -580,6 +647,11 @@ describe("for a role that may not add, change or delete connections", () => {
     expect(screen.getByText(refusal.create("Viewer"))).toBeInTheDocument();
     expect(screen.queryByText(refusal.update("Viewer"))).toBeNull();
     expect(screen.queryByText(refusal.delete("Viewer"))).toBeNull();
+    // One refusal, so asking for it opens Requests with that line picked.
+    expect(screen.getByRole("link", { name: "Ask for it" })).toHaveAttribute(
+      "href",
+      expect.stringMatching(/\/requests\?ask=connections%3Acreate$/)
+    );
   });
 
   it("opens nothing and asks the server nothing when they are pressed anyway", async () => {
@@ -672,8 +744,12 @@ describe("for a role that may not add, change or delete connections", () => {
     }
     expect(add).toBeDisabled();
     expect(remove).toBeDisabled();
-    expect(screen.getByText(refusal.create("Fixer"))).toBeInTheDocument();
-    expect(screen.getByText(refusal.delete("Fixer"))).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Your role (Fixer) can't add a connection or delete a connection. ` +
+          `Ask an admin to turn on "Add a connection" and "Delete a connection" for this role.`
+      )
+    ).toBeInTheDocument();
     expect(screen.queryByText(/edit or test a saved connection/)).toBeNull();
 
     fireEvent.click(test);

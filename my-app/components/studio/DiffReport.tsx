@@ -385,6 +385,19 @@ function objectNote(diff: ObjectDiff, sides: ReportSides, dropMode: DropMode): s
   // ALTER POLICY can move the roles and the expressions but not the command the
   // policy applies to, so the generator drops it and writes it again.
   if (diff.kind === "POLICY") return "rule changed — dropped and recreated";
+  // ALTER SEQUENCE, ALTER DOMAIN and ALTER TYPE ... ADD VALUE change these
+  // where they stand. They fell through to "replaced", which reads as if the
+  // object were swapped for a new one: for a type that columns use, that is a
+  // drop the script never runs.
+  if (diff.kind === "SEQUENCE" || diff.kind === "ENUM" || diff.kind === "DOMAIN") {
+    return "definition changed — altered in place";
+  }
+  // CREATE OR REPLACE carries a routine, unless its return type or an argument
+  // name moved: PostgreSQL refuses that replace, so the generator drops the
+  // old one first. The compare engine decides which, as for a view.
+  if ((diff.kind === "FUNCTION" || diff.kind === "PROCEDURE") && diff.replaceNeedsDrop === true) {
+    return "definition changed — dropped and recreated";
+  }
   return "definition changed — replaced";
 }
 
