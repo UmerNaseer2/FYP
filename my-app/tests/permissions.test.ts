@@ -90,6 +90,7 @@ const AGREED_GRID: Record<string, "viewer" | "editor" | "admin"> = {
   "organization:delete": "admin",
   "github:read": "admin",
   "github:update": "admin",
+  "ai:read": "editor",
 };
 
 describe("the catalogue", () => {
@@ -157,9 +158,10 @@ describe("presetFor", () => {
     // Users is open to any role an Admin ticks it for, but a new Viewer is
     // not shown who else belongs and under which address. GitHub registry is
     // open the same way, but a new Viewer is not shown which repository the
-    // organization keeps its scripts in either.
+    // organization keeps its scripts in either. AI assistance starts at
+    // Editor, so it is not in the Viewer preset at all.
     const expected = FEATURES.filter((f) => !("adminOnly" in f && f.adminOnly))
-      .filter((f) => f.key !== "users" && f.key !== "github")
+      .filter((f) => f.key !== "users" && f.key !== "github" && f.key !== "ai")
       .map((f) => readKeyOf(f.key));
     expect(presetFor("viewer")).toEqual(expected);
     expect(presetFor("editor")).not.toContain("users:read");

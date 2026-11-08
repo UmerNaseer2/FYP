@@ -20,6 +20,7 @@ import { ExportBar } from "@/components/studio/ExportBar";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DataCompare } from "@/components/studio/DataCompare";
 import { CriticalChanges } from "@/components/studio/CriticalChanges";
+import { CompareSummaryPanel } from "@/components/studio/CompareSummaryPanel";
 import { CompareHistory } from "@/components/studio/CompareHistory";
 import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
@@ -1027,6 +1028,15 @@ function CompareScreenView({ query }: { query: string }) {
                         hurt" — and somebody who only reads one line of this page
                         should read that one. */}
                     <CriticalChanges doc={diffDoc} allowDataLoss={allowDataLoss} />
+                    {/* The AI's read of the same rows, under the engine's own
+                        list. It draws nothing without "Use AI assistance". */}
+                    {diffDoc.changes.length > 0 && (
+                      <CompareSummaryPanel
+                        query={query}
+                        target={outcome.index}
+                        resetKey={`${query}|${outcome.index}|${runSerial}`}
+                      />
+                    )}
                     {/* The board first, then the narrative. The diff below only
                         shows what changed, so it cannot say "nothing happened to
                         your views" — this can, and it is the answer people scroll

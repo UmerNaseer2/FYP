@@ -151,6 +151,18 @@ describe("the wording", () => {
     expect(driftAlertText("unreachable", "shop", "unreachable").title).toBe("Database not reachable");
   });
 
+  it("adds the AI's line to a new or changed drift, and to nothing else", () => {
+    const line = "Live lost old_notes and books.price.";
+    expect(driftAlertText("drifted", "shop", "drifted", line).body).toBe(
+      "shop no longer matches its baseline. Live lost old_notes and books.price."
+    );
+    expect(driftAlertText("changed", "shop", "drifted", line).body).toBe(
+      "The drift in shop has changed. Live lost old_notes and books.price."
+    );
+    expect(driftAlertText("in_sync", "shop", "in_sync", line).body).toBe("shop matches its baseline again.");
+    expect(driftAlertText("drifted", "shop", "drifted", null).body).toBe("shop no longer matches its baseline.");
+  });
+
   it("says whether a database that came back still matches", () => {
     expect(driftAlertText("reachable", "shop", "in_sync").body).toContain("and it matches its baseline");
     expect(driftAlertText("reachable", "shop", "drifted").body).toContain("but it differs from its baseline");
@@ -197,6 +209,12 @@ describe("alertDriftChange", () => {
       body: "shop on Live no longer matches its baseline.",
       url: "/swinburne-fyp/phone",
     });
+  });
+
+  it("carries the AI's line on the drift when the check wrote one", async () => {
+    mockQuery.mockResolvedValue(FOUND);
+    await alertDriftChange(7, run({ aiSummary: "Live lost old_notes." }));
+    expect(sentOnce().alert.body).toBe("shop on Live no longer matches its baseline. Live lost old_notes.");
   });
 
   it("prefers the label people gave a schema", async () => {

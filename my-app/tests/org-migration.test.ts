@@ -126,7 +126,17 @@ const ORG_TABLES = [
 // organizations, so they are not on the bootstrap's list of older tables to
 // move. A linked computer belongs to one organization the same way, and so do
 // its GitHub repository and access token.
-const ORG_SCOPED = [...ORG_TABLES, "memberships", "agents", "organization_github"];
+// The AI switch, the AI usage log and the saved AI answers are each one
+// organization's too.
+const ORG_SCOPED = [
+  ...ORG_TABLES,
+  "memberships",
+  "agents",
+  "organization_github",
+  "organization_ai",
+  "ai_calls",
+  "ai_results",
+];
 // A person, and the accounts they sign in with, belong to no organization:
 // one person can be in several. The last two belong to the server: whose turn
 // the drift check is (one tick covers every organization), and which deployments
@@ -793,6 +803,23 @@ async function fillOrganization(
        (org_id, repo_owner, repo_name, token, updated_by)
      VALUES ($1, 'probe', 'probe-scripts', 'not-a-real-token', $2)`,
     [orgId, `member-${orgId}@example.invalid`]
+  );
+  await client.query(
+    `INSERT INTO organization_ai (org_id, enabled, updated_by)
+     VALUES ($1, true, $2)`,
+    [orgId, `member-${orgId}@example.invalid`]
+  );
+  await client.query(
+    `INSERT INTO ai_calls
+       (org_id, actor, feature, provider, model, prompt_version, outcome)
+     VALUES ($1, 'probe@example.invalid', 'compare-summary', 'probe',
+             'probe-model', 1, 'ok')`,
+    [orgId]
+  );
+  await client.query(
+    `INSERT INTO ai_results (org_id, feature, cache_key, model, answer)
+     VALUES ($1, 'compare-summary', 'probe', 'probe-model', '{}')`,
+    [orgId]
   );
 
   const connectionId = await insertId(

@@ -82,6 +82,7 @@ describe("SCREEN_GROUPS", () => {
       "Performance",
       "Visualizer",
       "Connections",
+      "AI assistance",
       "Admin",
     ]);
   });

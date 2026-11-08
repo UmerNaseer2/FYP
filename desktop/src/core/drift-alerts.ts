@@ -12,7 +12,12 @@
  *
  * Nothing the database said goes into a notification, since an unreachable
  * check keeps the database's own error, which can name a host. The words are
- * fixed, with only the schema's and the connection's names put in.
+ * fixed, with only the schema's and the connection's names put in, and one
+ * exception: when the organization has AI assistance on, the server saves the
+ * AI's one line on a new drift with the row (my-app/lib/ai/drift-alert-line.ts),
+ * already checked against the two schemas. It names tables and columns, never
+ * what the database answered, and it is read only from a drifted row and
+ * cleaned again here.
  *
  * Pure: no Electron and no database. Tested in src/test/drift-alerts.test.ts.
  */
@@ -38,6 +43,8 @@ export type DriftRow = {
   /** What the check found, in short. Null on the rows a person's action wrote. */
   fingerprint: string | null;
   counts: DriftCounts | null;
+  /** The AI's one line on the drift, saved with a drifted row. Null on every other row. */
+  aiSummary: string | null;
   schemaName: string;
   label: string | null;
   /** The saved connection the schema is on, by its number in the app. */
@@ -75,6 +82,8 @@ export type DriftAlert = {
   connectionId: number | null;
   connectionName: string | null;
   counts: DriftCounts | null;
+  /** The AI's one line on what changed, made fit for a notification, or null. */
+  aiSummary: string | null;
   /** Whether the check found drift, which "reachable" says too. */
   drifted: boolean;
   /**
@@ -100,6 +109,9 @@ export type DriftNotification = {
 
 /** The most of a name a notification shows, in characters. */
 const NAME_LIMIT = 48;
+
+/** The most of the AI's line a notification shows, in characters, the same as the server's cap. */
+const AI_LINE_LIMIT = 160;
 
 /** How many lines a notification about several schemas has at most. */
 const MAX_LINES = 4;
@@ -143,6 +155,18 @@ export function readCounts(detail: unknown): DriftCounts | null {
     constraintsChanged: readCount(saved.constraintsChanged),
     objectsChanged: readCount(saved.objectsChanged),
   };
+}
+
+/**
+ * The AI's one line the server saved with a drifted row, or null. It went
+ * through the server's checks, but it is cleaned again here all the same:
+ * one line, no backticks, no control or invisible characters, capped.
+ */
+export function readAiSummary(detail: unknown): string | null {
+  if (typeof detail !== "object" || detail === null || Array.isArray(detail)) return null;
+  const line = (detail as Record<string, unknown>).aiSummary;
+  if (typeof line !== "string") return null;
+  return fitText(line.replace(/`/g, ""), AI_LINE_LIMIT);
 }
 
 /** A row's number, which PostgreSQL may give as digits when it is a big one. */
@@ -192,6 +216,9 @@ export function readDriftRow(raw: Record<string, unknown>): DriftRow | null {
     source,
     fingerprint: readText(raw.fingerprint),
     counts: readCounts(raw.detail),
+    // Only a drift has a line about what changed. A row of another status
+    // that somehow carried one would be telling the wrong story.
+    aiSummary: status === "drifted" ? readAiSummary(raw.detail) : null,
     schemaName,
     label: readText(raw.label),
     connectionId: readId(raw.connection_id),
@@ -202,9 +229,8 @@ export function readDriftRow(raw: Record<string, unknown>): DriftRow | null {
   };
 }
 
-/** A name made fit for one line of a notification, or null when nothing of it is left. */
-function cleanName(text: string | null): string | null {
-  if (text === null) return null;
+/** Text made fit for one line of a notification, at most `limit` characters, or null when nothing of it is left. */
+function fitText(text: string, limit: number): string | null {
   // Format characters (zero-width ones, and the ones that turn the text after
   // them around) go, and line breaks, tabs and other control characters
   // become one space.
@@ -215,8 +241,13 @@ function cleanName(text: string | null): string | null {
   if (clean === "") return null;
   // Counted in characters, not UTF-16 units, so that an emoji is never cut in half.
   const characters = Array.from(clean);
-  if (characters.length <= NAME_LIMIT) return clean;
-  return `${characters.slice(0, NAME_LIMIT - 1).join("").trimEnd()}\u{2026}`;
+  if (characters.length <= limit) return clean;
+  return `${characters.slice(0, limit - 1).join("").trimEnd()}\u{2026}`;
+}
+
+/** A name made fit for one line of a notification, or null when nothing of it is left. */
+function cleanName(text: string | null): string | null {
+  return text === null ? null : fitText(text, NAME_LIMIT);
 }
 
 /** What is news in a scheduled check, judged against the row before it, or null when nothing is. */
@@ -255,6 +286,7 @@ export function driftAlert(row: DriftRow): DriftAlert | null {
     connectionId: row.connectionId,
     connectionName: cleanName(row.connectionName),
     counts: row.counts,
+    aiSummary: row.status === "drifted" ? row.aiSummary : null,
     drifted: row.status === "drifted",
     orgSlug: row.orgSlug,
   };
@@ -288,13 +320,16 @@ function subjectOf(alert: DriftAlert): string {
 function singleBody(alert: DriftAlert): string {
   const subject = subjectOf(alert);
   const counts = countsText(alert.counts);
+  const line = alert.aiSummary === null ? "" : ` ${alert.aiSummary}`;
   switch (alert.kind) {
     case "drifted":
       return counts === null
-        ? `${subject} no longer matches its baseline.`
-        : `${subject} no longer matches its baseline: ${counts}.`;
+        ? `${subject} no longer matches its baseline.${line}`
+        : `${subject} no longer matches its baseline: ${counts}.${line}`;
     case "changed":
-      return counts === null ? `The drift in ${subject} has changed.` : `The drift in ${subject} has changed. Now: ${counts}.`;
+      return counts === null
+        ? `The drift in ${subject} has changed.${line}`
+        : `The drift in ${subject} has changed. Now: ${counts}.${line}`;
     case "in_sync":
       return `${subject} matches its baseline again.`;
     case "unreachable":

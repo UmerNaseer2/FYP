@@ -51,6 +51,7 @@ import { Pill } from "@/components/ui/Pill";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
 import { useUser } from "@/hooks/useUser";
+import { SqlGeneratePanel, type GeneratedScript } from "@/components/studio/SqlGeneratePanel";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { refusalMessage } from "@/lib/permissions";
@@ -332,6 +333,18 @@ export default function ScriptEditorPage() {
       setExistingFamily("");
       setNewFamily("");
     }
+    setSaveResult(null);
+    setOfferStatus(null);
+  }
+
+  // ── A script the AI wrote from plain words ("Write it with AI") ──────────
+  // Applied like a draft: the SQL, rollback and description are replaced, and
+  // the save results, which were about the script that was there, are cleared.
+  function loadGenerated(script: GeneratedScript) {
+    setSql(script.sql);
+    setRollbackSql(script.rollbackSql);
+    setSaveWithoutRollback(false);
+    setDescription(script.description);
     setSaveResult(null);
     setOfferStatus(null);
   }
@@ -1255,6 +1268,16 @@ export default function ScriptEditorPage() {
               </div>
             )}
           </div>
+
+          {/* ── Write it with AI (draws nothing without AI) ───────────────── */}
+          {connectionId && schema && (
+            <SqlGeneratePanel
+              connectionId={Number(connectionId)}
+              schemaName={schema}
+              editorHasText={Boolean(sql.trim() || rollbackSql.trim() || description.trim())}
+              onUse={loadGenerated}
+            />
+          )}
 
           {/* ── Script ─────────────────────────────────────────────────────── */}
           <div className="card p-5">

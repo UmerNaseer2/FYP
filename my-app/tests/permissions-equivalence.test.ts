@@ -119,6 +119,16 @@ const ADDED: Record<string, Gate> = {
   "POST /api/requests": { kind: "member" },
   "PATCH /api/requests/[id]": { kind: "member" },
   "POST /api/requests/seen": { kind: "member" },
+  // AI assistance: using it, and the Admin screen's AI tab.
+  "GET /api/ai/status": { kind: "permission", keys: ["ai:read"] },
+  "POST /api/ai/rate": { kind: "permission", keys: ["ai:read"] },
+  "POST /api/ai/chat": { kind: "permission", keys: ["ai:read"] },
+  "POST /api/compare/summary": { kind: "permission", keys: ["compare:read"] },
+  "POST /api/scripts/review": { kind: "permission", keys: ["deploy:read", "approvals:read"] },
+  "POST /api/lineage/drift/explain": { kind: "permission", keys: ["drift:read"] },
+  "POST /api/scripts/generate": { kind: "permission", keys: ["scripts:read"] },
+  "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
+  "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */
@@ -267,4 +277,30 @@ test("a phone sees a request's SQL only where the Deploy screen would show it", 
   });
   expect(startsAllowed("viewer", ["approvals:read"])).toBe(true);
   expect(startsAllowed("viewer", ["scripts:read", "deploy:read"])).toBe(true);
+});
+
+test("an AI route asks for AI assistance on top of the screen it serves", () => {
+  // requirePermission lets in any one of its keys, so each AI route that also
+  // serves a screen checks "Use AI assistance" separately: a viewer, who may
+  // compare but not use AI out of the box, is turned away.
+  expect(handlers.get("POST /api/compare/summary")?.gate).toEqual({ kind: "permission", keys: ["compare:read"] });
+  expect(hasPermissionLiterals(path.join(API_DIR, "compare", "summary", "route.ts"))).toContain("ai:read");
+  expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
+  expect(startsAllowed("viewer", ["ai:read"])).toBe(false);
+  expect(startsAllowed("editor", ["ai:read"])).toBe(true);
+  expect(handlers.get("POST /api/scripts/review")?.gate).toEqual({
+    kind: "permission",
+    keys: ["deploy:read", "approvals:read"],
+  });
+  expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "review", "route.ts"))).toContain("ai:read");
+  expect(startsAllowed("viewer", ["deploy:read", "approvals:read"])).toBe(true);
+  expect(handlers.get("POST /api/lineage/drift/explain")?.gate).toEqual({ kind: "permission", keys: ["drift:read"] });
+  expect(hasPermissionLiterals(path.join(API_DIR, "lineage", "drift", "explain", "route.ts"))).toContain("ai:read");
+  expect(handlers.get("POST /api/scripts/generate")?.gate).toEqual({ kind: "permission", keys: ["scripts:read"] });
+  expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "generate", "route.ts"))).toContain("ai:read");
+  expect(startsAllowed("viewer", ["drift:read"])).toBe(true);
+  // The chat serves no screen of its own: AI assistance alone lets someone ask,
+  // and each lookup then runs the read route's own check as them.
+  expect(handlers.get("POST /api/ai/chat")?.gate).toEqual({ kind: "permission", keys: ["ai:read"] });
+  expect(startsAllowed("viewer", ["ai:read"])).toBe(false);
 });

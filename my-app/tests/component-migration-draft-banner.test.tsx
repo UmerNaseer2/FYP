@@ -109,8 +109,8 @@ function banner(over: Overrides = {}) {
   );
 }
 
-const offer = () => screen.queryByRole("region", { name: "A script from Performance" });
-const panel = () => screen.getByRole("region", { name: "A script from Performance" });
+const offer = () => screen.queryByRole("region", { name: "A script draft" });
+const panel = () => screen.getByRole("region", { name: "A script draft" });
 const words = (el: Element | null) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 const headline = () => words(panel().querySelector(".font-semibold"));
 const paragraphs = () => Array.from(panel().querySelectorAll("p")).map((p) => words(p));
@@ -158,7 +158,7 @@ describe("what the offer says", () => {
   test("names the script by what it runs and what it runs against", () => {
     saved();
     banner();
-    expect(headline()).toBe("A script from Performance is waiting: 1 statement for schema public.");
+    expect(headline()).toBe("A script draft is waiting: 1 statement for schema public.");
   });
 
   test("counts the statements rather than the lines it spans", () => {
@@ -166,7 +166,7 @@ describe("what the offer says", () => {
     // count of anything but statements would be several times too big.
     saved(TWO_STATEMENTS);
     banner();
-    expect(headline()).toBe("A script from Performance is waiting: 2 statements for schema public.");
+    expect(headline()).toBe("A script draft is waiting: 2 statements for schema public.");
   });
 
   test("says where loading would point the editor", () => {

@@ -63,6 +63,23 @@ export type DriftRun = {
    * is every "always" check and any that could not read it.
    */
   previous?: RecordedOutcome | null;
+  /**
+   * The AI's one line on this drift, for the alerts. Only a check that was
+   * given a `describe` and found new drift has one; null when the AI was off,
+   * slow or wrong, and the alert then goes out without it.
+   */
+  aiSummary?: string | null;
+};
+
+/** Extras a caller can hand a check. */
+export type DriftCheckOptions = {
+  /**
+   * Writes the one line an alert carries about a new drift. Called only when
+   * the check found drift and is writing a row about it, so an unchanged drift
+   * costs no AI call. It must answer null rather than throw, and quickly: the
+   * check waits for it.
+   */
+  describe?: (driftReport: CompareReport) => Promise<string | null>;
 };
 
 /**
@@ -100,7 +117,8 @@ export async function runDriftCheck(
   orgId: number,
   trackedSchemaId: number,
   source: DriftSource,
-  mode: DriftRecordMode = "always"
+  mode: DriftRecordMode = "always",
+  options: DriftCheckOptions = {}
 ): Promise<DriftRunResult> {
   // Every path out of here stamps the check time, including the ones that found
   // nothing to check. The schedule is driven by when a schema was last LOOKED
@@ -163,6 +181,18 @@ export async function runDriftCheck(
 
   const previous = mode === "always" ? undefined : await previousOutcome(orgId, trackedSchemaId);
   const worthRecording = mode === "always" || outcomeChanged(previous, status, fingerprint);
+
+  // The alert line, written before the row so the row keeps it: the desktop
+  // app reads its alerts from these rows.
+  let aiSummary: string | null = null;
+  if (worthRecording && status === "drifted" && report && options.describe) {
+    try {
+      aiSummary = await options.describe(report);
+    } catch (error) {
+      console.error("Drift — the alert line failed:", error);
+    }
+  }
+
   const recorded = worthRecording
     ? await recordDriftEvent({
         orgId,
@@ -173,6 +203,7 @@ export async function runDriftCheck(
         baselineSnapshotId: comp.expected.snapshotId,
         source,
         fingerprint,
+        aiSummary,
       })
     : false;
 
@@ -189,6 +220,7 @@ export async function runDriftCheck(
       recorded,
       fingerprint,
       previous,
+      aiSummary,
     },
   };
 }
@@ -290,7 +322,15 @@ export type DriftEventRecord = {
    * it, so the first real drift after a deploy is always recorded.
    */
   fingerprint?: string | null;
+  /** The AI's one line on the drift, kept in the row's detail beside the counts. */
+  aiSummary?: string | null;
 };
+
+/** The row's detail: the counts, and the alert line when there is one. */
+function eventDetail(record: DriftEventRecord): string | null {
+  if (!record.counts) return null;
+  return JSON.stringify(record.aiSummary ? { ...record.counts, aiSummary: record.aiSummary } : record.counts);
+}
 
 /**
  * Write one drift_events row. Returns whether it landed rather than throwing.
@@ -317,7 +357,7 @@ export async function recordDriftEvent(record: DriftEventRecord): Promise<boolea
         record.trackedSchemaId,
         record.status,
         record.summary,
-        record.counts ? JSON.stringify(record.counts) : null,
+        eventDetail(record),
         record.baselineSnapshotId,
         record.source,
         record.fingerprint ?? null,

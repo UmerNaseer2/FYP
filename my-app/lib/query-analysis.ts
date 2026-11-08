@@ -209,6 +209,21 @@ function deniedQuotedCallIn(names: string): string | null {
   return null;
 }
 
+/**
+ * The first call in `sql` that acts on the server itself (the same list the
+ * measured mode refuses), lower-cased, or null. Reads bare names, quoted names
+ * and the bodies of dollar-quoted blocks such as DO $$ ... $$, since a script
+ * the AI writes runs whatever is in them. A U& escaped name cannot be read, so
+ * it counts as one: the answer is "u&".
+ */
+export function serverActingCallIn(sql: string): string | null {
+  const bare = deniedFunctionIn(maskNonCode(sql, { readDollarBodies: true }));
+  if (bare) return bare;
+  const names = maskNonCode(sql, { keepQuotedNames: true, readDollarBodies: true });
+  if (/\bU&"/i.test(names)) return "u&";
+  return deniedQuotedCallIn(names);
+}
+
 /** The refusal for a denied call, worded for someone who is not a DBA. */
 function deniedMessage(name: string, foundIn: "query" | "plan"): string {
   const where =

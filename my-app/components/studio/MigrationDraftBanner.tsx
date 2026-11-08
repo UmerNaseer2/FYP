@@ -43,12 +43,12 @@ export function MigrationDraftBanner({
   const connection = connections.find((c) => String(c.id) === draft.connectionId) ?? null;
 
   return (
-    <section className="card p-0 overflow-hidden" aria-label="A script from Performance">
+    <section className="card p-0 overflow-hidden" aria-label="A script draft">
       <div className="p-4 flex items-start gap-3" style={{ borderLeft: "3px solid var(--brand)" }}>
         <InfoIcon size={16} style={{ color: "var(--brand)", marginTop: 2, flexShrink: 0 }} />
         <div className="min-w-0 flex-1 space-y-2">
           <div className="text-[13.5px] font-semibold" style={{ color: "var(--text)" }}>
-            A script from Performance is waiting: {countOf(statements, "statement")} for schema{" "}
+            A script draft is waiting: {countOf(statements, "statement")} for schema{" "}
             <span className="mono">{draft.schema}</span>.
           </div>
           <div className="text-[12.5px] space-y-1 leading-[1.55]" style={{ color: "var(--text-2)" }}>

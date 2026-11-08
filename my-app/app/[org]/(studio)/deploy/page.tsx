@@ -86,6 +86,7 @@ import {
 import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
+import { MigrationReviewPanel } from "@/components/studio/MigrationReviewPanel";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
@@ -1707,6 +1708,23 @@ function DeployBody() {
       cancelled = true;
     };
   }, [targetIsProduction, rollbackReady, rollbackSteps, scriptGroup]);
+
+  // The runs the AI review reads, spelled the way the approval request spells
+  // them, so the review and an approval are about the same scripts.
+  const reviewScripts = useMemo(
+    () =>
+      scriptsUpToTarget.map((s) => ({ scriptName: s.script_name, version: s.version, sqlContent: s.sql_content })),
+    [scriptsUpToTarget]
+  );
+  const rollbackReviewScripts = useMemo(
+    () =>
+      rollbackSteps.map((step) => ({
+        scriptName: scriptGroup.trim(),
+        version: step.version,
+        sqlContent: "sql" in step.resolved ? step.resolved.sql : "",
+      })),
+    [rollbackSteps, scriptGroup]
+  );
 
   // An acknowledgement is for one exact batch against one exact target. Change
   // any part of what would run and it has to be given again — otherwise a tick
@@ -3595,6 +3613,15 @@ function DeployBody() {
                           )}
                         </RiskGate>
                       )}
+                      {connectionId && rollbackReady && (
+                        <MigrationReviewPanel
+                          connectionId={Number(connectionId)}
+                          schemaName={schema}
+                          action="revert"
+                          scripts={rollbackReviewScripts}
+                          resetKey={rollbackKey}
+                        />
+                      )}
                       {targetIsProduction && (
                         <ApprovalPanel
                           action="revert"
@@ -4132,6 +4159,15 @@ function DeployBody() {
                             }
                             acknowledged={driftAcknowledged}
                             onAcknowledge={setDriftAcknowledged}
+                          />
+                        )}
+                        {connectionId && scriptsUpToTarget.length > 0 && (
+                          <MigrationReviewPanel
+                            connectionId={Number(connectionId)}
+                            schemaName={schema}
+                            action="deploy"
+                            scripts={reviewScripts}
+                            resetKey={`${connectionId}|${schema}|${selectionBody}`}
                           />
                         )}
                         {targetIsProduction && (

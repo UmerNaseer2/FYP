@@ -307,6 +307,7 @@ function alertsAt(endpoint: string, browser: Phone = newPhone()) {
 function alert(changes: Partial<DriftAlert> = {}): DriftAlert {
   return {
     kind: "drifted",
+    aiSummary: null,
     eventId: 1,
     trackedSchemaId: 7,
     name: "orders",

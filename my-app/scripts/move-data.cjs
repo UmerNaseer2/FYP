@@ -120,6 +120,11 @@ const LEFT_BEHIND_TABLES = [
   // The GitHub access token is locked with the old site's key, so an Admin
   // adds the repository and token again on the new site.
   "organization_github",
+  // AI assistance starts switched off on the new site, and the usage counts
+  // and saved answers belong to the old site's AI service and its limits.
+  "organization_ai",
+  "ai_calls",
+  "ai_results",
 ];
 
 /** A new person's columns. Their old `role` stays behind: the column's default is the safe start. */

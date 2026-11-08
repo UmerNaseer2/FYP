@@ -95,6 +95,9 @@ export type RoleChange = {
    *   two-person-rule      "on" or "off": what the rule was switched to
    *   github-settings      "repository", "token" or "removed": what was saved;
    *                        the subject is the repository, as owner/name
+   *   ai-settings          "on" or "off" for AI assistance as a whole, with
+   *                        no subject; for one feature, the subject is the
+   *                        feature's name and the detail "on" or "off"
    */
   detail: string | null;
   actor: string;
