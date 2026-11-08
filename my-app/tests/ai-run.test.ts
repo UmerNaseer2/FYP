@@ -16,10 +16,12 @@ import {
   aiRefusalStatus,
   FEATURE_OFF,
   jsonSchemaOf,
+  messageForFailure,
   modelsFor,
   NOT_CONFIGURED,
   readAnswer,
   runAiTask,
+  soonerWait,
   SWITCHED_OFF,
   type AiDeps,
   type AiTaskSpec,
@@ -292,12 +294,36 @@ describe("runAiTask: asking the model", () => {
     await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "ok", model: "fast-model" });
   });
 
-  test("a used-up quota does not try the other model", async () => {
-    const { deps, provider, calls } = fakes({ replies: [new AiError("rate_limited", "429", 429)] });
+  test("a used-up allowance on the smart model tries the fast one, which has its own", async () => {
+    const { deps, provider } = fakes({ replies: [new AiError("rate_limited", "429", 429, 20_738_000), good] });
+    await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "ok", model: "fast-model" });
+    expect(provider.requests.map((r) => r.model)).toEqual(["smart-model", "fast-model"]);
+  });
+
+  test("when both allowances are used up, it says how long until the sooner one is back", async () => {
+    const { deps, provider, calls } = fakes({
+      replies: [new AiError("rate_limited", "429", 429, 20_738_000), new AiError("rate_limited", "429", 429, 5_000_000)],
+    });
     const result = await runAiTask(caller, spec(), deps);
     expect(result).toMatchObject({ kind: "failed", outcome: "rate_limited" });
-    expect(provider.requests).toHaveLength(1);
+    expect(result.kind === "failed" && result.message).toBe(
+      "The AI service's free allowance is used up for today. Try again in about an hour."
+    );
+    expect(provider.requests).toHaveLength(2);
     expect(calls[0].outcome).toBe("rate_limited");
+  });
+
+  test("the used-up message names the wait the service gave", () => {
+    expect(messageForFailure("rate_limited")).toBe("The AI service's free allowance is used up for now. Try again in a minute.");
+    expect(messageForFailure("rate_limited", 30_000)).toContain("Try again in a minute.");
+    expect(messageForFailure("rate_limited", 300_000)).toContain("Try again in about 5 minutes.");
+    expect(messageForFailure("rate_limited", 20_738_000)).toBe(
+      "The AI service's free allowance is used up for today. Try again in about 6 hours."
+    );
+    expect(soonerWait(null, 5)).toBe(5);
+    expect(soonerWait(7, null)).toBe(7);
+    expect(soonerWait(7, 5)).toBe(5);
+    expect(soonerWait(null, null)).toBeNull();
   });
 
   test("a refused request does not try the other model", async () => {

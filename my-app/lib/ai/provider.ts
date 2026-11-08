@@ -23,7 +23,17 @@ export type AiToolSpec = {
   parameters: Record<string, unknown>;
 };
 
-export type AiToolCall = { id: string; name: string; arguments: string };
+export type AiToolCall = {
+  id: string;
+  name: string;
+  arguments: string;
+  /**
+   * Whatever else the service attached to the call, sent back unread with the
+   * conversation. Gemini 3 puts its "thought signature" here and refuses a
+   * follow-up that leaves it out.
+   */
+  extra?: Record<string, unknown>;
+};
 
 export type AiUsage = {
   inputTokens: number;
@@ -70,12 +80,15 @@ export type AiErrorKind = "rate_limited" | "overloaded" | "timeout" | "rejected"
 export class AiError extends Error {
   readonly kind: AiErrorKind;
   readonly status: number | null;
+  /** How long the service asked callers to wait before trying again, when it said. */
+  readonly retryAfterMs: number | null;
 
-  constructor(kind: AiErrorKind, message: string, status: number | null = null) {
+  constructor(kind: AiErrorKind, message: string, status: number | null = null, retryAfterMs: number | null = null) {
     super(message);
     this.name = "AiError";
     this.kind = kind;
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 

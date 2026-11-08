@@ -122,6 +122,7 @@ const ADDED: Record<string, Gate> = {
   // AI assistance: using it, and the Admin screen's AI tab.
   "GET /api/ai/status": { kind: "permission", keys: ["ai:read"] },
   "POST /api/ai/rate": { kind: "permission", keys: ["ai:read"] },
+  "POST /api/ai/chat": { kind: "permission", keys: ["ai:read"] },
   "POST /api/compare/summary": { kind: "permission", keys: ["compare:read"] },
   "POST /api/scripts/review": { kind: "permission", keys: ["deploy:read", "approvals:read"] },
   "POST /api/lineage/drift/explain": { kind: "permission", keys: ["drift:read"] },
@@ -298,4 +299,8 @@ test("an AI route asks for AI assistance on top of the screen it serves", () => 
   expect(handlers.get("POST /api/scripts/generate")?.gate).toEqual({ kind: "permission", keys: ["scripts:read"] });
   expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "generate", "route.ts"))).toContain("ai:read");
   expect(startsAllowed("viewer", ["drift:read"])).toBe(true);
+  // The chat serves no screen of its own: AI assistance alone lets someone ask,
+  // and each lookup then runs the read route's own check as them.
+  expect(handlers.get("POST /api/ai/chat")?.gate).toEqual({ kind: "permission", keys: ["ai:read"] });
+  expect(startsAllowed("viewer", ["ai:read"])).toBe(false);
 });

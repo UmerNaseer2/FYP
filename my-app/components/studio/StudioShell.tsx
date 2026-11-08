@@ -11,6 +11,7 @@ import { Drawer } from "@/components/ui";
 import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
 import { StudioTopbar } from "./StudioTopbar";
+import { SchemaChatButton } from "./SchemaChat";
 import { OrgSwitcher } from "./OrgSwitcher";
 import { ViewAsSwitcher } from "./ViewAsSwitcher";
 import { NAV_ITEMS, activeNavItem } from "./nav";
@@ -183,6 +184,7 @@ export function StudioShell({ children, user }: StudioShellProps) {
           breadcrumbScreen={active.screen}
           showMenu={isMobile}
           onMenuClick={() => setMobileNavOpen(true)}
+          action={<SchemaChatButton />}
         />
         <main className="relative flex-1 min-h-0 overflow-y-auto" style={{ background: "var(--bg)" }}>
           {children}

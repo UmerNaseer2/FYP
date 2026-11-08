@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ChevronRightIcon, MenuIcon } from "@/components/ui/icons";
 
 type StudioTopbarProps = {
@@ -6,14 +7,17 @@ type StudioTopbarProps = {
   /** Show the hamburger that opens the mobile nav drawer. */
   showMenu?: boolean;
   onMenuClick?: () => void;
+  /** Shown at the right end of the bar (the schema chat button). */
+  action?: ReactNode;
 };
 
 /**
  * Top chrome: a breadcrumb that reflects the active screen, plus a hamburger
  * that opens the nav drawer on mobile. Each screen exposes its own working
- * actions in the page body, so the top bar stays intentionally minimal.
+ * actions in the page body, so the top bar stays intentionally minimal: the
+ * one action it carries is the schema chat, which belongs to no one screen.
  */
-export function StudioTopbar({ breadcrumbScreen, showMenu = false, onMenuClick }: StudioTopbarProps) {
+export function StudioTopbar({ breadcrumbScreen, showMenu = false, onMenuClick, action }: StudioTopbarProps) {
   return (
     <div
       className="topbar h-14 px-3 sm:px-5 flex items-center gap-2 sm:gap-4 flex-none"
@@ -38,6 +42,7 @@ export function StudioTopbar({ breadcrumbScreen, showMenu = false, onMenuClick }
           {breadcrumbScreen}
         </span>
       </nav>
+      {action && <div className="ml-auto flex items-center gap-2 flex-none">{action}</div>}
     </div>
   );
 }

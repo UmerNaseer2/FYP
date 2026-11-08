@@ -30,7 +30,12 @@ type WireMessage =
   | {
       role: "assistant";
       content: string | null;
-      tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
+      tool_calls?: Array<{
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+        extra_content?: Record<string, unknown>;
+      }>;
     }
   | { role: "tool"; tool_call_id: string; name: string; content: string };
 
@@ -48,6 +53,7 @@ function toWire(system: string, messages: readonly AiMessage[]): WireMessage[] {
                 id: call.id,
                 type: "function" as const,
                 function: { name: call.name, arguments: call.arguments },
+                ...(call.extra ? { extra_content: call.extra } : {}),
               })),
             }
           : {}),
@@ -75,24 +81,43 @@ function kindOf(status: number): AiError["kind"] {
 }
 
 /**
- * The service's own words for a refusal, kept short. Never the request: the
- * request holds the prompt, and the headers hold the key.
+ * The service's own words for a refusal, kept short, and the wait it asked
+ * for, when it named one. Never the request: the request holds the prompt,
+ * and the headers hold the key.
  */
-async function reasonFrom(response: Response): Promise<string> {
+async function refusalFrom(response: Response): Promise<{ reason: string; retryAfterMs: number | null }> {
+  let text = "";
   try {
-    const text = await response.text();
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      const first = Array.isArray(parsed) ? parsed[0] : parsed;
-      const message = (first as { error?: { message?: unknown } } | null)?.error?.message;
-      if (typeof message === "string") return message.slice(0, 300);
-    } catch {
-      // Not JSON: fall through to the text itself.
-    }
-    return text.slice(0, 300);
+    text = await response.text();
   } catch {
-    return "";
+    return { reason: "", retryAfterMs: retryAfterFrom(response.headers.get("retry-after"), "") };
   }
+  let reason = text.slice(0, 300);
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const first = Array.isArray(parsed) ? parsed[0] : parsed;
+    const message = (first as { error?: { message?: unknown } } | null)?.error?.message;
+    if (typeof message === "string") reason = message.slice(0, 300);
+  } catch {
+    // Not JSON: the text itself is the reason.
+  }
+  return { reason, retryAfterMs: retryAfterFrom(response.headers.get("retry-after"), text) };
+}
+
+/**
+ * The wait a refusal asked for: a Retry-After header in seconds, or the
+ * "retry in 23.4s" and "retryDelay": "23s" that Gemini writes in its body.
+ */
+export function retryAfterFrom(header: string | null, body: string): number | null {
+  const seconds = (value: string | undefined) => {
+    const n = Number(value);
+    return value !== undefined && Number.isFinite(n) && n >= 0 ? Math.ceil(n * 1000) : null;
+  };
+  if (header && /^\s*\d+(\.\d+)?\s*$/.test(header)) return seconds(header.trim());
+  return (
+    seconds(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(body)?.[1]) ??
+    seconds(/retry in (\d+(?:\.\d+)?)\s*s/i.exec(body)?.[1])
+  );
 }
 
 type WireResponse = {
@@ -101,7 +126,11 @@ type WireResponse = {
     finish_reason?: string | null;
     message?: {
       content?: string | null;
-      tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>;
+      tool_calls?: Array<{
+        id?: string;
+        function?: { name?: string; arguments?: string };
+        extra_content?: Record<string, unknown>;
+      }>;
     };
   }>;
   usage?: {
@@ -160,7 +189,8 @@ export class OpenAiCompatibleProvider implements AiProvider {
     let data: WireResponse;
     try {
       if (!response.ok) {
-        throw new AiError(kindOf(response.status), await reasonFrom(response), response.status);
+        const { reason, retryAfterMs } = await refusalFrom(response);
+        throw new AiError(kindOf(response.status), reason, response.status, retryAfterMs);
       }
       data = (await response.json()) as WireResponse;
     } catch (error) {
@@ -177,7 +207,14 @@ export class OpenAiCompatibleProvider implements AiProvider {
     const text = choice?.message?.content ?? "";
     const toolCalls: AiToolCall[] = (choice?.message?.tool_calls ?? []).flatMap((call, index) =>
       call.function?.name
-        ? [{ id: call.id || `call_${index}`, name: call.function.name, arguments: call.function.arguments ?? "{}" }]
+        ? [
+            {
+              id: call.id || `call_${index}`,
+              name: call.function.name,
+              arguments: call.function.arguments ?? "{}",
+              ...(call.extra_content && typeof call.extra_content === "object" ? { extra: call.extra_content } : {}),
+            },
+          ]
         : []
     );
     const reported = data.usage?.prompt_tokens !== undefined && data.usage?.completion_tokens !== undefined;

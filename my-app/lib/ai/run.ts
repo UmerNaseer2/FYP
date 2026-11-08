@@ -79,6 +79,8 @@ export type AiDeps = {
     "recordAiCall" | "callsToday" | "callsLastMinute" | "readSavedAnswer" | "saveAnswer"
   >;
   now: () => number;
+  /** Waits, for the one pause schema chat takes when the service asks it to. Tests pass their own. */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export function defaultAiDeps(): AiDeps {
@@ -89,6 +91,7 @@ export function defaultAiDeps(): AiDeps {
     readSettings: readOrgAi,
     store,
     now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
 
@@ -178,16 +181,41 @@ export function modelsFor(config: AiConfig, tier: AiTier): string[] {
     : [config.models[tier]];
 }
 
-function outcomeOf(error: AiError): AiOutcome {
+export function outcomeOf(error: AiError): AiOutcome {
   if (error.kind === "rate_limited") return "rate_limited";
   if (error.kind === "timeout") return "timeout";
   return "provider_error";
 }
 
-export function messageForFailure(outcome: AiOutcome): string {
+/** The sooner of two waits a busy service named, when it named any. */
+export function soonerWait(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.min(a, b);
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * A free allowance can be used up for a minute or for the rest of the day
+ * (Gemini's free tier allows a set number of requests a day for each model),
+ * so the message says how long, as far as the service said.
+ */
+function usedUpMessage(retryAfterMs: number | null): string {
+  if (retryAfterMs !== null && retryAfterMs >= HOUR_MS) {
+    const hours = Math.round(retryAfterMs / HOUR_MS);
+    return `The AI service's free allowance is used up for today. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`;
+  }
+  if (retryAfterMs !== null && retryAfterMs > 90_000) {
+    return `The AI service's free allowance is used up for now. Try again in about ${Math.ceil(retryAfterMs / 60_000)} minutes.`;
+  }
+  return "The AI service's free allowance is used up for now. Try again in a minute.";
+}
+
+export function messageForFailure(outcome: AiOutcome, retryAfterMs: number | null = null): string {
   switch (outcome) {
     case "rate_limited":
-      return "The AI service's free allowance is used up for now. Try again in a minute.";
+      return usedUpMessage(retryAfterMs);
     case "timeout":
       return "The AI service took too long to answer. Try again.";
     case "invalid_output":
@@ -198,9 +226,9 @@ export function messageForFailure(outcome: AiOutcome): string {
   }
 }
 
-const ZERO: AiUsage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, estimated: false };
+export const ZERO: AiUsage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, estimated: false };
 
-function addUsage(a: AiUsage, b: AiUsage): AiUsage {
+export function addUsage(a: AiUsage, b: AiUsage): AiUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
@@ -272,6 +300,7 @@ export async function runAiTask<T>(
   let retries = 0;
   let lastModel = models[0];
   let failure: AiOutcome | null = null;
+  let waitMs: number | null = null;
 
   const finish = async (outcome: AiOutcome) =>
     deps.store.recordAiCall({
@@ -307,15 +336,17 @@ export async function runAiTask<T>(
       } catch (error) {
         if (!(error instanceof AiError)) throw error;
         failure = outcomeOf(error);
-        // A refused request will be refused by the other model too, and a
-        // used-up quota is shared by both.
-        if (error.kind === "rejected" || error.kind === "rate_limited") break;
+        if (error.kind === "rate_limited") waitMs = soonerWait(waitMs, error.retryAfterMs);
+        // A refused request will be refused by the other model too. A used-up
+        // allowance is not: Gemini counts each model's requests apart, so the
+        // other model may still answer.
+        if (error.kind === "rejected") break;
       }
     }
     if (text === null) {
       const outcome = failure ?? "provider_error";
       await finish(outcome);
-      return { kind: "failed", outcome, message: messageForFailure(outcome) };
+      return { kind: "failed", outcome, message: messageForFailure(outcome, waitMs) };
     }
 
     const read = readAnswer(text, spec.schema);
