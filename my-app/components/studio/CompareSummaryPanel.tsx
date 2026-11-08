@@ -10,22 +10,10 @@ import {
   type SummaryLevel,
 } from "@/lib/ai/features/compare-summary-view";
 import { AiPanel } from "./AiPanel";
+import { withNames } from "./ai-names";
 
 const LEVEL_TONE: Record<SummaryLevel, PillTone> = { breaking: "break", safe: "sync", info: "neutral" };
 const LEVEL_LABEL: Record<SummaryLevel, string> = { breaking: "Breaking", safe: "Safe", info: "Info" };
-
-/** Writes `name` in backticks as code, the way the model was asked to mark names. */
-function withNames(text: string) {
-  return text.split(/(`[^`]+`)/g).map((part, i) =>
-    part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
-      <code key={i} className="mono">
-        {part.slice(1, -1)}
-      </code>
-    ) : (
-      <span key={i}>{part}</span>
-    )
-  );
-}
 
 function ChangeRefs({ ids, cited }: { ids: string[]; cited: Record<string, CitedChange> }) {
   return (

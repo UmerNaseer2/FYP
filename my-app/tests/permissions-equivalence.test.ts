@@ -123,6 +123,7 @@ const ADDED: Record<string, Gate> = {
   "GET /api/ai/status": { kind: "permission", keys: ["ai:read"] },
   "POST /api/ai/rate": { kind: "permission", keys: ["ai:read"] },
   "POST /api/compare/summary": { kind: "permission", keys: ["compare:read"] },
+  "POST /api/scripts/review": { kind: "permission", keys: ["deploy:read", "approvals:read"] },
   "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
   "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
 };
@@ -284,4 +285,10 @@ test("an AI route asks for AI assistance on top of the screen it serves", () => 
   expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
   expect(startsAllowed("viewer", ["ai:read"])).toBe(false);
   expect(startsAllowed("editor", ["ai:read"])).toBe(true);
+  expect(handlers.get("POST /api/scripts/review")?.gate).toEqual({
+    kind: "permission",
+    keys: ["deploy:read", "approvals:read"],
+  });
+  expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "review", "route.ts"))).toContain("ai:read");
+  expect(startsAllowed("viewer", ["deploy:read", "approvals:read"])).toBe(true);
 });

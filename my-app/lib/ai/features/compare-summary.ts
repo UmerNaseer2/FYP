@@ -212,17 +212,29 @@ const SQL_WORDS = new Set(
     "table", "column", "view", "drop", "add", "alter", "create", "rename", "integer", "int", "bigint",
     "smallint", "text", "varchar", "boolean", "bool", "uuid", "json", "jsonb", "date", "time", "timestamp",
     "timestamptz", "numeric", "decimal", "real", "serial", "bigserial", "bytea", "true", "false",
+    "concurrently", "valid", "validate", "analyze", "vacuum", "truncate", "delete", "update", "insert",
+    "select", "using", "where", "from", "into", "values", "set", "constraint", "references", "type",
+    "sequence", "trigger", "function", "schema", "begin", "commit", "rollback", "transaction", "lock",
+    "lock_timeout", "statement_timeout", "exists", "if", "on", "returning", "now",
   ].map((w) => w.toLowerCase())
 );
 
-/** The names a sentence puts in backticks that neither schema has. */
-export function unknownTickedNames(text: string, known: Set<string>): string[] {
+/**
+ * The names a sentence puts in backticks that neither schema has. `alsoKnown`
+ * lets a feature count names its own input has, such as the tables a
+ * migration creates.
+ */
+export function unknownTickedNames(
+  text: string,
+  known: Set<string>,
+  alsoKnown: (name: string) => boolean = () => false
+): string[] {
   const unknown: string[] = [];
   for (const match of text.matchAll(/`([^`]+)`/g)) {
     const name = match[1].trim();
     if (!/^"?[a-z_][a-z0-9_$]*"?(\s*\.\s*"?[a-z_][a-z0-9_$]*"?){0,2}$/i.test(name)) continue;
-    if (SQL_WORDS.has(name.toLowerCase()) || /^c\d+$/i.test(name)) continue;
-    if (!isKnownName(name, known) && !unknown.includes(name)) unknown.push(name);
+    if (SQL_WORDS.has(name.toLowerCase()) || /^[cs]\d+$/i.test(name)) continue;
+    if (!isKnownName(name, known) && !alsoKnown(name) && !unknown.includes(name)) unknown.push(name);
   }
   return unknown;
 }
