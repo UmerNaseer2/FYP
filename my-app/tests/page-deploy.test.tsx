@@ -289,10 +289,9 @@ describe("who is allowed to run anything here", () => {
     ).toBeInTheDocument();
     // The top of the page says it once and offers the way to ask, so the line under
     // the connection is kept for what is about that connection alone.
-    expect(screen.getByRole("link", { name: "Ask for it" })).toHaveAttribute(
-      "href",
-      "/test-org/requests?ask=deploy%3Arun"
-    );
+    // (The AI review panel has its own "Ask for it" link, for AI assistance.)
+    const asks = screen.getAllByRole("link", { name: "Ask for it" }).map((link) => link.getAttribute("href"));
+    expect(asks).toContain("/test-org/requests?ask=deploy%3Arun");
     expect(screen.queryByText(/Running migrations against "Dev box"/)).toBeNull();
   });
 

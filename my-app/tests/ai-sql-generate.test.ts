@@ -17,10 +17,18 @@ import {
   checkSqlGenerate,
   otherSchemasIn,
   refusedIn,
+  requestAsksForDataLoss,
   type TrialHook,
   type TrialOutcome,
 } from "@/lib/ai/features/sql-generate";
-import { describeTrialError, makeTrial, notPutBack, STRUCTURE_SQL } from "@/lib/ai/features/sql-generate-trial";
+import {
+  describeTrialError,
+  makeTrial,
+  notPutBack,
+  STRUCTURE_SQL,
+  TRIAL_TIME_BUDGET_MS,
+  trialStatementTimeout,
+} from "@/lib/ai/features/sql-generate-trial";
 import { isSqlGenerateAnswer, isSqlGenerateChecks, type SqlGenerateAnswer } from "@/lib/ai/features/sql-generate-view";
 import { MockProvider } from "@/lib/ai/mock";
 import { runAiTask, type AiDeps } from "@/lib/ai/run";
@@ -107,6 +115,38 @@ describe("refusedIn", () => {
   test("a server call is reported once, not again as a refused function", () => {
     expect(refusedIn("SELECT pg_terminate_backend(1);", "public")).toHaveLength(1);
   });
+
+  // A DO block or function body can be a '' or E'' string, not only a $$ body.
+  const inStringBodies = [
+    ["a server call in DO ''", "DO 'BEGIN PERFORM pg_terminate_backend(pid) FROM pg_stat_activity; END';", "pg_terminate_backend"],
+    ["a file read in a RAISE in DO ''", "DO 'BEGIN RAISE EXCEPTION ''%'', pg_read_file(''/etc/hostname''); END';", "pg_read_file"],
+    ["EXECUTE in DO E''", "DO E'BEGIN EXECUTE ''DROP TABLE books''; END';", "EXECUTE"],
+    ["an escaped name in DO E''", "DO E'BEGIN PERFORM pg\\x5fsleep(100); END';", "pg_sleep"],
+    ["a wait in a function body written as ''", "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS 'BEGIN PERFORM pg_sleep(100); END';", "pg_sleep"],
+    ["a SET in a DO body inside a DO body", "DO $$ BEGIN EXECUTE 'x'; END $$; DO 'BEGIN DO ''BEGIN SET search_path TO other; END''; END';", "SET or RESET"],
+  ] as const;
+  test.each(inStringBodies)("refuses %s", (_label, sql, word) => {
+    expect(refusedIn(sql, "public").join(" ")).toContain(word);
+  });
+
+  test("a body written in a way the app cannot read is refused", () => {
+    expect(refusedIn("DO U&'BEGIN PERFORM pg_sleep(1); END';", "public").join(" ")).toContain("cannot read");
+  });
+
+  test("a body read twice is reported once", () => {
+    expect(refusedIn("DO $$ BEGIN PERFORM pg_sleep(1); END $$;", "public")).toHaveLength(1);
+  });
+
+  test("a harmless body written as '' and ON CONFLICT DO NOTHING pass", () => {
+    expect(
+      refusedIn("CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN NEW.title := ''x''; RETURN NEW; END';", "public")
+    ).toEqual([]);
+    expect(refusedIn("INSERT INTO books (id) VALUES (1) ON CONFLICT DO NOTHING;", "public")).toEqual([]);
+  });
+
+  test("another schema inside a DO block is refused", () => {
+    expect(refusedIn("DO $$ BEGIN UPDATE other.books SET id = 1; END $$;", "public").join(" ")).toContain("another schema (other)");
+  });
 });
 
 describe("otherSchemasIn", () => {
@@ -120,6 +160,23 @@ describe("otherSchemasIn", () => {
   });
   test("an alias and a column after FROM are not a schema", () => {
     expect(otherSchemasIn("SELECT EXTRACT(year FROM o.created_at) FROM orders o;", "public", columns)).toEqual([]);
+    // Without the column names too: the FROM inside EXTRACT and the like is skipped.
+    expect(otherSchemasIn("SELECT EXTRACT(year FROM o.created_at) FROM orders o;", "public")).toEqual([]);
+    expect(otherSchemasIn("SELECT substring(o.title FROM 2), trim(both ' ' FROM o.title) FROM orders o;", "public")).toEqual([]);
+    expect(otherSchemasIn("SELECT * FROM orders o WHERE o.id IS DISTINCT FROM o.book_id;", "public")).toEqual([]);
+  });
+  test("a table in another schema counts even when the target has a column of that name", () => {
+    const withNotes = new Set(["notes", "comments"]);
+    expect(otherSchemasIn("DELETE FROM archive.notes;", "public", withNotes)).toEqual(["archive"]);
+    expect(otherSchemasIn("UPDATE legacy.comments SET id = 1;", "public", withNotes)).toEqual(["legacy"]);
+    expect(refusedIn("DELETE FROM archive.notes;", "public", withNotes).join(" ")).toContain("another schema (archive)");
+  });
+  test("a schema named inside a DO block or a function body counts", () => {
+    expect(otherSchemasIn("DO $$ BEGIN UPDATE other.books SET id = 1; END $$;", "public")).toEqual(["other"]);
+    expect(otherSchemasIn("DO 'BEGIN UPDATE other.books SET id = 1; END';", "public")).toEqual(["other"]);
+    expect(
+      otherSchemasIn("CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN CREATE INDEX i ON audit.log (id); END $$;", "public")
+    ).toEqual(["audit"]);
   });
   test("the catalogs and the target schema are fine", () => {
     expect(otherSchemasIn("SELECT * FROM pg_catalog.pg_class;", "public")).toEqual([]);
@@ -152,9 +209,56 @@ describe("the prompt", () => {
     expect(task().facts.allowDataLoss).toBe(false);
     expect(task({ request: "Drop the price column from books" }).facts.allowDataLoss).toBe(true);
     expect(task({ request: "get rid of old orders" }).facts.allowDataLoss).toBe(true);
+    expect(task({ request: "Add a phone column to users, don't delete anything" }).facts.allowDataLoss).toBe(false);
   });
   test("the request is cut to the limit", () => {
     expect(task({ request: "x".repeat(5_000) }).facts.request).toHaveLength(2_000);
+  });
+});
+
+describe("requestAsksForDataLoss", () => {
+  test.each([
+    "Drop the price column from books",
+    "get rid of old orders",
+    "Delete the orders older than a year",
+    "Clear out the sessions table",
+    "Truncate the logs table",
+    "Add a phone column, then drop the fax column",
+    "Remove the default from status and delete the rows where status is null",
+    "Don't drop the table, just remove the old rows",
+  ])("%s asks for it", (request) => {
+    expect(requestAsksForDataLoss(request)).toBe(true);
+  });
+
+  test.each([
+    "Add a stock count to books",
+    "Make users.email NOT NULL and remove its default",
+    "Add a phone column to users, don't delete anything",
+    "Add a phone column to users and do not delete anything",
+    "Rename the column but never remove rows",
+    "Add an index on title. Do not drop anything.",
+    "Add the column without drop or delete",
+    "Drop the index on books.title",
+    "Remove the NOT NULL from books.price",
+    "Drop the unique constraint on users.email",
+    "Delete nothing",
+    "Make the error message clear",
+    "Nothing should be removed",
+  ])("%s does not", (request) => {
+    expect(requestAsksForDataLoss(request)).toBe(false);
+  });
+
+  test("a DELETE before SET NOT NULL is sent back when the request said to keep the data", async () => {
+    const { facts } = task({ request: "Make books.title NOT NULL and remove its default" });
+    const out = await checkSqlGenerate(
+      answer({
+        sql: "DELETE FROM books WHERE title IS NULL;\nALTER TABLE books ALTER COLUMN title DROP DEFAULT;\nALTER TABLE books ALTER COLUMN title SET NOT NULL;",
+        rollbackSql: "ALTER TABLE books ALTER COLUMN title DROP NOT NULL;",
+        summary: "Makes `books.title` required.",
+      }),
+      facts
+    );
+    expect(out.problems.join(" ")).toContain("deletes data");
   });
 });
 
@@ -208,6 +312,14 @@ describe("checkSqlGenerate", () => {
     const { facts } = task();
     const out = await checkSqlGenerate(answer({ rollbackSql: "BEGIN; ALTER TABLE books DROP COLUMN stock; COMMIT;" }), facts);
     expect(out.problems.some((p) => p.startsWith("The rollback: "))).toBe(true);
+  });
+
+  test("a summary naming a made-up schema in front of a new column is sent back", async () => {
+    const { facts } = task();
+    const out = await checkSqlGenerate(answer({ summary: "Adds `made_up.books.stock`." }), facts);
+    expect(out.problems.join(" ")).toContain("made_up.books.stock");
+    const fine = await checkSqlGenerate(answer({ summary: "Adds `public.books.stock`." }), task().facts);
+    expect(fine.problems).toEqual([]);
   });
 
   test("a summary naming something neither the schema nor the script has is sent back", async () => {
@@ -438,19 +550,44 @@ describe("makeTrial", () => {
     const texts = fake.steps.map((s) => s.text);
     expect(texts[0]).toBe("BEGIN");
     expect(texts).toContain("SET LOCAL lock_timeout = 2000");
-    expect(texts).toContain("SET LOCAL statement_timeout = 10000");
+    // The 10 second budget is shared by the 2 statements: 5 seconds each.
+    expect(texts).toContain("SET LOCAL statement_timeout = 5000");
     expect(texts).toContain('SET LOCAL search_path TO "shop"');
     expect(texts.indexOf(UP)).toBeLessThan(texts.indexOf(DOWN));
     expect(texts.at(-1)).toBe("ROLLBACK");
     expect(fake.released()).toBe(true);
   });
 
-  test("a wrong column fails the script step with the database's words", async () => {
-    const fake = fakeClient({ failOn: /ADD COLUMN/, error: Object.assign(new Error('column "stok" does not exist'), { code: "42703" }) });
-    const outcome = await makeTrial({}, "public", async () => fake.client)(UP, DOWN);
-    expect(outcome).toEqual({ status: "failed", step: "script", message: 'column "stok" does not exist (SQLSTATE 42703).' });
+  test("a wrong column fails the script step with a plain description and the script's name", async () => {
+    const up = "ALTER TABLE books ADD COLUMN stock int; UPDATE books SET stok = 0;";
+    const fake = fakeClient({ failOn: /stok/, error: Object.assign(new Error('column "stok" does not exist'), { code: "42703" }) });
+    const outcome = await makeTrial({}, "public", async () => fake.client)(up, DOWN);
+    expect(outcome).toEqual({
+      status: "failed",
+      step: "script",
+      message: 'The script uses a column that does not exist, SQLSTATE 42703 ("stok").',
+    });
     expect(fake.steps.at(-1)?.text).toBe("ROLLBACK");
     expect(fake.released()).toBe(true);
+  });
+
+  test("the time budget is shared by every statement of the script and its rollback", async () => {
+    expect(trialStatementTimeout("SELECT 1; SELECT 2; SELECT 3; SELECT 4;", "SELECT 5;")).toBe(TRIAL_TIME_BUDGET_MS / 5);
+    const fake = fakeClient();
+    await makeTrial({}, "public", async () => fake.client)("SELECT 1; SELECT 2; SELECT 3; SELECT 4;", "SELECT 5;");
+    expect(fake.steps.map((s) => s.text)).toContain("SET LOCAL statement_timeout = 2000");
+  });
+
+  test("a script with too many statements for the budget is not tried and never connects", async () => {
+    const many = Array.from({ length: 41 }, (_, i) => `ALTER TABLE books ADD COLUMN c${i} int;`).join("\n");
+    expect(trialStatementTimeout(many, DOWN)).toBeNull();
+    let connected = false;
+    const outcome = await makeTrial({}, "public", async () => {
+      connected = true;
+      return fakeClient().client;
+    })(many, DOWN);
+    expect(outcome).toMatchObject({ status: "not-tried", reason: expect.stringContaining("too many statements") });
+    expect(connected).toBe(false);
   });
 
   test("a failed rollback is the rollback step", async () => {
@@ -535,13 +672,16 @@ describe("makeTrial", () => {
 
 describe("describeTrialError", () => {
   test("a NOT NULL failure gives names, never the row", () => {
-    const read = describeTrialError({
-      code: "23502",
-      message: 'null value in column "stock" of relation "books" violates not-null constraint',
-      detail: "Failing row contains (1, Secret Title, 9.99, null).",
-      table: "books",
-      column: "stock",
-    });
+    const read = describeTrialError(
+      {
+        code: "23502",
+        message: 'null value in column "stock" of relation "books" violates not-null constraint',
+        detail: "Failing row contains (1, Secret Title, 9.99, null).",
+        table: "books",
+        column: "stock",
+      },
+      "ALTER TABLE books ADD COLUMN stock int NOT NULL;"
+    );
     expect(read).toEqual({
       message: "Rows already in the table break the change, SQLSTATE 23502 (table books, column stock). Say what to do with them, or add a DEFAULT.",
     });
@@ -554,9 +694,46 @@ describe("describeTrialError", () => {
     expect(read).toMatchObject({ message: expect.stringContaining("22P02") });
   });
 
-  test("other errors keep the message and the hint", () => {
-    expect(describeTrialError({ code: "42P01", message: 'relation "invoices" does not exist', hint: "Check the name." })).toEqual({
-      message: 'relation "invoices" does not exist (SQLSTATE 42P01). Hint: Check the name.',
+  test("other errors get a plain description by SQLSTATE, never the message or the hint", () => {
+    expect(
+      describeTrialError({ code: "42P01", message: 'relation "invoices" does not exist', hint: "Check the name." }, "SELECT * FROM invoices;")
+    ).toEqual({ message: 'The script uses a table or view that does not exist, SQLSTATE 42P01 ("invoices").' });
+    // With no script text, no name is kept.
+    expect(describeTrialError({ code: "42P01", message: 'relation "invoices" does not exist' })).toEqual({
+      message: "The script uses a table or view that does not exist, SQLSTATE 42P01.",
+    });
+  });
+
+  test("a RAISE that carries row values or a file's text gives none of it", () => {
+    const script = "DO $$ BEGIN RAISE EXCEPTION 'price % for % is too high', 9.99, 'x' USING HINT = 'x', TABLE = 'x'; END $$;";
+    const read = describeTrialError(
+      { code: "P0001", message: 'price 9.99 for "Secret Title" is too high', hint: "Ask ada@example.com", table: "ada", column: "Secret Title" },
+      script
+    );
+    expect(read).toEqual({ message: "A RAISE EXCEPTION in the script stopped it, SQLSTATE P0001." });
+    expect(JSON.stringify(read)).not.toMatch(/Secret|ada|9\.99/);
+  });
+
+  test("a duplicate key keeps the constraint and table, never the key's value", () => {
+    const read = describeTrialError(
+      {
+        code: "23505",
+        message: 'could not create unique index "users_email_key"',
+        detail: "Key (email)=(ada@example.com) is duplicated.",
+        table: "users",
+        constraint: "users_email_key",
+      },
+      "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email);"
+    );
+    expect(read).toEqual({
+      message:
+        "Rows already in the table break the change, SQLSTATE 23505 (table users, constraint users_email_key). Say what to do with them, or add a DEFAULT.",
+    });
+  });
+
+  test("an unknown code in a known class gets the class's description", () => {
+    expect(describeTrialError({ code: "42P99", message: "secret words" })).toEqual({
+      message: "The script has a mistake in its SQL or names something wrong, SQLSTATE 42P99.",
     });
   });
 

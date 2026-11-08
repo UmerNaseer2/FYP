@@ -12,6 +12,8 @@ jest.mock("../lib/version-db", () => ({
 import type { NextRequest } from "next/server";
 import type { AiConfig } from "@/lib/ai/config";
 import {
+  CANCELLED,
+  CUT_OFF,
   LOOKUPS_USED_UP,
   MAX_RATE_WAIT_MS,
   OUT_OF_TIME,
@@ -19,6 +21,7 @@ import {
   TOO_MANY_STEPS,
   MAX_STEPS,
   MAX_TOOL_CALLS,
+  checkChatAnswer,
   historyMessages,
   runSchemaChat,
   splitSql,
@@ -611,8 +614,9 @@ describe("runSchemaChat", () => {
     const result = await runSchemaChat(caller, { question: "Loop forever", history: [], tools: chat }, d);
     expect(result).toEqual({ kind: "failed", outcome: "failed_check", message: TOO_MANY_STEPS });
     expect(provider.requests).toHaveLength(MAX_STEPS);
-    expect(rows).toHaveLength(MAX_STEPS + 1);
-    expect(rows.at(-1)?.outcome).toBe("failed_check");
+    // One row per model call, and no extra row for giving up (no call was made).
+    expect(rows).toHaveLength(MAX_STEPS);
+    expect(rows.every((r) => r.outcome === "ok")).toBe(true);
   });
 
   it("stops before a step that would go over the input budget", async () => {
@@ -640,9 +644,11 @@ describe("runSchemaChat", () => {
       },
     ]);
     const { chat } = tools();
-    const { deps: d } = deps(provider, { now: () => clock });
+    const { deps: d, rows } = deps(provider, { now: () => clock });
     const result = await runSchemaChat(caller, { question: "Slow one", history: [], tools: chat }, d);
     expect(result).toEqual({ kind: "failed", outcome: "timeout", message: OUT_OF_TIME });
+    // The one model call has its row. Stopping adds none, as no call was sent.
+    expect(rows.map((r) => r.outcome)).toEqual(["ok"]);
   });
 
   it("caps each step's wait at the time the question has left", async () => {
@@ -806,7 +812,8 @@ describe("runSchemaChat", () => {
     expect(provider.requests.map((r) => r.model)).toEqual(["smart-model", "smart-model", "smart-model"]);
     // The step after the wait gets the time the question has left.
     expect(provider.requests[2].timeoutMs).toBe(90_000);
-    expect(rows.map((r) => r.outcome)).toEqual(["ok", "ok"]);
+    // Every request has its own row, the busy one too: each counts against the limits.
+    expect(rows.map((r) => r.outcome)).toEqual(["ok", "rate_limited", "ok"]);
   });
 
   it("waits only once per question", async () => {
@@ -823,7 +830,8 @@ describe("runSchemaChat", () => {
     expect(result.kind === "failed" && result.outcome).toBe("rate_limited");
     expect(sleep).toHaveBeenCalledTimes(1);
     expect(provider.requests.map((r) => r.model)).toEqual(["smart-model", "smart-model", "smart-model", "fast-model"]);
-    expect(rows.map((r) => r.outcome)).toEqual(["ok", "rate_limited"]);
+    // One row per request: the first busy one, the first step, then both models busy.
+    expect(rows.map((r) => r.outcome)).toEqual(["rate_limited", "ok", "rate_limited", "rate_limited"]);
   });
 
   it("hands the question to the fast model when the smart one's allowance is used up for the day", async () => {
@@ -861,8 +869,9 @@ describe("runSchemaChat", () => {
     }
   });
 
-  it("does not try the other model after a refusal from the service", async () => {
-    const provider = new MockProvider([new AiError("rejected", "bad request", 400)]);
+  it("does not try the other model after the service refuses the key", async () => {
+    // The other model would use the same key. A 400 about one model does try the other (as in runAiTask).
+    const provider = new MockProvider([new AiError("rejected", "bad key", 401)]);
     const { chat } = tools();
     const { deps: d, rows } = deps(provider);
     const result = await runSchemaChat(caller, { question: "Anything", history: [], tools: chat }, d);
@@ -982,5 +991,318 @@ describe("OpenAI-compatible tool calls", () => {
     });
     expect(messages[3]).toEqual({ role: "tool", tool_call_id: "call_1", name: "list_connections", content: "1: Shop dev" });
     expect(bodies[1].tools).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------------
+ * Fixes from the review of the chat (U7, U20 to U27, U45, U48, U66).
+ * --------------------------------------------------------------------- */
+
+/** A tool set that has already run these lookups, in this order. */
+async function looked(runs: [string, Record<string, unknown>][], over: Parameters<typeof tools>[0] = {}) {
+  const made = tools(over);
+  for (const [name, args] of runs) await made.chat.run(name, JSON.stringify(args));
+  return made;
+}
+
+const PUBLIC = { connectionId: 1, schema: "public" };
+
+/** A route answer that waits a moment first, so two lookups can overlap. */
+function later(ms: number, answer: () => Response) {
+  return () => new Promise<Response>((resolve) => setTimeout(() => resolve(answer()), ms));
+}
+
+describe("schema chat review fixes", () => {
+  it("U23: turns away names every object has, such as constructor", async () => {
+    const { chat } = tools();
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      const run = await chat.run(name, "{}");
+      expect(run.ok).toBe(false);
+      expect(run.content).toContain("There is no lookup called");
+    }
+  });
+
+  it("U24: says the version is unknown when the version table could not be read, without the error", async () => {
+    const broken = tools({
+      routes: {
+        versionHistory: () =>
+          Response.json({
+            detected: { table: null, version: null, message: "could not read a version table: connect ECONNREFUSED db.secret-host.example" },
+          }),
+      },
+    });
+    const run = await broken.chat.run("version_history", JSON.stringify(PUBLIC));
+    expect(run.ok).toBe(false);
+    expect(run.content).toContain("could not read this schema's version table");
+    expect(run.content).not.toContain("secret-host");
+    expect(run.content).not.toContain("has no version table");
+    expect(broken.chat.lastTarget()).toBeNull();
+
+    const none = tools({
+      routes: { versionHistory: () => Response.json({ detected: { table: null, version: null, message: "No version table in this schema." } }) },
+    });
+    const empty = await none.chat.run("version_history", JSON.stringify(PUBLIC));
+    expect(empty.ok).toBe(true);
+    expect(empty.content).toContain("has no version table");
+  });
+
+  it("U45: reads drift the way Explain drift does, so a table made live is added, not removed", async () => {
+    const baseline = shop();
+    const live = schema(
+      [...shop().tables, table("reviews", [column("id", { isPrimaryKey: true, nullable: false }), column("book_id")])],
+      { database: "secret_shop_db" }
+    );
+    const { chat } = tools({
+      routes: {
+        drift: () =>
+          Response.json({
+            schemaName: "public",
+            environment: "prod",
+            connection: { id: 4, name: "Shop prod" },
+            expected: { version: "1.3.0" },
+            state: "drifted",
+            summary: "1 table added.",
+            counts: { tablesAdded: 1 },
+            report: compareSchemas(baseline, live),
+            lastRecorded: null,
+          }),
+      },
+    });
+    const run = await chat.run("drift_detail", JSON.stringify({ trackedSchemaId: 3 }));
+    expect(run.ok).toBe(true);
+    expect(run.content).toContain("What changed on the live database since the registry version:");
+    const line = run.content.split("\n").find((l) => l.includes("reviews"));
+    expect(line).toMatch(/added/);
+    expect(line).not.toMatch(/removed|dropped/);
+  });
+
+  it("U48: says when usage statistics or the search record could not be read, without the error", async () => {
+    const { chat } = tools({
+      routes: {
+        advice: () =>
+          Response.json({
+            advice: [],
+            counts: { high: 0, medium: 0, low: 0, total: 0 },
+            tablesAnalyzed: 2,
+            statsUnavailable: "permission denied on db.secret-host.example",
+            patternsUnavailable: "pg_stat_statements on db.secret-host.example is not loaded",
+          }),
+      },
+    });
+    const run = await chat.run("performance_advice", JSON.stringify(PUBLIC));
+    expect(run.content).toContain("The usage statistics could not be read this time");
+    expect(run.content).toContain("The record of searches run against this schema could not be read");
+    expect(run.content).not.toContain("secret-host");
+  });
+
+  it("U26: aims a draft at the compared target, whatever was looked at after or before", async () => {
+    const compare = async () => readyScreen({});
+    const compareArgs = { sourceConnectionId: 1, sourceSchema: "public", targetConnectionId: 2, targetSchema: "public" };
+    const after = await looked([["compare_schemas", compareArgs], ["show_schema", PUBLIC]], { compare });
+    expect(after.chat.lastTarget()).toEqual({ connectionId: 2, schema: "public" });
+    const before = await looked([["show_schema", PUBLIC], ["compare_schemas", compareArgs]], { compare });
+    expect(before.chat.lastTarget()).toEqual({ connectionId: 2, schema: "public" });
+    // The target snapshot is the compared target's, not the source's.
+    expect(after.chat.targetSnapshot()?.tables.map((t) => t.name)).toEqual(["books"]);
+  });
+
+  it("U26: names no target when two schemas were looked at and nothing says which one", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC], ["show_schema", { connectionId: 1, schema: "audit" }]]);
+    expect(chat.lastTarget()).toBeNull();
+    // The draft is still checked, against both.
+    const checked = checkChatAnswer("```sql\nSELECT * FROM invoices;\n```", chat, []);
+    expect(checked.answer.target).toBeNull();
+    expect(checked.answer.sqlProblems.join(" ")).toContain("invoices");
+  });
+
+  it("U21: a table.column pair is checked as a pair, and a word the app wrote does not make a name real", async () => {
+    const { chat } = await looked([
+      ["list_connections", {}],
+      ["show_schema", PUBLIC],
+      ["find_column", { ...PUBLIC, name: "discount_code" }],
+    ]);
+    const checked = checkChatAnswer(
+      "Prices are in `books.price`. Not `orders.price`, `orders.environment`, `orders.name`, `orders.discount_code` or `discount_code`.",
+      chat,
+      []
+    );
+    expect(checked.answer.unverifiedNames).toEqual([
+      "orders.price",
+      "orders.environment",
+      "orders.name",
+      "orders.discount_code",
+      "discount_code",
+    ]);
+  });
+
+  it("U22: checks the draft's tables against the schema, and a refused draft's names are not taken as real", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const missing = checkChatAnswer("Old orders are kept in `orders_archive`.\n```sql\nSELECT * FROM orders_archive;\n```", chat, []);
+    expect(missing.answer.sqlProblems.join(" ")).toContain("tables the lookups did not show: orders_archive");
+    expect(missing.answer.unverifiedNames).toEqual(["orders_archive"]);
+
+    const refused = checkChatAnswer(
+      "Keep old orders in `orders_archive`.\n```sql\nCREATE TABLE audit.orders_archive (id integer);\n```",
+      chat,
+      []
+    );
+    expect(refused.answer.sqlProblems.length).toBeGreaterThan(0);
+    expect(refused.answer.unverifiedNames).toEqual(["orders_archive"]);
+
+    const adds = checkChatAnswer(
+      "This adds `stock` to `books`, so `books.stock` holds the count.\n```sql\nALTER TABLE books ADD COLUMN stock integer;\n```",
+      chat,
+      []
+    );
+    expect(adds.answer.sqlProblems).toEqual([]);
+    expect(adds.answer.unverifiedNames).toEqual([]);
+  });
+
+  it("U20: does not read a column after FROM inside EXTRACT as a table in another schema", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const checked = checkChatAnswer(
+      "Orders per year:\n```sql\nSELECT EXTRACT(YEAR FROM o.created_at) AS year, count(*) FROM orders o GROUP BY 1;\n```",
+      chat,
+      []
+    );
+    expect(checked.answer.sqlProblems).toEqual([]);
+    expect(checked.answer.sql).toContain("EXTRACT(YEAR FROM o.created_at)");
+  });
+
+  it("U25: finds SQL in any block, tagged or not, closed or not", () => {
+    expect(splitSql("Draft:\n```sql\nALTER TABLE books ADD COLUMN stock int")).toEqual({
+      text: "Draft:",
+      sql: "ALTER TABLE books ADD COLUMN stock int",
+    });
+    expect(splitSql("Run ```sql DROP TABLE orders;``` now.").sql).toBe("DROP TABLE orders;");
+    expect(splitSql("```\nEXPLAIN ANALYZE DELETE FROM orders;\n```").sql).toBe("EXPLAIN ANALYZE DELETE FROM orders;");
+    expect(splitSql("```\nSET search_path TO audit;\n```").sql).toBe("SET search_path TO audit;");
+    expect(splitSql("```\nCALL archive_orders();\n```").sql).toBe("CALL archive_orders();");
+    expect(splitSql("~~~sql\nDROP TABLE books;\n~~~").sql).toBe("DROP TABLE books;");
+    expect(splitSql("```text\nDROP TABLE books;\n```").sql).toBe("DROP TABLE books;");
+    expect(splitSql("```\n-- tidy up\nDROP TABLE books;\n```").sql).toBe("-- tidy up\nDROP TABLE books;");
+    // A block that is not SQL stays in the text.
+    expect(splitSql("```json\n{\"a\": 1}\n```")).toEqual({ text: '```json\n{"a": 1}\n```', sql: null });
+  });
+
+  it("U25: refuses an untagged DO block, so it is checked like any draft", async () => {
+    const { chat } = await looked([["show_schema", PUBLIC]]);
+    const checked = checkChatAnswer("Try:\n```\nDO $$ BEGIN EXECUTE 'DROP TABLE orders'; END $$;\n```", chat, []);
+    expect(checked.answer.sql).toContain("DO $$");
+    expect(checked.answer.sqlProblems.length).toBeGreaterThan(0);
+    expect(checked.answer.text).not.toContain("DROP TABLE");
+  });
+
+  it("U25: does not show SQL from an answer the service cut off", async () => {
+    const cut = { text: "Add it:\n```sql\nALTER TABLE books ADD COLUMN stock", finishReason: "length" as const };
+    const provider = new MockProvider([{ text: "", toolCalls: [call("show_schema", PUBLIC)] }, cut, cut]);
+    const { chat } = tools();
+    const { deps: d } = deps(provider);
+    const answer = ok(await runSchemaChat(caller, { question: "Add stock to books", history: [], tools: chat }, d));
+    expect(answer.sql).toBeNull();
+    expect(answer.sqlProblems).toContain(CUT_OFF);
+    expect(answer.text).not.toContain("ALTER TABLE");
+    expect(provider.requests[2].messages.at(-1)?.content).toContain(CUT_OFF);
+  });
+
+  it("U27: asks nothing when the question was cancelled before it started", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const provider = new MockProvider(["never sent"]);
+    const { chat, calls } = tools();
+    const { deps: d, rows } = deps(provider);
+    const result = await runSchemaChat(caller, { question: "Anything", history: [], tools: chat }, d, controller.signal);
+    expect(result).toEqual({ kind: "failed", outcome: "timeout", message: CANCELLED });
+    expect(provider.requests).toHaveLength(0);
+    expect(calls.connections).toHaveLength(0);
+    expect(rows).toEqual([]);
+  });
+
+  it("U27: stops between steps once the person leaves, and runs no more lookups", async () => {
+    const controller = new AbortController();
+    const provider = new MockProvider([
+      () => {
+        controller.abort();
+        return { text: "", toolCalls: [call("show_schema", PUBLIC)] };
+      },
+      "never sent",
+    ]);
+    const { chat, calls } = tools();
+    const { deps: d, rows } = deps(provider);
+    const result = await runSchemaChat(caller, { question: "Anything", history: [], tools: chat }, d, controller.signal);
+    expect(result).toEqual({ kind: "failed", outcome: "timeout", message: CANCELLED });
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0].signal).toBe(controller.signal);
+    expect(calls.snapshot).toHaveLength(0);
+    // The one call that was sent keeps its row.
+    expect(rows.map((r) => r.outcome)).toEqual(["ok"]);
+  });
+
+  it("U27: does not try the other model when the call was stopped because the person left", async () => {
+    const controller = new AbortController();
+    const provider = new MockProvider([
+      () => {
+        controller.abort();
+        return new AiError("timeout", "The request was cancelled.");
+      },
+      "never sent",
+    ]);
+    const { chat } = tools();
+    const { deps: d, rows } = deps(provider);
+    const result = await runSchemaChat(caller, { question: "Anything", history: [], tools: chat }, d, controller.signal);
+    expect(result).toEqual({ kind: "failed", outcome: "timeout", message: CANCELLED });
+    expect(provider.requests).toHaveLength(1);
+    expect(rows.map((r) => r.outcome)).toEqual(["timeout"]);
+  });
+
+  it("U66: runs the lookups of one turn at the same time, and replies in the order asked", async () => {
+    let active = 0;
+    let most = 0;
+    const tracked = (ms: number, answer: () => Response) => async () => {
+      active += 1;
+      most = Math.max(most, active);
+      const response = await later(ms, answer)();
+      active -= 1;
+      return response;
+    };
+    const provider = new MockProvider([
+      { text: "", toolCalls: [call("version_history", PUBLIC, "v1"), call("deploy_approvals", PUBLIC, "a1")] },
+      "Version 1.4.0, nothing waiting.",
+    ]);
+    const { chat } = tools({
+      routes: {
+        // The first is the slower one, so it finishes last.
+        versionHistory: tracked(30, () => Response.json({ detected: { table: "schema_version", version: "1.4.0", recent: [] } })),
+        approvals: tracked(1, () => Response.json({ approvals: [] })),
+      },
+    });
+    const { deps: d } = deps(provider);
+    const answer = ok(await runSchemaChat(caller, { question: "Version and approvals?", history: [], tools: chat }, d));
+    expect(most).toBe(2);
+    const toolMessages = provider.requests[1].messages.filter((m) => m.role === "tool");
+    expect(toolMessages.map((m) => (m as { toolCallId: string }).toolCallId)).toEqual(["v1", "a1"]);
+    expect(answer.toolsUsed.map((t) => t.name)).toEqual(["list_connections", "version_history", "deploy_approvals"]);
+  });
+
+  it("U66: two lookups running at once share one read of the schema", async () => {
+    const { chat, calls } = tools({ routes: { snapshot: later(10, () => Response.json({ snapshot: shop() })) } });
+    const [outline, found] = await Promise.all([
+      chat.run("show_schema", JSON.stringify(PUBLIC)),
+      chat.run("find_column", JSON.stringify({ ...PUBLIC, name: "price" })),
+    ]);
+    expect(outline.ok && found.ok).toBe(true);
+    expect(found.content).toContain("price");
+    expect(calls.snapshot).toHaveLength(1);
+  });
+
+  it("U66: reads a schema once when two lookups of one turn need it", async () => {
+    const provider = new MockProvider([
+      { text: "", toolCalls: [call("show_schema", PUBLIC, "s1"), call("find_column", { ...PUBLIC, name: "price" }, "f1")] },
+      "`books.price` holds the price.",
+    ]);
+    const { chat, calls } = tools({ routes: { snapshot: later(10, () => Response.json({ snapshot: shop() })) } });
+    const { deps: d } = deps(provider);
+    ok(await runSchemaChat(caller, { question: "Where is the price?", history: [], tools: chat }, d));
+    expect(calls.snapshot).toHaveLength(1);
   });
 });

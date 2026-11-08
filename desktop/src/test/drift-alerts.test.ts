@@ -454,8 +454,16 @@ test("adds the AI's line on a drift to the notification about one schema", () =>
     notificationFor([alert]).body,
     "Orders on Production no longer matches its baseline: 1 table changed. Someone added the discount column to orders."
   );
-  const changed = alertFor({ previousStatus: "drifted", fingerprint: "b", lastFingerprint: "a", counts: NONE, aiSummary: "A new index on `orders`." });
-  assert.equal(notificationFor([changed]).body, "The drift in Orders on Production has changed. A new index on `orders`.");
+  // The plan gives the line to new drift only: "Drift changed" and "reachable
+  // again" go out without it, as the web's phone alerts do.
+  const changed = alertFor({ previousStatus: "drifted", fingerprint: "b", lastFingerprint: "a", counts: NONE, aiSummary: "A new index on orders." });
+  assert.equal(changed.kind, "changed");
+  assert.equal(changed.aiSummary, null);
+  assert.equal(notificationFor([changed]).body, "The drift in Orders on Production has changed.");
+  const reachable = alertFor({ previousStatus: "unreachable", aiSummary: "A new index on orders." });
+  assert.equal(reachable.kind, "reachable");
+  assert.equal(reachable.aiSummary, null);
+  assert.ok(!notificationFor([reachable]).body.includes("index"));
   // A notification about several schemas keeps to its one short line each.
   const two = notificationFor([alert, alertFor({ id: 11, trackedSchemaId: 4, label: "Stock" })]);
   assert.ok(!two.body.includes("discount"));
@@ -466,6 +474,8 @@ test("cleans the AI's line to one short line, and reads it only from a drifted r
   const line = (aiSummary: unknown, status = "drifted") =>
     readDriftRow({ ...good, status, detail: { tablesAdded: 1, aiSummary } })?.aiSummary;
   assert.equal(line("Two\nlines\u200b and\ta tab"), "Two lines and a tab");
+  // Half a surrogate pair standing alone goes; a whole emoji stays.
+  assert.equal(line("A new \ud83d table \u{1F600}"), "A new table \u{1F600}");
   assert.equal(line("x".repeat(400))?.length, 160);
   assert.ok(line("x".repeat(400))?.endsWith(ELLIPSIS));
   for (const value of [undefined, null, 7, "", "  \n ", ["a"]]) assert.equal(line(value), null, String(value));

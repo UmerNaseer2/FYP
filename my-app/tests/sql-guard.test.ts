@@ -2,6 +2,7 @@ import { gradeSql } from "@/lib/change-type";
 import { compareSchemas } from "@/lib/compare";
 import { generateRollback, renderRollbackScript } from "@/lib/generate-sql";
 import {
+  codeBodiesIn,
   containsTransactionControl,
   doBlockBodies,
   extractEnumAddValues,
@@ -504,6 +505,55 @@ describe("findMightFailStatements", () => {
     expect(findMightFailStatements(guarded(guardedFk))).toEqual(
       findMightFailStatements(guarded(guardedFk, "$$"))
     );
+  });
+});
+
+describe("codeBodiesIn", () => {
+  test("reads a DO body written as a '' string, with doubled quotes undone", () => {
+    expect(codeBodiesIn("DO 'BEGIN RAISE NOTICE ''hi''; END';")).toEqual({
+      bodies: [{ kind: "do", text: "BEGIN RAISE NOTICE 'hi'; END" }],
+      unreadable: false,
+    });
+  });
+
+  test("reads a DO E'' body with its backslash escapes", () => {
+    expect(codeBodiesIn("DO E'BEGIN PERFORM pg\\x5fsleep(1); RAISE NOTICE \\'a\\'; END';").bodies).toEqual([
+      { kind: "do", text: "BEGIN PERFORM pg_sleep(1); RAISE NOTICE 'a'; END" },
+    ]);
+  });
+
+  test("reads a function body written as '' or $$, and a DO with LANGUAGE around it", () => {
+    expect(codeBodiesIn("CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1';").bodies).toEqual([{ kind: "routine", text: "SELECT 1" }]);
+    expect(codeBodiesIn("CREATE FUNCTION f() RETURNS int AS $body$ SELECT 2 $body$ LANGUAGE sql;").bodies).toEqual([
+      { kind: "routine", text: " SELECT 2 " },
+    ]);
+    expect(codeBodiesIn("DO LANGUAGE plpgsql 'BEGIN NULL; END';").bodies).toEqual([{ kind: "do", text: "BEGIN NULL; END" }]);
+    expect(codeBodiesIn("DO 'BEGIN NULL; END' LANGUAGE plpgsql;").bodies).toEqual([{ kind: "do", text: "BEGIN NULL; END" }]);
+  });
+
+  test("reads a body inside a body", () => {
+    expect(codeBodiesIn("DO $$ BEGIN EXECUTE 'x'; END $$; DO 'BEGIN DO ''BEGIN NULL; END''; END';").bodies).toEqual([
+      { kind: "do", text: " BEGIN EXECUTE 'x'; END " },
+      { kind: "do", text: "BEGIN DO 'BEGIN NULL; END'; END" },
+      { kind: "do", text: "BEGIN NULL; END" },
+    ]);
+  });
+
+  test("a U& body, or bodies nested too deep, cannot be read", () => {
+    expect(codeBodiesIn("DO U&'BEGIN NULL; END';")).toEqual({ bodies: [], unreadable: true });
+    let sql = "NULL;";
+    for (let i = 0; i < 6; i += 1) sql = `DO '${sql.replace(/'/g, "''")}';`;
+    expect(codeBodiesIn(sql).unreadable).toBe(true);
+  });
+
+  test("DO and AS that start no body give nothing", () => {
+    const sql = [
+      "INSERT INTO books (id) VALUES (1) ON CONFLICT DO NOTHING;",
+      "CREATE TABLE copy AS SELECT 'x' AS label FROM books;",
+      "SELECT CAST(price AS text) FROM books; -- DO 'not code'",
+      "COMMENT ON TABLE books IS 'DO ''BEGIN NULL; END''';",
+    ].join("\n");
+    expect(codeBodiesIn(sql)).toEqual({ bodies: [], unreadable: false });
   });
 });
 

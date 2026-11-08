@@ -24,16 +24,16 @@ import { z } from "zod";
 import type { SchemaSnapshot } from "../../postgres";
 import { serverActingCallIn } from "../../query-analysis";
 import { quoteIdent } from "../../perf-sql";
-import { hasExecutableSql, maskNonCode, splitStatements } from "../../sql-guard";
+import { codeBodiesIn, hasExecutableSql, maskNonCode, splitStatements } from "../../sql-guard";
 import { bareName, checkGeneratedSql, knownNames, tableRefsInSql, unknownTablesInSql } from "../checks";
 import { mentionedObjects, schemaSlice } from "../context";
 import { estimateTokens } from "../provider";
 import type { AiTaskSpec } from "../run";
 import { unknownTickedNames } from "./compare-summary";
-import type { SqlGenerateAnswer, SqlGenerateChecks, SqlTrial } from "./sql-generate-view";
+import { MAX_REQUEST_CHARS, type SqlGenerateAnswer, type SqlGenerateChecks, type SqlTrial } from "./sql-generate-view";
 
-/** The longest request the editor sends. */
-export const MAX_REQUEST_CHARS = 2_000;
+/** The longest request the editor sends (kept in the view file, which the browser also loads). */
+export { MAX_REQUEST_CHARS };
 const SCHEMA_TOKENS = 10_000;
 const MAX_ASSUMPTIONS = 5;
 
@@ -66,8 +66,48 @@ export const SQL_GENERATE_SYSTEM = [
   "- rollbackSql undoes only what sql does. It never drops or changes anything that was in SCHEMA before the script, unless sql changed it, and then it puts it back as it was.",
 ].join("\n");
 
-/** Words in a request that ask for data to be removed. */
-const ASKS_FOR_DATA_LOSS = /\b(?:drop|delete|remove|truncate|purge|clear|wipe|erase|get\s+rid\s+of)\b/i;
+/** Words in a request that can ask for data to be removed. */
+const DATA_LOSS_WORD = /\b(drop|delete|remove|truncate|purge|clear|wipe|erase|get\s+rid\s+of)\b/gi;
+
+/** Words that turn a request around: don't delete, without dropping, never remove. */
+const NEGATION =
+  /\b(?:no|not|never|nothing|none|without|nor|avoid|cannot|(?:do|does|did|is|are|was|were|should|must|can|could|would|will|wo|ca|need)n['’]?t)\b/i;
+
+/** Things a removal word can take away without taking rows or values: remove its default, drop the index. */
+const HARMLESS_OBJECT =
+  /^(?:\S+\s+){0,3}?(?:default|constraint|check|index|indexes|not\s+null|unique|primary\s+key|foreign\s+key|trigger|view|comment|policy)\b/i;
+
+/** What "clear" must be followed by to mean emptying something: "clear out", "clear the table". */
+const CLEAR_SOMETHING = /^(?:out|all|the|every|any|old|those|these|this|that|its|their)\b/i;
+
+/**
+ * Whether a request plainly asks for data to be removed. Only then does the
+ * check let a script delete rows or drop a column or table.
+ *
+ * The request is read clause by clause (split at punctuation and "but"). A
+ * removal word counts only when:
+ * - no negation comes before it in its clause ("don't delete anything",
+ *   "without dropping", "never remove"),
+ * - it has something after it, and that is not "nothing" or "no ...",
+ * - what it removes is not a default, constraint, index, view or the like
+ *   ("remove its default", "drop the NOT NULL").
+ * When in doubt the answer is no, so the data-loss check stays on.
+ */
+export function requestAsksForDataLoss(request: string): boolean {
+  for (const clause of request.split(/[,;:!?\n]+|\.(?=\s|$)|\bbut\b/i)) {
+    for (const match of clause.matchAll(DATA_LOSS_WORD)) {
+      // NOT NULL is a column rule, not a negation.
+      const before = clause.slice(0, match.index).replace(/\bnot\s+null(?:able)?\b/gi, " ");
+      if (NEGATION.test(before)) continue;
+      const object = clause.slice(match.index + match[0].length).trim();
+      if (!object || /^(?:nothing|none|no|zero)\b/i.test(object)) continue;
+      if (HARMLESS_OBJECT.test(object)) continue;
+      if (match[1].toLowerCase() === "clear" && !CLEAR_SOMETHING.test(object)) continue;
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Functions the generator refuses on top of serverActingCallIn's list. */
 const REFUSED_FUNCTIONS =
@@ -131,20 +171,28 @@ function sameSchema(a: string, b: string): boolean {
 
 /**
  * The schemas a SQL text writes in front of a name, other than the target and
- * the catalogs. `columns` are the schema's column names: EXTRACT(year FROM
- * o.created_at) puts an alias and a column after FROM, not a schema and a table.
+ * the catalogs, in the script and inside its DO blocks and function bodies.
+ *
+ * `columns` is no longer read. It once let through archive.notes whenever the
+ * schema had a column called notes, to step over EXTRACT(year FROM
+ * o.created_at), but tableRefsInSql now skips a FROM inside EXTRACT and the
+ * like itself. It stays so callers that pass it still compile.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function otherSchemasIn(sql: string, schemaName: string, columns: ReadonlySet<string> = new Set()): string[] {
   const found = new Set<string>();
+  // tableRefsInSql reads the bodies as well.
   for (const ref of tableRefsInSql(sql)) {
-    if (!ref.schema || columns.has(ref.name)) continue;
+    if (!ref.schema) continue;
     if (!sameSchema(ref.schema, schemaName) && !ALWAYS_READABLE_SCHEMAS.has(ref.schema)) found.add(ref.schema);
   }
-  const text = maskNonCode(sql, { keepQuotedNames: true });
-  for (const match of text.matchAll(QUALIFIED_OBJECT)) {
-    const raw = match[1];
-    const schema = raw.startsWith('"') ? raw.slice(1, -1) : raw.toLowerCase();
-    if (!sameSchema(schema, schemaName) && !ALWAYS_READABLE_SCHEMAS.has(schema.toLowerCase())) found.add(schema);
+  for (const piece of [sql, ...codeBodiesIn(sql).bodies.map((body) => body.text)]) {
+    const text = maskNonCode(piece, { keepQuotedNames: true });
+    for (const match of text.matchAll(QUALIFIED_OBJECT)) {
+      const raw = match[1];
+      const schema = raw.startsWith('"') ? raw.slice(1, -1) : raw.toLowerCase();
+      if (!sameSchema(schema, schemaName) && !ALWAYS_READABLE_SCHEMAS.has(schema.toLowerCase())) found.add(schema);
+    }
   }
   return [...found];
 }
@@ -175,20 +223,33 @@ export function backticksToQuotes(sql: string): string {
 
 export function refusedIn(sql: string, schemaName: string, columns: ReadonlySet<string> = new Set()): string[] {
   const problems: string[] = [];
-  const serverCall = serverActingCallIn(sql);
-  if (serverCall) problems.push(`It calls ${serverCall}, which acts on the server rather than the schema.`);
-  // Quotes come off so "pg_sleep"(1) and pg_catalog.pg_sleep(1) read the same.
-  const names = maskNonCode(sql, { keepQuotedNames: true, readDollarBodies: true }).replace(/"/g, "");
-  const call = names.match(REFUSED_FUNCTIONS);
-  if (call && call[1].toLowerCase() !== serverCall) {
-    problems.push(`It calls ${call[1].toLowerCase()}, which reads files, waits or changes settings. The generator does not write that.`);
+  const add = (problem: string) => {
+    if (!problems.includes(problem)) problems.push(problem);
+  };
+  // A DO block or function body can be a '' or E'' string as well as a $$
+  // body, and maskNonCode blanks strings. So each body is decoded and read on
+  // its own too: DO 'BEGIN PERFORM pg_sleep(100); END' is refused just like
+  // the same call written between $$ marks.
+  const { bodies, unreadable } = codeBodiesIn(sql);
+  if (unreadable) {
+    add("It writes a DO block or function body in a way the app cannot read (a U& string, or bodies inside bodies). Write the body between $$ marks.");
   }
-  const code = maskNonCode(sql, { readDollarBodies: true });
-  if (DYNAMIC_EXECUTE.test(code)) {
-    problems.push("It runs SQL built from a string with EXECUTE. Write the statements out instead, so the app can read them.");
-  }
-  for (const [pattern, reason] of REFUSED_STATEMENTS) {
-    if (pattern.test(code) && !problems.includes(reason)) problems.push(reason);
+  for (const text of [sql, ...bodies.map((body) => body.text)]) {
+    const serverCall = serverActingCallIn(text);
+    if (serverCall) add(`It calls ${serverCall}, which acts on the server rather than the schema.`);
+    // Quotes come off so "pg_sleep"(1) and pg_catalog.pg_sleep(1) read the same.
+    const names = maskNonCode(text, { keepQuotedNames: true, readDollarBodies: true }).replace(/"/g, "");
+    const call = names.match(REFUSED_FUNCTIONS);
+    if (call && call[1].toLowerCase() !== serverCall) {
+      add(`It calls ${call[1].toLowerCase()}, which reads files, waits or changes settings. The generator does not write that.`);
+    }
+    const code = maskNonCode(text, { readDollarBodies: true });
+    if (DYNAMIC_EXECUTE.test(code)) {
+      add("It runs SQL built from a string with EXECUTE. Write the statements out instead, so the app can read them.");
+    }
+    for (const [pattern, reason] of REFUSED_STATEMENTS) {
+      if (pattern.test(code)) add(reason);
+    }
   }
   const others = otherSchemasIn(sql, schemaName, columns);
   if (others.length > 0) {
@@ -296,7 +357,7 @@ export function buildSqlGenerateTask(options: {
     schemaName: options.schemaName,
     snapshot: options.snapshot,
     focus,
-    allowDataLoss: ASKS_FOR_DATA_LOSS.test(request),
+    allowDataLoss: requestAsksForDataLoss(request),
     trial: options.trial,
     last: null,
     lastProblems: [],
@@ -397,11 +458,16 @@ export async function checkSqlGenerate(
 
   const known = knownNames(facts.snapshot);
   const scriptNames = namesIn(value.sql);
-  const summaryUnknown = unknownTickedNames(value.summary, known, (name) =>
-    bareName(name)
+  const summaryUnknown = unknownTickedNames(value.summary, known, (name) => {
+    // bareName drops the schema of schema.table.column, so the schema is
+    // checked first: made_up.reviews.stars is not fine just because the
+    // script makes reviews.stars.
+    const parts = name.replace(/"/g, "").split(".");
+    if (parts.length >= 3 && !known.has(`schema:${parts[0].trim().toLowerCase()}`)) return false;
+    return bareName(name)
       .split(".")
-      .every((part) => scriptNames.has(part))
-  );
+      .every((part) => scriptNames.has(part));
+  });
   if (summaryUnknown.length > 0) {
     problems.push(`The summary names things that are neither in the schema nor in the script: ${summaryUnknown.join(", ")}.`);
   }

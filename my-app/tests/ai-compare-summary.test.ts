@@ -11,6 +11,7 @@ import { compareSchemas } from "@/lib/compare";
 import {
   buildCompareSummaryTask,
   changeLabel,
+  MAX_LISTED_CHANGES,
   checkCompareSummary,
   citedChanges,
   unknownTickedNames,
@@ -21,7 +22,7 @@ import type { AiConfig } from "@/lib/ai/config";
 import { MockProvider } from "@/lib/ai/mock";
 import { runAiTask, type AiDeps } from "@/lib/ai/run";
 import { AI_OFF } from "@/lib/ai/settings";
-import type { ConstraintSnapshot, ForeignKeySnapshot } from "@/lib/postgres";
+import type { ConstraintSnapshot, ForeignKeySnapshot, ViewSnapshot } from "@/lib/postgres";
 import { column, schema, table } from "./helpers/snapshots";
 
 function pk(name: string): ConstraintSnapshot {
@@ -136,6 +137,55 @@ describe("the prompt", () => {
 
   test("the same diff asks the same question, so the saved answer is reused", () => {
     expect(task().spec.cacheInput).toEqual(task().spec.cacheInput);
+  });
+});
+
+describe("the prompt after the review fixes", () => {
+  // U43: more breaking changes than the list holds. The note under the list
+  // used to call every cut change safe or info.
+  test("says how many of the changes it leaves out are breaking", () => {
+    const extra = Array.from({ length: MAX_LISTED_CHANGES + 30 }, (_, i) =>
+      table(`old_${String(i).padStart(3, "0")}`, [id()], { primaryKey: pk(`old_${i}_pkey`) })
+    );
+    const built = buildCompareSummaryTask(compareSchemas(schema([]), schema(extra)), { allowDataLoss: false });
+    if (!built) throw new Error("expected changes");
+    const breaking = [...built.facts.rows.values()].filter((row) => row.severity === "breaking").length;
+    expect(breaking).toBeGreaterThan(MAX_LISTED_CHANGES);
+    const cut = built.facts.rows.size - MAX_LISTED_CHANGES;
+    expect(built.spec.prompt).toContain(
+      `(${cut} more changes are not listed, ${breaking - MAX_LISTED_CHANGES} of them breaking.)`
+    );
+    expect(built.spec.prompt).not.toContain("more safe or info changes");
+  });
+
+  // U44: a renamed table's rows are filed under its source name, so its users
+  // in the target were never looked up.
+  test("names the users of a table that was renamed", () => {
+    const columns = () => [id(), column("name", { typeDisplay: "text" }), column("email", { typeDisplay: "text" })];
+    const activeCustomers: ViewSnapshot = {
+      name: "active_customers",
+      materialized: false,
+      definition: "SELECT id, name FROM custmers",
+      normalizedDefinition: "select id, name from custmers",
+      columns: ["id", "name"],
+      dependsOn: ["custmers"],
+    };
+    const renamedTarget = schema(
+      [table("custmers", [...columns(), column("phone", { typeDisplay: "text" })], { primaryKey: pk("custmers_pkey") })],
+      { views: [activeCustomers] }
+    );
+    const renamedSource = schema(
+      [table("customers", columns(), { primaryKey: pk("custmers_pkey") })],
+      { views: [{ ...activeCustomers, definition: "SELECT id, name FROM customers", dependsOn: ["customers"] }] }
+    );
+    const report = compareSchemas(renamedSource, renamedTarget);
+    // The engine pairs the two tables on its own, as a rename.
+    expect(report.matchedTables.map((m) => [m.left.name, m.right.name])).toContainEqual(["customers", "custmers"]);
+
+    const built = buildCompareSummaryTask(report, { allowDataLoss: false });
+    if (!built) throw new Error("expected changes");
+    expect(built.spec.prompt).toMatch(/^custmers: view active_customers/m);
+    expect(built.spec.prompt).not.toContain("No changed table or view in the target has known users.");
   });
 });
 

@@ -5,8 +5,9 @@ import { Card, ConfirmDialog, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, InfoIcon } from "@/components/ui/icons";
 import { apiFetch } from "@/lib/api-fetch";
 import { errorFrom, jsonOf } from "@/lib/api-answer";
-import { isAiAdminView, type AiAdminView } from "@/lib/ai/views";
+import { AI_USAGE_NOTE, isAiAdminView, type AiAdminView } from "@/lib/ai/views";
 import type { AiFeature } from "@/lib/ai/prompts";
+import { resetAiStatus } from "@/components/studio/AiPanel";
 
 /**
  * The AI tab on the Admin screen (app/api/admin/ai/route.ts).
@@ -18,8 +19,9 @@ import type { AiFeature } from "@/lib/ai/prompts";
  * the Roles & permissions tab (Editors and Admins out of the box).
  *
  * The usage card is the last 30 days from the ai_calls table: how many calls,
- * how many were answered from a saved answer, how many failed the app's
- * checks, tokens, and how long answers took.
+ * how many were answered from a saved answer, how many gave no usable answer
+ * (the service failed, or the answer failed the app's checks), tokens, and
+ * how long answers took.
  */
 
 const SENT =
@@ -71,6 +73,8 @@ export function AiTab({ active }: { active: boolean }) {
         return;
       }
       setView(body);
+      // The AI panels remember whether AI is on; make them ask again.
+      resetAiStatus();
     } catch {
       setActionError("Network error while saving. Nothing was changed.");
     } finally {
@@ -267,8 +271,7 @@ function UsageCard({ view }: { view: AiAdminView }) {
         </div>
       )}
       <p className="text-[12px] mt-2" style={{ color: "var(--text-3)" }}>
-        Saved answers cost nothing: the same question about the same schema is answered from the last checked answer
-        for seven days. Failed counts answers the app refused because they did not match its own checks.
+        {AI_USAGE_NOTE}
       </p>
     </Card>
   );

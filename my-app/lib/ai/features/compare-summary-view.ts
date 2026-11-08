@@ -4,19 +4,23 @@
 
 export type SummaryLevel = "breaking" | "safe" | "info";
 
+/** One graded item of an AI answer: a Compare risk, or a drift item. */
+export type SummaryItem = {
+  title: string;
+  /** The change ids it cites, such as "C3". */
+  changes: string[];
+  /** Always the engine's grade of the cited changes, never the model's. */
+  level: SummaryLevel;
+  why: string;
+  /** Objects that use what changes. Every one exists. */
+  affects: string[];
+};
+
 export type CompareSummaryAnswer = {
   /** One sentence: what this migration does to the target. */
   headline: string;
-  /** What can hurt, most serious first. Each item cites change ids such as "C3". */
-  risks: {
-    title: string;
-    changes: string[];
-    /** Always the engine's grade of the cited changes, never the model's. */
-    level: SummaryLevel;
-    why: string;
-    /** Objects in the target that use what changes. Every one exists. */
-    affects: string[];
-  }[];
+  /** What can hurt, most serious first. */
+  risks: SummaryItem[];
   /** A suggested order to apply the changes in. Every step names real changes. */
   order: { step: string; changes: string[] }[];
 };
@@ -24,8 +28,21 @@ export type CompareSummaryAnswer = {
 /** What a cited change id stands for, sent beside the answer. */
 export type CitedChange = { label: string; severity: SummaryLevel };
 
-function isStringArray(value: unknown): value is string[] {
+export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** The shape of one SummaryItem. The level is any text here; the screen falls back for one it does not know. */
+export function isSummaryItem(value: unknown): value is SummaryItem {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.title === "string" &&
+    typeof v.why === "string" &&
+    typeof v.level === "string" &&
+    isStringArray(v.changes) &&
+    isStringArray(v.affects)
+  );
 }
 
 export function isCompareSummaryAnswer(value: unknown): value is CompareSummaryAnswer {
@@ -34,16 +51,7 @@ export function isCompareSummaryAnswer(value: unknown): value is CompareSummaryA
   return (
     typeof v.headline === "string" &&
     Array.isArray(v.risks) &&
-    v.risks.every(
-      (risk) =>
-        typeof risk === "object" &&
-        risk !== null &&
-        typeof risk.title === "string" &&
-        typeof risk.why === "string" &&
-        typeof risk.level === "string" &&
-        isStringArray(risk.changes) &&
-        isStringArray(risk.affects)
-    ) &&
+    v.risks.every(isSummaryItem) &&
     Array.isArray(v.order) &&
     v.order.every(
       (step) => typeof step === "object" && step !== null && typeof step.step === "string" && isStringArray(step.changes)

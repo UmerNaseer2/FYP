@@ -498,7 +498,7 @@ export type DriftOneLiner = z.infer<typeof driftOneLinerSchema>;
 export const DRIFT_ONE_LINER_SYSTEM = [
   "You write the one line that goes on a drift alert, shown on a phone's lock screen and in a desktop notification.",
   "Drift means the live database no longer matches the registry's baseline. The CHANGES list goes from the baseline to live.",
-  `Answer in JSON: line, one plain sentence of at most 25 words on what changed on live, the most serious change first. Put table and column names in backticks. No change ids, no advice, no greeting, and no guess at who did it.`,
+  `Answer in JSON: line, one plain sentence of at most 25 words on what changed on live, the most serious change first. Name the tables and columns that changed, and put every table and column name in backticks. No change ids, no advice, no greeting, and no guess at who did it.`,
 ].join("\n");
 
 export type DriftOneLinerTask = { spec: AiTaskSpec<DriftOneLiner>; inputTokens: number };
@@ -528,12 +528,125 @@ export function buildDriftOneLinerTask(report: CompareReport): DriftOneLinerTask
 export function checkDriftOneLiner(value: DriftOneLiner, known: Set<string>): { value: DriftOneLiner; problems: string[] } {
   const problems: string[] = [];
   const line = value.line.replace(/\s+/g, " ").trim();
-  const unknown = unknownTickedNames(line, known);
-  if (unknown.length > 0) problems.push(`The line names things neither schema has: ${unknown.join(", ")}.`);
+  const names = lineNames(line, known);
+  const unknown = [...unknownTickedNames(line, known), ...names.unknownBare];
+  if (unknown.length > 0) {
+    problems.push(`The line names things neither schema has: ${[...new Set(unknown)].join(", ")}. Put every table and column name in backticks.`);
+  }
+  if (names.notNames.length > 0) {
+    problems.push(`Only put table and column names in backticks, not: ${names.notNames.join(", ")}.`);
+  }
+  if (names.ticked === 0) problems.push("The line names no table or column in backticks. Name what changed, in backticks.");
   if (/\bC\d+\b/.test(line)) problems.push("The line has a change id in it. Say what changed in words.");
   if (line.split(" ").length > ALERT_LINE_WORDS) problems.push(`The line is longer than ${ALERT_LINE_WORDS} words. Keep it to one short sentence.`);
   if (EMAIL_LIKE.test(line)) problems.push("The line names a person. Say what changed, never who changed it.");
   return { value: { line }, problems };
+}
+
+/** A plain name, maybe with a schema or table in front: what unknownTickedNames checks. */
+const PLAIN_NAME = /^"?[a-z_][a-z0-9_$]*"?(\s*\.\s*"?[a-z_][a-z0-9_$]*"?){0,2}$/i;
+
+/** Words for a kind of object. The word right before one is often a name: "the customers table". */
+const OBJECT_WORDS = new Set([
+  "table", "tables", "column", "columns", "index", "indexes", "indices", "view", "views",
+  "constraint", "constraints", "trigger", "triggers", "sequence", "sequences", "function", "functions",
+]);
+
+/**
+ * Ordinary words that stand next to an object word without being a name: "a
+ * new table", "the unique index", "the column was dropped". Kept as a list on
+ * purpose, so a real name such as "billing" in "the billing table" is still
+ * checked.
+ */
+const NOT_A_NAME = new Set([
+  // Which one, and how many.
+  "a", "an", "the", "this", "that", "these", "those", "its", "their", "each", "every", "any", "some", "all",
+  "both", "no", "another", "other", "same", "whole", "only", "one", "two", "three", "four", "five", "six",
+  "seven", "eight", "nine", "ten", "several", "many", "few", "more", "most", "single", "first", "second", "last",
+  // What kind.
+  "new", "old", "extra", "nullable", "unique", "primary", "foreign", "key", "keys", "check", "partial",
+  "composite", "temporary", "temp", "empty", "existing", "missing", "added", "dropped", "removed",
+  "renamed", "changed", "altered", "matching", "remaining", "related", "affected",
+  // Words that join a sentence together.
+  "and", "or", "but", "nor", "so", "then", "also", "still", "now", "not", "of", "to", "on", "in", "from",
+  "with", "by", "for", "as", "at", "into", "onto", "over", "under", "about", "after", "before", "since",
+  "without", "within", "while", "which", "who", "where", "when", "what", "it", "they", "them", "there",
+  "here", "itself", "is", "was", "were", "are", "be", "been", "has", "had", "have", "does", "did", "do",
+  "will", "would", "can", "could", "may", "might", "should", "must", "got", "lost", "gone",
+]);
+
+/** Words that come after an object word to say something about it: "the column type", "the table rows". */
+const ABOUT_AN_OBJECT = new Set(["type", "types", "name", "names", "default", "defaults", "rows", "data", "definition"]);
+
+/** Whether a bare word next to an object word could be the object's name, and so must be checked. */
+function mayBeAName(lower: string): boolean {
+  return !OBJECT_WORDS.has(lower) && !NOT_A_NAME.has(lower) && !/^\d+$/.test(lower);
+}
+
+/**
+ * What a line names, checked against the two schemas.
+ *
+ * The prompt asks for every name in backticks, but the model's answer is
+ * untrusted, and alertLine takes the backticks away. So a name outside them
+ * would reach a lock screen unchecked. A bare word counts as a name when it
+ * looks like one (has an underscore, a dot or a $ in it, or a capital inside
+ * it like orderItems), or when it stands right next to a word such as
+ * "table" or "column", as in "the customers table" or "the table customers".
+ * Each must be in one of the two schemas.
+ *
+ * Also returned: text in backticks that is no plain name and so cannot be
+ * checked (`ghost table`), and how many backticked pieces there are. A line
+ * with none ignored the backtick rule, and its names went unchecked, so the
+ * caller sends it back.
+ */
+function lineNames(line: string, known: Set<string>): { unknownBare: string[]; notNames: string[]; ticked: number } {
+  const unknownBare: string[] = [];
+  const notNames: string[] = [];
+  let ticked = 0;
+  // Odd pieces sit between two backticks. A backtick with no partner leaves
+  // its last piece as bare text, which is how alertLine will show it.
+  const pieces = line.split("`");
+  // The words in order. A backticked piece is one word marked `ticked`, so
+  // "the `orders` table" never takes "the" for the table's name.
+  const words: { text: string; ticked: boolean }[] = [];
+  pieces.forEach((piece, i) => {
+    const isTicked = i % 2 === 1 && i < pieces.length - 1;
+    if (isTicked) {
+      const name = piece.trim();
+      if (name === "") return;
+      ticked += 1;
+      // A plain name in backticks is checked by unknownTickedNames.
+      if (!PLAIN_NAME.test(name) && !isKnownName(name, known)) notNames.push(name);
+      words.push({ text: name, ticked: true });
+      return;
+    }
+    for (const match of piece.matchAll(/[\p{L}\p{N}_$]+(?:\.[\p{L}\p{N}_$]+)*/gu)) {
+      words.push({ text: match[0], ticked: false });
+    }
+  });
+
+  words.forEach((word, i) => {
+    if (word.ticked) return;
+    const lower = word.text.toLowerCase();
+    // A number such as 1.5 has a dot in it but is no name.
+    const looksLikeName = (/[_$.]/.test(word.text) && !/^[\d.]+$/.test(word.text)) || /\p{Ll}\p{Lu}/u.test(word.text);
+    const next = words[i + 1];
+    const before = words[i - 1];
+    // "the customers table": the word before an object word.
+    const beforeObjectWord = next !== undefined && !next.ticked && OBJECT_WORDS.has(next.text.toLowerCase()) && mayBeAName(lower);
+    // "the table customers": the word after one.
+    const afterObjectWord =
+      before !== undefined &&
+      !before.ticked &&
+      OBJECT_WORDS.has(before.text.toLowerCase()) &&
+      mayBeAName(lower) &&
+      !ABOUT_AN_OBJECT.has(lower);
+    const mustCheck = looksLikeName || beforeObjectWord || afterObjectWord;
+    if (mustCheck && !isKnownName(word.text, known) && !unknownBare.includes(word.text)) {
+      unknownBare.push(word.text);
+    }
+  });
+  return { unknownBare, notNames, ticked };
 }
 
 /**
@@ -544,9 +657,15 @@ export function checkDriftOneLiner(value: DriftOneLiner, known: Set<string>): { 
 export function alertLine(line: string): string | null {
   const text = line
     .replace(/`/g, "")
-    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
+    // \p{Cs} is half of a surrogate pair standing alone. The model's JSON can
+    // hold one, and PostgreSQL's jsonb refuses it, which would lose the row.
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return null;
-  return text.length > ALERT_LINE_LIMIT ? `${text.slice(0, ALERT_LINE_LIMIT - 3).trimEnd()}...` : text;
+  // Counted and cut in whole characters (code points), not UTF-16 units, so
+  // an emoji at the cut is never split in half.
+  const characters = Array.from(text);
+  if (characters.length <= ALERT_LINE_LIMIT) return text;
+  return `${characters.slice(0, ALERT_LINE_LIMIT - 3).join("").trimEnd()}...`;
 }

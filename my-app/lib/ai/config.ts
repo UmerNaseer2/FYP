@@ -67,19 +67,29 @@ export function readAiConfig(env: NodeJS.ProcessEnv = process.env): AiConfig | n
   };
 }
 
-/** The service's name as people know it, from its address. */
+/** What a service this file does not know is called on screen. Never its address. */
+export const OTHER_SERVICE = "the AI service in the server's settings";
+
+/**
+ * The service's name as people know it, from its address. Shown to everyone
+ * who may use AI, so it is only ever a name from this list: a service this
+ * file does not know is OTHER_SERVICE, never its host name, which could be
+ * an internal machine's name or address.
+ */
 export function serviceName(baseUrl: string): string {
   let host = "";
   try {
     host = new URL(baseUrl).hostname.toLowerCase();
   } catch {
-    return "AI service";
+    return OTHER_SERVICE;
   }
   if (host.endsWith("generativelanguage.googleapis.com")) return "Google Gemini";
   if (host.endsWith("groq.com")) return "Groq";
   if (host.endsWith("openrouter.ai")) return "OpenRouter";
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return "Ollama (this computer)";
-  return host;
+  if (host === "api.openai.com") return "OpenAI";
+  // URL gives an IPv6 host in brackets: "[::1]".
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return "Ollama (this computer)";
+  return OTHER_SERVICE;
 }
 
 /** What a screen may know about the AI setup: never the key or the address. */

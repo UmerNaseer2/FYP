@@ -6,11 +6,12 @@
  * never holds a host, SQL, a person's name or anything a person typed. The
  * reason to look is in the alert, and the rest is behind sign-in in the app.
  *
- * One exception, when an organization has AI assistance on: a drift alert can
- * carry the AI's one line on what changed, which names the tables and columns
- * involved. It is checked against the two schemas, cleaned to one plain line
- * and capped (lib/ai/features/drift-explain.ts), so it holds object names and
- * nothing else; never rows, SQL, hosts or people.
+ * One exception, when an organization has AI assistance on: a "Drift found"
+ * alert (new drift, plan 6.3 3a) can carry the AI's one line on what changed,
+ * which names the tables and columns involved. Every name in it, in backticks
+ * or not, is checked against the two schemas, and a line that names anything
+ * unchecked is dropped. What is left is cleaned to one plain line and capped
+ * (lib/ai/features/drift-explain.ts). No other alert carries it.
  *
  * Recipients are worked out when an alert is sent, from memberships and roles
  * at that moment, so taking a permission away also takes away its alerts.
@@ -116,7 +117,9 @@ export function driftAlertText(
   const line = aiSummary ? ` ${aiSummary}` : "";
   const bodies: Record<DriftAlertKind, string> = {
     drifted: `${subject} no longer matches its baseline.${line}`,
-    changed: `The drift in ${subject} has changed.${line}`,
+    // The plan gives the AI line to new drift only, so "changed" has none.
+    // The desktop app's alerts (src/core/drift-alerts.ts) follow the same rule.
+    changed: `The drift in ${subject} has changed.`,
     in_sync: `${subject} matches its baseline again.`,
     unreachable: `Schema Studio could not reach ${subject} to check it for drift. It tries again at the next check.`,
     reachable:

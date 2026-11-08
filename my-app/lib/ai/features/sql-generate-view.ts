@@ -2,6 +2,12 @@
 // reach a database or the AI service, so the editor can use the types and the
 // shape checks.
 
+/**
+ * The longest request the editor sends. The route refuses a longer one with a
+ * 413, and the editor's box stops at it, so both read it from here.
+ */
+export const MAX_REQUEST_CHARS = 2_000;
+
 export type SqlGenerateAnswer = {
   /** The script. Empty when the model said it cannot be done. */
   sql: string;

@@ -3,8 +3,8 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { runComparison } from "@/lib/compare-run";
-import { aiResponse } from "@/lib/ai/respond";
-import { aiGate, defaultAiDeps } from "@/lib/ai/run";
+import { aiGateRefusal, aiResponse } from "@/lib/ai/respond";
+import { defaultAiDeps } from "@/lib/ai/run";
 import { runSchemaChat } from "@/lib/ai/chat";
 import { makeChatTools } from "@/lib/ai/chat-tools";
 import { MAX_HISTORY_TURNS, MAX_QUESTION_CHARS, type ChatTurn } from "@/lib/ai/features/schema-chat-view";
@@ -63,13 +63,8 @@ export async function POST(request: NextRequest) {
   const { principal } = gate;
   const caller = { orgId: principal.orgId, email: actorFor(principal) };
   const deps = defaultAiDeps();
-  try {
-    const refused = await aiGate(caller, "schema-chat", deps);
-    if (refused) return aiResponse(refused);
-  } catch (error) {
-    console.error("POST ai chat: could not read the AI settings:", error);
-    return NextResponse.json({ error: "Could not read this organization's AI settings. Is the app database reachable?" }, { status: 500 });
-  }
+  const off = await aiGateRefusal(caller, "schema-chat", deps, "POST ai chat");
+  if (off) return off;
 
   const tools = makeChatTools({
     baseUrl: request.nextUrl.origin,
@@ -90,7 +85,9 @@ export async function POST(request: NextRequest) {
   });
 
   try {
-    const result = await runSchemaChat(caller, { question, history: readHistory(body.history), tools }, deps);
+    // request.signal is aborted when the person leaves or presses Stop, and
+    // the question then stops, so no more AI calls are spent on it.
+    const result = await runSchemaChat(caller, { question, history: readHistory(body.history), tools }, deps, request.signal);
     return aiResponse(result);
   } catch (error) {
     console.error("POST ai chat error:", error);

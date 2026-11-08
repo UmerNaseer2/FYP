@@ -28,7 +28,7 @@ import { estimateTokens } from "../provider";
 import type { AiTaskSpec } from "../run";
 import type { CitedChange, CompareSummaryAnswer, SummaryLevel } from "./compare-summary-view";
 
-/** Change rows listed in the prompt. Breaking ones go first, so they are never the ones cut. */
+/** Change rows listed in the prompt. Breaking ones go first, so a cut takes safe and info ones before any breaking one. */
 export const MAX_LISTED_CHANGES = 120;
 const DETAIL_LIMIT = 180;
 const TARGET_SLICE_TOKENS = 2_000;
@@ -128,15 +128,28 @@ export function buildCompareSummaryTask(
       `${id} [${row.severity}]${row.manual ? " [needs a person]" : ""} ${changeLabel(row)}: ${clip(row.detail, DETAIL_LIMIT)}`
   );
   const unlisted = doc.changes.length - listedEntries.length;
-  if (unlisted > 0) changeLines.push(`(${unlisted} more safe or info changes are not listed.)`);
+  // More breaking changes than the list holds: say how many of the cut ones break.
+  const unlistedBreaking = [...rows.entries()].filter(
+    ([id, row]) => !listed.has(id) && row.severity === "breaking"
+  ).length;
+  if (unlistedBreaking > 0) {
+    changeLines.push(`(${unlisted} more changes are not listed, ${unlistedBreaking} of them breaking.)`);
+  } else if (unlisted > 0) {
+    changeLines.push(`(${unlisted} more safe or info changes are not listed.)`);
+  }
 
   // What uses the target objects that change: the tables and views the
   // breaking, dropped, renamed and changed rows touch.
   const target = report.right;
   const targetNames = new Set([...target.tables.map((t) => t.name), ...(target.views ?? []).map((v) => v.name)]);
+  // The rows of a matched table are filed under its source name. A renamed
+  // table has another name in the target, which is the one its users read.
+  const targetNameOf = new Map<string, string>();
+  for (const match of report.matchedTables) targetNameOf.set(match.left.name, match.right.name);
   const touched: string[] = [];
   for (const [, row] of listedEntries) {
-    const name = row.table || (row.category === "View" ? row.object : "");
+    const filedAs = row.table || (row.category === "View" ? row.object : "");
+    const name = targetNameOf.get(filedAs) ?? filedAs;
     if (!name || !targetNames.has(name) || touched.includes(name)) continue;
     if (row.severity === "breaking" || row.change !== "added") touched.push(name);
   }
@@ -184,7 +197,9 @@ export function buildCompareSummaryTask(
   const facts: CompareSummaryFacts = {
     rows,
     listed,
-    known: knownNames(report.left, report.right),
+    // The source's objects under the target's schema name as well: that is
+    // where a new table will live once the migration runs.
+    known: knownNames(report.left, report.right, report.left && report.right ? { ...report.left, schema: report.right.schema } : null),
     breakingIds,
   };
 

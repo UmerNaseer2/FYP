@@ -4,10 +4,13 @@
 // The route only builds this hook when the caller may run scripts on the
 // target and it is labelled Dev or Staging (see app/api/scripts/generate). The
 // session is set up the way a deploy sets it up: a lock wait cap, the target
-// schema alone on the search path, strings read the standard way. A statement
-// time cap is added, so a slow script cannot hold its locks for long. The
-// transaction id is read before and after each part: a script that ended the
-// transaction itself would otherwise have committed on its own.
+// schema alone on the search path, strings read the standard way. A time cap
+// is added, so a slow script cannot hold its locks for long. PostgreSQL applies
+// statement_timeout to each statement of a script on its own, so the cap of
+// one statement is the trial's whole time budget shared out over the
+// statements of the script and its rollback: all of them together stay within
+// the budget. The transaction id is read before and after each part: a script
+// that ended the transaction itself would otherwise have committed on its own.
 //
 // When there is a rollback, the schema's structure is read before the script
 // and again after the rollback: the tables, views, indexes, sequences and
@@ -18,19 +21,41 @@
 // pass the try, and running the rollback would delete a column the script
 // never added, with its data.
 //
-// What a failure says goes back to the AI to fix the script, so it is cut
-// down to structure: the message of a data error (a value that cannot be cast,
-// a duplicate key) can quote a row, so for those only the kind of error and
-// the names of the column and constraint are kept. The error's detail, which
-// is where PostgreSQL puts row values, is never read.
+// What a failure says goes back to the AI to fix the script, and is shown on
+// the screen, so it is cut down to structure. PostgreSQL's own message and
+// hint are never passed on: a data error (a value that cannot be cast, a
+// duplicate key) quotes a row, and a RAISE in the script can put anything in
+// the message, including a value read from a table. What is said instead is a
+// plain description picked by the error code, and the names of the table,
+// column and constraint, kept only when the script itself has them (a RAISE
+// can set those fields too). The error's detail, which is where PostgreSQL
+// puts row values, is never read.
 
 import type { ClientConfig, PoolClient } from "pg";
 import { getPoolForConfig } from "../../postgres";
 import { currentTransactionId, readStringsTheStandardWay } from "../../script-transaction";
+import { splitStatements } from "../../sql-guard";
 import type { TrialHook, TrialOutcome } from "./sql-generate";
 
 export const TRIAL_LOCK_TIMEOUT_MS = 2_000;
-export const TRIAL_STATEMENT_TIMEOUT_MS = 10_000;
+/** The most time the statements of one trial, script and rollback, may take together. */
+export const TRIAL_TIME_BUDGET_MS = 10_000;
+/** The most one statement may take: the whole budget, when it is the only one. */
+export const TRIAL_STATEMENT_TIMEOUT_MS = TRIAL_TIME_BUDGET_MS;
+/** The least time one statement gets, however many there are. */
+const MIN_STATEMENT_TIMEOUT_MS = 250;
+
+/**
+ * The statement_timeout for one trial: the budget shared out over every
+ * statement of the script and its rollback, so that all of them together stay
+ * within it. Null when there are so many statements that each would get less
+ * than MIN_STATEMENT_TIMEOUT_MS: such a trial is not tried.
+ */
+export function trialStatementTimeout(sql: string, rollbackSql: string): number | null {
+  const count = Math.max(1, splitStatements(sql).length + splitStatements(rollbackSql).length);
+  const each = Math.floor(TRIAL_TIME_BUDGET_MS / count);
+  return each < MIN_STATEMENT_TIMEOUT_MS ? null : each;
+}
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -41,14 +66,78 @@ type PgError = { code?: unknown; message?: unknown; column?: unknown; constraint
 /** Codes that say "could not try", not "the script is wrong". */
 const NOT_TRIED: Record<string, string> = {
   "55P03": "A table the script touches is locked by someone else right now, so the app could not try it.",
-  "57014": `The script took longer than ${TRIAL_STATEMENT_TIMEOUT_MS / 1000} seconds, so the app stopped trying it. It may be slow on this database.`,
+  "57014": `The script took too long: a trial gets ${TRIAL_TIME_BUDGET_MS / 1000} seconds for the script and its rollback together, so the app stopped trying it. It may be slow on this database.`,
   "42501": "The app's database user may not make these changes here, so the script could not be tried.",
   "55P04": "The script adds an enum value and then uses it. That only works when the value is committed first, as a deploy does, so the app could not try it.",
   "25P02": "The database ended the trial transaction early, so the app could not finish trying the script.",
 };
 
-/** What a failure says, cut down to structure. */
-export function describeTrialError(error: unknown): { notTried: string } | { message: string } {
+/** A plain description of the errors a script most often meets, by SQLSTATE. */
+const ERROR_BY_CODE: Record<string, string> = {
+  "42601": "The script has a syntax error",
+  "42P01": "The script uses a table or view that does not exist",
+  "42703": "The script uses a column that does not exist",
+  "42704": "The script uses a type or other object that does not exist",
+  "42883": "The script calls a function or operator that does not exist for these types",
+  "42702": "The script uses a column name that more than one table has, without saying which",
+  "42P07": "The script creates a table, index or other object whose name is already taken",
+  "42701": "The script adds a column whose name is already taken",
+  "42710": "The script creates a constraint, trigger or other object whose name is already taken",
+  "42723": "The script creates a function that already exists with the same arguments",
+  "42804": "A value or expression in the script has the wrong type",
+  "42809": "The script uses an object as the wrong kind of thing, such as a view as a table",
+  "42830": "A foreign key in the script points at columns that have no unique key",
+  "42P10": "ON CONFLICT in the script names columns that have no unique key or index",
+  "42P16": "The script defines a table in a way PostgreSQL does not allow",
+  "42P13": "A function in the script has a definition PostgreSQL does not allow",
+  "2BP01": "Other objects depend on what the script drops or changes",
+  "0A000": "The script uses a feature PostgreSQL does not support here",
+  "P0001": "A RAISE EXCEPTION in the script stopped it",
+  "P0004": "An ASSERT in the script failed",
+};
+
+/** The same, by the first two characters of the code, for the rest. */
+const ERROR_BY_CLASS: Record<string, string> = {
+  "42": "The script has a mistake in its SQL or names something wrong",
+  "0A": "The script uses a feature PostgreSQL does not support here",
+  "2B": "Other objects depend on what the script drops or changes",
+  P0: "A PL/pgSQL block in the script raised an error",
+  "54": "The script goes past a PostgreSQL limit, such as too many columns or too long a name",
+  "55": "An object the script uses is not in a state that allows the change",
+  XX: "The database hit an internal error while trying the script",
+};
+
+/**
+ * The names a failure may carry back: the table, column and constraint fields,
+ * and the "quoted" names in PostgreSQL's message (column "stok" does not
+ * exist), but only those the script itself has as a word. A name the script
+ * does not have could be a value read from a table, so it is left out.
+ */
+function namesTheScriptHas(e: PgError, scriptText: string): string {
+  const words = new Set(scriptText.toLowerCase().match(/[a-z_][a-z0-9_$]*/g) ?? []);
+  const has = (name: unknown): name is string =>
+    typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(name) && words.has(name.toLowerCase());
+  const names: string[] = [];
+  if (has(e.table)) names.push(`table ${e.table}`);
+  if (has(e.column)) names.push(`column ${e.column}`);
+  if (has(e.constraint)) names.push(`constraint ${e.constraint}`);
+  const message = typeof e.message === "string" ? e.message : "";
+  for (const match of message.matchAll(/"([^"\n]{1,63})"/g)) {
+    const name = match[1];
+    if (has(name) && name !== e.table && name !== e.column && name !== e.constraint && !names.includes(`"${name}"`)) {
+      names.push(`"${name}"`);
+    }
+  }
+  return names.length > 0 ? ` (${names.join(", ")})` : "";
+}
+
+/**
+ * What a failure says, cut down to structure: a plain description by SQLSTATE
+ * and the names in it that the script has. PostgreSQL's message and hint are
+ * never passed on as they are. `scriptText` is what was run (the script and
+ * its rollback); with none, no name is kept.
+ */
+export function describeTrialError(error: unknown, scriptText = ""): { notTried: string } | { message: string } {
   const e = (typeof error === "object" && error !== null ? error : {}) as PgError;
   const code = typeof e.code === "string" ? e.code : "";
   if (NOT_TRIED[code]) return { notTried: NOT_TRIED[code] };
@@ -57,20 +146,14 @@ export function describeTrialError(error: unknown): { notTried: string } | { mes
   if (!/^[0-9A-Z]{5}$/.test(code)) {
     return { notTried: "The app could not reach the database to try the script." };
   }
-  const names = [
-    typeof e.table === "string" ? `table ${e.table}` : null,
-    typeof e.column === "string" ? `column ${e.column}` : null,
-    typeof e.constraint === "string" ? `constraint ${e.constraint}` : null,
-  ].filter(Boolean);
-  const where = names.length > 0 ? ` (${names.join(", ")})` : "";
-  // Class 22 (data exception) and 23 (integrity) messages can quote a value.
+  const where = namesTheScriptHas(e, scriptText);
+  // Class 22 (data exception) and 23 (integrity): the rows already there.
   if (code.startsWith("22")) return { message: `A value already in the table does not fit the change, SQLSTATE ${code}${where}.` };
   if (code.startsWith("23")) {
     return { message: `Rows already in the table break the change, SQLSTATE ${code}${where}. Say what to do with them, or add a DEFAULT.` };
   }
-  const message = typeof e.message === "string" ? e.message : "The database refused it.";
-  const hint = typeof e.hint === "string" && e.hint ? ` Hint: ${e.hint}` : "";
-  return { message: `${message} (SQLSTATE ${code}).${hint}` };
+  const kind = ERROR_BY_CODE[code] ?? ERROR_BY_CLASS[code.slice(0, 2)] ?? "The database refused the script";
+  return { message: `${kind}, SQLSTATE ${code}${where}.` };
 }
 
 /** Each object in the schema by name, with a column's type as its shape. */
@@ -146,6 +229,13 @@ export function makeTrial(
   connect: () => Promise<PoolClient> = () => getPoolForConfig(cfg).connect()
 ): TrialHook {
   return async (sql, rollbackSql): Promise<TrialOutcome> => {
+    const statementTimeout = trialStatementTimeout(sql, rollbackSql);
+    if (statementTimeout === null) {
+      return {
+        status: "not-tried",
+        reason: `The script and its rollback have too many statements to try within ${TRIAL_TIME_BUDGET_MS / 1000} seconds.`,
+      };
+    }
     let client: PoolClient;
     try {
       client = await connect();
@@ -156,7 +246,8 @@ export function makeTrial(
     try {
       await client.query("BEGIN");
       await client.query(`SET LOCAL lock_timeout = ${TRIAL_LOCK_TIMEOUT_MS}`);
-      await client.query(`SET LOCAL statement_timeout = ${TRIAL_STATEMENT_TIMEOUT_MS}`);
+      // Each statement gets its share of the budget (see trialStatementTimeout).
+      await client.query(`SET LOCAL statement_timeout = ${statementTimeout}`);
       await client.query(`SET LOCAL search_path TO ${quoteIdent(schemaName)}`);
       await readStringsTheStandardWay(client);
       const exists = await client.query("SELECT 1 FROM information_schema.schemata WHERE schema_name = $1", [schemaName]);
@@ -190,7 +281,7 @@ export function makeTrial(
       }
       return { status: "passed" };
     } catch (error) {
-      const read = describeTrialError(error);
+      const read = describeTrialError(error, `${sql}\n${rollbackSql}`);
       if ("notTried" in read) return { status: "not-tried", reason: read.notTried };
       if (step === "setup") return { status: "not-tried", reason: "The app could not set up the trial on this database." };
       return { status: "failed", step, message: read.message };

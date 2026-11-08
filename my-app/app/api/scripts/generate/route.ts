@@ -1,39 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
-import { ADMIN_ROLE, hasPermission, refusalMessage } from "@/lib/permissions";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { fetchSchemaSnapshot, getPoolForConfig } from "@/lib/postgres";
-import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { ADMIN_ROLE, hasPermission } from "@/lib/permissions";
+import { getPoolForConfig } from "@/lib/postgres";
+import type { PoolConfig } from "pg";
 import { canExecute, toExecuteRole } from "@/lib/connection-access";
 import { louderEnvironment, toEnvironment, type Environment } from "@/lib/environments";
 import { configIdentity, findProductionTwin } from "@/lib/environment-guard";
 import { findTrackedSchema } from "@/lib/lineage-db";
-import { aiResponse } from "@/lib/ai/respond";
-import { aiGate, defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
+import { loadPgTarget, readTargetSnapshot, type PgTargetRow } from "@/lib/ai/pg-target";
+import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
 import { buildSqlGenerateTask, MAX_REQUEST_CHARS, type TrialHook } from "@/lib/ai/features/sql-generate";
 import { makeTrial } from "@/lib/ai/features/sql-generate-trial";
 
-/** How long the schema capture waits for a lock on the target. */
-const SNAPSHOT_LOCK_TIMEOUT_MS = 2_000;
+/** The saved connection, with the columns chooseTrial reads. */
+type ConnectionRow = PgTargetRow;
 
-type ConnectionRow = {
-  name: string;
-  type: string;
-  host: string;
-  port: number;
-  database_name: string;
-  username: string;
-  password: string;
-  connection_string: string | null;
-  ssl: boolean | null;
-  ssl_mode: string | null;
-  environment: string | null;
-  execute_role: string | null;
-};
-
-async function readServerMajor(cfg: ReturnType<typeof buildPgConfig>): Promise<number | null> {
+async function readServerMajor(cfg: PoolConfig): Promise<number | null> {
   try {
     const result = await getPoolForConfig(cfg).query("SHOW server_version_num");
     const n = Number(result.rows[0]?.server_version_num);
@@ -63,9 +47,8 @@ async function readServerMajor(cfg: ReturnType<typeof buildPgConfig>): Promise<n
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("scripts:read");
   if (!gate.ok) return gate.response;
-  if (!hasPermission(gate.principal, "ai:read")) {
-    return NextResponse.json({ error: refusalMessage(gate.principal.roleLabel, "ai:read") }, { status: 403 });
-  }
+  const noAi = aiPermissionRefusal(gate.principal);
+  if (noAi) return noAi;
 
   let body: Record<string, unknown>;
   try {
@@ -91,52 +74,15 @@ export async function POST(request: NextRequest) {
   const orgId = gate.principal.orgId;
   const caller = { orgId, email: actorFor(gate.principal) };
   const deps = defaultAiDeps();
-  try {
-    const refused = await aiGate(caller, "sql-generate", deps);
-    if (refused) return aiResponse(refused);
-  } catch (error) {
-    console.error("POST scripts generate: could not read the AI settings:", error);
-    return NextResponse.json({ error: "Could not read this organization's AI settings. Is the app database reachable?" }, { status: 500 });
-  }
+  const off = await aiGateRefusal(caller, "sql-generate", deps, "POST scripts generate");
+  if (off) return off;
 
-  let row: ConnectionRow;
-  try {
-    await syncMetadataTables();
-    const result = await pool.query(
-      `SELECT name, type, host, port, database_name, username, password, connection_string, ssl, ssl_mode,
-              environment, execute_role
-         FROM connections
-        WHERE id = $1 AND org_id = $2`,
-      [connectionId, orgId]
-    );
-    if (result.rows.length === 0) {
-      return NextResponse.json({ error: `No saved connection found with id ${connectionId}.` }, { status: 404 });
-    }
-    row = result.rows[0];
-  } catch (error) {
-    console.error("POST scripts generate: could not read the connection:", error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: "Could not read saved connection. Is the app database reachable?" }, { status: 500 });
-  }
-  if (row.type !== "PostgreSQL") {
-    return NextResponse.json({ error: "Writing scripts with AI works for PostgreSQL targets only." }, { status: 400 });
-  }
-
-  let cfg: ReturnType<typeof buildPgConfig>;
-  try {
-    cfg = buildPgConfig({
-      host: row.host,
-      port: row.port,
-      database: row.database_name,
-      user: row.username,
-      password: row.password,
-      connectionString: row.connection_string,
-      ssl: Boolean(row.ssl),
-      sslMode: row.ssl_mode,
-    });
-  } catch (error) {
-    console.error("POST scripts generate: could not read the connection's credentials:", error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
-  }
+  const target = await loadPgTarget(orgId, connectionId, {
+    notPostgresMessage: "Writing scripts with AI works for PostgreSQL targets only.",
+    logPrefix: "POST scripts generate",
+  });
+  if (!target.ok) return target.response;
+  const { row, cfg } = target;
 
   // Whether to try the script, decided before the AI is asked, the same way a
   // deploy decides whether it may run.
@@ -150,21 +96,21 @@ export async function POST(request: NextRequest) {
   });
 
   try {
-    const captured = await fetchSchemaSnapshot(cfg, schemaName, { lockTimeoutMs: SNAPSHOT_LOCK_TIMEOUT_MS });
-    if (!captured.ok) {
-      return NextResponse.json({ error: `Could not read the target's schema: ${captured.error}` }, { status: 502 });
-    }
+    const captured = await readTargetSnapshot(cfg, schemaName);
+    if (!captured.ok) return captured.response;
     const task = buildSqlGenerateTask({
       request: words,
       schemaName,
-      snapshot: captured.data,
+      snapshot: captured.snapshot,
       serverMajor: await readServerMajor(cfg),
       trial,
     });
-    const result = await runAiTask(caller, task.spec, deps);
-    if (result.kind === "failed" && task.facts.lastProblems.length > 0) {
+    const result = await runAiTask(caller, { ...task.spec, signal: request.signal, refresh: body.refresh === true }, deps);
+    if (result.kind === "failed" && result.outcome === "failed_check" && task.facts.lastProblems.length > 0) {
       // The runner's message is general. What was still wrong with the last
-      // answer is what tells the person how to reword the request.
+      // answer is what tells the person how to reword the request. Only when
+      // the checks are why it failed: after a timeout or a refused call the
+      // problems are from an earlier answer and say nothing about this one.
       const problems = task.facts.lastProblems.slice(0, 5);
       return NextResponse.json(
         { error: `${result.message} The last answer still had this problem: ${problems[0]}`, reason: result.outcome, problems },
@@ -187,7 +133,7 @@ async function chooseTrial(options: {
   orgId: number;
   connectionId: number;
   schemaName: string;
-  cfg: ReturnType<typeof buildPgConfig>;
+  cfg: PoolConfig;
 }): Promise<TrialHook | { notTried: string }> {
   const { who, row, orgId, connectionId, schemaName, cfg } = options;
   if (!canExecute(who, toExecuteRole(row.execute_role))) {

@@ -25,6 +25,16 @@ export type AiAdminView = {
   canUpdate: boolean;
 };
 
+/**
+ * The note under the Admin usage card: what a call is, and what Failed
+ * counts (store.ts readAiUsage: every outcome but ok and limit_reached).
+ */
+export const AI_USAGE_NOTE =
+  "Each request to the AI service is one call, a retry or a switch to the other model included. " +
+  "Saved answers cost nothing: the same question about the same schema is answered from the last checked answer for seven days. " +
+  "Failed counts calls that gave no usable answer: the service was busy, out of its free allowance or too slow, " +
+  "or the answer did not pass the app's checks.";
+
 export const FEATURE_LIST = AI_FEATURES.map((key) => ({ key, label: FEATURE_LABELS[key] }));
 
 export function isAiStatusView(value: unknown): value is AiStatusView {

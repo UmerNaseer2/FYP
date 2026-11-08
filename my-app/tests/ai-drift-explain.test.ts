@@ -22,10 +22,15 @@ import {
   withAppManualNotes,
   type DriftExplainFacts,
 } from "@/lib/ai/features/drift-explain";
-import { isDriftExplainAnswer, isDriftScripts, type DriftExplainAnswer } from "@/lib/ai/features/drift-explain-view";
+import {
+  driftExplainKey,
+  isDriftExplainAnswer,
+  isDriftScripts,
+  type DriftExplainAnswer,
+} from "@/lib/ai/features/drift-explain-view";
 import { changeLabel } from "@/lib/ai/features/compare-summary";
 import { knownNames } from "@/lib/ai/checks";
-import { ALERT_LINE_WAIT_MS, driftAlertLine, SCHEDULED_ACTOR } from "@/lib/ai/drift-alert-line";
+import { ALERT_LINE_TIMEOUT_MS, ALERT_LINE_WAIT_MS, driftAlertLine, SCHEDULED_ACTOR } from "@/lib/ai/drift-alert-line";
 import type { AiConfig } from "@/lib/ai/config";
 import { MockProvider } from "@/lib/ai/mock";
 import type { AiProvider } from "@/lib/ai/provider";
@@ -335,11 +340,38 @@ describe("the one line in a drift alert", () => {
 
   test("a line with a made-up name, a change id, too many words or an email is sent back", () => {
     expect(checkDriftOneLiner({ line: "Live lost `ghost`." }, known).problems).toEqual([
-      "The line names things neither schema has: ghost.",
+      "The line names things neither schema has: ghost. Put every table and column name in backticks.",
     ]);
-    expect(checkDriftOneLiner({ line: "C2 was dropped." }, known).problems[0]).toContain("change id");
-    expect(checkDriftOneLiner({ line: "word ".repeat(31) }, known).problems[0]).toContain("longer than 30 words");
-    expect(checkDriftOneLiner({ line: "ada@example.com dropped it." }, known).problems[0]).toContain("names a person");
+    const problemsOf = (line: string) => checkDriftOneLiner({ line }, known).problems.join(" ");
+    expect(problemsOf("`books` lost C2.")).toContain("change id");
+    expect(problemsOf("`books` " + "word ".repeat(31))).toContain("longer than 30 words");
+    expect(problemsOf("ada@example.com dropped `books`.")).toContain("names a person");
+  });
+
+  test("a name outside backticks is checked too, and a line with an unchecked name is sent back", () => {
+    const problemsOf = (line: string) => checkDriftOneLiner({ line }, known).problems;
+    // Names that look like names: an underscore, a dot, a capital inside.
+    expect(problemsOf("Live lost `books.price` and customers_backup.")).toEqual([
+      "The line names things neither schema has: customers_backup. Put every table and column name in backticks.",
+    ]);
+    expect(problemsOf("Live lost `old_notes` and the orders.total column.").join(" ")).toContain("orders.total");
+    expect(problemsOf("Live lost `old_notes` and gained orderItems.").join(" ")).toContain("orderItems");
+    // Plain words standing next to "table" or "column".
+    expect(problemsOf("Live lost `books.price` and the customers table.").join(" ")).toContain("customers");
+    expect(problemsOf("Live lost `books.price` and the table customers.").join(" ")).toContain("customers");
+    expect(problemsOf("Live lost `books.price` and the billing table.").join(" ")).toContain("billing");
+    // Backticks around something that is no name cannot be checked.
+    expect(problemsOf("Live lost `the ghost table`.").join(" ")).toContain("Only put table and column names in backticks");
+    // A line with no backticks at all ignored the rule, so nothing in it was checked.
+    expect(problemsOf("Someone tidied up the database.").join(" ")).toContain("names no table or column in backticks");
+    // A backtick with no partner leaves the rest bare, as the alert shows it.
+    expect(problemsOf("Live lost `books.price` and `customers_backup").join(" ")).toContain("customers_backup");
+
+    // Names that exist pass, in backticks or not, and so do ordinary words.
+    expect(problemsOf("Live lost the `old_notes` table and the books.price column.")).toEqual([]);
+    expect(problemsOf("Live has a new `reviews` table and lost the old_notes table.")).toEqual([]);
+    expect(problemsOf("Live dropped 2 columns and the unique index on `books`, and the column type changed.")).toEqual([]);
+    expect(problemsOf("Live lost `public.old_notes` with its 2 columns in version 1.5 of `books`.")).toEqual([]);
   });
 
   test("the alert shows it plain, on one line, and never too long", () => {
@@ -348,6 +380,19 @@ describe("the one line in a drift alert", () => {
     expect(long.length).toBeLessThanOrEqual(160);
     expect(long.endsWith("...")).toBe(true);
     expect(alertLine(" `` \n ")).toBeNull();
+  });
+
+  test("the alert line is cut in whole characters, never half an emoji", () => {
+    // An emoji is two UTF-16 units. Placed across the cut, a cut by units
+    // would keep only its first half, which jsonb refuses.
+    const line = alertLine(`${"a".repeat(156)}\u{1F600}${"b".repeat(20)}`)!;
+    expect(/\p{Cs}/u.test(line)).toBe(false);
+    expect(Array.from(line)).toHaveLength(160);
+    expect(line).toBe(`${"a".repeat(156)}\u{1F600}...`);
+    // Half a pair standing alone in the answer goes.
+    expect(alertLine("Live lost \ud83d `books.price`.")).toBe("Live lost books.price.");
+    // A short line with an emoji is kept whole.
+    expect(alertLine("Live lost `books.price` \u{1F600}")).toBe("Live lost books.price \u{1F600}");
   });
 });
 
@@ -383,7 +428,7 @@ describe("asking for the alert line", () => {
     expect(provider.requests).toHaveLength(1);
     expect(provider.requests[0].model).toBe("fast-model");
     expect(JSON.stringify(provider.requests[0])).not.toContain("bookshop_prod_secret");
-    expect(provider.requests[0].timeoutMs).toBe(8_000);
+    expect(provider.requests[0].timeoutMs).toBe(4_000);
   });
 
   test("is no line when AI is off for the organization, and nothing is asked", async () => {
@@ -411,7 +456,35 @@ describe("asking for the alert line", () => {
     expect(await pending).toBeNull();
   });
 
+  test("waits the plan's hard 4 seconds, retry included", () => {
+    expect(ALERT_LINE_WAIT_MS).toBe(4_000);
+    expect(ALERT_LINE_TIMEOUT_MS).toBeLessThanOrEqual(ALERT_LINE_WAIT_MS);
+  });
+
   test("the call log says a scheduled check asked, not a person", () => {
     expect(SCHEDULED_ACTOR).toBe("scheduled drift check");
+  });
+});
+
+describe("when the drift panel clears its answer", () => {
+  test("a re-check that finds other drift with the same counts is a new key", () => {
+    // Live added books.isbn, then someone swapped it for books.discount:
+    // still one table changed, so the summary is the same words.
+    const withIsbn = compareSchemas(baseline, live);
+    const otherLive = schema(
+      [
+        table("authors", [id(), text("name")]),
+        table("books", [id(), text("title"), text("discount")]),
+        table("reviews", [id(), column("book_id")]),
+      ],
+      { database: "bookshop_prod_secret" }
+    );
+    const withDiscount = compareSchemas(baseline, otherLive);
+    expect(driftExplainKey(4, withIsbn, 11)).not.toBe(driftExplainKey(4, withDiscount, 11));
+    // The same drift is the same key, and so the answer stays.
+    expect(driftExplainKey(4, withIsbn, 11)).toBe(driftExplainKey(4, compareSchemas(baseline, live), 11));
+    // Another schema or another baseline is a new key too.
+    expect(driftExplainKey(4, withIsbn, 11)).not.toBe(driftExplainKey(5, withIsbn, 11));
+    expect(driftExplainKey(4, withIsbn, 11)).not.toBe(driftExplainKey(4, withIsbn, 12));
   });
 });

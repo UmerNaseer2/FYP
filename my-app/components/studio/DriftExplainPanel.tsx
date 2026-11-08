@@ -2,13 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Pill, type PillTone } from "@/components/ui/Pill";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
 import { apiFetch } from "@/lib/api-fetch";
 import { saveMigrationDraft } from "@/lib/migration-draft";
+import { countOf } from "@/lib/plural";
 import { refusalMessage } from "@/lib/permissions";
-import { isCitedChanges, type CitedChange, type SummaryLevel } from "@/lib/ai/features/compare-summary-view";
+import { isCitedChanges, type CitedChange } from "@/lib/ai/features/compare-summary-view";
 import {
   isDriftExplainAnswer,
   isDriftScripts,
@@ -19,11 +19,9 @@ import {
 } from "@/lib/ai/features/drift-explain-view";
 import { AiPanel } from "./AiPanel";
 import { AskAdmin } from "./AskAdmin";
-import { ChangeRefs } from "./CompareSummaryPanel";
+import { ChangeRefs, RiskRow } from "./CompareSummaryPanel";
 import { withNames } from "./ai-names";
 
-const LEVEL_TONE: Record<SummaryLevel, PillTone> = { breaking: "break", safe: "sync", info: "neutral" };
-const LEVEL_LABEL: Record<SummaryLevel, string> = { breaking: "Breaking", safe: "Safe", info: "Info" };
 const CHOICE_LABEL: Record<DriftChoice, string> = {
   revert: "Revert the live database",
   adopt: "Adopt the change into the registry",
@@ -42,10 +40,6 @@ const SCRIPT_TEXT: Record<keyof DriftScripts, { title: string; what: string; ope
     open: "Open adopt draft",
   },
 };
-
-function countOf(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
 
 function scriptFacts(script: DriftScript): string {
   const parts = [`${countOf(script.runs, "statement")} to run`];
@@ -129,29 +123,7 @@ function ExplainView({
         </h4>
         <ol className="mt-2 space-y-3">
           {answer.items.map((item, i) => (
-            <li key={i}>
-              <div className="flex flex-wrap items-center gap-2">
-                <Pill tone={LEVEL_TONE[item.level] ?? "neutral"}>{LEVEL_LABEL[item.level] ?? item.level}</Pill>
-                <span className="font-medium">{withNames(item.title)}</span>
-              </div>
-              <p className="mt-1" style={{ color: "var(--text-2)" }}>
-                {withNames(item.why)}
-              </p>
-              {item.affects.length > 0 && (
-                <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                  <span className="font-semibold" style={{ color: "var(--text-3)" }}>
-                    Uses it:{" "}
-                  </span>
-                  {item.affects.map((name, j) => (
-                    <span key={name}>
-                      {j > 0 && ", "}
-                      <span className="mono">{name}</span>
-                    </span>
-                  ))}
-                </p>
-              )}
-              <ChangeRefs ids={item.changes} cited={cited} />
-            </li>
+            <RiskRow key={i} item={item} cited={cited} />
           ))}
         </ol>
       </div>
@@ -276,11 +248,12 @@ export function DriftExplainPanel({
       askLabel="Explain with AI"
       resetKey={resetKey}
       isAnswer={isDriftExplainAnswer}
-      ask={() =>
+      ask={(signal, refresh) =>
         apiFetch("/api/lineage/drift/explain", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trackedSchemaId }),
+          body: JSON.stringify({ trackedSchemaId, refresh }),
+          signal,
         })
       }
     >

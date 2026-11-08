@@ -12,6 +12,7 @@
 // The old checks are written out by hand, copied from commit 256a210 (the last
 // one before this work), because that commit is history: nothing should ever
 // change this table except a route that is added or removed.
+import fs from "fs";
 import path from "path";
 import { hasPermission, isAdminOnly, presetFor, type PermissionKey } from "@/lib/permissions";
 import { allHandlers, hasPermissionLiterals, API_DIR, type Gate } from "./helpers/route-gates";
@@ -280,11 +281,14 @@ test("a phone sees a request's SQL only where the Deploy screen would show it", 
 });
 
 test("an AI route asks for AI assistance on top of the screen it serves", () => {
+  // Each AI route calls aiPermissionRefusal, which checks "ai:read" for it.
+  const asksForAi = (file: string) => fs.readFileSync(file, "utf8").includes("aiPermissionRefusal(");
+  expect(hasPermissionLiterals(path.join(API_DIR, "..", "..", "lib", "ai", "respond.ts"))).toContain("ai:read");
   // requirePermission lets in any one of its keys, so each AI route that also
   // serves a screen checks "Use AI assistance" separately: a viewer, who may
   // compare but not use AI out of the box, is turned away.
   expect(handlers.get("POST /api/compare/summary")?.gate).toEqual({ kind: "permission", keys: ["compare:read"] });
-  expect(hasPermissionLiterals(path.join(API_DIR, "compare", "summary", "route.ts"))).toContain("ai:read");
+  expect(asksForAi(path.join(API_DIR, "compare", "summary", "route.ts"))).toBe(true);
   expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
   expect(startsAllowed("viewer", ["ai:read"])).toBe(false);
   expect(startsAllowed("editor", ["ai:read"])).toBe(true);
@@ -292,12 +296,12 @@ test("an AI route asks for AI assistance on top of the screen it serves", () => 
     kind: "permission",
     keys: ["deploy:read", "approvals:read"],
   });
-  expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "review", "route.ts"))).toContain("ai:read");
+  expect(asksForAi(path.join(API_DIR, "scripts", "review", "route.ts"))).toBe(true);
   expect(startsAllowed("viewer", ["deploy:read", "approvals:read"])).toBe(true);
   expect(handlers.get("POST /api/lineage/drift/explain")?.gate).toEqual({ kind: "permission", keys: ["drift:read"] });
-  expect(hasPermissionLiterals(path.join(API_DIR, "lineage", "drift", "explain", "route.ts"))).toContain("ai:read");
+  expect(asksForAi(path.join(API_DIR, "lineage", "drift", "explain", "route.ts"))).toBe(true);
   expect(handlers.get("POST /api/scripts/generate")?.gate).toEqual({ kind: "permission", keys: ["scripts:read"] });
-  expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "generate", "route.ts"))).toContain("ai:read");
+  expect(asksForAi(path.join(API_DIR, "scripts", "generate", "route.ts"))).toBe(true);
   expect(startsAllowed("viewer", ["drift:read"])).toBe(true);
   // The chat serves no screen of its own: AI assistance alone lets someone ask,
   // and each lookup then runs the read route's own check as them.

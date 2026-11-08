@@ -120,25 +120,81 @@ export function retryAfterFrom(header: string | null, body: string): number | nu
   );
 }
 
-type WireResponse = {
-  model?: string;
-  choices?: Array<{
-    finish_reason?: string | null;
-    message?: {
-      content?: string | null;
-      tool_calls?: Array<{
-        id?: string;
-        function?: { name?: string; arguments?: string };
-        extra_content?: Record<string, unknown>;
-      }>;
-    };
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    prompt_tokens_details?: { cached_tokens?: number };
+/** A plain object (not null, not a list), for reading an answer whose shape is not trusted. */
+function objectOf(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function numberOf(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * The text of an answer. Most services send a string; some send a list of
+ * parts ({ type: "text", text }). Anything else counts as no text.
+ */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      const text = objectOf(part)?.text;
+      return typeof text === "string" ? text : "";
+    })
+    .join("");
+}
+
+const WRONG_SHAPE = "The AI service sent an answer of the wrong shape.";
+
+/**
+ * The service's answer, read without trusting its shape. A proxy or a
+ * service having a bad day can send a 200 with anything in it; that must end
+ * as a clean "could not answer" (and a usage row), never as a TypeError.
+ */
+function readWireAnswer(data: unknown): {
+  text: string;
+  toolCalls: AiToolCall[];
+  finishReason: string;
+  model: string | null;
+  promptTokens: number | undefined;
+  completionTokens: number | undefined;
+  cachedTokens: number | undefined;
+} {
+  const body = objectOf(data);
+  if (!body) throw new AiError("overloaded", WRONG_SHAPE);
+  const choices = body.choices;
+  const choice = Array.isArray(choices) ? objectOf(choices[0]) : null;
+  if (!choice) {
+    // Some services answer 200 with an error inside instead of a 4xx or 5xx.
+    const said = objectOf(body.error)?.message;
+    throw new AiError("overloaded", typeof said === "string" && said ? said.slice(0, 300) : WRONG_SHAPE);
+  }
+  const message = objectOf(choice.message);
+  const rawCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  const toolCalls: AiToolCall[] = [];
+  rawCalls.forEach((raw, index) => {
+    const call = objectOf(raw);
+    const fn = objectOf(call?.function);
+    if (!call || !fn || typeof fn.name !== "string" || !fn.name) return;
+    const extra = objectOf(call.extra_content);
+    toolCalls.push({
+      id: typeof call.id === "string" && call.id ? call.id : `call_${index}`,
+      name: fn.name,
+      arguments: typeof fn.arguments === "string" ? fn.arguments : "{}",
+      ...(extra ? { extra } : {}),
+    });
+  });
+  const usage = objectOf(body.usage);
+  return {
+    text: textOf(message?.content),
+    toolCalls,
+    finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown",
+    model: typeof body.model === "string" && body.model ? body.model : null,
+    promptTokens: numberOf(usage?.prompt_tokens),
+    completionTokens: numberOf(usage?.completion_tokens),
+    cachedTokens: numberOf(objectOf(usage?.prompt_tokens_details)?.cached_tokens),
   };
-};
+}
 
 export class OpenAiCompatibleProvider implements AiProvider {
   constructor(
@@ -166,70 +222,64 @@ export class OpenAiCompatibleProvider implements AiProvider {
       }));
     }
 
+    // One controller stops the call for either reason: the wait ran out, or
+    // the caller gave up (request.signal).
     const controller = new AbortController();
     const timeoutMs = request.timeoutMs ?? this.config.timeoutMs;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelled = () => request.signal?.aborted === true;
+    const giveUp = () => controller.abort();
+    if (cancelled()) throw new AiError("timeout", "The request was cancelled.");
+    request.signal?.addEventListener("abort", giveUp, { once: true });
+    const stopped = () =>
+      cancelled()
+        ? new AiError("timeout", "The request was cancelled.")
+        : new AiError("timeout", `No answer within ${Math.round(timeoutMs / 1000)} seconds.`);
+    const timer = setTimeout(giveUp, timeoutMs);
     const started = Date.now();
-    let response: Response;
+    let data: unknown;
     try {
-      response = await this.fetchImpl(`${this.config.baseUrl}chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.config.apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      clearTimeout(timer);
-      if (controller.signal.aborted) {
-        throw new AiError("timeout", `No answer within ${Math.round(timeoutMs / 1000)} seconds.`);
+      let response: Response;
+      try {
+        response = await this.fetchImpl(`${this.config.baseUrl}chat/completions`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.config.apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (controller.signal.aborted) throw stopped();
+        throw new AiError("overloaded", `Could not reach the AI service: ${(error as Error).message}`);
       }
-      throw new AiError("overloaded", `Could not reach the AI service: ${(error as Error).message}`);
-    }
-
-    let data: WireResponse;
-    try {
-      if (!response.ok) {
-        const { reason, retryAfterMs } = await refusalFrom(response);
-        throw new AiError(kindOf(response.status), reason, response.status, retryAfterMs);
+      try {
+        if (!response.ok) {
+          const { reason, retryAfterMs } = await refusalFrom(response);
+          throw new AiError(kindOf(response.status), reason, response.status, retryAfterMs);
+        }
+        data = (await response.json()) as unknown;
+      } catch (error) {
+        if (error instanceof AiError) throw error;
+        if (controller.signal.aborted) throw stopped();
+        throw new AiError("overloaded", "The AI service sent an answer that was not JSON.");
       }
-      data = (await response.json()) as WireResponse;
-    } catch (error) {
-      if (error instanceof AiError) throw error;
-      if (controller.signal.aborted) {
-        throw new AiError("timeout", `No answer within ${Math.round(timeoutMs / 1000)} seconds.`);
-      }
-      throw new AiError("overloaded", "The AI service sent an answer that was not JSON.");
     } finally {
       clearTimeout(timer);
+      request.signal?.removeEventListener("abort", giveUp);
     }
 
-    const choice = data.choices?.[0];
-    const text = choice?.message?.content ?? "";
-    const toolCalls: AiToolCall[] = (choice?.message?.tool_calls ?? []).flatMap((call, index) =>
-      call.function?.name
-        ? [
-            {
-              id: call.id || `call_${index}`,
-              name: call.function.name,
-              arguments: call.function.arguments ?? "{}",
-              ...(call.extra_content && typeof call.extra_content === "object" ? { extra: call.extra_content } : {}),
-            },
-          ]
-        : []
-    );
-    const reported = data.usage?.prompt_tokens !== undefined && data.usage?.completion_tokens !== undefined;
+    const answer = readWireAnswer(data);
+    const reported = answer.promptTokens !== undefined && answer.completionTokens !== undefined;
     const inputText = request.system + request.messages.map((m) => m.content).join("\n");
     return {
-      text: request.jsonSchema ? stripFences(text) : text,
-      toolCalls,
+      text: request.jsonSchema ? stripFences(answer.text) : answer.text,
+      toolCalls: answer.toolCalls,
       usage: {
-        inputTokens: data.usage?.prompt_tokens ?? estimateTokens(inputText),
-        outputTokens: data.usage?.completion_tokens ?? estimateTokens(text),
-        cachedTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        inputTokens: answer.promptTokens ?? estimateTokens(inputText),
+        outputTokens: answer.completionTokens ?? estimateTokens(answer.text),
+        cachedTokens: answer.cachedTokens ?? 0,
         estimated: !reported,
       },
-      finishReason: choice?.finish_reason ?? "unknown",
-      model: data.model || request.model,
+      finishReason: answer.finishReason,
+      model: answer.model || request.model,
       ms: Date.now() - started,
     };
   }

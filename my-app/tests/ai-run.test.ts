@@ -23,6 +23,7 @@ import {
   runAiTask,
   soonerWait,
   SWITCHED_OFF,
+  TASK_DEADLINE_MS,
   type AiDeps,
   type AiTaskSpec,
 } from "@/lib/ai/run";
@@ -187,7 +188,7 @@ describe("runAiTask: asking the model", () => {
         actor: "ada@example.com",
         feature: "compare-summary",
         provider: "Google Gemini",
-        promptVersion: 1,
+        promptVersion: 2,
         model: "smart-model",
         outputTokens: 10,
         estimated: true,
@@ -214,9 +215,13 @@ describe("runAiTask: asking the model", () => {
     expect(retry).toHaveLength(3);
     expect(retry[1]).toEqual({ role: "assistant", content: "Sure! Here it is" });
     expect(retry[2].content).toContain("The answer was not valid JSON.");
-    // Both calls' tokens are counted in the one row.
-    expect(calls).toHaveLength(1);
-    expect(calls[0].outputTokens).toBe(20);
+    // Each request is its own call, with its own tokens; the answer's usage is the sum.
+    expect(calls).toEqual([
+      expect.objectContaining({ outcome: "invalid_output", outputTokens: 10, retries: 0 }),
+      expect.objectContaining({ outcome: "ok", outputTokens: 10, retries: 1 }),
+    ]);
+    expect(result.kind === "ok" && result.usage.outputTokens).toBe(20);
+    expect(result).toMatchObject({ callId: 2 });
   });
 
   test("JSON of the wrong shape twice fails as invalid output", async () => {
@@ -227,7 +232,10 @@ describe("runAiTask: asking the model", () => {
       outcome: "invalid_output",
       message: expect.stringContaining("did not pass the app's checks"),
     });
-    expect(calls).toEqual([expect.objectContaining({ outcome: "invalid_output", retries: 1 })]);
+    expect(calls).toEqual([
+      expect.objectContaining({ outcome: "invalid_output", retries: 0 }),
+      expect.objectContaining({ outcome: "invalid_output", retries: 1 }),
+    ]);
     expect(saved).toHaveLength(0);
   });
 
@@ -282,11 +290,17 @@ describe("runAiTask: asking the model", () => {
   });
 
   test("the smart model timing out falls back to the fast one", async () => {
-    const { deps, provider, calls } = fakes({ replies: [new AiError("timeout", "slow"), good] });
+    const { deps, provider, calls, saved } = fakes({ replies: [new AiError("timeout", "slow"), good] });
     const result = await runAiTask(caller, spec(), deps);
-    expect(result).toMatchObject({ kind: "ok", model: "fast-model" });
+    expect(result).toMatchObject({ kind: "ok", model: "fast-model", callId: 2 });
     expect(provider.requests.map((r) => r.model)).toEqual(["smart-model", "fast-model"]);
-    expect(calls[0]).toMatchObject({ model: "fast-model", outcome: "ok" });
+    // The request that timed out is a call too.
+    expect(calls).toEqual([
+      expect.objectContaining({ model: "smart-model", outcome: "timeout", outputTokens: 0 }),
+      expect.objectContaining({ model: "fast-model", outcome: "ok" }),
+    ]);
+    // A fallback answer is shown but not saved, so the smart model is asked next time.
+    expect(saved).toHaveLength(0);
   });
 
   test("a busy smart model falls back too", async () => {
@@ -310,7 +324,7 @@ describe("runAiTask: asking the model", () => {
       "The AI service's free allowance is used up for today. Try again in about an hour."
     );
     expect(provider.requests).toHaveLength(2);
-    expect(calls[0].outcome).toBe("rate_limited");
+    expect(calls.map((c) => c.outcome)).toEqual(["rate_limited", "rate_limited"]);
   });
 
   test("the used-up message names the wait the service gave", () => {
@@ -326,10 +340,17 @@ describe("runAiTask: asking the model", () => {
     expect(soonerWait(null, null)).toBeNull();
   });
 
-  test("a refused request does not try the other model", async () => {
-    const { deps, provider } = fakes({ replies: [new AiError("rejected", "bad key", 401)] });
+  test.each([401, 403])("a refused key (%i) does not try the other model", async (status) => {
+    const { deps, provider, calls } = fakes({ replies: [new AiError("rejected", "bad key", status)] });
     await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "failed", outcome: "provider_error" });
     expect(provider.requests).toHaveLength(1);
+    expect(calls).toEqual([expect.objectContaining({ outcome: "provider_error" })]);
+  });
+
+  test.each([400, 402, 404])("a refusal about the one model (%i) still asks the other model", async (status) => {
+    const { deps, provider } = fakes({ replies: [new AiError("rejected", "no such model", status), good] });
+    await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "ok", model: "fast-model" });
+    expect(provider.requests.map((r) => r.model)).toEqual(["smart-model", "fast-model"]);
   });
 
   test("both models timing out fails as a timeout", async () => {
@@ -343,8 +364,8 @@ describe("runAiTask: asking the model", () => {
     expect(provider.requests.map((r) => r.model)).toEqual(["fast-model"]);
   });
 
-  test("an error that is not the service's is not swallowed", async () => {
-    const { deps } = fakes({
+  test("an error that is not the service's is not swallowed, and its call is still written", async () => {
+    const { deps, calls } = fakes({
       replies: [
         () => {
           throw new TypeError("bug");
@@ -352,6 +373,209 @@ describe("runAiTask: asking the model", () => {
       ],
     });
     await expect(runAiTask(caller, spec(), deps)).rejects.toThrow("bug");
+    expect(calls).toEqual([expect.objectContaining({ outcome: "provider_error" })]);
+  });
+});
+
+// A store that keeps its rows in memory and reserves a row before each
+// request, like store.reserveAiCall does under its lock. JavaScript runs one
+// thing at a time, so the count and the reserved row here are one step.
+type Row = AiCallRecord & { id: number };
+
+function reservingFakes(over: { config?: AiConfig; replies?: ConstructorParameters<typeof MockProvider>[0] } = {}) {
+  const config = over.config ?? CONFIG;
+  const provider = new MockProvider(over.replies ?? []);
+  const rows: Row[] = [];
+  const counted = () => rows.filter((row) => !row.cacheHit && row.outcome !== "limit_reached");
+  const add = (record: AiCallRecord) => {
+    const row = { ...record, id: rows.length + 1 };
+    rows.push(row);
+    return row.id;
+  };
+  const deps: AiDeps = {
+    config,
+    provider,
+    readSettings: async () => ON,
+    store: {
+      recordAiCall: async (record) => add(record),
+      // What the old check counted: rows already written.
+      callsToday: async () => counted().length,
+      callsLastMinute: async (_org, email) => counted().filter((row) => row.actor === email).length,
+      readSavedAnswer: (async () => null) as AiDeps["store"]["readSavedAnswer"],
+      saveAnswer: async () => undefined,
+      reserveAiCall: async (call, limits) => {
+        if (counted().length >= limits.dailyLimit) return { kind: "limited", which: "daily" };
+        if (counted().filter((row) => row.actor === call.actor).length >= limits.perMinuteLimit) {
+          return { kind: "limited", which: "per-minute" };
+        }
+        const id = add({
+          ...call,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          estimated: false,
+          ms: 0,
+          retries: 0,
+          outcome: "provider_error",
+          cacheHit: false,
+        });
+        return { kind: "reserved", id };
+      },
+      finishAiCall: async (id, end) => {
+        const row = rows.find((r) => r.id === id);
+        if (!row) return false;
+        Object.assign(row, end);
+        return true;
+      },
+    },
+    now: (() => {
+      let clock = 1_000;
+      return () => (clock += 250);
+    })(),
+  };
+  return { deps, provider, rows };
+}
+
+describe("runAiTask: each request is one call against the limits", () => {
+  test("requests still in flight count, so 25 at once with a limit of 10 lets 10 through", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const replies = Array.from({ length: 25 }, () => async () => {
+      await held;
+      return good;
+    });
+    const { deps, provider, rows } = reservingFakes({ replies });
+    const runs = Array.from({ length: 25 }, () => runAiTask(caller, spec({ cacheInput: null }), deps));
+    // Let every task reach its request before any answer comes back.
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    release();
+    const results = await Promise.all(runs);
+    expect(results.filter((r) => r.kind === "ok")).toHaveLength(10);
+    expect(results.filter((r) => r.kind === "limited")).toHaveLength(15);
+    expect(provider.requests).toHaveLength(10);
+    expect(rows.filter((r) => r.outcome === "ok")).toHaveLength(10);
+    expect(rows.filter((r) => r.outcome === "limit_reached")).toHaveLength(15);
+  });
+
+  test("the reserved row is filled in when the call ends, and its id is the answer's", async () => {
+    const { deps, rows } = reservingFakes({ replies: [good] });
+    const result = await runAiTask(caller, spec(), deps);
+    expect(result).toMatchObject({ kind: "ok", callId: 1 });
+    expect(rows).toEqual([expect.objectContaining({ id: 1, outcome: "ok", model: "smart-model", outputTokens: 10 })]);
+  });
+
+  test("a switch to the other model is checked against the limit too", async () => {
+    const { deps, provider, rows } = reservingFakes({
+      config: { ...CONFIG, perMinuteLimit: 1 },
+      replies: [new AiError("timeout", "slow"), good],
+    });
+    await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "limited" });
+    expect(provider.requests).toHaveLength(1);
+    expect(rows.map((r) => r.outcome)).toEqual(["timeout", "limit_reached"]);
+  });
+
+  test("a retry is checked against the limit too", async () => {
+    const { deps, provider } = reservingFakes({
+      config: { ...CONFIG, perMinuteLimit: 1 },
+      replies: ["not json", good],
+    });
+    await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "limited" });
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("the daily limit names the daily count", async () => {
+    const { deps } = reservingFakes({ config: { ...CONFIG, dailyLimit: 0 } });
+    await expect(runAiTask(caller, spec(), deps)).resolves.toEqual({
+      kind: "limited",
+      message: "Your organization has used its 0 AI calls for today. The count starts again at midnight UTC.",
+    });
+  });
+});
+
+describe("runAiTask: time, cancelling and asking again", () => {
+  test("a model that timed out is not asked again for the retry", async () => {
+    const { deps, provider } = fakes({ replies: [new AiError("timeout", "slow"), "not json", good] });
+    await expect(runAiTask(caller, spec(), deps)).resolves.toMatchObject({ kind: "ok", model: "fast-model", retries: 1 });
+    expect(provider.requests.map((r) => r.model)).toEqual(["smart-model", "fast-model", "fast-model"]);
+  });
+
+  test("the whole task has a deadline: no new request once the time is used up", async () => {
+    const { deps, provider, calls } = fakes({ replies: [good, good] });
+    let clock = 0;
+    deps.now = () => clock;
+    const slowCheck = async (value: Answer) => {
+      clock += TASK_DEADLINE_MS;
+      return { value, problems: ["Name a real table."] };
+    };
+    await expect(runAiTask(caller, spec({ check: slowCheck }), deps)).resolves.toMatchObject({
+      kind: "failed",
+      outcome: "timeout",
+    });
+    expect(provider.requests).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("a request may only wait for the time the task has left", async () => {
+    const { deps, provider } = fakes({ replies: [good, good] });
+    let clock = 0;
+    deps.now = () => clock;
+    const slowCheck = async (value: Answer) => {
+      // The first time only: 100 s go by, and the answer needs fixing.
+      if (clock > 0) return { value, problems: [] };
+      clock += 100_000;
+      return { value, problems: ["Name a real table."] };
+    };
+    await expect(runAiTask(caller, spec({ check: slowCheck }), deps)).resolves.toMatchObject({ kind: "ok" });
+    expect(provider.requests.map((r) => r.timeoutMs)).toEqual([CONFIG.timeoutMs, TASK_DEADLINE_MS - 100_000]);
+  });
+
+  test("a task cancelled before it starts asks nothing", async () => {
+    const stop = new AbortController();
+    stop.abort();
+    const { deps, provider, calls } = fakes({ replies: [good] });
+    await expect(runAiTask(caller, spec({ signal: stop.signal }), deps)).resolves.toMatchObject({
+      kind: "failed",
+      outcome: "timeout",
+    });
+    expect(provider.requests).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a task cancelled while it waits does not ask the other model", async () => {
+    const stop = new AbortController();
+    const { deps, provider, calls } = fakes({
+      replies: [
+        () => {
+          stop.abort();
+          return new AiError("timeout", "The request was cancelled.");
+        },
+        good,
+      ],
+    });
+    await expect(runAiTask(caller, spec({ signal: stop.signal }), deps)).resolves.toMatchObject({
+      kind: "failed",
+      outcome: "timeout",
+    });
+    expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0].signal).toBe(stop.signal);
+    expect(calls).toEqual([expect.objectContaining({ outcome: "timeout" })]);
+  });
+
+  test("asking again skips the saved answer and saves the new one", async () => {
+    const fresh: Answer = { summary: "Adds two columns to books.", tables: ["books"] };
+    const { deps, provider, saved } = fakes({ savedAnswer: { model: "smart-model", answer: good }, replies: [fresh] });
+    const result = await runAiTask(caller, spec({ refresh: true }), deps);
+    expect(result).toMatchObject({ kind: "ok", value: fresh, saved: false });
+    expect(provider.requests).toHaveLength(1);
+    expect(saved).toEqual([expect.objectContaining({ value: fresh })]);
+  });
+
+  test("a different model means a different saved answer", async () => {
+    const one = fakes({ replies: [good] });
+    await runAiTask(caller, spec(), one.deps);
+    const other = fakes({ config: { ...CONFIG, models: { ...CONFIG.models, smart: "newer-model" } }, replies: [good] });
+    await runAiTask(caller, spec(), other.deps);
+    expect(one.saved[0].key).not.toBe(other.saved[0].key);
   });
 });
 

@@ -10,19 +10,21 @@
 // uses them, and asked for a verdict and findings. Then the code checks it:
 //   - a finding that cites an id not in the run, or names in backticks an
 //     object that is neither in the target nor in the run's SQL, is dropped;
-//   - a finding's severity is raised to the floor of the statements it cites,
-//     never lowered;
-//   - after the check, every flagged statement no finding cites gets a finding
-//     written by the app itself (fromApp), so a statement the app knows is
-//     dangerous is never left off the screen because the model missed it.
-// Only structure goes in the prompt: the SQL, names, types, keys, and the
-// planner's row estimates for the touched tables, rounded. No rows, no hosts,
-// no database names.
+//   - when the answer is shown, a finding's severity is raised to the floor of
+//     the statements it cites, never lowered, and the model's own severity is
+//     kept beside it, so a "safe" verdict over a finding the app raised is
+//     replaced;
+//   - every flagged statement no finding cites gets a finding written by the
+//     app itself (fromApp), so a statement the app knows is dangerous is never
+//     left off the screen because the model missed it.
+// Only structure goes in the prompt: the SQL with every value in it replaced
+// by ?, names, types, keys, and the planner's row estimates for the touched
+// tables, rounded. No rows, no passwords, no hosts, no database names.
 // ---------------------------------------------------------------------------
 
 import { z } from "zod";
 import { gradeSql } from "../../change-type";
-import { scriptLabel } from "../../deploy-risk";
+import { readScriptLevel, scriptLabel } from "../../deploy-risk";
 import type { SchemaSnapshot } from "../../postgres";
 import {
   findMightFailStatements,
@@ -31,6 +33,7 @@ import {
   maskNonCode,
   splitStatements,
 } from "../../sql-guard";
+import { countOf } from "../../plural";
 import { bareName, isKnownName, knownNames } from "../checks";
 import { schemaSlice } from "../context";
 import { buildDependencyIndex, describeDependents } from "../dependents";
@@ -59,22 +62,33 @@ const MAX_FINDINGS = 8;
 const RUN_LOCK_WAIT_SECONDS = 15;
 
 /** One script of the run, as the Deploy screen sends it. */
-export type ReviewScript = { scriptName: string; version: string; sqlContent: string };
+export type ReviewScript = {
+  scriptName: string;
+  version: string;
+  sqlContent: string;
+  /**
+   * The level the caller sent with the script, as Deploy's change_type. Only
+   * "breaking", "additive" or "patch" counts, the same as for deploy-risk.
+   */
+  changeType?: unknown;
+};
 
-/** The model's answer: a finding before the app marks where it came from. */
-export type ModelReviewFinding = Omit<MigrationReviewFinding, "fromApp">;
+/** The model's answer: a finding before the app raises it and marks where it came from. */
+export type ModelReviewFinding = Omit<MigrationReviewFinding, "fromApp" | "modelSeverity">;
 export type ModelReview = { verdict: string; findings: ModelReviewFinding[] };
 
+// trim() runs before min(1), so an answer of only spaces is refused and asked
+// again, rather than saved as an empty verdict the next read would refuse.
 export const migrationReviewSchema = z.object({
-  verdict: z.string().min(1).max(400),
+  verdict: z.string().trim().min(1).max(400),
   findings: z
     .array(
       z.object({
         statements: z.array(z.string()).min(1).max(30),
         severity: z.enum(["high", "medium", "low"]),
-        title: z.string().min(1).max(160),
-        why: z.string().min(1).max(700),
-        saferWay: z.string().max(900),
+        title: z.string().trim().min(1).max(160),
+        why: z.string().trim().min(1).max(700),
+        saferWay: z.string().trim().max(900),
         objects: z.array(z.string()).max(12),
       })
     )
@@ -88,6 +102,7 @@ export const MIGRATION_REVIEW_SYSTEM = [
   `- findings: the problems, most serious first, at most ${MAX_FINDINGS}. Put related statements in one finding. Each finding cites the ids of its statements (S1, S2 ...) and has: severity; title, at most 12 words; why, one or two sentences on what goes wrong on this target, using the table sizes and the WHAT USES list; saferWay, how to get the same result with less risk in one or two sentences, with SQL when it helps, or an empty string when there is nothing better; objects, the tables, columns, views or other objects it is about.`,
   "Severity is high when the run can lose data, fail part way, or hold a lock long enough to stop the application; medium when it can fail on rows already in the table or break something that uses the target; low for anything else worth knowing. Each statement shows the app's own reading in brackets. Never set a severity below the reading of the statements you cite: the app raises it if you do.",
   "Look for: lost data (dropped tables or columns, TRUNCATE, DELETE or UPDATE with no WHERE); statements that fail on existing rows (NOT NULL with no default, a UNIQUE, CHECK or FOREIGN KEY the rows may break, a type change that cannot cast); long locks on big tables (a type change or volatile default that rewrites the table, an index built without CONCURRENTLY, a constraint checked in one go where NOT VALID then VALIDATE CONSTRAINT holds a lighter lock); objects the WHAT USES list shows will break.",
+  "Every value written in the SQL (a string, a password, a host, and a number in a statement that reads or writes rows) is shown as ?. The app takes the real value out before it sends the statement, so never treat a ? as the value itself or as a problem.",
   "The whole run is one transaction. Anything that cannot run inside a transaction, such as CREATE INDEX CONCURRENTLY, fails the run if it is in a script, so when you suggest it, say it has to be run by hand outside the app.",
   "When nothing is wrong, findings is an empty list and the verdict says the run looks safe.",
   "Cite only ids from the STATEMENTS list, and only in the statements field: the screen shows them beside each finding, so never write an id in verdict, title, why or saferWay. Put every table, column, view or other object name you write in backticks. In saferWay, SQL may go in backticks too; nowhere else does anything but names.",
@@ -139,6 +154,123 @@ function withoutComments(sql: string): string {
   return out;
 }
 
+/** The words that start a statement that reads or writes rows. */
+const ROW_STATEMENTS = new Set(["INSERT", "UPDATE", "DELETE", "MERGE", "COPY", "WITH", "SELECT", "VALUES", "CALL", "TABLE"]);
+
+/** The first word of masked code, upper case: "INSERT", "WITH", "DO". */
+function firstWord(code: string): string {
+  return (/^[\s(]*([A-Za-z_]+)/.exec(code)?.[1] ?? "").toUpperCase();
+}
+
+/**
+ * Is the dollar-quoted text that starts at `at` the code of a DO block or of
+ * a function or procedure? `code` is the masked statement, so the text before
+ * `at` holds only code.
+ */
+function isCodeBody(code: string, at: number): boolean {
+  const before = code.slice(0, at);
+  if (/^\s*DO\s*(?:LANGUAGE\s+(?:"[^"]*"|\w+)\s*)?$/i.test(before)) return true;
+  return /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b/i.test(code) && /\bAS\s*$/i.test(before);
+}
+
+const DOLLAR_TAG = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/;
+
+/**
+ * Numbers replaced by ?. Only for a statement that reads or writes rows,
+ * where a number is a value (VALUES (7, 19.95), WHERE id = 42). The default
+ * mask blanks strings and quoted names, so a digit inside either is left
+ * alone, and the look-behind keeps the digits of a name (t1) and of a $1.
+ */
+function hideNumbers(sql: string): string {
+  const code = maskNonCode(sql);
+  const number = /(?<![A-Za-z0-9_$\u0080-\uffff.])(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[A-Za-z0-9_]*/g;
+  let out = "";
+  let from = 0;
+  for (const match of code.matchAll(number)) {
+    out += `${sql.slice(from, match.index)}?`;
+    from = match.index + match[0].length;
+  }
+  return out + sql.slice(from);
+}
+
+/**
+ * The statement as the AI and the screen get it: comments taken out, and
+ * every value replaced by '?', so no password, host, database name or row
+ * value leaves the app. The structure stays: the kind of statement, every
+ * name, every type.
+ *   - A string or dollar-quoted text becomes '?'.
+ *   - The body of a DO block or of a function is code, not a value: it is
+ *     kept, and the values inside it are replaced the same way. Inside a body,
+ *     every string and nested dollar-quoted text is a value.
+ *   - A number is a value only in a statement that reads or writes rows
+ *     (INSERT, UPDATE ...). In other statements, and in a function's body, a
+ *     number is structure (varchar(80), DEFAULT 0) and stays.
+ */
+export function redactValues(sql: string, readBodies = true): string {
+  const text = withoutComments(sql);
+  const code = maskNonCode(text, { keepQuotedNames: true });
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === code[i]) {
+      out += text[i];
+      i += 1;
+      continue;
+    }
+    // A string or dollar-quoted text opens here. The mask blanks it to spaces
+    // (keeping newlines), so it ends at the last character the mask changed
+    // before the code goes on.
+    let end = i + 1;
+    for (let j = i; j < text.length && /\s/.test(code[j]); j += 1) {
+      if (text[j] !== code[j]) end = j + 1;
+    }
+    const literal = text.slice(i, end);
+    const tag = DOLLAR_TAG.exec(literal)?.[0];
+    if (readBodies && tag !== undefined && isCodeBody(code, i)) {
+      const closed = literal.length >= tag.length * 2 && literal.endsWith(tag);
+      const body = literal.slice(tag.length, closed ? literal.length - tag.length : literal.length);
+      out += tag + redactValues(body, false) + (closed ? tag : "");
+    } else {
+      out += "'?'";
+    }
+    i = end;
+  }
+  return readBodies && ROW_STATEMENTS.has(firstWord(code)) ? hideNumbers(out) : out;
+}
+
+/**
+ * The masked code split by brackets: the top level first, then each bracket
+ * group, with the groups inside each one blanked. A WHERE in a subquery is in
+ * the subquery's group, not in the statement's own level.
+ */
+function bracketLevels(code: string): string[] {
+  const open: string[] = [""];
+  const closed: string[] = [];
+  for (const ch of code) {
+    if (ch === "(") {
+      open[open.length - 1] += " ";
+      open.push("");
+    } else if (ch === ")" && open.length > 1) {
+      closed.push(open.pop()!);
+      open[open.length - 1] += " ";
+    } else {
+      open[open.length - 1] += ch;
+    }
+  }
+  return [...open, ...closed];
+}
+
+/**
+ * Is this level an UPDATE with no WHERE of its own? A level that starts with
+ * WITH runs the first statement word after its CTEs, which are groups of
+ * their own and so already blanked here.
+ */
+function isUpdateWithoutWhere(level: string): boolean {
+  let verb = firstWord(level);
+  if (verb === "WITH") verb = (/\b(SELECT|INSERT|UPDATE|DELETE|MERGE|VALUES|TABLE)\b/i.exec(level)?.[1] ?? "").toUpperCase();
+  return verb === "UPDATE" && !/\bWHERE\b/i.test(level);
+}
+
 function higher(a: ReviewSeverity, b: ReviewSeverity): ReviewSeverity {
   return SEVERITY_ORDER.indexOf(a) >= SEVERITY_ORDER.indexOf(b) ? a : b;
 }
@@ -185,8 +317,10 @@ export function readStatement(sql: string, replacedByNext: boolean): { floor: Re
   }
   // The engine grades structure, and an UPDATE moves none, so it never flags
   // one. With no WHERE it rewrites every row, and the old values are gone once
-  // the run commits. Read here only: Deploy's gates stay the engine's.
-  if (/^\s*UPDATE\b/i.test(code) && !/\bWHERE\b/i.test(code)) {
+  // the run commits. Read here only: Deploy's gates stay the engine's. Each
+  // bracket level is read on its own, so a WHERE inside a subquery does not
+  // count for the UPDATE around it, and WITH ... UPDATE is read too.
+  if (bracketLevels(code).some(isUpdateWithoutWhere)) {
     flags.push("changes every row (UPDATE with no WHERE)");
     raise("medium");
   }
@@ -222,6 +356,13 @@ function isReplacement(statement: string, next: string | undefined): boolean {
   return pair.level === alone.level && pair.sureLevel === alone.sureLevel && pair.because === alone.because;
 }
 
+/**
+ * The flag a statement carries when Deploy counts its script as breaking
+ * (by its stamp, the level sent with it, or its SQL as a whole) and no
+ * statement's own reading says so.
+ */
+export const SCRIPT_BREAKING_FLAG = "breaking (Deploy counts this script as breaking)";
+
 /** The run as numbered statements, or null when nothing in it would run. */
 export function listReviewStatements(scripts: readonly ReviewScript[], snapshot: SchemaSnapshot): ReviewListing | null {
   const targetNames = new Map<string, string>();
@@ -235,6 +376,7 @@ export function listReviewStatements(scripts: readonly ReviewScript[], snapshot:
   for (const script of scripts) {
     const parts = splitStatements(script.sqlContent).filter((s) => hasExecutableSql(s));
     const label = scriptLabel(script.scriptName, script.version);
+    const ids: string[] = [];
     parts.forEach((sql, k) => {
       const names = statementNames(sql);
       names.forEach((n) => runNames.add(n));
@@ -245,14 +387,33 @@ export function listReviewStatements(scripts: readonly ReviewScript[], snapshot:
       }
       for (const real of mine) if (!touched.includes(real)) touched.push(real);
       const reading = readStatement(sql, isReplacement(sql, parts[k + 1]));
-      statements.set(`S${statements.size + 1}`, {
+      const id = `S${statements.size + 1}`;
+      ids.push(id);
+      statements.set(id, {
         label: parts.length > 1 ? `${label}, statement ${k + 1}` : label,
-        sql: withoutComments(sql).trim(),
+        // What the prompt and the screen show: values replaced by ?.
+        sql: redactValues(sql).trim(),
         floor: reading.floor,
         flags: reading.flags,
         touched: mine,
       });
     });
+
+    // The review never rates a script lower than Deploy's risk list does. The
+    // stamp is a comment, so neither the model nor readStatement sees it, and
+    // a level stamped by hand (or sent with the run) can say more than any one
+    // statement's SQL. Then every statement of the script carries Deploy's
+    // reading, at least medium, the prompt's grade for breaking what uses the
+    // target.
+    const level = readScriptLevel({ sqlContent: script.sqlContent, changeType: script.changeType });
+    const ownBreaking = ids.some((id) => statements.get(id)!.flags.some((flag) => flag.startsWith("breaking")));
+    if (level.breaking && !ownBreaking) {
+      for (const id of ids) {
+        const statement = statements.get(id)!;
+        statement.flags.push(SCRIPT_BREAKING_FLAG);
+        statement.floor = higher(statement.floor, "medium");
+      }
+    }
   }
   return statements.size === 0 ? null : { statements, touched, runNames };
 }
@@ -325,8 +486,8 @@ export function buildMigrationReviewTask(
   const sections = [
     "THE RUN",
     options.action === "deploy"
-      ? `A deploy of ${scriptCount} script${scriptCount === 1 ? "" : "s"}, ${listing.statements.size} statements, applied in the order listed.`
-      : `A rollback: the stored down scripts of ${scriptCount} version${scriptCount === 1 ? "" : "s"}, ${listing.statements.size} statements, applied in the order listed.`,
+      ? `A deploy of ${countOf(scriptCount, "script")}, ${countOf(listing.statements.size, "statement")}, applied in the order listed.`
+      : `A rollback: the stored down scripts of ${countOf(scriptCount, "version")}, ${countOf(listing.statements.size, "statement")}, applied in the order listed.`,
     `It runs as one transaction: if any statement fails, nothing is kept. Each statement waits at most ${RUN_LOCK_WAIT_SECONDS} seconds for a lock, and the run stops if it cannot get one. A statement that holds its lock has no time limit, so a slow one blocks everyone else using that table until the run ends.`,
     "",
     "STATEMENTS (id [the app's reading] script: sql)",
@@ -374,9 +535,18 @@ function normaliseIds(ids: readonly string[]): string[] {
 /** A name counts when the target has it, or every part of it is in the run's SQL. */
 function knownToReview(name: string, facts: MigrationReviewFacts): boolean {
   if (isKnownName(name, facts.known)) return true;
+  // schema.table.column with a schema nobody has: bareName would drop the
+  // schema, and the rest could pass on its own.
+  const whole = name.replace(/"/g, "").split(".");
+  if (whole.length >= 3 && !facts.known.has(`schema:${whole[0].trim().toLowerCase()}`)) return false;
   return bareName(name)
     .split(".")
     .every((part) => facts.runNames.has(part));
+}
+
+/** The app's floor for the statements a finding cites: the highest of their readings. */
+function floorOf(ids: readonly string[], facts: MigrationReviewFacts): ReviewSeverity {
+  return ids.reduce<ReviewSeverity>((top, id) => higher(top, facts.statements.get(id)?.floor ?? "low"), "low");
 }
 
 export type MigrationReviewCheck = {
@@ -415,13 +585,14 @@ export function checkMigrationReview(answer: ModelReview, facts: MigrationReview
     const objects = [...new Set(finding.objects.map((o) => o.trim().replace(/^`|`$/g, "")).filter(Boolean))];
     const realObjects = objects.filter((o) => knownToReview(o, facts));
     droppedObjects += objects.length - realObjects.length;
-    // The floor: never below the app's own reading of the cited statements.
-    const floor = ids.reduce<ReviewSeverity>((top, id) => higher(top, facts.statements.get(id)!.floor), "low");
-    const severity = higher(finding.severity, floor);
-    if (severity !== finding.severity) severityRaised += 1;
+    // The value keeps the model's own severity. withAppFindings raises it to
+    // the app's floor when the answer is shown, so the two stay apart: a
+    // "safe" verdict over a finding the app had to raise is not the model's
+    // reading of the run.
+    if (higher(finding.severity, floorOf(ids, facts)) !== finding.severity) severityRaised += 1;
     findings.push({
       statements: ids,
-      severity,
+      severity: finding.severity,
       title: finding.title.trim(),
       why: finding.why.trim(),
       saferWay: finding.saferWay.trim(),
@@ -434,7 +605,10 @@ export function checkMigrationReview(answer: ModelReview, facts: MigrationReview
       `Too many findings cite things that are not in the run (${[...new Set(reasons)].slice(0, 8).join("; ")}). Cite only the listed statement ids and real object names.`
     );
   }
-  findings.sort((a, b) => SEVERITY_ORDER.indexOf(b.severity) - SEVERITY_ORDER.indexOf(a.severity));
+  // Most serious first as the screen will show them, after the floor, so the
+  // cut below keeps the worst.
+  const shown = (f: ModelReviewFinding) => SEVERITY_ORDER.indexOf(higher(f.severity, floorOf(f.statements, facts)));
+  findings.sort((a, b) => shown(b) - shown(a));
 
   return {
     value: { verdict: answer.verdict.trim(), findings: findings.slice(0, MAX_FINDINGS + 2) },
@@ -442,6 +616,12 @@ export function checkMigrationReview(answer: ModelReview, facts: MigrationReview
     report: { droppedItems, droppedObjects, severityRaised },
   };
 }
+
+/** The verdict when the app's own checks find worse than the model did. */
+const APP_VERDICT_HIGH =
+  "The app's own checks flag statements that can lose data, break what uses the target or stop the run, and the AI review missed them or rated them lower. Read the high findings before you deploy.";
+const APP_VERDICT_MEDIUM =
+  "The app's own checks flag statements that can fail on existing rows, change every row or break what uses the target, and the AI review missed them or rated them lower. Read the medium findings before you deploy.";
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -477,19 +657,35 @@ export function withAppFindings(review: ModelReview, facts: MigrationReviewFacts
     fromApp: true,
   }));
 
-  const findings: MigrationReviewFinding[] = [
-    ...review.findings.map((f) => ({ ...f, fromApp: false })),
-    ...fromApp,
-  ].sort((a, b) => SEVERITY_ORDER.indexOf(b.severity) - SEVERITY_ORDER.indexOf(a.severity));
+  // The model's findings, each raised to the floor of the statements it
+  // cites (never lowered), with the model's own severity kept beside it.
+  const modelFindings: MigrationReviewFinding[] = review.findings.map((f) => ({
+    statements: f.statements,
+    severity: higher(f.severity, floorOf(f.statements, facts)),
+    modelSeverity: f.severity,
+    title: f.title,
+    why: f.why,
+    saferWay: f.saferWay,
+    objects: f.objects,
+    fromApp: false,
+  }));
 
-  // A verdict that calls the run safe while the app holds a high finding the
-  // model never raised would contradict the list under it.
-  const modelHasHigh = review.findings.some((f) => f.severity === "high");
-  const appHasHigh = fromApp.some((f) => f.severity === "high");
-  const verdict =
-    appHasHigh && !modelHasHigh
-      ? "The app's own checks flag statements that can lose data or stop the run, and the AI review did not cover them. Read the findings marked as the app's before you deploy."
-      : review.verdict;
+  const findings: MigrationReviewFinding[] = [...modelFindings, ...fromApp].sort(
+    (a, b) => SEVERITY_ORDER.indexOf(b.severity) - SEVERITY_ORDER.indexOf(a.severity)
+  );
+
+  // The model's verdict is its reading of the worst problem it graded. When
+  // the app's checks find worse, in a statement the model left out or one it
+  // graded lower, a "looks safe" verdict would contradict the list under it.
+  const rank = (severity: ReviewSeverity) => SEVERITY_ORDER.indexOf(severity);
+  const modelTop = Math.max(-1, ...review.findings.map((f) => rank(f.severity)));
+  const appTop = Math.max(
+    -1,
+    ...fromApp.map((f) => rank(f.severity)),
+    ...modelFindings.filter((f) => f.severity !== f.modelSeverity).map((f) => rank(f.severity))
+  );
+  let verdict = review.verdict;
+  if (appTop > modelTop) verdict = appTop === rank("high") ? APP_VERDICT_HIGH : APP_VERDICT_MEDIUM;
 
   return { verdict, findings, appFindings: fromApp.length };
 }

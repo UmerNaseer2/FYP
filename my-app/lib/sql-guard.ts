@@ -493,6 +493,186 @@ function doBlockBody(statement: string): string {
   return maskNonCode(end === -1 ? statement.slice(start) : statement.slice(start, end));
 }
 
+// ─── Code bodies in any quoting ─────────────────────────────────────────────
+
+/** The inside of a DO block or a function or procedure, as the server will run it. */
+export type CodeBody = { kind: "do" | "routine"; text: string };
+
+/** How many bodies inside bodies are read before the reading gives up. */
+const MAX_BODY_DEPTH = 4;
+
+/**
+ * Every DO body and function or procedure body in a script, decoded, in
+ * whatever quotes it was written: $$ … $$, '…' with '' for a quote, or E'…'
+ * with backslash escapes. Bodies inside bodies are read too.
+ *
+ * maskNonCode blanks a '' string whole, and doBlockBodies only reads $$
+ * bodies, so `DO 'BEGIN PERFORM pg_sleep(100); END'` used to pass every scan
+ * that reads bodies. This is for scans that must see what really runs; the
+ * existing callers of maskNonCode and doBlockBodies are unchanged.
+ *
+ * A body is the literal that follows DO (around an optional LANGUAGE name) or
+ * the first literal after AS (CREATE FUNCTION … AS '…'). `unreadable` is true
+ * when a body is written in a way this does not decode (a U&'' string), or
+ * bodies are nested deeper than MAX_BODY_DEPTH. A caller that refuses what it
+ * cannot read refuses then.
+ *
+ * Each text is the body itself, not masked: a caller masks it the way it masks
+ * a whole script.
+ */
+export function codeBodiesIn(sql: string): { bodies: CodeBody[]; unreadable: boolean } {
+  const result = { bodies: [] as CodeBody[], unreadable: false };
+  collectBodies(sql, 0, result);
+  return result;
+}
+
+function collectBodies(sql: string, depth: number, result: { bodies: CodeBody[]; unreadable: boolean }): void {
+  // The keywords are looked for in code only, never in a string or comment.
+  const code = maskNonCode(sql);
+  for (const match of code.matchAll(/\b(DO|AS)\b/gi)) {
+    const kind: CodeBody["kind"] = match[1].toLowerCase() === "do" ? "do" : "routine";
+    let at = match.index + match[0].length;
+    for (;;) {
+      at = skipSpaceAndComments(sql, at);
+      // DO LANGUAGE plpgsql '…' and DO '…' LANGUAGE plpgsql: the name (which
+      // may itself be a string) is not a body, so it is stepped over.
+      if (kind === "do" && /^LANGUAGE\b/i.test(sql.slice(at, at + 9))) {
+        at = skipSpaceAndComments(sql, at + "LANGUAGE".length);
+        const name = readLiteral(sql, at);
+        if (name) at = name.end;
+        else at += (/^(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)/.exec(sql.slice(at)) ?? [""])[0].length;
+        continue;
+      }
+      const literal = readLiteral(sql, at);
+      // ON CONFLICT DO NOTHING, DO INSTEAD, AS SELECT, AS (…): no literal, no body.
+      if (!literal) break;
+      if (literal.text === null) {
+        result.unreadable = true;
+      } else if (depth + 1 > MAX_BODY_DEPTH) {
+        result.unreadable = true;
+      } else {
+        result.bodies.push({ kind, text: literal.text });
+        collectBodies(literal.text, depth + 1, result);
+      }
+      at = literal.end;
+      // A function has one body. AS 'file', 'symbol' (a C function) names a
+      // file and a symbol, and the second is not code.
+      if (kind === "routine") break;
+    }
+  }
+}
+
+/** Step over spaces, -- comments and (nested) block comments. */
+function skipSpaceAndComments(sql: string, from: number): number {
+  let at = from;
+  for (;;) {
+    while (at < sql.length && /\s/.test(sql[at])) at += 1;
+    if (sql.startsWith("--", at)) {
+      while (at < sql.length && sql[at] !== "\n" && sql[at] !== "\r") at += 1;
+      continue;
+    }
+    if (sql.startsWith("/*", at)) {
+      let depth = 1;
+      at += 2;
+      while (at < sql.length && depth > 0) {
+        if (sql.startsWith("/*", at)) {
+          depth += 1;
+          at += 2;
+        } else if (sql.startsWith("*/", at)) {
+          depth -= 1;
+          at += 2;
+        } else {
+          at += 1;
+        }
+      }
+      continue;
+    }
+    return at;
+  }
+}
+
+/**
+ * The string literal starting at `at`, decoded, and the index just past it.
+ * Null when no literal starts there. `text` is null for a literal this does
+ * not decode (U&'…').
+ */
+function readLiteral(sql: string, at: number): { text: string | null; end: number } | null {
+  if (sql[at] === "'") return readQuoted(sql, at, false);
+  if ((sql[at] === "E" || sql[at] === "e") && sql[at + 1] === "'") return readQuoted(sql, at + 1, true);
+  if ((sql[at] === "U" || sql[at] === "u") && sql[at + 1] === "&" && sql[at + 2] === "'") {
+    const skipped = readQuoted(sql, at + 2, false);
+    return { text: null, end: skipped.end };
+  }
+  if (sql[at] === "$") {
+    const tag = /\$(?:[A-Za-z_\u0080-￿][A-Za-z0-9_\u0080-￿]*)?\$/y;
+    tag.lastIndex = at;
+    const open = tag.exec(sql);
+    if (!open) return null;
+    const start = at + open[0].length;
+    const close = sql.indexOf(open[0], start);
+    if (close === -1) return { text: sql.slice(start), end: sql.length };
+    return { text: sql.slice(start, close), end: close + open[0].length };
+  }
+  return null;
+}
+
+/**
+ * A '' string opening at `open`, decoded: '' becomes ', and with `escapes`
+ * (an E'' string) the backslash escapes are read the way PostgreSQL reads
+ * them, so `pg\x5fsleep` is read as pg_sleep. A string that goes on after a
+ * newline ('a'<newline>'b' is 'ab') is followed, like maskNonCode does.
+ */
+function readQuoted(sql: string, open: number, escapes: boolean): { text: string; end: number } {
+  const quoteContinue = /(?:[ \t\f]|--[^\n\r]*)*[\n\r](?:[ \t\n\r\f\v]+|--[^\n\r]*[\n\r])*'/y;
+  let text = "";
+  let j = open + 1;
+  for (;;) {
+    while (j < sql.length) {
+      const ch = sql[j];
+      if (escapes && ch === "\\") {
+        const escape = readEscape(sql, j);
+        text += escape.text;
+        j = escape.end;
+        continue;
+      }
+      if (ch === "'") {
+        if (sql[j + 1] === "'") {
+          text += "'";
+          j += 2;
+          continue;
+        }
+        break;
+      }
+      text += ch;
+      j += 1;
+    }
+    if (j >= sql.length) return { text, end: sql.length }; // unterminated
+    quoteContinue.lastIndex = j + 1;
+    if (!quoteContinue.exec(sql)) return { text, end: j + 1 };
+    j = quoteContinue.lastIndex; // just past the quote that carries the string on
+  }
+}
+
+/** One backslash escape of an E'' string, starting at the backslash. */
+function readEscape(sql: string, at: number): { text: string; end: number } {
+  const rest = sql.slice(at + 1, at + 10);
+  const simple: Record<string, string> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+  if (rest[0] !== undefined && simple[rest[0]]) return { text: simple[rest[0]], end: at + 2 };
+  const octal = /^[0-7]{1,3}/.exec(rest);
+  if (octal) return { text: String.fromCharCode(parseInt(octal[0], 8) & 0xff), end: at + 1 + octal[0].length };
+  const hex = /^x([0-9A-Fa-f]{1,2})/.exec(rest);
+  if (hex) return { text: String.fromCharCode(parseInt(hex[1], 16)), end: at + 1 + hex[0].length };
+  const unicode = /^(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8}))/.exec(rest);
+  if (unicode) {
+    const point = parseInt(unicode[1] ?? unicode[2], 16);
+    const text = point <= 0x10ffff ? String.fromCodePoint(point) : "";
+    return { text, end: at + 1 + unicode[0].length };
+  }
+  // Any other character stands for itself: \\ is \, \' is '.
+  if (at + 1 >= sql.length) return { text: "", end: sql.length };
+  return { text: sql[at + 1], end: at + 2 };
+}
+
 /**
  * Split a script into statements, ignoring semicolons that are not statement
  * boundaries.

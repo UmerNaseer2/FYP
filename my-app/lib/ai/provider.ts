@@ -54,6 +54,11 @@ export type GenerateRequest = {
   maxOutputTokens: number;
   /** Overrides the configured wait for this one call. */
   timeoutMs?: number;
+  /**
+   * Stops the call when the caller gives up (the person left the page, or a
+   * drift alert stopped waiting). The call then fails as a timeout.
+   */
+  signal?: AbortSignal;
 };
 
 export type GenerateResult = {
@@ -71,9 +76,10 @@ export type GenerateResult = {
  *
  * - rate_limited: the service's quota is used up; wait, do not retry now.
  * - overloaded: the service is busy (503) or broke (5xx); the fast model may answer.
- * - timeout: no answer in time; the fast model may answer.
+ * - timeout: no answer in time, or the caller gave up; the fast model may answer.
  * - rejected: the service refused the request itself (400, 401, 403, 404):
- *   a bad key or a model this key cannot use. Retrying will not help.
+ *   a bad key (401, 403: no model will answer) or a model this key cannot
+ *   use (the other model may). Asking the same model again will not help.
  */
 export type AiErrorKind = "rate_limited" | "overloaded" | "timeout" | "rejected";
 

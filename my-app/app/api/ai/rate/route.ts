@@ -3,6 +3,9 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { rateAiCall } from "@/lib/ai/store";
 
+/** ai_calls.id is a PostgreSQL INTEGER; a bigger number is not an id, it is a bad request. */
+const MAX_CALL_ID = 2_147_483_647;
+
 /**
  * A thumbs up or down on an AI answer, from the person who asked for it.
  * POST `{ callId, rating }` with rating 1 or -1. The Admin AI tab counts them
@@ -19,7 +22,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Expected a JSON body." }, { status: 400 });
   }
   const { callId, rating } = (body ?? {}) as { callId?: unknown; rating?: unknown };
-  if (typeof callId !== "number" || !Number.isInteger(callId) || callId <= 0 || (rating !== 1 && rating !== -1)) {
+  if (
+    typeof callId !== "number" ||
+    !Number.isInteger(callId) ||
+    callId <= 0 ||
+    callId > MAX_CALL_ID ||
+    (rating !== 1 && rating !== -1)
+  ) {
     return NextResponse.json({ error: "Send a callId and a rating of 1 or -1." }, { status: 400 });
   }
 

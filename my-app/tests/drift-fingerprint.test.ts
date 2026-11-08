@@ -34,7 +34,7 @@ const ORG = 7;
 // statements only, so jest.mock("@/...") would not resolve.
 const mockPoolQuery = jest.fn<Promise<unknown>, [string, unknown[]?]>(
   async (text: string) => {
-    if (/SELECT status, fingerprint FROM drift_events/.test(text)) {
+    if (/SELECT id, status, fingerprint FROM drift_events/.test(text)) {
       return {
         rows: mockState.previous ? [mockState.previous] : [],
         rowCount: mockState.previous ? 1 : 0,

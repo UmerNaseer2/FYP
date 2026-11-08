@@ -13,11 +13,23 @@
 // ---------------------------------------------------------------------------
 
 import type { SchemaSnapshot } from "../postgres";
-import { analyseRunRisk, type RunRisk } from "../deploy-risk";
+import { analyseRunRisk, scriptLabel, type RunRisk } from "../deploy-risk";
 import { gradeSql, type SqlGrade } from "../change-type";
-import { containsTransactionControl, hasExecutableSql, maskNonCode, splitStatements } from "../sql-guard";
+import {
+  codeBodiesIn,
+  containsTransactionControl,
+  findRowDestroyingStatements,
+  hasExecutableSql,
+  maskNonCode,
+  splitStatements,
+} from "../sql-guard";
 
-/** Every name a model may cite: tables, columns as table.column, views, types, routines and the rest. */
+/**
+ * Every name a model may cite: tables, columns as table.column, views, types,
+ * routines and the rest. Each object is also there with its own schema in
+ * front (public.books, public.books.title), so a name with a schema is only
+ * known in the schema that really has it.
+ */
 export function knownNames(...snapshots: ReadonlyArray<SchemaSnapshot | null | undefined>): Set<string> {
   const names = new Set<string>();
   const add = (name: string | null | undefined) => {
@@ -25,31 +37,39 @@ export function knownNames(...snapshots: ReadonlyArray<SchemaSnapshot | null | u
   };
   for (const snapshot of snapshots) {
     if (!snapshot) continue;
-    add(`schema:${snapshot.schema}`);
+    const schema = snapshot.schema;
+    // The name alone and the name with this snapshot's schema in front.
+    const addObject = (name: string | null | undefined) => {
+      if (!name) return;
+      add(name);
+      add(`${schema}.${name}`);
+    };
+    add(`schema:${schema}`);
     for (const table of snapshot.tables) {
-      add(table.name);
+      addObject(table.name);
       for (const column of table.columns) {
+        // A bare column name, but never schema.column: that is not a name.
         add(column.name);
-        add(`${table.name}.${column.name}`);
+        addObject(`${table.name}.${column.name}`);
       }
-      if (table.primaryKey) add(table.primaryKey.name);
-      for (const c of [...table.uniqueConstraints, ...table.checkConstraints, ...table.excludeConstraints]) add(c.name);
-      for (const fk of table.foreignKeys) add(fk.name);
-      for (const index of table.indexes ?? []) add(index.name);
+      if (table.primaryKey) addObject(table.primaryKey.name);
+      for (const c of [...table.uniqueConstraints, ...table.checkConstraints, ...table.excludeConstraints]) addObject(c.name);
+      for (const fk of table.foreignKeys) addObject(fk.name);
+      for (const index of table.indexes ?? []) addObject(index.name);
       for (const trigger of table.triggers ?? []) {
-        add(trigger.name);
-        add(trigger.functionName);
+        addObject(trigger.name);
+        addObject(trigger.functionName);
       }
     }
     for (const view of snapshot.views ?? []) {
-      add(view.name);
-      for (const column of view.columns) add(`${view.name}.${column}`);
+      addObject(view.name);
+      for (const column of view.columns) addObject(`${view.name}.${column}`);
     }
-    for (const sequence of snapshot.sequences ?? []) add(sequence.name);
-    for (const type of snapshot.types ?? []) add(type.name);
-    for (const routine of snapshot.routines ?? []) add(routine.name);
-    for (const extension of snapshot.extensions ?? []) add(extension.name);
-    for (const collation of snapshot.collations ?? []) add(collation.name);
+    for (const sequence of snapshot.sequences ?? []) addObject(sequence.name);
+    for (const type of snapshot.types ?? []) addObject(type.name);
+    for (const routine of snapshot.routines ?? []) addObject(routine.name);
+    for (const extension of snapshot.extensions ?? []) addObject(extension.name);
+    for (const collation of snapshot.collations ?? []) addObject(collation.name);
   }
   return names;
 }
@@ -64,16 +84,22 @@ export function bareName(name: string): string {
 }
 
 /**
- * Whether one cited name exists. "books" and "books.title" are looked up as
- * they are. "public.books" counts when public is a schema the model was shown
- * and books is in it. "orders.title" does not count just because some other
- * table has a title column: a pair is only known as a pair.
+ * Whether one cited name exists, looked up whole, quotes off and lower-cased.
+ * "books" and "books.title" are known as they are. "public.books" and
+ * "public.books.title" count only when public is a schema the model was shown
+ * and books is in that schema: knownNames adds each object with its own schema
+ * in front. So "orders.title" does not count just because some other table
+ * has a title column, "cmp_prod.refunds" does not count when refunds is only
+ * in cmp_dev, and "public.title" does not count when title is only a column.
  */
 export function isKnownName(raw: string, known: Set<string>): boolean {
-  const name = bareName(raw);
-  if (!name || known.has(name)) return true;
-  const parts = name.split(".");
-  return parts.length === 2 && known.has(`schema:${parts[0]}`) && known.has(parts[1]);
+  const name = raw
+    .trim()
+    .replace(/"/g, "")
+    .split(".")
+    .map((part) => part.trim().toLowerCase())
+    .join(".");
+  return !name || known.has(name);
 }
 
 export type NameCheck<T> = {
@@ -140,6 +166,18 @@ export function checkGeneratedSql(sql: string, options: { allowDataLoss?: boolea
   }
   const grade = gradeSql(sql);
   const risk = analyseRunRisk([{ scriptName: "ai_draft", version: "0.0.0", sqlContent: sql }]);
+  // The risk scan reads a DO body only when it is written between $$ marks,
+  // and never a function body. A body can also be a '' or E'' string, and a
+  // function or trigger deletes rows when it runs later. So every body is read
+  // here too, and what it deletes is added to the script's data loss.
+  const scriptKinds = new Set(risk.dataLoss.flatMap((d) => d.kinds));
+  const kinds = new Set(scriptKinds);
+  for (const body of codeBodiesIn(sql).bodies) {
+    for (const kind of findRowDestroyingStatements(body.text)) kinds.add(kind);
+  }
+  if (kinds.size > scriptKinds.size) {
+    risk.dataLoss = [{ label: scriptLabel("ai_draft", "0.0.0"), scriptName: "ai_draft", version: "0.0.0", kinds: [...kinds] }];
+  }
   if (!options.allowDataLoss && risk.dataLoss.length > 0) {
     problems.push(
       `It deletes data (${risk.dataLoss.flatMap((d) => d.kinds).join(", ")}). Only write that when the request asks for it.`
@@ -155,6 +193,8 @@ export type TableRef = {
   name: string;
   /** True for CREATE TABLE and CREATE VIEW, and for RENAME TO. */
   creates: boolean;
+  /** Set when the name is inside a DO block or a function body. */
+  inBody?: true;
 };
 
 const TABLE_REF =
@@ -174,12 +214,37 @@ function unquotePart(part: string): string {
   return trimmed.startsWith('"') ? trimmed.slice(1, -1) : trimmed.toLowerCase();
 }
 
+/** Functions whose parentheses hold FROM as a word: EXTRACT(year FROM d), TRIM(BOTH ' ' FROM name). */
+const FROM_AS_A_WORD = /\b(?:extract|substring|trim|overlay)\s*$/i;
+
 /**
- * The tables and views a SQL text names. Strings and comments are skipped
- * (quoted names are kept), and so are function bodies, whose INTO is a
- * variable, not a table.
+ * Whether the FROM at `at` (in masked code) is part of an expression, not the
+ * start of a list of tables: x IS DISTINCT FROM y, EXTRACT(year FROM
+ * o.created_at), SUBSTRING(name FROM 2). What follows it is a column.
  */
-export function tableRefsInSql(sql: string): TableRef[] {
+function fromIsInAnExpression(code: string, at: number): boolean {
+  if (/\bis\s+(?:not\s+)?distinct\s+$/i.test(code.slice(Math.max(0, at - 40), at))) return true;
+  // Walk back to the "(" this FROM is inside, if any, and read the word before it.
+  let depth = 0;
+  for (let i = at - 1; i >= 0; i -= 1) {
+    const ch = code[i];
+    if (ch === ";") return false;
+    if (ch === ")") depth += 1;
+    if (ch === "(") {
+      if (depth === 0) return FROM_AS_A_WORD.test(code.slice(Math.max(0, i - 20), i));
+      depth -= 1;
+    }
+  }
+  return false;
+}
+
+/**
+ * The table refs in one piece of code. `inBody` is for the inside of a DO
+ * block or a function, which is PL/pgSQL: there INTO also follows SELECT and
+ * RETURNING to name a variable, so only INSERT INTO and MERGE INTO count, and
+ * FETCH … FROM and MOVE … FROM name a cursor.
+ */
+function tableRefsInCode(sql: string, inBody: boolean): TableRef[] {
   const text = maskNonCode(sql, { keepQuotedNames: true });
   const refs: TableRef[] = [];
   for (const match of text.matchAll(TABLE_REF)) {
@@ -187,39 +252,73 @@ export function tableRefsInSql(sql: string): TableRef[] {
     const parts = match[1].split(".").map(unquotePart);
     const name = parts[parts.length - 1];
     if (NOT_A_TABLE.has(name) && !match[1].includes('"')) continue;
-    refs.push({
+    const before = text.slice(Math.max(0, match.index - 40), match.index);
+    const isFrom = keyword.startsWith("from");
+    if (isFrom && fromIsInAnExpression(text, match.index)) continue;
+    // FROM jsonb_each(x) or JOIN unnest(y): a function call, not a table.
+    // A schema in front is kept, so the other-schema check still sees it.
+    const afterName = text.slice(match.index + match[0].length);
+    if ((isFrom || keyword.startsWith("join")) && parts.length === 1 && /^\s*\(/.test(afterName)) continue;
+    if (inBody) {
+      if (keyword.startsWith("into") && !/\b(?:insert|merge)\s+$/i.test(before)) continue;
+      const statement = text.slice(text.lastIndexOf(";", match.index) + 1, match.index);
+      if (isFrom && /(?:^|\b(?:begin|then|else|loop)\b)\s*(?:fetch|move)\b/i.test(statement)) continue;
+    }
+    const ref: TableRef = {
       schema: parts.length > 1 ? parts[0].toLowerCase() : null,
       name: name.toLowerCase(),
       creates: keyword.startsWith("create") || keyword.startsWith("rename"),
-    });
+    };
+    if (inBody) ref.inBody = true;
+    refs.push(ref);
   }
   return refs;
 }
 
-/** The names a WITH clause gives its parts: WITH recent AS (...). */
+/**
+ * The tables and views a SQL text names. Strings and comments are skipped
+ * (quoted names are kept). DO blocks and function bodies are read too, in any
+ * quoting: PostgreSQL does not look up the tables a PL/pgSQL body uses until
+ * it runs, so a made-up table there is only found here. Their refs carry
+ * inBody.
+ */
+export function tableRefsInSql(sql: string): TableRef[] {
+  const refs = tableRefsInCode(sql, false);
+  for (const body of codeBodiesIn(sql).bodies) refs.push(...tableRefsInCode(body.text, true));
+  return refs;
+}
+
+/** The names a WITH clause gives its parts: WITH recent AS (...), in the script and in its bodies. */
 function cteNamesIn(sql: string): string[] {
-  const text = maskNonCode(sql, { keepQuotedNames: true });
   const names: string[] = [];
-  for (const match of text.matchAll(/("[^"]+"|[a-z_][a-z0-9_$]*)\s+as\s+(?:not\s+)?(?:materialized\s+)?\(/gi)) {
-    names.push(unquotePart(match[1]).toLowerCase());
+  for (const piece of [sql, ...codeBodiesIn(sql).bodies.map((body) => body.text)]) {
+    const text = maskNonCode(piece, { keepQuotedNames: true });
+    for (const match of text.matchAll(/("[^"]+"|[a-z_][a-z0-9_$]*)\s+as\s+(?:not\s+)?(?:materialized\s+)?\(/gi)) {
+      names.push(unquotePart(match[1]).toLowerCase());
+    }
   }
   return names;
 }
 
+/** The catalogs every database has, which a script may read. */
+const CATALOG_SCHEMAS = new Set(["pg_catalog", "information_schema"]);
+
 /**
- * The table names a SQL text uses that the schema does not have.
+ * The table names a SQL text uses that the schema does not have, inside DO
+ * blocks and function bodies too.
  * Shallow on purpose: it reads the name after the keywords that introduce a
  * table (FROM, JOIN, TABLE, INTO, UPDATE, REFERENCES) and leaves columns to
- * the dry run, which is the real test. A name that is a column somewhere is
- * let through, because EXTRACT(year FROM created_at) and IS DISTINCT FROM
- * put a column after FROM.
+ * the dry run, which is the real test. FROM inside EXTRACT(year FROM
+ * created_at) or after IS DISTINCT is not read (see tableRefsInSql), so a
+ * column there is not taken for a table. The catalogs are let through:
+ * information_schema.columns, and pg_constraint without a schema, which a DO
+ * block reads to add a constraint only once.
  */
 export function unknownTablesInSql(sql: string, snapshot: SchemaSnapshot, createdHere: Set<string> = new Set()): string[] {
   const tables = new Set([
     ...snapshot.tables.map((t) => t.name.toLowerCase()),
     ...(snapshot.views ?? []).map((v) => v.name.toLowerCase()),
   ]);
-  const columns = new Set(snapshot.tables.flatMap((t) => t.columns.map((c) => c.name.toLowerCase())));
   const created = new Set([...createdHere, ...cteNamesIn(sql)]);
   const unknown: string[] = [];
   for (const ref of tableRefsInSql(sql)) {
@@ -227,7 +326,8 @@ export function unknownTablesInSql(sql: string, snapshot: SchemaSnapshot, create
       created.add(ref.name);
       continue;
     }
-    if (tables.has(ref.name) || created.has(ref.name) || columns.has(ref.name) || unknown.includes(ref.name)) continue;
+    if (ref.schema ? CATALOG_SCHEMAS.has(ref.schema) : ref.name.startsWith("pg_")) continue;
+    if (tables.has(ref.name) || created.has(ref.name) || unknown.includes(ref.name)) continue;
     unknown.push(ref.name);
   }
   return unknown;

@@ -32,8 +32,11 @@ import type { DriftSource } from "./drift-source";
  * neither see nor stamp another organization's schema.
  */
 
-/** The newest outcome on record for a schema. */
-export type RecordedOutcome = { status: string; fingerprint: string | null };
+/**
+ * The newest outcome on record for a schema. `id` is the row's id, used to
+ * tell whether another row was written while a check waited on the AI.
+ */
+export type RecordedOutcome = { id?: number | string; status: string; fingerprint: string | null };
 
 /** A check that ran, whatever it found. */
 export type DriftRun = {
@@ -74,10 +77,11 @@ export type DriftRun = {
 /** Extras a caller can hand a check. */
 export type DriftCheckOptions = {
   /**
-   * Writes the one line an alert carries about a new drift. Called only when
-   * the check found drift and is writing a row about it, so an unchanged drift
-   * costs no AI call. It must answer null rather than throw, and quickly: the
-   * check waits for it.
+   * Writes the one line an alert carries about a new drift. Called only on an
+   * "on_change" check that found drift, is writing a row about it, and whose
+   * alert will show the line (a "Drift found" alert, see alertShowsLine), so
+   * an unchanged drift or any other alert costs no AI call. It must answer
+   * null rather than throw, and quickly: the check waits for it.
    */
   describe?: (driftReport: CompareReport) => Promise<string | null>;
 };
@@ -180,17 +184,25 @@ export async function runDriftCheck(
   const fingerprint = report ? driftFingerprint(report) : null;
 
   const previous = mode === "always" ? undefined : await previousOutcome(orgId, trackedSchemaId);
-  const worthRecording = mode === "always" || outcomeChanged(previous, status, fingerprint);
+  let worthRecording = mode === "always" || outcomeChanged(previous, status, fingerprint);
 
   // The alert line, written before the row so the row keeps it: the desktop
   // app reads its alerts from these rows.
   let aiSummary: string | null = null;
-  if (worthRecording && status === "drifted" && report && options.describe) {
+  if (worthRecording && status === "drifted" && report && options.describe && alertShowsLine(previous)) {
     try {
       aiSummary = await options.describe(report);
     } catch (error) {
-      console.error("Drift — the alert line failed:", error);
+      console.error("Drift: the alert line failed:", error);
     }
+    // The wait on the AI can take seconds. If a person acknowledged the
+    // drift, re-baselined, deployed or pressed Check now in that time, their
+    // row is now the newest, and this check's row (against the old state)
+    // would bury it and send a stale alert. So the newest row is read again
+    // here, and when it moved this check writes nothing. The next check looks
+    // again. When it cannot be read, the row is written as before.
+    const newest = await previousOutcome(orgId, trackedSchemaId);
+    if (newest !== undefined && !sameRow(previous, newest)) worthRecording = false;
   }
 
   const recorded = worthRecording
@@ -283,6 +295,30 @@ function outcomeChanged(
   return previous.fingerprint !== fingerprint;
 }
 
+/**
+ * Whether the alert this check sends will show the AI's line, so the line is
+ * only asked for then.
+ *
+ * Plan 6.3 (3a) gives the line to new drift only: the "Drift found" alert.
+ * That is a drifted check after an in_sync row or after no row at all
+ * (driftAlertKind in lib/push-alerts.ts, alertKind in the desktop app's
+ * src/core/drift-alerts.ts). After an unreachable row the alert is "reachable
+ * again", and after a drifted row it is "Drift changed" or nothing, and
+ * neither shows the line. When the previous row could not be read, the web
+ * sends no alert at all, so nothing is asked either.
+ */
+function alertShowsLine(previous: RecordedOutcome | null | undefined): boolean {
+  if (previous === undefined) return false;
+  if (previous === null) return true;
+  return previous.status !== "drifted" && previous.status !== "unreachable";
+}
+
+/** Whether two reads of the newest outcome found the same row. */
+function sameRow(before: RecordedOutcome | null | undefined, after: RecordedOutcome | null): boolean {
+  if (!before || !after) return !before && !after;
+  return String(before.id) === String(after.id);
+}
+
 /** The newest outcome on record, null when there is none, undefined when it could not be read. */
 async function previousOutcome(
   orgId: number,
@@ -290,7 +326,7 @@ async function previousOutcome(
 ): Promise<RecordedOutcome | null | undefined> {
   try {
     const previous = await pool.query<RecordedOutcome>(
-      `SELECT status, fingerprint FROM drift_events
+      `SELECT id, status, fingerprint FROM drift_events
         WHERE tracked_schema_id = $1 AND org_id = $2
         ORDER BY detected_at DESC, id DESC
         LIMIT 1`,

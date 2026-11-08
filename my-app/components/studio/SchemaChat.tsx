@@ -18,11 +18,9 @@ import {
 } from "@/lib/ai/features/schema-chat-view";
 import { saveMigrationDraft } from "@/lib/migration-draft";
 import { refusalMessage } from "@/lib/permissions";
-import { useAiFeature } from "./AiPanel";
+import { MAX_MIGRATION_DESCRIPTION } from "@/lib/perf-sql";
+import { AI_SUGGESTION_LABEL, RateButtons, rateAiAnswer, useAiFeature } from "./AiPanel";
 import { withNames } from "./ai-names";
-
-/** The editor's description box takes this much (MAX_MIGRATION_DESCRIPTION). */
-const MAX_DESCRIPTION = 1_000;
 
 /** What each lookup is called on screen. */
 const LOOKUP_LABEL: Record<string, string> = {
@@ -110,6 +108,9 @@ function AnswerView({
 
   return (
     <div className="space-y-3 text-[13.5px]">
+      <p className="text-[12px] font-semibold" style={{ color: "var(--text-2)" }}>
+        {AI_SUGGESTION_LABEL}, written by {meta.model}.
+      </p>
       <div className="whitespace-pre-wrap break-words" style={{ color: "var(--text)", lineHeight: 1.55 }}>
         {withNames(answer.text)}
       </div>
@@ -150,6 +151,11 @@ function AnswerView({
               {refusalMessage(roleLabel, "scripts:create")}
             </p>
           )}
+          {!answer.target && (
+            <p className="text-[12px] mt-1" style={{ color: "var(--text-3)" }}>
+              The app could not tell which database this draft is for, so copy it into the Script Editor yourself.
+            </p>
+          )}
           {copied === "blocked" && (
             <p className="text-[12px] mt-1" style={{ color: "var(--text-3)" }}>
               Your browser blocked the clipboard. Select the SQL and copy it by hand.
@@ -172,22 +178,7 @@ function AnswerView({
             <Lookups tools={answer.toolsUsed} /> {meta.model}, {(meta.ms / 1000).toFixed(1)} s.
           </span>
         </span>
-        {meta.callId !== null && (
-          <span className="flex items-center gap-1">
-            <span>Helpful?</span>
-            <button type="button" className="btn btn-ghost px-2 py-0.5" aria-pressed={rated === 1} onClick={() => onRate(1)}>
-              Yes
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost px-2 py-0.5"
-              aria-pressed={rated === -1}
-              onClick={() => onRate(-1)}
-            >
-              No
-            </button>
-          </span>
-        )}
+        {meta.callId !== null && <RateButtons rated={rated} onRate={onRate} />}
       </div>
     </div>
   );
@@ -218,10 +209,18 @@ export function SchemaChatButton() {
   const [asking, setAsking] = useState(false);
   const [openFailed, setOpenFailed] = useState<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  // The question being asked now, so it can be stopped. Stopping the fetch
+  // also stops the work on the server, so no AI calls are spent on an answer
+  // nobody will see.
+  const askRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (open) endRef.current?.scrollIntoView({ block: "end" });
   }, [entries, asking, open]);
+
+  // Leaving the page (or another organization's page taking its place) stops
+  // the question.
+  useEffect(() => () => askRef.current?.abort(), []);
 
   if (!usable) return null;
 
@@ -234,13 +233,19 @@ export function SchemaChatButton() {
     setEntries((list) => [...list, { kind: "question", text: question }]);
     setDraft("");
     setAsking(true);
+    askRef.current?.abort();
+    const controller = new AbortController();
+    askRef.current = controller;
     try {
       const response = await apiFetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, history }),
+        signal: controller.signal,
       });
       const body = await jsonOf(response);
+      // Stopped while the answer was on its way: stop() already said so.
+      if (controller.signal.aborted) return;
       if (!response.ok || !isAiAnswerBody(body) || !isChatAnswer(body.answer)) {
         const message = errorFrom(body) ?? "The AI answer could not be read.";
         setEntries((list) => [...list, { kind: "error", message }]);
@@ -249,25 +254,29 @@ export function SchemaChatButton() {
         setEntries((list) => [...list, { kind: "answer", answer, meta: body.meta, rated: null }]);
       }
     } catch {
+      if (controller.signal.aborted) return;
       setEntries((list) => [...list, { kind: "error", message: "Network error while asking the AI." }]);
     } finally {
-      setAsking(false);
+      if (askRef.current === controller) {
+        askRef.current = null;
+        setAsking(false);
+      }
     }
+  }
+
+  /** Stop the question being asked. The server stops working on it too. */
+  function stop() {
+    askRef.current?.abort();
+    askRef.current = null;
+    setAsking(false);
+    setEntries((list) => [...list, { kind: "error", message: "You stopped this question." }]);
   }
 
   async function rate(index: number, rating: 1 | -1) {
     const entry = entries[index];
     if (entry?.kind !== "answer" || entry.meta.callId === null) return;
     setEntries((list) => list.map((e, i) => (i === index && e.kind === "answer" ? { ...e, rated: rating } : e)));
-    try {
-      await apiFetch("/api/ai/rate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ callId: entry.meta.callId, rating }),
-      });
-    } catch {
-      // A lost thumbs is not worth an error on screen.
-    }
+    await rateAiAnswer(entry.meta.callId, rating);
   }
 
   function openInEditor(index: number, answer: ChatAnswer) {
@@ -278,7 +287,7 @@ export function SchemaChatButton() {
       rollbackSql: null,
       description: (asked?.kind === "question" ? `Schema chat: ${asked.text}` : "Schema chat draft").slice(
         0,
-        MAX_DESCRIPTION
+        MAX_MIGRATION_DESCRIPTION
       ),
       connectionId: String(answer.target.connectionId),
       schema: answer.target.schema,
@@ -338,6 +347,11 @@ export function SchemaChatButton() {
                 {entries.length > 0 && !asking && (
                   <Button size="sm" variant="ghost" onClick={() => setEntries([])}>
                     Clear
+                  </Button>
+                )}
+                {asking && (
+                  <Button size="sm" variant="ghost" onClick={stop}>
+                    Stop
                   </Button>
                 )}
                 <Button size="sm" variant="primary" type="submit" disabled={!canSend}>

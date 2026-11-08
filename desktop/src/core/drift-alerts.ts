@@ -232,10 +232,10 @@ export function readDriftRow(raw: Record<string, unknown>): DriftRow | null {
 /** Text made fit for one line of a notification, at most `limit` characters, or null when nothing of it is left. */
 function fitText(text: string, limit: number): string | null {
   // Format characters (zero-width ones, and the ones that turn the text after
-  // them around) go, and line breaks, tabs and other control characters
-  // become one space.
+  // them around) and half surrogate pairs standing alone go, and line breaks,
+  // tabs and other control characters become one space.
   const clean = text
-    .replace(/\p{Cf}+/gu, "")
+    .replace(/[\p{Cf}\p{Cs}]+/gu, "")
     .replace(/[\s\p{Cc}]+/gu, " ")
     .trim();
   if (clean === "") return null;
@@ -286,7 +286,10 @@ export function driftAlert(row: DriftRow): DriftAlert | null {
     connectionId: row.connectionId,
     connectionName: cleanName(row.connectionName),
     counts: row.counts,
-    aiSummary: row.status === "drifted" ? row.aiSummary : null,
+    // Plan 6.3 (3a) gives the AI line to new drift only, the "Drift found"
+    // alert, as the web's phone alerts do (lib/push-alerts.ts). A "Drift
+    // changed" or "reachable again" alert goes out without it.
+    aiSummary: kind === "drifted" ? row.aiSummary : null,
     drifted: row.status === "drifted",
     orgSlug: row.orgSlug,
   };
@@ -328,8 +331,8 @@ function singleBody(alert: DriftAlert): string {
         : `${subject} no longer matches its baseline: ${counts}.${line}`;
     case "changed":
       return counts === null
-        ? `The drift in ${subject} has changed.${line}`
-        : `The drift in ${subject} has changed. Now: ${counts}.${line}`;
+        ? `The drift in ${subject} has changed.`
+        : `The drift in ${subject} has changed. Now: ${counts}.`;
     case "in_sync":
       return `${subject} matches its baseline again.`;
     case "unreachable":

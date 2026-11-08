@@ -12,13 +12,17 @@ import {
   buildMigrationReviewTask,
   checkMigrationReview,
   listReviewStatements,
+  migrationReviewSchema,
   readStatement,
+  redactValues,
   reviewedStatements,
+  SCRIPT_BREAKING_FLAG,
   statementNames,
   withAppFindings,
   type ModelReview,
   type ReviewScript,
 } from "@/lib/ai/features/migration-review";
+import { stampChangeType } from "@/lib/change-type";
 import { isMigrationReviewAnswer } from "@/lib/ai/features/migration-review-view";
 import type { AiConfig } from "@/lib/ai/config";
 import { MockProvider } from "@/lib/ai/mock";
@@ -144,14 +148,15 @@ describe("what the prompt carries", () => {
     expect(spec.prompt).toContain("S4 [low] authors v1.1.0: ALTER TABLE authors ADD COLUMN bio text");
   });
 
-  test("comments are taken out of the statement text, a -- inside a string stays", () => {
+  test("comments are taken out of the statement text, a -- inside a string is a value and goes too", () => {
     const list = listReviewStatements(
       [{ scriptName: "notes", version: "1.0.0", sqlContent: "/* why */ UPDATE authors SET name = 'a -- b' -- tidy\nWHERE id = 1;" }],
       target
     )!;
     const { spec } = buildMigrationReviewTask(list, { action: "deploy", snapshot: target, sizes, fingerprint: "c" });
-    expect(spec.prompt).toContain("notes v1.0.0: UPDATE authors SET name = 'a -- b' WHERE id = 1");
+    expect(spec.prompt).toContain("notes v1.0.0: UPDATE authors SET name = '?' WHERE id = ?");
     expect(spec.prompt).not.toContain("tidy");
+    expect(spec.prompt).not.toContain("a -- b");
   });
 
   test("the run's rules: one transaction, a 15 second lock wait", () => {
@@ -235,15 +240,19 @@ describe("the check on the model's answer", () => {
       {
         verdict: "Mostly fine.",
         findings: [
-          { ...good, severity: "low" },
           { ...good, statements: ["S4"], severity: "medium", title: "Adds `authors.bio`", why: "Nothing breaks." },
+          { ...good, severity: "low" },
         ],
       },
       facts
     );
-    expect(value.findings[0].severity).toBe("high");
-    expect(value.findings[1].severity).toBe("medium");
+    // The checked answer keeps the model's own grades, worst first after the floor.
+    expect(value.findings.map((f) => f.severity)).toEqual(["low", "medium"]);
     expect(report.severityRaised).toBe(1);
+    // The screen gets the raised grade, with the model's own beside it.
+    const shown = withAppFindings(value, facts);
+    expect(shown.findings[0]).toEqual(expect.objectContaining({ statements: ["S1"], severity: "high", modelSeverity: "low" }));
+    expect(shown.findings[1]).toEqual(expect.objectContaining({ statements: ["S4"], severity: "medium", modelSeverity: "medium" }));
   });
 
   test("objects that are nowhere are taken off, the finding stays", () => {
@@ -346,5 +355,157 @@ describe("rough sizes", () => {
     expect(roughBytes(500)).toBe("about 500 bytes");
     expect(roughBytes(8192)).toBe("about 8 kB");
     expect(roughBytes(3.2 * 1024 * 1024)).toBe("about 3 MB");
+  });
+});
+
+describe("no values leave the app", () => {
+  test("passwords, hosts, database names and row values become ?, the structure stays", () => {
+    const sql = [
+      "CREATE ROLE reporting LOGIN PASSWORD 'Winter2026!';",
+      "CREATE SERVER pay FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host 'prod-db.internal', dbname 'payments', port '5432');",
+      "INSERT INTO admins (email, pin, \"Note\") VALUES ('ceo@client.com', 4821, E'it\\'s secret');",
+    ].join("\n");
+    const list = listReviewStatements([{ scriptName: "seed", version: "1.0.0", sqlContent: sql }], target)!;
+    const { spec } = buildMigrationReviewTask(list, { action: "deploy", snapshot: target, sizes, fingerprint: "v" });
+    for (const secret of ["Winter2026", "prod-db.internal", "payments", "5432", "ceo@client.com", "4821", "secret"]) {
+      expect(spec.prompt).not.toContain(secret);
+    }
+    expect(spec.prompt).toContain("CREATE ROLE reporting LOGIN PASSWORD '?'");
+    expect(spec.prompt).toContain("OPTIONS (host '?', dbname '?', port '?')");
+    expect(spec.prompt).toContain(`INSERT INTO admins (email, pin, "Note") VALUES ('?', ?, E'?')`);
+    // The screen's preview shows the same text the AI got.
+    const { facts } = buildMigrationReviewTask(list, { action: "deploy", snapshot: target, sizes, fingerprint: "v" });
+    const answer = withAppFindings(
+      { verdict: "Fine.", findings: [{ statements: ["S1"], severity: "low", title: "Role", why: "A new role.", saferWay: "", objects: [] }] },
+      facts
+    );
+    expect(reviewedStatements(answer, facts).S1.preview).toBe("CREATE ROLE reporting LOGIN PASSWORD '?'");
+  });
+
+  test("a DO block's code is kept and only the values inside it go", () => {
+    const sql =
+      "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_reader') THEN " +
+      "CREATE ROLE app_reader PASSWORD 'hunter2'; END IF; END $$;";
+    expect(redactValues(sql)).toBe(
+      "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '?') THEN CREATE ROLE app_reader PASSWORD '?'; END IF; END $$;"
+    );
+  });
+
+  test("a function's body is code, nested dollar text inside it and a dollar value elsewhere are values", () => {
+    const fn =
+      "CREATE OR REPLACE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN NEW.note := $q$top secret$q$; -- hidden\n RETURN NEW; END $fn$;";
+    // The comment is blanked to spaces, which the prompt folds into one.
+    expect(redactValues(fn).replace(/\s+/g, " ")).toBe(
+      "CREATE OR REPLACE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN NEW.note := '?'; RETURN NEW; END $fn$;"
+    );
+    expect(redactValues("COMMENT ON TABLE books IS $$Owner: ada@example.com$$;")).toBe("COMMENT ON TABLE books IS '?';");
+  });
+
+  test("numbers are values in a statement that writes rows, structure in DDL", () => {
+    expect(redactValues("UPDATE t1 SET price = 19.95 WHERE id = 42 AND code = $1")).toBe(
+      "UPDATE t1 SET price = ? WHERE id = ? AND code = $1"
+    );
+    expect(redactValues("ALTER TABLE books ADD COLUMN code varchar(80) DEFAULT 0")).toBe(
+      "ALTER TABLE books ADD COLUMN code varchar(80) DEFAULT 0"
+    );
+  });
+});
+
+describe("an UPDATE that changes every row", () => {
+  const flag = "changes every row (UPDATE with no WHERE)";
+
+  test("a WHERE inside a subquery does not count for the UPDATE around it", () => {
+    const r = readStatement(
+      "UPDATE orders SET customer_name = (SELECT name FROM customers WHERE customers.id = orders.customer_id)",
+      false
+    );
+    expect(r.flags).toContain(flag);
+    expect(r.floor).toBe("medium");
+  });
+
+  test("WITH ... UPDATE and an UPDATE inside a WITH are read too", () => {
+    expect(readStatement("WITH c AS (SELECT 1) UPDATE orders SET customer_name = 'x'", false).flags).toContain(flag);
+    expect(
+      readStatement("WITH moved AS (UPDATE orders SET status = 'old' RETURNING id) SELECT count(*) FROM moved", false).flags
+    ).toContain(flag);
+  });
+
+  test("an UPDATE with its own WHERE is not flagged, even with a subquery in it", () => {
+    expect(readStatement("UPDATE orders SET status = 'x' WHERE id IN (SELECT id FROM old_orders)", false).flags).toEqual([]);
+    expect(readStatement("WITH c AS (SELECT 1) UPDATE orders SET status = 'x' WHERE id = 3", false).flags).toEqual([]);
+  });
+});
+
+describe("the review never rates a script lower than Deploy does", () => {
+  const view = "CREATE OR REPLACE VIEW book_titles AS SELECT id, title FROM books;";
+
+  test("a script stamped breaking is at least medium, though its SQL grades lower", () => {
+    const list = listReviewStatements([{ scriptName: "views", version: "3.0.0", sqlContent: stampChangeType(view, "breaking") }], target)!;
+    const s1 = list.statements.get("S1")!;
+    expect(s1.flags).toContain(SCRIPT_BREAKING_FLAG);
+    expect(s1.floor).toBe("medium");
+    // The model saying nothing is wrong does not stand over the app's finding.
+    const facts = buildMigrationReviewTask(list, { action: "deploy", snapshot: target, sizes, fingerprint: "b" }).facts;
+    const answer = withAppFindings({ verdict: "The run looks safe to apply.", findings: [] }, facts);
+    expect(answer.findings[0]).toEqual(expect.objectContaining({ fromApp: true, severity: "medium" }));
+    expect(answer.verdict).toContain("The app's own checks flag");
+  });
+
+  test("a level sent with the script counts too, an unstamped additive script is left alone", () => {
+    const sent = listReviewStatements([{ scriptName: "views", version: "3.0.0", sqlContent: view, changeType: "breaking" }], target)!;
+    expect(sent.statements.get("S1")!.flags).toContain(SCRIPT_BREAKING_FLAG);
+    const plain = listReviewStatements([{ scriptName: "views", version: "3.0.0", sqlContent: view }], target)!;
+    expect(plain.statements.get("S1")!.flags).toEqual([]);
+    expect(plain.statements.get("S1")!.floor).toBe("low");
+  });
+
+  test("a script whose own statements already read as breaking gets no extra flag", () => {
+    const list = listReviewStatements(
+      [{ scriptName: "books", version: "2.0.0", sqlContent: stampChangeType("ALTER TABLE books DROP COLUMN price;", "breaking") }],
+      target
+    )!;
+    expect(list.statements.get("S1")!.flags).not.toContain(SCRIPT_BREAKING_FLAG);
+  });
+});
+
+describe("a verdict over a finding the app raised", () => {
+  test("the model citing a dropped column as low under a safe verdict does not keep the verdict", () => {
+    const list = listReviewStatements([{ scriptName: "orders", version: "2.0.0", sqlContent: "ALTER TABLE books DROP COLUMN price;" }], target)!;
+    const { facts } = buildMigrationReviewTask(list, { action: "deploy", snapshot: target, sizes, fingerprint: "d" });
+    const checked = checkMigrationReview(
+      {
+        verdict: "The run looks safe to apply.",
+        findings: [{ statements: ["S1"], severity: "low", title: "Drops a column", why: "`books.price` goes.", saferWay: "", objects: [] }],
+      },
+      facts
+    ).value;
+    const answer = withAppFindings(checked, facts);
+    expect(answer.appFindings).toBe(0);
+    expect(answer.findings[0]).toEqual(expect.objectContaining({ severity: "high", modelSeverity: "low", fromApp: false }));
+    expect(answer.verdict).not.toBe("The run looks safe to apply.");
+    expect(answer.verdict).toContain("rated them lower");
+    expect(isMigrationReviewAnswer(answer)).toBe(true);
+  });
+
+  test("the model's own high grade keeps its verdict", () => {
+    const list = listReviewStatements([{ scriptName: "orders", version: "2.0.0", sqlContent: "ALTER TABLE books DROP COLUMN price;" }], target)!;
+    const { facts } = buildMigrationReviewTask(list, { action: "deploy", snapshot: target, sizes, fingerprint: "e" });
+    const review: ModelReview = {
+      verdict: "Copy `books.price` first.",
+      findings: [{ statements: ["S1"], severity: "high", title: "Prices are lost", why: "`books.price` goes.", saferWay: "", objects: [] }],
+    };
+    expect(withAppFindings(review, facts).verdict).toBe(review.verdict);
+  });
+});
+
+describe("an answer of only spaces", () => {
+  test("is refused by the answer's shape, so it is asked again rather than saved empty", () => {
+    const finding = { statements: ["S1"], severity: "low", title: "A title", why: "A reason.", saferWay: "  ", objects: [] };
+    expect(migrationReviewSchema.safeParse({ verdict: "   ", findings: [] }).success).toBe(false);
+    expect(migrationReviewSchema.safeParse({ verdict: "Fine.", findings: [{ ...finding, title: "  " }] }).success).toBe(false);
+    expect(migrationReviewSchema.safeParse({ verdict: "Fine.", findings: [{ ...finding, why: "\n" }] }).success).toBe(false);
+    const ok = migrationReviewSchema.safeParse({ verdict: "  Fine. ", findings: [finding] });
+    expect(ok.success && ok.data.verdict).toBe("Fine.");
+    expect(ok.success && ok.data.findings[0].saferWay).toBe("");
   });
 });

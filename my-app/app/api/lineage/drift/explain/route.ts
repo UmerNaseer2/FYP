@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { computeDriftDetail } from "@/lib/lineage-db";
-import { aiResponse } from "@/lib/ai/respond";
-import { aiGate, defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
+import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
 import {
   buildDriftExplainTask,
   buildDriftScripts,
@@ -31,9 +30,8 @@ import {
 export async function POST(request: NextRequest) {
   const gate = await requirePermission("drift:read");
   if (!gate.ok) return gate.response;
-  if (!hasPermission(gate.principal, "ai:read")) {
-    return NextResponse.json({ error: refusalMessage(gate.principal.roleLabel, "ai:read") }, { status: 403 });
-  }
+  const noAi = aiPermissionRefusal(gate.principal);
+  if (noAi) return noAi;
 
   let body: Record<string, unknown>;
   try {
@@ -50,13 +48,8 @@ export async function POST(request: NextRequest) {
   const caller = { orgId: gate.principal.orgId, email: actorFor(gate.principal) };
   const deps = defaultAiDeps();
   // Said before the database is read: with AI off there is nothing to read it for.
-  try {
-    const refused = await aiGate(caller, "drift-explain", deps);
-    if (refused) return aiResponse(refused);
-  } catch (error) {
-    console.error("POST drift explain: could not read the AI settings:", error);
-    return NextResponse.json({ error: "Could not read this organization's AI settings. Is the app database reachable?" }, { status: 500 });
-  }
+  const off = await aiGateRefusal(caller, "drift-explain", deps, "POST drift explain");
+  if (off) return off;
 
   try {
     const comp = await computeDriftDetail(gate.principal.orgId, trackedSchemaId);
@@ -83,7 +76,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "The check found drift but no change it can list, so there is nothing to explain." }, { status: 409 });
     }
 
-    const result = await runAiTask(caller, task.spec, deps);
+    const result = await runAiTask(caller, { ...task.spec, signal: request.signal, refresh: body.refresh === true }, deps);
     if (result.kind !== "ok") return aiResponse(result);
     // The app's own notes are added here, after the check and after a saved
     // answer is read, so every explanation of this drift gets them.

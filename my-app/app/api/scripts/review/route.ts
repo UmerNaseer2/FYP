@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
-import { hasPermission, refusalMessage } from "@/lib/permissions";
-import pool, { syncMetadataTables } from "@/lib/version-db";
-import { fetchSchemaSnapshot } from "@/lib/postgres";
-import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
 import { runFingerprint } from "@/lib/approvals-db";
-import { aiResponse } from "@/lib/ai/respond";
-import { aiGate, defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
+import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
 import { readTableSizes } from "@/lib/ai/table-sizes";
+import { loadPgTarget, readTargetSnapshot } from "@/lib/ai/pg-target";
 import {
   buildMigrationReviewTask,
   listReviewStatements,
@@ -21,17 +17,17 @@ import {
 const MAX_SCRIPTS = 200;
 /** The SQL of one run, in characters. A run past this is not one to read in a prompt. */
 const MAX_RUN_CHARS = 400_000;
-/** How long the schema capture waits for a lock on the target. */
-const SNAPSHOT_LOCK_TIMEOUT_MS = 2_000;
 
 function readScripts(value: unknown): ReviewScript[] | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SCRIPTS) return null;
   const scripts: ReviewScript[] = [];
   for (const item of value) {
     if (typeof item !== "object" || item === null) return null;
-    const { scriptName, version, sqlContent } = item as Record<string, unknown>;
+    const { scriptName, version, sqlContent, changeType } = item as Record<string, unknown>;
     if (typeof scriptName !== "string" || typeof version !== "string" || typeof sqlContent !== "string") return null;
-    scripts.push({ scriptName, version, sqlContent });
+    // The change type the Deploy screen sent, when it sent one. The review
+    // reads it the way Deploy does, so it never rates a script lower.
+    scripts.push(changeType === undefined ? { scriptName, version, sqlContent } : { scriptName, version, sqlContent, changeType });
   }
   return scripts;
 }
@@ -56,9 +52,8 @@ export async function POST(request: NextRequest) {
   if (!gate.ok) return gate.response;
   // requirePermission lets in any one of the keys it is given, so the AI box
   // is asked for on its own: it is needed as well.
-  if (!hasPermission(gate.principal, "ai:read")) {
-    return NextResponse.json({ error: refusalMessage(gate.principal.roleLabel, "ai:read") }, { status: 403 });
-  }
+  const noAi = aiPermissionRefusal(gate.principal);
+  if (noAi) return noAi;
 
   let body: Record<string, unknown>;
   try {
@@ -91,69 +86,20 @@ export async function POST(request: NextRequest) {
   const caller = { orgId: gate.principal.orgId, email: actorFor(gate.principal) };
   const deps = defaultAiDeps();
   // Said before the target is touched: with AI off there is nothing to read it for.
-  try {
-    const refused = await aiGate(caller, "migration-review", deps);
-    if (refused) return aiResponse(refused);
-  } catch (error) {
-    console.error("POST scripts review: could not read the AI settings:", error);
-    return NextResponse.json({ error: "Could not read this organization's AI settings. Is the app database reachable?" }, { status: 500 });
-  }
+  const off = await aiGateRefusal(caller, "migration-review", deps, "POST scripts review");
+  if (off) return off;
 
-  let row: {
-    type: string;
-    host: string;
-    port: number;
-    database_name: string;
-    username: string;
-    password: string;
-    connection_string: string | null;
-    ssl: boolean | null;
-    ssl_mode: string | null;
-  };
-  try {
-    await syncMetadataTables();
-    const result = await pool.query(
-      `SELECT type, host, port, database_name, username, password, connection_string, ssl, ssl_mode
-         FROM connections
-        WHERE id = $1 AND org_id = $2`,
-      [connectionId, gate.principal.orgId]
-    );
-    // Another organization's connection reads as missing, like a deleted one.
-    if (result.rows.length === 0) {
-      return NextResponse.json({ error: `No saved connection found with id ${connectionId}.` }, { status: 404 });
-    }
-    row = result.rows[0];
-  } catch (error) {
-    console.error("POST scripts review: could not read the connection:", error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: "Could not read saved connection. Is the app database reachable?" }, { status: 500 });
-  }
-  if (row.type !== "PostgreSQL") {
-    return NextResponse.json({ error: "The AI review reads PostgreSQL targets only." }, { status: 400 });
-  }
-
-  let cfg: ReturnType<typeof buildPgConfig>;
-  try {
-    cfg = buildPgConfig({
-      host: row.host,
-      port: row.port,
-      database: row.database_name,
-      user: row.username,
-      password: row.password,
-      connectionString: row.connection_string,
-      ssl: Boolean(row.ssl),
-      sslMode: row.ssl_mode,
-    });
-  } catch (error) {
-    console.error("POST scripts review: could not read the connection's credentials:", error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
-  }
+  const target = await loadPgTarget(gate.principal.orgId, connectionId, {
+    notPostgresMessage: "The AI review reads PostgreSQL targets only.",
+    logPrefix: "POST scripts review",
+  });
+  if (!target.ok) return target.response;
+  const cfg = target.cfg;
 
   try {
-    const captured = await fetchSchemaSnapshot(cfg, schemaName, { lockTimeoutMs: SNAPSHOT_LOCK_TIMEOUT_MS });
-    if (!captured.ok) {
-      return NextResponse.json({ error: `Could not read the target's schema: ${captured.error}` }, { status: 502 });
-    }
-    const snapshot = captured.data;
+    const captured = await readTargetSnapshot(cfg, schemaName);
+    if (!captured.ok) return captured.response;
+    const snapshot = captured.snapshot;
     const listing = listReviewStatements(scripts, snapshot);
     if (!listing) {
       return NextResponse.json({ error: "These scripts have no statement that would run, so there is nothing to review." }, { status: 409 });
@@ -166,7 +112,7 @@ export async function POST(request: NextRequest) {
       fingerprint: runFingerprint(scripts, action),
     });
 
-    const result = await runAiTask(caller, task.spec, deps);
+    const result = await runAiTask(caller, { ...task.spec, signal: request.signal, refresh: body.refresh === true }, deps);
     if (result.kind !== "ok") return aiResponse(result);
     // The app's own findings are added here, after the check and after a saved
     // answer is read, so every review of this run gets the same ones.

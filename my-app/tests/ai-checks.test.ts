@@ -143,8 +143,27 @@ describe("knownNames and the cited name check", () => {
     ["orders.title", false],
     ["books.isbn", false],
     ["sales.books", false],
+    // A column is not a table, so public.title is not a name.
+    ["public.title", false],
+    // A schema that was never shown, in front of a real table.column.
+    ["made_up.books.title", false],
   ])("%s known: %s", (name, expected) => {
     expect(isKnownName(name, known)).toBe(expected);
+  });
+
+  test("a name with a schema in front is known only in that schema", () => {
+    const refunds = table("refunds", { columns: [column("id"), column("amount", "numeric", { ordinalPosition: 2 })] });
+    const both = knownNames(
+      { database: "shop", schema: "cmp_prod", tables: [books] } as SchemaSnapshot,
+      { database: "shop", schema: "cmp_dev", tables: [books, refunds] } as SchemaSnapshot
+    );
+    expect(isKnownName("cmp_dev.refunds", both)).toBe(true);
+    expect(isKnownName("cmp_dev.refunds.amount", both)).toBe(true);
+    expect(isKnownName("cmp_prod.books.title", both)).toBe(true);
+    expect(isKnownName("refunds.amount", both)).toBe(true);
+    expect(isKnownName("cmp_prod.refunds", both)).toBe(false);
+    expect(isKnownName("cmp_prod.refunds.amount", both)).toBe(false);
+    expect(isKnownName("cmp_prod.amount", both)).toBe(false);
   });
 
   test("checkCitedNames keeps the items that cite only real names", () => {
@@ -193,6 +212,22 @@ describe("checkGeneratedSql", () => {
     expect(refused.problems[0]).toMatch(/^It deletes data/);
     expect(checkGeneratedSql(sql, { allowDataLoss: true }).ok).toBe(true);
   });
+
+  test.each([
+    ["DO ''", "DO 'BEGIN DELETE FROM books; END';"],
+    ["DO E''", "DO E'BEGIN TRUNCATE books; END';"],
+    ["a function body written as ''", "CREATE FUNCTION wipe() RETURNS void LANGUAGE sql AS 'DELETE FROM books';"],
+    ["DO '' with a quote inside", "DO 'BEGIN DELETE FROM books WHERE title = ''x''; END';"],
+  ])("data loss in a body written as %s is refused", (_label, sql) => {
+    const result = checkGeneratedSql(sql);
+    expect(result.ok).toBe(false);
+    expect(result.problems.join(" ")).toMatch(/It deletes data \((?:DELETE|TRUNCATE)/);
+    expect(result.risk?.dataLoss.length).toBeGreaterThan(0);
+  });
+
+  test("a body that deletes nothing adds no data loss", () => {
+    expect(checkGeneratedSql("DO 'BEGIN RAISE NOTICE ''hi''; END';").ok).toBe(true);
+  });
 });
 
 describe("unknownTablesInSql", () => {
@@ -233,6 +268,43 @@ describe("unknownTablesInSql", () => {
     expect(
       unknownTablesInSql("CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE n int; BEGIN SELECT 1 INTO n; RETURN n; END $$;", snapshot)
     ).toEqual([]);
+  });
+
+  test("a table a trigger function writes to must exist too", () => {
+    const sql = [
+      "CREATE FUNCTION log_price() RETURNS trigger LANGUAGE plpgsql AS $$",
+      "BEGIN INSERT INTO product_audit (id) VALUES (NEW.id); RETURN NEW; END $$;",
+      "CREATE TRIGGER log_price AFTER UPDATE ON books FOR EACH ROW EXECUTE FUNCTION log_price();",
+    ].join("\n");
+    expect(unknownTablesInSql(sql, snapshot)).toEqual(["product_audit"]);
+    expect(
+      unknownTablesInSql("CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS 'BEGIN UPDATE ghosts SET id = 1; END';", snapshot)
+    ).toEqual(["ghosts"]);
+  });
+
+  test("a body's variables, cursors and catalog reads are not tables", () => {
+    const sql = [
+      "CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$",
+      "DECLARE n int; r record; c refcursor;",
+      "BEGIN",
+      "  SELECT count(*) INTO n FROM books;",
+      "  OPEN c FOR SELECT * FROM books;",
+      "  FETCH c INTO r;",
+      "  FETCH NEXT FROM c INTO r;",
+      "  MOVE FORWARD 1 FROM c;",
+      "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'x') THEN",
+      "    INSERT INTO books (id) SELECT 1 FROM information_schema.columns LIMIT 1;",
+      "  END IF;",
+      "  n := EXTRACT(year FROM now());",
+      "  RETURN n;",
+      "END $$;",
+    ].join("\n");
+    expect(unknownTablesInSql(sql, snapshot)).toEqual([]);
+  });
+
+  test("a table in another schema is checked even when a column has its name", () => {
+    // stores has a notes column, but there is no notes table.
+    expect(unknownTablesInSql("DELETE FROM archive.notes;", snapshot)).toEqual(["notes"]);
   });
 
   test("the rollback may drop what the script created", () => {

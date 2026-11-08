@@ -4,20 +4,18 @@ import { useState } from "react";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { Pill, type PillTone } from "@/components/ui/Pill";
 import { apiFetch } from "@/lib/api-fetch";
+import { MAX_MIGRATION_DESCRIPTION } from "@/lib/perf-sql";
+import { countOf } from "@/lib/plural";
 import {
   isSqlGenerateAnswer,
   isSqlGenerateChecks,
+  MAX_REQUEST_CHARS,
   type SqlGenerateAnswer,
   type SqlGenerateChecks,
   type SqlGenerateLevel,
 } from "@/lib/ai/features/sql-generate-view";
 import { AiPanel } from "./AiPanel";
 import { withNames } from "./ai-names";
-
-/** Kept in step with the request limit in lib/ai/features/sql-generate.ts. */
-const MAX_REQUEST_CHARS = 2_000;
-/** The editor's description box takes this much (MAX_MIGRATION_DESCRIPTION). */
-const MAX_DESCRIPTION = 1_000;
 
 const LEVEL_TONE: Record<SqlGenerateLevel, PillTone> = { breaking: "break", additive: "sync", patch: "neutral" };
 const LEVEL_LABEL: Record<SqlGenerateLevel, string> = { breaking: "Breaking", additive: "Additive", patch: "Patch" };
@@ -103,9 +101,9 @@ function GeneratedView({
               </Pill>
             )}
             <span>
-              {checks.statements === 1 ? "1 statement" : `${checks.statements} statements`}
+              {countOf(checks.statements, "statement")}
               {checks.rollbackStatements > 0
-                ? `, rollback of ${checks.rollbackStatements === 1 ? "1 statement" : `${checks.rollbackStatements} statements`}`
+                ? `, rollback of ${countOf(checks.rollbackStatements, "statement")}`
                 : ", no rollback"}
             </span>
           </div>
@@ -124,7 +122,7 @@ function GeneratedView({
             onUse({
               sql: answer.sql,
               rollbackSql: answer.rollbackSql,
-              description: answer.summary.replace(/`/g, "").slice(0, MAX_DESCRIPTION),
+              description: answer.summary.replace(/`/g, "").slice(0, MAX_MIGRATION_DESCRIPTION),
             })
           }
         >
@@ -190,11 +188,12 @@ export function SqlGeneratePanel({
           </div>
         }
         isAnswer={isSqlGenerateAnswer}
-        ask={() =>
+        ask={(signal, refresh) =>
           apiFetch("/api/scripts/generate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ connectionId, schemaName, request: words }),
+            body: JSON.stringify({ connectionId, schemaName, request: words, refresh }),
+            signal,
           })
         }
       >

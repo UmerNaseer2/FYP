@@ -1,23 +1,20 @@
 // Explain drift as the screen gets it. No imports that reach a database or
 // the AI service, so the drift page can use the types and the shape checks.
 
-import type { SummaryLevel } from "./compare-summary-view";
+import { buildDiffDocument } from "../../compare-export";
+import type { CompareReport } from "../../compare-types";
+import { isStringArray, isSummaryItem, type SummaryItem } from "./compare-summary-view";
 
 export type DriftChoice = "adopt" | "revert" | "either";
 
 export type DriftExplainAnswer = {
   /** One sentence: what changed on the live database. */
   headline: string;
-  /** What changed, most serious first. Each item cites change ids such as "C3". */
-  items: {
-    title: string;
-    changes: string[];
-    /** Always the engine's grade of the cited changes, never the model's. */
-    level: SummaryLevel;
-    why: string;
-    /** Objects that use what changed. Every one exists in the baseline or live. */
-    affects: string[];
-  }[];
+  /**
+   * What changed, most serious first. Each item cites change ids such as
+   * "C3", and its affects name objects in the baseline or live.
+   */
+  items: SummaryItem[];
   /** A guess at how it happened, never naming a person. May be empty. */
   likelyCause: string;
   /** The AI's suggestion only. Nothing acts on it. */
@@ -49,10 +46,6 @@ export type DriftScript = {
 
 export type DriftScripts = { revert: DriftScript; adopt: DriftScript };
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -67,15 +60,7 @@ export function isDriftExplainAnswer(value: unknown): value is DriftExplainAnswe
     typeof recommendation.choice === "string" &&
     typeof recommendation.why === "string" &&
     Array.isArray(items) &&
-    items.every(
-      (item) =>
-        isObject(item) &&
-        typeof item.title === "string" &&
-        typeof item.why === "string" &&
-        typeof item.level === "string" &&
-        isStringArray(item.changes) &&
-        isStringArray(item.affects)
-    ) &&
+    items.every(isSummaryItem) &&
     Array.isArray(manualNotes) &&
     manualNotes.every((note) => isObject(note) && typeof note.note === "string" && isStringArray(note.changes))
   );
@@ -96,4 +81,30 @@ function isDriftScript(value: unknown): value is DriftScript {
 
 export function isDriftScripts(value: unknown): value is DriftScripts {
   return isObject(value) && isDriftScript(value.revert) && isDriftScript(value.adopt);
+}
+
+/**
+ * What the drift panel's answer is about, as one string: the schema, the
+ * baseline, and every difference found. The panel clears its answer (and the
+ * scripts that came with it) when this changes.
+ *
+ * The drift summary is not enough for this: it holds only counts, so a
+ * re-check that finds different drift with the same counts (one column
+ * dropped and another added) would keep explaining, and offering scripts
+ * for, the old drift. buildDiffDocument (lib/compare-export.ts) is the one
+ * list of changes the screen shows, and it is safe in the browser.
+ */
+export function driftExplainKey(
+  trackedSchemaId: number,
+  report: CompareReport | null,
+  baselineSnapshotId: number | null = null
+): string {
+  const changes = report
+    ? buildDiffDocument(report).changes.map((row) =>
+        [row.category, row.table, row.object, row.change, row.detail].join("|")
+      )
+    : [];
+  // Sorted, so the same drift read in another order is the same key.
+  changes.sort();
+  return [String(trackedSchemaId), String(baselineSnapshotId ?? "none"), ...changes].join("\n");
 }

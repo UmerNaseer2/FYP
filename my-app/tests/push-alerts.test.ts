@@ -151,14 +151,14 @@ describe("the wording", () => {
     expect(driftAlertText("unreachable", "shop", "unreachable").title).toBe("Database not reachable");
   });
 
-  it("adds the AI's line to a new or changed drift, and to nothing else", () => {
+  it("adds the AI's line to a new drift only, as the plan says, and to nothing else", () => {
     const line = "Live lost old_notes and books.price.";
     expect(driftAlertText("drifted", "shop", "drifted", line).body).toBe(
       "shop no longer matches its baseline. Live lost old_notes and books.price."
     );
-    expect(driftAlertText("changed", "shop", "drifted", line).body).toBe(
-      "The drift in shop has changed. Live lost old_notes and books.price."
-    );
+    // The desktop app's "Drift changed" has no line either (src/core/drift-alerts.ts).
+    expect(driftAlertText("changed", "shop", "drifted", line).body).toBe("The drift in shop has changed.");
+    expect(driftAlertText("reachable", "shop", "drifted", line).body).not.toContain("old_notes");
     expect(driftAlertText("in_sync", "shop", "in_sync", line).body).toBe("shop matches its baseline again.");
     expect(driftAlertText("drifted", "shop", "drifted", null).body).toBe("shop no longer matches its baseline.");
   });

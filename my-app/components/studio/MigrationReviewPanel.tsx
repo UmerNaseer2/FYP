@@ -15,7 +15,12 @@ import { withNames } from "./ai-names";
 const SEVERITY_TONE: Record<ReviewSeverity, PillTone> = { high: "break", medium: "drift", low: "neutral" };
 const SEVERITY_LABEL: Record<ReviewSeverity, string> = { high: "High", medium: "Medium", low: "Low" };
 
-export type ReviewRunScript = { scriptName: string; version: string; sqlContent: string };
+/**
+ * One script of the run. `changeType` is the change type the Deploy screen
+ * read for it, when it has one; the review then rates the script at least as
+ * high as Deploy does.
+ */
+export type ReviewRunScript = { scriptName: string; version: string; sqlContent: string; changeType?: string };
 
 function StatementRefs({ ids, statements }: { ids: string[]; statements: Record<string, ReviewedStatement> }) {
   return (
@@ -66,6 +71,14 @@ function ReviewView({
                       From the app&apos;s checks
                     </span>
                   )}
+                  {!finding.fromApp && finding.modelSeverity && finding.modelSeverity !== finding.severity && (
+                    <span
+                      className="pill pill-outline text-[11.5px]"
+                      title="The app's own checks flag these statements, so the app raised the grade the AI gave."
+                    >
+                      AI said {SEVERITY_LABEL[finding.modelSeverity]}, raised by the app
+                    </span>
+                  )}
                 </div>
                 <p className="mt-1" style={{ color: "var(--text-2)" }}>
                   {withNames(finding.why)}
@@ -113,15 +126,16 @@ export function MigrationReviewPanel({
     <AiPanel
       feature="migration-review"
       title={action === "deploy" ? "Review this run" : "Review this rollback"}
-      blurb="An AI read of what this run can break on this target: lost data, statements that fail on existing rows, long locks. The run's SQL, the schema structure and rough table sizes are sent to the AI, never your rows."
+      blurb="An AI read of what this run can break on this target: lost data, statements that fail on existing rows, long locks. The run's SQL (with the values written in it shown as ?), the schema structure and rough table sizes are sent to the AI, never your rows."
       askLabel="Review with AI"
       resetKey={resetKey}
       isAnswer={isMigrationReviewAnswer}
-      ask={() =>
+      ask={(signal, refresh) =>
         apiFetch("/api/scripts/review", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ connectionId, schemaName, action, scripts }),
+          body: JSON.stringify({ connectionId, schemaName, action, scripts, refresh }),
+          signal,
         })
       }
     >

@@ -20,7 +20,14 @@ export type MockReply =
   | Record<string, unknown>
   | AiError
   | Partial<GenerateResult>
-  | ((request: GenerateRequest) => string | Record<string, unknown> | Partial<GenerateResult> | AiError);
+  | ((
+      request: GenerateRequest
+    ) =>
+      | string
+      | Record<string, unknown>
+      | Partial<GenerateResult>
+      | AiError
+      | Promise<string | Record<string, unknown> | Partial<GenerateResult> | AiError>);
 
 function isResult(value: object): value is Partial<GenerateResult> {
   return "text" in value || "toolCalls" in value;
@@ -41,9 +48,12 @@ export class MockProvider implements AiProvider {
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
     this.requests.push(request);
+    // Like the real adapter: a caller that already gave up gets a timeout.
+    if (request.signal?.aborted) throw new AiError("timeout", "The request was cancelled.");
     let reply = this.replies.shift();
     if (reply === undefined) throw new Error("MockProvider: no answer queued for this call");
-    if (typeof reply === "function") reply = reply(request);
+    // A function may be async, so a test can hold an answer back.
+    if (typeof reply === "function") reply = await reply(request);
     if (reply instanceof AiError) throw reply;
     const base: GenerateResult = {
       text: "",

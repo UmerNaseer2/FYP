@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -27,6 +27,7 @@ import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DriftResolutionBar } from "@/components/studio/DriftResolutionBar";
 import { DriftSchemaPicker } from "@/components/studio/DriftSchemaPicker";
 import { DriftExplainPanel } from "@/components/studio/DriftExplainPanel";
+import { driftExplainKey } from "@/lib/ai/features/drift-explain-view";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
 import { describeCadence } from "@/lib/drift-schedule";
@@ -481,6 +482,13 @@ function DetailTab({
     void load();
   }, [load]);
 
+  // What the AI panel's answer is about. It changes with the drift itself, not
+  // just its counts, so a re-check that finds other changes clears the answer.
+  const explainKey = useMemo(
+    () => (view ? driftExplainKey(view.trackedSchemaId, view.report, view.expected.snapshotId) : ""),
+    [view]
+  );
+
   // Only the first load blanks the screen. A re-check keeps the current diff on
   // screen until the new one lands, so the page doesn't flash back to skeleton
   // every time someone presses a button.
@@ -623,7 +631,7 @@ function DetailTab({
           trackedSchemaId={view.trackedSchemaId}
           connectionId={view.connection.id}
           schemaName={view.schemaName}
-          resetKey={`${view.trackedSchemaId}:${view.summary}`}
+          resetKey={explainKey}
         />
       )}
 

@@ -11,6 +11,11 @@ export type MigrationReviewFinding = {
   statements: string[];
   /** Never below the app's own reading of the statements it cites. */
   severity: ReviewSeverity;
+  /**
+   * The severity the AI gave, before the app raised it to its own reading.
+   * Set on every finding the AI wrote, absent on the app's own findings.
+   */
+  modelSeverity?: ReviewSeverity;
   title: string;
   why: string;
   /** How to get the same result with less risk. Empty when there is nothing better. */
@@ -63,6 +68,7 @@ export function isMigrationReviewAnswer(value: unknown): value is MigrationRevie
         f !== null &&
         isStringArray(f.statements) &&
         isSeverity(f.severity) &&
+        (f.modelSeverity === undefined || isSeverity(f.modelSeverity)) &&
         typeof f.title === "string" &&
         typeof f.why === "string" &&
         typeof f.saferWay === "string" &&

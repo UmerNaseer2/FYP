@@ -7,13 +7,15 @@ import {
   isCompareSummaryAnswer,
   type CitedChange,
   type CompareSummaryAnswer,
+  type SummaryItem,
   type SummaryLevel,
 } from "@/lib/ai/features/compare-summary-view";
 import { AiPanel } from "./AiPanel";
 import { withNames } from "./ai-names";
 
-const LEVEL_TONE: Record<SummaryLevel, PillTone> = { breaking: "break", safe: "sync", info: "neutral" };
-const LEVEL_LABEL: Record<SummaryLevel, string> = { breaking: "Breaking", safe: "Safe", info: "Info" };
+/** How an engine grade looks, on the Compare summary and the drift explanation alike. */
+export const LEVEL_TONE: Record<SummaryLevel, PillTone> = { breaking: "break", safe: "sync", info: "neutral" };
+export const LEVEL_LABEL: Record<SummaryLevel, string> = { breaking: "Breaking", safe: "Safe", info: "Info" };
 
 export function ChangeRefs({ ids, cited }: { ids: string[]; cited: Record<string, CitedChange> }) {
   return (
@@ -27,6 +29,36 @@ export function ChangeRefs({ ids, cited }: { ids: string[]; cited: Record<string
         </li>
       ))}
     </ul>
+  );
+}
+
+/** One graded item: the grade, the title, why, what uses it and the changes it cites. */
+export function RiskRow({ item, cited }: { item: SummaryItem; cited: Record<string, CitedChange> }) {
+  // The shape check lets any text through as the level, so an unknown one still draws.
+  const tone = LEVEL_TONE[item.level] ?? "neutral";
+  const label = LEVEL_LABEL[item.level] ?? item.level;
+  return (
+    <li>
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill tone={tone}>{label}</Pill>
+        <span className="font-medium">{withNames(item.title)}</span>
+      </div>
+      <p className="mt-1" style={{ color: "var(--text-2)" }}>
+        {withNames(item.why)}
+      </p>
+      {item.affects.length > 0 && (
+        <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-2)" }}>
+          Used by:{" "}
+          {item.affects.map((name, j) => (
+            <span key={name}>
+              {j > 0 && ", "}
+              <code className="mono">{name}</code>
+            </span>
+          ))}
+        </p>
+      )}
+      <ChangeRefs ids={item.changes} cited={cited} />
+    </li>
   );
 }
 
@@ -46,27 +78,7 @@ function SummaryView({ answer, cited }: { answer: CompareSummaryAnswer; cited: R
         ) : (
           <ol className="mt-2 space-y-3">
             {answer.risks.map((risk, i) => (
-              <li key={i}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Pill tone={LEVEL_TONE[risk.level]}>{LEVEL_LABEL[risk.level]}</Pill>
-                  <span className="font-medium">{withNames(risk.title)}</span>
-                </div>
-                <p className="mt-1" style={{ color: "var(--text-2)" }}>
-                  {withNames(risk.why)}
-                </p>
-                {risk.affects.length > 0 && (
-                  <p className="mt-1 text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                    Used by:{" "}
-                    {risk.affects.map((name, j) => (
-                      <span key={name}>
-                        {j > 0 && ", "}
-                        <code className="mono">{name}</code>
-                      </span>
-                    ))}
-                  </p>
-                )}
-                <ChangeRefs ids={risk.changes} cited={cited} />
-              </li>
+              <RiskRow key={i} item={risk} cited={cited} />
             ))}
           </ol>
         )}
@@ -101,14 +113,15 @@ export function CompareSummaryPanel({ query, target, resetKey }: { query: string
       feature="compare-summary"
       title="Change summary"
       blurb="A short read of this comparison: what the migration does, what can hurt and in what order to apply it. Only the schema structure is sent to the AI, never your data."
-      askLabel="Summarise with AI"
+      askLabel="Summarize with AI"
       resetKey={resetKey}
       isAnswer={isCompareSummaryAnswer}
-      ask={() =>
+      ask={(signal, refresh) =>
         apiFetch("/api/compare/summary", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, target }),
+          body: JSON.stringify({ query, target, refresh }),
+          signal,
         })
       }
     >
