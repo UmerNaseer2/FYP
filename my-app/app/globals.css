@@ -1,11 +1,16 @@
 @import "tailwindcss";
 
-/* ===== Base ===== */
+/* ===== Base =====
+   The body follows the design tokens below, so a screen that paints nothing
+   of its own (the not-found and error screens, the demo page, the access
+   check AuthGuard shows first) still reads in both themes. It used to be a
+   light grey Arial page left over from the first screens, which put
+   near-black headings on the dark theme's background. */
 body {
   margin: 0;
-  font-family: Arial, Helvetica, sans-serif;
-  background: #eef2f7;
-  color: #0f172a;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
 }
 
 * {
@@ -156,9 +161,8 @@ body {
 /* =====================================================================
    Schema Studio — Design System (Phase 1 / Pass 0 Foundations)
    ADDITIVE. Ported from FYP/Pass 0 - Foundations.html. These tokens and
-   component classes power the new dark-first shell. They do NOT touch the
-   legacy .db-* / .compare-* / .admin-* pages above, which keep their own
-   light theme and Arial body. Fonts are wired via next/font CSS variables
+   component classes power the dark-first shell, and the body rule at the top
+   of this file uses them too. Fonts are wired via next/font CSS variables
    (--font-geist-sans / --font-geist-mono) instead of literal font names.
    ===================================================================== */
 

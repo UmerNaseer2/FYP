@@ -21,9 +21,7 @@ export const metadata: Metadata = {
 
 export default function DemoPage() {
   return (
-    // The colour is set here because the body's colour does not follow the
-    // dark theme, and EmptyState's heading would inherit it.
-    <div style={{ height: "100vh", background: "var(--bg)", color: "var(--text)" }}>
+    <div style={{ height: "100vh", background: "var(--bg)" }}>
       <EmptyState
         icon={<CompareIcon size={22} />}
         title="The live demo is coming soon"

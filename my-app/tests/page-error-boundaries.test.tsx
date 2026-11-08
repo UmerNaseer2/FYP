@@ -172,6 +172,21 @@ describe("an address that matches no screen", () => {
   });
 });
 
+describe("the page behind the screens outside the studio", () => {
+  test("takes its colours from the theme", () => {
+    // The not-found and error screens, the demo page and AuthGuard's access
+    // check paint no text colour of their own, so their headings inherit the
+    // body's. A fixed near-black there all but vanished on the dark theme's
+    // background. jsdom applies no stylesheet, so this reads the rule itself.
+    const css = readFileSync(path.join(__dirname, "..", "app", "globals.css"), "utf8");
+    // Only the rule that starts its own line: the print block's indented
+    // "html, body" rule is not this one.
+    const body = /(?:^|\n)body\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(body).toMatch(/(?:^|[;\s])color:\s*var\(--text\)/);
+    expect(body).toMatch(/(?:^|[;\s])background:\s*var\(--bg\)/);
+  });
+});
+
 describe("the application shell itself failing", () => {
   test("brings nothing with it from the rest of the app", () => {
     // The whole point of this file. It replaces the ROOT layout, so the layout
