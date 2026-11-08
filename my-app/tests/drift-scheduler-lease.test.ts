@@ -196,7 +196,7 @@ describe("a tick nobody else is running", () => {
     await runSchedulerTick(NOW);
     // The tick reads schemas from every organization, so nothing else tells the
     // check whose rows it may read and write.
-    expect(mockCheck.mock.calls[0]).toEqual([3, 1, "scheduled", "on_change"]);
+    expect(mockCheck.mock.calls[0]).toEqual([3, 1, "scheduled", "on_change", { describe: expect.any(Function) }]);
   });
 
   it("passes each check's outcome to the phone alerts, in that organization", async () => {

@@ -26,6 +26,7 @@ import { DiffReport, tallyDelta } from "@/components/studio/DiffReport";
 import { SummaryMatrix } from "@/components/studio/SummaryMatrix";
 import { DriftResolutionBar } from "@/components/studio/DriftResolutionBar";
 import { DriftSchemaPicker } from "@/components/studio/DriftSchemaPicker";
+import { DriftExplainPanel } from "@/components/studio/DriftExplainPanel";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
 import { describeCadence } from "@/lib/drift-schedule";
@@ -579,6 +580,17 @@ function DetailTab({
 
       {/* Delta counts — only when we actually computed a comparison */}
       {view.counts && <CountTiles counts={view.counts} report={view.report} />}
+
+      {/* The AI's read of the drift, with the revert and adopt scripts the app
+          writes. Draws nothing without "Use AI assistance" or with AI off. */}
+      {view.state === "drifted" && view.connection && view.report && (
+        <DriftExplainPanel
+          trackedSchemaId={view.trackedSchemaId}
+          connectionId={view.connection.id}
+          schemaName={view.schemaName}
+          resetKey={`${view.trackedSchemaId}:${view.summary}`}
+        />
+      )}
 
       {/* Expected ↔ Actual */}
       <section>

@@ -6,6 +6,12 @@
  * never holds a host, SQL, a person's name or anything a person typed. The
  * reason to look is in the alert, and the rest is behind sign-in in the app.
  *
+ * One exception, when an organization has AI assistance on: a drift alert can
+ * carry the AI's one line on what changed, which names the tables and columns
+ * involved. It is checked against the two schemas, cleaned to one plain line
+ * and capped (lib/ai/features/drift-explain.ts), so it holds object names and
+ * nothing else; never rows, SQL, hosts or people.
+ *
  * Recipients are worked out when an alert is sent, from memberships and roles
  * at that moment, so taking a permission away also takes away its alerts.
  *
@@ -104,11 +110,13 @@ const DRIFT_TITLES: Record<DriftAlertKind, string> = {
 export function driftAlertText(
   kind: DriftAlertKind,
   subject: string,
-  status: string
+  status: string,
+  aiSummary: string | null = null
 ): { title: string; body: string } {
+  const line = aiSummary ? ` ${aiSummary}` : "";
   const bodies: Record<DriftAlertKind, string> = {
-    drifted: `${subject} no longer matches its baseline.`,
-    changed: `The drift in ${subject} has changed.`,
+    drifted: `${subject} no longer matches its baseline.${line}`,
+    changed: `The drift in ${subject} has changed.${line}`,
     in_sync: `${subject} matches its baseline again.`,
     unreachable: `Schema Studio could not reach ${subject} to check it for drift. It tries again at the next check.`,
     reachable:
@@ -195,7 +203,7 @@ export async function alertDriftChange(orgId: number, run: DriftRun): Promise<vo
     const name = cleanName(row.label) ?? cleanName(row.schema_name) ?? `Schema ${run.trackedSchemaId}`;
     const alert: Alert = {
       kind: "drift",
-      ...driftAlertText(kind, subjectOf(name, cleanName(row.connection_name)), run.status),
+      ...driftAlertText(kind, subjectOf(name, cleanName(row.connection_name)), run.status, run.aiSummary ?? null),
       url: orgHref(row.slug, "/phone"),
     };
     await sendAlert(await devicesHolding(orgId, ["drift:read"]), alert);

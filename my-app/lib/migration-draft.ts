@@ -1,11 +1,12 @@
 // ---------------------------------------------------------------------------
 // migration-draft.ts
-// The hand-over from a Performance tab to the Script Editor.
+// The hand-over from another screen to the Script Editor.
 //
 // "Save as a migration" on either Performance tab
 // (components/studio/FixScriptBuilder.tsx) keeps the ticked schema changes
-// here, and the Script Editor (components/studio/MigrationDraftBanner.tsx)
-// offers to load them. They wait in this tab's sessionStorage rather than in
+// here, and so do "Open revert draft" and "Open adopt draft" in the Drift
+// screen's AI panel (components/studio/DriftExplainPanel.tsx). The Script
+// Editor (components/studio/MigrationDraftBanner.tsx) offers to load them. They wait in this tab's sessionStorage rather than in
 // the URL: a URL ends up in the browser's history and in request logs, and a
 // script can be long. sessionStorage belongs to this one tab and is emptied
 // when the tab closes.
@@ -31,7 +32,7 @@ import { hasExecutableSql, splitStatements } from "./sql-guard";
 /** The one key the draft is kept under. */
 export const MIGRATION_DRAFT_KEY = "schema-studio:migration-draft";
 
-/** What a Performance tab hands to the Script Editor. */
+/** What a Performance tab or the Drift screen hands to the Script Editor. */
 export type MigrationDraft = {
   /** The schema changes, each headed by its finding (buildFixScript's `changes`). */
   sql: string;

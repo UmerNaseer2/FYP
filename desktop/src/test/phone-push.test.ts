@@ -91,6 +91,7 @@ function resubscribed(old: TestPhone): TestPhone {
 function alert(changes: Partial<DriftAlert> = {}): DriftAlert {
   return {
     kind: "drifted",
+    aiSummary: null,
     eventId: 1,
     trackedSchemaId: 7,
     name: "orders",

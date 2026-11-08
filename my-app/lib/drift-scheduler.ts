@@ -4,6 +4,7 @@ import pool, { syncMetadataTables } from "./version-db";
 import { mapWithLimit } from "./concurrency";
 import { runDriftCheck, type DriftRecordMode } from "./drift-runner";
 import { alertDriftChange } from "./push-alerts";
+import { driftAlertLine } from "./ai/drift-alert-line";
 import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
 import { sweepAgentRows } from "./agent-db";
 import type { DriftSource } from "./drift-source";
@@ -465,7 +466,11 @@ async function checkUnderLease(now: Date): Promise<TickReport> {
 async function checkOne(entry: ScheduledSchema): Promise<string> {
   // "on_change" so a quarter-hourly "still fine" does not push a day of
   // real events out of the audit feed. The check is still stamped.
-  const result = await runDriftCheck(entry.orgId, entry.trackedSchemaId, "scheduled", "on_change");
+  // A new drift gets the AI's one line for its alert, when the organization
+  // has AI on. It never stops the check: no line, and the alert goes out bare.
+  const result = await runDriftCheck(entry.orgId, entry.trackedSchemaId, "scheduled", "on_change", {
+    describe: (driftReport) => driftAlertLine(entry.orgId, driftReport),
+  });
   // Only scheduled checks alert: someone who presses Check now is looking at the answer.
   if (result.ok) await alertDriftChange(entry.orgId, result.run);
   return result.ok ? result.run.status : `problem:${result.problem.kind}`;

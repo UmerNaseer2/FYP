@@ -32,6 +32,7 @@ function rowWith(changes: Partial<DriftRow>): DriftRow {
     source: "scheduled",
     fingerprint: "fp-new",
     counts: { ...NONE, tablesAdded: 2 },
+    aiSummary: null,
     schemaName: "public",
     label: "Orders",
     connectionId: 5,
@@ -121,6 +122,7 @@ test("reads a row of the watcher's query by its column names, but never the summ
       source: "scheduled",
       fingerprint: "abc",
       counts: { ...NONE, tablesAdded: 1 },
+      aiSummary: null,
       schemaName: "public",
       label: null,
       connectionId: 5,
@@ -203,6 +205,7 @@ test("an alert carries the row's number, schema, connection, counts and whether 
     connectionId: 5,
     connectionName: "Production",
     counts: { ...NONE, tablesAdded: 2 },
+    aiSummary: null,
     drifted: true,
     orgSlug: "acme",
   });
@@ -427,4 +430,56 @@ test("reads an organization's address by the web app's own rule", () => {
   const match = /export const ORG_SLUG_PATTERN = "([^"]+)";/.exec(source);
   assert.ok(match, "my-app/lib/org-slug.ts still sets ORG_SLUG_PATTERN on one line");
   assert.equal(ORG_SLUG_PATTERN, match[1], "Copy ORG_SLUG_PATTERN from my-app/lib/org-slug.ts into src/core/drift-alerts.ts.");
+});
+
+test("adds the AI's line on a drift to the notification about one schema", () => {
+  const row = readDriftRow({
+    id: 50,
+    tracked_schema_id: 3,
+    status: "drifted",
+    source: "scheduled",
+    fingerprint: "fp",
+    detail: { tablesChanged: 1, aiSummary: "Someone added the `discount` column to `orders`." },
+    schema_name: "public",
+    label: "Orders",
+    connection_name: "Production",
+    previous_status: "in_sync",
+    last_fingerprint: null,
+  });
+  assert.ok(row);
+  assert.equal(row.aiSummary, "Someone added the discount column to orders.");
+  const alert = driftAlert(row);
+  assert.ok(alert);
+  assert.equal(
+    notificationFor([alert]).body,
+    "Orders on Production no longer matches its baseline: 1 table changed. Someone added the discount column to orders."
+  );
+  const changed = alertFor({ previousStatus: "drifted", fingerprint: "b", lastFingerprint: "a", counts: NONE, aiSummary: "A new index on `orders`." });
+  assert.equal(notificationFor([changed]).body, "The drift in Orders on Production has changed. A new index on `orders`.");
+  // A notification about several schemas keeps to its one short line each.
+  const two = notificationFor([alert, alertFor({ id: 11, trackedSchemaId: 4, label: "Stock" })]);
+  assert.ok(!two.body.includes("discount"));
+});
+
+test("cleans the AI's line to one short line, and reads it only from a drifted row", () => {
+  const good = { id: 12, tracked_schema_id: 4, status: "drifted", source: "scheduled", schema_name: "public" };
+  const line = (aiSummary: unknown, status = "drifted") =>
+    readDriftRow({ ...good, status, detail: { tablesAdded: 1, aiSummary } })?.aiSummary;
+  assert.equal(line("Two\nlines\u200b and\ta tab"), "Two lines and a tab");
+  assert.equal(line("x".repeat(400))?.length, 160);
+  assert.ok(line("x".repeat(400))?.endsWith(ELLIPSIS));
+  for (const value of [undefined, null, 7, "", "  \n ", ["a"]]) assert.equal(line(value), null, String(value));
+  assert.equal(line("A new table.", "in_sync"), null);
+  assert.equal(line("A new table.", "unreachable"), null);
+  assert.equal(readDriftRow({ ...good, detail: "aiSummary" })?.aiSummary, null);
+  // An alert that is not about drift never carries one, whatever the row said.
+  assert.equal(alertFor({ status: "in_sync", previousStatus: "drifted", aiSummary: "stale" }).aiSummary, null);
+});
+
+test("escapes markup in the AI's line too", () => {
+  const alert = alertFor({ aiSummary: "A <b>bold</b> & new table." });
+  assert.equal(
+    notificationFor([alert], true).body,
+    "Orders on Production no longer matches its baseline: 2 tables added. A &lt;b&gt;bold&lt;/b&gt; &amp; new table."
+  );
 });

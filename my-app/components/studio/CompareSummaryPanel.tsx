@@ -15,7 +15,7 @@ import { withNames } from "./ai-names";
 const LEVEL_TONE: Record<SummaryLevel, PillTone> = { breaking: "break", safe: "sync", info: "neutral" };
 const LEVEL_LABEL: Record<SummaryLevel, string> = { breaking: "Breaking", safe: "Safe", info: "Info" };
 
-function ChangeRefs({ ids, cited }: { ids: string[]; cited: Record<string, CitedChange> }) {
+export function ChangeRefs({ ids, cited }: { ids: string[]; cited: Record<string, CitedChange> }) {
   return (
     <ul className="mt-1.5 flex flex-wrap gap-1.5 text-[12px]" style={{ color: "var(--text-2)" }}>
       {ids.map((id) => (
