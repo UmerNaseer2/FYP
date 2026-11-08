@@ -82,6 +82,8 @@ export function AiPanel<T>({
   isAnswer,
   children,
   resetKey,
+  input,
+  askDisabled = false,
 }: {
   feature: AiFeature;
   title: string;
@@ -95,6 +97,10 @@ export function AiPanel<T>({
   children: (answer: T, extra: Record<string, unknown>) => ReactNode;
   /** When this changes (another comparison, another script), the answer is cleared. */
   resetKey?: string;
+  /** What the person fills in before asking (Script Editor: what the script should do). Shown unless an answer is on its way. */
+  input?: ReactNode;
+  /** True while the input is not ready to ask with. */
+  askDisabled?: boolean;
 }) {
   const usable = useAiFeature(feature);
   const [state, setState] = useState<State<T>>({ kind: "idle" });
@@ -155,7 +161,12 @@ export function AiPanel<T>({
           )}
         </div>
         {state.kind !== "asking" && (
-          <Button size="sm" variant={state.kind === "idle" ? "secondary" : "ghost"} onClick={() => void run()}>
+          <Button
+            size="sm"
+            variant={state.kind === "idle" ? "secondary" : "ghost"}
+            disabled={askDisabled}
+            onClick={() => void run()}
+          >
             {state.kind === "idle" ? (
               askLabel
             ) : (
@@ -166,6 +177,8 @@ export function AiPanel<T>({
           </Button>
         )}
       </div>
+
+      {input !== undefined && state.kind !== "asking" && <div className="mt-3">{input}</div>}
 
       {state.kind === "asking" && (
         <p className="text-[13px] mt-3" style={{ color: "var(--text-2)" }} role="status">

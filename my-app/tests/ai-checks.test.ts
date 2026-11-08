@@ -8,6 +8,7 @@ import {
   isKnownName,
   knownNames,
   lockLevel,
+  tableRefsInSql,
   unknownTablesInSql,
 } from "@/lib/ai/checks";
 import { mentionedObjects, schemaSlice, schemaText, tableText } from "@/lib/ai/context";
@@ -214,6 +215,39 @@ describe("unknownTablesInSql", () => {
 
   test("names in comments do not count", () => {
     expect(unknownTablesInSql("-- FROM ghosts\nSELECT 1 FROM books;", snapshot)).toEqual([]);
+  });
+
+  test("keywords after FROM, UPDATE and REFERENCES are not tables", () => {
+    const sql = [
+      "ALTER TABLE books ADD COLUMN author_id int REFERENCES authors(id) ON UPDATE CASCADE ON DELETE SET NULL;",
+      "INSERT INTO books (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id;",
+      "SELECT * FROM books FOR UPDATE OF books NOWAIT;",
+      "SELECT * FROM ONLY books;",
+    ].join("\n");
+    expect(unknownTablesInSql(sql, snapshot)).toEqual([]);
+  });
+
+  test("a WITH part, a string and a function body's INTO are not tables", () => {
+    expect(unknownTablesInSql("WITH recent AS (SELECT * FROM books) SELECT * FROM recent;", snapshot)).toEqual([]);
+    expect(unknownTablesInSql("SELECT 'FROM ghosts' FROM books;", snapshot)).toEqual([]);
+    expect(
+      unknownTablesInSql("CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE n int; BEGIN SELECT 1 INTO n; RETURN n; END $$;", snapshot)
+    ).toEqual([]);
+  });
+
+  test("the rollback may drop what the script created", () => {
+    expect(unknownTablesInSql("DROP TABLE IF EXISTS reviews;", snapshot, new Set(["reviews"]))).toEqual([]);
+    expect(unknownTablesInSql("DROP TABLE IF EXISTS reviews;", snapshot)).toEqual(["reviews"]);
+  });
+});
+
+describe("tableRefsInSql", () => {
+  test("reads the schema, the name and whether it is created", () => {
+    expect(tableRefsInSql('CREATE TABLE IF NOT EXISTS shop."Reviews" (id int); ALTER TABLE books RENAME TO volumes;')).toEqual([
+      { schema: "shop", name: "reviews", creates: true },
+      { schema: null, name: "books", creates: false },
+      { schema: null, name: "volumes", creates: true },
+    ]);
   });
 });
 

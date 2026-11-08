@@ -40,6 +40,7 @@ import {
   planSteps,
   readPlan as readPlanRaw,
   readSql as readSqlRaw,
+  serverActingCallIn,
   shareBand,
   shareLegend,
   shareText,
@@ -252,6 +253,23 @@ describe("checkAnalysable — what is refused", () => {
     expect(checkAnalysable("-- nothing yet\n/* still nothing */", false)).toContain(
       "only comments"
     );
+  });
+});
+
+describe("serverActingCallIn", () => {
+  it("finds a call in plain code, in a dollar-quoted body and in a quoted name", () => {
+    expect(serverActingCallIn("SELECT pg_terminate_backend(1)")).toBe("pg_terminate_backend");
+    expect(serverActingCallIn("DO $$ BEGIN PERFORM pg_reload_conf(); END $$")).toBe("pg_reload_conf");
+    expect(serverActingCallIn('SELECT "pg_terminate_backend"(1)')).toBe("pg_terminate_backend");
+  });
+
+  it("counts a U& escaped name, which cannot be read", () => {
+    expect(serverActingCallIn('SELECT U&"pg_\\0073leep"(1)')).toBe("u&");
+  });
+
+  it("ignores strings and comments, and an ordinary script", () => {
+    expect(serverActingCallIn("SELECT 'pg_terminate_backend(1)'")).toBe(null);
+    expect(serverActingCallIn("-- pg_reload_conf()\nALTER TABLE books ADD COLUMN x int")).toBe(null);
   });
 });
 

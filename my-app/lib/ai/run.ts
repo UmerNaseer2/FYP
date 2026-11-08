@@ -11,8 +11,8 @@
 //   4. Ask the model for JSON of a fixed shape. If the smart model times out
 //      or is busy, the fast one is asked instead.
 //   5. Read the JSON against the shape (zod), then run the feature's own code
-//      checks (names exist, grade locked, SQL guards). One retry, with the
-//      problems spelled out, when either fails.
+//      checks (names exist, grade locked, SQL guards). One retry (or the
+//      feature's own count), with the problems spelled out, when either fails.
 //   6. Write a usage row either way, and save a good answer for reuse.
 //
 // The model never decides anything here. A feature's `check` is where the
@@ -43,10 +43,13 @@ export type AiTaskSpec<T> = {
   maxOutputTokens: number;
   /**
    * The feature's code checks. Returns the answer to show (the engine's facts
-   * written over the model's) and any problems. A problem triggers the one
-   * retry, and fails the task if it is still there after it.
+   * written over the model's) and any problems. A problem triggers a retry,
+   * and fails the task if it is still there after the last one. It may be
+   * async: SQL generation tries the script on the database inside it.
    */
-  check?: (value: T) => { value: T; problems: string[] };
+  check?: (value: T) => { value: T; problems: string[] } | Promise<{ value: T; problems: string[] }>;
+  /** How many times a failed answer is sent back to be fixed. One unless said. */
+  repairs?: number;
   timeoutMs?: number;
 };
 
@@ -281,7 +284,8 @@ export async function runAiTask<T>(
       cacheHit: false,
     });
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const repairs = Math.max(0, spec.repairs ?? 1);
+  for (let attempt = 0; attempt <= repairs; attempt += 1) {
     let text: string | null = null;
     for (const model of models) {
       lastModel = model;
@@ -321,7 +325,7 @@ export async function runAiTask<T>(
     if ("problems" in read) {
       problems = read.problems;
     } else {
-      const checked = spec.check ? spec.check(read.value) : { value: read.value, problems: [] };
+      const checked = spec.check ? await spec.check(read.value) : { value: read.value, problems: [] };
       problems = checked.problems;
       value = checked.value;
       outcome = "failed_check";
@@ -332,7 +336,7 @@ export async function runAiTask<T>(
       if (key) await deps.store.saveAnswer(caller.orgId, spec.feature, key, lastModel, value);
       return { kind: "ok", value, callId, model: lastModel, saved: false, ms, retries, usage };
     }
-    if (attempt === 0) {
+    if (attempt < repairs) {
       retries += 1;
       messages.push({ role: "assistant", content: text });
       messages.push({
@@ -344,7 +348,7 @@ export async function runAiTask<T>(
     await finish(outcome);
     return { kind: "failed", outcome, message: messageForFailure(outcome) };
   }
-  // Not reached: the loop returns on its second pass.
+  // Not reached: the loop returns on its last pass.
   await finish("provider_error");
   return { kind: "failed", outcome: "provider_error", message: messageForFailure("provider_error") };
 }

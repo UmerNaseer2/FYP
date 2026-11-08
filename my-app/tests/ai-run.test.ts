@@ -255,6 +255,30 @@ describe("runAiTask: asking the model", () => {
     expect(calls[0].outcome).toBe("failed_check");
   });
 
+  test("an async check is awaited, and repairs sets how many fixes are asked for", async () => {
+    let seen = 0;
+    const check = async (value: Answer) => {
+      seen += 1;
+      await Promise.resolve();
+      return { value, problems: seen < 3 ? [`wrong ${seen}`] : [] };
+    };
+    const { deps, provider } = fakes({ replies: [good, good, good] });
+    const result = await runAiTask(caller, spec({ check, repairs: 2 }), deps);
+    expect(result).toMatchObject({ kind: "ok", retries: 2 });
+    expect(provider.requests).toHaveLength(3);
+    expect(provider.requests[2].messages.at(-1)?.content).toContain("wrong 2");
+  });
+
+  test("repairs 0 asks once and never sends an answer back", async () => {
+    const check = () => ({ value: good, problems: ["wrong"] });
+    const { deps, provider } = fakes({ replies: [good, good] });
+    await expect(runAiTask(caller, spec({ check, repairs: 0 }), deps)).resolves.toMatchObject({
+      kind: "failed",
+      outcome: "failed_check",
+    });
+    expect(provider.requests).toHaveLength(1);
+  });
+
   test("the smart model timing out falls back to the fast one", async () => {
     const { deps, provider, calls } = fakes({ replies: [new AiError("timeout", "slow"), good] });
     const result = await runAiTask(caller, spec(), deps);

@@ -125,6 +125,7 @@ const ADDED: Record<string, Gate> = {
   "POST /api/compare/summary": { kind: "permission", keys: ["compare:read"] },
   "POST /api/scripts/review": { kind: "permission", keys: ["deploy:read", "approvals:read"] },
   "POST /api/lineage/drift/explain": { kind: "permission", keys: ["drift:read"] },
+  "POST /api/scripts/generate": { kind: "permission", keys: ["scripts:read"] },
   "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
   "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
 };
@@ -294,5 +295,7 @@ test("an AI route asks for AI assistance on top of the screen it serves", () => 
   expect(startsAllowed("viewer", ["deploy:read", "approvals:read"])).toBe(true);
   expect(handlers.get("POST /api/lineage/drift/explain")?.gate).toEqual({ kind: "permission", keys: ["drift:read"] });
   expect(hasPermissionLiterals(path.join(API_DIR, "lineage", "drift", "explain", "route.ts"))).toContain("ai:read");
+  expect(handlers.get("POST /api/scripts/generate")?.gate).toEqual({ kind: "permission", keys: ["scripts:read"] });
+  expect(hasPermissionLiterals(path.join(API_DIR, "scripts", "generate", "route.ts"))).toContain("ai:read");
   expect(startsAllowed("viewer", ["drift:read"])).toBe(true);
 });

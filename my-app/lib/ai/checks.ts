@@ -15,7 +15,7 @@
 import type { SchemaSnapshot } from "../postgres";
 import { analyseRunRisk, type RunRisk } from "../deploy-risk";
 import { gradeSql, type SqlGrade } from "../change-type";
-import { containsTransactionControl, hasExecutableSql, splitStatements } from "../sql-guard";
+import { containsTransactionControl, hasExecutableSql, maskNonCode, splitStatements } from "../sql-guard";
 
 /** Every name a model may cite: tables, columns as table.column, views, types, routines and the rest. */
 export function knownNames(...snapshots: ReadonlyArray<SchemaSnapshot | null | undefined>): Set<string> {
@@ -148,31 +148,87 @@ export function checkGeneratedSql(sql: string, options: { allowDataLoss?: boolea
   return { ok: problems.length === 0, problems, grade, risk, statements: splitStatements(sql).length };
 }
 
+/** A table or view a SQL text names, after one of the keywords that introduce one. */
+export type TableRef = {
+  /** The schema written in front of it, lower-cased, or null. */
+  schema: string | null;
+  name: string;
+  /** True for CREATE TABLE and CREATE VIEW, and for RENAME TO. */
+  creates: boolean;
+};
+
+const TABLE_REF =
+  /\b(?:create\s+(?:unlogged\s+)?table(?:\s+if\s+not\s+exists)?|create\s+(?:or\s+replace\s+)?(?:materialized\s+)?view(?:\s+if\s+not\s+exists)?|rename\s+to|alter\s+table(?:\s+if\s+exists)?(?:\s+only)?|drop\s+table(?:\s+if\s+exists)?|from|join|into|update|references|truncate(?:\s+table)?)\s+((?:"[^"]+"|[a-z_][a-z0-9_$]*)(?:\s*\.\s*(?:"[^"]+"|[a-z_][a-z0-9_$]*))?)/gi;
+
 /**
- * The table and column names a SQL text uses that the schema does not have.
- * Shallow on purpose: it reads identifiers after the keywords that introduce a
- * table (FROM, JOIN, TABLE, INTO, UPDATE, REFERENCES, ON) and leaves column
- * checking to the dry run, which is the real test.
+ * Words that can follow FROM, UPDATE, INTO and the rest without being a
+ * table: ON UPDATE CASCADE, DO UPDATE SET, FOR UPDATE OF, FROM ONLY books.
+ */
+const NOT_A_TABLE = new Set([
+  "select", "lateral", "only", "unnest", "generate_series", "values", "cascade", "set", "restrict",
+  "no", "on", "of", "or", "nowait", "skip", "default", "null", "current", "with", "rows",
+]);
+
+function unquotePart(part: string): string {
+  const trimmed = part.trim();
+  return trimmed.startsWith('"') ? trimmed.slice(1, -1) : trimmed.toLowerCase();
+}
+
+/**
+ * The tables and views a SQL text names. Strings and comments are skipped
+ * (quoted names are kept), and so are function bodies, whose INTO is a
+ * variable, not a table.
+ */
+export function tableRefsInSql(sql: string): TableRef[] {
+  const text = maskNonCode(sql, { keepQuotedNames: true });
+  const refs: TableRef[] = [];
+  for (const match of text.matchAll(TABLE_REF)) {
+    const keyword = match[0].toLowerCase();
+    const parts = match[1].split(".").map(unquotePart);
+    const name = parts[parts.length - 1];
+    if (NOT_A_TABLE.has(name) && !match[1].includes('"')) continue;
+    refs.push({
+      schema: parts.length > 1 ? parts[0].toLowerCase() : null,
+      name: name.toLowerCase(),
+      creates: keyword.startsWith("create") || keyword.startsWith("rename"),
+    });
+  }
+  return refs;
+}
+
+/** The names a WITH clause gives its parts: WITH recent AS (...). */
+function cteNamesIn(sql: string): string[] {
+  const text = maskNonCode(sql, { keepQuotedNames: true });
+  const names: string[] = [];
+  for (const match of text.matchAll(/("[^"]+"|[a-z_][a-z0-9_$]*)\s+as\s+(?:not\s+)?(?:materialized\s+)?\(/gi)) {
+    names.push(unquotePart(match[1]).toLowerCase());
+  }
+  return names;
+}
+
+/**
+ * The table names a SQL text uses that the schema does not have.
+ * Shallow on purpose: it reads the name after the keywords that introduce a
+ * table (FROM, JOIN, TABLE, INTO, UPDATE, REFERENCES) and leaves columns to
+ * the dry run, which is the real test. A name that is a column somewhere is
+ * let through, because EXTRACT(year FROM created_at) and IS DISTINCT FROM
+ * put a column after FROM.
  */
 export function unknownTablesInSql(sql: string, snapshot: SchemaSnapshot, createdHere: Set<string> = new Set()): string[] {
   const tables = new Set([
     ...snapshot.tables.map((t) => t.name.toLowerCase()),
     ...(snapshot.views ?? []).map((v) => v.name.toLowerCase()),
   ]);
-  const created = new Set(createdHere);
-  const pattern =
-    /\b(?:create\s+(?:unlogged\s+)?table(?:\s+if\s+not\s+exists)?|create\s+(?:materialized\s+)?view|alter\s+table(?:\s+if\s+exists)?(?:\s+only)?|drop\s+table(?:\s+if\s+exists)?|from|join|into|update|references|truncate(?:\s+table)?)\s+((?:"[^"]+"|[a-z_][a-z0-9_$]*)(?:\s*\.\s*(?:"[^"]+"|[a-z_][a-z0-9_$]*))?)/gi;
+  const columns = new Set(snapshot.tables.flatMap((t) => t.columns.map((c) => c.name.toLowerCase())));
+  const created = new Set([...createdHere, ...cteNamesIn(sql)]);
   const unknown: string[] = [];
-  const text = sql.replace(/--[^\n]*/g, " ");
-  for (const match of text.matchAll(pattern)) {
-    const keyword = match[0].toLowerCase();
-    const name = bareName(match[1]).split(".").slice(-1)[0];
-    if (keyword.startsWith("create")) {
-      created.add(name);
+  for (const ref of tableRefsInSql(sql)) {
+    if (ref.creates) {
+      created.add(ref.name);
       continue;
     }
-    if (["select", "lateral", "only", "unnest", "generate_series", "values"].includes(name)) continue;
-    if (!tables.has(name) && !created.has(name) && !unknown.includes(name)) unknown.push(name);
+    if (tables.has(ref.name) || created.has(ref.name) || columns.has(ref.name) || unknown.includes(ref.name)) continue;
+    unknown.push(ref.name);
   }
   return unknown;
 }
