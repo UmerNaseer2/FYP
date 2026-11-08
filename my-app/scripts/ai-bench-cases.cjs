@@ -54,7 +54,8 @@ const chat = [
     id: "chat-07-unique",
     question: "Is customers.email unique in dev on Bookshop?",
     require: [["customers_email_key", "unique"]],
-    forbid: ["re:\\bnot unique\\b", "re:\\bisn't unique\\b"],
+    // "unique" alone is in a wrong answer too ("No, it has no unique constraint").
+    forbid: ["re:\\bnot\\s+(?:a\\s+)?unique\\b", "re:\\bisn't unique\\b", "no unique", "re:^\\W*no\\b"],
   },
   {
     id: "chat-08-indexes",
@@ -98,8 +99,23 @@ const chat = [
   {
     id: "chat-15-made-up-table",
     question: "What columns does the invoices table have in dev on Bookshop?",
-    require: [["re:\\bno\\b", "not", "doesn't", "does not", "isn't", "there is no"]],
-    forbid: ["re:invoices\\.(id|total|amount)"],
+    // Whole phrases only: a bare "not" is in "NOT NULL" of a made-up column list.
+    require: [
+      [
+        "there is no",
+        "there's no",
+        "does not exist",
+        "doesn't exist",
+        "not found",
+        "not one of",
+        "re:\\bno\\s+(?:such\\s+)?(?:table|invoices)\\b",
+        "re:\\b(?:does not|doesn't)\\s+(?:have|include|contain)\\b",
+        "re:\\b(?:could not|couldn't|can't|cannot|did not|didn't)\\s+find\\b",
+        "re:\\b(?:not|isn't)\\s+(?:a|an|any)\\b",
+      ],
+    ],
+    // Any description of its columns is made up.
+    forbid: ["re:invoices\\.(id|total|amount)", "re:\\binvoices\\b(?:\\s+table)?\\s+(?:has|contains|includes)\\s+(?!no\\b)"],
   },
   {
     id: "chat-16-compare-risk",
@@ -279,7 +295,13 @@ const review = [
   {
     id: "review-07-update-all",
     sql: "UPDATE orders SET status = 'shipped';",
-    hazards: [{ min: "medium", terms: ["every row", "all rows", "where", "every order", "all orders"] }],
+    // Not a bare "where", which is in almost any finding's text.
+    hazards: [
+      {
+        min: "medium",
+        terms: ["every row", "all rows", "where clause", "re:\\b(?:no|without(?: a)?|missing(?: a)?)\\s+where\\b", "every order", "all orders"],
+      },
+    ],
   },
   {
     id: "review-08-unique-existing",

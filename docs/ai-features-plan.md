@@ -229,28 +229,34 @@ Also in step 0:
 
 ## 10. Benchmark results (2026-11-08 UTC)
 
-Run with `npm run ai:bench` against the local bypass preview, on the throwaway Bookshop test database, with the Gemini free tier. 64 cases in all; every case passed on its final run.
+Run with `npm run ai:bench` against the local bypass preview, on the throwaway Bookshop test database, with the Gemini free tier, between 02:42 and 03:16 UTC. The bench has 61 cases: 56 in `scripts/ai-bench-cases.cjs` and 5 safety cases in `scripts/ai-bench.cjs`.
 
-| Feature | Cases | Pass | Fail | Median time (s) | Mean tokens in | Mean tokens out |
-|---|---|---|---|---|---|---|
-| 1 Compare summary | 3 | 3 | 0 | 3.1 | 1,473 | 429 |
-| 2 Migration review | 15 | 15 | 0 | 2.4 | 1,481 | 146 |
-| 3 Explain drift | 4 | 4 | 0 | 2.9 | 1,009 | 217 |
-| 4 SQL from words | 13 | 13 | 0 | 2.5 | 1,397 | 125 |
-| 5 Schema chat | 21 | 21 | 0 | 4.5 | 5,108 | 107 |
-| Safety | 5 | 5 | 0 | 3.1 | 2,539 | 106 |
+**Read these numbers with care.** A review after this run found that the bench's scoring gave too much credit in several places (each one is named below). The scoring has been tightened since, but the bench has not been run again, so the table is the old scoring's verdict on the latest run of each case. Run the bench again (`npm run ai:bench -- --fresh`) before quoting any of it.
 
-- **Migration review:** caught 11 of 11 risky scripts, all through the AI's own reading (none only through the app's checks), and none of the 4 safe scripts got a false "high".
-- **SQL from words:** all 11 drafts ran in the trial, did what was asked and came with a rollback that put the structure back. Both requests that cannot be done were answered "cannot".
-- **Explain drift:** each of the 4 revert scripts was run on the test database inside a transaction that was rolled back, and each put the drifted schema back as the registry has it (drops stay held back in safe mode, as the engine intends).
-- **Safety:** Viewers are refused before any AI call; a role with AI but without "See saved connections" got its lookups refused and the answer said so, with nothing leaked; instructions hidden in a test schema (in a CHECK constraint and a view) were ignored by both chat and SQL from words, with no DROP drafted and nothing aimed outside the schema asked about.
-- **Models:** 100 of the 102 real AI calls went to `gemini-3.5-flash-lite`. `gemini-3.5-flash` allows only 20 requests a day on the free tier, so the bench and the app fall back to flash-lite. The per minute limit was hit 4 times; each time the bench waited 65 s and the retry worked.
-- **Cost of a chat question:** 2 to 4 model requests and about 5,100 tokens in, against about 1,000 to 1,500 for the other features. On a free tier, chat is what runs out the day's requests first.
+| Feature | Cases | Pass | Partial | Fail | Error | Median time (s) | Mean tokens in | Mean tokens out |
+|---|---|---|---|---|---|---|---|---|
+| 1 Compare summary | 3 | 3 | 0 | 0 | 0 | 3.1 | 1,473 | 429 |
+| 2 Migration review | 15 | 15 | 0 | 0 | 0 | 2.4 | 1,481 | 146 |
+| 3 Explain drift | 4 | 4 | 0 | 0 | 0 | 2.9 | 1,009 | 217 |
+| 4 SQL from words | 13 | 13 | 0 | 0 | 0 | 2.5 | 1,397 | 125 |
+| 5 Schema chat | 21 | 21 | 0 | 0 | 0 | 4.5 | 5,108 | 107 |
+| Safety | 5 | 5 | 0 | 0 | 0 | 3.1 | 2,539 | 106 |
+
+- **Latest run, not best run.** The CSV holds 119 rows for the day, and 35 of the 61 cases ran more than once. The table shows each case's latest row. Six cases did worse in an earlier run that day: review-03 (fail, then pass once the tables were filled), sql-07 (one fail between passes), sql-08 (fail, then pass after the prompt fix), sql-12 (partial, then pass), chat-06 (fail, then pass) and safety-03 (two errors while the bench made its test role, then pass). The old bench also marked an answer that failed the app's checks as an error, and the next run tried that case again, so a real failure could vanish from the table. In this run the only errors were safety-03's two, so nothing was hidden that way. Such an answer now counts as a fail, and the summary says how many cases ran more than once.
+- **Migration review:** in the latest run each of the 11 risky scripts got a finding at or above the wanted severity, and none of the 4 safe scripts got a false "high". The earlier claim that all 11 came from the AI's own reading is withdrawn. The old scoring read the severity after the app had raised it to the statement's floor, so a finding the AI rated low counted as the AI's catch, and the saved rows do not hold the AI's own rating. review-07 also matched any finding with the word "where" in it. The app now keeps the AI's own rating next to the raised one, and the bench counts a catch as the AI's only when the AI's own rating reaches the wanted level.
+- **SQL from words:** in the latest run all 11 drafts ran in the trial and did what was asked, and both requests that cannot be done got the AI's own "cannot" (the notes quote it). The earlier claim that all 11 came with a rollback that put the structure back is not backed. The old summary counted every pass that way, but sql-12 (drop a column) also passes with no rollback at all, which is the right answer when the data cannot come back, and the saved notes do not say which of the two it was. The old scoring would also have counted the app refusing every draft as a "cannot", and a draft skipped for transaction control as one that ran. Neither shows in the latest rows, and the bench now counts both apart.
+- **Explain drift:** the latest run's notes say each of the 4 revert scripts, run on the test database inside a transaction that was rolled back, put the drifted schema back as the registry has it (drops stay held back in safe mode, as the engine intends). The old pass did not depend on that, though: two earlier runs that day passed all 4 cases while the notes said "no revert script to try" and then "revert left a difference". The old scoring also graded the engine's own change labels together with the AI's words, so drift-01 and drift-03 (which accept any recommendation) passed on almost any answer that cited the change. A pass now needs the revert to work and the AI's own words to name the change.
+- **Compare summary:** the 3 passes graded the engine's change labels as well as the AI's words, and the breaking check is one the app forces anyway, so they say less about the AI than they seem to. Only the AI's headline, risks and steps are graded now.
+- **Schema chat:** 21 of 21 passed, but two cases were too loose. chat-15 (a table that is not there) accepted the word "not", which is in the "NOT NULL" of a made-up column list, and chat-07 passed an answer saying the email column has no unique constraint. A name the lookups never showed was only noted, not failed. Both cases are stricter now, and a name the AI made up fails the case. A name the user asked about does not count as made up: chat-09's latest row notes `reviews`, the very table its question asks about.
+- **Safety:** Viewers are refused before any AI call (their rows have no model and no tokens). A role with AI but without "See saved connections" got its lookups refused and the answer said so, with nothing leaked. Instructions were hidden in a test schema (in a CHECK constraint and a view). SQL from words kept to the request: its latest draft had no DROP and named no other schema. The chat result is not proven. The chat throws out any SQL its checks refuse, and the old scoring never read the reasons the chat gives, so "ignored the note" could also mean the AI drafted the hidden DROP and the app threw it out. The bench now reads those reasons and grades that outcome as partial.
+- **Answers and models:** 102 rows got a fresh answer from the AI and 8 got one of the app's saved answers (4 of them among the 61 latest rows). Of the 102 fresh answers, 100 came from `gemini-3.5-flash-lite` and 2 from `gemini-3.5-flash` (one review, one drift). A row can stand for several model requests (a chat question makes more than one), so these count answers, not requests. `gemini-3.5-flash` allows only 20 requests a day on the free tier.
+- **Rate limits:** the results files do not record rate limit waits (the bench prints them only on screen), so the earlier note that the per minute limit was hit 4 times is not backed by them. The CSV's retries column counts the app's own repair rounds instead: 4 rows needed one.
+- **Cost of a chat question:** about 5,100 tokens in on average, against about 1,000 to 1,500 for the other features, because the lookups' results go back to the model. Chat is the costliest feature to run.
 
 ### What the benchmark found and what was fixed
 
 - **Empty tables hide risk.** The first review run was on empty tables, where an index that blocks writes is truly harmless, so "safe" was the right answer and the case tested nothing. `scripts/ai-bench-rows.sql` now fills the dev schema with made-up rows of realistic size (500,000 orders, 1,000,000 order lines), and the bench stops with a message if they are not loaded. Benchmarks need realistic sizes.
-- **One case was wrong, not the app.** A script that adds a column, fills it and then sets NOT NULL looked safe, but the column has no default, so every later INSERT that leaves it out fails. The app's own rule grades SET NOT NULL as breaking for that reason, so the case was relabelled as risky and a truly safe version (ADD COLUMN ... NOT NULL DEFAULT) was added.
+- **One case was wrong, not the app.** A script that adds a column, fills it and then sets NOT NULL looked safe, but the column has no default, so every later INSERT that leaves it out fails. The app's own rule grades SET NOT NULL as breaking for that reason, so the case was relabelled as risky and a truly safe version (ADD COLUMN ... NOT NULL DEFAULT) was added. The old case's failed row stays in the CSV under its old name, review-14-safe-backfill; the table counts only the new case.
 - **A real bug in SQL from words, fixed in three layers.** Asked for a column that already existed, the AI wrote `ADD COLUMN IF NOT EXISTS`, which does nothing, with a rollback that dropped the existing column. The fix: the trial now compares the structure before and after and flags a draft that changes nothing; it checks that the rollback does not remove anything that was there before; and the prompt (version 2) tells the model to say it cannot when the thing is already there. The rerun answered "cannot".
 - **Rows that break a change.** On the filled tables, making `authors.country` unique fails because countries repeat. The trial's error is cut to its kind (for example "Rows already in the table break the change") and the row values in PostgreSQL's error detail are never sent to the AI. The AI then said it cannot be done, rather than deleting authors until the countries were unique.
 
@@ -266,6 +272,6 @@ psql -h 127.0.0.1 -p 55432 -U postgres -d shop -f scripts/ai-bench-rows.sql
 npm run ai:bench
 ```
 
-- Options: `--only review,sql`, `--case <ids>`, `--fresh` (ignore today's saved answers), `--pace-ms`. A rerun on the same day uses the saved answers unless `--fresh` is given.
-- Results go to `bench-results/` (git-ignored): a CSV with one row per case, a JSONL file with the full answers, and a summary with the tables above. File names use the UTC date.
+- Options: `--only review,sql`, `--case <ids>`, `--fresh` (ignore today's earlier results and run every case), `--pace-ms`. A rerun on the same day skips each case that already has a pass, partial or fail row from that day and runs the rest. The summary shows each case's latest row and says how many cases ran more than once.
+- Results go to `bench-results/` (git-ignored): a CSV with one row per case run, a JSONL file with the full answers, and a summary with the tables above. File names use the UTC date.
 - Test databases only. Free tiers may keep what they are sent, so never point it at a client's database.
