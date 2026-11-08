@@ -42,6 +42,7 @@ If the project already holds tables from an older copy of the app, move them to 
 | `NEXT_PUBLIC_AUTH_BYPASS` | `false` |
 | `CRON_SECRET` | A new random value: `openssl rand -hex 32`. Under 32 characters, the route refuses every call. |
 | `DRIFT_CALL_MINUTES` | `15` on the free plan: the minutes between the scheduled calls in step 5. Blank means every minute. |
+| `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL_FAST`, `AI_MODEL_SMART` | Only for AI help, as "Optional lines" in [README.md](README.md) describes. Each organization still starts with AI off until its Admin switches it on in Admin, AI. |
 
 Leave `ALLOW_PRIVATE_DB_HOSTS` unset, because there is no private network to reach from here. Leave `DRIFT_SCHEDULER` blank, because on Vercel a blank value means a scheduled call wakes the checker.
 

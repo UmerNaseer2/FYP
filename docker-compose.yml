@@ -132,6 +132,19 @@ services:
       # `off` stops that, for a copy that should not touch any database by
       # itself (a demo, or a second copy of this server).
       DRIFT_SCHEDULER: ${DRIFT_SCHEDULER:-}
+      # Optional. AI help: the Compare summary, the migration review, drift
+      # explanations, SQL drafts from plain words and the schema chat. It
+      # stays off until AI_BASE_URL, AI_API_KEY and a model name are all set,
+      # and each organization still starts with it off until its Admin
+      # switches it on in Admin, AI. See deploy/README.md, "Optional lines".
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL_FAST: ${AI_MODEL_FAST:-}
+      AI_MODEL_SMART: ${AI_MODEL_SMART:-}
+      AI_REASONING_EFFORT: ${AI_REASONING_EFFORT:-}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-}
+      AI_DAILY_LIMIT: ${AI_DAILY_LIMIT:-}
+      AI_PER_MINUTE: ${AI_PER_MINUTE:-}
     depends_on:
       db:
         condition: service_healthy

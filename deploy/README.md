@@ -221,6 +221,17 @@ apply them with `docker compose up -d`.
   whole server.
 - `DRIFT_SCHEDULER=off`, only on a copy of this server that should not check
   the tracked databases for drift by itself, such as a demo.
+- `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL_FAST` and `AI_MODEL_SMART`, only if
+  people should get AI help: the Compare summary, the migration review, drift
+  explanations, SQL drafts from plain words and the schema chat. The address
+  is the service's OpenAI-style one, ending in a slash, such as
+  `https://generativelanguage.googleapis.com/v1beta/openai/` for Google
+  Gemini. The fast model does the short jobs and the smart one the rest;
+  either one alone is used for both. Each organization still starts with AI
+  off until its Admin switches it on in Admin, AI. A free key may let the
+  service learn from what it is sent, so use one only with test databases.
+  `AI_DAILY_LIMIT` (calls per organization per day, 300 by default) and
+  `AI_PER_MINUTE` (calls per person per minute, 10 by default) cap the use.
 
 ## 5. Start it once by hand
 
