@@ -11,6 +11,7 @@ jest.mock("../lib/version-db", () => ({
 import type { PoolClient } from "pg";
 import type { AiConfig } from "@/lib/ai/config";
 import {
+  backticksToQuotes,
   buildSqlGenerateTask,
   checkSqlGenerate,
   otherSchemasIn,
@@ -55,6 +56,19 @@ function task(options: { request?: string; trial?: TrialHook | { notTried: strin
     trial: options.trial ?? { notTried: "Not in tests." },
   });
 }
+
+describe("backticksToQuotes", () => {
+  it("quotes backticked names, each dotted part apart", () => {
+    expect(backticksToQuotes("ALTER TABLE `books` ADD COLUMN `stock` integer;")).toBe('ALTER TABLE "books" ADD COLUMN "stock" integer;');
+    expect(backticksToQuotes("SELECT 1 FROM `shop.Order`;")).toBe('SELECT 1 FROM "shop"."Order";');
+  });
+
+  it("leaves backticks in strings and comments, and SQL without them, alone", () => {
+    const sql = "-- add `stock`\nCOMMENT ON TABLE books IS 'counts `stock`';";
+    expect(backticksToQuotes(sql)).toBe(sql);
+    expect(backticksToQuotes("SELECT 1;")).toBe("SELECT 1;");
+  });
+});
 
 describe("refusedIn", () => {
   const refused = [

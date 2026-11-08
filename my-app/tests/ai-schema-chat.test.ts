@@ -693,6 +693,18 @@ describe("runSchemaChat", () => {
     expect(answer.target).toEqual({ connectionId: 1, schema: "public" });
   });
 
+  it("quotes the names an AI wrote in MySQL backticks, as seen live", async () => {
+    const provider = new MockProvider([
+      { text: "", toolCalls: [call("show_schema", { connectionId: 1, schema: "public" })] },
+      "Draft:\n```sql\nALTER TABLE `books` ADD COLUMN `stock` integer DEFAULT 0;\n```\nNot run.",
+    ]);
+    const { chat } = tools();
+    const { deps: d } = deps(provider);
+    const answer = ok(await runSchemaChat(caller, { question: "Add stock to books", history: [], tools: chat }, d));
+    expect(answer.sql).toBe('ALTER TABLE "books" ADD COLUMN "stock" integer DEFAULT 0;');
+    expect(answer.sqlProblems).toEqual([]);
+  });
+
   it("sends back a name no lookup returned, and flags it if it stays", async () => {
     const made = "Discounts are in `discount_code` on `orders`.";
     const provider = new MockProvider([{ text: "", toolCalls: [call("show_schema", { connectionId: 1, schema: "public" })] }, made, made]);

@@ -23,6 +23,7 @@
 import { z } from "zod";
 import type { SchemaSnapshot } from "../../postgres";
 import { serverActingCallIn } from "../../query-analysis";
+import { quoteIdent } from "../../perf-sql";
 import { hasExecutableSql, maskNonCode, splitStatements } from "../../sql-guard";
 import { bareName, checkGeneratedSql, knownNames, tableRefsInSql, unknownTablesInSql } from "../checks";
 import { mentionedObjects, schemaSlice } from "../context";
@@ -150,6 +151,26 @@ export function otherSchemasIn(sql: string, schemaName: string, columns: Readonl
  * The problems a script has that no database needs to be asked about: what it
  * may never do, whatever it is for. Empty when it is fine.
  */
+/**
+ * PostgreSQL does not read `name`: backticks are MySQL's quotes. The AI is asked
+ * to put names in backticks in its prose, and the habit slips into its SQL.
+ * Outside strings and comments, each backticked name becomes a quoted one (each
+ * dotted part apart), which names exactly what the AI wrote.
+ */
+export function backticksToQuotes(sql: string): string {
+  const code = maskNonCode(sql);
+  let out = "";
+  let from = 0;
+  for (const match of code.matchAll(/`([^`\n]+)`/g)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    const inner = sql.slice(start + 1, end - 1);
+    out += sql.slice(from, start) + inner.split(".").map((part) => quoteIdent(part.trim())).join(".");
+    from = end;
+  }
+  return out + sql.slice(from);
+}
+
 export function refusedIn(sql: string, schemaName: string, columns: ReadonlySet<string> = new Set()): string[] {
   const problems: string[] = [];
   const serverCall = serverActingCallIn(sql);
@@ -271,6 +292,8 @@ export async function checkSqlGenerate(
     return { value, problems };
   };
 
+  value.sql = backticksToQuotes(value.sql);
+  value.rollbackSql = backticksToQuotes(value.rollbackSql);
   if (!hasExecutableSql(value.sql)) {
     if (!value.cannot) return finish(["The answer has no SQL statement in it, and cannot says nothing."], null);
     value.sql = "";

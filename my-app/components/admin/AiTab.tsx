@@ -145,7 +145,7 @@ export function AiTab({ active }: { active: boolean }) {
             <span className="font-medium">Let people in this organization use AI assistance</span>
             <span className="block mt-0.5" style={{ color: "var(--text-2)" }}>
               {view.enabled
-                ? "On. Roles with Use AI assistance see the AI buttons on Compare, Deploy, Drift and the Script Editor."
+                ? "On. Roles with Use AI assistance see the AI buttons on Compare, Deploy, Drift and the Script Editor, and Ask AI in the top bar."
                 : "Off. Nothing about this organization's schemas is sent to an AI service."}
             </span>
           </span>
