@@ -92,6 +92,17 @@ describe("orgHref", () => {
   });
 });
 
+describe("the move tool's copy of the list", () => {
+  test("reserves the same words", () => {
+    // scripts/move-data.cjs is a plain script, so it keeps its own copy.
+    // tests/move-data-db.test.ts checks this too, but that suite skips without
+    // a test database, so a laptop run never got to it and only CI saw the two
+    // lists part.
+    const tool = require("../scripts/move-data.cjs") as { RESERVED_SLUGS: Set<string> };
+    expect([...tool.RESERVED_SLUGS].sort()).toEqual([...RESERVED_SLUGS].sort());
+  });
+});
+
 describe("reserved words", () => {
   test("every reserved word has a slug's shape, so none is listed for nothing", () => {
     const pointless = [...RESERVED_SLUGS].filter((word) => !SLUG.test(word));
