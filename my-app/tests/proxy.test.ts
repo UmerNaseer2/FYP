@@ -176,6 +176,8 @@ describe("edge proxy", () => {
       mockSession = null;
       const { proxy } = await loadProxy(signInOn);
       expect((await proxy(home())).status).toBe(200);
+      // The demo page is the other one: the poster's QR code opens it.
+      expect((await proxy(new NextRequest("http://localhost:3000/demo"))).status).toBe(200);
       // The pathname decides, so a query string changes nothing.
       expect((await proxy(new NextRequest("http://localhost:3000/?from=email"))).status).toBe(200);
       expect((await proxy(page())).status).toBe(307);
@@ -295,6 +297,14 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/")).toBe(true);
     // Exact paths only. A prefix match on "/" would open every page there is.
     for (const guarded of ["/studio", "/login", "/api/me", "//", "", "/index"]) {
+      expect(isPublicPath(guarded)).toBe(false);
+    }
+  });
+
+  it("opens the demo page, and nothing under or beside it", () => {
+    // The FYP poster's QR code opens it, so it must answer without a session.
+    expect(isPublicPath("/demo")).toBe(true);
+    for (const guarded of ["/demo/", "/demo/x", "/demos", "/demo-x", "/org/demo", "/api/demo"]) {
       expect(isPublicPath(guarded)).toBe(false);
     }
   });

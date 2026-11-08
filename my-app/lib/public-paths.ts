@@ -11,7 +11,8 @@
  *
  * Add a page here only when it shows nothing that belongs to an organization
  * or a person. A public page does its own deciding about who is signed in (the
- * landing page, app/page.tsx, sends a signed-in visitor on to the studio). An
+ * landing page, app/page.tsx, sends a signed-in visitor on to the studio; the
+ * demo page, app/demo/page.tsx, reads nothing at all). An
  * endpoint on this list does its own checking (the drift tick has no person behind
  * it, and checks a shared secret). The phone app's two files have to be there for
  * a browser to install the app or show an alert, whoever is signed in, and hold
@@ -21,6 +22,7 @@
  */
 const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/",
+  "/demo",
   "/api/internal/drift-tick",
   "/sw.js",
   "/manifest.webmanifest",
