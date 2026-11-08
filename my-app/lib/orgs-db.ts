@@ -170,6 +170,20 @@ export async function findMembership(profileId: number, slug: string): Promise<M
 }
 
 /**
+ * The membership a person holds in the organization with this id, or null. For
+ * a linked computer, whose token names its organization by id (lib/agent-auth.ts).
+ */
+export async function findMembershipById(profileId: number, orgId: number): Promise<Member | null> {
+  await syncMetadataTables();
+  const { rows } = await pool.query<MemberRow>(
+    `${MEMBERSHIP_SELECT}
+      WHERE p.id = $1 AND o.id = $2`,
+    [profileId, orgId]
+  );
+  return toMember(rows[0]);
+}
+
+/**
  * The membership a signed-in person holds in the default organization, or
  * null when they hold none: an admin removed them after they signed in, or
  * the sign-in that should have added them could not reach the database.

@@ -99,6 +99,11 @@ test("Schema Studio's own pages get the desktop features and nothing else, with 
   await desktop.findLocalDatabases("extra");
   desktop.setTheme("dark", "extra");
   desktop.openSettings("extra");
+  await desktop.syncStatus("extra");
+  await desktop.syncCreate({ name: "Shop" }, "extra");
+  await desktop.syncUpdate(31, { name: "Shop" }, "extra");
+  await desktop.syncRemove(31, 4, true, "extra");
+  await desktop.syncSendUp(5, "extra");
 
   assert.deepEqual(messages, [
     { kind: "invoke", channel: BRIDGE.signIn, args: [] },
@@ -107,6 +112,11 @@ test("Schema Studio's own pages get the desktop features and nothing else, with 
     { kind: "invoke", channel: BRIDGE.findLocalDatabases, args: [] },
     { kind: "send", channel: BRIDGE.setTheme, args: ["dark"] },
     { kind: "send", channel: BRIDGE.openSettings, args: [] },
+    { kind: "invoke", channel: BRIDGE.syncStatus, args: [] },
+    { kind: "invoke", channel: BRIDGE.syncCreate, args: [{ name: "Shop" }] },
+    { kind: "invoke", channel: BRIDGE.syncUpdate, args: [31, { name: "Shop" }] },
+    { kind: "invoke", channel: BRIDGE.syncRemove, args: [31, 4, true] },
+    { kind: "invoke", channel: BRIDGE.syncSendUp, args: [5] },
   ]);
 });
 

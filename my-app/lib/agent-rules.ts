@@ -43,6 +43,12 @@ export type ComputerConnection = {
   id: number;
   name: string;
   environment: Environment;
+  /**
+   * Picked for the phone. Only a shared one can be asked about from elsewhere;
+   * the rest are listed on the website's Connections page for their owner.
+   * An older desktop sent only shared ones and no flag, so missing means true.
+   */
+  shared?: boolean;
 };
 
 /** What GET /api/computers says about each of a person's computers. */

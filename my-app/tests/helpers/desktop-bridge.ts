@@ -10,8 +10,8 @@ import type { DesktopBridge } from "@/lib/desktop-bridge";
  *
  * Every method is a jest.fn, so a case can both answer a call and check that it
  * was made. The defaults are the quiet ones: a sign-in that is still waiting
- * for the browser, a search that found nothing, and the rest doing nothing at
- * all, so a case only spells out the call it is about.
+ * for the browser, a search that found nothing, a computer that is not linked
+ * to a website, and the rest doing nothing at all, so a case only spells out the call it is about.
  *
  * Remove it after every case that installs it. A bridge left behind turns every
  * later case in the file into a desktop case, and they would then be checking
@@ -27,6 +27,12 @@ export function installDesktopBridge(): FakeDesktopBridge {
     findLocalDatabases: jest.fn(() => Promise.resolve([])),
     setTheme: jest.fn(),
     openSettings: jest.fn(),
+    // Not linked to a website, so every change is saved on this computer as before.
+    syncStatus: jest.fn(() => Promise.resolve({ linked: false, changedAt: null })),
+    syncCreate: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
+    syncUpdate: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
+    syncRemove: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
+    syncSendUp: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
   };
   window.schemaStudioDesktop = bridge;
   return bridge;

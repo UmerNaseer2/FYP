@@ -363,7 +363,7 @@ describe("connections inside the caller's organization", () => {
     });
     expect(result.status).toBe(200);
     const [insert] = statements(/INSERT INTO connections/);
-    expect(insert[0]).toMatch(/execute_role, org_id\)/);
+    expect(insert[0]).toMatch(/execute_role, org_id,/);
     expect(insert[1]?.[13]).toBe(TEST_ORG.id);
     expect(insert[1]).not.toContain(OTHER_ORG);
   });
@@ -384,7 +384,8 @@ describe("connections inside the caller's organization", () => {
     const updates = statements(/UPDATE connections/);
     expect(updates).toHaveLength(2);
     expect(updates[0][1]).toEqual([4, TEST_ORG.id]);
-    expect(updates[1][1]?.slice(-2)).toEqual([4, TEST_ORG.id]);
+    // The last two values are who saved it and the version the edit started from.
+    expect(updates[1][1]?.slice(-4, -2)).toEqual([4, TEST_ORG.id]);
   });
 
   it("answers a delete of another organization's connection with not found", async () => {
@@ -401,7 +402,7 @@ describe("connections inside the caller's organization", () => {
     const result = await remove({ id: 4 });
     expect(result.status).toBe(200);
     expect(mockDependents).toHaveBeenCalledWith(TEST_ORG.id, 4);
-    expect(statements(/DELETE FROM connections/)[0][1]).toEqual([4, TEST_ORG.id]);
+    expect(statements(/DELETE FROM connections/)[0][1]).toEqual([4, TEST_ORG.id, null]);
   });
 });
 
@@ -419,7 +420,7 @@ describe("taking the Production label off a connection", () => {
       if (/SELECT password, connection_string/.test(text)) {
         return { rows: [{ ...SAVED, name: "Production", environment }] };
       }
-      if (/SELECT name, environment FROM connections/.test(text)) {
+      if (/SELECT name, environment, version, site_id FROM connections/.test(text)) {
         return { rows: [{ name: "Production", environment }] };
       }
       if (/RETURNING/.test(text)) return { rows: [{ id: 4, name: "Production" }] };

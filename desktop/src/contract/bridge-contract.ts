@@ -21,6 +21,8 @@ type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ?
 export const signInResult: Same<Bridge.DesktopSignInResult, Ipc.SignInResult> = true;
 export const foundDatabase: Same<Bridge.FoundDatabase, Ipc.FoundDatabase> = true;
 export const themeChoice: Same<Bridge.ThemeChoice, Ipc.ThemeChoice> = true;
+export const syncStatus: Same<Bridge.DesktopSyncStatus, Ipc.SyncStatus> = true;
+export const syncAnswer: Same<Bridge.DesktopSyncAnswer, Ipc.SyncAnswer> = true;
 
 // Every method the web app can call has a message channel in the main process.
 export const bridgeChannels: Same<keyof Bridge.DesktopBridge, keyof typeof Ipc.BRIDGE> = true;

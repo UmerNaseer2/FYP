@@ -206,6 +206,22 @@ export class Connection extends Model<
   declare last_test_latency_ms: CreationOptional<number | null>;
   /** Why the last test failed, so the row can say more than "failed". */
   declare last_test_error: CreationOptional<string | null>;
+  /**
+   * Goes up by one on every save. A save names the version it started from, and
+   * one that started from an older version is turned down instead of silently
+   * overwriting someone else's change (lib/connection-writes.ts).
+   */
+  declare version: CreationOptional<number>;
+  /** When and by whom the row was last saved, for the "someone changed this" message. */
+  declare updated_at: CreationOptional<Date | null>;
+  declare updated_by: CreationOptional<string | null>;
+  /**
+   * Desktop only: the website's number for this connection when it is a copy of
+   * one the linked website owns, and the website's version of it. Null for a
+   * connection this computer owns, and always null on a website.
+   */
+  declare site_id: CreationOptional<number | null>;
+  declare site_version: CreationOptional<number | null>;
 }
 
 Connection.init(
@@ -246,6 +262,11 @@ Connection.init(
     last_test_version: { type: DataTypes.TEXT, allowNull: true },
     last_test_latency_ms: { type: DataTypes.INTEGER, allowNull: true },
     last_test_error: { type: DataTypes.TEXT, allowNull: true },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    updated_at: { type: DataTypes.DATE, allowNull: true },
+    updated_by: { type: DataTypes.TEXT, allowNull: true },
+    site_id: { type: DataTypes.INTEGER, allowNull: true },
+    site_version: { type: DataTypes.INTEGER, allowNull: true },
   },
   {
     sequelize,
@@ -915,6 +936,11 @@ export class AgentConnectionRow extends Model<
   declare local_id: number;
   declare name: string;
   declare environment: string;
+  /**
+   * Whether its person picked it for the phone. Only shared ones can be asked
+   * about; the rest are listed on the website's Connections page for their owner.
+   */
+  declare shared: CreationOptional<boolean>;
 }
 
 AgentConnectionRow.init(
@@ -929,6 +955,7 @@ AgentConnectionRow.init(
     local_id: { type: DataTypes.INTEGER, allowNull: false },
     name: { type: DataTypes.TEXT, allowNull: false },
     environment: { type: DataTypes.TEXT, allowNull: false },
+    shared: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   },
   {
     sequelize,

@@ -31,6 +31,8 @@ export type StartServerOptions = {
   buildConfig: BuildConfig;
   secrets: SecretValues;
   gateToken: string;
+  /** The main process's own token for the server's sync route. */
+  syncToken: string;
   /** The schema registry's repository, from config.json; empty when not set. */
   github: { owner: string; repo: string };
   /** Aborted when the app quits while the server is still starting. */
@@ -155,6 +157,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
       type: "start",
       serverDir: files.serverDir,
       gateToken: options.gateToken,
+      syncToken: options.syncToken,
       nextauthSecret: options.secrets.nextauthSecret,
       appEncryptionKey: options.secrets.appEncryptionKey,
       githubToken: options.secrets.githubToken,

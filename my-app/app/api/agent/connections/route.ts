@@ -10,9 +10,11 @@ const NOT_A_LIST = `Send up to ${MOST_CONNECTIONS} connections, each with an id 
 
 /**
  * PUT /api/agent/connections
- * A linked computer says which of its connections it shares. Only a number, a
- * name and an environment are copied from each, so a host or a user sent by
- * mistake is simply dropped here.
+ * A linked computer lists the connections only it can reach, and which of them
+ * its person shared with the phone. Only a number, a name, an environment and
+ * that flag are copied from each, so a host or a user sent by mistake is simply
+ * dropped here. Only shared ones can be asked about (createAgentJob); the rest
+ * are shown to their owner on the Connections page.
  */
 export async function PUT(request: NextRequest) {
   const gate = await requireAgent(request);
@@ -33,13 +35,13 @@ function readConnections(value: unknown): ComputerConnection[] | null {
   if (!Array.isArray(value) || value.length > MOST_CONNECTIONS) return null;
   const list: ComputerConnection[] = [];
   const seen = new Set<number>();
-  for (const entry of value as { id?: unknown; name?: unknown; environment?: unknown }[]) {
+  for (const entry of value as { id?: unknown; name?: unknown; environment?: unknown; shared?: unknown }[]) {
     const id = entry?.id;
     const name = cleanLabel(entry?.name, LONGEST_CONNECTION_NAME);
     if (typeof id !== "number" || !Number.isInteger(id) || id < 1 || id > 2147483647 || name === "") return null;
     if (seen.has(id)) return null;
     seen.add(id);
-    list.push({ id, name, environment: toEnvironment(entry.environment) });
+    list.push({ id, name, environment: toEnvironment(entry.environment), shared: entry.shared !== false });
   }
   return list;
 }

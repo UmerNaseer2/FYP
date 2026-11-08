@@ -36,6 +36,8 @@ import {
   type SignInResult,
   type StartAtLoginResult,
   type StartupState,
+  type SyncAnswer,
+  type SyncStatus,
   type ThemeChoice,
 } from "../shared/ipc";
 import { logWarn } from "./log";
@@ -60,6 +62,11 @@ export type IpcHandlers = {
     findLocalDatabases(): Promise<FoundDatabase[]>;
     setTheme(choice: ThemeChoice): void;
     openSettings(): void;
+    syncStatus(): SyncStatus;
+    syncCreate(connection: Record<string, unknown>): Promise<SyncAnswer>;
+    syncUpdate(siteId: number, connection: Record<string, unknown>): Promise<SyncAnswer>;
+    syncRemove(siteId: number, baseVersion: number | null, confirm: boolean): Promise<SyncAnswer>;
+    syncSendUp(localId: number): Promise<SyncAnswer>;
   };
   startup: {
     getState(): StartupState;
@@ -113,6 +120,24 @@ export type IpcHandlers = {
 };
 
 const REFUSED = "Schema Studio refused a request from this page.";
+
+function isRowNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/** A connection's number, or a refusal. */
+function rowNumber(value: unknown): number {
+  if (!isRowNumber(value)) throw new Error(REFUSED);
+  return value;
+}
+
+/** A connection's fields as the page sent them, or a refusal. The site checks each one before it keeps it. */
+function plainObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error(REFUSED);
+  }
+  return value as Record<string, unknown>;
+}
 
 /** The address of the page that sent the message, when it was the page itself and not a frame inside it. */
 function senderUrl(event: IpcMainEvent | IpcMainInvokeEvent): URL | null {
@@ -180,6 +205,14 @@ export function registerIpc(handlers: IpcHandlers): void {
     if (isThemeChoice(choice)) bridge.setTheme(choice);
   });
   on(studio, BRIDGE.openSettings, () => bridge.openSettings());
+  handle(studio, BRIDGE.syncStatus, () => bridge.syncStatus());
+  handle(studio, BRIDGE.syncCreate, (connection) => bridge.syncCreate(plainObject(connection)));
+  handle(studio, BRIDGE.syncUpdate, (siteId, connection) => bridge.syncUpdate(rowNumber(siteId), plainObject(connection)));
+  handle(studio, BRIDGE.syncRemove, (siteId, baseVersion, confirm) => {
+    if ((baseVersion !== null && !isRowNumber(baseVersion)) || typeof confirm !== "boolean") throw new Error(REFUSED);
+    return bridge.syncRemove(rowNumber(siteId), baseVersion, confirm);
+  });
+  handle(studio, BRIDGE.syncSendUp, (localId) => bridge.syncSendUp(rowNumber(localId)));
 
   handle(splash, STARTUP.getState, () => startup.getState());
   on(splash, STARTUP.retry, () => startup.retry());

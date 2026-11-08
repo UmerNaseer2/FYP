@@ -16,7 +16,10 @@
  * endpoint on this list does its own checking (the drift tick has no person behind
  * it, and checks a shared secret). The phone app's two files have to be there for
  * a browser to install the app or show an alert, whoever is signed in, and hold
- * nothing about anyone.
+ * nothing about anyone. The desktop sync route checks the desktop app's own
+ * main-process token, and answers 404 anywhere that is not a desktop
+ * (lib/desktop-sync.ts); the main process keeps the computer in step with its
+ * website whether or not anyone is signed in here.
  *
  * Edge-safe: the proxy runs on the edge runtime, so this file imports nothing.
  */
@@ -24,6 +27,7 @@ const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   "/",
   "/demo",
   "/api/internal/drift-tick",
+  "/api/desktop/sync",
   "/sw.js",
   "/manifest.webmanifest",
 ]);

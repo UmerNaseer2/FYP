@@ -60,6 +60,40 @@ export type FoundDatabase = {
 /** "system" follows the Ubuntu setting; the other two pin the app to one. */
 export type ThemeChoice = "system" | "light" | "dark";
 
+/**
+ * How this computer stands with the Schema Studio website it is linked to
+ * (Settings, Web site). Linked or not, `changedAt` moves each time the
+ * website's connections changed on this computer, so the Connections screen
+ * knows to read its list again.
+ */
+export type DesktopSyncStatus =
+  | { linked: false; changedAt: number | null }
+  | {
+      linked: true;
+      origin: string;
+      orgName: string;
+      /** False while the website cannot be reached: its connections cannot be changed here until it can. */
+      online: boolean;
+      lastSyncedAt: number | null;
+      changedAt: number | null;
+    };
+
+/**
+ * How a change sent to the linked website ended.
+ *
+ *  - saved: the website took it; `body` is its answer.
+ *  - local: it belongs on this computer, for `reason`. The screen saves it here as usual.
+ *  - refused: the website said no; `body` holds its words, and a conflict's newer copy.
+ *  - offline: the website could not be reached, and nothing changed.
+ *  - not-linked: this computer is not linked, so the screen saves it here as usual.
+ */
+export type DesktopSyncAnswer =
+  | { kind: "saved"; body: unknown }
+  | { kind: "local"; reason: string }
+  | { kind: "refused"; status: number; body: unknown }
+  | { kind: "offline"; message: string }
+  | { kind: "not-linked" };
+
 export interface DesktopBridge {
   /**
    * Opens the system browser on Microsoft's sign-in page and waits for the
@@ -79,6 +113,20 @@ export interface DesktopBridge {
   setTheme(choice: ThemeChoice): void;
   /** Opens the desktop app's Settings window, where the GitHub details live. */
   openSettings(): void;
+  /** How this computer stands with the website it is linked to. */
+  syncStatus(): Promise<DesktopSyncStatus>;
+  /**
+   * Adds a connection: on the website when it can reach the database, here
+   * when only this computer can. A database whose address only works here
+   * never goes to the website, not even its password for a test.
+   */
+  syncCreate(connection: Record<string, unknown>): Promise<DesktopSyncAnswer>;
+  /** Saves a change to one of the website's connections, on the website. `base_version` says which version it started from. */
+  syncUpdate(siteId: number, connection: Record<string, unknown>): Promise<DesktopSyncAnswer>;
+  /** Deletes one of the website's connections, on the website. */
+  syncRemove(siteId: number, baseVersion: number | null, confirm: boolean): Promise<DesktopSyncAnswer>;
+  /** Moves one of this computer's own connections up to the website, keeping its history here. */
+  syncSendUp(localId: number): Promise<DesktopSyncAnswer>;
 }
 
 declare global {

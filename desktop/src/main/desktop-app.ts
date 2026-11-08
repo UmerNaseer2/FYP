@@ -135,7 +135,7 @@ import { ConfigStore } from "./config-store";
 import { makeDiagnostics } from "./diagnostics";
 import { DriftWatcher } from "./drift-watcher";
 import { findLocalDatabases } from "./finder";
-import { CloudAgent } from "./cloud-agent";
+import { CloudAgent, SYNC_HEADER, readExported, readOwnConnections } from "./cloud-agent";
 import { registerIpc } from "./ipc";
 import { SYSTEM_CLOCK } from "./clock";
 import { addLogSecret, logError, logFolder, logInfo, logWarn } from "./log";
@@ -178,6 +178,10 @@ const FIRST_CHECK_MS = 20_000;
 const BACKGROUND_CHECK_MS = 30_000;
 /** How long Settings waits for the server to list the saved connections that phones may be shown. */
 const PHONE_CONNECTIONS_MS = 15_000;
+/** How long the site link waits for this computer's server to read or change its copies of the site's connections. */
+const SYNC_SERVER_MS = 30_000;
+/** What the Connections screen hears when this computer is not linked to a site, so everything stays on it. */
+const NOT_LINKED = Promise.resolve({ kind: "not-linked" } as const);
 const CLOUD_NOT_READY = "Schema Studio is still starting. Try again in a moment.";
 const PHONE_LINK_FAILED = "The phone link could not start. Schema Studio's log has the details.";
 /** Why a restore cannot finish while phone-link.json is locked: what phones may see has to change with the restore. */
@@ -290,6 +294,11 @@ export class DesktopApp {
   private readonly background: boolean;
   /** Proves to the server that a request comes from this app's own windows. A new one every time the app starts. */
   private readonly gateToken = crypto.randomBytes(32).toString("base64url");
+  /**
+   * Lets this process, and no window, keep the computer's copies of the linked website's connections up to date
+   * through the server's sync route. A new one every time the app starts.
+   */
+  private readonly syncToken = crypto.randomBytes(32).toString("base64url");
   private readonly config: ConfigStore;
   /** The Appearance choice in use. It still applies for now when saving it failed. */
   private theme: ThemeChoice;
@@ -356,6 +365,7 @@ export class DesktopApp {
     this.home = options.home;
     this.background = options.background;
     addLogSecret(this.gateToken);
+    addLogSecret(this.syncToken);
     this.config = openConfig(options.paths);
     this.theme = this.config.get().theme;
     this.keepRunning = this.config.get().keepRunning;
@@ -443,6 +453,11 @@ export class DesktopApp {
         findLocalDatabases: () => findLocalDatabases(),
         setTheme: (choice) => this.setTheme(choice),
         openSettings: () => this.openSettings(),
+        syncStatus: () => this.cloudAgent?.syncStatus() ?? { linked: false, changedAt: null },
+        syncCreate: (connection) => this.cloudAgent?.syncCreate(connection) ?? NOT_LINKED,
+        syncUpdate: (siteId, connection) => this.cloudAgent?.syncUpdate(siteId, connection) ?? NOT_LINKED,
+        syncRemove: (siteId, baseVersion, confirm) => this.cloudAgent?.syncRemove(siteId, baseVersion, confirm) ?? NOT_LINKED,
+        syncSendUp: (localId) => this.cloudAgent?.syncSendUp(localId) ?? NOT_LINKED,
       },
       startup: {
         getState: () => this.startup,
@@ -583,6 +598,7 @@ export class DesktopApp {
         buildConfig: this.build,
         secrets: opened.secrets,
         gateToken: this.gateToken,
+        syncToken: this.syncToken,
         signal,
       });
       this.server = server;
@@ -840,8 +856,49 @@ export class DesktopApp {
         shell.openExternal(url).catch((error: unknown) => logWarn("Could not open the site in the web browser.", error));
       },
       onChange: () => this.cloudChanged(),
+      sync: {
+        apply: async (connections) => {
+          await this.syncServer({ action: "apply", connections });
+        },
+        local: async () => readOwnConnections(await this.syncServer({ action: "local" })),
+        export: async (id) => readExported(await this.syncServer({ action: "export", id }, true)),
+        adopt: async (id, siteId, siteVersion) => {
+          const answer = await this.syncServer({ action: "adopt", id, siteId, siteVersion });
+          return typeof answer === "object" && answer !== null && (answer as { adopted?: unknown }).adopted === true;
+        },
+      },
     });
     this.cloudAgent.start();
+  }
+
+  /**
+   * Asks the app's own server to change or read this computer's copies of the
+   * site's connections (app/api/desktop/sync in the web app). Unlike
+   * callServer, it carries no sign-in cookie: it works with nobody signed in,
+   * through a token that only this process and the server hold. Throws on any
+   * answer but 200, or returns null for a 404 when asked to.
+   */
+  private async syncServer(body: Record<string, unknown>, missingIsNull = false): Promise<unknown> {
+    const { ses, server } = this;
+    if (ses === null || server === null) throw new Error("Schema Studio's server is not running.");
+    const response = await ses.fetch(`${server.origin}/api/desktop/sync`, {
+      method: "POST",
+      headers: { [GATE_HEADER]: this.gateToken, [SYNC_HEADER]: this.syncToken, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "omit",
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(SYNC_SERVER_MS),
+    });
+    if (missingIsNull && response.status === 404) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`This computer's server answered ${response.status}.`);
+    }
+    return response.json();
   }
 
   /** Tells Settings, if it is open, how the site link stands now. */

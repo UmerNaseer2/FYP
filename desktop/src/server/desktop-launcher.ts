@@ -27,6 +27,8 @@ export type LauncherStart = {
   /** The folder that holds Next.js's server.js. */
   serverDir: string;
   gateToken: string;
+  /** Lets the app's main process, and only it, keep the computer in step with its website (my-app/lib/desktop-sync.ts). */
+  syncToken: string;
   nextauthSecret: string;
   appEncryptionKey: string;
   githubToken: string | null;
@@ -91,6 +93,7 @@ function start(message: LauncherStart): void {
 
   process.env.NEXTAUTH_SECRET = message.nextauthSecret;
   process.env.APP_ENCRYPTION_KEY = message.appEncryptionKey;
+  process.env.SCHEMA_STUDIO_SYNC_TOKEN = message.syncToken;
   setOrRemove("GITHUB_PAT", message.githubToken);
 
   installGate(http, {

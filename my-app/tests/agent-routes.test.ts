@@ -256,13 +256,21 @@ describe("PUT /api/agent/connections", () => {
     });
     expect(await response.json()).toEqual({ ok: true });
     expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [
-      { id: 1, name: "Book shop", environment: "prod" },
+      { id: 1, name: "Book shop", environment: "prod", shared: true },
+    ]);
+  });
+
+  it("keeps the shared flag a newer desktop sends, and reads a missing one as shared", async () => {
+    await put({ connections: [{ id: 1, name: "x", shared: false }, { id: 2, name: "y" }] });
+    expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [
+      { id: 1, name: "x", environment: "unset", shared: false },
+      { id: 2, name: "y", environment: "unset", shared: true },
     ]);
   });
 
   it("turns an environment it does not know into none", async () => {
     await put({ connections: [{ id: 1, name: "x", environment: "moon" }] });
-    expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [{ id: 1, name: "x", environment: "unset" }]);
+    expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [{ id: 1, name: "x", environment: "unset", shared: true }]);
   });
 
   it.each([
@@ -290,7 +298,7 @@ describe("who may use a person's computers", () => {
   const refused = NextResponse.json({ error: "Sign in to continue." }, { status: 401 });
 
   it.each([
-    ["list", () => computers()],
+    ["list", () => computers(call("GET", "/api/computers"))],
     ["remove", () => removeComputer(call("DELETE", "/api/computers/1"), idOf("1"))],
     ["read a link", () => readLink(call("GET", "/api/computers/link?code=BCDF-GHJK"))],
     ["approve", () => approve(call("POST", "/api/computers/link", { code: "BCDF-GHJK" }))],
@@ -307,13 +315,19 @@ describe("who may use a person's computers", () => {
 describe("GET /api/computers", () => {
   it("lists this person's computers in this organization", async () => {
     db.listComputers.mockResolvedValue([]);
-    expect(await (await computers()).json()).toEqual({ computers: [] });
-    expect(db.listComputers).toHaveBeenCalledWith(member.orgId, 12);
+    expect(await (await computers(call("GET", "/api/computers"))).json()).toEqual({ computers: [] });
+    expect(db.listComputers).toHaveBeenCalledWith(member.orgId, 12, false);
+  });
+
+  it("adds the unshared connections only when asked, for the Connections page", async () => {
+    db.listComputers.mockResolvedValue([]);
+    await computers(call("GET", "/api/computers?connections=all"));
+    expect(db.listComputers).toHaveBeenCalledWith(member.orgId, 12, true);
   });
 
   it("has none under the sign-in bypass, where nobody has an account", async () => {
     mockGate = { ok: true, principal: inBypass };
-    expect(await (await computers()).json()).toEqual({ computers: [] });
+    expect(await (await computers(call("GET", "/api/computers"))).json()).toEqual({ computers: [] });
     expect(db.listComputers).not.toHaveBeenCalled();
   });
 });

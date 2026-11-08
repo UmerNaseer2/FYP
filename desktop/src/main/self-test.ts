@@ -134,6 +134,8 @@ async function runSteps(files: AppFiles, paths: AppPaths, build: BuildInfo, resu
   const { signal } = new AbortController();
   const gateToken = crypto.randomBytes(32).toString("base64url");
   addLogSecret(gateToken);
+  const syncToken = crypto.randomBytes(32).toString("base64url");
+  addLogSecret(syncToken);
 
   const opened = await attempt(
     results,
@@ -165,6 +167,7 @@ async function runSteps(files: AppFiles, paths: AppPaths, build: BuildInfo, resu
         buildConfig: build,
         secrets: opened.secrets,
         gateToken,
+        syncToken,
         signal,
       });
     },

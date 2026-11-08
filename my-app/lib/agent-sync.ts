@@ -1,0 +1,152 @@
+/**
+ * What a linked desktop reads to keep its copies of the website's connections
+ * (docs/two-way-sync-plan.md). The routes are app/api/agent/sync and
+ * app/api/agent/sync/connections; this is the part with the database in it.
+ */
+import { createHash } from "node:crypto";
+import pool, { syncMetadataTables } from "@/lib/version-db";
+import type { Principal } from "@/lib/auth-guard";
+import { decryptSecret } from "@/lib/secret-store";
+import { hasPermission } from "@/lib/permissions";
+
+/** The permissions that let someone see the Connections list, the same as GET /api/connections. */
+export function maySeeConnections(principal: Principal): boolean {
+  return hasPermission(
+    principal,
+    "connections:read",
+    "dashboard:read",
+    "scripts:read",
+    "deploy:read",
+    "version_sync:read",
+    "performance:read",
+    "visualizer:read"
+  );
+}
+
+/**
+ * A desktop keeps its copies in a database its person can open, so a
+ * connection's secrets go to it only when that person could change the
+ * connection anyway. Everyone else gets the copy without them.
+ */
+export function mayHoldSecrets(principal: Principal): boolean {
+  return hasPermission(principal, "connections:update");
+}
+
+export type SyncedConnection = {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  database_name: string;
+  type: string;
+  username: string;
+  /** Plain text, and only when mayHoldSecrets; otherwise "". */
+  password: string;
+  connection_string: string;
+  has_password: boolean;
+  ssl_mode: string;
+  environment: string;
+  application_table: string | null;
+  execute_role: string;
+  version: number;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
+export type SyncAnswer =
+  | { same: true; rev: string }
+  | { same: false; rev: string; withSecrets: boolean; connections: SyncedConnection[] };
+
+/**
+ * The organization's connections for a linked desktop, or `same` when nothing
+ * changed since `knownRev`. The fingerprint covers every id and version and
+ * whether secrets are included, so a role change that adds or takes away the
+ * passwords also counts as a change. Costs one small query when nothing moved.
+ */
+export async function readSync(principal: Principal, knownRev: string | null): Promise<SyncAnswer> {
+  await syncMetadataTables();
+  const allowed = maySeeConnections(principal);
+  const withSecrets = allowed && mayHoldSecrets(principal);
+  const { rows: fingerprint } = await pool.query<{ md5: string }>(
+    `SELECT md5(COALESCE(string_agg(id || ':' || version, ',' ORDER BY id), '')) AS md5
+       FROM connections WHERE org_id = $1`,
+    [principal.orgId]
+  );
+  const rev = `${allowed ? fingerprint[0].md5 : "none"}.${withSecrets ? "s" : "p"}`;
+  if (rev === knownRev) return { same: true, rev };
+  if (!allowed) return { same: false, rev, withSecrets: false, connections: [] };
+
+  const { rows } = await pool.query<{
+    id: number;
+    name: string;
+    host: string;
+    port: number;
+    database_name: string;
+    type: string;
+    username: string;
+    password: string | null;
+    connection_string: string | null;
+    ssl_mode: string;
+    environment: string;
+    application_table: string | null;
+    execute_role: string;
+    version: number;
+    updated_at: Date | null;
+    updated_by: string | null;
+  }>(
+    `SELECT id, name, host, port, database_name, type, username, password, connection_string,
+            ssl_mode, environment, application_table, execute_role, version, updated_at, updated_by
+       FROM connections WHERE org_id = $1 ORDER BY id`,
+    [principal.orgId]
+  );
+  const connections = rows.map((row): SyncedConnection => {
+    // A secret this server cannot read (a changed APP_ENCRYPTION_KEY) goes as
+    // none, the same as for someone not allowed it, rather than as ciphertext.
+    let password = "";
+    let connectionString = "";
+    if (withSecrets) {
+      try {
+        password = decryptSecret(row.password) ?? "";
+        connectionString = decryptSecret(row.connection_string) ?? "";
+      } catch {
+        password = "";
+        connectionString = "";
+      }
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      host: row.host,
+      port: Number(row.port),
+      database_name: row.database_name,
+      type: row.type,
+      username: row.username,
+      password,
+      connection_string: connectionString,
+      has_password: Boolean(row.password) || Boolean(row.connection_string),
+      ssl_mode: row.ssl_mode,
+      environment: row.environment,
+      application_table: row.application_table,
+      execute_role: row.execute_role,
+      version: Number(row.version),
+      updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+      updated_by: row.updated_by,
+    };
+  });
+  return { same: false, rev, withSecrets, connections };
+}
+
+/** A fingerprint as a desktop sent it back, or null. Never longer than one of ours. */
+export function readRev(value: string | null): string | null {
+  if (!value || value.length > 40 || !/^[a-z0-9.]+$/.test(value)) return null;
+  return value;
+}
+
+/** For tests: the fingerprint of a list, the way the query above makes it. */
+export function revOf(list: { id: number; version: number }[], withSecrets: boolean): string {
+  const joined = [...list]
+    .sort((a, b) => a.id - b.id)
+    .map((row) => `${row.id}:${row.version}`)
+    .join(",");
+  return `${createHash("md5").update(joined).digest("hex")}.${withSecrets ? "s" : "p"}`;
+}

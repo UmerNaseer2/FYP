@@ -667,7 +667,10 @@ describe("for a role that may not add, change or delete connections", () => {
     // that shows them.
     expect(document.querySelector(".drawer")).not.toHaveClass("open");
     expect(deleteDialog()).not.toHaveClass("open");
-    expect(fetchCalls.map((c) => c.url)).toEqual(["/api/connections"]);
+    // The list of the person's own computers is a read, asked for on load.
+    expect(fetchCalls.map((c) => c.url).filter((url) => !url.startsWith("/api/computers"))).toEqual([
+      "/api/connections",
+    ]);
   });
 
   it("lets a role that may only add save one, and leaves its test to the row", async () => {
@@ -1043,5 +1046,378 @@ describe("finding databases on this computer, in the desktop app", () => {
       drawer().queryByRole("list", { name: "Databases found on this computer" })
     ).not.toBeInTheDocument();
     expect(bridge.findLocalDatabases).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the website and this computer, in the desktop app", () => {
+  // Inside a desktop app linked to the website, a connection is either the
+  // website's (shared with the organization, changed on the website, locked
+  // while the website cannot be reached) or this computer's own. See
+  // docs/two-way-sync-plan.md. The values below are made up.
+  const LINKED = {
+    linked: true,
+    origin: "https://studio.example.test",
+    orgName: "Acme",
+    online: true,
+    lastSyncedAt: 1,
+    changedAt: 1,
+  };
+  const SHOP = conn({
+    id: 1,
+    name: "Shop",
+    host: "db.shop.test",
+    version: 1,
+    site_id: 31,
+    site_version: 4,
+    has_password: true,
+  });
+  const LAPTOP = conn({ id: 2, name: "Laptop", host: "localhost", version: 3, site_id: null });
+  const REPORTS = conn({ id: 3, name: "Reports", host: "db.reports.test", version: 1, site_id: null });
+
+  let bridge: FakeDesktopBridge;
+  beforeEach(() => {
+    bridge = installDesktopBridge();
+    bridge.syncStatus.mockResolvedValue(LINKED);
+    setRoutes([{ match: "/api/connections", method: "GET", body: [SHOP, LAPTOP, REPORTS] }]);
+  });
+  afterEach(() => removeDesktopBridge());
+
+  /** The open dialog whose heading is `name`. */
+  function dialog(name: string | RegExp): HTMLElement {
+    const heading = screen.getByRole("heading", { name });
+    const modal = heading.closest(".modal-scrim");
+    if (!modal) throw new Error("No dialog around that heading");
+    return modal as HTMLElement;
+  }
+
+  async function shown() {
+    render(<ConnectionsPage />);
+    await loaded();
+    await waitFor(() => expect(bridge.syncStatus).toHaveBeenCalled());
+    await flushAsync();
+  }
+
+  it("tags each row with where it lives", async () => {
+    await shown();
+    expect(within(rowFor("Shop")).getByText("Website")).toBeInTheDocument();
+    expect(within(rowFor("Laptop")).getByText("This computer")).toBeInTheDocument();
+    expect(within(rowFor("Reports")).getByText("This computer")).toBeInTheDocument();
+    expect(within(rowFor("Shop")).queryByText("No password on this computer")).toBeNull();
+  });
+
+  it("says when the website kept a connection's password from this role", async () => {
+    setRoutes([
+      {
+        match: "/api/connections",
+        method: "GET",
+        body: [{ ...SHOP, has_password: false, has_connection_string: false }],
+      },
+    ]);
+    await shown();
+    expect(within(rowFor("Shop")).getByText("No password on this computer")).toBeInTheDocument();
+  });
+
+  it("says nothing about the website while the computer is not linked", async () => {
+    bridge.syncStatus.mockResolvedValue({ linked: false, changedAt: null });
+    setRoutes([{ match: "/api/connections", method: "GET", body: [LAPTOP] }]);
+    await shown();
+    expect(screen.queryByText("This computer")).toBeNull();
+    expect(screen.queryByRole("button", { name: /to the website/ })).toBeNull();
+  });
+
+  it("locks the website's rows while the website cannot be reached, and only those", async () => {
+    bridge.syncStatus.mockResolvedValue({ ...LINKED, online: false });
+    await shown();
+
+    expect(screen.getByText(/its connections are locked on this computer/)).toBeInTheDocument();
+    const edit = within(rowFor("Shop")).getByRole("button", { name: /Edit/ });
+    expect(edit).toBeDisabled();
+    expect(edit).toHaveAttribute("title", expect.stringMatching(/can't be reached right now/));
+    expect(screen.getByRole("button", { name: "Delete Shop" })).toBeDisabled();
+    // A test only reads, so it still runs.
+    expect(within(rowFor("Shop")).getByRole("button", { name: /Test/ })).toBeEnabled();
+    // This computer's own connections are not the website's to lock.
+    expect(within(rowFor("Laptop")).getByRole("button", { name: /Edit/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete Laptop" })).toBeEnabled();
+    // Nothing goes up while the website is away.
+    expect(screen.queryByRole("button", { name: /to the website/ })).toBeNull();
+  });
+
+  it("locks them too once the computer is no longer linked", async () => {
+    bridge.syncStatus.mockResolvedValue({ linked: false, changedAt: null });
+    await shown();
+    expect(within(rowFor("Shop")).getByRole("button", { name: /Edit/ })).toHaveAttribute(
+      "title",
+      expect.stringMatching(/no longer linked/)
+    );
+  });
+
+  async function addOne(name: string, uri: string) {
+    fireEvent.click(screen.getByRole("button", { name: /^Add connection/ }));
+    fireEvent.change(screen.getByPlaceholderText("e.g. Staging — Neon"), { target: { value: name } });
+    fireEvent.change(
+      screen.getByPlaceholderText("postgres://user:pass@host:5432/database?sslmode=require"),
+      { target: { value: uri } }
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+  }
+
+  it("adds a connection on the website when the website takes it", async () => {
+    bridge.syncCreate.mockResolvedValue({ kind: "saved", body: { connection: { id: 40, name: "Orders" } } });
+    await shown();
+    await addOne("Orders", "postgres://app@db.orders.test:5432/orders?sslmode=require");
+
+    expect(await screen.findByText("Saved on the website")).toBeInTheDocument();
+    expect(bridge.syncCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Orders" }));
+    // The website has it; nothing was written on this computer.
+    expect(fetchCalls.filter((c) => c.method === "POST")).toHaveLength(0);
+  });
+
+  it("saves here and says why when the website does not keep it", async () => {
+    const reason = "The website could not reach this database, so it was saved on this computer only.";
+    bridge.syncCreate.mockResolvedValue({ kind: "local", reason });
+    setRoutes([
+      { match: "/api/connections", method: "POST", body: conn({ id: 41, name: "Orders" }) },
+      { match: "/api/connections", method: "GET", body: [SHOP, LAPTOP, REPORTS] },
+    ]);
+    await shown();
+    await addOne("Orders", "postgres://app@db.orders.test:5432/orders?sslmode=require");
+
+    expect(await screen.findByText(reason)).toBeInTheDocument();
+    expect(fetchCalls.filter((c) => c.method === "POST")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  it("changes a website connection on the website, from the version it started with", async () => {
+    bridge.syncUpdate.mockResolvedValue({ kind: "saved", body: { connection: { id: 31 } } });
+    await shown();
+    fireEvent.click(within(rowFor("Shop")).getByRole("button", { name: /Edit/ }));
+    expect(screen.getByText("Saved on the website, for everyone in Acme.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("Connection updated")).toBeInTheDocument();
+    expect(bridge.syncUpdate).toHaveBeenCalledWith(31, expect.objectContaining({ name: "Shop", base_version: 4 }));
+    expect(fetchCalls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("changes this computer's own connection here, as before", async () => {
+    setRoutes([
+      { match: "/api/connections", method: "PUT", body: LAPTOP },
+      { match: "/api/connections", method: "GET", body: [SHOP, LAPTOP, REPORTS] },
+    ]);
+    await shown();
+    fireEvent.click(within(rowFor("Laptop")).getByRole("button", { name: /Edit/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("Connection updated")).toBeInTheDocument();
+    expect(bridge.syncUpdate).not.toHaveBeenCalled();
+    const puts = fetchCalls.filter((c) => c.method === "PUT");
+    expect(JSON.parse(puts[0].body ?? "{}")).toEqual(expect.objectContaining({ id: 2, base_version: 3 }));
+  });
+
+  it("asks which version stays when somebody changed it first", async () => {
+    const current = { ...SHOP, id: 31, version: 5, updated_by: "sam@example.test", updated_at: new Date().toISOString() };
+    bridge.syncUpdate
+      .mockResolvedValueOnce({
+        kind: "refused",
+        status: 409,
+        body: {
+          error: 'sam@example.test saved "Shop" after you opened it. Keep their version, or save yours on top.',
+          conflict: true,
+          current,
+        },
+      })
+      .mockResolvedValueOnce({ kind: "saved", body: { connection: current } });
+    await shown();
+    fireEvent.click(within(rowFor("Shop")).getByRole("button", { name: /Edit/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    // Both dialogs stay mounted (see deleteDialog), so "open" is what shows one.
+    const modal = dialog("Changed while you were editing");
+    await waitFor(() => expect(modal).toHaveClass("open"));
+    expect(within(modal).getByText(/saved "Shop" after you opened it/)).toBeInTheDocument();
+    expect(within(modal).getByText("just now")).toBeInTheDocument();
+    // Nothing was saved, and the drawer is out of the way.
+    expect(document.querySelector(".drawer")).not.toHaveClass("open");
+
+    fireEvent.click(within(modal).getByRole("button", { name: "Save mine on top" }));
+    expect(await screen.findByText("Connection updated")).toBeInTheDocument();
+    // The second try starts from the version that won.
+    expect(bridge.syncUpdate).toHaveBeenLastCalledWith(31, expect.objectContaining({ base_version: 5 }));
+    expect(modal).not.toHaveClass("open");
+  });
+
+  it("deletes a website connection on the website", async () => {
+    bridge.syncRemove.mockResolvedValue({ kind: "saved", body: { ok: true } });
+    await shown();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Shop" }));
+    expect(within(deleteDialog()).getByText(/It is deleted on the website, for everyone in Acme/)).toBeInTheDocument();
+    fireEvent.click(within(deleteDialog()).getByRole("button", { name: /Delete connection/ }));
+
+    expect(await screen.findByText("Connection deleted")).toBeInTheDocument();
+    expect(bridge.syncRemove).toHaveBeenCalledWith(31, 4, false);
+    expect(fetchCalls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("changes nothing and says so when the website went away mid-save", async () => {
+    const message = "The website cannot be reached right now, so nothing was changed. Try again once it is back.";
+    bridge.syncRemove.mockResolvedValue({ kind: "offline", message });
+    await shown();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Shop" }));
+    fireEvent.click(within(deleteDialog()).getByRole("button", { name: /Delete connection/ }));
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(deleteDialog()).not.toHaveClass("open");
+    expect(screen.getByRole("button", { name: "Delete Shop" })).toBeInTheDocument();
+  });
+
+  it("sends one of this computer's connections up to the website on request", async () => {
+    bridge.syncSendUp.mockResolvedValue({ kind: "saved", body: { connection: { id: 50 } } });
+    await shown();
+    // localhost only means something here, so it is not offered.
+    expect(screen.queryByRole("button", { name: "Send Laptop to the website" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send Shop to the website" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send Reports to the website" }));
+    const modal = dialog(/to the website\?/);
+    expect(modal).toHaveClass("open");
+    expect(within(modal).getByText(/everyone\s+in Acme can use it/)).toBeInTheDocument();
+    fireEvent.click(within(modal).getByRole("button", { name: "Send to website" }));
+
+    expect(await screen.findByText("Sent Reports to the website")).toBeInTheDocument();
+    expect(bridge.syncSendUp).toHaveBeenCalledWith(3);
+  });
+
+  it("reads the list again when the sync changed it", async () => {
+    const timers = jest.spyOn(window, "setInterval");
+    try {
+      await shown();
+      const poll = timers.mock.calls.find((call) => call[1] === 10_000);
+      if (!poll) throw new Error("The page does not ask the desktop app again");
+      const reads = () => fetchCalls.filter((c) => c.method === "GET" && c.url === "/api/connections").length;
+      const before = reads();
+
+      // Same answer: nothing changed, so nothing is read again.
+      await act(async () => (poll[0] as () => void)());
+      await flushAsync();
+      expect(reads()).toBe(before);
+
+      bridge.syncStatus.mockResolvedValue({ ...LINKED, changedAt: 2 });
+      await act(async () => (poll[0] as () => void)());
+      await waitFor(() => expect(reads()).toBe(before + 1));
+    } finally {
+      timers.mockRestore();
+    }
+  });
+});
+
+describe("somebody changed it first, on the website", () => {
+  const ORDERS = conn({ id: 1, name: "Orders DB", version: 2 });
+
+  it("deletes over the newer version only when asked again", async () => {
+    const current = { ...ORDERS, version: 3, updated_by: "sam@example.test", updated_at: new Date().toISOString() };
+    setRoutes([
+      { match: "/api/connections", method: "GET", body: [ORDERS] },
+      {
+        match: "/api/connections",
+        method: "DELETE",
+        status: 409,
+        body: { error: "Changed", conflict: true, current },
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Orders DB" }));
+    fireEvent.click(within(deleteDialog()).getByRole("button", { name: /Delete connection/ }));
+
+    const modal = (await screen.findByRole("heading", { name: "Changed before you deleted it" })).closest(
+      ".modal-scrim"
+    ) as HTMLElement;
+    await waitFor(() => expect(modal).toHaveClass("open"));
+    expect(within(modal).getByText(/sam@example.test changed "Orders DB" after this page read it/)).toBeInTheDocument();
+
+    setRoutes([
+      { match: "/api/connections", method: "GET", body: [] },
+      { match: "/api/connections", method: "DELETE", body: { ok: true } },
+    ]);
+    fireEvent.click(within(modal).getByRole("button", { name: "Delete anyway" }));
+    await waitFor(() => expect(screen.getByText("No connections yet.")).toBeInTheDocument());
+    expect(fetchCalls.filter((c) => c.method === "DELETE").map((c) => c.body)).toEqual([
+      JSON.stringify({ id: 1, base_version: 2, confirm: false }),
+      JSON.stringify({ id: 1, base_version: 3, confirm: false }),
+    ]);
+  });
+
+  it("keeps their version and reads the list again", async () => {
+    const current = { ...ORDERS, port: 6543, version: 3, updated_by: "sam@example.test" };
+    setRoutes([
+      { match: "/api/connections", method: "GET", body: [ORDERS] },
+      {
+        match: "/api/connections",
+        method: "PUT",
+        status: 409,
+        body: { error: 'sam@example.test saved "Orders DB" after you opened it.', conflict: true, current },
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(within(rowFor("Orders DB")).getByRole("button", { name: /Edit/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    const modal = screen.getByRole("heading", { name: "Changed while you were editing" }).closest(
+      ".modal-scrim"
+    ) as HTMLElement;
+    await waitFor(() => expect(modal).toHaveClass("open"));
+    expect(within(modal).getByText("db.internal:6543/shop")).toBeInTheDocument();
+    const gets = fetchCalls.filter((c) => c.method === "GET" && c.url === "/api/connections").length;
+    fireEvent.click(within(modal).getByRole("button", { name: "Keep theirs" }));
+
+    await waitFor(() =>
+      expect(fetchCalls.filter((c) => c.method === "GET" && c.url === "/api/connections").length).toBe(gets + 1)
+    );
+    expect(fetchCalls.filter((c) => c.method === "PUT")).toHaveLength(1);
+    expect(JSON.parse(fetchCalls.find((c) => c.method === "PUT")?.body ?? "{}").base_version).toBe(2);
+  });
+});
+
+describe("the person's own computers, on the website", () => {
+  it("lists what each linked computer keeps, by name only", async () => {
+    setRoutes([
+      { match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] },
+      {
+        match: "/api/computers?connections=all",
+        body: {
+          computers: [
+            {
+              id: 1,
+              name: "Work laptop",
+              online: false,
+              lastSeenAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+              connections: [{ id: 5, name: "Laptop Postgres", environment: "dev", shared: false }],
+            },
+            { id: 2, name: "Spare", online: true, lastSeenAt: null, connections: [] },
+          ],
+        },
+      },
+    ]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    expect(await screen.findByRole("heading", { name: "On your computers" })).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Connections on Work laptop" });
+    expect(within(list).getByText("Laptop Postgres")).toBeInTheDocument();
+    expect(screen.getByText("last seen 3h ago")).toBeInTheDocument();
+    // A computer that holds nothing is left out.
+    expect(screen.queryByText("Spare")).toBeNull();
+  });
+
+  it("does not ask for a role that may not compare", async () => {
+    setCustomRole("reader", "Reader", ["connections:read"]);
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+    await flushAsync();
+    expect(fetchCalls.some((c) => c.url.startsWith("/api/computers"))).toBe(false);
   });
 });

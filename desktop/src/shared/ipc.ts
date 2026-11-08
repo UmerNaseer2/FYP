@@ -45,6 +45,23 @@ export type FoundDatabase = {
 /** "system" follows Ubuntu's light or dark style; the other two pin one. */
 export type ThemeChoice = "system" | "light" | "dark";
 
+/**
+ * How this computer stands with the website it is linked to, for the
+ * Connections screen (docs/two-way-sync-plan.md). The same shape as the web
+ * app's DesktopSyncStatus; src/contract/bridge-contract.ts checks it.
+ */
+export type SyncStatus =
+  | { linked: false; changedAt: number | null }
+  | { linked: true; origin: string; orgName: string; online: boolean; lastSyncedAt: number | null; changedAt: number | null };
+
+/** How a change sent through the link ended. The same shape as the web app's DesktopSyncAnswer. */
+export type SyncAnswer =
+  | { kind: "saved"; body: unknown }
+  | { kind: "local"; reason: string }
+  | { kind: "refused"; status: number; body: unknown }
+  | { kind: "offline"; message: string }
+  | { kind: "not-linked" };
+
 /** The web app's bridge (my-app/lib/desktop-bridge.ts). */
 export const BRIDGE = {
   signIn: "desktop:sign-in",
@@ -53,6 +70,11 @@ export const BRIDGE = {
   findLocalDatabases: "desktop:find-local-databases",
   setTheme: "desktop:set-theme",
   openSettings: "desktop:open-settings",
+  syncStatus: "desktop:sync-status",
+  syncCreate: "desktop:sync-create",
+  syncUpdate: "desktop:sync-update",
+  syncRemove: "desktop:sync-remove",
+  syncSendUp: "desktop:sync-send-up",
 } as const;
 
 /** The start screen. */

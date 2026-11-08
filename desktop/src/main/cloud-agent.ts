@@ -37,8 +37,9 @@
  * it a fetch from a session with no cookies (src/main/desktop-app.ts).
  */
 import { parseCloudLinkState, type CloudLinkState } from "../core/cloud-agent-file";
+import { staysHome } from "../core/stays-home";
 import { utf8 } from "../shared/remote/bytes";
-import type { CloudLinkResult, CloudView } from "../shared/ipc";
+import type { CloudLinkResult, CloudView, SyncAnswer, SyncStatus } from "../shared/ipc";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { readRequest, type CompareSummary, type Request } from "../shared/remote/rpc";
 import type { Clock } from "./clock";
@@ -64,6 +65,12 @@ export const JOB_LIMIT_MS = 150_000;
 const SITE_LIMIT_MS = 20_000;
 /** The site turns away a bigger answer (MAX_ANSWER_BYTES in the web app's lib/agent-rules.ts). */
 export const MAX_ANSWER_BYTES = 1024 * 1024;
+/** The header this computer's server reads the sync token from (SYNC_HEADER in the web app's lib/desktop-sync.ts). */
+export const SYNC_HEADER = "x-schema-studio-sync";
+/** How often, at most, to ask the site whether its connections changed. Each ask follows a poll that worked. */
+export const SYNC_EVERY_MS = 15_000;
+/** How long to wait before asking again a site that has no sync, such as one not yet updated. */
+export const NO_SYNC_RETRY_MS = 30 * 60_000;
 
 const BAD_ADDRESS = "That is not a web address Schema Studio can use. It looks like https://schema-studio.example.com.";
 const NOT_REACHED = "Could not reach that site. Check the address and your connection.";
@@ -78,6 +85,12 @@ const SITE_TROUBLE = "Cannot reach the site right now. Schema Studio keeps tryin
 const LOCKED = "The site link could not be opened because the login keyring is locked. Unlock it and start Schema Studio again.";
 const DAMAGED = "The saved site link could not be read. Unlink it to start again.";
 const FAILED_TO_START = "The site link could not start. The log has the details.";
+const STAYS_HOME = "Its address only works on this computer, so it stays here, password and all.";
+const SAVED_HERE_OFFLINE =
+  "The website cannot be reached right now, so this was saved on this computer only. Use Send to website once it is back.";
+const SITE_HAS_NO_SYNC = "The linked website does not share connections yet, so this was saved on this computer only.";
+const WRITE_OFFLINE = "The website cannot be reached right now, so nothing was changed. Try again once it is back.";
+const GONE_HERE = "That connection is no longer on this computer.";
 
 export type CloudStore = {
   load(): LoadResult<CloudLinkState>;
@@ -103,7 +116,48 @@ export type CloudAgentOptions = {
   onChange: () => void;
   /** How long one question may take. Only the tests change it. */
   jobLimitMs?: number;
+  /** This computer's own server's side of the two-way sync. Without it, nothing is synced. */
+  sync?: SyncHost;
 };
+
+/** One of this computer's own connections, as the site lists it under the computer. */
+export type OwnConnection = { id: number; name: string; environment: string };
+
+/**
+ * This computer's own server's side of the two-way sync
+ * (docs/two-way-sync-plan.md; app/api/desktop/sync in the web app). The app
+ * calls it with a token only the main process holds.
+ */
+export type SyncHost = {
+  /** Makes this computer's copies of the site's connections match the list. Throws when it could not. */
+  apply(connections: readonly unknown[]): Promise<void>;
+  /** This computer's own connections, by name only. */
+  local(): Promise<OwnConnection[]>;
+  /** One of this computer's own connections in full, password included, or null when it is not one. */
+  export(id: number): Promise<Record<string, unknown> | null>;
+  /** One of this computer's own connections became that site connection. */
+  adopt(id: number, siteId: number, siteVersion: number): Promise<boolean>;
+};
+
+/** This computer's server's list of its own connections ({ connections } from the "local" action). Throws when it is not one. */
+export function readOwnConnections(body: unknown): OwnConnection[] {
+  if (!isRecord(body) || !Array.isArray(body.connections)) throw new Error("This computer's list of connections could not be read.");
+  return body.connections.flatMap((row): OwnConnection[] => {
+    if (!isRecord(row)) return [];
+    const { id, name, environment } = row;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return [];
+    if (typeof name !== "string" || typeof environment !== "string") return [];
+    return [{ id, name: name.slice(0, 200), environment: environment.slice(0, 50) }];
+  });
+}
+
+/** One connection from the server's "export" action, or null. */
+export function readExported(body: unknown): Record<string, unknown> | null {
+  return isRecord(body) && isRecord(body.connection) ? body.connection : null;
+}
+
+/** What the site sent back to a change, or why there is nothing to read. */
+type SiteWrite = { kind: "answer"; status: number; json: unknown } | { kind: "offline"; message: string } | { kind: "not-linked" };
 
 type Linking = {
   origin: string;
@@ -172,6 +226,22 @@ export function readCloudJob(method: unknown, params: unknown): Extract<Request,
   return request.method === "schemas.list" || request.method === "compare.run" ? request : null;
 }
 
+/** The site's answer to GET /api/agent/sync, or null when it is not one. Each row is checked by this computer's server. */
+function readSyncAnswer(body: unknown): { rev: string; connections: readonly unknown[] | null } | null {
+  if (!isRecord(body) || typeof body.rev !== "string" || body.rev.length === 0 || body.rev.length > 100) return null;
+  if (body.same === true) return { rev: body.rev, connections: null };
+  if (body.same !== false || !Array.isArray(body.connections) || body.connections.length > 2000) return null;
+  return { rev: body.rev, connections: body.connections };
+}
+
+/** The id and version of a connection the site just saved, or null. */
+function readSaved(body: unknown): { id: number; version: number } | null {
+  if (!isRecord(body)) return null;
+  const id = Number(body.id);
+  const version = Number(body.version);
+  return Number.isSafeInteger(id) && id > 0 && Number.isSafeInteger(version) && version > 0 ? { id, version } : null;
+}
+
 function sameIds(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
@@ -199,6 +269,20 @@ export class CloudAgent {
   private publishAgain = false;
   /** Sorted, or null before the first time the site heard. */
   private publishedIds: readonly number[] | null = null;
+  /** What the site last heard of this computer's own connections, to notice one added, renamed or deleted here. */
+  private publishedOwn: string | null = null;
+
+  // The two-way sync. All of its work runs one piece at a time, in order, on syncChain.
+  private syncChain: Promise<unknown> = Promise.resolve();
+  /** The site's mark for the list this computer has, so an unchanged list is not sent again. */
+  private syncRev: string | null = null;
+  private lastSyncTry = 0;
+  private syncedAt: number | null = null;
+  /** When the site's connections last changed here, so the Connections screen knows to read them again. */
+  private changedAt: number | null = null;
+  /** Whether the site has the sync: null until it answers. */
+  private siteSyncs: boolean | null = null;
+  private noSyncUntil = 0;
 
   constructor(private readonly options: CloudAgentOptions) {}
 
@@ -301,6 +385,7 @@ export class CloudAgent {
     this.link = null;
     this.problem = null;
     this.publishedIds = null;
+    this.dropCopies();
     if (this.damaged) {
       this.damaged = false;
       this.unavailable = null;
@@ -324,6 +409,228 @@ export class CloudAgent {
   sharedChanged(): void {
     if (this.link === null) return;
     if (this.publishing || this.publishedIds === null || !sameIds(this.sharedIds(), this.publishedIds)) void this.publish(this.run);
+  }
+
+  /** How this computer stands with the site, for the Connections screen. */
+  syncStatus(): SyncStatus {
+    const link = this.link;
+    if (link === null || this.options.sync === undefined || this.siteSyncs === false) return { linked: false, changedAt: this.changedAt };
+    return {
+      linked: true,
+      origin: link.origin,
+      orgName: link.orgName,
+      online: this.problem === null,
+      lastSyncedAt: this.syncedAt,
+      changedAt: this.changedAt,
+    };
+  }
+
+  /**
+   * Adds a connection on the site, when the site can reach its database. One
+   * whose address only works here never leaves this computer; one the site
+   * cannot reach stays here too (docs/two-way-sync-plan.md, rules 2 and 3).
+   */
+  syncCreate(connection: Record<string, unknown>): Promise<SyncAnswer> {
+    if (this.link === null || this.options.sync === undefined) return Promise.resolve({ kind: "not-linked" });
+    if (staysHome(connection)) return Promise.resolve({ kind: "local", reason: STAYS_HOME });
+    return this.queue(async () => {
+      const link = this.link;
+      if (link === null) return { kind: "not-linked" };
+      if (this.siteSyncs === false) return { kind: "local", reason: SITE_HAS_NO_SYNC };
+      if (this.problem !== null) return { kind: "local", reason: SAVED_HERE_OFFLINE };
+      const run = this.run;
+      const sent = await this.siteWrite(link, "POST", connection);
+      if (sent.kind !== "answer") return sent.kind === "offline" ? { kind: "local", reason: SAVED_HERE_OFFLINE } : sent;
+      const { status, json } = sent;
+      if (status === 404) return this.siteHasNoSync();
+      if (status === 200 && isRecord(json) && json.saved === false) {
+        return { kind: "local", reason: typeof json.reason === "string" && json.reason !== "" ? json.reason : SAVED_HERE_OFFLINE };
+      }
+      if (status === 200 && isRecord(json) && json.saved === true) {
+        await this.syncDown(run);
+        return { kind: "saved", body: json.connection };
+      }
+      return { kind: "refused", status, body: json };
+    });
+  }
+
+  /** Saves a change to one of the site's connections, on the site. It comes back down with the next sync, which runs at once. */
+  syncUpdate(siteId: number, connection: Record<string, unknown>): Promise<SyncAnswer> {
+    return this.siteChange("PUT", { ...connection, id: siteId });
+  }
+
+  /** Deletes one of the site's connections, on the site. */
+  syncRemove(siteId: number, baseVersion: number | null, confirm: boolean): Promise<SyncAnswer> {
+    return this.siteChange("DELETE", { id: siteId, base_version: baseVersion, confirm });
+  }
+
+  /**
+   * Sends one of this computer's own connections up to the site. The site
+   * tests it first and keeps it only if it can reach the database. The row
+   * here then becomes the site's copy, keeping its number, so its history
+   * and saved comparisons keep working.
+   */
+  syncSendUp(localId: number): Promise<SyncAnswer> {
+    const sync = this.options.sync;
+    if (this.link === null || sync === undefined) return Promise.resolve({ kind: "not-linked" });
+    return this.queue(async () => {
+      const link = this.link;
+      if (link === null) return { kind: "not-linked" };
+      const run = this.run;
+      const connection = await sync.export(localId);
+      if (connection === null) return { kind: "refused", status: 404, body: { error: GONE_HERE } };
+      if (staysHome(connection)) return { kind: "local", reason: STAYS_HOME };
+      const sent = await this.siteWrite(link, "POST", connection);
+      if (sent.kind !== "answer") return sent;
+      const { status, json } = sent;
+      if (status === 404) return this.siteHasNoSync();
+      if (status === 200 && isRecord(json) && json.saved === false) {
+        return { kind: "local", reason: typeof json.reason === "string" && json.reason !== "" ? json.reason : WRITE_OFFLINE };
+      }
+      const saved = status === 200 && isRecord(json) && json.saved === true ? readSaved(json.connection) : null;
+      if (saved === null) return { kind: "refused", status, body: json };
+      if (run !== this.run) return { kind: "not-linked" };
+      await sync.adopt(localId, saved.id, saved.version);
+      await this.syncDown(run);
+      void this.publish(run);
+      return { kind: "saved", body: isRecord(json) ? json.connection : null };
+    });
+  }
+
+  /** Adding is the one change that never answers 404 on a site that has the sync, so a 404 means the site has none yet. */
+  private siteHasNoSync(): SyncAnswer {
+    this.siteSyncs = false;
+    this.noSyncUntil = this.options.clock.now() + NO_SYNC_RETRY_MS;
+    return { kind: "local", reason: SITE_HAS_NO_SYNC };
+  }
+
+  private siteChange(method: "PUT" | "DELETE", body: Record<string, unknown>): Promise<SyncAnswer> {
+    if (this.link === null || this.options.sync === undefined) return Promise.resolve({ kind: "not-linked" });
+    return this.queue(async () => {
+      const link = this.link;
+      if (link === null) return { kind: "not-linked" };
+      const run = this.run;
+      const sent = await this.siteWrite(link, method, body);
+      if (sent.kind !== "answer") return sent;
+      if (sent.status !== 200) return { kind: "refused", status: sent.status, body: sent.json };
+      await this.syncDown(run);
+      return { kind: "saved", body: sent.json };
+    });
+  }
+
+  /** Sends one change to the site's connections, as the person who linked this computer. */
+  private async siteWrite(link: CloudLinkState, method: "POST" | "PUT" | "DELETE", body: unknown): Promise<SiteWrite> {
+    const run = this.run;
+    try {
+      const response = await this.send(link.origin, method, "/api/agent/sync/connections", body, link.token);
+      const json = await bodyOf(response);
+      if (run !== this.run) return { kind: "not-linked" };
+      if (response.status === 401) {
+        this.siteForgotUs();
+        return { kind: "not-linked" };
+      }
+      // A host's own error page, not the site's answer.
+      if (response.status >= 500 && !(isRecord(json) && typeof json.error === "string")) throw new Error(`The site answered ${response.status}.`);
+      this.setProblem(null);
+      return { kind: "answer", status: response.status, json };
+    } catch (error) {
+      if (run !== this.run) return { kind: "not-linked" };
+      logWarn(`Could not send a change to the site: ${error instanceof Error ? error.name : "unknown error"}.`);
+      this.setProblem(SITE_TROUBLE);
+      return { kind: "offline", message: WRITE_OFFLINE };
+    }
+  }
+
+  /** Runs one piece of sync work after the ones before it, whatever became of them. */
+  private queue<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.syncChain.then(work, work);
+    this.syncChain = next.catch(() => undefined);
+    return next;
+  }
+
+  /**
+   * Asks the site for its connections, and makes this computer's copies
+   * match. The site answers "same" when nothing changed since the last ask,
+   * which is most of the time. Returns whether it worked.
+   */
+  private async syncDown(run: number): Promise<boolean> {
+    const link = this.link;
+    const sync = this.options.sync;
+    if (link === null || sync === undefined || run !== this.run) return false;
+    const now = this.options.clock.now();
+    this.lastSyncTry = now;
+    try {
+      const rev = this.syncRev === null ? "" : `?rev=${encodeURIComponent(this.syncRev)}`;
+      const response = await this.send(link.origin, "GET", `/api/agent/sync${rev}`, undefined, link.token);
+      if (run !== this.run) return false;
+      if (response.status === 401) {
+        this.siteForgotUs();
+        return false;
+      }
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => undefined);
+        if (this.siteSyncs !== false) logInfo("The linked site does not share its connections yet. Asking again later.");
+        this.siteSyncs = false;
+        this.noSyncUntil = now + NO_SYNC_RETRY_MS;
+        return false;
+      }
+      if (!response.ok) throw new Error(`The site answered ${response.status}.`);
+      const answer = readSyncAnswer(await bodyOf(response));
+      if (run !== this.run) return false;
+      if (answer === null) throw new Error("The site's list could not be read.");
+      const first = this.siteSyncs !== true;
+      this.siteSyncs = true;
+      if (answer.connections !== null) {
+        await sync.apply(answer.connections);
+        if (run !== this.run) return false;
+        this.changedAt = this.options.clock.now();
+      }
+      this.syncRev = answer.rev;
+      this.syncedAt = this.options.clock.now();
+      // The first time, the site hears about every connection here, not just the shared ones. After that, when one changes.
+      if (first || (await this.ownPrint()) !== this.publishedOwn) void this.publish(run);
+      return true;
+    } catch (error) {
+      if (run === this.run) logWarn(`Could not bring the site's connections up to date: ${error instanceof Error ? error.name : "unknown error"}.`);
+      return false;
+    }
+  }
+
+  /** What this computer's own connections look like to the site now, to notice a change. */
+  private async ownPrint(): Promise<string | null> {
+    try {
+      return JSON.stringify(await this.ownConnections());
+    } catch {
+      return this.publishedOwn;
+    }
+  }
+
+  /** Every one of this computer's own connections, each marked shared or not. Only for a site that has the sync. */
+  private async ownConnections(): Promise<(OwnConnection & { shared: boolean })[]> {
+    const sync = this.options.sync;
+    if (sync === undefined) return [];
+    const shared = new Set(this.options.sharedConnectionIds());
+    return (await sync.local()).map(({ id, name, environment }) => ({ id, name, environment, shared: shared.has(id) }));
+  }
+
+  /** Clears this computer's copies of a site's connections, after a link ends or before a new one starts. */
+  private dropCopies(): void {
+    const sync = this.options.sync;
+    this.syncRev = null;
+    this.syncedAt = null;
+    this.siteSyncs = null;
+    this.noSyncUntil = 0;
+    this.lastSyncTry = 0;
+    this.publishedOwn = null;
+    if (sync === undefined) return;
+    void this.queue(async () => {
+      try {
+        await sync.apply([]);
+        this.changedAt = this.options.clock.now();
+      } catch (error) {
+        logWarn("Could not remove the site's connections from this computer.", error);
+      }
+    });
   }
 
   private sharedIds(): number[] {
@@ -413,6 +720,8 @@ export class CloudAgent {
       return this.linkEnded(NOT_SAVED);
     }
     this.endLinking();
+    // Copies left by a link to another site, if any, go before this one's arrive.
+    this.dropCopies();
     this.link = state;
     this.notice = null;
     this.problem = null;
@@ -477,11 +786,21 @@ export class CloudAgent {
 
     this.failures = 0;
     this.setProblem(null);
+    this.maybeSync(run);
     if (job === null) return this.schedulePoll(run, this.nextPollMs());
     this.busyUntil = this.options.clock.now() + BUSY_FOR_MS;
     void this.answer(run, link, job);
     // At once, because a second question may be waiting behind this one.
     this.schedulePoll(run, 0);
+  }
+
+  /** After a poll that worked: asks the site whether its connections changed, if it is time. */
+  private maybeSync(run: number): void {
+    if (this.options.sync === undefined) return;
+    const now = this.options.clock.now();
+    if (now - this.lastSyncTry < SYNC_EVERY_MS || now < this.noSyncUntil) return;
+    this.lastSyncTry = now;
+    void this.queue(() => this.syncDown(run));
   }
 
   private pollFailed(run: number, error: unknown): void {
@@ -506,6 +825,7 @@ export class CloudAgent {
     this.link = null;
     this.problem = null;
     this.publishedIds = null;
+    this.dropCopies();
     this.notice = UNLINKED_THERE;
     try {
       this.options.store.remove();
@@ -568,7 +888,10 @@ export class CloudAgent {
     this.publishTimer = this.options.clock.setTimeout(() => void this.publish(run), PUBLISH_EVERY_MS);
     try {
       const ids = this.sharedIds();
-      const connections = await this.sharedConnections(ids);
+      // A site with the sync hears of every connection here, each marked shared or not, so it can list them under
+      // this computer. Read through the main process's own token, so it works with nobody signed in here.
+      const own = this.siteSyncs === true && this.options.sync !== undefined ? await this.ownConnections() : null;
+      const connections = own ?? (await this.sharedConnections(ids));
       if (run !== this.run) return;
       const response = await this.send(link.origin, "PUT", "/api/agent/connections", { connections }, link.token);
       await response.body?.cancel().catch(() => undefined);
@@ -576,6 +899,7 @@ export class CloudAgent {
       if (response.status === 401) return this.siteForgotUs();
       if (!response.ok) throw new Error(`The site answered ${response.status}.`);
       this.publishedIds = ids;
+      if (own !== null) this.publishedOwn = JSON.stringify(own);
     } catch (error) {
       // Tried again at the next turn. A person signed out here keeps the list the site already has.
       if (run === this.run && !(error instanceof Refused)) {

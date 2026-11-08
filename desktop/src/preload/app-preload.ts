@@ -33,6 +33,11 @@
     findLocalDatabases: "desktop:find-local-databases",
     setTheme: "desktop:set-theme",
     openSettings: "desktop:open-settings",
+    syncStatus: "desktop:sync-status",
+    syncCreate: "desktop:sync-create",
+    syncUpdate: "desktop:sync-update",
+    syncRemove: "desktop:sync-remove",
+    syncSendUp: "desktop:sync-send-up",
   };
   const STARTUP: Ipc["STARTUP"] = {
     getState: "startup:get-state",
@@ -63,6 +68,11 @@
       findLocalDatabases: () => ipcRenderer.invoke(BRIDGE.findLocalDatabases),
       setTheme: (choice) => ipcRenderer.send(BRIDGE.setTheme, choice),
       openSettings: () => ipcRenderer.send(BRIDGE.openSettings),
+      syncStatus: () => ipcRenderer.invoke(BRIDGE.syncStatus),
+      syncCreate: (connection) => ipcRenderer.invoke(BRIDGE.syncCreate, connection),
+      syncUpdate: (siteId, connection) => ipcRenderer.invoke(BRIDGE.syncUpdate, siteId, connection),
+      syncRemove: (siteId, baseVersion, confirm) => ipcRenderer.invoke(BRIDGE.syncRemove, siteId, baseVersion, confirm),
+      syncSendUp: (localId) => ipcRenderer.invoke(BRIDGE.syncSendUp, localId),
     };
     contextBridge.exposeInMainWorld("schemaStudioDesktop", desktop);
   }

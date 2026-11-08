@@ -42,6 +42,9 @@ const EXEMPT: Record<string, string> = {
   "agent/jobs/[id]": "checked against the computer's own token instead",
   "agent/connections": "checked against the computer's own token instead",
   "agent/self": "checked against the computer's own token instead",
+  "agent/sync": "checked against the computer's own token, then its person's role (lib/agent-sync.ts)",
+  "agent/sync/connections": "checked against the computer's own token, then its person's role",
+  "desktop/sync": "checked against the desktop's own main-process token, and 404 off the desktop (lib/desktop-sync.ts)",
 };
 
 /**

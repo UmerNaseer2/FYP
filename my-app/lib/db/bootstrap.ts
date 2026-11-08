@@ -560,6 +560,23 @@ async function backfillOlderTables(): Promise<void> {
      UPDATE connections SET ssl_mode = 'require' WHERE ssl IS TRUE AND ssl_mode = 'disable'`
   );
 
+  // Two-way sync with a linked desktop (docs/two-way-sync-plan.md): a version
+  // that every save moves on, who saved last, and on a desktop the website's
+  // number and version for a connection it holds a copy of.
+  await metadataPool.query(
+    `ALTER TABLE connections
+       ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1,
+       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ,
+       ADD COLUMN IF NOT EXISTS updated_by TEXT,
+       ADD COLUMN IF NOT EXISTS site_id INTEGER,
+       ADD COLUMN IF NOT EXISTS site_version INTEGER`
+  );
+  // A computer used to send only the connections its person shared with the
+  // phone, so every row already there is a shared one.
+  await metadataPool.query(
+    `ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT true`
+  );
+
   // `environment` is the typed dev / staging / prod label. It is deliberately
   // NOT guessed from the row's name: the whole point is that the label is data
   // the app can trust, and a regex over "Prod — RDS" is not that. Rows created

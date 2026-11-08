@@ -142,6 +142,14 @@ const UNGATED = [
   "POST /api/agent/jobs/[id]",
   "PUT /api/agent/connections",
   "DELETE /api/agent/self",
+  // The two-way sync. A linked computer's own token, checked against the
+  // person who linked it and their role inside the handler.
+  "GET /api/agent/sync",
+  "POST /api/agent/sync/connections",
+  "PUT /api/agent/sync/connections",
+  "DELETE /api/agent/sync/connections",
+  // The desktop app's own server, answering only its main process's token.
+  "POST /api/desktop/sync",
   "GET /api/internal/drift-tick",
   "GET /api/auth/[...nextauth]",
   "POST /api/auth/[...nextauth]"];

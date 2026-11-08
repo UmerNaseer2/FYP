@@ -15,6 +15,7 @@ import {
   findDefaultMembership,
   findDefaultOrganization,
   findMembership,
+  findMembershipById,
   findOrganization,
   type Member,
   type Organization,
@@ -306,28 +307,49 @@ async function signedInPrincipal(slug: string | null): Promise<Resolution> {
       );
       return { kind: "unavailable" };
     }
-    return {
-      kind: "ok",
-      principal: {
-        profileId,
-        email: membership.email,
-        name: membership.personName ?? membership.email,
-        role: access.role,
-        roleLabel: access.roleLabel,
-        permissions: access.permissions,
-        bypass: false,
-        viewingAs: null,
-        orgId: membership.orgId,
-        orgSlug: membership.slug,
-        orgName: membership.name,
-        orgIsDefault: membership.isDefault,
-        orgTwoPersonRule: membership.twoPersonRule,
-      },
-    };
+    return { kind: "ok", principal: memberPrincipal(profileId, membership, access) };
   } catch (error) {
     console.error("Could not read the caller's membership:", error);
     return { kind: "unavailable" };
   }
+}
+
+function memberPrincipal(
+  profileId: number,
+  membership: Member,
+  access: NonNullable<Awaited<ReturnType<typeof getRoleAccess>>>
+): Principal {
+  return {
+    profileId,
+    email: membership.email,
+    name: membership.personName ?? membership.email,
+    role: access.role,
+    roleLabel: access.roleLabel,
+    permissions: access.permissions,
+    bypass: false,
+    viewingAs: null,
+    orgId: membership.orgId,
+    orgSlug: membership.slug,
+    orgName: membership.name,
+    orgIsDefault: membership.isDefault,
+    orgTwoPersonRule: membership.twoPersonRule,
+  };
+}
+
+/**
+ * A linked computer's person, in the computer's organization, with the role
+ * they hold there now. The routes under /api/agent/sync act as this person, so
+ * a desktop can do through the link exactly what its person could do on the
+ * website, and no more. Null when they are no longer a member, which the
+ * computer's own check (lib/agent-auth.ts) would normally have caught first.
+ * Throws when the database cannot be read; the caller answers 503.
+ */
+export async function agentPrincipal(agent: { orgId: number; profileId: number }): Promise<Principal | null> {
+  const membership = await findMembershipById(agent.profileId, agent.orgId);
+  if (!membership) return null;
+  const access = await getRoleAccess(membership.orgId, membership.role);
+  if (!access) return null;
+  return memberPrincipal(agent.profileId, membership, access);
 }
 
 /** Who is calling, in the organization `slug` names, and what they may do there. Never throws. */

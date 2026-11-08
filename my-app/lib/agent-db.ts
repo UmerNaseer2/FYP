@@ -189,15 +189,16 @@ export async function replaceAgentConnections(agentId: number, connections: Comp
     ]);
     if (connections.length > 0) {
       await client.query(
-        `INSERT INTO agent_connections (agent_id, local_id, name, environment)
-         SELECT $1::int, * FROM unnest($2::int[], $3::text[], $4::text[])
+        `INSERT INTO agent_connections (agent_id, local_id, name, environment, shared)
+         SELECT $1::int, * FROM unnest($2::int[], $3::text[], $4::text[], $5::boolean[])
          ON CONFLICT (agent_id, local_id)
-         DO UPDATE SET name = EXCLUDED.name, environment = EXCLUDED.environment`,
+         DO UPDATE SET name = EXCLUDED.name, environment = EXCLUDED.environment, shared = EXCLUDED.shared`,
         [
           agentId,
           connections.map((connection) => connection.id),
           connections.map((connection) => connection.name),
           connections.map((connection) => connection.environment),
+          connections.map((connection) => connection.shared !== false),
         ]
       );
     }
@@ -269,8 +270,12 @@ export async function finishAgentJob(
   return rowCount === 1;
 }
 
-/** This person's computers in this organization. Nobody else's, by design. */
-export async function listComputers(orgId: number, profileId: number): Promise<Computer[]> {
+/**
+ * This person's computers in this organization. Nobody else's, by design. With
+ * `everything`, each computer's unshared connections too, for the website's
+ * Connections page; without it only the ones picked for the phone.
+ */
+export async function listComputers(orgId: number, profileId: number, everything = false): Promise<Computer[]> {
   await syncMetadataTables();
   const { rows } = await pool.query<{
     id: number;
@@ -282,15 +287,16 @@ export async function listComputers(orgId: number, profileId: number): Promise<C
     `SELECT a.id, a.name, a.last_seen_at,
             COALESCE(a.last_seen_at > now() - make_interval(secs => $3), false) AS online,
             COALESCE(
-              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name, 'environment', c.environment)
+              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name, 'environment', c.environment,
+                                                 'shared', c.shared)
                                ORDER BY c.name, c.local_id)
-                 FROM agent_connections c WHERE c.agent_id = a.id),
+                 FROM agent_connections c WHERE c.agent_id = a.id AND ($4 OR c.shared)),
               '[]'
             ) AS connections
        FROM agents a
       WHERE a.org_id = $1 AND a.profile_id = $2
       ORDER BY a.name, a.id`,
-    [orgId, profileId, ONLINE_WITHIN_SECONDS]
+    [orgId, profileId, ONLINE_WITHIN_SECONDS, everything]
   );
   return rows.map((row) => ({
     id: row.id,
@@ -330,7 +336,7 @@ export async function createAgentJob(
   await sweepAgentRows();
   const { rows: found } = await pool.query<{ online: boolean; shared: number[] }>(
     `SELECT COALESCE(a.last_seen_at > now() - make_interval(secs => $4), false) AS online,
-            ARRAY(SELECT c.local_id FROM agent_connections c WHERE c.agent_id = a.id) AS shared
+            ARRAY(SELECT c.local_id FROM agent_connections c WHERE c.agent_id = a.id AND c.shared) AS shared
        FROM agents a
       WHERE a.id = $1 AND a.org_id = $2 AND a.profile_id = $3`,
     [agentId, orgId, profileId, ONLINE_WITHIN_SECONDS]

@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
+import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { useOrgHref } from "@/hooks/useOrg";
 import { hasPostgresScheme, parsePostgresUri, uriToFields } from "@/lib/parse-uri";
@@ -52,11 +53,18 @@ import {
   AlertCircleIcon,
   AlertTriangleIcon,
   LockIcon,
+  MonitorIcon,
+  VersionSyncIcon,
 } from "@/components/ui/icons";
 import { EnvironmentPill, ExecuteRolePill, FilterPill } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import { LocalDatabaseFinder } from "@/components/studio/LocalDatabaseFinder";
-import type { FoundDatabase } from "@/lib/desktop-bridge";
+import {
+  getDesktopBridge,
+  type DesktopSyncAnswer,
+  type DesktopSyncStatus,
+  type FoundDatabase,
+} from "@/lib/desktop-bridge";
 import { apiFetch } from "@/lib/api-fetch";
 
 // ——— Data shapes ———
@@ -97,6 +105,19 @@ type Connection = {
   last_test_version?: string | null;
   last_test_latency_ms?: number | null;
   last_test_error?: string | null;
+  // Bumped by every save. A save or delete says which version it started
+  // from, so one made over somebody else's newer change is turned down.
+  version?: number;
+  // Inside the desktop app only: set on the copies of the linked website's
+  // connections. site_id is the website's own number for it and site_version
+  // its version there. Null on the computer's own connections and on the website.
+  site_id?: number | null;
+  site_version?: number | null;
+  // Whether a password is stored. A website copy comes down without one for a
+  // role that may not change connections.
+  has_password?: boolean;
+  updated_by?: string | null;
+  updated_at?: string | null;
 };
 
 /** What DELETE reports when a connection is still in use. */
@@ -107,6 +128,48 @@ type Dependents = {
   /** Saved comparison sets using this connection as their source or a target. */
   comparisonSets: number;
   comparisonSetNames: string[];
+};
+
+/** What a save or delete answers, read the same way from the website or from this computer. */
+type WriteBody = {
+  error?: string;
+  errors?: FieldErrors;
+  id?: number;
+  conflict?: boolean;
+  current?: Connection;
+  needsConfirmation?: boolean;
+  dependents?: Dependents;
+} | null;
+
+type WriteReply = { ok: boolean; status: number; body: WriteBody };
+
+function asWriteBody(value: unknown): WriteBody {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as WriteBody) : null;
+}
+
+/**
+ * A save or delete turned down because somebody changed the connection after
+ * this page read it. Nothing was written: the person picks which version stays.
+ */
+type Conflict = {
+  kind: "update" | "delete";
+  conn: Connection;
+  /** The save to send again on "Save mine on top". Empty for a delete. */
+  body: Record<string, unknown>;
+  /** Whether the delete was already confirmed over what uses the connection. */
+  confirm: boolean;
+  /** The newer version, as it stands now. */
+  current: Connection | null;
+  message: string;
+};
+
+/** One of the person's linked computers and the connections only it holds (website only). */
+type Computer = {
+  id: number;
+  name: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  connections: { id: number; name: string; environment: string | null; shared: boolean }[];
 };
 
 type RowResult =
@@ -147,6 +210,28 @@ function isLocalHost(host: string): boolean {
 // The string the Local quick start fills in. Hosted clears it, but keeps one
 // the person pasted.
 const LOCAL_QUICK_START_URI = "postgres://postgres@localhost:5432/postgres";
+
+// Why a website connection cannot be changed on this computer right now.
+const CHECKING_LOCK = "Checking the link to the website…";
+const NOT_LINKED_LOCK =
+  "This computer is no longer linked to the website, so the website's connections can't be changed here. Link it again in Settings.";
+const OFFLINE_LOCK =
+  "The website can't be reached right now. This connection belongs to the website, so it can be changed again once the website is back.";
+
+/**
+ * The version a save or delete of this row starts from. A desktop copy of a
+ * website connection is changed on the website, so it is the website's version.
+ */
+function startedFrom(conn: Connection): number | null {
+  const version = conn.site_id != null ? conn.site_version : conn.version;
+  return typeof version === "number" ? version : null;
+}
+
+/** The same row, starting from the newer version somebody else saved. */
+function atVersion(conn: Connection, version: number | null | undefined): Connection {
+  if (typeof version !== "number") return conn;
+  return conn.site_id != null ? { ...conn, site_version: version } : { ...conn, version };
+}
 
 /**
  * `base`, or `base 2`, `base 3` and so on when a saved connection already has
@@ -290,6 +375,31 @@ export default function ConnectionsPage() {
   const [deleteDependents, setDeleteDependents] = useState<Dependents | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // ——— The linked website (desktop app only) ———
+  // Inside the desktop app a connection is either the website's (shared with
+  // the organization, changed on the website, and locked while the website
+  // cannot be reached) or this computer's own. See docs/two-way-sync-plan.md.
+  const bridge = useDesktopBridge();
+  const [syncStatus, setSyncStatus] = useState<DesktopSyncStatus | null>(null);
+  // A note about where a change went, longer than a toast can hold. Stays until closed.
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [sendUpTarget, setSendUpTarget] = useState<Connection | null>(null);
+  const [sendingUp, setSendingUp] = useState(false);
+  const conflictRef = useRef<HTMLDivElement>(null);
+  const sendUpRef = useRef<HTMLDivElement>(null);
+  const conflictTitleId = useId();
+  const sendUpTitleId = useId();
+  useDialogFocus(conflict !== null, conflictRef);
+  useDialogFocus(sendUpTarget !== null, sendUpRef);
+  // The changedAt this page last read, so a change the sync brought in reloads
+  // the list. Undefined until the first read, which needs no extra reload.
+  const seenChange = useRef<number | null | undefined>(undefined);
+
+  // On the website: the person's own linked computers and what they hold.
+  const [computers, setComputers] = useState<Computer[]>([]);
+
   // Toast
   const [toastMsg, setToastMsg] = useState("");
   const [toastShow, setToastShow] = useState(false);
@@ -331,6 +441,55 @@ export default function ConnectionsPage() {
     reload();
   }, [reload]);
 
+  // Inside the desktop app: how this computer stands with the website, read
+  // now and every ten seconds. The list reloads when the sync changed it.
+  const refreshSync = useCallback(async () => {
+    const desktop = getDesktopBridge();
+    if (!desktop) return;
+    try {
+      const status = await desktop.syncStatus();
+      setSyncStatus(status);
+      const before = seenChange.current;
+      seenChange.current = status.changedAt;
+      if (before !== undefined && before !== status.changedAt) void reload();
+    } catch {
+      // The last answer stands until the next one.
+    }
+  }, [reload]);
+
+  useEffect(() => {
+    if (!bridge) return;
+    void refreshSync();
+    const timer = window.setInterval(() => void refreshSync(), 10_000);
+    return () => window.clearInterval(timer);
+  }, [bridge, refreshSync]);
+
+  // On the website: the connections the person keeps on their own linked
+  // computers. They never come here, but comparing them runs through the
+  // computer, so the page says they exist. Names only, and nothing on a failure.
+  const mayCompare = !sessionLoading && can("compare:read");
+  useEffect(() => {
+    if (bridge || getDesktopBridge() || !mayCompare) return;
+    let live = true;
+    apiFetch("/api/computers?connections=all")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (live && data && Array.isArray(data.computers)) setComputers(data.computers);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [bridge, mayCompare]);
+
+  /** Why this row cannot be changed here right now, or null when it can. */
+  function siteLock(conn: Connection): string | null {
+    if (!bridge || conn.site_id == null) return null;
+    if (syncStatus === null) return CHECKING_LOCK;
+    if (!syncStatus.linked) return NOT_LINKED_LOCK;
+    return syncStatus.online ? null : OFFLINE_LOCK;
+  }
+
   // Close drawer / modal on Escape.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -338,6 +497,8 @@ export default function ConnectionsPage() {
       setDrawerOpen(false);
       setDeleteTarget(null);
       setDeleteDependents(null);
+      setConflict(null);
+      setSendUpTarget(null);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -361,7 +522,7 @@ export default function ConnectionsPage() {
 
   function openEdit(conn: Connection) {
     // The button is off already.
-    if (updateRefusal !== null) return;
+    if (updateRefusal !== null || siteLock(conn) !== null) return;
     const hasUri = Boolean(conn.has_connection_string);
     setEditingId(conn.id);
     fieldsFilledFrom.current = "";
@@ -614,13 +775,48 @@ export default function ConnectionsPage() {
 
     setSaving(true);
     try {
-      const res = await apiFetch("/api/connections", {
-        method: editingId === null ? "POST" : "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, name, id: editingId ?? undefined }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
+      const body: Record<string, unknown> = { ...payload, name };
+      const editing = editingId === null ? null : (connections.find((c) => c.id === editingId) ?? null);
+      let reply: WriteReply | null;
+      // Set when the website took the change: its answer carries the
+      // website's numbers, not this computer's.
+      let viaWebsite = false;
+      // Why a new connection stayed on this computer, when the desktop app said.
+      let keptHere: string | null = null;
+      if (editing) {
+        viaWebsite = Boolean(bridge) && editing.site_id != null;
+        reply = await sendUpdate(editing, body);
+      } else {
+        // Inside a linked desktop app the website gets the first say: it keeps
+        // a connection it can reach, and anything else is saved here.
+        const desktop = getDesktopBridge();
+        const answer = desktop ? await askDesktop(() => desktop.syncCreate(body)) : null;
+        if (answer?.kind === "saved") {
+          viaWebsite = true;
+          reply = { ok: true, status: 200, body: null };
+        } else if (answer?.kind === "refused") {
+          reply = { ok: false, status: answer.status, body: asWriteBody(answer.body) };
+        } else {
+          if (answer?.kind === "local") keptHere = answer.reason;
+          if (answer?.kind === "offline") keptHere = answer.message;
+          reply = await localWrite("POST", body);
+        }
+      }
+      if (reply === null) return;
+      const data = reply.body;
+      if (!reply.ok) {
+        if (editing && reply.status === 409 && data?.conflict) {
+          setDrawerOpen(false);
+          setConflict({
+            kind: "update",
+            conn: editing,
+            body,
+            confirm: false,
+            current: data.current ?? null,
+            message: data.error ?? "Somebody changed this connection after you opened it.",
+          });
+          return;
+        }
         // The route returns the same field-keyed map, so a rule only it can
         // check (a duplicate name, a host it refuses to dial) lands on the
         // field it belongs to rather than in a toast that disappears.
@@ -629,7 +825,14 @@ export default function ConnectionsPage() {
         return;
       }
       setDrawerOpen(false);
-      showToast(editingId === null ? "Connection saved" : "Connection updated");
+      if (editingId === null && viaWebsite) {
+        showToast("Saved on the website");
+      } else if (keptHere !== null) {
+        showToast("Saved on this computer");
+        setSyncNotice(keptHere);
+      } else {
+        showToast(editingId === null ? "Connection saved" : "Connection updated");
+      }
       await reload();
 
       // The drawer's "Test connection" runs before the row exists, so its
@@ -641,7 +844,7 @@ export default function ConnectionsPage() {
       // testRow() skips it for a role that may add connections but not test
       // saved ones (that is Connections: Update). Its new row reads "Never",
       // which is true of the row.
-      if (drawerTest.kind === "ok" && typeof data?.id === "number") {
+      if (drawerTest.kind === "ok" && !viaWebsite && typeof data?.id === "number") {
         void testRow(data as Connection, true);
       } else if (editingId !== null) {
         // The route clears the stored test when the target moves — this map has
@@ -723,10 +926,86 @@ export default function ConnectionsPage() {
     }
   }
 
+  // ——— Writes: the website's connections change on the website, the rest here ———
+
+  /** One request to this server's own route (the website's, or this computer's inside the desktop app). */
+  async function localWrite(method: "POST" | "PUT" | "DELETE", body: Record<string, unknown>): Promise<WriteReply> {
+    const res = await apiFetch("/api/connections", {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { ok: res.ok, status: res.status, body: asWriteBody(await res.json().catch(() => null)) };
+  }
+
+  /** A call to the desktop app, or null when the app itself did not answer. */
+  async function askDesktop(call: () => Promise<DesktopSyncAnswer>): Promise<DesktopSyncAnswer | null> {
+    try {
+      return await call();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * What the desktop app said about a change to one of the website's
+   * connections, read as if the route had answered. Null when nothing was
+   * changed; the page has said why.
+   */
+  function siteReply(answer: DesktopSyncAnswer | null): WriteReply | null {
+    if (answer === null) {
+      showToast("The desktop app did not answer. Try again.");
+      return null;
+    }
+    switch (answer.kind) {
+      case "saved":
+        return { ok: true, status: 200, body: asWriteBody(answer.body) };
+      case "refused":
+        return { ok: false, status: answer.status, body: asWriteBody(answer.body) };
+      case "offline":
+        showToast("Nothing was changed");
+        setSyncNotice(answer.message);
+        void refreshSync();
+        return null;
+      case "local":
+        showToast("Nothing was changed");
+        setSyncNotice(answer.reason);
+        return null;
+      case "not-linked":
+        showToast("Nothing was changed");
+        setSyncNotice(NOT_LINKED_LOCK);
+        void refreshSync();
+        void reload();
+        return null;
+    }
+  }
+
+  /** Saves a change: a website connection on the website, anything else here. */
+  async function sendUpdate(conn: Connection, body: Record<string, unknown>): Promise<WriteReply | null> {
+    const base = startedFrom(conn) ?? undefined;
+    const desktop = getDesktopBridge();
+    if (desktop && conn.site_id != null) {
+      const siteId = conn.site_id;
+      return siteReply(await askDesktop(() => desktop.syncUpdate(siteId, { ...body, base_version: base })));
+    }
+    return localWrite("PUT", { ...body, id: conn.id, base_version: base });
+  }
+
+  /** Deletes a connection: a website connection on the website, anything else here. */
+  async function sendDelete(conn: Connection, confirm: boolean): Promise<WriteReply | null> {
+    const base = startedFrom(conn);
+    const desktop = getDesktopBridge();
+    if (desktop && conn.site_id != null) {
+      const siteId = conn.site_id;
+      return siteReply(await askDesktop(() => desktop.syncRemove(siteId, base, confirm)));
+    }
+    return localWrite("DELETE", { id: conn.id, base_version: base ?? undefined, confirm });
+  }
+
   // ——— Delete ———
   function openDelete(conn: Connection) {
     // The button is off already.
-    if (deleteRefusal !== null) return;
+    if (deleteRefusal !== null || siteLock(conn) !== null) return;
     setDeleteTarget(conn);
     setDeleteDependents(null);
   }
@@ -741,41 +1020,145 @@ export default function ConnectionsPage() {
     if (!target) return;
     setDeleting(true);
     try {
-      const res = await apiFetch("/api/connections", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        // First press asks. If the API says the connection is still in use we
-        // show what goes with it, and this second press confirms.
-        body: JSON.stringify({ id: target.id, confirm: deleteDependents !== null }),
-      });
-      const data = await res.json().catch(() => null);
-
-      if (res.status === 409 && data?.needsConfirmation) {
-        setDeleteDependents(
-          data.dependents ?? {
-            trackedSchemas: 0,
-            schemaNames: [],
-            snapshots: 0,
-            comparisonSets: 0,
-            comparisonSetNames: [],
-          }
-        );
-        return;
-      }
-      if (!res.ok) {
+      // First press asks. If the API says the connection is still in use we
+      // show what goes with it, and this second press confirms.
+      const confirmed = deleteDependents !== null;
+      const reply = await sendDelete(target, confirmed);
+      if (reply === null) {
+        // Nothing was deleted, and the note under the header says why.
         closeDelete();
-        showToast(data?.error ?? "Could not delete the connection.");
         return;
       }
-
-      closeDelete();
-      showToast("Connection deleted");
-      await reload();
+      await afterDelete(target, reply, confirmed);
     } catch {
       closeDelete();
       showToast("Could not delete the connection.");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  /** What a delete answered, from the dialog or from "Delete anyway" over a newer version. */
+  async function afterDelete(target: Connection, reply: WriteReply, confirmed: boolean) {
+    const data = reply.body;
+    if (reply.status === 409 && data?.needsConfirmation) {
+      setDeleteTarget(target);
+      setDeleteDependents(
+        data.dependents ?? {
+          trackedSchemas: 0,
+          schemaNames: [],
+          snapshots: 0,
+          comparisonSets: 0,
+          comparisonSetNames: [],
+        }
+      );
+      return;
+    }
+    if (reply.status === 409 && data?.conflict) {
+      closeDelete();
+      const who = data.current?.updated_by ?? "Somebody";
+      setConflict({
+        kind: "delete",
+        conn: target,
+        body: {},
+        confirm: confirmed,
+        current: data.current ?? null,
+        message: `${who} changed "${target.name}" after this page read it. Keep it, or delete it anyway.`,
+      });
+      return;
+    }
+    if (!reply.ok) {
+      closeDelete();
+      showToast(data?.error ?? "Could not delete the connection.");
+      return;
+    }
+    closeDelete();
+    showToast("Connection deleted");
+    await reload();
+  }
+
+  // ——— Somebody changed it first ———
+  async function keepTheirs() {
+    setConflict(null);
+    await reload();
+  }
+
+  async function overrideConflict() {
+    const c = conflict;
+    if (!c) return;
+    const fresh = atVersion(c.conn, c.current?.version);
+    setResolving(true);
+    try {
+      if (c.kind === "delete") {
+        const reply = await sendDelete(fresh, c.confirm);
+        setConflict(null);
+        if (reply === null) return;
+        await afterDelete(fresh, reply, c.confirm);
+        return;
+      }
+      const reply = await sendUpdate(fresh, c.body);
+      if (reply === null) {
+        setConflict(null);
+        return;
+      }
+      if (reply.status === 409 && reply.body?.conflict) {
+        // Somebody saved again in the meantime.
+        setConflict({ ...c, conn: fresh, current: reply.body.current ?? null, message: reply.body.error ?? c.message });
+        return;
+      }
+      setConflict(null);
+      if (!reply.ok) {
+        showToast(reply.body?.error ?? "Could not save the connection.");
+        return;
+      }
+      showToast("Connection updated");
+      setRowResults((r) => {
+        const next = { ...r };
+        delete next[c.conn.id];
+        return next;
+      });
+      await reload();
+    } catch {
+      setConflict(null);
+      showToast(c.kind === "update" ? "Could not save the connection." : "Could not delete the connection.");
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  // ——— Send to website (desktop app only) ———
+  async function sendUp() {
+    const target = sendUpTarget;
+    const desktop = getDesktopBridge();
+    if (!target || !desktop) return;
+    setSendingUp(true);
+    try {
+      const answer = await askDesktop(() => desktop.syncSendUp(target.id));
+      setSendUpTarget(null);
+      if (answer === null) {
+        showToast("The desktop app did not answer. Try again.");
+        return;
+      }
+      if (answer.kind === "saved") {
+        showToast(`Sent ${target.name} to the website`);
+      } else if (answer.kind === "local") {
+        showToast("It stays on this computer");
+        setSyncNotice(answer.reason);
+      } else if (answer.kind === "offline") {
+        showToast("Nothing was sent");
+        setSyncNotice(answer.message);
+        void refreshSync();
+      } else if (answer.kind === "not-linked") {
+        showToast("Nothing was sent");
+        setSyncNotice(NOT_LINKED_LOCK);
+        void refreshSync();
+      } else {
+        showToast("Nothing was sent");
+        setSyncNotice(asWriteBody(answer.body)?.error ?? "The website did not take it.");
+      }
+      await reload();
+    } finally {
+      setSendingUp(false);
     }
   }
 
@@ -822,6 +1205,15 @@ export default function ConnectionsPage() {
     latencies.length > 0
       ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
       : null;
+
+  // Inside the desktop app, once it is linked: which rows are the website's.
+  const showWhere = bridge !== null && (syncStatus?.linked === true || connections.some((c) => c.site_id != null));
+  const orgName = syncStatus?.linked ? syncStatus.orgName : "your organization";
+  const canSendUp = bridge !== null && syncStatus?.linked === true && syncStatus.online;
+  const editingSite = bridge !== null && connections.some((c) => c.id === editingId && c.site_id != null);
+  const siteLocked =
+    bridge !== null && syncStatus?.linked === true && !syncStatus.online && connections.some((c) => c.site_id != null);
+  const computersWithConnections = bridge ? [] : computers.filter((c) => c.connections.length > 0);
 
   const tlsOn = sslModeUsesTls(form.sslMode);
   const sslChoice = SSL_CHOICES.find((c) => c.mode === form.sslMode) ?? SSL_CHOICES[0];
@@ -997,6 +1389,43 @@ export default function ConnectionsPage() {
         </section>
       )}
 
+      {/* Inside the desktop app: why the website's connections are locked. */}
+      {siteLocked && (
+        <section className="px-8 pb-3">
+          <div className="warn-inline">
+            <span className="ico">
+              <LockIcon size={14} />
+            </span>
+            <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+              The website can&apos;t be reached right now, so its connections are locked on this computer
+              until it is back. Testing them still works.
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Where a change went, when that was not where the person might expect. */}
+      {syncNotice && (
+        <section className="px-8 pb-3">
+          <div className="warn-inline" role="status">
+            <span className="ico">
+              <InfoIcon size={14} />
+            </span>
+            <div className="text-[12.5px] flex-1" style={{ color: "var(--text-2)" }}>
+              {syncNotice}
+            </div>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setSyncNotice(null)}
+              aria-label="Dismiss"
+              type="button"
+            >
+              <XIcon size={12} />
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* ——— Table ——— */}
       <section className="px-8 pb-12">
         <div className="card overflow-hidden">
@@ -1125,6 +1554,7 @@ export default function ConnectionsPage() {
                       result?.status === "ok" ? "ok" : result?.status === "err" ? "err" : "unknown";
                     const local = isLocalHost(conn.host);
                     const sslMode = connSslMode(conn);
+                    const lock = siteLock(conn);
                     return (
                       <tr key={conn.id}>
                         {/* Name */}
@@ -1147,6 +1577,32 @@ export default function ConnectionsPage() {
                                     Remote
                                   </span>
                                 )}
+                                {showWhere &&
+                                  (conn.site_id != null ? (
+                                    <span
+                                      className="pill pill-sync"
+                                      title={lock ?? `Kept on the website and shared with ${orgName}.`}
+                                    >
+                                      {lock ? <LockIcon size={11} /> : <span className="dot" />}
+                                      Website
+                                    </span>
+                                  ) : (
+                                    <span className="pill pill-outline" title="Kept on this computer only.">
+                                      <MonitorIcon size={11} />
+                                      This computer
+                                    </span>
+                                  ))}
+                                {showWhere &&
+                                  conn.site_id != null &&
+                                  conn.has_password === false &&
+                                  !conn.has_connection_string && (
+                                    <span
+                                      className="pill pill-pending"
+                                      title="The website only sends a connection's password to roles that may change connections."
+                                    >
+                                      No password on this computer
+                                    </span>
+                                  )}
                               </div>
                               <div className="mono text-[11.5px] mt-0.5" style={{ color: "var(--text-3)" }}>
                                 {conn.has_connection_string ? "connection string" : "host & fields"} ·{" "}
@@ -1223,17 +1679,28 @@ export default function ConnectionsPage() {
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => openEdit(conn)}
-                              disabled={updateRefusal !== null}
-                              title={updateRefusal ?? undefined}
+                              disabled={updateRefusal !== null || lock !== null}
+                              title={updateRefusal ?? lock ?? undefined}
                             >
                               <EditIcon size={12} />
                               Edit
                             </button>
+                            {canSendUp && conn.site_id == null && !local && (
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => setSendUpTarget(conn)}
+                                disabled={createRefusal !== null}
+                                title={createRefusal ?? `Move it to the website, for everyone in ${orgName}`}
+                                aria-label={`Send ${conn.name} to the website`}
+                              >
+                                <VersionSyncIcon size={12} />
+                              </button>
+                            )}
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => openDelete(conn)}
-                              disabled={deleteRefusal !== null}
-                              title={deleteRefusal ?? undefined}
+                              disabled={deleteRefusal !== null || lock !== null}
+                              title={deleteRefusal ?? lock ?? undefined}
                               style={{ color: "var(--break)" }}
                               aria-label={`Delete ${conn.name}`}
                             >
@@ -1282,6 +1749,60 @@ export default function ConnectionsPage() {
             </div>
           </div>
         )}
+
+        {/* On the website: what the person keeps in the desktop app on their
+            own computers. Those never come here (their passwords stay on the
+            computer), but they exist, and comparing them runs through it. */}
+        {computersWithConnections.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-center gap-2">
+              <MonitorIcon size={14} />
+              <h2 className="text-[14px] font-semibold">On your computers</h2>
+            </div>
+            <p className="help max-w-[70ch] mt-1 mb-3">
+              Connections kept in the desktop app on your own computers. Only you see this list.
+              Their passwords stay on that computer, so they can&apos;t be changed here, and comparing
+              them runs through the computer while it is on.
+            </p>
+            <div className="card overflow-hidden">
+              {computersWithConnections.map((computer, index) => (
+                <div
+                  key={computer.id}
+                  className="px-4 py-3"
+                  style={index === 0 ? undefined : { borderTop: "1px solid var(--border)" }}
+                >
+                  <div className="flex items-center gap-2 flex-wrap text-[13px]">
+                    <span className="font-medium">{computer.name}</span>
+                    {computer.online ? (
+                      <span className="pill pill-sync">
+                        <span className="dot" />
+                        Online
+                      </span>
+                    ) : (
+                      <span className="pill pill-neutral">
+                        <span className="dot" style={{ background: "var(--text-3)" }} />
+                        Offline
+                      </span>
+                    )}
+                    {!computer.online && computer.lastSeenAt && (
+                      <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+                        last seen {timeAgo(computer.lastSeenAt)}
+                      </span>
+                    )}
+                  </div>
+                  <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5" aria-label={`Connections on ${computer.name}`}>
+                    {computer.connections.map((c) => (
+                      <li key={c.id} className="flex items-center gap-1.5 text-[12.5px]">
+                        <span>{c.name}</span>
+                        <EnvironmentPill environment={toEnvironment(c.environment)} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* ——— Scrim + Drawer ——— */}
@@ -1318,8 +1839,12 @@ export default function ConnectionsPage() {
               </h2>
               <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
                 {editingId === null
-                  ? "Reach a PostgreSQL server, local or hosted."
-                  : "Update credentials, re-test, then save."}
+                  ? syncStatus?.linked
+                    ? "Saved on the website when it can reach the database, otherwise on this computer only."
+                    : "Reach a PostgreSQL server, local or hosted."
+                  : editingSite
+                    ? `Saved on the website, for everyone in ${orgName}.`
+                    : "Update credentials, re-test, then save."}
               </div>
             </div>
           </div>
@@ -1804,6 +2329,11 @@ export default function ConnectionsPage() {
                 This removes the saved connection. Tracked schemas that use it will lose their way to
                 reach the database. This can&apos;t be undone.
               </p>
+              {bridge && deleteTarget?.site_id != null && (
+                <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
+                  It is deleted on the website, for everyone in {orgName}.
+                </p>
+              )}
 
               {deleteDependents && (
                 <div
@@ -1899,6 +2429,122 @@ export default function ConnectionsPage() {
                 : deleteDependents
                   ? "Delete anyway"
                   : "Delete connection"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ——— Somebody changed it first ——— */}
+      <div
+        className={`modal-scrim ${conflict ? "open" : ""}`}
+        inert={!conflict}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={conflictTitleId}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) void keepTheirs();
+        }}
+      >
+        <div ref={conflictRef} tabIndex={-1} className="modal p-5">
+          <div className="flex items-start gap-3">
+            <div
+              className="w-10 h-10 rounded-full grid place-items-center flex-none"
+              style={{ background: "var(--pending-soft)", color: "var(--pending)" }}
+            >
+              <AlertCircleIcon size={18} />
+            </div>
+            <div className="min-w-0">
+              <h3 id={conflictTitleId} className="text-[15px] font-semibold tracking-[-0.005em]">
+                {conflict?.kind === "delete" ? "Changed before you deleted it" : "Changed while you were editing"}
+              </h3>
+              <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
+                {conflict?.message}
+              </p>
+              {conflict?.current && (
+                <div className="mt-3 panel p-3" style={{ background: "var(--surface-2)" }}>
+                  <div className="text-[12px] flex items-center justify-between gap-3">
+                    <span style={{ color: "var(--text-3)" }}>Their version</span>
+                    <span className="mono" style={{ color: "var(--text-2)" }}>
+                      {conflict.current.name}
+                    </span>
+                  </div>
+                  <div className="text-[12px] flex items-center justify-between gap-3 mt-1">
+                    <span style={{ color: "var(--text-3)" }}>Connection</span>
+                    <span className="mono truncate" style={{ color: "var(--text-2)" }}>
+                      {`${conflict.current.host}:${conflict.current.port}/${conflict.current.database_name}`}
+                    </span>
+                  </div>
+                  {conflict.current.updated_at && (
+                    <div className="text-[12px] flex items-center justify-between gap-3 mt-1">
+                      <span style={{ color: "var(--text-3)" }}>Saved</span>
+                      <span style={{ color: "var(--text-2)" }}>{timeAgo(conflict.current.updated_at)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-5">
+            <button className="btn btn-ghost btn-sm" onClick={() => void keepTheirs()} type="button">
+              {conflict?.kind === "delete" ? "Keep it" : "Keep theirs"}
+            </button>
+            <button
+              className={`btn btn-sm ${conflict?.kind === "delete" ? "btn-destructive" : "btn-primary"}`}
+              onClick={overrideConflict}
+              disabled={resolving}
+              type="button"
+            >
+              {resolving
+                ? conflict?.kind === "delete"
+                  ? "Deleting…"
+                  : "Saving…"
+                : conflict?.kind === "delete"
+                  ? "Delete anyway"
+                  : "Save mine on top"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ——— Send to website (desktop app only) ——— */}
+      <div
+        className={`modal-scrim ${sendUpTarget ? "open" : ""}`}
+        inert={!sendUpTarget}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={sendUpTitleId}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setSendUpTarget(null);
+        }}
+      >
+        <div ref={sendUpRef} tabIndex={-1} className="modal p-5">
+          <div className="flex items-start gap-3">
+            <div
+              className="w-10 h-10 rounded-full grid place-items-center flex-none"
+              style={{ background: "var(--brand-soft)", color: "var(--brand)" }}
+            >
+              <VersionSyncIcon size={18} />
+            </div>
+            <div className="min-w-0">
+              <h3 id={sendUpTitleId} className="text-[15px] font-semibold tracking-[-0.005em]">
+                Send <span className="mono">{sendUpTarget?.name}</span> to the website?
+              </h3>
+              <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
+                The website tries to reach the database first and only keeps it if it can. Then everyone
+                in {orgName} can use it, and it can only be changed while the website can be reached.
+              </p>
+              <p className="text-[13px] mt-1.5" style={{ color: "var(--text-2)" }}>
+                Its drift history and saved comparisons on this computer stay with it.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-5">
+            <button className="btn btn-ghost btn-sm" onClick={() => setSendUpTarget(null)} type="button">
+              Cancel
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={sendUp} disabled={sendingUp} type="button">
+              <VersionSyncIcon size={12} />
+              {sendingUp ? "Sending…" : "Send to website"}
             </button>
           </div>
         </div>

@@ -161,6 +161,7 @@ export type StartServerOnFreePortOptions = {
   buildConfig: BuildConfig;
   secrets: SecretValues;
   gateToken: string;
+  syncToken: string;
   /** Aborted when the app quits while the server is still starting. */
   signal: AbortSignal;
 };
@@ -188,6 +189,7 @@ export async function startServerOnFreePort(options: StartServerOnFreePortOption
       buildConfig: options.buildConfig,
       secrets: options.secrets,
       gateToken: options.gateToken,
+      syncToken: options.syncToken,
       github: config.get().github,
       signal,
     });

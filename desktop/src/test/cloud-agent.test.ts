@@ -20,10 +20,15 @@ import {
   IDLE_POLL_MS,
   MAX_ANSWER_BYTES,
   MOST_JOBS_AT_ONCE,
+  NO_SYNC_RETRY_MS,
   PUBLISH_EVERY_MS,
+  SYNC_EVERY_MS,
   readCloudJob,
+  readOwnConnections,
   type CloudFetch,
   type CloudStore,
+  type OwnConnection,
+  type SyncHost,
 } from "../main/cloud-agent";
 import type { Clock } from "../main/clock";
 import { initLog, logFilePaths, logWarn } from "../main/log";
@@ -260,6 +265,7 @@ type RigOptions = {
   app?: Record<string, AppAnswer | Error>;
   call?: AppCaller;
   jobLimitMs?: number;
+  sync?: SyncHost;
 };
 
 function rig(options: RigOptions = {}) {
@@ -282,6 +288,7 @@ function rig(options: RigOptions = {}) {
       changes.count += 1;
     },
     jobLimitMs: options.jobLimitMs,
+    sync: options.sync,
   });
   /** Moves time on, letting each timer's work finish before the next timer runs. */
   async function pass(ms: number): Promise<void> {
@@ -1133,6 +1140,344 @@ test("a computer can link again after unlinking", async () => {
   await pass(3_000);
   assert.equal(agent.view().state, "linked");
   agent.stop();
+});
+
+// ----- The two-way sync -----
+
+const SYNC = "GET /api/agent/sync";
+const SYNC_AFTER = `${SYNC}?rev=r1`;
+const WRITE = "/api/agent/sync/connections";
+/** A connection the site keeps. Made up, and with no password: the repo is public. */
+const SITE_ROW = { id: 31, name: "Shop", host: "db.example.com", version: 4 };
+const LISTED: SiteAnswer = { status: 200, body: { same: false, rev: "r1", withSecrets: true, connections: [SITE_ROW] } };
+const SAME: SiteAnswer = { status: 200, body: { same: true, rev: "r1" } };
+/** A new connection whose database is out on the internet, so the site decides. */
+const OUT_THERE = { name: "Shop", host: "db.example.com", port: 5432, database_name: "shop", username: "shop_owner" };
+const AT_HOME = { ...OUT_THERE, host: "localhost" };
+
+/** Plays this computer's server's side of the sync. */
+function fakeSync(own: OwnConnection[] = [
+  { id: 1, name: "Dev", environment: "dev" },
+  { id: 3, name: "Laptop", environment: "dev" },
+]) {
+  const applied: unknown[][] = [];
+  const adopted: [number, number, number][] = [];
+  const state = { own, exported: new Map<number, Record<string, unknown>>(), failApply: false };
+  const host: SyncHost = {
+    apply: async (connections) => {
+      if (state.failApply) throw new Error("The disk is full.");
+      applied.push([...connections]);
+    },
+    local: async () => state.own.map((row) => ({ ...row })),
+    export: async (id) => state.exported.get(id) ?? null,
+    adopt: async (id, siteId, siteVersion) => {
+      adopted.push([id, siteId, siteVersion]);
+      return true;
+    },
+  };
+  return { host, applied, adopted, state };
+}
+
+/** A linked computer with the sync, its first sync done. */
+async function synced() {
+  const sync = fakeSync();
+  const r = rig({ loaded: SAVED, sync: sync.host });
+  r.site.set(SYNC, LISTED);
+  r.site.set(SYNC_AFTER, SAME);
+  r.agent.start();
+  await r.pass(0);
+  return { ...r, sync };
+}
+
+test("the site's connections come down after a poll, and later asks carry the site's mark", async () => {
+  const { agent, clock, pass, site, sync } = await synced();
+  assert.deepEqual(sync.applied, [[SITE_ROW]]);
+  const status = agent.syncStatus();
+  assert.ok(status.linked);
+  assert.equal(status.online, true);
+  assert.equal(status.orgName, "Acme Data");
+  assert.equal(status.lastSyncedAt, clock.time);
+  const changedAt = status.changedAt;
+  assert.equal(changedAt, clock.time);
+  // The site now hears of every connection here, each marked shared or not, through this computer's own token.
+  assert.deepEqual(site.of(PUBLISH).at(-1)?.body, {
+    connections: [
+      { id: 1, name: "Dev", environment: "dev", shared: true },
+      { id: 3, name: "Laptop", environment: "dev", shared: false },
+    ],
+  });
+  assert.equal(site.of(SYNC)[0].init.redirect, "error");
+  assert.equal((site.of(SYNC)[0].init.headers as Record<string, string>).Authorization, `Bearer ${TOKEN}`);
+
+  await pass(SYNC_EVERY_MS - 1);
+  assert.equal(site.count(SYNC_AFTER), 0, "not more often than every 15 seconds");
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(SYNC_AFTER), 1);
+  assert.equal(sync.applied.length, 1, "an unchanged list is not applied again");
+  assert.equal(agent.syncStatus().changedAt, changedAt);
+  agent.stop();
+});
+
+test("a connection added, renamed or deleted here reaches the site's list at the next sync, and nothing goes when nothing changed", async () => {
+  const { agent, pass, site, sync } = await synced();
+  const before = site.count(PUBLISH);
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(PUBLISH), before);
+  sync.state.own = [...sync.state.own, { id: 4, name: "Scratch", environment: "dev" }];
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(PUBLISH), before + 1);
+  assert.equal((site.of(PUBLISH).at(-1)?.body as { connections: unknown[] }).connections.length, 3);
+  agent.stop();
+});
+
+test("a site without the sync keeps everything here, and is asked again only after half an hour", async () => {
+  const sync = fakeSync();
+  const { agent, pass, site } = rig({ loaded: SAVED, sync: sync.host });
+  site.set(SYNC, { status: 404 });
+  agent.start();
+  await pass(0);
+  assert.equal(site.count(SYNC), 1);
+  assert.deepEqual(agent.syncStatus(), { linked: false, changedAt: null });
+  assert.deepEqual(await agent.syncCreate(OUT_THERE), {
+    kind: "local",
+    reason: "The linked website does not share connections yet, so this was saved on this computer only.",
+  });
+  assert.equal(site.count(`POST ${WRITE}`), 0);
+  assert.equal(sync.applied.length, 0);
+  // The old list, of shared connections only, still goes.
+  assert.deepEqual((site.of(PUBLISH).at(-1)?.body as { connections: unknown[] }).connections, [
+    { id: 1, name: "Dev", environment: "dev" },
+    { id: 2, name: "Prod", environment: "prod" },
+  ]);
+  await pass(NO_SYNC_RETRY_MS - 1);
+  assert.equal(site.count(SYNC), 1);
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(SYNC), 2);
+  agent.stop();
+});
+
+test("a 401 to the sync ends the link and clears the site's connections from this computer", async () => {
+  const sync = fakeSync();
+  const { agent, pass, site, store } = rig({ loaded: SAVED, sync: sync.host });
+  site.set(SYNC, { status: 401 });
+  agent.start();
+  await pass(0);
+  assert.equal(agent.view().state, "off");
+  assert.equal(store.removed, 1);
+  assert.deepEqual(sync.applied, [[]]);
+  assert.deepEqual(agent.syncStatus(), { linked: false, changedAt: agent.syncStatus().changedAt });
+  assert.notEqual(agent.syncStatus().changedAt, null);
+});
+
+test("a list from the site that cannot be read changes nothing here", async () => {
+  const sync = fakeSync();
+  const { agent, pass, site } = rig({ loaded: SAVED, sync: sync.host });
+  newLogLines();
+  site.set(SYNC, { status: 200, body: { same: false, rev: "r1", connections: "everything" } });
+  agent.start();
+  await pass(0);
+  assert.equal(sync.applied.length, 0);
+  assert.equal(agent.syncStatus().changedAt, null);
+  assert.match(newLogLines(), /Could not bring the site's connections up to date: Error\./);
+  agent.stop();
+});
+
+test("unlinking clears the site's connections from this computer", async () => {
+  const { agent, site, sync } = await synced();
+  agent.unlink();
+  await settle();
+  assert.equal(site.count(SELF), 1);
+  assert.deepEqual(sync.applied.at(-1), []);
+  assert.deepEqual(agent.syncStatus(), { linked: false, changedAt: agent.syncStatus().changedAt });
+});
+
+test("a new connection at a home address stays here without the site hearing of it", async () => {
+  const { agent, site } = await synced();
+  const before = site.calls.length;
+  assert.deepEqual(await agent.syncCreate(AT_HOME), {
+    kind: "local",
+    reason: "Its address only works on this computer, so it stays here, password and all.",
+  });
+  assert.deepEqual(await agent.syncCreate({ ...OUT_THERE, connection_string: "postgres://u@127.0.0.1/app" }), {
+    kind: "local",
+    reason: "Its address only works on this computer, so it stays here, password and all.",
+  });
+  assert.equal(site.calls.length, before);
+  agent.stop();
+});
+
+test("a new connection the site can reach is kept there, and comes down at once", async () => {
+  const { agent, site, sync } = await synced();
+  site.set(`POST ${WRITE}`, { status: 200, body: { saved: true, connection: { id: 40, version: 1 } } });
+  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [SITE_ROW, { id: 40 }] } });
+  assert.deepEqual(await agent.syncCreate(OUT_THERE), { kind: "saved", body: { id: 40, version: 1 } });
+  assert.deepEqual(site.of(`POST ${WRITE}`)[0].body, OUT_THERE);
+  assert.deepEqual(sync.applied.at(-1), [SITE_ROW, { id: 40 }]);
+  agent.stop();
+});
+
+test("a new connection the site cannot reach stays here, with the site's words", async () => {
+  const { agent, site } = await synced();
+  site.set(`POST ${WRITE}`, { status: 200, body: { saved: false, reason: "The website could not reach that database." } });
+  assert.deepEqual(await agent.syncCreate(OUT_THERE), { kind: "local", reason: "The website could not reach that database." });
+  agent.stop();
+});
+
+test("a refusal from the site is passed on as it is, so the screen can say why", async () => {
+  const { agent, site } = await synced();
+  site.set(`POST ${WRITE}`, { status: 403, body: { error: "Viewers cannot add connections." } });
+  assert.deepEqual(await agent.syncCreate(OUT_THERE), { kind: "refused", status: 403, body: { error: "Viewers cannot add connections." } });
+  agent.stop();
+});
+
+test("with the site out of reach, a new connection is saved here only, and changes to the site's are not made", async () => {
+  const { agent, site } = await synced();
+  site.set(`POST ${WRITE}`, new TypeError("fetch failed"));
+  const added = await agent.syncCreate(OUT_THERE);
+  assert.equal(added.kind, "local");
+  assert.match(added.kind === "local" ? added.reason : "", /Send to website/);
+  const status = agent.syncStatus();
+  assert.ok(status.linked);
+  assert.equal(status.online, false);
+
+  // Once the site is known to be down, a new connection does not even try.
+  const tries = site.count(`POST ${WRITE}`);
+  assert.equal((await agent.syncCreate(OUT_THERE)).kind, "local");
+  assert.equal(site.count(`POST ${WRITE}`), tries);
+
+  site.set(`PUT ${WRITE}`, new TypeError("fetch failed"));
+  assert.deepEqual(await agent.syncUpdate(31, { name: "Shop 2", base_version: 4 }), {
+    kind: "offline",
+    message: "The website cannot be reached right now, so nothing was changed. Try again once it is back.",
+  });
+  agent.stop();
+});
+
+test("a host's error page counts as the site being out of reach, not as its answer", async () => {
+  const { agent, site } = await synced();
+  site.set(`PUT ${WRITE}`, { status: 502, body: "Bad gateway" });
+  assert.equal((await agent.syncUpdate(31, { name: "Shop 2", base_version: 4 })).kind, "offline");
+  site.set(`PUT ${WRITE}`, { status: 503, body: { error: "Could not check your access." } });
+  assert.deepEqual(await agent.syncUpdate(31, { name: "Shop 2", base_version: 4 }), {
+    kind: "refused",
+    status: 503,
+    body: { error: "Could not check your access." },
+  });
+  agent.stop();
+});
+
+test("a change to one of the site's connections goes to the site with its number, and a stale one comes back as a conflict", async () => {
+  const { agent, site, sync } = await synced();
+  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [{ ...SITE_ROW, name: "Shop 2", version: 5 }] } });
+  const saved = await agent.syncUpdate(31, { name: "Shop 2", base_version: 4, id: 99 });
+  assert.equal(saved.kind, "saved");
+  assert.deepEqual(site.of(`PUT ${WRITE}`)[0].body, { name: "Shop 2", base_version: 4, id: 31 });
+  assert.deepEqual(sync.applied.at(-1), [{ ...SITE_ROW, name: "Shop 2", version: 5 }]);
+
+  const current = { ...SITE_ROW, name: "Shop 3", version: 6 };
+  site.set(`PUT ${WRITE}`, { status: 409, body: { error: "Someone else changed it.", conflict: true, current } });
+  assert.deepEqual(await agent.syncUpdate(31, { name: "Shop 2b", base_version: 5 }), {
+    kind: "refused",
+    status: 409,
+    body: { error: "Someone else changed it.", conflict: true, current },
+  });
+  agent.stop();
+});
+
+test("deleting one of the site's connections sends only its number, version and the confirmation", async () => {
+  const { agent, site } = await synced();
+  assert.equal((await agent.syncRemove(31, 4, true)).kind, "saved");
+  assert.deepEqual(site.of(`DELETE ${WRITE}`)[0].body, { id: 31, base_version: 4, confirm: true });
+  agent.stop();
+});
+
+test("Send to website moves one of this computer's connections up, and the row here becomes the site's copy", async () => {
+  const { agent, site, sync } = await synced();
+  sync.state.exported.set(3, OUT_THERE);
+  site.set(`POST ${WRITE}`, { status: 200, body: { saved: true, connection: { id: 40, version: 1 } } });
+  const before = site.count(PUBLISH);
+  assert.deepEqual(await agent.syncSendUp(3), { kind: "saved", body: { id: 40, version: 1 } });
+  await settle();
+  assert.deepEqual(site.of(`POST ${WRITE}`)[0].body, OUT_THERE);
+  assert.deepEqual(sync.adopted, [[3, 40, 1]]);
+  assert.ok(site.count(PUBLISH) > before);
+  agent.stop();
+});
+
+test("Send to website keeps a home connection here, and says so for one that is gone", async () => {
+  const { agent, site, sync } = await synced();
+  sync.state.exported.set(3, AT_HOME);
+  assert.equal((await agent.syncSendUp(3)).kind, "local");
+  assert.deepEqual(await agent.syncSendUp(9), {
+    kind: "refused",
+    status: 404,
+    body: { error: "That connection is no longer on this computer." },
+  });
+  assert.equal(site.count(`POST ${WRITE}`), 0);
+  assert.deepEqual(sync.adopted, []);
+  agent.stop();
+});
+
+test("Send to website leaves the row here as it was when the site cannot reach the database", async () => {
+  const { agent, site, sync } = await synced();
+  sync.state.exported.set(3, OUT_THERE);
+  site.set(`POST ${WRITE}`, { status: 200, body: { saved: false, reason: "The website could not reach that database." } });
+  assert.deepEqual(await agent.syncSendUp(3), { kind: "local", reason: "The website could not reach that database." });
+  assert.deepEqual(sync.adopted, []);
+  agent.stop();
+});
+
+test("with no link, or no sync, everything stays on this computer", async () => {
+  const sync = fakeSync();
+  const off = rig({ sync: sync.host });
+  off.agent.start();
+  assert.deepEqual(off.agent.syncStatus(), { linked: false, changedAt: null });
+  assert.deepEqual(await off.agent.syncCreate(OUT_THERE), { kind: "not-linked" });
+  assert.deepEqual(await off.agent.syncUpdate(31, {}), { kind: "not-linked" });
+  assert.deepEqual(await off.agent.syncRemove(31, 4, true), { kind: "not-linked" });
+  assert.deepEqual(await off.agent.syncSendUp(3), { kind: "not-linked" });
+  assert.equal(off.site.calls.length, 0);
+
+  const without = rig({ loaded: SAVED });
+  without.agent.start();
+  await without.pass(0);
+  assert.deepEqual(without.agent.syncStatus(), { linked: false, changedAt: null });
+  assert.equal(without.site.count(SYNC), 0);
+  without.agent.stop();
+});
+
+test("changes run one at a time, in the order they were asked for", async () => {
+  const { agent, site } = await synced();
+  const first = held<SiteAnswer>();
+  site.set(`PUT ${WRITE}`, first.promise);
+  const one = agent.syncUpdate(31, { name: "A", base_version: 4 });
+  const two = agent.syncRemove(31, 5, true);
+  await settle();
+  assert.equal(site.count(`DELETE ${WRITE}`), 0, "the delete waits for the change before it");
+  first.release({ status: 200, body: { saved: true } });
+  assert.equal((await one).kind, "saved");
+  assert.equal((await two).kind, "saved");
+  assert.equal(site.count(`DELETE ${WRITE}`), 1);
+  agent.stop();
+});
+
+test("readOwnConnections keeps only well-formed rows, cut to size, and throws on anything else", () => {
+  assert.deepEqual(
+    readOwnConnections({
+      connections: [
+        { id: 1, name: "Dev", environment: "dev", host: "kept out" },
+        { id: "2", name: "Bad", environment: "dev" },
+        { id: 3, name: "x".repeat(300), environment: "prod" },
+        null,
+      ],
+    }),
+    [
+      { id: 1, name: "Dev", environment: "dev" },
+      { id: 3, name: "x".repeat(200), environment: "prod" },
+    ],
+  );
+  assert.throws(() => readOwnConnections({ connections: "all" }));
+  assert.throws(() => readOwnConnections(null));
 });
 
 // ----- The log -----

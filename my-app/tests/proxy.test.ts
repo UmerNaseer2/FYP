@@ -319,6 +319,14 @@ describe("isPublicPath", () => {
     }
   });
 
+  it("opens the desktop sync route and nothing beside it", () => {
+    // The route checks the desktop's main-process token, and answers 404 off a desktop.
+    expect(isPublicPath("/api/desktop/sync")).toBe(true);
+    for (const guarded of ["/api/desktop", "/api/desktop/", "/api/desktop/sync/", "/api/desktop/sync/x", "/api/desktop/syncs"]) {
+      expect(isPublicPath(guarded)).toBe(false);
+    }
+  });
+
   it("opens the scheduled call's own path and nothing beside it", () => {
     // Its route checks the shared secret, so this one exact path is safe to open.
     expect(isPublicPath("/api/internal/drift-tick")).toBe(true);
