@@ -4,7 +4,7 @@ import { actorFor } from "@/lib/auth-mode";
 import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { runComparison } from "@/lib/compare-run";
 import { aiGateRefusal, aiResponse } from "@/lib/ai/respond";
-import { defaultAiDeps } from "@/lib/ai/run";
+import { aiDepsFor } from "@/lib/ai/run";
 import { runSchemaChat } from "@/lib/ai/chat";
 import { makeChatTools } from "@/lib/ai/chat-tools";
 import { MAX_HISTORY_TURNS, MAX_QUESTION_CHARS, type ChatTurn } from "@/lib/ai/features/schema-chat-view";
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 
   const { principal } = gate;
   const caller = { orgId: principal.orgId, email: actorFor(principal) };
-  const deps = defaultAiDeps();
+  const deps = await aiDepsFor(caller.orgId);
   const off = await aiGateRefusal(caller, "schema-chat", deps, "POST ai chat");
   if (off) return off;
 

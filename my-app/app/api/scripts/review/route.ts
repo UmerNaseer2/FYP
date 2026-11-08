@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { runFingerprint } from "@/lib/approvals-db";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
-import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import { readTableSizes } from "@/lib/ai/table-sizes";
 import { loadPgTarget, readTargetSnapshot } from "@/lib/ai/pg-target";
 import {
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
   }
 
   const caller = { orgId: gate.principal.orgId, email: actorFor(gate.principal) };
-  const deps = defaultAiDeps();
+  const deps = await aiDepsFor(caller.orgId);
   // Said before the target is touched: with AI off there is nothing to read it for.
   const off = await aiGateRefusal(caller, "migration-review", deps, "POST scripts review");
   if (off) return off;

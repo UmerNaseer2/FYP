@@ -98,7 +98,7 @@ function off(reason: string, askAdmin = false): AiAccess {
 /** What the server's status says about one feature. */
 function accessFromStatus(view: AiStatusView | null, feature: AiFeature): AiAccess {
   if (!view) return off("Could not check whether AI is on here. Reload the page to try again.");
-  if (!view.configured) return off("AI is not set up on this server.");
+  if (!view.configured) return off(view.problem ?? "AI is not set up on this server.");
   if (!view.enabled) {
     return off("AI is switched off for this organization. An Admin can switch it on in Admin, AI.");
   }

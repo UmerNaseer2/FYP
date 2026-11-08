@@ -12,6 +12,9 @@
 //   - A service may quietly ignore the JSON schema. That is fine: run.ts parses
 //     and checks every answer itself, so a stray answer is caught there.
 //   - Some put a JSON answer inside ```json fences. stripFences takes them off.
+//   - OpenAI's own service (an organization's own OpenAI key, Admin, AI) wants
+//     max_completion_tokens, which its thinking models also spend on thinking,
+//     and its strict JSON format refuses string length limits. See isOpenAiItself.
 // ---------------------------------------------------------------------------
 
 import type { AiConfig } from "./config";
@@ -24,6 +27,40 @@ import {
   type GenerateRequest,
   type GenerateResult,
 } from "./provider";
+
+/** True for OpenAI's own service, as opposed to the other OpenAI-style ones. */
+export function isOpenAiItself(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Room for an OpenAI thinking model's thinking on top of the answer itself:
+ * OpenAI counts the thinking against max_completion_tokens, and an answer cut
+ * short is an answer lost. The same room as the Claude adapter gives.
+ */
+const OPENAI_THINKING_ROOM = 4_000;
+
+/** The JSON Schema keywords OpenAI's strict format refuses. The app checks them itself (run.ts readAnswer). */
+const OPENAI_UNSENT = new Set(["minLength", "maxLength"]);
+
+function withoutOpenAiUnsent(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(withoutOpenAiUnsent);
+  if (node === null || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (OPENAI_UNSENT.has(key)) continue;
+    // Under "properties" the keys are field names, never keywords.
+    out[key] =
+      key === "properties" && value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).map(([field, sub]) => [field, withoutOpenAiUnsent(sub)]))
+        : withoutOpenAiUnsent(value);
+  }
+  return out;
+}
 
 type WireMessage =
   | { role: "system" | "user"; content: string }
@@ -203,16 +240,20 @@ export class OpenAiCompatibleProvider implements AiProvider {
   ) {}
 
   async generate(request: GenerateRequest): Promise<GenerateResult> {
+    const openAi = isOpenAiItself(this.config.baseUrl);
     const body: Record<string, unknown> = {
       model: request.model,
       messages: toWire(request.system, request.messages),
-      max_tokens: request.maxOutputTokens,
     };
+    // OpenAI's thinking models refuse max_tokens; the other services want it.
+    if (openAi) body.max_completion_tokens = request.maxOutputTokens + OPENAI_THINKING_ROOM;
+    else body.max_tokens = request.maxOutputTokens;
     if (this.config.reasoningEffort) body.reasoning_effort = this.config.reasoningEffort;
     if (request.jsonSchema) {
+      const schema = openAi ? withoutOpenAiUnsent(request.jsonSchema.schema) : request.jsonSchema.schema;
       body.response_format = {
         type: "json_schema",
-        json_schema: { name: request.jsonSchema.name, strict: true, schema: request.jsonSchema.schema },
+        json_schema: { name: request.jsonSchema.name, strict: true, schema },
       };
     }
     if (request.tools && request.tools.length > 0) {

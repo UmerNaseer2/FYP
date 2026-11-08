@@ -232,6 +232,11 @@ apply them with `docker compose up -d`.
   service learn from what it is sent, so use one only with test databases.
   `AI_DAILY_LIMIT` (calls per organization per day, 300 by default) and
   `AI_PER_MINUTE` (calls per person per minute, 10 by default) cap the use.
+  An organization's Admin can also save the organization's own key in Admin,
+  AI, for Google Gemini, OpenAI or Anthropic Claude. That organization's AI
+  calls then go to that service on its account, even when these lines are
+  left out. The key is stored encrypted, so this needs `APP_ENCRYPTION_KEY`,
+  and changing that key later means the Admin saves the AI key again.
 
 ## 5. Start it once by hand
 

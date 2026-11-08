@@ -712,6 +712,19 @@ async function backfillOlderTables(): Promise<void> {
     `ALTER TABLE memberships ADD COLUMN IF NOT EXISTS requests_seen_at TIMESTAMPTZ`
   );
 
+  // An organization's own AI key (lib/ai/org-key.ts). Empty everywhere at
+  // first, which keeps every organization on the server's AI settings.
+  await metadataPool.query(
+    `ALTER TABLE organization_ai
+       ADD COLUMN IF NOT EXISTS key_provider TEXT,
+       ADD COLUMN IF NOT EXISTS api_key TEXT,
+       ADD COLUMN IF NOT EXISTS key_hint TEXT,
+       ADD COLUMN IF NOT EXISTS model_fast TEXT,
+       ADD COLUMN IF NOT EXISTS model_smart TEXT,
+       ADD COLUMN IF NOT EXISTS key_set_by TEXT,
+       ADD COLUMN IF NOT EXISTS key_set_at TIMESTAMPTZ`
+  );
+
   await alterTimestampColumns();
 }
 

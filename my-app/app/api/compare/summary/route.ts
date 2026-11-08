@@ -5,7 +5,7 @@ import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { runComparison } from "@/lib/compare-run";
 import { MAX_COMPARISON_TARGETS } from "@/lib/comparison-set-rules";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
-import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import { buildCompareSummaryTask, citedChanges } from "@/lib/ai/features/compare-summary";
 
 /**
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
   const { params, index } = summaryQuery(typeof body.query === "string" ? body.query : "", target);
 
   const caller = { orgId: gate.principal.orgId, email: actorFor(gate.principal) };
-  const deps = defaultAiDeps();
+  const deps = await aiDepsFor(caller.orgId);
   // Said before the comparison runs: with AI off there is nothing to compare for.
   const off = await aiGateRefusal(caller, "compare-summary", deps, "POST compare summary");
   if (off) return off;

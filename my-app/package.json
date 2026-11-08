@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@dagrejs/dagre": "^3.0.0",
     "@xyflow/react": "^12.11.0",
     "jose": "^6.2.13",

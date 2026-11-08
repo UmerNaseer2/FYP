@@ -31,7 +31,7 @@ import { isChatAnswer, type ChatAnswer } from "@/lib/ai/features/schema-chat-vie
 import { MockProvider } from "@/lib/ai/mock";
 import { OpenAiCompatibleProvider, retryAfterFrom } from "@/lib/ai/openai-compatible";
 import { AiError, type AiToolCall } from "@/lib/ai/provider";
-import type { AiDeps, AiRunResult } from "@/lib/ai/run";
+import { OWN_KEY_REFUSED, type AiDeps, type AiRunResult } from "@/lib/ai/run";
 import { AI_OFF } from "@/lib/ai/settings";
 import type { AiCallRecord } from "@/lib/ai/store";
 import { compareSchemas } from "@/lib/compare";
@@ -878,6 +878,16 @@ describe("runSchemaChat", () => {
     expect(result.kind).toBe("failed");
     expect(provider.requests).toHaveLength(1);
     expect(rows).toHaveLength(1);
+  });
+
+  it("tells the Admin where to fix an organization's own key the service refused", async () => {
+    const provider = new MockProvider([new AiError("rejected", "bad key", 403)]);
+    const { chat } = tools();
+    const { deps: d } = deps(provider);
+    d.config = { ...d.config!, source: "organization" };
+    const result = await runSchemaChat(caller, { question: "Anything", history: [], tools: chat }, d);
+    expect(result).toMatchObject({ kind: "failed", message: OWN_KEY_REFUSED });
+    expect(provider.requests).toHaveLength(1);
   });
 
   it("asks nothing when the organization has the feature off", async () => {

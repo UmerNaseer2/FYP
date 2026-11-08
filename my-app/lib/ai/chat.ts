@@ -31,7 +31,7 @@ import {
   addUsage,
   aiGate,
   callBase,
-  defaultAiDeps,
+  aiDepsFor,
   endAiCall,
   keyRefused,
   startAiCall,
@@ -322,12 +322,13 @@ export function checkChatAnswer(
 export async function runSchemaChat(
   caller: AiCaller,
   input: SchemaChatInput,
-  deps: AiDeps = defaultAiDeps(),
+  given?: AiDeps,
   signal?: AbortSignal
 ): Promise<AiRunResult<ChatAnswer>> {
   // No row is written for a question stopped before a model call was sent.
   const cancelled = (): AiRunResult<ChatAnswer> => ({ kind: "failed", outcome: "timeout", message: CANCELLED });
   if (signal?.aborted) return cancelled();
+  const deps = given ?? (await aiDepsFor(caller.orgId));
   const refused = await aiGate(caller, "schema-chat", deps);
   if (refused) return refused;
   const config = deps.config!;
@@ -369,6 +370,8 @@ export async function runSchemaChat(
   let lookups = 0;
   let waited = false;
   let waitMs: number | null = null;
+  // The service refused the key itself (401 or 403), so the message can say which key.
+  let refusedKey = false;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   // What the next step's input will be, roughly: the whole conversation so far.
   let nextInput = estimateTokens(system + JSON.stringify(specs) + messages.map((m) => m.content).join("\n"));
@@ -456,14 +459,21 @@ export async function runSchemaChat(
         }
         if (error.kind === "rate_limited") waitMs = soonerWait(waitMs, error.retryAfterMs);
         // The other model has an allowance of its own. A refused key it would share.
-        if (keyRefused(error)) break;
+        if (keyRefused(error)) {
+          refusedKey = true;
+          break;
+        }
       }
     }
     if (!result) {
       // Each request that was sent already has its row.
       const outcome = failure ?? "provider_error";
       if (signal?.aborted) return { kind: "failed", outcome, message: CANCELLED };
-      return { kind: "failed", outcome, message: messageForFailure(outcome, waitMs) };
+      return {
+        kind: "failed",
+        outcome,
+        message: messageForFailure(outcome, waitMs, { ownKey: config.source === "organization", keyRefused: refusedKey }),
+      };
     }
     usage = addUsage(usage, result.usage);
     lastModel = result.model || lastModel;

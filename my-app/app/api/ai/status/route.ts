@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import { describeAiConfig } from "@/lib/ai/config";
+import { aiDepsFor, NOT_CONFIGURED } from "@/lib/ai/run";
 import { readOrgAi } from "@/lib/ai/settings";
 import type { AiStatusView } from "@/lib/ai/views";
 
@@ -9,19 +10,22 @@ import type { AiStatusView } from "@/lib/ai/views";
  * Compare, Deploy, Drift and the Script Editor ask this before drawing a
  * button, so nobody is offered a button that can only be refused.
  *
- * Needs ai:read (Editors and Admins out of the box). Says nothing about the
- * key or the service's address.
+ * Needs ai:read (Editors and Admins out of the box). The service is the one
+ * the organization's calls use: its own key when an Admin saved one, else
+ * the server's. Says nothing about the key or the service's address.
  */
 export async function GET() {
   const gate = await requirePermission("ai:read");
   if (!gate.ok) return gate.response;
 
   try {
-    const setup = describeAiConfig();
+    const deps = await aiDepsFor(gate.principal.orgId);
+    const setup = describeAiConfig(deps.config);
     const settings = await readOrgAi(gate.principal.orgId);
     const view: AiStatusView = {
       configured: setup.configured,
       service: setup.service,
+      problem: setup.configured ? null : (deps.setupProblem ?? NOT_CONFIGURED),
       enabled: settings.enabled,
       features: settings.features,
     };

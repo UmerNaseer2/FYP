@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, type Principal } from "@/lib/auth-guard";
+import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
-import { describeAiConfig, readAiConfig } from "@/lib/ai/config";
-import { AI_FEATURES, FEATURE_LABELS } from "@/lib/ai/prompts";
-import { readOrgAi, saveOrgAi, type OrgAiSettings } from "@/lib/ai/settings";
-import { readAiUsage } from "@/lib/ai/store";
-import { readAiSettingsChange, type AiAdminView } from "@/lib/ai/views";
-import { hasPermission } from "@/lib/permissions";
+import { readAiAdminView } from "@/lib/ai/admin-view";
+import { saveOrgAi } from "@/lib/ai/settings";
+import { readAiSettingsChange } from "@/lib/ai/views";
 
 /**
  * The AI tab on the Admin screen.
  *
- * GET (organization:read): whether this server has an AI service set up and
- * which models it uses, whether AI is on for the organization and for each
- * feature, and the last 30 days of use (calls, saved answers, tokens, how long
- * answers took, thumbs up and down).
+ * GET (organization:read): which AI service and models the organization's
+ * calls use (its own key when an Admin saved one, else the server's), whether
+ * AI is on for the organization and for each feature, and the last 30 days of
+ * use (calls, saved answers, tokens, how long answers took, thumbs up and
+ * down). The organization's own key is saved at /api/admin/ai/key.
  *
  * PATCH (organization:update): `{ enabled?, features?: { [feature]: boolean } }`.
  * Switching AI on means schema structure (table, column and index names, never
@@ -26,13 +24,7 @@ export async function GET() {
   if (!gate.ok) return gate.response;
 
   try {
-    const settings = await readOrgAi(gate.principal.orgId);
-    // The usage card is a nice to have: the switches still work without it.
-    const usage = await readAiUsage(gate.principal.orgId).catch((error) => {
-      console.error("Failed to read the AI usage:", error);
-      return null;
-    });
-    return NextResponse.json(viewOf(settings, usage, gate.principal));
+    return NextResponse.json(await readAiAdminView(gate.principal));
   } catch (error) {
     console.error("Failed to read the AI settings:", error);
     return NextResponse.json({ error: "Could not read the AI settings." }, { status: 503 });
@@ -58,23 +50,9 @@ export async function PATCH(request: NextRequest) {
     if (saved.kind === "not-found") {
       return NextResponse.json({ error: "This organization no longer exists." }, { status: 404 });
     }
-    const usage = await readAiUsage(principal.orgId).catch(() => null);
-    return NextResponse.json({ ...viewOf(saved.settings, usage, principal), changed: saved.changed });
+    return NextResponse.json({ ...(await readAiAdminView(principal, saved.settings)), changed: saved.changed });
   } catch (error) {
     console.error("Failed to save the AI settings:", error);
     return NextResponse.json({ error: "Could not save the AI settings." }, { status: 503 });
   }
-}
-
-function viewOf(settings: OrgAiSettings, usage: AiAdminView["usage"], principal: Principal): AiAdminView {
-  return {
-    setup: describeAiConfig(),
-    enabled: settings.enabled,
-    features: AI_FEATURES.map((key) => ({ key, label: FEATURE_LABELS[key], on: settings.features[key] })),
-    updatedBy: settings.updatedBy,
-    updatedAt: settings.updatedAt ? new Date(settings.updatedAt).toISOString() : null,
-    usage,
-    dailyLimit: readAiConfig()?.dailyLimit ?? null,
-    canUpdate: hasPermission(principal, "organization:update"),
-  };
 }

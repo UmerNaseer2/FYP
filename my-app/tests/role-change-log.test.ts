@@ -319,6 +319,16 @@ describe("someone removed, and the organization changed", () => {
       { kind: "ai-settings", subject: "Explain drift", detail: "on", ...admin },
       "switched the AI feature Explain drift on",
     ],
+    [
+      "the organization's own AI key saved",
+      { kind: "ai-settings", subject: "Organization AI key", detail: "Anthropic Claude", ...admin },
+      "saved the organization's own AI key for Anthropic Claude",
+    ],
+    [
+      "the organization's own AI key removed",
+      { kind: "ai-settings", subject: "Organization AI key", detail: "removed", ...admin },
+      "removed the organization's own AI key, so AI uses the server's settings again",
+    ],
   ])("%s", (_name, over, text) => {
     expect(describeRoleChanges([row({ id: 7, ...over })])).toEqual([line({ id: 7, text })]);
   });

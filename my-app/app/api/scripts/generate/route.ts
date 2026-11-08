@@ -10,7 +10,7 @@ import { configIdentity, findProductionTwin } from "@/lib/environment-guard";
 import { findTrackedSchema } from "@/lib/lineage-db";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
 import { loadPgTarget, readTargetSnapshot, type PgTargetRow } from "@/lib/ai/pg-target";
-import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import { buildSqlGenerateTask, MAX_REQUEST_CHARS, type TrialHook } from "@/lib/ai/features/sql-generate";
 import { makeTrial } from "@/lib/ai/features/sql-generate-trial";
 
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
 
   const orgId = gate.principal.orgId;
   const caller = { orgId, email: actorFor(gate.principal) };
-  const deps = defaultAiDeps();
+  const deps = await aiDepsFor(caller.orgId);
   const off = await aiGateRefusal(caller, "sql-generate", deps, "POST scripts generate");
   if (off) return off;
 

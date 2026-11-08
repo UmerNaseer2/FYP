@@ -44,7 +44,7 @@ const mockRunAiTask = jest.fn();
 jest.mock("../lib/ai/run", () => ({
   ...jest.requireActual("../lib/ai/run"),
   aiGate: async () => null,
-  defaultAiDeps: () => ({}),
+  aiDepsFor: async () => ({}),
   runAiTask: (...args: unknown[]) => mockRunAiTask(...args),
 }));
 

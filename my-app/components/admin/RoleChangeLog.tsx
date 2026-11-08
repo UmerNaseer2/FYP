@@ -1,5 +1,6 @@
 "use client";
 
+import { AI_KEY_LOG_SUBJECT } from "@/lib/ai/key-providers";
 import { isPermissionKey } from "@/lib/permissions";
 import { joinList, lineName } from "@/lib/role-summary";
 import type { RoleChange } from "@/lib/roles-db";
@@ -112,6 +113,12 @@ function sentenceFor(change: RoleChange): string {
       return `pointed the organization at the GitHub repository ${repository}`;
     }
     case "ai-settings":
+      // The organization's own AI key: the detail is the service, or "removed".
+      if (change.subject === AI_KEY_LOG_SUBJECT) {
+        return change.detail === "removed"
+          ? "removed the organization's own AI key, so AI uses the server's settings again"
+          : `saved the organization's own AI key for ${change.detail ?? "an AI service"}`;
+      }
       // No subject: AI assistance as a whole. A subject: one AI feature.
       if (!change.subject) {
         return change.detail === "off"

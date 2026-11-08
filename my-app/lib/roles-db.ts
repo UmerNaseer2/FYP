@@ -97,7 +97,10 @@ export type RoleChange = {
    *                        the subject is the repository, as owner/name
    *   ai-settings          "on" or "off" for AI assistance as a whole, with
    *                        no subject; for one feature, the subject is the
-   *                        feature's name and the detail "on" or "off"
+   *                        feature's name and the detail "on" or "off";
+   *                        for the organization's own AI key, the subject
+   *                        is AI_KEY_LOG_SUBJECT and the detail the
+   *                        service's name or "removed", never the key
    */
   detail: string | null;
   actor: string;

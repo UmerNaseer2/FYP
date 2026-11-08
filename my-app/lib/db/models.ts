@@ -703,6 +703,21 @@ export class OrganizationAiRow extends Model<
   declare features: CreationOptional<Record<string, boolean>>;
   declare updated_by: string;
   declare updated_at: CreationOptional<Date>;
+  /**
+   * The organization's own AI key, when an Admin saved one (lib/ai/org-key.ts).
+   * Its AI calls then use this key instead of the server's. key_provider is a
+   * name from lib/ai/key-providers.ts; api_key is always encrypted
+   * ("enc:v1:..."), never plain text; key_hint is its last four characters,
+   * the only part a screen ever shows.
+   */
+  declare key_provider: CreationOptional<string | null>;
+  declare api_key: CreationOptional<string | null>;
+  declare key_hint: CreationOptional<string | null>;
+  /** Model names that replace the provider's usual ones. Null keeps them. */
+  declare model_fast: CreationOptional<string | null>;
+  declare model_smart: CreationOptional<string | null>;
+  declare key_set_by: CreationOptional<string | null>;
+  declare key_set_at: CreationOptional<Date | null>;
 }
 
 OrganizationAiRow.init(
@@ -718,6 +733,13 @@ OrganizationAiRow.init(
     features: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
     updated_by: { type: DataTypes.TEXT, allowNull: false },
     updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
+    key_provider: { type: DataTypes.TEXT, allowNull: true },
+    api_key: { type: DataTypes.TEXT, allowNull: true },
+    key_hint: { type: DataTypes.TEXT, allowNull: true },
+    model_fast: { type: DataTypes.TEXT, allowNull: true },
+    model_smart: { type: DataTypes.TEXT, allowNull: true },
+    key_set_by: { type: DataTypes.TEXT, allowNull: true },
+    key_set_at: { type: DataTypes.DATE, allowNull: true },
   },
   { sequelize, tableName: "organization_ai" }
 );

@@ -6,6 +6,10 @@
 // else: it never goes to the browser, into the database, or into a log line.
 // describeAiConfig() is the only thing screens see, and it carries no key.
 //
+// An organization can also save its own key (Admin, AI; lib/ai/org-key.ts).
+// Its calls then use configForOrgKey below instead of these settings, with
+// the same limits and wait.
+//
 //   AI_PROVIDER      openai-compatible (Gemini, Groq, OpenRouter, Ollama)
 //   AI_BASE_URL      the service's OpenAI-style address, ending in a slash
 //   AI_API_KEY       the key
@@ -17,10 +21,15 @@
 //   AI_PER_MINUTE    calls per person per minute (default 10)
 // ---------------------------------------------------------------------------
 
+import { AI_KEY_PROVIDERS, type AiKeyProvider } from "./key-providers";
+
 export type AiTier = "fast" | "smart";
 
 export type AiConfig = {
-  provider: "openai-compatible";
+  /** How the app talks to the service: the OpenAI-style adapter, or the Claude SDK. */
+  provider: "openai-compatible" | "anthropic";
+  /** Whose key this is: the server's settings (when missing), or the organization's own. */
+  source?: "server" | "organization";
   baseUrl: string;
   apiKey: string;
   models: Record<AiTier, string>;
@@ -38,6 +47,17 @@ function wholeNumber(value: string | undefined, fallback: number, min: number): 
   if (value === undefined || value.trim() === "") return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= min ? parsed : fallback;
+}
+
+/** The limits and wait every AI call keeps, whoever's key it uses. */
+export type AiLimits = Pick<AiConfig, "timeoutMs" | "dailyLimit" | "perMinuteLimit">;
+
+export function readAiLimits(env: NodeJS.ProcessEnv = process.env): AiLimits {
+  return {
+    timeoutMs: wholeNumber(env.AI_TIMEOUT_MS, 90_000, 1_000),
+    dailyLimit: wholeNumber(env.AI_DAILY_LIMIT, 300, 0),
+    perMinuteLimit: wholeNumber(env.AI_PER_MINUTE, 10, 0),
+  };
 }
 
 /**
@@ -61,9 +81,28 @@ export function readAiConfig(env: NodeJS.ProcessEnv = process.env): AiConfig | n
     apiKey,
     models: { fast: fast || smart, smart: smart || fast },
     reasoningEffort: EFFORTS.has(effort) ? effort : null,
-    timeoutMs: wholeNumber(env.AI_TIMEOUT_MS, 90_000, 1_000),
-    dailyLimit: wholeNumber(env.AI_DAILY_LIMIT, 300, 0),
-    perMinuteLimit: wholeNumber(env.AI_PER_MINUTE, 10, 0),
+    ...readAiLimits(env),
+  };
+}
+
+/**
+ * The settings for an organization's own key: the service's address and
+ * protocol from the fixed list, never typed by anyone, and the server's
+ * limits and wait.
+ */
+export function configForOrgKey(
+  key: { provider: AiKeyProvider; apiKey: string; models: Record<AiTier, string> },
+  env: NodeJS.ProcessEnv = process.env
+): AiConfig {
+  const service = AI_KEY_PROVIDERS[key.provider];
+  return {
+    provider: service.protocol,
+    source: "organization",
+    baseUrl: service.baseUrl,
+    apiKey: key.apiKey,
+    models: { ...key.models },
+    reasoningEffort: service.reasoningEffort,
+    ...readAiLimits(env),
   };
 }
 
@@ -87,6 +126,7 @@ export function serviceName(baseUrl: string): string {
   if (host.endsWith("groq.com")) return "Groq";
   if (host.endsWith("openrouter.ai")) return "OpenRouter";
   if (host === "api.openai.com") return "OpenAI";
+  if (host === "api.anthropic.com") return "Anthropic Claude";
   // URL gives an IPv6 host in brackets: "[::1]".
   if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return "Ollama (this computer)";
   return OTHER_SERVICE;
@@ -97,9 +137,16 @@ export type AiSetup = {
   configured: boolean;
   service: string | null;
   models: Record<AiTier, string> | null;
+  /** True when the organization's own key is used, not the server's. */
+  ownKey: boolean;
 };
 
 export function describeAiConfig(config: AiConfig | null = readAiConfig()): AiSetup {
-  if (!config) return { configured: false, service: null, models: null };
-  return { configured: true, service: serviceName(config.baseUrl), models: { ...config.models } };
+  if (!config) return { configured: false, service: null, models: null, ownKey: false };
+  return {
+    configured: true,
+    service: serviceName(config.baseUrl),
+    models: { ...config.models },
+    ownKey: config.source === "organization",
+  };
 }

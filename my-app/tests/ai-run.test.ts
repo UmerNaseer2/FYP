@@ -19,6 +19,7 @@ import {
   messageForFailure,
   modelsFor,
   NOT_CONFIGURED,
+  OWN_KEY_REFUSED,
   readAnswer,
   runAiTask,
   soonerWait,
@@ -628,5 +629,69 @@ describe("the helpers", () => {
     [{ kind: "failed", outcome: "failed_check", message: "" } as const, 502],
   ])("aiRefusalStatus(%o) is %i", (result, status) => {
     expect(aiRefusalStatus(result)).toBe(status);
+  });
+});
+
+describe("runAiTask: an organization's own key", () => {
+  const OWN: AiConfig = { ...CONFIG, source: "organization", apiKey: "fake-test-key-not-real-0000" };
+
+  test.each([401, 403])("a refused own key (%i) tells the Admin where to fix it, after one request", async (status) => {
+    const { deps, provider } = fakes({ config: OWN, replies: [new AiError("rejected", "bad key", status)] });
+    const result = await runAiTask(caller, spec(), deps);
+    expect(result).toMatchObject({ kind: "failed", outcome: "provider_error", message: OWN_KEY_REFUSED });
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("a refused server key keeps the general message: users cannot fix the server's key", async () => {
+    const { deps } = fakes({ replies: [new AiError("rejected", "bad key", 401)] });
+    const result = await runAiTask(caller, spec(), deps);
+    expect(result).toMatchObject({ kind: "failed", message: "The AI service could not answer. Try again later." });
+  });
+
+  test("a refusal about one model is not blamed on the own key", async () => {
+    const { deps, provider } = fakes({
+      config: OWN,
+      replies: [new AiError("rejected", "no such model", 404), new AiError("rejected", "no such model", 404)],
+    });
+    const result = await runAiTask(caller, spec(), deps);
+    expect(result).toMatchObject({ kind: "failed", message: "The AI service could not answer. Try again later." });
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("an own key at its limit on both models says it is the organization's limit", async () => {
+    const { deps } = fakes({
+      config: OWN,
+      replies: [new AiError("rate_limited", "429", 429, 300_000), new AiError("rate_limited", "429", 429, 600_000)],
+    });
+    const result = await runAiTask(caller, spec(), deps);
+    expect(result.kind === "failed" && result.message).toBe(
+      "Your organization's AI key has reached its limit for now. Try again in about 5 minutes."
+    );
+  });
+
+  test("a key that cannot be used gives the reason, not the general not-set-up message", async () => {
+    const { deps, provider } = fakes({ config: null });
+    deps.setupProblem = "This organization's AI key cannot be read on this server.";
+    await expect(runAiTask(caller, spec(), deps)).resolves.toEqual({
+      kind: "unavailable",
+      reason: "not-configured",
+      message: "This organization's AI key cannot be read on this server.",
+    });
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  test("the failure messages for an own key", () => {
+    expect(messageForFailure("provider_error", null, { ownKey: true, keyRefused: true })).toBe(OWN_KEY_REFUSED);
+    // The server's key refused is not something an organization's Admin can fix.
+    expect(messageForFailure("provider_error", null, { ownKey: false, keyRefused: true })).toBe(
+      "The AI service could not answer. Try again later."
+    );
+    expect(messageForFailure("rate_limited", null, { ownKey: true })).toBe(
+      "Your organization's AI key has reached its limit for now. Try again in a minute."
+    );
+    expect(messageForFailure("rate_limited", 7_200_000, { ownKey: true })).toBe(
+      "Your organization's AI key has reached its limit for today. Try again in about 2 hours."
+    );
+    expect(messageForFailure("timeout", null, { ownKey: true })).toBe("The AI service took too long to answer. Try again.");
   });
 });

@@ -12,7 +12,7 @@
 
 import type { CompareReport } from "../compare-types";
 import { alertLine, buildDriftOneLinerTask } from "./features/drift-explain";
-import { defaultAiDeps, runAiTask, type AiDeps } from "./run";
+import { runAiTask, type AiDeps } from "./run";
 
 /** How long the service gets for one answer. Never more than the whole wait. */
 export const ALERT_LINE_TIMEOUT_MS = 4_000;
@@ -25,7 +25,8 @@ export const SCHEDULED_ACTOR = "scheduled drift check";
 export async function driftAlertLine(
   orgId: number,
   driftReport: CompareReport,
-  deps: AiDeps = defaultAiDeps()
+  /** Left out, the organization's own AI settings are read (aiDepsFor). Tests pass their own. */
+  deps?: AiDeps
 ): Promise<string | null> {
   // Aborted when the wait is up (and in any case once the wait is over), so
   // the AI task that lost the race stops instead of going on in the background.

@@ -8,6 +8,7 @@ import { errorFrom, jsonOf } from "@/lib/api-answer";
 import { AI_USAGE_NOTE, isAiAdminView, type AiAdminView } from "@/lib/ai/views";
 import type { AiFeature } from "@/lib/ai/prompts";
 import { resetAiStatus } from "@/components/studio/AiPanel";
+import { AiKeyCard } from "./AiKeyCard";
 
 /**
  * The AI tab on the Admin screen (app/api/admin/ai/route.ts).
@@ -17,6 +18,10 @@ import { resetAiStatus } from "@/components/studio/AiPanel";
  * exactly what is sent. Each feature can then be switched off on its own.
  * Who may use the features at all is the "Use AI assistance" permission on
  * the Roles & permissions tab (Editors and Admins out of the box).
+ *
+ * The "Organization AI key" card (AiKeyCard.tsx) lets an Admin save the
+ * organization's own key for Claude, Gemini or OpenAI, used instead of the
+ * server's AI settings.
  *
  * The usage card is the last 30 days from the ai_calls table: how many calls,
  * how many were answered from a saved answer, how many gave no usable answer
@@ -118,14 +123,15 @@ export function AiTab({ active }: { active: boolean }) {
         </div>
       )}
 
-      {!setup.configured && (
+      {!setup.configured && !view.orgKey && (
         <div className="role-note">
           <InfoIcon size={15} className="ico" />
           <div>
             <div className="title">No AI service is set up on this server</div>
             <div className="body">
-              Whoever runs the server adds AI_BASE_URL, AI_API_KEY and the two model names to its settings and
-              restarts it. Until then the switches below are saved but nothing is sent anywhere.
+              {"Whoever runs the server adds AI_BASE_URL, AI_API_KEY and the two model names to its settings and " +
+                "restarts it, or an Admin saves this organization's own key below. Until then the switches below are " +
+                "saved but nothing is sent anywhere."}
             </div>
           </div>
         </div>
@@ -156,13 +162,22 @@ export function AiTab({ active }: { active: boolean }) {
         </label>
         {setup.configured && setup.models && (
           <p className="text-[12.5px] mt-3" style={{ color: "var(--text-3)" }}>
-            {`Service: ${setup.service}. Models: ${setup.models.smart} for reviews and explanations, ${setup.models.fast} for short summaries.`}
+            {`Service: ${setup.service}${setup.ownKey ? ", with this organization's own key" : ""}. Models: ${setup.models.smart} for reviews and explanations, ${setup.models.fast} for short summaries.`}
           </p>
         )}
         <p className="text-[12.5px] mt-1.5 max-w-[68ch]" style={{ color: "var(--text-3)" }}>
           {`What is sent: ${SENT} The app checks every answer against its own engine before showing it, and nothing the AI writes runs without someone approving it.`}
         </p>
       </Card>
+
+      <AiKeyCard
+        view={view}
+        onChange={(next) => {
+          setView(next);
+          // The AI panels remember which service is used; make them ask again.
+          resetAiStatus();
+        }}
+      />
 
       <Card className="p-4 sm:p-5">
         <h3 className="section-title">Features</h3>

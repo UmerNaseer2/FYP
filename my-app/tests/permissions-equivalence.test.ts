@@ -130,6 +130,8 @@ const ADDED: Record<string, Gate> = {
   "POST /api/scripts/generate": { kind: "permission", keys: ["scripts:read"] },
   "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
   "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
+  "PUT /api/admin/ai/key": { kind: "permission", keys: ["organization:update"] },
+  "DELETE /api/admin/ai/key": { kind: "permission", keys: ["organization:update"] },
 };
 
 /** NextAuth's endpoints, ungated then and now (see permissions-coverage). */

@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import { actorFor } from "@/lib/auth-mode";
 import { computeDriftDetail } from "@/lib/lineage-db";
 import { aiGateRefusal, aiPermissionRefusal, aiResponse } from "@/lib/ai/respond";
-import { defaultAiDeps, runAiTask } from "@/lib/ai/run";
+import { aiDepsFor, runAiTask } from "@/lib/ai/run";
 import {
   buildDriftExplainTask,
   buildDriftScripts,
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
   }
 
   const caller = { orgId: gate.principal.orgId, email: actorFor(gate.principal) };
-  const deps = defaultAiDeps();
+  const deps = await aiDepsFor(caller.orgId);
   // Said before the database is read: with AI off there is nothing to read it for.
   const off = await aiGateRefusal(caller, "drift-explain", deps, "POST drift explain");
   if (off) return off;

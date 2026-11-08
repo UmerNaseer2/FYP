@@ -3,8 +3,9 @@
 // The one way an AI feature asks the model anything. Every feature calls
 // runAiTask, so every answer goes through the same steps:
 //
-//   1. Is AI set up on this server, switched on for the organization, and is
-//      this feature on? (The route has already checked the person may use it.)
+//   1. Is AI set up (the organization's own key, or the server's settings),
+//      switched on for the organization, and is this feature on? (The route
+//      has already checked the person may use it.)
 //   2. Is a checked answer to the same question, from the same model, saved?
 //      Then that is the answer (unless the person pressed Ask again).
 //   3. Before every request to the service: are the organization's daily
@@ -26,7 +27,7 @@
 // The model never decides anything here. A feature's `check` is where the
 // engine's facts overrule it.
 import { z } from "zod";
-import { readAiConfig, serviceName, type AiConfig, type AiTier } from "./config";
+import { configForOrgKey, readAiConfig, serviceName, type AiConfig, type AiTier } from "./config";
 import {
   AiError,
   type AiMessage,
@@ -35,7 +36,9 @@ import {
   type GenerateRequest,
   type GenerateResult,
 } from "./provider";
+import { AnthropicProvider } from "./anthropic";
 import { OpenAiCompatibleProvider } from "./openai-compatible";
+import { readOrgKey } from "./org-key";
 import { PROMPT_VERSIONS, SHARED_RULES, type AiFeature } from "./prompts";
 import { featureOn, readOrgAi, type OrgAiSettings } from "./settings";
 import * as store from "./store";
@@ -109,13 +112,24 @@ export type AiDeps = {
   now: () => number;
   /** Waits, for the one pause schema chat takes when the service asks it to. Tests pass their own. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Why there is no config, when it is not simply "nothing is set up": the
+   * organization's own key cannot be read, or its settings could not be.
+   */
+  setupProblem?: string;
 };
 
+/** The adapter that speaks to the service in this config. */
+export function providerFor(config: AiConfig): AiProvider {
+  return config.provider === "anthropic" ? new AnthropicProvider(config) : new OpenAiCompatibleProvider(config);
+}
+
+/** The server's own AI settings (AI_* in its environment), for every organization without a key of its own. */
 export function defaultAiDeps(): AiDeps {
   const config = readAiConfig();
   return {
     config,
-    provider: config ? new OpenAiCompatibleProvider(config) : null,
+    provider: config ? providerFor(config) : null,
     readSettings: readOrgAi,
     store,
     now: () => Date.now(),
@@ -124,7 +138,33 @@ export function defaultAiDeps(): AiDeps {
 }
 
 export const NOT_CONFIGURED =
-  "AI assistance is not set up on this server. An administrator adds an AI service key to the server's settings.";
+  "AI assistance is not set up yet. An Admin can save the organization's own AI key in Admin, AI, " +
+  "or a server administrator can add an AI service key to the server's settings.";
+export const KEY_UNREADABLE =
+  "This organization's AI key cannot be read on this server. An Admin can save it again in Admin, AI.";
+export const SETTINGS_UNREADABLE = "Could not read this organization's AI settings. Is the app database reachable?";
+
+/**
+ * The AI settings one organization's calls use: its own key when an Admin
+ * saved one (Admin, AI), else the server's. A saved key that cannot be read,
+ * or a database that cannot be reached, means no AI for now, never a quiet
+ * switch to the server's key: the organization chose its own service.
+ */
+export async function aiDepsFor(orgId: number): Promise<AiDeps> {
+  const server = defaultAiDeps();
+  let key;
+  try {
+    key = await readOrgKey(orgId);
+  } catch (error) {
+    console.error("[ai] reading the organization's AI key:", (error as Error).message);
+    return { ...server, config: null, provider: null, setupProblem: SETTINGS_UNREADABLE };
+  }
+  if (!key) return server;
+  if (key.apiKey === null) return { ...server, config: null, provider: null, setupProblem: KEY_UNREADABLE };
+  const config = configForOrgKey({ provider: key.provider, apiKey: key.apiKey, models: key.models });
+  return { ...server, config, provider: providerFor(config) };
+}
+
 export const SWITCHED_OFF = "AI assistance is switched off for this organization. An Admin can switch it on in Admin, AI.";
 export const FEATURE_OFF = "This AI feature is switched off for this organization. An Admin can switch it on in Admin, AI.";
 
@@ -178,9 +218,11 @@ export function readAnswer<T>(text: string, schema: z.ZodType<T>): { value: T } 
 export async function aiGate(
   caller: AiCaller,
   feature: AiFeature,
-  deps: Pick<AiDeps, "config" | "provider" | "readSettings">
+  deps: Pick<AiDeps, "config" | "provider" | "readSettings" | "setupProblem">
 ): Promise<Extract<AiRunResult<never>, { kind: "unavailable" }> | null> {
-  if (!deps.config || !deps.provider) return { kind: "unavailable", reason: "not-configured", message: NOT_CONFIGURED };
+  if (!deps.config || !deps.provider) {
+    return { kind: "unavailable", reason: "not-configured", message: deps.setupProblem ?? NOT_CONFIGURED };
+  }
   const settings = await deps.readSettings(caller.orgId);
   if (!settings.enabled) return { kind: "unavailable", reason: "switched-off", message: SWITCHED_OFF };
   if (!featureOn(settings, feature)) return { kind: "unavailable", reason: "feature-off", message: FEATURE_OFF };
@@ -325,23 +367,41 @@ const HOUR_MS = 60 * 60 * 1000;
 /**
  * A free allowance can be used up for a minute or for the rest of the day
  * (Gemini's free tier allows a set number of requests a day for each model),
- * so the message says how long, as far as the service said.
+ * so the message says how long, as far as the service said. An organization's
+ * own key has the limits of that organization's account instead.
  */
-function usedUpMessage(retryAfterMs: number | null): string {
+function usedUpMessage(retryAfterMs: number | null, ownKey: boolean): string {
+  const what = ownKey ? "Your organization's AI key has reached its limit" : "The AI service's free allowance is used up";
   if (retryAfterMs !== null && retryAfterMs >= HOUR_MS) {
     const hours = Math.round(retryAfterMs / HOUR_MS);
-    return `The AI service's free allowance is used up for today. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`;
+    return `${what} for today. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`;
   }
   if (retryAfterMs !== null && retryAfterMs > 90_000) {
-    return `The AI service's free allowance is used up for now. Try again in about ${Math.ceil(retryAfterMs / 60_000)} minutes.`;
+    return `${what} for now. Try again in about ${Math.ceil(retryAfterMs / 60_000)} minutes.`;
   }
-  return "The AI service's free allowance is used up for now. Try again in a minute.";
+  return `${what} for now. Try again in a minute.`;
 }
 
-export function messageForFailure(outcome: AiOutcome, retryAfterMs: number | null = null): string {
+export const OWN_KEY_REFUSED =
+  "The AI service refused your organization's AI key. An Admin can check it, or save a new one, in Admin, AI.";
+
+/** What the failure message should know about the key the calls used. */
+export type FailureContext = {
+  /** The calls used the organization's own key (Admin, AI), not the server's. */
+  ownKey?: boolean;
+  /** The service refused the key itself (401 or 403). */
+  keyRefused?: boolean;
+};
+
+export function messageForFailure(
+  outcome: AiOutcome,
+  retryAfterMs: number | null = null,
+  context: FailureContext = {}
+): string {
+  if (context.ownKey && context.keyRefused) return OWN_KEY_REFUSED;
   switch (outcome) {
     case "rate_limited":
-      return usedUpMessage(retryAfterMs);
+      return usedUpMessage(retryAfterMs, context.ownKey === true);
     case "timeout":
       return "The AI service took too long to answer. Try again.";
     case "invalid_output":
@@ -351,7 +411,6 @@ export function messageForFailure(outcome: AiOutcome, retryAfterMs: number | nul
       return "The AI service could not answer. Try again later.";
   }
 }
-
 
 export function addUsage(a: AiUsage, b: AiUsage): AiUsage {
   return {
@@ -373,11 +432,8 @@ export const TASK_DEADLINE_MS = 150_000;
 /** With less time than this left, a request is not started. */
 const MIN_REQUEST_MS = 2_000;
 
-export async function runAiTask<T>(
-  caller: AiCaller,
-  spec: AiTaskSpec<T>,
-  deps: AiDeps = defaultAiDeps()
-): Promise<AiRunResult<T>> {
+export async function runAiTask<T>(caller: AiCaller, spec: AiTaskSpec<T>, given?: AiDeps): Promise<AiRunResult<T>> {
+  const deps = given ?? (await aiDepsFor(caller.orgId));
   const refused = await aiGate(caller, spec.feature, deps);
   if (refused) return refused;
   const config = deps.config!;
@@ -418,11 +474,13 @@ export async function runAiTask<T>(
   // not wait on a hung model a second time.
   let modelIndex = 0;
   let waitMs: number | null = null;
+  let refusedKey = false;
+  const ownKey = config.source === "organization";
   const cancelled = () => spec.signal?.aborted === true;
   const failed = (outcome: AiOutcome): AiRunResult<T> => ({
     kind: "failed",
     outcome,
-    message: messageForFailure(outcome, outcome === "rate_limited" ? waitMs : null),
+    message: messageForFailure(outcome, outcome === "rate_limited" ? waitMs : null, { ownKey, keyRefused: refusedKey }),
   });
 
   const repairs = Math.max(0, spec.repairs ?? 1);
@@ -463,7 +521,10 @@ export async function runAiTask<T>(
         failure = outcomeOf(error);
         await end(failure);
         if (error.kind === "rate_limited") waitMs = soonerWait(waitMs, error.retryAfterMs);
-        if (keyRefused(error)) break;
+        if (keyRefused(error)) {
+          refusedKey = true;
+          break;
+        }
         // A used-up allowance is worth trying the other model for: Gemini
         // counts each model's requests apart.
         modelIndex = i + 1;
