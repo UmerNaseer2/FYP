@@ -122,7 +122,7 @@ const ADDED: Record<string, Gate> = {
   // AI assistance: using it, and the Admin screen's AI tab.
   "GET /api/ai/status": { kind: "permission", keys: ["ai:read"] },
   "POST /api/ai/rate": { kind: "permission", keys: ["ai:read"] },
-  "POST /api/compare/summary": { kind: "permission", keys: ["compare:read", "ai:read"] },
+  "POST /api/compare/summary": { kind: "permission", keys: ["compare:read"] },
   "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
   "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
 };
@@ -273,4 +273,15 @@ test("a phone sees a request's SQL only where the Deploy screen would show it", 
   });
   expect(startsAllowed("viewer", ["approvals:read"])).toBe(true);
   expect(startsAllowed("viewer", ["scripts:read", "deploy:read"])).toBe(true);
+});
+
+test("an AI route asks for AI assistance on top of the screen it serves", () => {
+  // requirePermission lets in any one of its keys, so each AI route that also
+  // serves a screen checks "Use AI assistance" separately: a viewer, who may
+  // compare but not use AI out of the box, is turned away.
+  expect(handlers.get("POST /api/compare/summary")?.gate).toEqual({ kind: "permission", keys: ["compare:read"] });
+  expect(hasPermissionLiterals(path.join(API_DIR, "compare", "summary", "route.ts"))).toContain("ai:read");
+  expect(startsAllowed("viewer", ["compare:read"])).toBe(true);
+  expect(startsAllowed("viewer", ["ai:read"])).toBe(false);
+  expect(startsAllowed("editor", ["ai:read"])).toBe(true);
 });

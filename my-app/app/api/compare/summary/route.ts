@@ -21,8 +21,13 @@ import { buildCompareSummaryTask, citedChanges } from "@/lib/ai/features/compare
  * Needs "Run comparisons" and "Use AI assistance".
  */
 export async function POST(request: NextRequest) {
-  const gate = await requirePermission("compare:read", "ai:read");
+  const gate = await requirePermission("compare:read");
   if (!gate.ok) return gate.response;
+  // requirePermission lets in any one of the keys it is given, so the AI box
+  // is asked for on its own: both are needed.
+  if (!hasPermission(gate.principal, "ai:read")) {
+    return NextResponse.json({ error: refusalMessage(gate.principal.roleLabel, "ai:read") }, { status: 403 });
+  }
 
   let body: { query?: unknown; target?: unknown };
   try {
