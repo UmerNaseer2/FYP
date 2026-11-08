@@ -804,6 +804,23 @@ async function fillOrganization(
      VALUES ($1, 'probe', 'probe-scripts', 'not-a-real-token', $2)`,
     [orgId, `member-${orgId}@example.invalid`]
   );
+  await client.query(
+    `INSERT INTO organization_ai (org_id, enabled, updated_by)
+     VALUES ($1, true, $2)`,
+    [orgId, `member-${orgId}@example.invalid`]
+  );
+  await client.query(
+    `INSERT INTO ai_calls
+       (org_id, actor, feature, provider, model, prompt_version, outcome)
+     VALUES ($1, 'probe@example.invalid', 'compare-summary', 'probe',
+             'probe-model', 1, 'ok')`,
+    [orgId]
+  );
+  await client.query(
+    `INSERT INTO ai_results (org_id, feature, cache_key, model, answer)
+     VALUES ($1, 'compare-summary', 'probe', 'probe-model', '{}')`,
+    [orgId]
+  );
 
   const connectionId = await insertId(
     client,
