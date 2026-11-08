@@ -10,7 +10,7 @@ export const PROMPT_VERSIONS = {
   "migration-review": 1,
   "drift-explain": 1,
   "drift-oneliner": 1,
-  "sql-generate": 1,
+  "sql-generate": 2,
   "schema-chat": 1,
 } as const;
 

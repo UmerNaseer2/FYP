@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "jest",
+    "ai:bench": "node scripts/ai-bench.cjs",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit"
   },

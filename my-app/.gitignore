@@ -57,3 +57,6 @@ yarn-debug.log*
 .playwright-mcp/
 *.drawio
 /*.png
+
+# AI benchmark output (npm run ai:bench)
+/bench-results/

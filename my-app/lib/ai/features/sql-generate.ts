@@ -61,7 +61,9 @@ export const SQL_GENERATE_SYSTEM = [
   "- No dynamic SQL: no EXECUTE of a built string in a DO block or a function.",
   "- No SECURITY DEFINER functions.",
   "- A NOT NULL column added to a table that may have rows needs a DEFAULT, or the script fails on the first row.",
-  "- Prefer IF NOT EXISTS and IF EXISTS where PostgreSQL has them, so the script is safe to read twice.",
+  "- When what the request asks for is already in SCHEMA (the column, table or index is there), write no SQL: leave sql and rollbackSql empty and say in cannot that it is already there.",
+  "- Do not use IF NOT EXISTS to step over something SCHEMA already has.",
+  "- rollbackSql undoes only what sql does. It never drops or changes anything that was in SCHEMA before the script, unless sql changed it, and then it puts it back as it was.",
 ].join("\n");
 
 /** Words in a request that ask for data to be removed. */
@@ -197,6 +199,54 @@ export function refusedIn(sql: string, schemaName: string, columns: ReadonlySet<
   return problems;
 }
 
+/** A name as PostgreSQL reads it: quoted exactly, otherwise lower-cased. */
+const NAME = String.raw`(?:"(?:[^"]|"")+"|[a-z_][a-z0-9_$]*)`;
+
+function readName(raw: string): string {
+  return raw.startsWith('"') ? raw.slice(1, -1).replace(/""/g, '"') : raw.toLowerCase();
+}
+
+/** The last part of a dotted name: the schema in front is refusedIn's business. */
+function lastPart(raw: string): string {
+  const parts = raw.match(new RegExp(NAME, "gi")) ?? [raw];
+  return readName(parts[parts.length - 1]);
+}
+
+const ALTER_TABLE = new RegExp(String.raw`^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(${NAME}(?:\s*\.\s*${NAME})?)`, "i");
+const ADD_IF_NOT_EXISTS = new RegExp(String.raw`\bADD\s+(?:COLUMN\s+)?IF\s+NOT\s+EXISTS\s+(${NAME})`, "gi");
+const CREATE_TABLE_IF_NOT_EXISTS = new RegExp(
+  String.raw`^\s*CREATE\s+(?:(?:GLOBAL|LOCAL)\s+)?(?:(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+IF\s+NOT\s+EXISTS\s+(${NAME}(?:\s*\.\s*${NAME})?)`,
+  "i"
+);
+const CREATE_INDEX_IF_NOT_EXISTS = new RegExp(String.raw`^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+(${NAME})`, "i");
+
+/**
+ * What a script adds with IF NOT EXISTS that the schema already has. Such a
+ * statement does nothing, and its rollback (DROP ... IF EXISTS) would remove
+ * the thing that was there before, with its data. Empty when there is none.
+ */
+export function alreadyThereIn(sql: string, snapshot: SchemaSnapshot): string[] {
+  const tables = new Map(snapshot.tables.map((t) => [t.name, new Set(t.columns.map((c) => c.name))]));
+  const indexes = new Set(snapshot.tables.flatMap((t) => (t.indexes ?? []).map((i) => i.name)));
+  const found: string[] = [];
+  for (const statement of splitStatements(sql)) {
+    const code = maskNonCode(statement, { keepQuotedNames: true });
+    const created = CREATE_TABLE_IF_NOT_EXISTS.exec(code);
+    if (created && tables.has(lastPart(created[1]))) found.push(`table ${lastPart(created[1])}`);
+    const index = CREATE_INDEX_IF_NOT_EXISTS.exec(code);
+    if (index && indexes.has(readName(index[1]))) found.push(`index ${readName(index[1])}`);
+    const altered = ALTER_TABLE.exec(code);
+    const columns = altered ? tables.get(lastPart(altered[1])) : undefined;
+    if (altered && columns) {
+      for (const match of code.slice(altered[0].length).matchAll(ADD_IF_NOT_EXISTS)) {
+        const name = readName(match[1]);
+        if (columns.has(name)) found.push(`column ${lastPart(altered[1])}.${name}`);
+      }
+    }
+  }
+  return [...new Set(found)];
+}
+
 /** The tables and views a script creates, for reading its rollback. */
 function createdBy(sql: string): Set<string> {
   return new Set(tableRefsInSql(sql).filter((r) => r.creates).map((r) => r.name));
@@ -324,6 +374,13 @@ export async function checkSqlGenerate(
   const unknown = unknownTablesInSql(value.sql, facts.snapshot);
   if (unknown.length > 0) {
     problems.push(`It uses tables the schema does not have: ${unknown.join(", ")}. Use only the tables in SCHEMA.`);
+  }
+  const already = alreadyThereIn(value.sql, facts.snapshot);
+  if (already.length > 0) {
+    problems.push(
+      `These statements would do nothing, because what they add is already there: ${already.join(", ")}. ` +
+        "Leave them out, and keep the rollback off what was there before. If nothing is left to do, leave sql and rollbackSql empty and say in cannot that it is already there."
+    );
   }
 
   const hasRollback = hasExecutableSql(value.rollbackSql);

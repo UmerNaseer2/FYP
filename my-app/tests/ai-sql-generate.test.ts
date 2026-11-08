@@ -11,6 +11,7 @@ jest.mock("../lib/version-db", () => ({
 import type { PoolClient } from "pg";
 import type { AiConfig } from "@/lib/ai/config";
 import {
+  alreadyThereIn,
   backticksToQuotes,
   buildSqlGenerateTask,
   checkSqlGenerate,
@@ -19,7 +20,7 @@ import {
   type TrialHook,
   type TrialOutcome,
 } from "@/lib/ai/features/sql-generate";
-import { describeTrialError, makeTrial } from "@/lib/ai/features/sql-generate-trial";
+import { describeTrialError, makeTrial, notPutBack, STRUCTURE_SQL } from "@/lib/ai/features/sql-generate-trial";
 import { isSqlGenerateAnswer, isSqlGenerateChecks, type SqlGenerateAnswer } from "@/lib/ai/features/sql-generate-view";
 import { MockProvider } from "@/lib/ai/mock";
 import { runAiTask, type AiDeps } from "@/lib/ai/run";
@@ -238,6 +239,75 @@ describe("checkSqlGenerate", () => {
   });
 });
 
+describe("alreadyThereIn", () => {
+  test("a column, table or index the schema already has is found", () => {
+    const snap = shop();
+    snap.tables[0].indexes = [{ name: "books_title_idx" } as never];
+    expect(alreadyThereIn("ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at timestamptz;", snap)).toEqual(["column orders.created_at"]);
+    expect(alreadyThereIn('ALTER TABLE ONLY public."books" ADD IF NOT EXISTS "price" int;', snap)).toEqual(["column books.price"]);
+    expect(alreadyThereIn("-- again\nCREATE TABLE IF NOT EXISTS books (id int);", snap)).toEqual(["table books"]);
+    expect(alreadyThereIn("CREATE UNIQUE INDEX IF NOT EXISTS books_title_idx ON books (title);", snap)).toEqual(["index books_title_idx"]);
+  });
+  test("what is new, or added without IF NOT EXISTS, is not", () => {
+    const snap = shop();
+    expect(alreadyThereIn("ALTER TABLE books ADD COLUMN IF NOT EXISTS stock int, ADD COLUMN IF NOT EXISTS isbn text;", snap)).toEqual([]);
+    expect(alreadyThereIn("CREATE TABLE IF NOT EXISTS reviews (id int);", snap)).toEqual([]);
+    expect(alreadyThereIn("ALTER TABLE books ADD COLUMN price int;", snap)).toEqual([]);
+    expect(alreadyThereIn("-- ALTER TABLE books ADD COLUMN IF NOT EXISTS price int;\nSELECT 1;", snap)).toEqual([]);
+    expect(alreadyThereIn("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS price int;", snap)).toEqual([]);
+  });
+  test("checkSqlGenerate sends a no-op addition back", async () => {
+    const { facts } = task({ request: "Add a price to books" });
+    const out = await checkSqlGenerate(
+      answer({
+        sql: "ALTER TABLE books ADD COLUMN IF NOT EXISTS price numeric(10,2);",
+        rollbackSql: "ALTER TABLE books DROP COLUMN IF EXISTS price;",
+        summary: "Adds `price` to `books`.",
+      }),
+      facts
+    );
+    expect(out.problems.join(" ")).toContain("already there: column books.price");
+    expect(facts.last).toBeNull();
+  });
+  test("the prompt says what to do when it is already there", () => {
+    expect(task().spec.system).toContain("already in SCHEMA");
+    expect(task().spec.system).toContain("rollbackSql undoes only what sql does");
+  });
+});
+
+describe("notPutBack", () => {
+  const before = new Map<string, string | null>([
+    ["table orders", null],
+    ["column orders.id", "integer"],
+    ["column orders.status", "text"],
+    ["constraint orders.orders_pkey", null],
+    ["table notes", null],
+    ["column notes.body", "text"],
+  ]);
+  test("the same structure, or only new things, is fine", () => {
+    expect(notPutBack(before, new Map(before))).toBeNull();
+    expect(notPutBack(before, new Map([...before, ["column orders.stock", "integer"]]))).toBeNull();
+  });
+  test("a gone column is named; a gone table is named without its columns", () => {
+    const after = new Map(before);
+    after.delete("column orders.status");
+    after.delete("table notes");
+    after.delete("column notes.body");
+    const message = notPutBack(before, after)!;
+    expect(message).toContain("gone: column orders.status, table notes.");
+    expect(message).not.toContain("notes.body");
+  });
+  test("a column with another type is named with both types", () => {
+    const after = new Map(before);
+    after.set("column orders.status", "character varying(10)");
+    expect(notPutBack(before, after)).toContain("column orders.status was text, is character varying(10)");
+  });
+  test("a long list is cut", () => {
+    const many = new Map<string, string | null>(Array.from({ length: 12 }, (_, i) => [`index i${i}`, null]));
+    expect(notPutBack(many, new Map())).toContain("and 4 more");
+  });
+});
+
 describe("the try on the database", () => {
   function withTrial(outcome: TrialOutcome) {
     const calls: [string, string][] = [];
@@ -330,9 +400,14 @@ describe("the whole run", () => {
 
 describe("makeTrial", () => {
   type Step = { text: string; values?: unknown[] };
-  function fakeClient(options: { failOn?: RegExp; error?: object; noSchema?: boolean; xids?: string[] } = {}) {
+  type Rows = { item: string; shape: string | null }[];
+  function fakeClient(
+    options: { failOn?: RegExp; error?: object; noSchema?: boolean; xids?: string[]; structures?: Rows[]; failStructureAfter?: boolean } = {}
+  ) {
     const steps: Step[] = [];
     const xids = [...(options.xids ?? ["100", "100", "100"])];
+    const structures = [...(options.structures ?? [])];
+    let structureReads = 0;
     let released: unknown = "not released";
     const client = {
       query: async (text: string, values?: unknown[]) => {
@@ -340,6 +415,11 @@ describe("makeTrial", () => {
         if (options.failOn && options.failOn.test(text)) throw options.error ?? Object.assign(new Error("boom"), { code: "42703" });
         if (text.includes("txid_current")) return { rows: [{ xid: xids.shift() ?? "100" }] };
         if (text.includes("information_schema.schemata")) return { rows: options.noSchema ? [] : [{ "?column?": 1 }] };
+        if (text === STRUCTURE_SQL) {
+          structureReads += 1;
+          if (options.failStructureAfter && structureReads > 1) throw Object.assign(new Error("gone"), { code: "57P01" });
+          return { rows: structures.shift() ?? [] };
+        }
         return { rows: [] };
       },
       release: (arg: unknown) => {
@@ -396,6 +476,38 @@ describe("makeTrial", () => {
     const fake = fakeClient();
     await makeTrial({}, "public", async () => fake.client)(UP, "");
     expect(fake.steps.some((s) => s.text === "")).toBe(false);
+    expect(fake.steps.some((s) => s.text === STRUCTURE_SQL)).toBe(false);
+  });
+
+  test("the structure is read before the script and after the rollback, for this schema", async () => {
+    const fake = fakeClient();
+    const outcome = await makeTrial({}, "shop", async () => fake.client)(UP, DOWN);
+    expect(outcome).toEqual({ status: "passed" });
+    const texts = fake.steps.map((s) => s.text);
+    const reads = texts.flatMap((t, i) => (t === STRUCTURE_SQL ? [i] : []));
+    expect(reads).toHaveLength(2);
+    expect(reads[0]).toBeLessThan(texts.indexOf(UP));
+    expect(reads[1]).toBeGreaterThan(texts.indexOf(DOWN));
+    expect(fake.steps[reads[0]].values).toEqual(["shop"]);
+  });
+
+  test("a rollback that removes what was there before fails the rollback step", async () => {
+    const was: Rows = [
+      { item: "table orders", shape: null },
+      { item: "column orders.status", shape: "text" },
+    ];
+    const fake = fakeClient({ structures: [was, [was[0]]] });
+    const noop = "ALTER TABLE orders ADD COLUMN IF NOT EXISTS status text;";
+    const outcome = await makeTrial({}, "shop", async () => fake.client)(noop, "ALTER TABLE orders DROP COLUMN IF EXISTS status;");
+    expect(outcome).toMatchObject({ status: "failed", step: "rollback" });
+    expect(outcome.status === "failed" && outcome.message).toContain("gone: column orders.status");
+    expect(fake.steps.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  test("the structure not read back is not tried, not failed", async () => {
+    const fake = fakeClient({ failStructureAfter: true });
+    const outcome = await makeTrial({}, "shop", async () => fake.client)(UP, DOWN);
+    expect(outcome).toEqual({ status: "not-tried", reason: "The app could not read the schema back after the rollback." });
   });
 
   test("a schema that is gone is not tried", async () => {
