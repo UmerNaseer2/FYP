@@ -318,6 +318,26 @@ describe("the helpers", () => {
     expect(json).toMatchObject({ type: "object", required: ["summary", "tables"] });
   });
 
+  test("jsonSchemaOf leaves out list length limits, which Gemini refuses, and keeps the rest", () => {
+    const Limited = z.object({
+      minItems: z.string().max(20),
+      items: z.array(z.object({ name: z.string().min(1) })).min(1).max(3),
+    });
+    const json = jsonSchemaOf(Limited);
+    const text = JSON.stringify(json);
+    expect(text).not.toMatch(/"(minItems|maxItems)":\d/);
+    // A field that happens to share a keyword's name is still there.
+    expect(json).toMatchObject({
+      required: ["minItems", "items"],
+      properties: {
+        minItems: { type: "string", maxLength: 20 },
+        items: { type: "array", items: { properties: { name: { minLength: 1 } } } },
+      },
+    });
+    // The answer is still held to the limits when it is read.
+    expect("problems" in readAnswer('{"minItems":"a","items":[]}', Limited)).toBe(true);
+  });
+
   test("readAnswer names the field that is wrong", () => {
     expect(readAnswer('{"summary":"a","tables":["b"]}', Answer)).toEqual({ value: { summary: "a", tables: ["b"] } });
     const wrong = readAnswer('{"summary":1,"tables":[]}', Answer);

@@ -95,10 +95,30 @@ export const SWITCHED_OFF = "AI assistance is switched off for this organization
 export const FEATURE_OFF = "This AI feature is switched off for this organization. An Admin can switch it on in Admin, AI.";
 
 /** The JSON Schema the service is asked to follow, from the zod shape. */
+// Keywords left out of the answer format sent to the service. Gemini's
+// OpenAI-compatible endpoint answers a strict format that limits a list's
+// length with a bare 400 "Request contains an invalid argument." The limits
+// still hold: readAnswer checks the answer against the zod schema itself.
+const UNSENT_KEYWORDS = new Set(["$schema", "minItems", "maxItems"]);
+
+function withoutUnsent(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(withoutUnsent);
+  if (node === null || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (UNSENT_KEYWORDS.has(key)) continue;
+    // Under "properties" the keys are field names, never keywords.
+    out[key] =
+      key === "properties" && value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).map(([field, sub]) => [field, withoutUnsent(sub)]))
+        : withoutUnsent(value);
+  }
+  return out;
+}
+
+/** The answer format sent to the service: the zod schema as JSON Schema, minus what services refuse. */
 export function jsonSchemaOf(schema: z.ZodType): Record<string, unknown> {
-  const json = z.toJSONSchema(schema) as Record<string, unknown>;
-  delete json.$schema;
-  return json;
+  return withoutUnsent(z.toJSONSchema(schema)) as Record<string, unknown>;
 }
 
 function zodProblems(error: z.ZodError): string[] {

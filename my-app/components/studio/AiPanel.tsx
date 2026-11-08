@@ -70,7 +70,7 @@ export type AiAsk = () => Promise<Response>;
 type State<T> =
   | { kind: "idle" }
   | { kind: "asking" }
-  | { kind: "answer"; answer: T; meta: AiAnswerMeta }
+  | { kind: "answer"; answer: T; meta: AiAnswerMeta; extra: Record<string, unknown> }
   | { kind: "error"; message: string };
 
 export function AiPanel<T>({
@@ -91,7 +91,8 @@ export function AiPanel<T>({
   ask: AiAsk;
   /** Checks the answer's shape on the way in. */
   isAnswer: (value: unknown) => value is T;
-  children: (answer: T) => ReactNode;
+  /** Draws the answer. `extra` holds whatever the route sent beside it (for Compare, what each change id means). */
+  children: (answer: T, extra: Record<string, unknown>) => ReactNode;
   /** When this changes (another comparison, another script), the answer is cleared. */
   resetKey?: string;
 }) {
@@ -118,7 +119,8 @@ export function AiPanel<T>({
         setState({ kind: "error", message: errorFrom(body) ?? "The AI answer could not be read." });
         return;
       }
-      setState({ kind: "answer", answer: body.answer, meta: body.meta });
+      const { answer, meta, ...extra } = body as typeof body & Record<string, unknown>;
+      setState({ kind: "answer", answer: answer as T, meta, extra });
     } catch {
       setState({ kind: "error", message: "Network error while asking the AI." });
     }
@@ -183,7 +185,7 @@ export function AiPanel<T>({
 
       {state.kind === "answer" && (
         <>
-          <div className="mt-3">{children(state.answer)}</div>
+          <div className="mt-3">{children(state.answer, state.extra)}</div>
           <div
             className="mt-4 pt-3 flex flex-wrap items-center justify-between gap-2 text-[12px]"
             style={{ borderTop: "1px solid var(--border)", color: "var(--text-3)" }}

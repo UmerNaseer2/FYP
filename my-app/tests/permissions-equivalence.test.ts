@@ -122,6 +122,7 @@ const ADDED: Record<string, Gate> = {
   // AI assistance: using it, and the Admin screen's AI tab.
   "GET /api/ai/status": { kind: "permission", keys: ["ai:read"] },
   "POST /api/ai/rate": { kind: "permission", keys: ["ai:read"] },
+  "POST /api/compare/summary": { kind: "permission", keys: ["compare:read", "ai:read"] },
   "GET /api/admin/ai": { kind: "permission", keys: ["organization:read"] },
   "PATCH /api/admin/ai": { kind: "permission", keys: ["organization:update"] },
 };
