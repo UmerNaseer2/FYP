@@ -30,6 +30,7 @@ import { DriftExplainPanel } from "@/components/studio/DriftExplainPanel";
 import { driftExplainKey } from "@/lib/ai/features/drift-explain-view";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
+import { ElsewhereDrift } from "@/components/studio/ElsewhereDrift";
 import { describeCadence } from "@/lib/drift-schedule";
 import { utcStamp } from "@/lib/format-date";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -145,7 +146,12 @@ function DriftScreen() {
   return (
     <Shell tab={tab} schema={schema}>
       {tab === "detail" ? (
-        <DetailContent key={schema ?? ""} schema={schema} />
+        <>
+          <DetailContent key={schema ?? ""} schema={schema} />
+          {/* Schemas checked on the other side of the sync: the website's own, in
+              the desktop app, or the person's computers', in a browser. */}
+          <ElsewhereDrift />
+        </>
       ) : tab === "schedule" ? (
         <ScheduleTable />
       ) : (
@@ -438,6 +444,8 @@ function DetailTab({
   onListChanged: () => void;
 }) {
   const orgPath = useOrgHref();
+  // A desktop's copy of one of the website's connections: the website checks it now.
+  const onWebsite = tracked.find((t) => t.id === selectedId)?.connectionOnWebsite === true;
   const [view, setView] = useState<DriftDetailView | null>(null);
   const [history, setHistory] = useState<DriftEventFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -607,6 +615,19 @@ function DetailTab({
             <b>This is a production schema.</b> Re-baselining accepts the live structure as
             correct — on production that means whatever changed outside this app becomes the
             new expected state.
+          </div>
+        </div>
+      )}
+
+      {/* Only on a desktop. The scheduler here leaves this schema alone (lib/drift-scheduler.ts). */}
+      {onWebsite && (
+        <div className="warn-inline">
+          <span className="ico" style={{ color: "var(--pending)" }}>
+            <InfoIcon size={14} />
+          </span>
+          <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <b>This connection belongs to the website.</b> The website checks it on its own timer, and its
+            results show under Checked by the website below. This computer no longer checks it on a timer.
           </div>
         </div>
       )}

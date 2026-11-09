@@ -78,6 +78,49 @@ export type DesktopSyncStatus =
       changedAt: number | null;
     };
 
+/** One drift check the linked website ran. */
+export type DesktopDriftCheck = {
+  status: "in_sync" | "drifted" | "unreachable";
+  summary: string;
+  /** When it ran, as an ISO time. */
+  checkedAt: string;
+  /** What ran it: a timer, a person, a deploy. */
+  source: string;
+  acknowledged: boolean;
+};
+
+/** One schema the linked website watches for drift, newest checks first. */
+export type DesktopDriftSchema = {
+  /** The website's id for the connection: a copy on this computer has it as its site id. */
+  connectionId: number;
+  connectionName: string;
+  environment: string;
+  schema: string;
+  label: string | null;
+  /** How often the website checks it, in minutes; 0 is by hand only. */
+  intervalMinutes: number;
+  lastCheckedAt: string | null;
+  checks: DesktopDriftCheck[];
+};
+
+/**
+ * The drift results the linked website keeps on its own connections, for the
+ * Drift page. `schemas` is null until the website first answered, and
+ * `allowed` is false for someone whose website role may not see drift.
+ */
+export type DesktopWebsiteDrift =
+  | { linked: false }
+  | {
+      linked: true;
+      origin: string;
+      orgName: string;
+      orgSlug: string | null;
+      online: boolean;
+      syncedAt: number | null;
+      allowed: boolean;
+      schemas: DesktopDriftSchema[] | null;
+    };
+
 /**
  * How a change sent to the linked website ended.
  *
@@ -127,6 +170,8 @@ export interface DesktopBridge {
   syncRemove(siteId: number, baseVersion: number | null, confirm: boolean): Promise<DesktopSyncAnswer>;
   /** Moves one of this computer's own connections up to the website, keeping its history here. */
   syncSendUp(localId: number): Promise<DesktopSyncAnswer>;
+  /** The drift results the linked website keeps on its own connections, asked for again when they are a few seconds old. */
+  syncDrift(): Promise<DesktopWebsiteDrift>;
 }
 
 declare global {

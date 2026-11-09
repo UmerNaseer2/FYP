@@ -322,9 +322,14 @@ async function loadEntries(): Promise<ScheduledSchema[]> {
   }>(
     `-- every organization: one schedule serves them all, and each check is then
      -- run inside the organization its schema belongs to
-     SELECT id, org_id, drift_check_interval_minutes, last_drift_check_at
-       FROM tracked_schemas
-      WHERE drift_check_interval_minutes > 0`
+     SELECT t.id, t.org_id, t.drift_check_interval_minutes, t.last_drift_check_at
+       FROM tracked_schemas t
+      WHERE t.drift_check_interval_minutes > 0
+        -- a desktop's copy of a website connection is checked by the website
+        -- (docs/two-way-sync-plan.md, step 2), so nothing is checked twice
+        AND NOT EXISTS (
+          SELECT 1 FROM connections c WHERE c.id = t.connection_id AND c.site_id IS NOT NULL
+        )`
   );
   return result.rows.map((row) => ({
     orgId: row.org_id,

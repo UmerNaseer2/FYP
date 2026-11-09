@@ -39,6 +39,7 @@ import {
   type SyncAnswer,
   type SyncStatus,
   type ThemeChoice,
+  type WebsiteDrift,
 } from "../shared/ipc";
 import { logWarn } from "./log";
 import { APP_HOST } from "./protocol";
@@ -67,6 +68,7 @@ export type IpcHandlers = {
     syncUpdate(siteId: number, connection: Record<string, unknown>): Promise<SyncAnswer>;
     syncRemove(siteId: number, baseVersion: number | null, confirm: boolean): Promise<SyncAnswer>;
     syncSendUp(localId: number): Promise<SyncAnswer>;
+    syncDrift(): Promise<WebsiteDrift>;
   };
   startup: {
     getState(): StartupState;
@@ -213,6 +215,7 @@ export function registerIpc(handlers: IpcHandlers): void {
     return bridge.syncRemove(rowNumber(siteId), baseVersion, confirm);
   });
   handle(studio, BRIDGE.syncSendUp, (localId) => bridge.syncSendUp(rowNumber(localId)));
+  handle(studio, BRIDGE.syncDrift, () => bridge.syncDrift());
 
   handle(splash, STARTUP.getState, () => startup.getState());
   on(splash, STARTUP.retry, () => startup.retry());

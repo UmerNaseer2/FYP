@@ -33,6 +33,7 @@ export function installDesktopBridge(): FakeDesktopBridge {
     syncUpdate: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
     syncRemove: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
     syncSendUp: jest.fn(() => Promise.resolve({ kind: "not-linked" })),
+    syncDrift: jest.fn(() => Promise.resolve({ linked: false })),
   };
   window.schemaStudioDesktop = bridge;
   return bridge;

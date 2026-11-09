@@ -35,6 +35,7 @@ import {
   setSearchParams,
 } from "./helpers/render-page";
 import { schema } from "./helpers/snapshots";
+import { installDesktopBridge, removeDesktopBridge } from "./helpers/desktop-bridge";
 
 /** A tracked row, with only the fields a test cares about spelled out. */
 function tracked(over: Partial<TrackedSchemaListItem> & { id: number }): TrackedSchemaListItem {
@@ -138,6 +139,7 @@ function routesFor(list: TrackedSchemaListItem[], view: DriftDetailView) {
     { match: /\/api\/lineage$/, body: list },
     { match: "/api/lineage/drift", body: view },
     { match: "/api/lineage/audit", body: [] },
+    { match: "/api/computers", body: { computers: [] } },
   ];
 }
 
@@ -450,5 +452,157 @@ describe("the audit tab", () => {
     // Four tiles reading zero over "nothing recorded" summarise nothing; they
     // only make an empty log look like a dashboard that has lost its data.
     expect(screen.queryByText("Recorded checks")).not.toBeInTheDocument();
+  });
+});
+
+describe("drift checked on the other side of the sync", () => {
+  const AT = "2026-11-08T10:00:00.000Z";
+  const check = { status: "drifted", summary: "1 table added", checkedAt: AT, source: "scheduled", acknowledged: false };
+  const watched = { schema: "public", label: null, intervalMinutes: 60, lastCheckedAt: AT, checks: [check] };
+
+  afterEach(() => removeDesktopBridge());
+
+  it("in a browser, lists what the person's own computers check, and only connections with results", async () => {
+    setSearchParams("tab=detail&schema=1");
+    setRoutes([
+      ...routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })).filter((r) => r.match !== "/api/computers"),
+      {
+        match: "/api/computers?connections=all",
+        body: {
+          computers: [
+            {
+              id: 4,
+              name: "Made-up laptop",
+              online: false,
+              lastSeenAt: AT,
+              connections: [
+                { id: 1, name: "Home shop", environment: "dev", shared: false, drift: [watched] },
+                { id: 2, name: "Nothing watched", environment: "dev", shared: false, drift: [] },
+              ],
+            },
+            { id: 5, name: "Quiet desktop", online: true, lastSeenAt: AT, connections: [] },
+          ],
+        },
+      },
+    ]);
+    render(<DriftPage />);
+
+    const list = await screen.findByRole("list", { name: "Drift checked on Made-up laptop" });
+    expect(list.textContent).toContain("Drifted");
+    expect(list.textContent).toContain("public on Home shop");
+    expect(list.textContent).toContain("1 table added");
+    expect(screen.getByRole("region", { name: "On your computers" }).textContent).toContain("Offline");
+    expect(screen.queryByText("Nothing watched")).not.toBeInTheDocument();
+    expect(screen.queryByText("Quiet desktop")).not.toBeInTheDocument();
+  });
+
+  it("in a browser, draws nothing when no computer has results, or the person may not compare", async () => {
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+    await driftRequest();
+    await waitFor(() => expect(fetchCalls.some((c) => c.url.includes("/api/computers"))).toBe(true));
+    expect(screen.queryByRole("region", { name: "On your computers" })).not.toBeInTheDocument();
+  });
+
+  it("in the desktop app, shows what the linked website checks, links to it, and never asks for computers", async () => {
+    const bridge = installDesktopBridge();
+    bridge.syncDrift.mockResolvedValue({
+      linked: true,
+      origin: "https://made-up.example.com",
+      orgName: "Acme Data",
+      orgSlug: "acme-data",
+      online: true,
+      syncedAt: Date.parse(AT),
+      allowed: true,
+      schemas: [{ connectionId: 31, connectionName: "Shop", environment: "prod", ...watched, label: "Shop tables" }],
+    });
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+
+    const list = await screen.findByRole("list", { name: "Drift checked by Acme Data" });
+    expect(list.textContent).toContain("Shop tables on Shop (public)");
+    expect(screen.getByRole("link", { name: "Open on the website" })).toHaveAttribute(
+      "href",
+      "https://made-up.example.com/acme-data/drift"
+    );
+    expect(screen.getByRole("region", { name: "Checked by the website" }).textContent).toContain("2026-11-08 10:00 UTC");
+    expect(fetchCalls.some((c) => c.url.includes("/api/computers"))).toBe(false);
+  });
+
+  it("in the desktop app, draws nothing when not linked or when the website role may not see drift", async () => {
+    const bridge = installDesktopBridge();
+    bridge.syncDrift.mockResolvedValue({
+      linked: true,
+      origin: "https://made-up.example.com",
+      orgName: "Acme Data",
+      orgSlug: "acme-data",
+      online: true,
+      syncedAt: null,
+      allowed: false,
+      schemas: [],
+    });
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+    await driftRequest();
+    await waitFor(() => expect(bridge.syncDrift).toHaveBeenCalled());
+    expect(screen.queryByRole("region", { name: "Checked by the website" })).not.toBeInTheDocument();
+  });
+
+  it("in the desktop app, says the website cannot be reached before its first answer", async () => {
+    const bridge = installDesktopBridge();
+    bridge.syncDrift.mockResolvedValue({
+      linked: true,
+      origin: "https://made-up.example.com",
+      orgName: "Acme Data",
+      orgSlug: "acme-data",
+      online: false,
+      syncedAt: null,
+      allowed: false,
+      schemas: null,
+    });
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+    const region = await screen.findByRole("region", { name: "Checked by the website" });
+    expect(region.textContent).toMatch(/cannot be reached right now/);
+    expect(screen.queryByRole("link", { name: "Open on the website" })).not.toBeInTheDocument();
+  });
+
+  it("in the desktop app, says nothing while the website's first answer is on its way", async () => {
+    const bridge = installDesktopBridge();
+    bridge.syncDrift.mockResolvedValue({
+      linked: true,
+      origin: "https://made-up.example.com",
+      orgName: "Acme Data",
+      orgSlug: "acme-data",
+      online: true,
+      syncedAt: null,
+      allowed: false,
+      schemas: null,
+    });
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+    await driftRequest();
+    await waitFor(() => expect(bridge.syncDrift).toHaveBeenCalled());
+    expect(screen.queryByRole("region", { name: "Checked by the website" })).not.toBeInTheDocument();
+  });
+
+  it("says a schema on a copy of a website connection is checked by the website", async () => {
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1, connectionOnWebsite: true })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+    expect(await screen.findByText("This connection belongs to the website.")).toBeInTheDocument();
+  });
+
+  it("says nothing of the kind for a schema on this side's own connection", async () => {
+    setSearchParams("tab=detail&schema=1");
+    setRoutes(routesFor([tracked({ id: 1 })], detail({ trackedSchemaId: 1 })));
+    render(<DriftPage />);
+    await screen.findByText("Read live on this page load");
+    expect(screen.queryByText("This connection belongs to the website.")).not.toBeInTheDocument();
   });
 });

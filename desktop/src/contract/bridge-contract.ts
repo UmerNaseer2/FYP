@@ -23,6 +23,7 @@ export const foundDatabase: Same<Bridge.FoundDatabase, Ipc.FoundDatabase> = true
 export const themeChoice: Same<Bridge.ThemeChoice, Ipc.ThemeChoice> = true;
 export const syncStatus: Same<Bridge.DesktopSyncStatus, Ipc.SyncStatus> = true;
 export const syncAnswer: Same<Bridge.DesktopSyncAnswer, Ipc.SyncAnswer> = true;
+export const websiteDrift: Same<Bridge.DesktopWebsiteDrift, Ipc.WebsiteDrift> = true;
 
 // Every method the web app can call has a message channel in the main process.
 export const bridgeChannels: Same<keyof Bridge.DesktopBridge, keyof typeof Ipc.BRIDGE> = true;

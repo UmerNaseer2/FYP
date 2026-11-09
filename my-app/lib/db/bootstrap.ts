@@ -576,6 +576,8 @@ async function backfillOlderTables(): Promise<void> {
   await metadataPool.query(
     `ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT true`
   );
+  // What a computer's own drift checks found, so its person sees them on the website.
+  await metadataPool.query(`ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS drift JSONB`);
 
   // `environment` is the typed dev / staging / prod label. It is deliberately
   // NOT guessed from the row's name: the whole point is that the label is data

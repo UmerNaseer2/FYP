@@ -20,7 +20,7 @@ import {
  *
  * One POST, four actions:
  *   apply   { connections }            the website's list; copies made to match
- *   local   {}                         this computer's own connections, names only
+ *   local   {}                         this computer's own connections, names only, with drift results
  *   export  { id }                     one of them in full, to send to the website
  *   adopt   { id, siteId, siteVersion } it became that website connection
  */

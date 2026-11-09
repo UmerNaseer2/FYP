@@ -54,6 +54,50 @@ export type SyncStatus =
   | { linked: false; changedAt: number | null }
   | { linked: true; origin: string; orgName: string; online: boolean; lastSyncedAt: number | null; changedAt: number | null };
 
+/** One drift check the website ran. The same shape as the web app's DesktopDriftCheck. */
+export type DriftCheck = {
+  status: "in_sync" | "drifted" | "unreachable";
+  summary: string;
+  /** When it ran, as an ISO time. */
+  checkedAt: string;
+  /** What ran it: a timer, a person, a deploy. */
+  source: string;
+  acknowledged: boolean;
+};
+
+/** One schema the website watches for drift, newest checks first. The same shape as the web app's DesktopDriftSchema. */
+export type WebsiteDriftSchema = {
+  /** The website's id for the connection: a copy here has it as its site id. */
+  connectionId: number;
+  connectionName: string;
+  environment: string;
+  schema: string;
+  label: string | null;
+  /** How often the website checks it, in minutes; 0 is by hand only. */
+  intervalMinutes: number;
+  lastCheckedAt: string | null;
+  checks: DriftCheck[];
+};
+
+/**
+ * The drift results the linked website keeps, for the Drift page
+ * (docs/two-way-sync-plan.md, step 2). The same shape as the web app's
+ * DesktopWebsiteDrift. `schemas` is null until the website first answered,
+ * and `allowed` is false for someone whose website role may not see drift.
+ */
+export type WebsiteDrift =
+  | { linked: false }
+  | {
+      linked: true;
+      origin: string;
+      orgName: string;
+      orgSlug: string | null;
+      online: boolean;
+      syncedAt: number | null;
+      allowed: boolean;
+      schemas: WebsiteDriftSchema[] | null;
+    };
+
 /** How a change sent through the link ended. The same shape as the web app's DesktopSyncAnswer. */
 export type SyncAnswer =
   | { kind: "saved"; body: unknown }
@@ -75,6 +119,7 @@ export const BRIDGE = {
   syncUpdate: "desktop:sync-update",
   syncRemove: "desktop:sync-remove",
   syncSendUp: "desktop:sync-send-up",
+  syncDrift: "desktop:sync-drift",
 } as const;
 
 /** The start screen. */

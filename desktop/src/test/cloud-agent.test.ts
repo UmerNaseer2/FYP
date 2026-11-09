@@ -17,13 +17,17 @@ import {
   BUSY_FOR_MS,
   BUSY_POLL_MS,
   CloudAgent,
+  DRIFT_EVERY_MS,
+  DRIFT_FRESH_MS,
   IDLE_POLL_MS,
   MAX_ANSWER_BYTES,
+  MOST_DRIFT_SCHEMAS,
   MOST_JOBS_AT_ONCE,
   NO_SYNC_RETRY_MS,
   PUBLISH_EVERY_MS,
   SYNC_EVERY_MS,
   readCloudJob,
+  readDriftAnswer,
   readOwnConnections,
   type CloudFetch,
   type CloudStore,
@@ -1478,6 +1482,230 @@ test("readOwnConnections keeps only well-formed rows, cut to size, and throws on
   );
   assert.throws(() => readOwnConnections({ connections: "all" }));
   assert.throws(() => readOwnConnections(null));
+});
+
+// ----- Drift results in the sync -----
+
+const DRIFT = "GET /api/agent/sync/drift";
+const DRIFT_AFTER = `${DRIFT}?rev=d1`;
+const AT = "2026-11-08T10:00:00.000Z";
+const CHECK = { status: "drifted", summary: "1 table added", checkedAt: AT, source: "scheduled", acknowledged: false };
+/** One schema the site watches. Made up. */
+const SITE_DRIFT = {
+  connectionId: 31,
+  connectionName: "Shop",
+  environment: "prod",
+  schema: "public",
+  label: null,
+  intervalMinutes: 60,
+  lastCheckedAt: AT,
+  checks: [CHECK],
+};
+const DRIFT_LISTED: SiteAnswer = {
+  status: 200,
+  body: { same: false, rev: "d1", allowed: true, orgSlug: "acme-data", schemas: [SITE_DRIFT] },
+};
+const DRIFT_SAME: SiteAnswer = { status: 200, body: { same: true, rev: "d1" } };
+
+/** A linked computer with the sync, its first sync done, and a site that keeps drift results. */
+async function syncedWithDrift(sync = fakeSync()) {
+  const r = rig({ loaded: SAVED, sync: sync.host });
+  r.site.set(SYNC, LISTED);
+  r.site.set(SYNC_AFTER, SAME);
+  r.site.set(DRIFT, DRIFT_LISTED);
+  r.site.set(DRIFT_AFTER, DRIFT_SAME);
+  r.agent.start();
+  await r.pass(0);
+  return { ...r, sync };
+}
+
+test("the site's drift results come down once the site has shown it syncs, then every minute with the site's mark", async () => {
+  const { agent, clock, pass, site } = await syncedWithDrift();
+  // Not with the very first sync: a site from before the sync would be asked for something it does not have.
+  assert.equal(site.count(DRIFT), 0);
+  assert.deepEqual(agent.driftStatus(), {
+    linked: true,
+    origin: ORIGIN,
+    orgName: "Acme Data",
+    orgSlug: "acme-data",
+    online: true,
+    syncedAt: null,
+    allowed: false,
+    schemas: null,
+  });
+
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(DRIFT), 1);
+  assert.equal((site.of(DRIFT)[0].init.headers as Record<string, string>).Authorization, `Bearer ${TOKEN}`);
+  const status = agent.driftStatus();
+  assert.ok(status.linked);
+  assert.equal(status.allowed, true);
+  assert.equal(status.syncedAt, clock.time);
+  assert.deepEqual(status.schemas, [SITE_DRIFT]);
+
+  await pass(IDLE_POLL_MS * 2);
+  assert.equal(site.count(DRIFT_AFTER), 0, "not more often than every minute");
+  await pass(DRIFT_EVERY_MS);
+  assert.equal(site.count(DRIFT_AFTER), 1);
+  const later = agent.driftStatus();
+  assert.ok(later.linked);
+  assert.deepEqual(later.schemas, [SITE_DRIFT], "an unchanged answer keeps the results");
+  const firstSyncedAt = status.syncedAt ?? 0;
+  assert.ok((later.syncedAt ?? 0) >= firstSyncedAt + DRIFT_EVERY_MS, "moved on by the answer that said nothing changed");
+  assert.ok((later.syncedAt ?? 0) <= clock.time);
+  agent.stop();
+});
+
+test("the Drift page asks again when the results are more than a few seconds old, and two asks at once share one call", async () => {
+  const { agent, pass, site } = await syncedWithDrift();
+  const [first, second] = await Promise.all([agent.websiteDrift(), agent.websiteDrift()]);
+  assert.equal(site.count(DRIFT), 1);
+  assert.ok(first.linked && second.linked);
+  assert.deepEqual(first.schemas, [SITE_DRIFT]);
+  assert.deepEqual(second.schemas, [SITE_DRIFT]);
+  await agent.websiteDrift();
+  assert.equal(site.count(DRIFT_AFTER), 0, "fresh results are not asked for again");
+  await pass(DRIFT_FRESH_MS);
+  await agent.websiteDrift();
+  assert.equal(site.count(DRIFT_AFTER), 1);
+  agent.stop();
+});
+
+test("someone whose website role may not see drift gets none, whatever the site sends", async () => {
+  const { agent, site } = await syncedWithDrift();
+  site.set(DRIFT, { status: 200, body: { same: false, rev: "d1", allowed: false, orgSlug: "acme-data", schemas: [SITE_DRIFT] } });
+  const status = await agent.websiteDrift();
+  assert.ok(status.linked);
+  assert.equal(status.allowed, false);
+  assert.deepEqual(status.schemas, []);
+  agent.stop();
+});
+
+test("a site without the drift sync is asked again only after half an hour, and a failing one is logged once", async () => {
+  const { agent, pass, site } = await syncedWithDrift();
+  site.set(DRIFT, { status: 404 });
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(DRIFT), 1);
+  const status = agent.driftStatus();
+  assert.ok(status.linked, "the connections still sync");
+  assert.equal(status.schemas, null);
+  assert.equal((await agent.websiteDrift()).linked, true);
+  await pass(NO_SYNC_RETRY_MS - IDLE_POLL_MS);
+  assert.equal(site.count(DRIFT), 1);
+
+  newLogLines();
+  site.set(DRIFT, { status: 503, body: { error: "made-up trouble" } });
+  await pass(IDLE_POLL_MS * 2);
+  assert.equal(site.count(DRIFT), 2);
+  await pass(DRIFT_EVERY_MS);
+  assert.equal(site.count(DRIFT), 3);
+  const logged = newLogLines();
+  const lines = logged.match(/Could not bring the site's drift results up to date: Error\./g) ?? [];
+  assert.equal(lines.length, 1);
+  assert.doesNotMatch(logged, /made-up trouble/);
+  agent.stop();
+});
+
+test("a 401 to the drift ask ends the link, and unlinking forgets the site's drift results", async () => {
+  const first = await syncedWithDrift();
+  await first.agent.websiteDrift();
+  first.agent.unlink();
+  await settle();
+  assert.deepEqual(first.agent.driftStatus(), { linked: false });
+
+  const second = await syncedWithDrift();
+  second.site.set(DRIFT, { status: 401 });
+  await second.agent.websiteDrift();
+  assert.equal(second.agent.view().state, "off");
+  assert.deepEqual(second.agent.driftStatus(), { linked: false });
+});
+
+test("with no link, or no sync, there are no website drift results and nothing is asked", async () => {
+  const unlinked = rig({ sync: fakeSync().host });
+  assert.deepEqual(await unlinked.agent.websiteDrift(), { linked: false });
+  const noSync = rig({ loaded: SAVED });
+  noSync.agent.start();
+  await noSync.pass(IDLE_POLL_MS * 5);
+  assert.deepEqual(await noSync.agent.websiteDrift(), { linked: false });
+  assert.equal(noSync.site.count(DRIFT), 0);
+  noSync.agent.stop();
+});
+
+test("this computer's own drift results go to the site with its list, and a new result sends the list again", async () => {
+  const OWN_DRIFT = [{ schema: "public", label: null, intervalMinutes: 0, lastCheckedAt: AT, checks: [CHECK] }];
+  const sync = fakeSync([
+    { id: 1, name: "Dev", environment: "dev", drift: OWN_DRIFT },
+    { id: 3, name: "Laptop", environment: "dev" },
+  ]);
+  const { agent, pass, site } = await syncedWithDrift(sync);
+  assert.deepEqual(site.of(PUBLISH).at(-1)?.body, {
+    connections: [
+      { id: 1, name: "Dev", environment: "dev", shared: true, drift: OWN_DRIFT },
+      { id: 3, name: "Laptop", environment: "dev", shared: false },
+    ],
+  });
+  const before = site.count(PUBLISH);
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(PUBLISH), before, "nothing new, nothing sent");
+  sync.state.own = [{ ...sync.state.own[0], drift: [{ ...OWN_DRIFT[0], checks: [{ ...CHECK, acknowledged: true }] }] }, sync.state.own[1]];
+  await pass(IDLE_POLL_MS);
+  assert.equal(site.count(PUBLISH), before + 1);
+  agent.stop();
+});
+
+test("readOwnConnections passes a connection's drift list on, cut to size, and leaves out anything that is not a list", () => {
+  const many = new Array(MOST_DRIFT_SCHEMAS + 10).fill({ schema: "a" });
+  assert.deepEqual(
+    readOwnConnections({
+      connections: [
+        { id: 1, name: "Dev", environment: "dev", drift: [{ schema: "public" }] },
+        { id: 2, name: "Bad", environment: "dev", drift: "all of it" },
+      ],
+    }),
+    [
+      { id: 1, name: "Dev", environment: "dev", drift: [{ schema: "public" }] },
+      { id: 2, name: "Bad", environment: "dev" },
+    ],
+  );
+  assert.equal(readOwnConnections({ connections: [{ id: 1, name: "Dev", environment: "dev", drift: many }] })[0].drift?.length, MOST_DRIFT_SCHEMAS);
+});
+
+test("readDriftAnswer keeps only well-formed schemas and checks, cut to size", () => {
+  const answer = readDriftAnswer({
+    same: false,
+    rev: "d1",
+    allowed: true,
+    orgSlug: "acme-data",
+    schemas: [
+      { ...SITE_DRIFT, extra: "dropped", summary: "dropped" },
+      { ...SITE_DRIFT, connectionId: "31" },
+      { ...SITE_DRIFT, schema: "" },
+      {
+        ...SITE_DRIFT,
+        label: "",
+        intervalMinutes: -1,
+        lastCheckedAt: "soon",
+        checks: [{ ...CHECK, status: "on fire" }, { ...CHECK, checkedAt: "soon" }, { ...CHECK, summary: "x".repeat(1000), acknowledged: "yes" }, "x"],
+      },
+      "x",
+    ],
+  });
+  assert.ok(answer?.results);
+  assert.deepEqual(answer.results.schemas[0], SITE_DRIFT);
+  assert.equal(answer.results.schemas.length, 2);
+  const tidied = answer.results.schemas[1];
+  assert.equal(tidied.label, null);
+  assert.equal(tidied.intervalMinutes, 0);
+  assert.equal(tidied.lastCheckedAt, null);
+  assert.equal(tidied.checks.length, 1);
+  assert.equal(tidied.checks[0].summary.length, 300);
+  assert.equal(tidied.checks[0].acknowledged, false);
+
+  assert.equal(readDriftAnswer({ same: false, rev: "d1", allowed: true, orgSlug: "../admin", schemas: [] })?.results?.orgSlug, null);
+  assert.deepEqual(readDriftAnswer({ same: true, rev: "d1" }), { rev: "d1", results: null });
+  assert.equal(readDriftAnswer({ same: false, rev: "d1", schemas: [] }), null);
+  assert.equal(readDriftAnswer({ same: false, rev: "", allowed: true, schemas: [] }), null);
+  assert.equal(readDriftAnswer("everything"), null);
 });
 
 // ----- The log -----

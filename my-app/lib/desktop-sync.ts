@@ -22,6 +22,8 @@ import { toSslMode, sslModeUsesTls } from "@/lib/connection-validate";
 import { toEnvironment } from "@/lib/environments";
 import { toExecuteRole } from "@/lib/connection-access";
 import { decryptSecret, encryptSecret } from "@/lib/secret-store";
+import { listOwnDrift } from "@/lib/drift-sync";
+import type { SyncedDriftSchema } from "@/lib/agent-rules";
 
 /** The header the main process puts its token in. */
 export const SYNC_HEADER = "x-schema-studio-sync";
@@ -202,14 +204,44 @@ export async function applySiteCopies(orgId: number, list: SiteCopy[]): Promise<
   return { kept: kept.length, skipped };
 }
 
-/** This computer's own connections: what the website lists as "On <computer>". Names and environments only. */
-export async function listOwnConnections(orgId: number): Promise<{ id: number; name: string; environment: string }[]> {
+export type OwnConnection = { id: number; name: string; environment: string; drift?: SyncedDriftSchema[] };
+
+/**
+ * This computer's own connections: what the website lists as "On <computer>".
+ * Names and environments only, and the drift results of the schemas watched on
+ * each, so their owner sees those on the website too.
+ */
+export async function listOwnConnections(orgId: number): Promise<OwnConnection[]> {
   await syncMetadataTables();
   const { rows } = await pool.query<{ id: number; name: string; environment: string }>(
     `SELECT id, name, environment FROM connections WHERE org_id = $1 AND site_id IS NULL ORDER BY id`,
     [orgId]
   );
-  return rows.map((row) => ({ id: Number(row.id), name: row.name, environment: toEnvironment(row.environment) }));
+  // The results are extra. A list without them still keeps the website's list of this computer's connections right.
+  let byConnection: Map<number, SyncedDriftSchema[]> | null = new Map();
+  try {
+    for (const found of await listOwnDrift(orgId)) {
+      const schema: SyncedDriftSchema = {
+        schema: found.schema,
+        label: found.label,
+        intervalMinutes: found.intervalMinutes,
+        lastCheckedAt: found.lastCheckedAt,
+        checks: found.checks,
+      };
+      const list = byConnection.get(found.connectionId);
+      if (list) list.push(schema);
+      else byConnection.set(found.connectionId, [schema]);
+    }
+  } catch (error) {
+    console.warn("Could not read this computer's drift results:", error instanceof Error ? error.name : "unknown error");
+    byConnection = null;
+  }
+  return rows.map((row) => {
+    const id = Number(row.id);
+    const own: OwnConnection = { id, name: row.name, environment: toEnvironment(row.environment) };
+    if (byConnection !== null) own.drift = byConnection.get(id) ?? [];
+    return own;
+  });
 }
 
 /**

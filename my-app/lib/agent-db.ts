@@ -189,16 +189,19 @@ export async function replaceAgentConnections(agentId: number, connections: Comp
     ]);
     if (connections.length > 0) {
       await client.query(
-        `INSERT INTO agent_connections (agent_id, local_id, name, environment, shared)
-         SELECT $1::int, * FROM unnest($2::int[], $3::text[], $4::text[], $5::boolean[])
+        `INSERT INTO agent_connections (agent_id, local_id, name, environment, shared, drift)
+         SELECT $1::int, u.id, u.name, u.environment, u.shared, u.drift::jsonb
+           FROM unnest($2::int[], $3::text[], $4::text[], $5::boolean[], $6::text[]) AS u(id, name, environment, shared, drift)
          ON CONFLICT (agent_id, local_id)
-         DO UPDATE SET name = EXCLUDED.name, environment = EXCLUDED.environment, shared = EXCLUDED.shared`,
+         DO UPDATE SET name = EXCLUDED.name, environment = EXCLUDED.environment, shared = EXCLUDED.shared,
+                       drift = EXCLUDED.drift`,
         [
           agentId,
           connections.map((connection) => connection.id),
           connections.map((connection) => connection.name),
           connections.map((connection) => connection.environment),
           connections.map((connection) => connection.shared !== false),
+          connections.map((connection) => (connection.drift === undefined ? null : JSON.stringify(connection.drift))),
         ]
       );
     }
@@ -288,7 +291,7 @@ export async function listComputers(orgId: number, profileId: number, everything
             COALESCE(a.last_seen_at > now() - make_interval(secs => $3), false) AS online,
             COALESCE(
               (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name, 'environment', c.environment,
-                                                 'shared', c.shared)
+                                                 'shared', c.shared, 'drift', COALESCE(c.drift, '[]'::jsonb))
                                ORDER BY c.name, c.local_id)
                  FROM agent_connections c WHERE c.agent_id = a.id AND ($4 OR c.shared)),
               '[]'

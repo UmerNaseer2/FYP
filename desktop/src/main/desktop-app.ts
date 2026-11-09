@@ -458,6 +458,7 @@ export class DesktopApp {
         syncUpdate: (siteId, connection) => this.cloudAgent?.syncUpdate(siteId, connection) ?? NOT_LINKED,
         syncRemove: (siteId, baseVersion, confirm) => this.cloudAgent?.syncRemove(siteId, baseVersion, confirm) ?? NOT_LINKED,
         syncSendUp: (localId) => this.cloudAgent?.syncSendUp(localId) ?? NOT_LINKED,
+        syncDrift: () => this.cloudAgent?.websiteDrift() ?? Promise.resolve({ linked: false }),
       },
       startup: {
         getState: () => this.startup,

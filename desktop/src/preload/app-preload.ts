@@ -38,6 +38,7 @@
     syncUpdate: "desktop:sync-update",
     syncRemove: "desktop:sync-remove",
     syncSendUp: "desktop:sync-send-up",
+    syncDrift: "desktop:sync-drift",
   };
   const STARTUP: Ipc["STARTUP"] = {
     getState: "startup:get-state",
@@ -73,6 +74,7 @@
       syncUpdate: (siteId, connection) => ipcRenderer.invoke(BRIDGE.syncUpdate, siteId, connection),
       syncRemove: (siteId, baseVersion, confirm) => ipcRenderer.invoke(BRIDGE.syncRemove, siteId, baseVersion, confirm),
       syncSendUp: (localId) => ipcRenderer.invoke(BRIDGE.syncSendUp, localId),
+      syncDrift: () => ipcRenderer.invoke(BRIDGE.syncDrift),
     };
     contextBridge.exposeInMainWorld("schemaStudioDesktop", desktop);
   }

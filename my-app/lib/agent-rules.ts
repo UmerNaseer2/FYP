@@ -10,6 +10,7 @@
  * No database in here, and nothing a browser could not run, so the link page and
  * the phone app can use it.
  */
+import { toDriftSource, type DriftSource } from "./drift-source";
 import type { Environment } from "./environments";
 
 /** Marks a computer's token, so one pasted in the wrong place can be recognized. */
@@ -49,7 +50,115 @@ export type ComputerConnection = {
    * An older desktop sent only shared ones and no flag, so missing means true.
    */
   shared?: boolean;
+  /** The schemas the computer watches for drift on it, with their newest results. An older desktop sends none. */
+  drift?: SyncedDriftSchema[];
 };
+
+/** What a drift check can find, the three answers lib/drift-runner gives. */
+export const DRIFT_STATUSES = ["in_sync", "drifted", "unreachable"] as const;
+export type SyncedDriftStatus = (typeof DRIFT_STATUSES)[number];
+
+/** The most schemas one computer, or one answer from the website, may send drift results for. */
+export const MOST_DRIFT_SCHEMAS = 200;
+/** The newest checks sent for each schema. */
+export const DRIFT_HISTORY = 5;
+/** A check's summary is cut to this many characters on the way. */
+export const LONGEST_DRIFT_SUMMARY = 300;
+const LONGEST_SCHEMA_NAME = 128;
+const LONGEST_SCHEMA_LABEL = 200;
+/** A year. No cadence the picker offers comes near it. */
+const LONGEST_INTERVAL_MINUTES = 525_600;
+
+/** One drift check, as it travels between a desktop and its website (docs/two-way-sync-plan.md, step 2). */
+export type SyncedDriftCheck = {
+  status: SyncedDriftStatus;
+  summary: string;
+  /** When it ran, as an ISO time. */
+  checkedAt: string;
+  /** What ran it (lib/drift-source.ts). */
+  source: DriftSource;
+  acknowledged: boolean;
+};
+
+/**
+ * One schema watched for drift, with its newest checks first. Only results
+ * travel: the snapshots and lineage behind them stay where the check ran.
+ */
+export type SyncedDriftSchema = {
+  schema: string;
+  label: string | null;
+  /** How often it is checked on a timer, in minutes; 0 is by hand only. */
+  intervalMinutes: number;
+  /** When a check last ran. A check that finds nothing new records no row, so this can be newer than the checks. */
+  lastCheckedAt: string | null;
+  checks: SyncedDriftCheck[];
+};
+
+/** One schema the website watches, as a linked desktop shows it (GET /api/agent/sync/drift). */
+export type WebsiteDriftSchema = SyncedDriftSchema & {
+  connectionId: number;
+  connectionName: string;
+  environment: Environment;
+};
+
+/** An ISO time from a string or a Date, or null when it is not one. */
+export function toIsoTime(value: unknown): string | null {
+  if (typeof value !== "string" && !(value instanceof Date)) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+/** Checks as the other side sent them: an unreadable one left out, newest first, at most DRIFT_HISTORY. */
+export function readDriftChecks(value: unknown): SyncedDriftCheck[] {
+  if (!Array.isArray(value)) return [];
+  const checks: SyncedDriftCheck[] = [];
+  for (const entry of value.slice(0, DRIFT_HISTORY * 4)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { status, summary, checkedAt, source, acknowledged } = entry as Record<string, unknown>;
+    const at = toIsoTime(checkedAt);
+    if (at === null || !(DRIFT_STATUSES as readonly unknown[]).includes(status)) continue;
+    checks.push({
+      status: status as SyncedDriftStatus,
+      summary: cleanLabel(summary, LONGEST_DRIFT_SUMMARY),
+      checkedAt: at,
+      source: toDriftSource(source),
+      acknowledged: acknowledged === true,
+    });
+  }
+  return checks.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt)).slice(0, DRIFT_HISTORY);
+}
+
+/** One schema as the other side sent it, or null when it has no name. */
+export function readDriftSchema(value: unknown): SyncedDriftSchema | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { schema, label, intervalMinutes, lastCheckedAt, checks } = value as Record<string, unknown>;
+  const name = cleanLabel(schema, LONGEST_SCHEMA_NAME);
+  if (name === "") return null;
+  const tidyLabel = cleanLabel(label, LONGEST_SCHEMA_LABEL);
+  const minutes =
+    typeof intervalMinutes === "number" && Number.isInteger(intervalMinutes) && intervalMinutes >= 0
+      ? Math.min(intervalMinutes, LONGEST_INTERVAL_MINUTES)
+      : 0;
+  return {
+    schema: name,
+    label: tidyLabel === "" ? null : tidyLabel,
+    intervalMinutes: minutes,
+    lastCheckedAt: toIsoTime(lastCheckedAt),
+    checks: readDriftChecks(checks),
+  };
+}
+
+/** Schemas as the other side sent them, at most `room` of them. An unreadable one is left out, not the list. */
+export function readDriftSchemas(value: unknown, room: number = MOST_DRIFT_SCHEMAS): SyncedDriftSchema[] {
+  if (!Array.isArray(value) || room <= 0) return [];
+  const schemas: SyncedDriftSchema[] = [];
+  for (const entry of value.slice(0, MOST_DRIFT_SCHEMAS)) {
+    if (schemas.length >= room) break;
+    const schema = readDriftSchema(entry);
+    if (schema !== null) schemas.push(schema);
+  }
+  return schemas;
+}
 
 /** What GET /api/computers says about each of a person's computers. */
 export type Computer = {

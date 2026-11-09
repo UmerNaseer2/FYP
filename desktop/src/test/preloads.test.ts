@@ -104,6 +104,7 @@ test("Schema Studio's own pages get the desktop features and nothing else, with 
   await desktop.syncUpdate(31, { name: "Shop" }, "extra");
   await desktop.syncRemove(31, 4, true, "extra");
   await desktop.syncSendUp(5, "extra");
+  await desktop.syncDrift("extra");
 
   assert.deepEqual(messages, [
     { kind: "invoke", channel: BRIDGE.signIn, args: [] },
@@ -117,6 +118,7 @@ test("Schema Studio's own pages get the desktop features and nothing else, with 
     { kind: "invoke", channel: BRIDGE.syncUpdate, args: [31, { name: "Shop" }] },
     { kind: "invoke", channel: BRIDGE.syncRemove, args: [31, 4, true] },
     { kind: "invoke", channel: BRIDGE.syncSendUp, args: [5] },
+    { kind: "invoke", channel: BRIDGE.syncDrift, args: [] },
   ]);
 });
 

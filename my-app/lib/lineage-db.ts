@@ -1183,6 +1183,12 @@ export type TrackedSchemaListItem = {
    * minutes. Null on a row that has only ever been checked by an older build.
    */
   lastCheckedAt: string | null;
+  /**
+   * True on a desktop when the connection is now a copy of a website
+   * connection: the website checks it from then on, and this history stays as
+   * it was (docs/two-way-sync-plan.md, step 2).
+   */
+  connectionOnWebsite?: boolean;
 };
 
 type TrackedListRow = {
@@ -1204,6 +1210,7 @@ type TrackedListRow = {
   drift_checked_at: string | null;
   drift_acknowledged_at: string | null;
   last_drift_check_at: string | null;
+  connection_on_website?: boolean | null;
 };
 
 /**
@@ -1229,6 +1236,7 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
       c.name           AS connection_name,
       c.host           AS connection_host,
       c.database_name  AS connection_database,
+      c.site_id IS NOT NULL AS connection_on_website,
       head.version     AS head_version,
       head.seq         AS head_seq,
       COALESCE(counts.migration_count, 0) AS migration_count,
@@ -1281,6 +1289,7 @@ export async function listTrackedSchemas(orgId: number): Promise<TrackedSchemaLi
     driftAcknowledgedAt: r.drift_acknowledged_at,
     driftIntervalMinutes: normalizeDriftInterval(r.drift_check_interval_minutes),
     lastCheckedAt: r.last_drift_check_at,
+    ...(r.connection_on_website === true ? { connectionOnWebsite: true } : {}),
   }));
 }
 

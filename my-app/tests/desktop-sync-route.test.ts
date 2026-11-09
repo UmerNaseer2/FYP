@@ -155,11 +155,58 @@ describe("apply", () => {
 });
 
 describe("the computer's own connections", () => {
-  it("lists them by name only", async () => {
+  it("lists them by name only, each with its drift results", async () => {
     mockPoolQuery.mockResolvedValueOnce({ rows: [{ id: "5", name: "Laptop", environment: "dev" }] });
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          connection_id: 5,
+          connection_name: "Laptop",
+          environment: "dev",
+          schema_name: "public",
+          label: null,
+          interval_minutes: 60,
+          last_checked_at: "2026-11-08T10:00:00.000Z",
+          checks: [
+            { status: "drifted", summary: "1 table added", checkedAt: "2026-11-08T10:00:00.000Z", source: "scheduled", acknowledged: false },
+          ],
+        },
+      ],
+    });
+    const response = await call({ action: "local" });
+    expect(await response.json()).toEqual({
+      connections: [
+        {
+          id: 5,
+          name: "Laptop",
+          environment: "dev",
+          drift: [
+            {
+              schema: "public",
+              label: null,
+              intervalMinutes: 60,
+              lastCheckedAt: "2026-11-08T10:00:00.000Z",
+              checks: [
+                { status: "drifted", summary: "1 table added", checkedAt: "2026-11-08T10:00:00.000Z", source: "scheduled", acknowledged: false },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(mockPoolQuery.mock.calls[0][0]).toMatch(/site_id IS NULL/);
+    // Drift is read from this computer's own connections only: copies are the website's to check.
+    expect(mockPoolQuery.mock.calls[1][0]).toMatch(/c\.site_id IS NULL/);
+    expect(mockPoolQuery.mock.calls[1][1]).toEqual([7, 300, 5, 200]);
+  });
+
+  it("still lists them when the drift results cannot be read", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ id: "5", name: "Laptop", environment: "dev" }] });
+    mockPoolQuery.mockRejectedValueOnce(new Error("made-up failure"));
     const response = await call({ action: "local" });
     expect(await response.json()).toEqual({ connections: [{ id: 5, name: "Laptop", environment: "dev" }] });
-    expect(mockPoolQuery.mock.calls[0][0]).toMatch(/site_id IS NULL/);
+    warn.mockRestore();
   });
 
   it("exports one in full, secrets opened, and only one of its own", async () => {

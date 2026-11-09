@@ -941,6 +941,11 @@ export class AgentConnectionRow extends Model<
    * about; the rest are listed on the website's Connections page for their owner.
    */
   declare shared: CreationOptional<boolean>;
+  /**
+   * The schemas the computer watches for drift on it and their newest results
+   * (SyncedDriftSchema[] in lib/agent-rules.ts). Null from an older desktop.
+   */
+  declare drift: CreationOptional<unknown[] | null>;
 }
 
 AgentConnectionRow.init(
@@ -956,6 +961,7 @@ AgentConnectionRow.init(
     name: { type: DataTypes.TEXT, allowNull: false },
     environment: { type: DataTypes.TEXT, allowNull: false },
     shared: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    drift: { type: DataTypes.JSONB, allowNull: true },
   },
   {
     sequelize,

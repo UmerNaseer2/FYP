@@ -145,6 +145,7 @@ const UNGATED = [
   // The two-way sync. A linked computer's own token, checked against the
   // person who linked it and their role inside the handler.
   "GET /api/agent/sync",
+  "GET /api/agent/sync/drift",
   "POST /api/agent/sync/connections",
   "PUT /api/agent/sync/connections",
   "DELETE /api/agent/sync/connections",

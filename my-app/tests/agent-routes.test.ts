@@ -273,6 +273,36 @@ describe("PUT /api/agent/connections", () => {
     expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [{ id: 1, name: "x", environment: "unset", shared: true }]);
   });
 
+  it("keeps the drift results a newer desktop sends, tidied, and none for an older one", async () => {
+    const check = { status: "drifted", summary: "1 table added", checkedAt: "2026-11-08T10:00:00.000Z", source: "scheduled", acknowledged: false };
+    await put({
+      connections: [
+        { id: 1, name: "x", drift: [{ schema: "public", intervalMinutes: 60, checks: [check, { ...check, status: "?" }] }, { schema: "" }] },
+        { id: 2, name: "y" },
+        { id: 3, name: "z", drift: "lots" },
+      ],
+    });
+    expect(db.replaceAgentConnections).toHaveBeenCalledWith(COMPUTER.id, [
+      {
+        id: 1,
+        name: "x",
+        environment: "unset",
+        shared: true,
+        drift: [{ schema: "public", label: null, intervalMinutes: 60, lastCheckedAt: null, checks: [check] }],
+      },
+      { id: 2, name: "y", environment: "unset", shared: true },
+      { id: 3, name: "z", environment: "unset", shared: true, drift: [] },
+    ]);
+  });
+
+  it("keeps at most so many drift schemas across the whole computer", async () => {
+    const schemas = Array.from({ length: 150 }, (_, i) => ({ schema: `s${i}` }));
+    await put({ connections: [{ id: 1, name: "x", drift: schemas }, { id: 2, name: "y", drift: schemas }] });
+    const [, sent] = db.replaceAgentConnections.mock.calls[0] as [number, { drift?: unknown[] }[]];
+    expect(sent[0].drift).toHaveLength(150);
+    expect(sent[1].drift).toHaveLength(50);
+  });
+
   it.each([
     ["no list", {}],
     ["a list too long", { connections: Array.from({ length: 101 }, (_, i) => ({ id: i + 1, name: "x" })) }],

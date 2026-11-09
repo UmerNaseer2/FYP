@@ -192,6 +192,14 @@ describe("a tick nobody else is running", () => {
     expect(report).toEqual({ kind: "by_org", byOrg: new Map([[3, "Checked 1."]]) });
   });
 
+  it("leaves out schemas on a desktop's copies of the website's connections: the website checks those", async () => {
+    await runSchedulerTick(NOW);
+    const read = mockDb.statements.find((statement) => statement.text.includes("FROM tracked_schemas"));
+    expect(read?.text.replace(/\s+/g, " ")).toMatch(
+      /NOT EXISTS \( ?SELECT 1 FROM connections c WHERE c\.id = t\.connection_id AND c\.site_id IS NOT NULL ?\)/
+    );
+  });
+
   it("runs each check in the organization its schema belongs to", async () => {
     await runSchedulerTick(NOW);
     // The tick reads schemas from every organization, so nothing else tells the

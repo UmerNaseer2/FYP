@@ -39,7 +39,7 @@
 import { parseCloudLinkState, type CloudLinkState } from "../core/cloud-agent-file";
 import { staysHome } from "../core/stays-home";
 import { utf8 } from "../shared/remote/bytes";
-import type { CloudLinkResult, CloudView, SyncAnswer, SyncStatus } from "../shared/ipc";
+import type { CloudLinkResult, CloudView, DriftCheck, SyncAnswer, SyncStatus, WebsiteDrift, WebsiteDriftSchema } from "../shared/ipc";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { readRequest, type CompareSummary, type Request } from "../shared/remote/rpc";
 import type { Clock } from "./clock";
@@ -71,6 +71,15 @@ export const SYNC_HEADER = "x-schema-studio-sync";
 export const SYNC_EVERY_MS = 15_000;
 /** How long to wait before asking again a site that has no sync, such as one not yet updated. */
 export const NO_SYNC_RETRY_MS = 30 * 60_000;
+/** How often, at most, to ask the site for its drift results. A check runs every few minutes at most. */
+export const DRIFT_EVERY_MS = 60_000;
+/** The Drift page asks again first when the results are older than this. */
+export const DRIFT_FRESH_MS = 10_000;
+/** The most schemas the site sends drift results for (MOST_DRIFT_SCHEMAS in the web app's lib/agent-rules.ts). */
+export const MOST_DRIFT_SCHEMAS = 200;
+/** The newest checks kept for each schema (DRIFT_HISTORY in the web app's lib/agent-rules.ts). */
+const DRIFT_HISTORY = 5;
+const DRIFT_STATUSES: readonly string[] = ["in_sync", "drifted", "unreachable"];
 
 const BAD_ADDRESS = "That is not a web address Schema Studio can use. It looks like https://schema-studio.example.com.";
 const NOT_REACHED = "Could not reach that site. Check the address and your connection.";
@@ -120,8 +129,12 @@ export type CloudAgentOptions = {
   sync?: SyncHost;
 };
 
-/** One of this computer's own connections, as the site lists it under the computer. */
-export type OwnConnection = { id: number; name: string; environment: string };
+/**
+ * One of this computer's own connections, as the site lists it under the
+ * computer, with the drift results of the schemas tracked on it. The drift
+ * goes to the site as this computer's server gave it; the site checks it.
+ */
+export type OwnConnection = { id: number; name: string; environment: string; drift?: readonly unknown[] };
 
 /**
  * This computer's own server's side of the two-way sync
@@ -144,10 +157,12 @@ export function readOwnConnections(body: unknown): OwnConnection[] {
   if (!isRecord(body) || !Array.isArray(body.connections)) throw new Error("This computer's list of connections could not be read.");
   return body.connections.flatMap((row): OwnConnection[] => {
     if (!isRecord(row)) return [];
-    const { id, name, environment } = row;
+    const { id, name, environment, drift } = row;
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return [];
     if (typeof name !== "string" || typeof environment !== "string") return [];
-    return [{ id, name: name.slice(0, 200), environment: environment.slice(0, 50) }];
+    const own: OwnConnection = { id, name: name.slice(0, 200), environment: environment.slice(0, 50) };
+    if (Array.isArray(drift)) own.drift = drift.slice(0, MOST_DRIFT_SCHEMAS);
+    return [own];
   });
 }
 
@@ -234,6 +249,66 @@ function readSyncAnswer(body: unknown): { rev: string; connections: readonly unk
   return { rev: body.rev, connections: body.connections };
 }
 
+/** A text field from the site, cut to `most` characters, or null when it is not text. */
+function textOf(value: unknown, most: number): string | null {
+  return typeof value === "string" ? value.slice(0, most) : null;
+}
+
+/** An ISO time from the site, or null. */
+function timeOf(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function readDriftCheck(value: unknown): DriftCheck | null {
+  if (!isRecord(value)) return null;
+  const { status, summary, checkedAt, source, acknowledged } = value;
+  const at = timeOf(checkedAt);
+  if (typeof status !== "string" || !DRIFT_STATUSES.includes(status) || at === null) return null;
+  return {
+    status: status as DriftCheck["status"],
+    summary: textOf(summary, 300) ?? "",
+    checkedAt: at,
+    source: textOf(source, 40) ?? "unknown",
+    acknowledged: acknowledged === true,
+  };
+}
+
+function readWebsiteDriftSchema(value: unknown): WebsiteDriftSchema | null {
+  if (!isRecord(value)) return null;
+  const { connectionId, connectionName, environment, schema, label, intervalMinutes, lastCheckedAt, checks } = value;
+  if (typeof connectionId !== "number" || !Number.isSafeInteger(connectionId) || connectionId <= 0) return null;
+  const name = textOf(connectionName, 200);
+  const schemaName = textOf(schema, 128);
+  if (name === null || schemaName === null || schemaName === "") return null;
+  return {
+    connectionId,
+    connectionName: name,
+    environment: textOf(environment, 50) ?? "",
+    schema: schemaName,
+    label: textOf(label, 200) || null,
+    intervalMinutes:
+      typeof intervalMinutes === "number" && Number.isSafeInteger(intervalMinutes) && intervalMinutes >= 0 ? intervalMinutes : 0,
+    lastCheckedAt: timeOf(lastCheckedAt),
+    checks: Array.isArray(checks)
+      ? checks.slice(0, 20).flatMap((check) => readDriftCheck(check) ?? []).slice(0, DRIFT_HISTORY)
+      : [],
+  };
+}
+
+/** The site's answer to GET /api/agent/sync/drift, or null when it is not one. Bad schemas are left out, not the whole list. */
+export function readDriftAnswer(
+  body: unknown
+): { rev: string; results: { allowed: boolean; orgSlug: string | null; schemas: WebsiteDriftSchema[] } | null } | null {
+  if (!isRecord(body) || typeof body.rev !== "string" || body.rev.length === 0 || body.rev.length > 100) return null;
+  if (body.same === true) return { rev: body.rev, results: null };
+  if (body.same !== false || typeof body.allowed !== "boolean" || !Array.isArray(body.schemas)) return null;
+  const slug = typeof body.orgSlug === "string" && /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/.test(body.orgSlug) ? body.orgSlug : null;
+  const schemas = body.allowed
+    ? body.schemas.slice(0, MOST_DRIFT_SCHEMAS).flatMap((schema) => readWebsiteDriftSchema(schema) ?? [])
+    : [];
+  return { rev: body.rev, results: { allowed: body.allowed, orgSlug: slug, schemas } };
+}
+
 /** The id and version of a connection the site just saved, or null. */
 function readSaved(body: unknown): { id: number; version: number } | null {
   if (!isRecord(body)) return null;
@@ -283,6 +358,15 @@ export class CloudAgent {
   /** Whether the site has the sync: null until it answers. */
   private siteSyncs: boolean | null = null;
   private noSyncUntil = 0;
+
+  // The website's drift results, for the Drift page. Asked for apart from the connections, less often.
+  private drift: { rev: string; allowed: boolean; orgSlug: string | null; schemas: WebsiteDriftSchema[] } | null = null;
+  private driftSyncedAt: number | null = null;
+  private lastDriftTry = 0;
+  private noDriftUntil = 0;
+  /** Only the first of a run of failures goes in the log. */
+  private driftFailing = false;
+  private driftPulling: Promise<void> | null = null;
 
   constructor(private readonly options: CloudAgentOptions) {}
 
@@ -423,6 +507,34 @@ export class CloudAgent {
       lastSyncedAt: this.syncedAt,
       changedAt: this.changedAt,
     };
+  }
+
+  /** The website's drift results, as last asked for. */
+  driftStatus(): WebsiteDrift {
+    const link = this.link;
+    if (link === null || this.options.sync === undefined || this.siteSyncs === false) return { linked: false };
+    const drift = this.drift;
+    return {
+      linked: true,
+      origin: link.origin,
+      orgName: link.orgName,
+      // The site's own word first, since an organization can be renamed after the link.
+      orgSlug: drift?.orgSlug ?? link.orgSlug,
+      online: this.problem === null,
+      syncedAt: this.driftSyncedAt,
+      allowed: drift?.allowed ?? false,
+      schemas: drift === null ? null : drift.schemas,
+    };
+  }
+
+  /** The website's drift results for the Drift page, asked for again first when they are more than a few seconds old. */
+  async websiteDrift(): Promise<WebsiteDrift> {
+    const now = this.options.clock.now();
+    if (this.driftPulling !== null) await this.driftPulling;
+    else if (this.link !== null && this.siteSyncs !== false && now >= this.noDriftUntil && now - this.lastDriftTry >= DRIFT_FRESH_MS) {
+      await this.pullDrift(this.run);
+    }
+    return this.driftStatus();
   }
 
   /**
@@ -596,6 +708,55 @@ export class CloudAgent {
     }
   }
 
+  /** Asks the site for its drift results, once at a time. */
+  private pullDrift(run: number): Promise<void> {
+    if (this.driftPulling === null) {
+      const pulling = this.syncDrift(run).finally(() => {
+        if (this.driftPulling === pulling) this.driftPulling = null;
+      });
+      this.driftPulling = pulling;
+    }
+    return this.driftPulling;
+  }
+
+  /**
+   * Asks the site for the drift results it keeps on its own connections. Only
+   * results come down; the site answers "same" when none changed. A site from
+   * before the drift sync answers 404, and is asked again much later.
+   */
+  private async syncDrift(run: number): Promise<void> {
+    const link = this.link;
+    if (link === null || this.options.sync === undefined || run !== this.run) return;
+    const now = this.options.clock.now();
+    this.lastDriftTry = now;
+    try {
+      const rev = this.drift === null ? "" : `?rev=${encodeURIComponent(this.drift.rev)}`;
+      const response = await this.send(link.origin, "GET", `/api/agent/sync/drift${rev}`, undefined, link.token);
+      if (run !== this.run) {
+        await response.body?.cancel().catch(() => undefined);
+        return;
+      }
+      if (response.status === 401) return this.siteForgotUs();
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => undefined);
+        this.noDriftUntil = now + NO_SYNC_RETRY_MS;
+        return;
+      }
+      if (!response.ok) throw new Error(`The site answered ${response.status}.`);
+      const answer = readDriftAnswer(await bodyOf(response));
+      if (run !== this.run) return;
+      if (answer === null || (answer.results === null && this.drift === null)) throw new Error("The site's drift results could not be read.");
+      if (answer.results !== null) this.drift = { rev: answer.rev, ...answer.results };
+      this.driftSyncedAt = this.options.clock.now();
+      this.driftFailing = false;
+    } catch (error) {
+      if (run === this.run && !this.driftFailing) {
+        logWarn(`Could not bring the site's drift results up to date: ${error instanceof Error ? error.name : "unknown error"}.`);
+      }
+      if (run === this.run) this.driftFailing = true;
+    }
+  }
+
   /** What this computer's own connections look like to the site now, to notice a change. */
   private async ownPrint(): Promise<string | null> {
     try {
@@ -610,7 +771,14 @@ export class CloudAgent {
     const sync = this.options.sync;
     if (sync === undefined) return [];
     const shared = new Set(this.options.sharedConnectionIds());
-    return (await sync.local()).map(({ id, name, environment }) => ({ id, name, environment, shared: shared.has(id) }));
+    return (await sync.local()).map(({ id, name, environment, drift }) => ({
+      id,
+      name,
+      environment,
+      shared: shared.has(id),
+      // Each schema's newest results, so the site can show them on its Drift page.
+      ...(drift === undefined ? {} : { drift }),
+    }));
   }
 
   /** Clears this computer's copies of a site's connections, after a link ends or before a new one starts. */
@@ -622,6 +790,11 @@ export class CloudAgent {
     this.noSyncUntil = 0;
     this.lastSyncTry = 0;
     this.publishedOwn = null;
+    this.drift = null;
+    this.driftSyncedAt = null;
+    this.lastDriftTry = 0;
+    this.noDriftUntil = 0;
+    this.driftFailing = false;
     if (sync === undefined) return;
     void this.queue(async () => {
       try {
@@ -794,13 +967,16 @@ export class CloudAgent {
     this.schedulePoll(run, 0);
   }
 
-  /** After a poll that worked: asks the site whether its connections changed, if it is time. */
+  /** After a poll that worked: asks the site whether its connections, or its drift results, changed, if it is time. */
   private maybeSync(run: number): void {
     if (this.options.sync === undefined) return;
     const now = this.options.clock.now();
-    if (now - this.lastSyncTry < SYNC_EVERY_MS || now < this.noSyncUntil) return;
-    this.lastSyncTry = now;
-    void this.queue(() => this.syncDown(run));
+    if (now - this.lastSyncTry >= SYNC_EVERY_MS && now >= this.noSyncUntil) {
+      this.lastSyncTry = now;
+      void this.queue(() => this.syncDown(run));
+    }
+    // Only once the site has shown it has the sync, so a site from before it is not asked twice.
+    if (this.siteSyncs === true && now - this.lastDriftTry >= DRIFT_EVERY_MS && now >= this.noDriftUntil) void this.pullDrift(run);
   }
 
   private pollFailed(run: number, error: unknown): void {

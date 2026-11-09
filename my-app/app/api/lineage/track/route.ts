@@ -89,6 +89,7 @@ export async function POST(request: NextRequest) {
     ssl: boolean;
     ssl_mode: string | null;
     environment: string | null;
+    site_id: number | null;
   };
   try {
     // ssl_mode and environment are both added lazily; make sure they exist
@@ -97,7 +98,8 @@ export async function POST(request: NextRequest) {
     // Another organization's connection reads as missing, the same answer a
     // deleted one gets, so this cannot be used to learn which ids exist.
     const result = await pool.query(
-      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment
+      `SELECT name, host, port, database_name, type, username, password, connection_string, ssl, ssl_mode, environment,
+              site_id
        FROM connections
        WHERE id = $1 AND org_id = $2`,
       [connectionId, gate.principal.orgId]
@@ -114,6 +116,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "Could not read saved connection. Is the app database reachable?" },
       { status: 500 }
+    );
+  }
+
+  // A desktop's copy of a website connection: the website watches its schemas,
+  // and this computer shows the results (docs/two-way-sync-plan.md, step 2).
+  if (conn.site_id !== null && conn.site_id !== undefined) {
+    return NextResponse.json(
+      {
+        error:
+          "This connection belongs to the website, so its schemas are tracked there. Track it on the website, and its drift results show here on the Drift page.",
+      },
+      { status: 409 }
     );
   }
 

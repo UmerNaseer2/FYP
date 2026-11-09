@@ -8,6 +8,8 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { Principal } from "@/lib/auth-guard";
 import { decryptSecret } from "@/lib/secret-store";
 import { hasPermission } from "@/lib/permissions";
+import { listOwnDrift } from "@/lib/drift-sync";
+import type { WebsiteDriftSchema } from "@/lib/agent-rules";
 
 /** The permissions that let someone see the Connections list, the same as GET /api/connections. */
 export function maySeeConnections(principal: Principal): boolean {
@@ -134,6 +136,29 @@ export async function readSync(principal: Principal, knownRev: string | null): P
     };
   });
   return { same: false, rev, withSecrets, connections };
+}
+
+/** The permissions that let someone see the Drift page, the same as GET /api/lineage. */
+export function maySeeDrift(principal: Principal): boolean {
+  return hasPermission(principal, "drift:read", "dashboard:read");
+}
+
+export type DriftSyncAnswer =
+  | { same: true; rev: string }
+  | { same: false; rev: string; allowed: boolean; orgSlug: string; schemas: WebsiteDriftSchema[] };
+
+/**
+ * The drift results of every schema the website watches, for a linked desktop
+ * to show next to its own (docs/two-way-sync-plan.md, step 2), or `same` when
+ * nothing changed since `knownRev`. Someone who may not see the Drift page
+ * gets an empty list and `allowed: false`.
+ */
+export async function readDriftSync(principal: Principal, knownRev: string | null): Promise<DriftSyncAnswer> {
+  const allowed = maySeeDrift(principal);
+  const schemas = allowed ? await listOwnDrift(principal.orgId) : [];
+  const rev = createHash("md5").update(JSON.stringify([principal.orgSlug, allowed, schemas])).digest("hex");
+  if (rev === knownRev) return { same: true, rev };
+  return { same: false, rev, allowed, orgSlug: principal.orgSlug, schemas };
 }
 
 /** A fingerprint as a desktop sent it back, or null. Never longer than one of ours. */
