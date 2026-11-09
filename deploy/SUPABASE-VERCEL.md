@@ -1,6 +1,6 @@
 # Running Schema Studio on Supabase and Vercel
 
-> **Run on real accounts.** Sections 1 to 5 and 7 have run on a real Supabase project and a real Vercel project, with a real Microsoft sign-in. Section 6 has not, because Swinburne's server still keeps its own database. Section 8 has run in a desktop browser with a real push, but not yet on a real phone. Section 9 has run against a copy of the site on one computer, with the desktop app's linking code run outside the app, and not yet on Vercel. Section 10 has run on test databases and a real desktop backup, and as a trial into a real Supabase project.
+> **Run on real accounts.** Sections 1 to 5 and 7 have run on a real Supabase project and a real Vercel project, with a real Microsoft sign-in. Section 6 has run on one computer, with a local PostgreSQL standing in for Supabase, and not yet on Swinburne's server. Section 8 has run in a desktop browser with a real push, but not yet on a real phone. Section 9 has run against a copy of the site on one computer, with the desktop app's linking code run outside the app, and not yet on Vercel. Section 10 has run on test databases and a real desktop backup, and as a trial into a real Supabase project.
 
 The web app runs on Vercel. Its own data (people, roles, saved connections, history) lives in a Supabase project, used as an ordinary PostgreSQL database. It is the same code as the Docker deployment in [README.md](README.md), set up through environment variables. Sign-in stays with Microsoft (and GitHub if you want it) through NextAuth. Supabase Auth is not used.
 
@@ -115,11 +115,67 @@ Checks run only when a call comes, so a schema is never checked more often than 
 
 ## 6. Sharing the database with the Docker copy
 
-The Docker copy can stay on beside Vercel, with both showing the same data:
+The Docker copy (such as the one on Swinburne's server) can use this same database. Both then show the same organizations, people, roles and cloud connections. Connections to the server's own databases stay on the server: everyone sees them by name, marked "Lives on Swinburne server", but their passwords never leave it and they only work from there.
 
-- Point it at the same `DATABASE_URL_A` and use the same `APP_ENCRYPTION_KEY`.
-- Saved connections are shared too, so a connection to a private database works from the Docker copy and fails from Vercel.
-- Let one copy run the checker. Set `DRIFT_SCHEDULER=off` on the other, or leave the `pg_cron` call out. Two copies would not check twice, but one that cannot reach a private database would record it as unreachable.
+| Connection | Password kept in | Works from |
+| --- | --- | --- |
+| Cloud (Neon, Supabase, AWS and so on) | this database | every copy and the desktop app |
+| Local on the server (`localhost`, private addresses) | the server's own `db` container | the server copy only |
+| Local on a laptop | that laptop's desktop app | that desktop app only |
+
+The connection form guesses from the address: `localhost` or a private address is local. The switch **Only this machine can reach it** overrides the guess.
+
+**Before you start**
+
+- The organization already exists on this site, and everyone who uses the server copy is a member of it here, with the right role. People and roles come from this database from now on, so someone who was only on the server copy is invited here once.
+- The server can reach this database: `nc -zv <the pooler's host> 6543` reports it open.
+- Write down the server's current `APP_ENCRYPTION_KEY` (or its `NEXTAUTH_SECRET` if it never set one). The move below needs it to open the old passwords.
+
+**1. Move the server's old connections, once.** `my-app/scripts/move-connections.cjs` copies them from the server's own database into the organization here:
+
+- A connection the site already has (same host, port, database and user) is skipped, so running it twice adds nothing.
+- Local connections get their passwords saved in the server's own store. Cloud ones are locked with this site's key.
+- History, tracked schemas and compare runs stay in the old database. Nothing there is changed, so it stays as a backup.
+
+On the server, in `~/FYP/my-app` with its packages installed (`npm ci` once), put the secrets in a file outside the repository, for example `~/move.env`:
+
+```text
+MOVE_FROM_URL=postgres://studio:<POSTGRES_PASSWORD>@127.0.0.1:5433/studio?sslmode=disable
+MOVE_FROM_KEY=<the server's old APP_ENCRYPTION_KEY>
+MOVE_TO_URL=<this site's DATABASE_URL_A>
+MOVE_TO_KEY=<this site's APP_ENCRYPTION_KEY>
+MOVE_MACHINE_NAME=Swinburne server
+```
+
+The first line is the server's `db` container, as the server itself reaches it (use the `POSTGRES_USER` and `POSTGRES_DB` from `.env` if it changed them from `studio`). Local passwords are saved there too. A server that never set `APP_ENCRYPTION_KEY` gives `MOVE_FROM_NEXTAUTH_SECRET` instead of `MOVE_FROM_KEY`. `MOVE_MACHINE_NAME` must match `LOCAL_MACHINE_NAME` below exactly.
+
+Try it. Without `--apply` it does the whole copy and then undoes it:
+
+```bash
+set -a; . ~/move.env; set +a; node scripts/move-connections.cjs --org <the organization's address>
+```
+
+It prints how many connections it would copy and skip, and never a host or password. Run it again with `--apply` added, then delete `~/move.env`. Add `--into <address>` when the organization has a different address on this site.
+
+**2. Point the server copy here.** Add these lines to `.env` in `~/FYP` with `nano .env`, replacing the old `APP_ENCRYPTION_KEY` line:
+
+```text
+DATABASE_URL_A=<this site's DATABASE_URL_A>
+APP_ENCRYPTION_KEY=<this site's APP_ENCRYPTION_KEY>
+LOCAL_DATABASE_URL=postgres://studio:<POSTGRES_PASSWORD>@db:5432/studio?sslmode=disable
+LOCAL_MACHINE_NAME=Swinburne server
+```
+
+`LOCAL_DATABASE_URL` is the same `db` container, as the app container reaches it. If this site never set `APP_ENCRYPTION_KEY`, its passwords are locked with its `NEXTAUTH_SECRET`: leave `APP_ENCRYPTION_KEY` out on the server and give it this site's `NEXTAUTH_SECRET` instead. Keep `ALLOW_PRIVATE_DB_HOSTS=true` and leave `DRIFT_SCHEDULER` blank: the server is the only copy that can check its own databases for drift. A cloud connection is still checked once, by whichever copy gets to it first.
+
+Then run `docker compose up -d`. No rebuild is needed. Sign in on the server copy: it now shows this site's organizations and connections, with the server's own ones ready to use. If you run the move again later, run `docker compose restart app` afterwards so the app reads the new passwords.
+
+**Good to know**
+
+- The desktop app needs nothing new. It links to this site, as section 9 explains, and gets the cloud connections from here. It never gets this database's address.
+- `deploy/backup.sh` still saves the server's own `db`: the old data and the local passwords. This database is backed up by Supabase (its dashboard, **Database**, **Backups**).
+- To go back, remove the four lines from `.env` (put the old `APP_ENCRYPTION_KEY` back) and run `docker compose up -d`. The server copy is then exactly as it was before step 2.
+- A copy without `LOCAL_DATABASE_URL` keeps every password in `DATABASE_URL_A`, as before. The client's container image works that way.
 
 ## 7. Staying inside the free plans
 
@@ -198,7 +254,7 @@ To unlink a computer, press **Unlink** in the desktop app's Settings, or **Unlin
 
 **What stays behind.**
 
-- Passwords of connections to private addresses, because this site cannot reach those databases anyway. Their scheduled drift checks are turned off. Add `--keep-private-passwords` when a Docker copy on that network shares the new database (section 6).
+- Passwords of connections to private addresses, because this site cannot reach those databases anyway. Their scheduled drift checks are turned off. A Docker copy that shares this database keeps those passwords on its own machine instead: move its connections with `scripts/move-connections.cjs`, as section 6 shows.
 - Microsoft sign-ins of people new to the site, because a sign-in belongs to one Microsoft directory. Those people sign in again on the new site. Someone from outside the new site's directory cannot, until an admin adds them to it. Add `--same-directory` when both sites sign in through the same directory.
 - Open invites, linked computers, and phones with alerts on. Invite, link and turn those on again.
 
@@ -236,7 +292,7 @@ Other options:
 | `--as <address>` | Gives the organization a different address on the new site, for example when its own is taken there. |
 | `--admin <email>` | Makes this person an admin of the moved organization. |
 | `--backup <file>` | Reads a desktop backup (Settings, **Backup**, **Save a backup**) instead of a database. Put its passphrase in `MOVE_BACKUP_PASSPHRASE`, and leave out `MOVE_FROM_URL` and `MOVE_FROM_KEY`, since the backup holds its own key. It needs the desktop code built first: `npm install` and `npm run build:ts` in `desktop`. |
-| `--keep-private-passwords` | Keeps the passwords of private connections, as above. |
+| `--keep-private-passwords` | Keeps the passwords of private connections in the new database. Not for a Docker copy set up as in section 6, which keeps them on its own machine. |
 | `--same-directory` | Keeps Microsoft sign-ins, as above. |
 
 The report holds counts only, never a host, email address, password or key. Afterwards, sign in on the new site and open the organization's address.

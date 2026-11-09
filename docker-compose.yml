@@ -82,7 +82,11 @@ services:
       # not whatever it is published as on your machine. `sslmode=disable`
       # because the postgres image serves no SSL, and the app only turns SSL
       # off by itself for localhost (see lib/db/metadata-ssl.ts).
-      DATABASE_URL_A: postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}?sslmode=disable
+      #
+      # To share one database with the website, set DATABASE_URL_A in .env to
+      # the shared database (Supabase's pooler string) and set
+      # LOCAL_DATABASE_URL below. deploy/SUPABASE-VERCEL.md, section 6.
+      DATABASE_URL_A: ${DATABASE_URL_A:-postgres://${POSTGRES_USER:-studio}:${POSTGRES_PASSWORD:-studio}@db:5432/${POSTGRES_DB:-studio}?sslmode=disable}
       # Signs the session cookie. Set your own, `openssl rand -hex 32`: with
       # none the app will not sign anyone in. There is no default on purpose.
       # One written here would be the same for every copy, so anyone could
@@ -95,6 +99,14 @@ services:
       # NEXTAUTH_SECRET. With neither, connection passwords are stored as
       # typed (the Connections screen says so) and no GitHub token is saved.
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      # Only when DATABASE_URL_A is a database shared with other copies.
+      # Connections to this machine's own databases (localhost, private
+      # addresses) keep their passwords here instead, in the compose `db`:
+      # postgres://studio:<POSTGRES_PASSWORD>@db:5432/studio?sslmode=disable.
+      # LOCAL_MACHINE_NAME is what everyone else sees, as "Lives on ...".
+      # Leave both empty and everything stays in DATABASE_URL_A, as before.
+      LOCAL_DATABASE_URL: ${LOCAL_DATABASE_URL:-}
+      LOCAL_MACHINE_NAME: ${LOCAL_MACHINE_NAME:-}
       # Optional. The default organization's GitHub script registry, for the
       # Script Editor's push and pull, until an admin saves a repository and
       # token for it on the Admin screen, under GitHub. Other organizations

@@ -221,6 +221,11 @@ apply them with `docker compose up -d`.
   whole server.
 - `DRIFT_SCHEDULER=off`, only on a copy of this server that should not check
   the tracked databases for drift by itself, such as a demo.
+- `DATABASE_URL_A`, `LOCAL_DATABASE_URL` and `LOCAL_MACHINE_NAME`, only to
+  share one database with the website on Vercel, so both show the same
+  organizations and cloud connections while this server's own databases keep
+  their passwords here. Follow SUPABASE-VERCEL.md, section 6: it also moves
+  the connections already saved here.
 - `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL_FAST` and `AI_MODEL_SMART`, only if
   people should get AI help: the Compare summary, the migration review, drift
   explanations, SQL drafts from plain words and the schema chat. The address

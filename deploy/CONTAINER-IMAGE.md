@@ -138,6 +138,8 @@ repository for `docker-compose.yml`, ideally at the commit in the file name
    Admin, as "The first sign-in makes the admin" in README.md explains.
 
 The database starts empty, and the app makes its tables when it starts.
+Leave `DATABASE_URL_A` and `LOCAL_DATABASE_URL` out of `.env`: the copy then
+keeps everything in its own database.
 
 ## Running it some other way
 
