@@ -10,6 +10,8 @@ import {
   BLOCKED_TEXT,
   cancelResultText,
   deployButtonText,
+  HIDDEN_TEXT,
+  hidesCharacters,
   mayCancel,
   mayControl,
   passkeyText,
@@ -126,6 +128,17 @@ test("the passkey button is named for what it does, and only a step that can be 
   assert.equal(stepButton("ask-approval", "deploy"), "Ask for approval with passkey");
   assert.equal(stepButton("waiting", "deploy"), null);
   assert.equal(stepButton("blocked", "revert"), null);
+});
+
+test("a run whose SQL holds characters that do not show on screen has no passkey button, while CRLF is fine", () => {
+  const run = (...sql: string[]) => ({ scripts: sql.map((text, index) => ({ name: "users", version: `${index + 1}.0.0`, sql: text })) });
+  // PostgreSQL ends the comment at the carriage return and runs the DROP, while a screen shows one comment.
+  assert.equal(hidesCharacters(run("CREATE INDEX users_email ON users (email); -- adds an index\rDROP TABLE accounts;")), true);
+  assert.equal(hidesCharacters(run("CREATE INDEX users_email ON users (email);", "SELECT 1;\u{FEFF}")), true);
+  assert.equal(hidesCharacters(run("CREATE INDEX users_email ON users (email);\r\n\tCREATE INDEX users_name ON users (name);\r\n")), false);
+  assert.equal(hidesCharacters(run()), false);
+  assert.match(HIDDEN_TEXT, /^This SQL contains characters that do not show on screen,/);
+  assert.match(HIDDEN_TEXT, /so this cannot be signed here\. Check it on the computer\.$/);
 });
 
 test("every step says what signing does, or why there is nothing to sign", () => {

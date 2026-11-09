@@ -10,7 +10,7 @@
  * phone-approvals.ts). These rules are there so the phone never offers a
  * button the computer would turn down.
  */
-import { countText, dayText } from "./format.js";
+import { countText, dayText, hasHiddenCharacters } from "./format.js";
 import type { ApprovalAction, ApprovalDecision } from "../shared/remote/approval.js";
 import type { ApprovalList, ApprovalRead, ApprovalSummary } from "../shared/remote/rpc.js";
 
@@ -63,7 +63,9 @@ export type Choices = { approve: boolean; reject: boolean; reason: string | null
  * The checks go from what no setup on the phone could change (the role, and
  * who asked) to what it could (its passkey), then to the request itself.
  * Approving needs the SQL on screen to be exactly the SQL the request runs,
- * so a request whose SQL the computer could not show may only be rejected.
+ * so a request whose SQL the computer could not show may only be rejected,
+ * and so may one whose SQL holds characters that do not show on screen,
+ * which can make it run something other than what it seems to.
  */
 export function decisionChoices(
   list: Pick<ApprovalList, "passkey" | "canApprove">,
@@ -92,6 +94,14 @@ export function decisionChoices(
       approve: false,
       reject: true,
       reason: "The computer cannot show the SQL this request runs, so it cannot be approved here. Reject it here, or decide it in Schema Studio on the computer.",
+    };
+  }
+  if (read.scripts.some((script) => hasHiddenCharacters(script.sql))) {
+    return {
+      approve: false,
+      reject: true,
+      reason:
+        "This SQL contains characters that do not show on screen, marked above as \u{240D} or as a code in \u{27E6} \u{27E7}. They can make it run something other than what it seems to, so it cannot be approved here. Check it on the computer.",
     };
   }
   return { approve: true, reject: true, reason: null };

@@ -495,6 +495,28 @@ describe("the Approvals tab", () => {
     expect(fetchCalls.some((call) => call.url.endsWith("/phone"))).toBe(false);
   });
 
+  test("SQL with characters that do not show is marked, and can be rejected but not approved", async () => {
+    const hiding = { ...KEPT, scripts: [{ ...KEPT.scripts[0], sqlContent: "-- adds an index\rDROP TABLE accounts;" }] };
+    open(
+      [
+        { match: "/api/deploy/approvals/5/phone", body: hiding },
+        { match: "/api/deploy/approvals/5", method: "POST", body: { ok: true } },
+      ],
+      { runsToApprove: [run()] }
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByText(/adds an index\u{240D}/u)).toBeInTheDocument();
+    expect(screen.getByText(/cannot be approved here/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Approve this run" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject this run" }));
+    await waitFor(() => {
+      expect(sentBody("POST")).toMatchObject({ decision: "reject", expectedFingerprint: "print-1" });
+    });
+  });
+
   test("Cancel backs out without sending anything", async () => {
     open([], { runsToApprove: [run()] });
     fireEvent.click(await screen.findByRole("button", { name: "Reject" }));

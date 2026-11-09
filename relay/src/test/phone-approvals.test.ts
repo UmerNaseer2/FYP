@@ -142,6 +142,29 @@ test("only lets a request be rejected when the computer cannot show its SQL", as
   assert.deepEqual(decisionChoices(list(), summary(fingerprint, { sql: "missing" }), read(fingerprint), fingerprint), { approve: false, reject: true, reason });
 });
 
+test("only lets a request be rejected when its SQL holds characters that do not show on screen", async () => {
+  const reason =
+    "This SQL contains characters that do not show on screen, marked above as \u{240D} or as a code in \u{27E6} \u{27E7}. They can make it run something other than what it seems to, so it cannot be approved here. Check it on the computer.";
+  const hiding: [string, ApprovalScript[]][] = [
+    // PostgreSQL ends the comment at the carriage return and runs the DROP, while a screen shows one comment.
+    ["a lone carriage return", [{ name: "add_orders_index", version: "4", sql: "CREATE INDEX orders_total ON orders (total); -- adds an index\rDROP TABLE accounts;" }]],
+    ["a zero-width space in the last script", [...SCRIPTS, { name: "add_order_note", version: "4", sql: "ALTER TABLE orders ADD COLUMN note text;\u{200B}" }]],
+    ["a right-to-left override", [{ name: "add_order_note", version: "4", sql: "ALTER TABLE orders ADD COLUMN note text; -- \u{202E}eton" }]],
+  ];
+  for (const [label, scripts] of hiding) {
+    const fingerprint = await approvalFingerprint(scripts, "deploy");
+    assert.deepEqual(decisionChoices(list(), summary(fingerprint), read(fingerprint, { scripts }), fingerprint), { approve: false, reject: true, reason }, label);
+  }
+});
+
+test("offers both decisions for SQL whose lines end in CRLF", async () => {
+  const scripts: ApprovalScript[] = [
+    { name: "add_orders_index", version: "4", sql: "CREATE INDEX orders_total ON orders (total);\r\n\tCREATE INDEX orders_day ON orders (created_at);\r\n" },
+  ];
+  const fingerprint = await approvalFingerprint(scripts, "deploy");
+  assert.deepEqual(decisionChoices(list(), summary(fingerprint), read(fingerprint, { scripts }), fingerprint), { approve: true, reject: true, reason: null });
+});
+
 test("checks a rollback's SQL as a rollback", async () => {
   const fingerprint = await approvalFingerprint(SCRIPTS, "revert");
   const request = summary(fingerprint, { action: "revert", targetVersion: "2" });

@@ -15,6 +15,7 @@ import {
   type RequestsPayload,
 } from "@/lib/access-requests";
 import { apiFetch } from "@/lib/api-fetch";
+import { HIDDEN_SQL_TEXT, hasHiddenCharacters, showHiddenCharacters } from "@/lib/hidden-characters";
 import type { ApprovalScript, ListedApproval } from "@/lib/approvals-db";
 import {
   STATUS_PILLS,
@@ -112,7 +113,9 @@ function SqlBlock({ copy }: { copy: SqlCopy }) {
             className="text-[12px] mt-1 p-2 rounded-lg overflow-auto"
             style={{ background: "var(--surface-3)", maxHeight: 320 }}
           >
-            {script.sqlContent}
+            {/* Characters that do not show on screen are marked, so the
+                SQL read here is the SQL that runs. */}
+            {showHiddenCharacters(script.sqlContent)}
           </pre>
         </div>
       ))}
@@ -132,6 +135,10 @@ function RunToApprove({ run, onChanged }: { run: ListedApproval; onChanged: () =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copy, setCopy] = useState<SqlCopy | null>(null);
+  // SQL with characters that do not show on screen may look like something
+  // other than what it runs, so it may be rejected here but not approved.
+  const hidden =
+    copy?.kind === "kept" && copy.scripts.some((script) => hasHiddenCharacters(script.sqlContent));
 
   async function readSql() {
     if (copy) return;
@@ -190,13 +197,18 @@ function RunToApprove({ run, onChanged }: { run: ListedApproval; onChanged: () =
       <Meta>{`Asked for by ${run.requested_by}, ${formatWhen(run.requested_at)}.`}</Meta>
 
       {copy && <SqlBlock copy={copy} />}
+      {hidden && (
+        <div className="mt-2">
+          <ErrorNote>{HIDDEN_SQL_TEXT}</ErrorNote>
+        </div>
+      )}
       {error && (
         <div className="mt-2">
           <ErrorNote>{error}</ErrorNote>
         </div>
       )}
 
-      {step === null ? (
+      {step === null || (step === "approve" && hidden) ? (
         <div className="flex flex-wrap gap-2 mt-3">
           {!copy && (
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => void readSql()}>
@@ -205,7 +217,7 @@ function RunToApprove({ run, onChanged }: { run: ListedApproval; onChanged: () =
           )}
           <Button
             size="sm"
-            disabled={busy}
+            disabled={busy || hidden}
             onClick={() => {
               setStep("approve");
               void readSql();

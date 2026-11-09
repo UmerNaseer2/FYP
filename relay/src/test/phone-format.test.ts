@@ -1,8 +1,8 @@
 /**
  * The words the phone app shows (src/phone/format.ts): the names of
  * environments, changes and severities, counts, each target's headline,
- * foreign keys, what the signed-in role may not do, waits, days and the
- * phone's own name.
+ * foreign keys, what the signed-in role may not do, waits, days, the
+ * phone's own name, and SQL's characters that do not show on screen.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -15,8 +15,10 @@ import {
   defaultPhoneName,
   ENVIRONMENT_LABELS,
   foreignKeyText,
+  hasHiddenCharacters,
   retryText,
   SEVERITY_LABELS,
+  showHiddenCharacters,
   targetHeadline,
 } from "../phone/format.js";
 import type { ForeignKeyOverview, HelloResult, TargetStatus, TargetSummary } from "../shared/remote/rpc.js";
@@ -185,4 +187,74 @@ test("names the device after what its browser says it runs on", () => {
   assert.equal(defaultPhoneName("Mozilla/5.0 (Windows NT 10.0)", 0), "Phone");
   assert.equal(defaultPhoneName("Chrome/130.0.0.0", 0), "Phone");
   assert.equal(defaultPhoneName("", 0), "Phone");
+});
+
+/**
+ * Characters in SQL that do not show on screen but change what it runs or
+ * how it reads. A lone carriage return ends a `--` comment for PostgreSQL yet
+ * shows as a space, so `-- adds an index` + CR + `DROP TABLE accounts;` passes
+ * for one comment. These are the classes the review plan fixes, as [first,
+ * last] code points. A carriage return counts only with no line feed straight
+ * after it, which has a test of its own.
+ */
+const HIDDEN_RANGES: readonly (readonly [number, number])[] = [
+  [0x0000, 0x0008],
+  [0x000b, 0x000c],
+  [0x000d, 0x000d],
+  [0x000e, 0x001f],
+  [0x007f, 0x009f],
+  [0x200b, 0x200f],
+  [0x2028, 0x2029],
+  [0x202a, 0x202e],
+  [0x2060, 0x2064],
+  [0x2066, 0x2069],
+  [0xfeff, 0xfeff],
+];
+
+function isHidden(code: number): boolean {
+  return HIDDEN_RANGES.some(([first, last]) => code >= first && code <= last);
+}
+
+/** A character's code as the markers write it, as in "U+200B". */
+function codeText(code: number): string {
+  return `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+test("finds exactly the hidden characters, checked at every character up to U+FFFF", () => {
+  for (let code = 0; code <= 0xffff; code += 1) {
+    assert.equal(hasHiddenCharacters(`a${String.fromCharCode(code)}b`), isHidden(code), codeText(code));
+  }
+  assert.equal(hasHiddenCharacters("\u{1F600} \u{20000}"), false);
+  assert.equal(hasHiddenCharacters(""), false);
+});
+
+test("finds a carriage return only where no line feed comes straight after it", () => {
+  for (const text of ["\r\n", "SELECT 1;\r\nSELECT 2;\r\n", "CREATE TABLE t (\r\n\tid integer\n);"]) {
+    assert.equal(hasHiddenCharacters(text), false, JSON.stringify(text));
+  }
+  for (const text of ["\r", "SELECT 1;\r", "-- adds an index\rDROP TABLE accounts;", "\n\r", "\r\r\n", "\r\n\r"]) {
+    assert.equal(hasHiddenCharacters(text), true, JSON.stringify(text));
+  }
+});
+
+test("shows a lone carriage return as \u{240D} and the line break PostgreSQL reads it as", () => {
+  assert.equal(showHiddenCharacters("-- adds an index\rDROP TABLE accounts;"), "-- adds an index\u{240D}\nDROP TABLE accounts;");
+  assert.equal(showHiddenCharacters("SELECT 1;\r"), "SELECT 1;\u{240D}\n");
+  assert.equal(showHiddenCharacters("SELECT 1;\r\r\nSELECT 2;"), "SELECT 1;\u{240D}\n\r\nSELECT 2;");
+});
+
+test("shows every other hidden character as its code between \u{27E6} and \u{27E7}", () => {
+  assert.equal(showHiddenCharacters("DROP\u{200B} TABLE"), "DROP\u{27E6}U+200B\u{27E7} TABLE");
+  const codes: number[] = [];
+  for (let code = 0; code <= 0xffff; code += 1) {
+    if (isHidden(code) && code !== 0x0d) codes.push(code);
+  }
+  const shown = showHiddenCharacters(String.fromCharCode(...codes));
+  assert.equal(shown, codes.map((code) => `\u{27E6}${codeText(code)}\u{27E7}`).join(""));
+  assert.equal(hasHiddenCharacters(shown), false);
+});
+
+test("changes nothing else, so SQL with nothing hidden shows as written, markup and all", () => {
+  const sql = "CREATE TABLE notes (\r\n\tbody text DEFAULT '<b>caf\u{E9} &amp; cr\u{E8}me</b>'\n);";
+  assert.equal(showHiddenCharacters(sql), sql);
 });

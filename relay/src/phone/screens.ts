@@ -5,9 +5,9 @@
  */
 import { ACTION_LABELS, requestedText, requestSize, requestTitle, versionText, type Choices } from "./approvals.js";
 import { BUILD_VERSION } from "./build-info.js";
-import { allTicked, CANCEL_QUESTION, cancelResultText, deployButtonText, mayCancel, mayControl, MISMATCH_TEXT, NO_FAMILIES_TEXT, PARTIAL_TEXT, passkeyText, planTitle, registryText, riskRows, rollbackButtonText, runText, startStatusText, startStatusTone, stepButton, stepOf, stepText, whereText, type RiskRow } from "./deploy.js";
+import { allTicked, CANCEL_QUESTION, cancelResultText, deployButtonText, HIDDEN_TEXT, hidesCharacters, mayCancel, mayControl, MISMATCH_TEXT, NO_FAMILIES_TEXT, PARTIAL_TEXT, passkeyText, planTitle, registryText, riskRows, rollbackButtonText, runText, startStatusText, startStatusTone, stepButton, stepOf, stepText, whereText, type RiskRow } from "./deploy.js";
 import { button, el, envBadge, failed, heading, loading, notice, type Child } from "./dom.js";
-import { accessProblem, CHANGE_LABELS, countText, dayText, foreignKeyText, SEVERITY_LABELS, targetHeadline } from "./format.js";
+import { accessProblem, CHANGE_LABELS, countText, dayText, foreignKeyText, SEVERITY_LABELS, showHiddenCharacters, targetHeadline } from "./format.js";
 import {
   ACKNOWLEDGE_QUESTION,
   activityProblemText,
@@ -383,7 +383,7 @@ function sessionCard(session: LiveSession, connectionId: number, control: LiveCo
   if (session.query !== null) {
     // Each screen is built anew at every refresh, so a session keeps its SQL open by its number, as a schema's tables do.
     const key = `live:${connectionId}/${session.pid}`;
-    const details = el("details", { class: "session-sql", open: openTables.has(key) }, el("summary", {}, "Show the SQL"), el("pre", { class: "sql" }, session.query));
+    const details = el("details", { class: "session-sql", open: openTables.has(key) }, el("summary", {}, "Show the SQL"), el("pre", { class: "sql" }, showHiddenCharacters(session.query)));
     details.addEventListener("toggle", () => actions.toggleTable(key, details.open));
     nodes.push(details);
   }
@@ -722,7 +722,9 @@ function scriptCard(script: ApprovalScript): HTMLElement {
     { class: "card script" },
     el("p", { class: "script-name" }, el("span", { class: "tag" }, versionText(script.version)), el("span", { class: "mono" }, script.name)),
     // Focusable, so the SQL can be scrolled sideways from a keyboard too.
-    el("pre", { class: "sql", tabindex: 0, "aria-label": `The SQL of ${script.name}` }, script.sql),
+    // Characters that do not show on screen are marked, so the SQL read here
+    // is the SQL that runs (format.ts, HIDDEN).
+    el("pre", { class: "sql", tabindex: 0, "aria-label": `The SQL of ${script.name}` }, showHiddenCharacters(script.sql)),
   );
 }
 
@@ -967,6 +969,9 @@ export function deployPlanScreen(route: Extract<Route, { screen: "deploy-plan" }
   // No step to take, or no passkey to take it with: what is above says why.
   if (label === null || plan.passkey !== "ready") return nodes;
   if (view.hash !== undefined && view.hash !== plan.fingerprint) return [...nodes, notice(MISMATCH_TEXT, "bad")];
+  // The fingerprint covers characters that do not show, so signing would
+  // accept SQL other than what the person read: no button for it.
+  if (hidesCharacters(plan)) return [...nodes, notice(HIDDEN_TEXT, "bad")];
   if (starting.problem !== null) nodes.push(notice(starting.problem, "bad"));
   if (starting.prepared?.status === "failed") nodes.push(failed(starting.prepared.message, actions.refresh));
   const ready = starting.prepared?.status === "loaded" && starting.working === null && allTicked(plan, view.ticked);

@@ -8,7 +8,7 @@
  * keep away buttons that would be refused, and work out what to sign.
  */
 import { versionText } from "./approvals.js";
-import { countText } from "./format.js";
+import { countText, hasHiddenCharacters } from "./format.js";
 import { agoText } from "./live.js";
 import type { ApprovalAction } from "../shared/remote/approval.js";
 import { ticksFor, type ControlTick, type DeployStep, type RunRisks } from "../shared/remote/control.js";
@@ -200,6 +200,18 @@ export const CANCEL_LOST_TEXT = "The link to the computer dropped before it answ
 
 /** The phone worked out the fingerprint of the SQL itself, and the computer's differs, so what would be signed is not what shows. */
 export const MISMATCH_TEXT = "The SQL the computer sent does not match its own fingerprint, so this cannot be signed here. Check it on the computer.";
+
+/**
+ * Whether a run's SQL holds characters that do not show on screen. The
+ * fingerprint covers them, so signing would accept SQL that runs something
+ * other than what the person read, and no passkey button is offered for it.
+ */
+export function hidesCharacters(plan: Pick<DeployPlan, "scripts">): boolean {
+  return plan.scripts.some((script) => hasHiddenCharacters(script.sql));
+}
+
+export const HIDDEN_TEXT =
+  "This SQL contains characters that do not show on screen, marked above as \u{240D} or as a code in \u{27E6} \u{27E7}. They can make it run something other than what it seems to, so this cannot be signed here. Check it on the computer.";
 
 export const NO_FAMILIES_TEXT = "The script registry has no scripts for this connection's database.";
 
