@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { SNAPSHOT_FORMAT_VERSION } from "./snapshot-format";
 import { BlockedHostError, checkConnectableHost } from "./host-guard";
 import { maskNonCode } from "./sql-guard";
+import { sequenceOwnerTable } from "./snapshot-facts";
 
 declare global {
   var __comparePgPoolMap: Map<string, Pool> | undefined;
@@ -2568,10 +2569,13 @@ export async function fetchSchemaSnapshot(
     // read now. A column owns at most one sequence, so there is nothing to
     // merge — the last writer would be the only writer either way.
     for (const sequence of sequences) {
-      if (sequence.ownedByTable === null || sequence.ownedByColumn === null) {
+      // The owner comes back quoted when its name needs quotes ("AuditLog"),
+      // while tablesByName holds bare names, so read it as a name first.
+      const ownerName = sequenceOwnerTable(sequence, schemaName);
+      if (ownerName === null || sequence.ownedByColumn === null) {
         continue;
       }
-      const owner = tablesByName.get(sequence.ownedByTable);
+      const owner = tablesByName.get(ownerName);
       const column = owner?.columns.find((c) => c.name === sequence.ownedByColumn);
       if (!column) continue;
       column.sequenceOptions = {

@@ -215,6 +215,28 @@ describe("picking a connection to track a schema on", () => {
   });
 });
 
+describe("a drifted schema's card", () => {
+  it("leads to the drift detail rather than to another check", async () => {
+    setRoutes(
+      baseRoutes([{ ...TRACKED, driftStatus: "drifted", driftSummary: "1 column added" }])
+    );
+    render(<StudioPage />);
+
+    const review = await screen.findByRole("link", { name: "Review drift on shop" });
+    expect(review).toHaveAttribute("href", "/test-org/drift?tab=detail&schema=7");
+    expect(review).toHaveClass("btn-primary");
+    expect(screen.getByRole("button", { name: /Check drift/ })).not.toHaveClass("btn-primary");
+  });
+
+  it("is not offered on a card that has not drifted", async () => {
+    setRoutes(baseRoutes([TRACKED]));
+    render(<StudioPage />);
+
+    await screen.findByRole("button", { name: "Stop tracking shop" });
+    expect(screen.queryByRole("link", { name: /Review drift/ })).toBeNull();
+  });
+});
+
 describe("for a role that may not track, check or stop tracking", () => {
   it("switches each button off and says why once, under the header", async () => {
     setUser("viewer");

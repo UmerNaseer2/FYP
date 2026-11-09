@@ -1554,9 +1554,9 @@ export default function ConnectionsPage() {
                               Drift, Deploy — needs a connection before it can
                               show anything at all. */}
                           <div className="help max-w-[46ch]">
-                            A connection is one PostgreSQL server this app can reach. Compare,
-                            Drift and Deploy all read through them, so this is the first thing
-                            to set up.
+                            A connection is one database on a PostgreSQL server this app can
+                            reach. Compare, Drift and Deploy all read through them, so this is
+                            the first thing to set up.
                           </div>
                           <button
                             className="btn btn-primary btn-sm"

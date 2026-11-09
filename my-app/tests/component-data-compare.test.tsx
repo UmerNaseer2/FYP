@@ -290,7 +290,7 @@ describe("what each table's line says", () => {
       />
     );
 
-    expect(screen.getByText("1,204 → 1,198 rows")).toBeInTheDocument();
+    expect(screen.getByText("1,204 rows in the source, 1,198 in the target")).toBeInTheDocument();
   });
 
   it("spells out the same count with different contents", () => {
@@ -404,7 +404,9 @@ describe("the rows that differ", () => {
       />
     );
 
-    expect(screen.getByText(/paired by/)).toHaveTextContent("1 row shown, paired by tenant_id, id");
+    expect(screen.getByText(/paired by/)).toHaveTextContent(
+      "1 row shown, paired by tenant_id, id. Each pair reads source → target."
+    );
     expect(screen.getByText("7, 12")).toBeInTheDocument();
     expect(screen.getByText("total")).toBeInTheDocument();
   });

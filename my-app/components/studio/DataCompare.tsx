@@ -130,7 +130,7 @@ function SampleRows({ sample }: { sample: RowSample }) {
       {sample.rows.length > 0 && (
         <div className="sample-rows__head">
           {sample.rows.length} {plural(sample.rows.length, "row", "rows")} shown, paired
-          by {sample.keyColumns.join(", ")}
+          by {sample.keyColumns.join(", ")}. Each pair reads source → target.
         </div>
       )}
       {sample.rows.map((row) => (
@@ -165,7 +165,12 @@ function SampleRows({ sample }: { sample: RowSample }) {
   );
 }
 
-/** "1,204 → 1,198 rows", or "1,204 rows" when both sides agree. */
+/**
+ * "1,204 rows in the source, 1,198 in the target", or "1,204 rows" when both
+ * sides agree. Said in words rather than with an arrow: the schema diff on
+ * this screen reads its arrows the other way round (what the target has now,
+ * then what the migration gives it), and the migration never copies rows.
+ */
 function rowCounts(table: TableDataCompare): string {
   if (table.leftRows === null) {
     return `${formatRows(table.rightRows)} ${plural(table.rightRows ?? 0, "row")} in the target`;
@@ -176,7 +181,7 @@ function rowCounts(table: TableDataCompare): string {
   if (table.leftRows === table.rightRows) {
     return `${formatRows(table.leftRows)} ${plural(table.leftRows, "row")}`;
   }
-  return `${formatRows(table.leftRows)} → ${formatRows(table.rightRows)} rows`;
+  return `${formatRows(table.leftRows)} ${plural(table.leftRows, "row")} in the source, ${formatRows(table.rightRows)} in the target`;
 }
 
 /**

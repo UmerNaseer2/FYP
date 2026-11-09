@@ -1101,7 +1101,8 @@ export function MigrationWorkbench({
                   <div className="flex items-center justify-between gap-3 flex-wrap text-[12px]" style={{ color: "var(--text-2)" }}>
                     <span className="min-w-0 flex-1">
                       The rollback has {countOf(rollbackWarnings.length, "warning")} about what it
-                      cannot put back — read them before pushing.
+                      cannot put back. Read {rollbackWarnings.length === 1 ? "it" : "them"} before
+                      pushing.
                     </span>
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPane("down")}>
                       Open the Rollback tab

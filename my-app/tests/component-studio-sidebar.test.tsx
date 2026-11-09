@@ -162,6 +162,10 @@ describe("the rail when it is open", () => {
     expect(link("Drift watch").className).toContain("active");
     expect(link("Dashboard").className).not.toContain("active");
     expect(link("Admin").className).not.toContain("active");
+    // The highlight is only colour, so it is said out loud as well.
+    expect(link("Drift watch")).toHaveAttribute("aria-current", "page");
+    expect(link("Dashboard")).not.toHaveAttribute("aria-current");
+    expect(link("Admin")).not.toHaveAttribute("aria-current");
   });
 
   test("marks nothing when the page you are on has no row", () => {
@@ -170,6 +174,7 @@ describe("the rail when it is open", () => {
     renderRail({ activeHref: "/schemas/12" });
     for (const row of screen.getAllByRole("link")) {
       expect(row.className).not.toContain("active");
+      expect(row).not.toHaveAttribute("aria-current");
     }
   });
 

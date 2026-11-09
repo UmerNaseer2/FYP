@@ -1384,7 +1384,7 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .viz-pane__field { display:flex; flex-direction:column; }
 .viz-pane__field--conn { flex:1; min-width:170px; }
 .viz-pane__field--schema { flex:0 1 230px; min-width:172px; }
-.viz-pane__stage { flex:1; min-height:0; position:relative; }
+.viz-pane__stage { flex:1; min-height:0; position:relative; container-type:inline-size; }
 
 /* Draggable divider between the two panes */
 .viz-divider { flex:none; width:13px; cursor:col-resize; position:relative; display:flex;
@@ -1488,6 +1488,12 @@ summary.obj-header::-webkit-details-marker { display:none; }
 .viz-panel--stats { gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:420px; }
 .viz-panel--hint { font-size:11px; color:var(--text-3); background:color-mix(in oklab, var(--bg) 72%, transparent);
                    border-radius:999px; padding:4px 12px; backdrop-filter:blur(4px); }
+/* A narrow pane (side by side, or a dragged divider) has no room for the
+   search box and the counts on one line, so the counts drop below it. */
+@container (max-width: 640px) {
+  .viz-canvas .react-flow__panel.viz-panel--stats { top:46px; max-width:calc(100% - 28px); }
+  .viz-canvas .viz-search { width:150px; }
+}
 
 /* ============================================================================
    MOBILE RESPONSIVE — self-contained block. Added for the app-wide mobile pass.

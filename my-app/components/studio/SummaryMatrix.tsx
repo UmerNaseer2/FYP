@@ -123,7 +123,13 @@ export function SummaryMatrix({
                     </td>
                   ) : row.absent ? (
                     <td className="matrix-na" colSpan={4}>
-                      none on either side
+                      {/* A serial or identity column's sequence is compared
+                          with that column, so a schema of serial keys has
+                          no sequences of its own here even though the
+                          connection's card counts them. */}
+                      {row.label === "Sequences"
+                        ? "no standalone sequences on either side"
+                        : "none on either side"}
                     </td>
                   ) : (
                     <>

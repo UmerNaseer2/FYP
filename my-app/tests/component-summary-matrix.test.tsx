@@ -273,6 +273,14 @@ describe("what a row says", () => {
     expect(note(container, "Views")).toBe("none on either side");
     expect(cells(container, "Views")).toEqual([]);
   });
+
+  it("says which sequences an empty sequences row is about", () => {
+    // Serial and identity sequences are compared with their column, so a
+    // schema of serial keys reaches this cell while its connection card still
+    // counts those sequences. Plain "none" read as a contradiction of that.
+    const { container } = board();
+    expect(note(container, "Sequences")).toBe("no standalone sequences on either side");
+  });
 });
 
 describe("a category nobody compared", () => {

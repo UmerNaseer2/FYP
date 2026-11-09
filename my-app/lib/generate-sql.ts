@@ -56,6 +56,7 @@ import type { ChangeLevel } from "./version-detection";
 // The compare engine asks this same question when it decides whether to tell
 // the reader a range type has to be created by hand.
 import { rangeTypeIsCreatable } from "./postgres";
+import { sequenceOwnerTable } from "./snapshot-facts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -312,7 +313,8 @@ function sequencePlanFor(source: SchemaSnapshot): SequencePlan {
         // sequence has to exist in this schema and belong to this very column.
         const record = sequences.find((entry) => entry.name === name);
         if (!record) continue;
-        if (record.ownedByTable !== table.name) continue;
+        // Read as a name: a quoted owner ("AuditLog") is the same table.
+        if (sequenceOwnerTable(record, source.schema) !== table.name) continue;
         if (record.ownedByColumn !== col.name) continue;
       }
       const columns = plan.shorthand.get(table.name);

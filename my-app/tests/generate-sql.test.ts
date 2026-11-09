@@ -1782,6 +1782,49 @@ describe("generateMigration — when a column may be written as serial", () => {
     expect(sql.some((text) => text.includes("CREATE SEQUENCE"))).toBe(false);
   });
 
+  it("writes serial for a quoted table name, whose owner the catalog prints with quotes", () => {
+    // regclass prints "AuditLog" (capitals) and "order" (a reserved word) with
+    // their quotes. Read straight, that never matched the table's bare name,
+    // so the column got DEFAULT nextval(...) and no sequence was ever made.
+    const source = schema(
+      [
+        table("AuditLog", [
+          column("Id", {
+            nullable: false,
+            columnDefault: `nextval('"AuditLog_Id_seq"'::regclass)`,
+          }),
+        ]),
+      ],
+      {
+        sequences: [
+          untuned({ name: "AuditLog_Id_seq", ownedByTable: '"AuditLog"', ownedByColumn: "Id" }),
+        ],
+      }
+    );
+    const sql = runSql(source, EMPTY);
+
+    expect(columnLine(sql, "Id")).toBe('"Id" serial NOT NULL');
+    expect(sql.join("\n")).not.toContain("nextval");
+  });
+
+  it("still writes serial when an older snapshot kept the schema on a quoted owner", () => {
+    const source = schema(
+      [
+        table("order", [
+          column("id", { nullable: false, columnDefault: `nextval('order_id_seq'::regclass)` }),
+        ]),
+      ],
+      {
+        sequences: [
+          untuned({ name: "order_id_seq", ownedByTable: 'public."order"', ownedByColumn: "id" }),
+        ],
+      }
+    );
+    const sql = runSql(source, EMPTY);
+
+    expect(columnLine(sql, "id")).toBe('"id" serial NOT NULL');
+  });
+
   it("writes out both columns in full when two of them share one sequence", () => {
     // A shared pool of numbers is a deliberate design. Two `serial`s would give
     // each column a private sequence, and both would start handing out 1.

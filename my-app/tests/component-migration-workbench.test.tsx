@@ -772,11 +772,20 @@ describe("the two panes", () => {
     show({ rollbackWarnings: ["Dropped rows do not come back.", "A renamed column keeps its new name."] });
     await versionReady();
 
-    expect(screen.getByText(/read them before pushing/)).toHaveTextContent(
-      "The rollback has 2 warnings about what it cannot put back — read them before pushing."
+    expect(screen.getByText(/before pushing/)).toHaveTextContent(
+      "The rollback has 2 warnings about what it cannot put back. Read them before pushing."
     );
     fireEvent.click(screen.getByRole("button", { name: "Open the Rollback tab" }));
     expect(screen.getByRole("tab", { name: "Rollback" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("speaks of a single rollback warning as one thing", async () => {
+    show({ rollbackWarnings: ["Dropped rows do not come back."] });
+    await versionReady();
+
+    expect(screen.getByText(/before pushing/)).toHaveTextContent(
+      "The rollback has 1 warning about what it cannot put back. Read it before pushing."
+    );
   });
 });
 

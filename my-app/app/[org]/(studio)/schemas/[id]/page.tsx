@@ -337,6 +337,7 @@ export default function SchemaDetailPage({
         connectionName={detail.connection?.name ?? null}
         trackedSchemaId={detail.trackedSchemaId}
         compareHref={compareHref}
+        driftHref={orgPath(`/drift?tab=detail&schema=${detail.trackedSchemaId}`)}
         onRechecked={() => void load()}
       />
 
@@ -383,6 +384,7 @@ function DriftBanner({
   connectionName,
   trackedSchemaId,
   compareHref,
+  driftHref,
   onRechecked,
 }: {
   status: DriftStatus | null;
@@ -392,6 +394,8 @@ function DriftBanner({
   connectionName: string | null;
   trackedSchemaId: number;
   compareHref: string | null;
+  /** The drift screen's detail tab for this schema, where it is resolved. */
+  driftHref: string;
   onRechecked: () => void;
 }) {
   // Drifted — the loud amber hero state.
@@ -430,6 +434,15 @@ function DriftBanner({
                 "The live schema differs from its baseline — changes may have been applied out-of-band."}
             </p>
             <div className="flex items-center gap-2 mt-3 flex-wrap">
+              {/* The expected and actual schemas side by side, and the ways
+                  to resolve the drift, live on the drift screen. */}
+              <Link
+                href={driftHref}
+                className="btn btn-primary btn-sm"
+                title="Opens the drift screen for this schema: what changed since the baseline, and the ways to resolve it."
+              >
+                <AlertTriangleIcon size={13} /> Review drift
+              </Link>
               {/* Compare only ever runs on two live databases, so this link
                   cannot show the baseline snapshot — it used to promise
                   "expected ↔ actual", which is a view that lives on /drift. */}

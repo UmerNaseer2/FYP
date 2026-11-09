@@ -1052,8 +1052,20 @@ function SchemaCard({
         >
           Open
         </Link>
+        {/* A drifted schema needs the drift detail (what changed, and the
+            ways to resolve it) more than another check, so that is the
+            loud button on the drifted card. */}
+        {item.driftStatus === "drifted" && (
+          <Link
+            href={orgPath(`/drift?tab=detail&schema=${item.id}`)}
+            className="btn btn-primary btn-sm"
+            aria-label={`Review drift on ${item.schemaName}`}
+          >
+            Review drift
+          </Link>
+        )}
         <Button
-          variant={meta.hero ? "primary" : "secondary"}
+          variant="secondary"
           size="sm"
           onClick={onCheckDrift}
           disabled={checking || checkRefusal !== null}

@@ -15,6 +15,7 @@ import {
   type FixKind,
 } from "./perf-sql";
 import { countOf } from "./plural";
+import { identifierParts, sequenceOwnerTable } from "./snapshot-facts";
 
 /**
  * Performance advice read out of a schema's structure, and out of PostgreSQL's
@@ -200,50 +201,6 @@ export const STRUCTURE_LOCK_TIMEOUT_MS = 5_000;
 // column defaults, partition keys. The helpers below read just enough of it to
 // print correct SQL back, and return null for anything they do not recognise,
 // so the rule that asked skips (or explains in words) rather than guessing.
-
-/**
- * The names in a dotted SQL name:
- *
- *   shop.orders      →  ["shop", "orders"]
- *   "Order Lines"    →  ["Order Lines"]
- *   "a""b".c         →  ['a"b', "c"]
- *
- * A quoted part keeps its exact spelling, with "" read as one quote. An
- * unquoted part is taken as written: PostgreSQL only prints a name without
- * quotes when it is already lower case. Null for anything else — a space, a
- * bracket, an unfinished quote — which is how `name DESC` or `lower(email)` is
- * told apart from a plain column.
- */
-function identifierParts(text: string): string[] | null {
-  const parts: string[] = [];
-  let i = 0;
-  for (;;) {
-    let part = "";
-    if (text[i] === '"') {
-      i += 1;
-      for (;;) {
-        if (i >= text.length) return null; // the quote never closes
-        if (text[i] === '"') {
-          if (text[i + 1] !== '"') break; // the closing quote
-          i += 1; // "" stands for one quote inside the name
-        }
-        part += text[i];
-        i += 1;
-      }
-      i += 1; // past the closing quote
-    } else {
-      while (i < text.length && /[^\s".(),]/.test(text[i])) {
-        part += text[i];
-        i += 1;
-      }
-    }
-    if (part === "") return null;
-    parts.push(part);
-    if (i === text.length) return parts;
-    if (text[i] !== ".") return null;
-    i += 1;
-  }
-}
 
 /** The one name in `text`, or null when it is anything but a single name. */
 function singleName(text: string): string | null {
@@ -1471,11 +1428,8 @@ function sequenceBelongsTo(
 ): boolean {
   const record = snapshot.sequences?.find((s) => s.name === sequenceName);
   if (!record) return true;
-  if (record.ownedByTable === null || record.ownedByColumn !== columnName) return false;
-  const owner = identifierParts(record.ownedByTable);
-  if (owner === null) return false;
-  if (owner.length === 1) return owner[0] === tableName;
-  return owner.length === 2 && owner[0] === snapshot.schema && owner[1] === tableName;
+  if (record.ownedByColumn !== columnName) return false;
+  return sequenceOwnerTable(record, snapshot.schema) === tableName;
 }
 
 /**

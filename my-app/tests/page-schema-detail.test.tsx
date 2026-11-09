@@ -221,6 +221,28 @@ describe("a tracked schema's header", () => {
     ]);
   });
 
+  it("takes a drifted schema to the drift screen, where it is resolved", async () => {
+    // The expected and actual schemas side by side, and the ways to resolve
+    // the drift, live on /drift. Nothing on this screen used to lead there.
+    setRoutes([
+      {
+        match: "/api/lineage/7",
+        body: detail({
+          drift: {
+            status: "drifted",
+            summary: null,
+            detail: null,
+            detectedAt: "2026-05-02T10:00:00.000Z",
+          },
+        }),
+      },
+    ]);
+    show("7");
+
+    const link = await screen.findByRole("link", { name: /Review drift/ });
+    expect(link).toHaveAttribute("href", "/test-org/drift?tab=detail&schema=7");
+  });
+
   it("does not offer Compare once the connection has been deleted", async () => {
     // Compare runs against two live databases. With the connection gone there
     // is no live database on this side at all, so the link would open a screen

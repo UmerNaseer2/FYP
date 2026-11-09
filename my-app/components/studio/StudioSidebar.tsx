@@ -149,6 +149,8 @@ export function StudioSidebar({
                 key={item.href}
                 href={item.href}
                 className={`nav-item ${active ? "active" : ""}`}
+                // The highlight is only colour; a screen reader hears this.
+                aria-current={active ? "page" : undefined}
                 title={item.label}
               >
                 {item.icon}
