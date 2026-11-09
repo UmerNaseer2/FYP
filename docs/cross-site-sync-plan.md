@@ -66,3 +66,23 @@ The Swinburne network has to let the server reach Supabase's database port. That
 
 - Nothing is pushed until you say so.
 - Once on main, the server picks up the code, but nothing changes there until its `.env` is updated. That is your step on the server, since it needs the real settings, followed by the move script.
+
+## Live run, 2026-11-09
+
+One throwaway PostgreSQL stood in for Supabase, with a "Vercel" copy (no local store) and a "server" copy (its own local database, named "Swinburne server") both pointed at it. Real sign-in cookies, no bypass. 47 checks, all passed:
+
+- A connection added on the Vercel copy shows on the server copy, its password locked as before.
+- A `localhost` connection added on the server copy shows on both by name, "on Swinburne server". Its password is only in the server's own database, never in the shared one.
+- Compare and test work for it on the server. On Vercel they say "This database lives on Swinburne server". Editing it works only on the server.
+- Typing a `local:v1:` value as a password is refused everywhere, so nobody can borrow another connection's password.
+- A linked desktop is sent the local connection without its key.
+- Drift: a tick on Vercel checks only the cloud schema, a tick on the server checks the local one, and nothing is checked twice.
+- A Viewer sees both connections and cannot add one.
+- The move script: a trial changes nothing, `--apply` copies one cloud and one local connection and skips the duplicate, a second `--apply` adds nothing. After a restart the server opens the moved local connection with its old password.
+- Deleting works from any copy. Deleted on Vercel, the listing goes and the password stays on the server, unused. Deleted on the server, both go.
+- A copy with no `LOCAL_DATABASE_URL` saves even a `localhost` connection exactly as today.
+
+Two things worth knowing:
+
+- Both copies ran on one Mac, so the "cloud" connection was really a local database both could reach. That is fine for the test, since only the shared database's rows decide what each copy does.
+- The move script also asks the DNS. A name that does not resolve from the server (for example a typo, or a host only another network knows) is moved as local, so its password stays on the server. Re-add it on the website if it is really a cloud database.
