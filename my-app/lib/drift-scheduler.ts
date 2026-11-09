@@ -7,6 +7,7 @@ import { alertDriftChange } from "./push-alerts";
 import { driftAlertLine } from "./ai/drift-alert-line";
 import { pruneSchemaMetrics, METRIC_RETENTION_DAYS } from "./schema-metrics";
 import { sweepAgentRows } from "./agent-db";
+import { holdsLocalSecret } from "./local-secrets";
 import type { DriftSource } from "./drift-source";
 import {
   isDue,
@@ -319,10 +320,13 @@ async function loadEntries(): Promise<ScheduledSchema[]> {
     org_id: number;
     drift_check_interval_minutes: number | null;
     last_drift_check_at: string | null;
+    local_key: string | null;
   }>(
     `-- every organization: one schedule serves them all, and each check is then
      -- run inside the organization its schema belongs to
-     SELECT t.id, t.org_id, t.drift_check_interval_minutes, t.last_drift_check_at
+     SELECT t.id, t.org_id, t.drift_check_interval_minutes, t.last_drift_check_at,
+            (SELECT substring(c.password from '^local:v1:([^:]*):')
+               FROM connections c WHERE c.id = t.connection_id) AS local_key
        FROM tracked_schemas t
       WHERE t.drift_check_interval_minutes > 0
         -- a desktop's copy of a website connection is checked by the website
@@ -331,7 +335,10 @@ async function loadEntries(): Promise<ScheduledSchema[]> {
           SELECT 1 FROM connections c WHERE c.id = t.connection_id AND c.site_id IS NOT NULL
         )`
   );
-  return result.rows.map((row) => ({
+  // A local connection is checked only by the machine that keeps its password
+  // (lib/local-secrets). Another copy leaves it alone, so it stays due until
+  // that machine's next tick rather than failing here.
+  return result.rows.filter((row) => !row.local_key || holdsLocalSecret(row.local_key)).map((row) => ({
     orgId: row.org_id,
     trackedSchemaId: row.id,
     intervalMinutes: normalizeDriftInterval(row.drift_check_interval_minutes),
