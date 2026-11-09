@@ -56,6 +56,10 @@ class MoveError extends Error {}
  * The old number is never kept, since in the new database it could mean a
  * different row.
  *
+ * `cleared` names columns emptied on the way: numbers that only meant something
+ * where the row was, such as a desktop's note of which website connection a row
+ * copies.
+ *
  * organizations, profiles and identities need more care, so they have their own
  * code below.
  */
@@ -65,7 +69,7 @@ const ORG_TABLES = [
   { name: "memberships", renumber: false, links: { profile_id: "profiles" } },
   { name: "role_changes", renumber: true, links: {} },
   { name: "access_requests", renumber: true, links: {} },
-  { name: "connections", renumber: true, links: {} },
+  { name: "connections", renumber: true, links: {}, cleared: ["site_id", "site_version"] },
   { name: "tracked_schemas", renumber: true, links: { connection_id: "connections" } },
   { name: "snapshots", renumber: true, links: { tracked_schema_id: "tracked_schemas" } },
   {
@@ -501,6 +505,7 @@ async function moveTable(context, step) {
   for (const original of read.get(step.name)) {
     const row = step.rewrite ? step.rewrite({ ...original }) : { ...original };
     row.org_id = newOrgId;
+    for (const column of step.cleared ?? []) if (column in row) row[column] = null;
     let keep = true;
     for (const [column, table] of Object.entries(step.links)) {
       if (row[column] === null || row[column] === undefined) continue;
@@ -773,7 +778,8 @@ async function moveOrganization(options) {
 
     const [newOrgId] = await reserveIds(target, "organizations", 1);
     // Never the default: the new database has one of those, and only one may exist.
-    const newOrg = { ...org, id: newOrgId, slug: newSlug, is_default: "f" };
+    // A linked desktop's note of its website role stays behind with the link.
+    const newOrg = { ...org, id: newOrgId, slug: newSlug, is_default: "f", site_role: null };
     await insertRows(target, "organizations", columns.get("organizations").there, [newOrg]);
 
     const context = { read, ids: new Map(), target, columns, newOrgId, report, toKey };

@@ -60,3 +60,6 @@ Each step is committed after its tests and type checks pass. One run against a l
   - Desktop server: `organizations.site_role` keeps the role; `/api/desktop/sync` saves it with the list (null clears it, a role it cannot read is a 400 before anything is written). `lib/auth-guard.ts` holds the default organization to it while linked.
   - Desktop app: a changed list without a readable role is not taken. Unlinking, a 401, and a start with no saved link clear the copies and the role. Settings, Web site, shows a sync line: the website role, when it last synced, how many connections come from the website and how many stay on this computer, and that website connections cannot be changed while it is offline.
   - Checked: type checks, the full web suite (6,347 tests), and the desktop's 849 tests. Not yet run live.
+- 2026-11-08: the 9 database suites run on a throwaway PostgreSQL cluster (256 tests pass).
+  - They found two things the earlier steps missed: the move tool now clears a connection's `site_id` and `site_version` and the organization's `site_role` when it moves an organization to another database, since those only mean something on the linked desktop; and the agent database test now expects `shared` and `drift`.
+  - New: a real-database check that the website role is kept, read back and cleared, and that a kept role it cannot read is refused.

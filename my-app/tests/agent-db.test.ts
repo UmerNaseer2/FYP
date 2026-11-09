@@ -264,7 +264,7 @@ describeWithDatabase("linked computers in a real metadata database", () => {
   });
 
   describe("the connections a computer shares", () => {
-    it("replaces the list, and keeps no more than names and environments", async () => {
+    it("replaces the list, and keeps no more than names, environments, sharing and drift results", async () => {
       const { caller } = await linked(orgA, ada);
       await agents.replaceAgentConnections(caller.id, [
         { id: 2, name: "Bookshop prod", environment: "prod" },
@@ -275,19 +275,22 @@ describeWithDatabase("linked computers in a real metadata database", () => {
         { id: 3, name: "New", environment: "unset" },
       ]);
       const [computer] = await agents.listComputers(orgA.id, ada.id);
+      // A list from before computers said which they share counts every one as shared.
       expect(computer.connections).toEqual([
-        { id: 1, name: "Bookshop dev renamed", environment: "staging" },
-        { id: 3, name: "New", environment: "unset" },
+        { id: 1, name: "Bookshop dev renamed", environment: "staging", shared: true, drift: [] },
+        { id: 3, name: "New", environment: "unset", shared: true, drift: [] },
       ]);
       const columns = await rows<{ column_name: string }>(
         `SELECT column_name FROM information_schema.columns WHERE table_name = 'agent_connections'`
       );
       expect(columns.map((column) => column.column_name).sort()).toEqual([
         "agent_id",
+        "drift",
         "environment",
         "id",
         "local_id",
         "name",
+        "shared",
       ]);
       await agents.replaceAgentConnections(caller.id, []);
       expect((await agents.listComputers(orgA.id, ada.id))[0].connections).toEqual([]);

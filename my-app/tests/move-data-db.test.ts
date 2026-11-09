@@ -17,7 +17,7 @@ import { testDatabaseUrl } from "./helpers/test-database";
 
 type Row = Record<string, unknown>;
 type Source = object;
-type Step = { name: string; renumber: boolean; links: Record<string, string> };
+type Step = { name: string; renumber: boolean; links: Record<string, string>; cleared?: string[] };
 type Report = {
   applied: boolean;
   moved: Record<string, number>;
@@ -258,6 +258,11 @@ describeWithDatabase("moving an organization between two real metadata databases
       [docker]
     );
     const rivalBox = await connection(rival, "Rival box", "203.0.113.9", "made-up-4", null);
+    // As on a desktop linked to a website: a copy of the website's connection 31, and the person's website role.
+    await db.query(`UPDATE connections SET site_id = 31, site_version = 4 WHERE id = $1`, [pub]);
+    await db.query(`UPDATE organizations SET site_role = '{"role":"viewer","label":"Viewer","permissions":[]}' WHERE id = $1`, [
+      acme,
+    ]);
 
     const tracked = (org: string, conn: string) =>
       id(
@@ -470,7 +475,10 @@ describeWithDatabase("moving an organization between two real metadata databases
           AND column_name LIKE '%\\_id' AND column_name <> 'org_id'`
     );
     const unfollowed = idColumns
-      .filter((row) => steps.has(row.table_name) && !(row.column_name in steps.get(row.table_name)!.links))
+      .filter((row) => {
+        const step = steps.get(row.table_name);
+        return step !== undefined && !(row.column_name in step.links) && !(step.cleared ?? []).includes(row.column_name);
+      })
       .map((row) => `${row.table_name}.${row.column_name}`);
     expect(unfollowed).toEqual([]);
 
@@ -706,10 +714,13 @@ describeWithDatabase("moving an organization between two real metadata databases
 
     // Passwords: locked with the new key, and none at all for private hosts.
     const connections = await one(
-      `SELECT name, password, connection_string, last_tested_at, last_test_ok
+      `SELECT name, password, connection_string, last_tested_at, last_test_ok, site_id, site_version
          FROM connections WHERE org_id = $1 ORDER BY name`
     );
     const [docker, pub, sneaky] = connections;
+    // A desktop's note of the website connection it copies, and its website role, mean nothing here.
+    expect(connections.map((row) => [row.site_id, row.site_version])).toEqual([[null, null], [null, null], [null, null]]);
+    expect((await one(`SELECT site_role FROM organizations WHERE id = $1`))[0].site_role).toBeNull();
     expect(pub.password.startsWith("enc:v1:")).toBe(true);
     expect(tool.openSecret(pub.password, NEW_KEY)).toBe("made-up-1");
     expect(newSite((store) => [store.decryptSecret(pub.password), store.decryptSecret(pub.connection_string)])).toEqual([
