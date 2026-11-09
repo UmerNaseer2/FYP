@@ -168,13 +168,16 @@ type Conflict = {
   message: string;
 };
 
-/** One of the person's linked computers and the connections only it holds (website only). */
+/** A computer linked in this organization and the connections only it holds (website only). */
 type Computer = {
   id: number;
   name: string;
+  /** Who linked it. */
+  owner: string;
+  mine: boolean;
   online: boolean;
   lastSeenAt: string | null;
-  connections: { id: number; name: string; environment: string | null; shared: boolean }[];
+  connections: { id: number; name: string; environment: string | null }[];
 };
 
 type RowResult =
@@ -406,7 +409,7 @@ export default function ConnectionsPage() {
   // the list. Undefined until the first read, which needs no extra reload.
   const seenChange = useRef<number | null | undefined>(undefined);
 
-  // On the website: the person's own linked computers and what they hold.
+  // On the website: every computer linked in the organization and what it holds.
   const [computers, setComputers] = useState<Computer[]>([]);
 
   // The machine this copy runs on, when it keeps local connections' passwords
@@ -489,14 +492,14 @@ export default function ConnectionsPage() {
     return () => window.clearInterval(timer);
   }, [bridge, refreshSync]);
 
-  // On the website: the connections the person keeps on their own linked
-  // computers. They never come here, but comparing them runs through the
-  // computer, so the page says they exist. Names only, and nothing on a failure.
-  const mayCompare = !sessionLoading && can("compare:read");
+  // On the website: the connections kept in the desktop app on every computer
+  // linked in the organization. Their passwords never come here, but everyone
+  // sees they exist and where they live. Names only, and nothing on a failure.
+  const mayList = !sessionLoading && can("connections:read");
   useEffect(() => {
-    if (bridge || getDesktopBridge() || !mayCompare) return;
+    if (bridge || getDesktopBridge() || !mayList) return;
     let live = true;
-    apiFetch("/api/computers?connections=all")
+    apiFetch("/api/connections/computers")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (live && data && Array.isArray(data.computers)) setComputers(data.computers);
@@ -505,7 +508,7 @@ export default function ConnectionsPage() {
     return () => {
       live = false;
     };
-  }, [bridge, mayCompare]);
+  }, [bridge, mayList]);
 
   /**
    * Why a local connection cannot be used here, or null when it can: its
@@ -1815,19 +1818,19 @@ export default function ConnectionsPage() {
           </div>
         )}
 
-        {/* On the website: what the person keeps in the desktop app on their
-            own computers. Those never come here (their passwords stay on the
-            computer), but they exist, and comparing them runs through it. */}
+        {/* On the website: what is kept in the desktop app on each computer
+            linked in the organization. Those never come here (their passwords
+            stay on the computer), but everyone sees where they live. */}
         {computersWithConnections.length > 0 && (
           <div className="mt-8">
             <div className="flex items-center gap-2">
               <MonitorIcon size={14} />
-              <h2 className="text-[14px] font-semibold">On your computers</h2>
+              <h2 className="text-[14px] font-semibold">On linked computers</h2>
             </div>
             <p className="help max-w-[70ch] mt-1 mb-3">
-              Connections kept in the desktop app on your own computers. Only you see this list.
-              Their passwords stay on that computer, so they can&apos;t be changed here, and comparing
-              them runs through the computer while it is on.
+              Connections kept in the desktop app on computers linked to {orgName}. Their passwords
+              stay on that computer, so they can&apos;t be changed or used here. Open Schema Studio on
+              that computer to use them. Its owner can also compare them from here while it is on.
             </p>
             <div className="card overflow-hidden">
               {computersWithConnections.map((computer, index) => (
@@ -1838,6 +1841,9 @@ export default function ConnectionsPage() {
                 >
                   <div className="flex items-center gap-2 flex-wrap text-[13px]">
                     <span className="font-medium">{computer.name}</span>
+                    <span className="text-[12px]" style={{ color: "var(--text-3)" }}>
+                      {computer.mine ? "yours" : computer.owner}
+                    </span>
                     {computer.online ? (
                       <span className="pill pill-sync">
                         <span className="dot" />

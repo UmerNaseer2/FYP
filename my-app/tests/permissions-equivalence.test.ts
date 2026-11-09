@@ -93,6 +93,8 @@ const ADDED: Record<string, Gate> = {
   "POST /api/compare/phone": { kind: "permission", keys: ["compare:read"] },
   "POST /api/invites/accept": { kind: "signed-in" },
   "GET /api/connections/phone": { kind: "permission", keys: ["compare:read", "visualizer:read"] },
+  "GET /api/connections/machine": { kind: "permission", keys: ["connections:read", "connections:create", "connections:update"] },
+  "GET /api/connections/computers": { kind: "permission", keys: ["connections:read"] },
   "GET /api/deploy/approvals/phone": { kind: "permission", keys: ["approvals:read"] },
   "GET /api/deploy/approvals/[id]/phone": { kind: "permission", keys: ["approvals:read"] },
   "GET /api/deploy/phone": { kind: "permission", keys: ["deploy:read"] },

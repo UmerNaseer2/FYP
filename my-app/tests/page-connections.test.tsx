@@ -667,12 +667,12 @@ describe("for a role that may not add, change or delete connections", () => {
     // that shows them.
     expect(document.querySelector(".drawer")).not.toHaveClass("open");
     expect(deleteDialog()).not.toHaveClass("open");
-    // The list of the person's own computers and this machine's name are
-    // reads, asked for on load.
+    // The org's linked computers and this machine's name are reads, asked
+    // for on load.
     expect(
       fetchCalls
         .map((c) => c.url)
-        .filter((url) => !url.startsWith("/api/computers") && url !== "/api/connections/machine")
+        .filter((url) => url !== "/api/connections/computers" && url !== "/api/connections/machine")
     ).toEqual([
       "/api/connections",
     ]);
@@ -1386,43 +1386,61 @@ describe("somebody changed it first, on the website", () => {
   });
 });
 
-describe("the person's own computers, on the website", () => {
-  it("lists what each linked computer keeps, by name only", async () => {
-    setRoutes([
-      { match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] },
+describe("the organization's linked computers, on the website", () => {
+  const COMPUTERS = {
+    computers: [
       {
-        match: "/api/computers?connections=all",
-        body: {
-          computers: [
-            {
-              id: 1,
-              name: "Work laptop",
-              online: false,
-              lastSeenAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
-              connections: [{ id: 5, name: "Laptop Postgres", environment: "dev", shared: false }],
-            },
-            { id: 2, name: "Spare", online: true, lastSeenAt: null, connections: [] },
-          ],
-        },
+        id: 1,
+        name: "Work laptop",
+        owner: "Ada",
+        mine: true,
+        online: false,
+        lastSeenAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+        connections: [{ id: 5, name: "Laptop Postgres", environment: "dev" }],
       },
+      {
+        id: 3,
+        name: "Bea's Mac",
+        owner: "Bea",
+        mine: false,
+        online: true,
+        lastSeenAt: new Date().toISOString(),
+        connections: [{ id: 2, name: "Home MySQL", environment: "staging" }],
+      },
+      { id: 2, name: "Spare", owner: "Ada", mine: true, online: true, lastSeenAt: null, connections: [] },
+    ],
+  };
+
+  it("lists what each linked computer keeps, by name only, with whose it is", async () => {
+    setRoutes([
+      { match: "/api/connections/computers", body: COMPUTERS },
+      { match: "/api/connections", body: [conn({ id: 1, name: "Orders DB" })] },
     ]);
     render(<ConnectionsPage />);
     await loaded();
 
-    expect(await screen.findByRole("heading", { name: "On your computers" })).toBeInTheDocument();
-    const list = screen.getByRole("list", { name: "Connections on Work laptop" });
-    expect(within(list).getByText("Laptop Postgres")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "On linked computers" })).toBeInTheDocument();
+    const mine = screen.getByRole("list", { name: "Connections on Work laptop" });
+    expect(within(mine).getByText("Laptop Postgres")).toBeInTheDocument();
+    expect(screen.getByText("yours")).toBeInTheDocument();
     expect(screen.getByText("last seen 3h ago")).toBeInTheDocument();
+    const theirs = screen.getByRole("list", { name: "Connections on Bea's Mac" });
+    expect(within(theirs).getByText("Home MySQL")).toBeInTheDocument();
+    expect(screen.getByText("Bea")).toBeInTheDocument();
     // A computer that holds nothing is left out.
     expect(screen.queryByText("Spare")).toBeNull();
   });
 
-  it("does not ask for a role that may not compare", async () => {
+  it("shows them to a role that may only read connections", async () => {
     setCustomRole("reader", "Reader", ["connections:read"]);
-    setRoutes([{ match: "/api/connections", body: [] }]);
+    setRoutes([
+      { match: "/api/connections/computers", body: COMPUTERS },
+      { match: "/api/connections", body: [] },
+    ]);
     render(<ConnectionsPage />);
     await loaded();
-    await flushAsync();
+    expect(await screen.findByRole("heading", { name: "On linked computers" })).toBeInTheDocument();
+    // The person's own computers list (for comparing) is not asked for.
     expect(fetchCalls.some((c) => c.url.startsWith("/api/computers"))).toBe(false);
   });
 });

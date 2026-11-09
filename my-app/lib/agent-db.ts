@@ -310,6 +310,65 @@ export async function listComputers(orgId: number, profileId: number, everything
   }));
 }
 
+/** One linked computer as the whole organization sees it. */
+export type OrgComputer = {
+  id: number;
+  name: string;
+  /** Who linked it, by their name. */
+  owner: string;
+  /** True for the person asking. */
+  mine: boolean;
+  online: boolean;
+  lastSeenAt: string | null;
+  /** The connections kept only on that computer, by name and environment. Nothing else leaves it. */
+  connections: { id: number; name: string; environment: string }[];
+};
+
+/**
+ * Every computer linked in this organization, with the connections only it
+ * holds. Everyone who can read connections sees these by name, so a laptop's
+ * databases are listed for the org the same way the server's local ones are.
+ * Names and environments only: comparing or removing a computer stays its
+ * owner's (listComputers, removeComputer).
+ */
+export async function listOrgComputers(orgId: number, profileId: number | null): Promise<OrgComputer[]> {
+  await syncMetadataTables();
+  const { rows } = await pool.query<{
+    id: number;
+    name: string;
+    owner: string;
+    mine: boolean;
+    online: boolean;
+    last_seen_at: Date | null;
+    connections: OrgComputer["connections"];
+  }>(
+    `SELECT a.id, a.name, a.last_seen_at,
+            COALESCE(NULLIF(btrim(p.name), ''), 'Someone in this organization') AS owner,
+            COALESCE(a.profile_id = $2, false) AS mine,
+            COALESCE(a.last_seen_at > now() - make_interval(secs => $3), false) AS online,
+            COALESCE(
+              (SELECT json_agg(json_build_object('id', c.local_id, 'name', c.name, 'environment', c.environment)
+                               ORDER BY c.name, c.local_id)
+                 FROM agent_connections c WHERE c.agent_id = a.id),
+              '[]'
+            ) AS connections
+       FROM agents a
+       LEFT JOIN profiles p ON p.id = a.profile_id
+      WHERE a.org_id = $1
+      ORDER BY (a.profile_id = $2) DESC NULLS LAST, owner, a.name, a.id`,
+    [orgId, profileId, ONLINE_WITHIN_SECONDS]
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    owner: row.owner,
+    mine: row.mine,
+    online: row.online,
+    lastSeenAt: row.last_seen_at ? row.last_seen_at.toISOString() : null,
+    connections: row.connections,
+  }));
+}
+
 /** Unlink one of this person's computers. False if it is not theirs. */
 export async function removeComputer(orgId: number, profileId: number, agentId: number): Promise<boolean> {
   await syncMetadataTables();

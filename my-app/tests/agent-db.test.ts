@@ -303,6 +303,21 @@ describeWithDatabase("linked computers in a real metadata database", () => {
       expect(await agents.listComputers(orgB.id, ada.id)).toEqual([]);
     }, SLOW);
 
+    it("lists every computer in the organization by name, with whose it is", async () => {
+      const { caller } = await linked(orgA, ada);
+      await agents.replaceAgentConnections(caller.id, [{ id: 7, name: "Laptop DB", environment: "dev", shared: false }]);
+      await db.query(`UPDATE profiles SET name = 'Ada' WHERE id = $1`, [ada.id]);
+      // Bea sees Ada's computer and what it holds, by name and environment only.
+      const [seen] = await agents.listOrgComputers(orgA.id, bea.id);
+      expect(seen).toMatchObject({ name: "Ada's laptop", owner: "Ada", mine: false });
+      expect(seen.connections).toEqual([{ id: 7, name: "Laptop DB", environment: "dev" }]);
+      expect((await agents.listOrgComputers(orgA.id, ada.id))[0].mine).toBe(true);
+      // Nobody signed in still gets the list, marked as no one's.
+      expect((await agents.listOrgComputers(orgA.id, null))[0].mine).toBe(false);
+      // Another organization sees none of it.
+      expect(await agents.listOrgComputers(orgB.id, bea.id)).toEqual([]);
+    }, SLOW);
+
     it("says whether a computer was heard from lately", async () => {
       const { caller } = await linked(orgA, ada);
       expect((await agents.listComputers(orgA.id, ada.id))[0].online).toBe(true);
