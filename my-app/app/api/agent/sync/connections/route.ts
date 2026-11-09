@@ -5,6 +5,7 @@ import { hasPermission, refusalMessage, type PermissionKey } from "@/lib/permiss
 import { runConnectionTest } from "@/lib/connection-config";
 import { createConnection, deleteConnection, updateConnection, type WriteAnswer } from "@/lib/connection-writes";
 import { sslModeFromLegacyBoolean, toSslMode } from "@/lib/connection-validate";
+import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "@/lib/local-secrets";
 
 /**
  * A linked desktop saving one of the website's connections, as its person.
@@ -60,6 +61,10 @@ export async function POST(request: NextRequest) {
     body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""
       ? toSslMode(body.ssl_mode)
       : sslModeFromLegacyBoolean(body.ssl);
+  // Only the server writes a local connection's marker (lib/local-secrets).
+  if (typedLocalMarker(body.password, body.connection_string)) {
+    return NextResponse.json({ saved: false, reason: TYPED_MARKER_MESSAGE });
+  }
   const test = await runConnectionTest({
     host: typeof body.host === "string" ? body.host : "",
     port: typeof body.port === "number" || typeof body.port === "string" ? body.port : null,

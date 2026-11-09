@@ -31,9 +31,13 @@ describe("metadataWantsSsl", () => {
     const compose = fs.readFileSync(path.join(__dirname, "..", "..", "docker-compose.yml"), "utf8");
     const line = compose.split("\n").find((l) => l.trim().startsWith("DATABASE_URL_A:"));
     expect(line).toBeDefined();
-    // The ${...:-default} parts are compose syntax; fill them the way compose
-    // would with nothing set, then ask the rule.
-    const url = line!.split("DATABASE_URL_A:")[1].trim().replace(/\$\{[A-Z_]+:-([^}]*)\}/g, "$1");
+    // The ${...:-default} parts are compose syntax, and they nest; fill them
+    // the way compose would with nothing set, innermost first, then ask the rule.
+    let url = line!.trim().slice("DATABASE_URL_A:".length).trim();
+    for (let filled = ""; filled !== url; ) {
+      filled = url;
+      url = url.replace(/\$\{[A-Z_]+:-([^{}]*)\}/g, "$1");
+    }
     expect(url).toContain("@db:5432/");
     expect(metadataWantsSsl(url)).toBe(false);
   });

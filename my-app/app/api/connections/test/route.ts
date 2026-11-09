@@ -4,6 +4,7 @@ import { hasPermission, refusalMessage } from "@/lib/permissions";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
 import { editElsewhereMessage, savedSecrets } from "@/lib/connection-writes";
+import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "@/lib/local-secrets";
 import {
   REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
@@ -48,6 +49,9 @@ export async function POST(request: NextRequest) {
       body.ssl_mode !== undefined && body.ssl_mode !== null && body.ssl_mode !== ""
         ? toSslMode(body.ssl_mode)
         : sslModeFromLegacyBoolean(body.ssl);
+
+    // Only the server writes a local connection's marker (lib/local-secrets).
+    if (typedLocalMarker(body.password, body.connection_string)) return failure(TYPED_MARKER_MESSAGE, 400);
 
     // A new connection: test exactly what was typed.
     let password = body.password;

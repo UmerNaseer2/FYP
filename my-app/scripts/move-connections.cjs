@@ -266,8 +266,8 @@ async function moveConnections(options) {
 
       const columns = Object.keys(item.row).filter((name) => !NOT_COPIED.has(name) && targetColumns.has(name));
       const values = columns.map((name) => item.row[name]);
-      columns.push("org_id", "password", "connection_string");
-      values.push(String(orgId), password, connectionString);
+      columns.push("password", "connection_string");
+      values.push(password, connectionString);
       if (targetColumns.has("version")) {
         columns.push("version");
         values.push("1");
@@ -277,9 +277,9 @@ async function moveConnections(options) {
         values.push(new Date().toISOString());
       }
       await target.query(
-        `INSERT INTO public.connections (${columns.map((name) => `"${name.replace(/"/g, '""')}"`).join(", ")})
-         VALUES (${columns.map((_, index) => `$${index + 1}`).join(", ")})`,
-        values
+        `INSERT INTO public.connections (org_id, ${columns.map((name) => `"${name.replace(/"/g, '""')}"`).join(", ")})
+         VALUES ($1, ${columns.map((_, index) => `$${index + 2}`).join(", ")})`,
+        [String(orgId), ...values]
       );
       if (place !== null) places.add(place);
       else unplacedNames.add((item.row.name ?? "").trim().toLowerCase());

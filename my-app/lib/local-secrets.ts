@@ -83,6 +83,29 @@ export function parseLocalMarker(value: string | null | undefined): { key: strin
   return { key: rest.slice(0, colon), machine: rest.slice(colon + 1) || "another machine" };
 }
 
+/**
+ * True when a value someone typed would read as a marker. Nobody may type one:
+ * on the machine that holds the key it would dial another connection's
+ * password to whatever host the typist chose.
+ */
+export function typedLocalMarker(...values: unknown[]): boolean {
+  return values.some((value) => typeof value === "string" && value.trimStart().startsWith(LOCAL_MARKER_PREFIX));
+}
+
+export const TYPED_MARKER_MESSAGE = `A password or connection string can't start with "${LOCAL_MARKER_PREFIX}".`;
+
+/** Stands in for the key when a marker leaves this database (see markerWithoutKey). */
+const HIDDEN_KEY = "elsewhere";
+
+/**
+ * A marker as another computer may see it: where the connection lives, without
+ * the key that finds its password. The key stays in the shared database.
+ */
+export function markerWithoutKey(value: string): string {
+  const marker = parseLocalMarker(value);
+  return `${LOCAL_MARKER_PREFIX}${HIDDEN_KEY}:${marker?.machine ?? "another machine"}`;
+}
+
 /** True when this machine holds the secrets for the connection with this key. */
 export function holdsLocalSecret(key: string | null | undefined): boolean {
   return typeof key === "string" && cache().entries.has(key);

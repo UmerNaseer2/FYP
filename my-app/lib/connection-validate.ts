@@ -1,6 +1,7 @@
 import { hasPostgresScheme, parsePostgresUri } from "./parse-uri";
 import { ENVIRONMENTS, toEnvironment, type Environment } from "./environments";
 import { toExecuteRole, type ExecuteRole } from "./connection-access";
+import { TYPED_MARKER_MESSAGE, typedLocalMarker } from "./local-secrets";
 import {
   IMPLEMENTED_DIALECTS,
   dialect,
@@ -291,6 +292,10 @@ export function validateConnection(
   const execute_role = toExecuteRole(rawExecuteRole);
 
   const usingUri = connection_string !== "";
+
+  // Only the server writes a local connection's marker (lib/local-secrets).
+  if (typedLocalMarker(password)) errors.password = TYPED_MARKER_MESSAGE;
+  if (typedLocalMarker(connection_string)) errors.connection_string = TYPED_MARKER_MESSAGE;
 
   if (rawEnvironment !== "" && rawEnvironment.toLowerCase() !== environment) {
     errors.environment =

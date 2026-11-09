@@ -268,6 +268,20 @@ describe("GET /api/agent/sync", () => {
     expect(ran(/md5\(/)[0][1]).toEqual([TEST_ORG.id]);
   });
 
+  it("sends a local connection as where it lives, without the key that finds its password", async () => {
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockImplementation(async (text: string) => {
+      if (/md5\(/.test(text)) return { rows: [{ md5 }] };
+      if (/FROM connections WHERE org_id = \$1 ORDER BY id/.test(text)) {
+        return { rows: [{ ...ROWS[0], password: "local:v1:5f0c7a2e-made-up-key:Swinburne server" }] };
+      }
+      return { rows: [] };
+    });
+    const result = await read();
+    expect(result.body.connections[0].password).toBe("local:v1:elsewhere:Swinburne server");
+    expect(JSON.stringify(result.body)).not.toContain("made-up-key");
+  });
+
   it("sends a viewer the connections without any secret, and a new fingerprint", async () => {
     mockAgentPrincipal = principalFor("viewer");
     setUpSync();
@@ -337,6 +351,16 @@ describe("saving through the link", () => {
     mockTest.mockResolvedValue({ ok: false, error: "Could not reach db.example.com." });
     const result = await add(NEW);
     expect(result.body).toEqual({ saved: false, reason: "Could not reach db.example.com." });
+    expect(ran(/INSERT INTO connections/)).toHaveLength(0);
+  });
+
+  it("refuses a typed local marker before dialling anything", async () => {
+    setUp();
+    mockTest.mockReset();
+    const result = await add({ ...NEW, password: "local:v1:made-up-key:Swinburne server" });
+    expect(result.body.saved).toBe(false);
+    expect(result.body.reason).toMatch(/can't start with "local:v1:"/);
+    expect(mockTest).not.toHaveBeenCalled();
     expect(ran(/INSERT INTO connections/)).toHaveLength(0);
   });
 
