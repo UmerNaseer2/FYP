@@ -29,9 +29,11 @@ import {
   readCloudJob,
   readDriftAnswer,
   readOwnConnections,
+  readSiteRole,
   type CloudFetch,
   type CloudStore,
   type OwnConnection,
+  type SiteRole,
   type SyncHost,
 } from "../main/cloud-agent";
 import type { Clock } from "../main/clock";
@@ -591,7 +593,8 @@ test("a saved link starts asking at once", async () => {
   const { agent, changes, pass, site } = rig({ loaded: SAVED });
   agent.start();
   await pass(0);
-  assert.deepEqual(agent.view(), { state: "linked", origin: ORIGIN, orgName: "Acme Data", linkedAt: LINKED.linkedAt, problem: null });
+  // No sync host in this rig, so no sync line either.
+  assert.deepEqual(agent.view(), { state: "linked", origin: ORIGIN, orgName: "Acme Data", linkedAt: LINKED.linkedAt, problem: null, sync: null });
   assert.equal(site.count(NEXT), 1);
   assert.equal(site.count(PUBLISH), 1);
   assert.ok(changes.count >= 1);
@@ -1153,7 +1156,12 @@ const SYNC_AFTER = `${SYNC}?rev=r1`;
 const WRITE = "/api/agent/sync/connections";
 /** A connection the site keeps. Made up, and with no password: the repo is public. */
 const SITE_ROW = { id: 31, name: "Shop", host: "db.example.com", version: 4 };
-const LISTED: SiteAnswer = { status: 200, body: { same: false, rev: "r1", withSecrets: true, connections: [SITE_ROW] } };
+/** The person's role on the site, as it comes with each changed list. */
+const SITE_ROLE: SiteRole = { role: "editor", label: "Editor", permissions: ["connections:read", "connections:update"] };
+const LISTED: SiteAnswer = {
+  status: 200,
+  body: { same: false, rev: "r1", withSecrets: true, connections: [SITE_ROW], role: SITE_ROLE },
+};
 const SAME: SiteAnswer = { status: 200, body: { same: true, rev: "r1" } };
 /** A new connection whose database is out on the internet, so the site decides. */
 const OUT_THERE = { name: "Shop", host: "db.example.com", port: 5432, database_name: "shop", username: "shop_owner" };
@@ -1165,12 +1173,14 @@ function fakeSync(own: OwnConnection[] = [
   { id: 3, name: "Laptop", environment: "dev" },
 ]) {
   const applied: unknown[][] = [];
+  const roles: (SiteRole | null)[] = [];
   const adopted: [number, number, number][] = [];
   const state = { own, exported: new Map<number, Record<string, unknown>>(), failApply: false };
   const host: SyncHost = {
-    apply: async (connections) => {
+    apply: async (connections, role) => {
       if (state.failApply) throw new Error("The disk is full.");
       applied.push([...connections]);
+      roles.push(role);
     },
     local: async () => state.own.map((row) => ({ ...row })),
     export: async (id) => state.exported.get(id) ?? null,
@@ -1179,7 +1189,7 @@ function fakeSync(own: OwnConnection[] = [
       return true;
     },
   };
-  return { host, applied, adopted, state };
+  return { host, applied, roles, adopted, state };
 }
 
 /** A linked computer with the sync, its first sync done. */
@@ -1269,6 +1279,7 @@ test("a 401 to the sync ends the link and clears the site's connections from thi
   assert.equal(agent.view().state, "off");
   assert.equal(store.removed, 1);
   assert.deepEqual(sync.applied, [[]]);
+  assert.deepEqual(sync.roles, [null], "the website role goes with the link");
   assert.deepEqual(agent.syncStatus(), { linked: false, changedAt: agent.syncStatus().changedAt });
   assert.notEqual(agent.syncStatus().changedAt, null);
 });
@@ -1286,12 +1297,90 @@ test("a list from the site that cannot be read changes nothing here", async () =
   agent.stop();
 });
 
+test("the person's website role comes down with the list, and Settings shows how the sync stands", async () => {
+  const { agent, changes, clock, pass, site, sync } = await synced();
+  assert.deepEqual(sync.roles, [SITE_ROLE]);
+  const view = agent.view();
+  assert.equal(view.state, "linked");
+  assert.deepEqual(view.state === "linked" && view.sync, { role: "Editor", lastSyncedAt: clock.time, website: 1, here: 2 });
+  // A new role comes with the next changed list; an unchanged one sends nothing.
+  const before = changes.count;
+  const viewer: SiteRole = { role: "viewer", label: "Viewer", permissions: ["connections:read"] };
+  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [], role: viewer } });
+  await pass(IDLE_POLL_MS);
+  assert.deepEqual(sync.roles, [SITE_ROLE, viewer]);
+  const later = agent.view();
+  assert.deepEqual(later.state === "linked" && later.sync, { role: "Viewer", lastSyncedAt: clock.time, website: 0, here: 2 });
+  assert.ok(changes.count > before, "Settings hears of each sync");
+  agent.stop();
+});
+
+test("a changed list without the person's website role, or with one that cannot be read, changes nothing here", async () => {
+  for (const role of [undefined, null, "editor", { role: "", label: "Editor", permissions: [] }, { ...SITE_ROLE, permissions: "all" }]) {
+    const sync = fakeSync();
+    const { agent, pass, site } = rig({ loaded: SAVED, sync: sync.host });
+    newLogLines();
+    site.set(SYNC, { status: 200, body: { same: false, rev: "r1", connections: [SITE_ROW], role } });
+    agent.start();
+    await pass(0);
+    assert.equal(sync.applied.length, 0, JSON.stringify(role));
+    assert.equal(agent.syncStatus().changedAt, null);
+    const view = agent.view();
+    assert.deepEqual(view.state === "linked" && view.sync, { role: null, lastSyncedAt: null, website: null, here: null });
+    assert.match(newLogLines(), /Could not bring the site's connections up to date/);
+    agent.stop();
+  }
+});
+
+test("a start with no saved link clears any copies, and website role, an earlier unlink left behind", async () => {
+  const sync = fakeSync();
+  const { agent, pass, site } = rig({ sync: sync.host });
+  agent.start();
+  await pass(0);
+  assert.deepEqual(sync.applied, [[]]);
+  assert.deepEqual(sync.roles, [null]);
+  assert.equal(site.calls.length, 0);
+  // When this computer's server cannot do it, the next start tries again, with no warning.
+  const failing = fakeSync();
+  failing.state.failApply = true;
+  const second = rig({ sync: failing.host });
+  newLogLines();
+  second.agent.start();
+  await second.pass(0);
+  const lines = newLogLines();
+  assert.match(lines, /Trying again at the next start/);
+  assert.match(lines, /\] info Could not check this computer/);
+  assert.doesNotMatch(lines, /\] warn /);
+});
+
+test("readSiteRole takes the site's role and turns away anything else", () => {
+  assert.deepEqual(readSiteRole({ role: " editor ", label: " ", permissions: ["a"] }), { role: "editor", label: "editor", permissions: ["a"] });
+  assert.deepEqual(readSiteRole(SITE_ROLE), SITE_ROLE);
+  for (const bad of [
+    null,
+    [],
+    "editor",
+    { role: "", label: "x", permissions: [] },
+    { role: "x".repeat(65), label: "x", permissions: [] },
+    { role: "editor", label: 4, permissions: [] },
+    { role: "editor", label: "x".repeat(101), permissions: [] },
+    { role: "editor", label: "x", permissions: "all" },
+    { role: "editor", label: "x", permissions: Array.from({ length: 201 }, () => "a") },
+    { role: "editor", label: "x", permissions: [7] },
+    { role: "editor", label: "x", permissions: ["x".repeat(65)] },
+  ]) {
+    assert.equal(readSiteRole(bad), null, JSON.stringify(bad));
+  }
+});
+
 test("unlinking clears the site's connections from this computer", async () => {
   const { agent, site, sync } = await synced();
   agent.unlink();
   await settle();
   assert.equal(site.count(SELF), 1);
   assert.deepEqual(sync.applied.at(-1), []);
+  assert.equal(sync.roles.at(-1), null, "the website role goes with the link");
+  assert.equal(agent.view().state, "off");
   assert.deepEqual(agent.syncStatus(), { linked: false, changedAt: agent.syncStatus().changedAt });
 });
 
@@ -1313,7 +1402,7 @@ test("a new connection at a home address stays here without the site hearing of 
 test("a new connection the site can reach is kept there, and comes down at once", async () => {
   const { agent, site, sync } = await synced();
   site.set(`POST ${WRITE}`, { status: 200, body: { saved: true, connection: { id: 40, version: 1 } } });
-  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [SITE_ROW, { id: 40 }] } });
+  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [SITE_ROW, { id: 40 }], role: SITE_ROLE } });
   assert.deepEqual(await agent.syncCreate(OUT_THERE), { kind: "saved", body: { id: 40, version: 1 } });
   assert.deepEqual(site.of(`POST ${WRITE}`)[0].body, OUT_THERE);
   assert.deepEqual(sync.applied.at(-1), [SITE_ROW, { id: 40 }]);
@@ -1372,7 +1461,7 @@ test("a host's error page counts as the site being out of reach, not as its answ
 
 test("a change to one of the site's connections goes to the site with its number, and a stale one comes back as a conflict", async () => {
   const { agent, site, sync } = await synced();
-  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [{ ...SITE_ROW, name: "Shop 2", version: 5 }] } });
+  site.set(SYNC_AFTER, { status: 200, body: { same: false, rev: "r2", connections: [{ ...SITE_ROW, name: "Shop 2", version: 5 }], role: SITE_ROLE } });
   const saved = await agent.syncUpdate(31, { name: "Shop 2", base_version: 4, id: 99 });
   assert.equal(saved.kind, "saved");
   assert.deepEqual(site.of(`PUT ${WRITE}`)[0].body, { name: "Shop 2", base_version: 4, id: 31 });

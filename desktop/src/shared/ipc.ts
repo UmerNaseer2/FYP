@@ -356,8 +356,22 @@ export type CloudView =
   | { state: "off"; origin: string | null; notice: string | null }
   /** code: to compare with the one on the site's page. */
   | { state: "linking"; origin: string; code: string }
-  /** problem: the site cannot be reached just now. The link stays. */
-  | { state: "linked"; origin: string; orgName: string; linkedAt: number; problem: string | null };
+  /** problem: the site cannot be reached just now. The link stays. sync: null for a site without the two-way sync. */
+  | { state: "linked"; origin: string; orgName: string; linkedAt: number; problem: string | null; sync: CloudSync | null };
+
+/**
+ * How the two-way sync with a linked site stands, for Settings. Each is null
+ * until the site first answered.
+ */
+export type CloudSync = {
+  /** The person's role on the site, which holds them here too while linked. */
+  role: string | null;
+  lastSyncedAt: number | null;
+  /** The site's connections this person sees, which this computer keeps copies of. */
+  website: number | null;
+  /** This computer's own connections, which stay here. */
+  here: number | null;
+};
 
 export type CloudLinkResult = { ok: true } | { ok: false; message: string };
 

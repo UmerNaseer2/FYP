@@ -578,6 +578,8 @@ async function backfillOlderTables(): Promise<void> {
   );
   // What a computer's own drift checks found, so its person sees them on the website.
   await metadataPool.query(`ALTER TABLE agent_connections ADD COLUMN IF NOT EXISTS drift JSONB`);
+  // On a linked desktop, the website role that caps what its person may do there (lib/site-role.ts).
+  await metadataPool.query(`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS site_role JSONB`);
 
   // `environment` is the typed dev / staging / prod label. It is deliberately
   // NOT guessed from the row's name: the whole point is that the label is data

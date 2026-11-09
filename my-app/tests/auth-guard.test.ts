@@ -31,6 +31,11 @@
 //     503, never the full admin.
 //   - resolveOrganization, the pages' lookup, reads the slug it is handed
 //     rather than the header, and says who was turned away, by profile ID.
+//   - On the desktop, a website role kept for the default organization (a
+//     linked computer, lib/site-role.ts) holds its member to what both roles
+//     allow, and names itself in a refusal. A website Admin, an organization
+//     other than the default, and the web leave the role whole. A kept role
+//     that cannot be read is a 503, never the full role.
 //   - requireSignedIn, for the one route about a person's organizations as a
 //     whole, asks only who someone is: no organization, no membership, no
 //     role. Signed out is 401, as it is for the other gates, and the bypass is
@@ -90,6 +95,17 @@ jest.mock("../lib/roles-db", () => ({
   getRoleAccess: (...args: unknown[]) => mockGetRoleAccess(...args),
 }));
 
+const mockLoadSiteRole = jest.fn();
+jest.mock("../lib/version-db", () => ({
+  __esModule: true,
+  default: { query: async () => ({ rows: [] }) },
+  syncMetadataTables: async () => undefined,
+}));
+jest.mock("../lib/site-role", () => ({
+  ...jest.requireActual("../lib/site-role"),
+  loadSiteRole: (...args: unknown[]) => mockLoadSiteRole(...args),
+}));
+
 import {
   requireMember,
   requirePermission,
@@ -137,6 +153,8 @@ beforeEach(() => {
   mockFindMembership.mockReset();
   mockFindDefaultMembership.mockReset();
   mockGetRoleAccess.mockReset();
+  mockLoadSiteRole.mockReset();
+  mockLoadSiteRole.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -347,6 +365,70 @@ describe("with real sign-in", () => {
     expect(mockGetRoleAccess).not.toHaveBeenCalled();
   });
 
+  describe("on a desktop linked to a website", () => {
+    const SITE_VIEWER = { role: "viewer", label: "Viewer", permissions: VIEWER.permissions };
+
+    test("the website role holds the default organization's member to what both roles allow", async () => {
+      onTheDesktop();
+      signedInAs(EDITOR);
+      mockLoadSiteRole.mockResolvedValue(SITE_VIEWER);
+      expect(principalOf(await requirePermission("dashboard:read"))).toMatchObject({
+        role: "viewer",
+        roleLabel: "Viewer on the website",
+        permissions: EDITOR.permissions.filter((key) => VIEWER.permissions.includes(key)),
+      });
+      expect(mockLoadSiteRole).toHaveBeenCalledWith(TEST_ORG.id);
+      expect(await refusal(await requirePermission("connections:create"))).toEqual([
+        403,
+        { error: refusalMessage("Viewer on the website", "connections:create") },
+      ]);
+    });
+
+    test("never gives more than the desktop role", async () => {
+      onTheDesktop();
+      signedInAs(VIEWER);
+      mockLoadSiteRole.mockResolvedValue({ role: "editor", label: "Editor", permissions: EDITOR.permissions });
+      expect(principalOf(await requireMember())).toMatchObject(VIEWER);
+      expect(await refusal(await requirePermission("connections:create"))).toEqual([
+        403,
+        { error: refusalMessage("Viewer", "connections:create") },
+      ]);
+    });
+
+    test("a website Admin, and no kept role, leave the desktop role whole", async () => {
+      onTheDesktop();
+      signedInAs(EDITOR);
+      mockLoadSiteRole.mockResolvedValue({ role: "admin", label: "Admin", permissions: [] });
+      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
+      mockLoadSiteRole.mockResolvedValue(null);
+      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
+    });
+
+    test("an organization other than the default is left alone, and so is the web", async () => {
+      onTheDesktop();
+      signedInAs(EDITOR);
+      mockLoadSiteRole.mockResolvedValue(SITE_VIEWER);
+      mockFindMembership.mockResolvedValue({ ...membership("editor"), orgId: ACME.id, slug: ACME.slug, isDefault: false });
+      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
+      delete process.env.SCHEMA_STUDIO_DESKTOP;
+      signedInAs(EDITOR);
+      expect(principalOf(await requireMember())).toMatchObject(EDITOR);
+      expect(mockLoadSiteRole).not.toHaveBeenCalled();
+    });
+
+    test("a kept role that cannot be read is 503 for both gates, never the full role", async () => {
+      onTheDesktop();
+      signedInAs(EDITOR);
+      mockLoadSiteRole.mockRejectedValue(new Error("The website role kept for this computer could not be read."));
+      const errors = quietErrors();
+      expect(await bothRefusals()).toEqual([
+        [503, ACCESS_UNAVAILABLE],
+        [503, ACCESS_UNAVAILABLE],
+      ]);
+      expect(errors).toHaveBeenCalled();
+    });
+  });
+
   test("a member's address and name are their profile's, never the session's", async () => {
     // Someone who signs in with GitHub one day and Microsoft the next is the
     // same person, known by the same address, in every screen and audit row.
@@ -529,6 +611,17 @@ describe("with the bypass on", () => {
     expect(principalOf(await requireMember())).toEqual(bypassAdminPrincipal());
     expect(mockFindDefault).toHaveBeenCalled();
     expect(mockFindOrganization).not.toHaveBeenCalled();
+  });
+
+  test("on a linked desktop the website role holds the bypass's admin too", async () => {
+    onTheDesktop();
+    noHeader();
+    mockLoadSiteRole.mockResolvedValue({ role: "viewer", label: "Viewer", permissions: VIEWER.permissions });
+    expect(principalOf(await requireMember())).toMatchObject({
+      role: "viewer",
+      roleLabel: "Viewer on the website",
+      permissions: ALL_PERMISSIONS.filter((key) => VIEWER.permissions.includes(key)),
+    });
   });
 
   test("on the desktop, no default organization at all is 404 for both gates", async () => {

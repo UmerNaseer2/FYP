@@ -147,6 +147,33 @@ describe("apply", () => {
     expect(values).not.toContain("king");
   });
 
+  it("keeps the website role first, and clears it with null", async () => {
+    const role = { role: "viewer", label: "Viewer", permissions: ["dashboard:read", "not-a-key"] };
+    expect((await call({ action: "apply", connections: [], role })).status).toBe(200);
+    const [save, remove] = mockPoolQuery.mock.calls;
+    expect(save[0]).toMatch(/UPDATE organizations SET site_role = \$2::jsonb WHERE id = \$1/);
+    expect(save[1]?.[0]).toBe(7);
+    // A key this version does not know is left out.
+    expect(JSON.parse(save[1]?.[1] as string)).toEqual({ role: "viewer", label: "Viewer", permissions: ["dashboard:read"] });
+    expect(remove[0]).toMatch(/DELETE FROM connections/);
+
+    mockPoolQuery.mockClear();
+    await call({ action: "apply", connections: [], role: null });
+    expect(mockPoolQuery.mock.calls[0][1]).toEqual([7, null]);
+  });
+
+  it("leaves the kept role alone when none is sent", async () => {
+    await call({ action: "apply", connections: [] });
+    expect(mockPoolQuery.mock.calls.some(([text]) => /site_role/.test(text))).toBe(false);
+  });
+
+  it("turns away a role it cannot read, and changes nothing", async () => {
+    for (const role of ["viewer", { role: "", label: "x", permissions: [] }, { role: "viewer", label: "Viewer", permissions: "all" }]) {
+      expect((await call({ action: "apply", connections: [COPY], role })).status).toBe(400);
+    }
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+  });
+
   it("turns away a list that is not a list or is far too long", async () => {
     expect((await call({ action: "apply", connections: "all" })).status).toBe(400);
     expect((await call({ action: "apply", connections: new Array(2001).fill(COPY) })).status).toBe(400);

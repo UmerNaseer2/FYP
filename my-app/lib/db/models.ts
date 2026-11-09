@@ -116,6 +116,12 @@ export class Organization extends Model<
    * one row has it, which the partial unique index below enforces.
    */
   declare is_default: CreationOptional<boolean>;
+  /**
+   * On a linked desktop, the role its person holds on the website, which
+   * caps what they may do here until the link ends (SiteRole in
+   * lib/site-role.ts). Null everywhere else.
+   */
+  declare site_role: CreationOptional<unknown | null>;
   declare created_at: CreationOptional<Date>;
 }
 
@@ -127,6 +133,7 @@ Organization.init(
     two_person_rule: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     personal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     is_default: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    site_role: { type: DataTypes.JSONB, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: NOW_TZ },
   },
   {

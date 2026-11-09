@@ -23,6 +23,7 @@ Each copy of Schema Studio (the desktop app, the Swinburne Docker server, Vercel
 - **Unlinking** removes the website's connections from the desktop (they stay on the website) and keeps the desktop's own.
 - **Connections already on a desktop when it links** stay desktop-only. "Send to website" moves one up, after the site has reached the database itself. The desktop's own row becomes the site's copy in place, so its local drift history and saved comparisons stay with it.
 - **Test results stay where they ran.** "Last tested" is not synced, because a test from the desktop and a test from the site can honestly disagree.
+- **The website role only takes away.** On a linked desktop the person may do what both their desktop role and their website role allow, never more than the desktop role. A website Admin is not held back at all. Refusals name the role as "<role> on the website". The role is kept on the desktop, so it still holds while the website cannot be reached, and a kept role that cannot be read refuses everything (503) until the next sync or an unlink. Unlinking gives the desktop role back in full.
 - **Compare screen.** Desktop-only connections show on the website's Connections page. Comparing them from the website stays in the phone app page, which already goes through the desktop. Putting them in the main Compare screen is a later piece.
 
 ## Steps
@@ -54,3 +55,8 @@ Each step is committed after its tests and type checks pass. One run against a l
   - Desktop: `cloud-agent.ts` asks for the site's results every 60 seconds once the site syncs, and again on demand when they are 10 seconds old; a 404 waits 30 minutes, a 401 unlinks. New bridge call `syncDrift`.
   - Drift page: "Checked by the website" in the desktop app (latest result per schema, link to the full diff on the site, offline note), "On your computers" in a browser, and a notice on a schema whose connection now belongs to the website.
   - Checked: type checks, the full web suite (6,315 tests), and the desktop's 845 tests. Not yet run live.
+- 2026-11-08: step 3 built and committed locally on `two-way-sync`.
+  - Site: each changed sync answer carries the person's role (`lib/site-role.ts`), and the fingerprint includes it, so a role change reaches the desktop at the next sync.
+  - Desktop server: `organizations.site_role` keeps the role; `/api/desktop/sync` saves it with the list (null clears it, a role it cannot read is a 400 before anything is written). `lib/auth-guard.ts` holds the default organization to it while linked.
+  - Desktop app: a changed list without a readable role is not taken. Unlinking, a 401, and a start with no saved link clear the copies and the role. Settings, Web site, shows a sync line: the website role, when it last synced, how many connections come from the website and how many stay on this computer, and that website connections cannot be changed while it is offline.
+  - Checked: type checks, the full web suite (6,347 tests), and the desktop's 849 tests. Not yet run live.

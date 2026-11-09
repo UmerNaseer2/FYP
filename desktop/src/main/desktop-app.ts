@@ -858,8 +858,8 @@ export class DesktopApp {
       },
       onChange: () => this.cloudChanged(),
       sync: {
-        apply: async (connections) => {
-          await this.syncServer({ action: "apply", connections });
+        apply: async (connections, role) => {
+          await this.syncServer({ action: "apply", connections, role });
         },
         local: async () => readOwnConnections(await this.syncServer({ action: "local" })),
         export: async (id) => readExported(await this.syncServer({ action: "export", id }, true)),

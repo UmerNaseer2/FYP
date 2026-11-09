@@ -21,6 +21,7 @@ import {
   type Organization,
 } from "./orgs-db";
 import { getRoleAccess } from "./roles-db";
+import { applySiteRole, loadSiteRole } from "./site-role";
 import { sessionProfileId } from "./session-profile";
 
 /**
@@ -352,9 +353,22 @@ export async function agentPrincipal(agent: { orgId: number; profileId: number }
   return memberPrincipal(agent.profileId, membership, access);
 }
 
-/** Who is calling, in the organization `slug` names, and what they may do there. Never throws. */
-function resolveIn(slug: string | null): Promise<Resolution> {
-  return BYPASS_AUTH ? bypassPrincipal(slug) : signedInPrincipal(slug);
+/**
+ * Who is calling, in the organization `slug` names, and what they may do there. Never throws.
+ *
+ * On a desktop linked to a website, its own organization is also held to the
+ * person's website role (lib/site-role.ts): the website can take away, never
+ * add. A role kept there that cannot be read is a 503, never the full role.
+ */
+async function resolveIn(slug: string | null): Promise<Resolution> {
+  const found = BYPASS_AUTH ? await bypassPrincipal(slug) : await signedInPrincipal(slug);
+  if (found.kind !== "ok" || !onDesktop() || !found.principal.orgIsDefault) return found;
+  try {
+    return { kind: "ok", principal: applySiteRole(found.principal, await loadSiteRole(found.principal.orgId)) };
+  } catch (error) {
+    console.error("Could not read the website role this computer works within:", error instanceof Error ? error.message : "unknown error");
+    return { kind: "unavailable" };
+  }
 }
 
 /** Who is calling, in the organization the request names, and what they may do there. Never throws. */

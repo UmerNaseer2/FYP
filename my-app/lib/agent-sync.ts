@@ -10,6 +10,7 @@ import { decryptSecret } from "@/lib/secret-store";
 import { hasPermission } from "@/lib/permissions";
 import { listOwnDrift } from "@/lib/drift-sync";
 import type { WebsiteDriftSchema } from "@/lib/agent-rules";
+import { siteRoleOf, type SiteRole } from "@/lib/site-role";
 
 /** The permissions that let someone see the Connections list, the same as GET /api/connections. */
 export function maySeeConnections(principal: Principal): boolean {
@@ -55,15 +56,26 @@ export type SyncedConnection = {
   updated_by: string | null;
 };
 
+/**
+ * `role` is the person's role on the website, which the desktop works within
+ * while it is linked (lib/site-role.ts, docs/two-way-sync-plan.md step 3).
+ */
 export type SyncAnswer =
   | { same: true; rev: string }
-  | { same: false; rev: string; withSecrets: boolean; connections: SyncedConnection[] };
+  | { same: false; rev: string; withSecrets: boolean; connections: SyncedConnection[]; role: SiteRole };
+
+/** A short mark of a role, so that a change to it counts as a change to the answer. */
+function roleMark(role: SiteRole): string {
+  const print = JSON.stringify([role.role, role.label, [...role.permissions].sort()]);
+  return createHash("md5").update(print).digest("hex").slice(0, 8);
+}
 
 /**
  * The organization's connections for a linked desktop, or `same` when nothing
- * changed since `knownRev`. The fingerprint covers every id and version and
- * whether secrets are included, so a role change that adds or takes away the
- * passwords also counts as a change. Costs one small query when nothing moved.
+ * changed since `knownRev`. The fingerprint covers every id and version,
+ * whether secrets are included, and the person's role, so a role change also
+ * counts as a change and reaches the desktop at its next sync. Costs one small
+ * query when nothing moved.
  */
 export async function readSync(principal: Principal, knownRev: string | null): Promise<SyncAnswer> {
   await syncMetadataTables();
@@ -74,9 +86,10 @@ export async function readSync(principal: Principal, knownRev: string | null): P
        FROM connections WHERE org_id = $1`,
     [principal.orgId]
   );
-  const rev = `${allowed ? fingerprint[0].md5 : "none"}.${withSecrets ? "s" : "p"}`;
+  const role = siteRoleOf(principal);
+  const rev = `${allowed ? fingerprint[0].md5 : "none"}.${withSecrets ? "s" : "p"}.${roleMark(role)}`;
   if (rev === knownRev) return { same: true, rev };
-  if (!allowed) return { same: false, rev, withSecrets: false, connections: [] };
+  if (!allowed) return { same: false, rev, withSecrets: false, connections: [], role };
 
   const { rows } = await pool.query<{
     id: number;
@@ -135,7 +148,7 @@ export async function readSync(principal: Principal, knownRev: string | null): P
       updated_by: row.updated_by,
     };
   });
-  return { same: false, rev, withSecrets, connections };
+  return { same: false, rev, withSecrets, connections, role };
 }
 
 /** The permissions that let someone see the Drift page, the same as GET /api/lineage. */
@@ -163,15 +176,15 @@ export async function readDriftSync(principal: Principal, knownRev: string | nul
 
 /** A fingerprint as a desktop sent it back, or null. Never longer than one of ours. */
 export function readRev(value: string | null): string | null {
-  if (!value || value.length > 40 || !/^[a-z0-9.]+$/.test(value)) return null;
+  if (!value || value.length > 50 || !/^[a-z0-9.]+$/.test(value)) return null;
   return value;
 }
 
-/** For tests: the fingerprint of a list, the way the query above makes it. */
-export function revOf(list: { id: number; version: number }[], withSecrets: boolean): string {
+/** For tests: the fingerprint of a list and a role, the way readSync makes it. */
+export function revOf(list: { id: number; version: number }[], withSecrets: boolean, role: SiteRole): string {
   const joined = [...list]
     .sort((a, b) => a.id - b.id)
     .map((row) => `${row.id}:${row.version}`)
     .join(",");
-  return `${createHash("md5").update(joined).digest("hex")}.${withSecrets ? "s" : "p"}`;
+  return `${createHash("md5").update(joined).digest("hex")}.${withSecrets ? "s" : "p"}.${roleMark(role)}`;
 }

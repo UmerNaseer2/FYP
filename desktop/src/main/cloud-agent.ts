@@ -39,7 +39,7 @@
 import { parseCloudLinkState, type CloudLinkState } from "../core/cloud-agent-file";
 import { staysHome } from "../core/stays-home";
 import { utf8 } from "../shared/remote/bytes";
-import type { CloudLinkResult, CloudView, DriftCheck, SyncAnswer, SyncStatus, WebsiteDrift, WebsiteDriftSchema } from "../shared/ipc";
+import type { CloudLinkResult, CloudSync, CloudView, DriftCheck, SyncAnswer, SyncStatus, WebsiteDrift, WebsiteDriftSchema } from "../shared/ipc";
 import { readRelayOrigin } from "../shared/remote/relay-protocol";
 import { readRequest, type CompareSummary, type Request } from "../shared/remote/rpc";
 import type { Clock } from "./clock";
@@ -142,8 +142,12 @@ export type OwnConnection = { id: number; name: string; environment: string; dri
  * calls it with a token only the main process holds.
  */
 export type SyncHost = {
-  /** Makes this computer's copies of the site's connections match the list. Throws when it could not. */
-  apply(connections: readonly unknown[]): Promise<void>;
+  /**
+   * Makes this computer's copies of the site's connections match the list,
+   * and keeps the person's website role, which holds them on this computer to
+   * what it allows (null clears it). Throws when it could not.
+   */
+  apply(connections: readonly unknown[], role: SiteRole | null): Promise<void>;
   /** This computer's own connections, by name only. */
   local(): Promise<OwnConnection[]>;
   /** One of this computer's own connections in full, password included, or null when it is not one. */
@@ -241,12 +245,39 @@ export function readCloudJob(method: unknown, params: unknown): Extract<Request,
   return request.method === "schemas.list" || request.method === "compare.run" ? request : null;
 }
 
-/** The site's answer to GET /api/agent/sync, or null when it is not one. Each row is checked by this computer's server. */
-function readSyncAnswer(body: unknown): { rev: string; connections: readonly unknown[] | null } | null {
+/**
+ * The person's role on the website, as the site sends it with its list
+ * (lib/site-role.ts in the web app). This computer's server reads it again and
+ * leaves out permissions it does not know; this only checks its shape, so a
+ * role the server would turn away never stops the list coming down.
+ */
+export type SiteRole = { role: string; label: string; permissions: string[] };
+
+/** A role from the site, or null when it is not one. The limits are the server's own. */
+export function readSiteRole(value: unknown): SiteRole | null {
+  if (!isRecord(value)) return null;
+  const { role, label, permissions } = value;
+  if (typeof role !== "string" || role.trim() === "" || role.length > 64) return null;
+  if (typeof label !== "string" || label.length > 100) return null;
+  if (!Array.isArray(permissions) || permissions.length > 200) return null;
+  if (!permissions.every((key): key is string => typeof key === "string" && key.length <= 64)) return null;
+  return { role: role.trim(), label: label.trim() || role.trim(), permissions: [...permissions] };
+}
+
+/**
+ * The site's answer to GET /api/agent/sync, or null when it is not one. Each
+ * row is checked by this computer's server. A changed list always comes with
+ * the person's website role: without it this computer cannot know what they
+ * may do here, so the answer is not one.
+ */
+function readSyncAnswer(
+  body: unknown
+): { rev: string; changed: { connections: readonly unknown[]; role: SiteRole } | null } | null {
   if (!isRecord(body) || typeof body.rev !== "string" || body.rev.length === 0 || body.rev.length > 100) return null;
-  if (body.same === true) return { rev: body.rev, connections: null };
+  if (body.same === true) return { rev: body.rev, changed: null };
   if (body.same !== false || !Array.isArray(body.connections) || body.connections.length > 2000) return null;
-  return { rev: body.rev, connections: body.connections };
+  const role = readSiteRole(body.role);
+  return role === null ? null : { rev: body.rev, changed: { connections: body.connections, role } };
 }
 
 /** A text field from the site, cut to `most` characters, or null when it is not text. */
@@ -357,6 +388,11 @@ export class CloudAgent {
   private changedAt: number | null = null;
   /** Whether the site has the sync: null until it answers. */
   private siteSyncs: boolean | null = null;
+  /** The person's role on the site, kept by this computer's server too, for the Settings line. */
+  private siteRole: SiteRole | null = null;
+  /** How many of the site's connections this person sees, and how many stay on this computer: null until known. */
+  private siteCount: number | null = null;
+  private ownCount: number | null = null;
   private noSyncUntil = 0;
 
   // The website's drift results, for the Drift page. Asked for apart from the connections, less often.
@@ -376,6 +412,8 @@ export class CloudAgent {
       const loaded = this.options.store.load();
       switch (loaded.status) {
         case "missing":
+          // An unlink this computer's server did not hear of leaves the site's copies, and the website role, behind.
+          this.dropCopies(true);
           break;
         case "values":
           if (loaded.upgrade) this.moveIntoKeyring(loaded.values);
@@ -410,7 +448,12 @@ export class CloudAgent {
   view(): CloudView {
     if (this.unavailable !== null) return { state: "unavailable", message: this.unavailable, canClear: this.damaged };
     if (this.link !== null) {
-      return { state: "linked", origin: this.link.origin, orgName: this.link.orgName, linkedAt: this.link.linkedAt, problem: this.problem };
+      const { origin, orgName, linkedAt } = this.link;
+      const sync: CloudSync | null =
+        this.options.sync === undefined || this.siteSyncs === false
+          ? null
+          : { role: this.siteRole?.label ?? null, lastSyncedAt: this.syncedAt, website: this.siteCount, here: this.ownCount };
+      return { state: "linked", origin, orgName, linkedAt, problem: this.problem, sync };
     }
     if (this.linking !== null) return { state: "linking", origin: this.linking.origin, code: this.linking.code };
     return { state: "off", origin: this.lastOrigin, notice: this.notice };
@@ -692,15 +735,19 @@ export class CloudAgent {
       if (answer === null) throw new Error("The site's list could not be read.");
       const first = this.siteSyncs !== true;
       this.siteSyncs = true;
-      if (answer.connections !== null) {
-        await sync.apply(answer.connections);
+      if (answer.changed !== null) {
+        await sync.apply(answer.changed.connections, answer.changed.role);
         if (run !== this.run) return false;
         this.changedAt = this.options.clock.now();
+        this.siteRole = answer.changed.role;
+        this.siteCount = answer.changed.connections.length;
       }
       this.syncRev = answer.rev;
       this.syncedAt = this.options.clock.now();
       // The first time, the site hears about every connection here, not just the shared ones. After that, when one changes.
       if (first || (await this.ownPrint()) !== this.publishedOwn) void this.publish(run);
+      // Settings shows when this last worked.
+      if (run === this.run) this.options.onChange();
       return true;
     } catch (error) {
       if (run === this.run) logWarn(`Could not bring the site's connections up to date: ${error instanceof Error ? error.name : "unknown error"}.`);
@@ -771,7 +818,9 @@ export class CloudAgent {
     const sync = this.options.sync;
     if (sync === undefined) return [];
     const shared = new Set(this.options.sharedConnectionIds());
-    return (await sync.local()).map(({ id, name, environment, drift }) => ({
+    const own = await sync.local();
+    this.ownCount = own.length;
+    return own.map(({ id, name, environment, drift }) => ({
       id,
       name,
       environment,
@@ -781,12 +830,20 @@ export class CloudAgent {
     }));
   }
 
-  /** Clears this computer's copies of a site's connections, after a link ends or before a new one starts. */
-  private dropCopies(): void {
+  /**
+   * Clears this computer's copies of a site's connections, and the website
+   * role with them, after a link ends or before a new one starts. `atStart`
+   * is the check at each start with no link, which finds nothing to clear
+   * nearly every time, so a failure then is not worth a warning.
+   */
+  private dropCopies(atStart = false): void {
     const sync = this.options.sync;
     this.syncRev = null;
     this.syncedAt = null;
     this.siteSyncs = null;
+    this.siteRole = null;
+    this.siteCount = null;
+    this.ownCount = null;
     this.noSyncUntil = 0;
     this.lastSyncTry = 0;
     this.publishedOwn = null;
@@ -798,10 +855,11 @@ export class CloudAgent {
     if (sync === undefined) return;
     void this.queue(async () => {
       try {
-        await sync.apply([]);
+        await sync.apply([], null);
         this.changedAt = this.options.clock.now();
       } catch (error) {
-        logWarn("Could not remove the site's connections from this computer.", error);
+        if (atStart) logInfo("Could not check this computer for a past site link's connections. Trying again at the next start.");
+        else logWarn("Could not remove the site's connections from this computer. They go at the next start.", error);
       }
     });
   }

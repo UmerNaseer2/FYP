@@ -233,9 +233,28 @@ describe("GET /api/agent/sync", () => {
 
   it("says nothing changed when the fingerprint matches, without reading the rows", async () => {
     setUpSync();
-    const result = await read(`${md5}.s`);
-    expect(result.body).toEqual({ same: true, rev: `${md5}.s` });
+    const first = await read();
+    expect(first.body.rev).toMatch(new RegExp(`^${md5}\\.s\\.[0-9a-f]{8}$`));
+    setUpSync();
+    const result = await read(first.body.rev);
+    expect(result.body).toEqual({ same: true, rev: first.body.rev });
     expect(ran(/WHERE org_id = \$1 ORDER BY id/)).toHaveLength(0);
+  });
+
+  it("sends the person's website role with the list, and a new fingerprint when the role changes", async () => {
+    setUpSync();
+    const first = await read();
+    expect(first.body.role).toEqual({ role: "editor", label: "Editor", permissions: [...principalFor("editor").permissions] });
+    const [dropped, ...kept] = principalFor("editor").permissions;
+    mockAgentPrincipal = principalFor("editor", { permissions: kept });
+    setUpSync();
+    const after = await read(first.body.rev);
+    expect(after.body.same).toBe(false);
+    expect(after.body.rev).not.toBe(first.body.rev);
+    expect(after.body.role.permissions).not.toContain(dropped);
+    mockAgentPrincipal = principalFor("editor", { roleLabel: "Editors" });
+    setUpSync();
+    expect((await read(first.body.rev)).body.same).toBe(false);
   });
 
   it("sends the passwords to someone who could change the connections", async () => {
@@ -252,7 +271,8 @@ describe("GET /api/agent/sync", () => {
     mockAgentPrincipal = principalFor("viewer");
     setUpSync();
     const result = await read(`${md5}.s`);
-    expect(result.body.rev).toBe(`${md5}.p`);
+    expect(result.body.rev).toMatch(new RegExp(`^${md5}\\.p\\.[0-9a-f]{8}$`));
+    expect(result.body.role.role).toBe("viewer");
     expect(result.body.withSecrets).toBe(false);
     for (const row of result.body.connections) {
       expect(row.password).toBe("");
@@ -265,16 +285,23 @@ describe("GET /api/agent/sync", () => {
     mockAgentPrincipal = principalFor("viewer", { permissions: [] });
     setUpSync();
     const result = await read();
-    expect(result.body).toEqual({ same: false, rev: "none.p", withSecrets: false, connections: [] });
+    expect(result.body).toEqual({
+      same: false,
+      rev: expect.stringMatching(/^none\.p\.[0-9a-f]{8}$/),
+      withSecrets: false,
+      connections: [],
+      role: { role: "viewer", label: "Viewer", permissions: [] },
+    });
   });
 
   it("reads back only a fingerprint shaped like one of ours", () => {
-    expect(readRev(`${md5}.s`)).toBe(`${md5}.s`);
-    expect(readRev("none.p")).toBe("none.p");
+    expect(readRev(`${md5}.s.0123abcd`)).toBe(`${md5}.s.0123abcd`);
+    expect(readRev("none.p.0123abcd")).toBe("none.p.0123abcd");
     expect(readRev("'; drop table x")).toBeNull();
-    expect(readRev("a".repeat(41))).toBeNull();
+    expect(readRev("a".repeat(51))).toBeNull();
     expect(readRev(null)).toBeNull();
-    expect(revOf([{ id: 5, version: 1 }, { id: 4, version: 3 }], true)).toMatch(/^[0-9a-f]{32}\.s$/);
+    const role = { role: "viewer", label: "Viewer", permissions: [] };
+    expect(revOf([{ id: 5, version: 1 }, { id: 4, version: 3 }], true, role)).toMatch(/^[0-9a-f]{32}\.s\.[0-9a-f]{8}$/);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   syncTokenMatches,
   type SiteCopy,
 } from "@/lib/desktop-sync";
+import { readSiteRole, saveSiteRole, type SiteRole } from "@/lib/site-role";
 
 /**
  * The desktop app's main process keeping this computer in step with the
@@ -19,7 +20,10 @@ import {
  * website, where there is no such token, to everything (lib/desktop-sync.ts).
  *
  * One POST, four actions:
- *   apply   { connections }            the website's list; copies made to match
+ *   apply   { connections, role }      the website's list; copies made to match.
+ *                                      `role` is the person's website role, which caps
+ *                                      what they may do here (lib/site-role.ts); null
+ *                                      clears it when the link ends
  *   local   {}                         this computer's own connections, names only, with drift results
  *   export  { id }                     one of them in full, to send to the website
  *   adopt   { id, siteId, siteVersion } it became that website connection
@@ -52,6 +56,11 @@ export async function POST(request: NextRequest) {
         if (!Array.isArray(asked.connections) || asked.connections.length > MOST_SYNCED) {
           return bad("Expected a list of connections.");
         }
+        let role: SiteRole | null | undefined;
+        if ("role" in asked) {
+          role = asked.role === null ? null : readSiteRole(asked.role);
+          if (role === null && asked.role !== null) return bad("Expected a role, or null.");
+        }
         const copies: SiteCopy[] = [];
         let unreadable = 0;
         for (const item of asked.connections) {
@@ -59,6 +68,8 @@ export async function POST(request: NextRequest) {
           if (copy) copies.push(copy);
           else unreadable += 1;
         }
+        // The role first: copies a person may no longer use never arrive before the role that says so.
+        if (role !== undefined) await saveSiteRole(org.id, role);
         const done = await applySiteCopies(org.id, copies);
         const skipped = done.skipped + unreadable;
         if (skipped > 0) console.warn(`Left out ${skipped} of the website's connections that this computer could not use.`);

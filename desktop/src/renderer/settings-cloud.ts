@@ -14,10 +14,36 @@
 {
   type CloudSettingsApi = import("../shared/ipc").CloudSettingsApi;
   type CloudView = import("../shared/ipc").CloudView;
+  type CloudSync = import("../shared/ipc").CloudSync;
 
   const NOT_LOADED = "Schema Studio could not set up the site link in this window. Close it and open Settings again.";
   const NOT_STARTED = "Schema Studio could not start linking. Try again, and if it keeps happening, the logs say why.";
   const OFFLINE_NOTE = "Schema Studio keeps working here without a site. Linking is optional.";
+
+  function connections(count: number): string {
+    return count === 1 ? "1 connection" : `${count} connections`;
+  }
+
+  /**
+   * How the two-way sync stands, in a sentence or three: the website role that
+   * holds the person here, when it last worked, and what each side keeps.
+   * Empty for a site without the sync.
+   */
+  function syncLine(sync: CloudSync | null, offline: boolean): string {
+    if (sync === null) return "";
+    const parts: string[] = [];
+    if (sync.role !== null) parts.push(`Your website role, ${sync.role}, applies here while linked.`);
+    parts.push(
+      sync.lastSyncedAt === null
+        ? "Not synced with the website yet."
+        : `Last synced ${new Date(sync.lastSyncedAt).toLocaleString()}.`
+    );
+    if (sync.website !== null && sync.here !== null) {
+      parts.push(`${connections(sync.website)} from the website, and ${connections(sync.here)} on this computer only.`);
+    }
+    if (offline) parts.push("The website's connections can be looked at here, but not changed, until it can be reached.");
+    return parts.join(" ");
+  }
 
   function element<T extends HTMLElement>(id: string): T {
     const found = document.getElementById(id);
@@ -45,6 +71,7 @@
     dot: element<HTMLSpanElement>("site-link-dot"),
     state: element<HTMLSpanElement>("site-link-state"),
     where: element<HTMLParagraphElement>("site-link-where"),
+    sync: element<HTMLParagraphElement>("site-link-sync"),
     problem: element<HTMLParagraphElement>("site-link-problem"),
     unlink: element<HTMLButtonElement>("site-link-unlink"),
   };
@@ -98,6 +125,8 @@
         linkedParts.dot.classList.toggle("dot-bad", view.problem !== null);
         setText(linkedParts.state, `Linked to ${view.orgName}`);
         setText(linkedParts.where, `${view.origin}, since ${new Date(view.linkedAt).toLocaleDateString()}`);
+        setText(linkedParts.sync, syncLine(view.sync, view.problem !== null));
+        linkedParts.sync.hidden = view.sync === null;
         linkedParts.problem.hidden = view.problem === null;
         setText(linkedParts.problem, view.problem ?? "");
         break;
