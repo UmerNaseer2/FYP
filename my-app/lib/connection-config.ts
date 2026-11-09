@@ -1,6 +1,7 @@
 import { Pool, type PoolConfig } from "pg";
 import { parse as parseConnectionString } from "pg-connection-string";
-import { decryptSecret, UNREADABLE_CREDENTIALS_MESSAGE } from "./secret-store";
+import { credentialsMessage, decryptSecret } from "./secret-store";
+import { resolveLocalMarker } from "./local-secrets";
 import { BlockedHostError, checkConnectableHost } from "./host-guard";
 import {
   sslModeFromLegacyBoolean,
@@ -85,9 +86,17 @@ function sslOptionFor(mode: SslMode): PoolConfig["ssl"] {
  * touching any of them. decryptSecret passes plaintext through unchanged, so
  * rows written before encryption existed — and values typed straight into the
  * drawer — keep working.
+ *
+ * A local connection's password is a marker (lib/local-secrets): its secrets
+ * come from this machine's own store, or this throws a LivesElsewhereError
+ * saying which machine holds them.
  */
 export function buildPgConfig(input: ConnectionInput): PoolConfig {
   const ssl = sslOptionFor(effectiveSslMode(input));
+  const local = resolveLocalMarker(input.password);
+  if (local) {
+    input = { ...input, password: local.password, connectionString: local.connectionString };
+  }
   const raw = (decryptSecret(input.connectionString) ?? "").trim();
 
   if (raw) {
@@ -278,7 +287,7 @@ export async function runConnectionTest(input: ConnectionInput): Promise<TestRes
     console.error("Could not prepare the connection:", error);
     return {
       ok: false,
-      error: UNREADABLE_CREDENTIALS_MESSAGE,
+      error: credentialsMessage(error),
       sslRequired: false,
       detail: error instanceof Error ? error.message : String(error),
     };

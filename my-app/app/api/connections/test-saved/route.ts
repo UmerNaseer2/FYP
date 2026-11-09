@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
+import { savedSecrets } from "@/lib/connection-writes";
+import { LivesElsewhereError } from "@/lib/local-secrets";
 
 /**
  * Test a saved connection by id (used by the per-row "Test" action).
@@ -49,6 +51,18 @@ export async function POST(request: NextRequest) {
         { ok: false, error: "Only PostgreSQL is supported right now.", sslRequired: false, detail: "" },
         { status: 400 }
       );
+    }
+
+    // A connection kept on another machine is not dialled from here, and its
+    // last test result (written by that machine) is left as it is.
+    const secrets = savedSecrets(conn.password, conn.connection_string);
+    if (!secrets.ok) {
+      return NextResponse.json({
+        ok: false,
+        error: new LivesElsewhereError(secrets.machine).message,
+        sslRequired: false,
+        detail: "",
+      });
     }
 
     const testResult = await runConnectionTest({

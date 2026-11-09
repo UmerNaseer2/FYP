@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { fetchSchemaSnapshot } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 
 // GET /api/schema/snapshot?connectionId=<id>&schema=<name>
 //
@@ -90,7 +90,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Schema snapshot — could not read the saved connection's credentials:", message);
-    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+    return NextResponse.json({ error: credentialsMessage(error) }, { status: 500 });
   }
 
   const snapshot = await fetchSchemaSnapshot(config, schema);

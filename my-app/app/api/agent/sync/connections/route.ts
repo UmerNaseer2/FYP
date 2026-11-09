@@ -70,7 +70,10 @@ export async function POST(request: NextRequest) {
     sslMode,
   });
   if (!test.ok) return NextResponse.json({ saved: false, reason: test.error });
-  const answer = await createConnection(asked.principal, body);
+  // What a computer sends up is a cloud connection: it has just been reached
+  // from here, and its own local ones never leave it. So it is saved with its
+  // password in the shared database even on a copy that keeps local ones.
+  const answer = await createConnection(asked.principal, { ...body, local_only: false });
   if (answer.status !== 200) return send(answer);
   return NextResponse.json({ saved: true, connection: answer.body });
 }
@@ -78,7 +81,10 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   const asked = await acting(request, "connections:update");
   if (!asked.ok) return asked.response;
-  return send(await updateConnection(asked.principal, asked.body));
+  // A change from a computer leaves the connection where its password is.
+  const { local_only: _ignored, ...body } = asked.body;
+  void _ignored;
+  return send(await updateConnection(asked.principal, body));
 }
 
 export async function DELETE(request: NextRequest) {

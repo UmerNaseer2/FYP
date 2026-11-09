@@ -8,6 +8,7 @@ import { DRIFT_SOURCE_VALUES, DEFAULT_DRIFT_SOURCE } from "../drift-source";
 import { THRESHOLD_KEYS } from "../perf-thresholds";
 import { DEFAULT_EXECUTE_ROLE } from "../connection-access";
 import { ORG_SLUG_PATTERN } from "../org-slug";
+import { ensureLocalSecrets } from "../local-store";
 import {
   ADMIN_ROLE,
   BUILT_IN_ROLES,
@@ -1280,5 +1281,8 @@ export function syncMetadataTables(): Promise<void> {
       throw error;
     });
   }
-  return inFlight;
+  // This machine's local passwords (lib/local-store) are read on the same
+  // first request. It does nothing without LOCAL_DATABASE_URL, returns at once
+  // once loaded, and never throws.
+  return Promise.all([inFlight, ensureLocalSecrets()]).then(() => undefined);
 }

@@ -132,21 +132,7 @@ export function checkConnectableHost(
     process.env.NODE_ENV === "production" &&
     process.env.ALLOW_PRIVATE_DB_HOSTS !== "true";
   if (blockPrivate) {
-    const isPrivate =
-      isLocalMachine ||
-      forms.some(
-        (f) =>
-          f === "localhost" ||
-          f.endsWith(".localhost") ||
-          f.startsWith("127.") ||
-          f === "::1" ||
-          f.startsWith("10.") ||
-          f.startsWith("192.168.") ||
-          /^172\.(1[6-9]|2\d|3[01])\./.test(f) ||
-          f.endsWith(".internal") ||
-          f.endsWith(".local")
-      );
-    if (isPrivate) {
+    if (isPrivateHost(host)) {
       return {
         ok: false,
         message: "Connections to internal/private hosts are disabled on this server.",
@@ -155,4 +141,34 @@ export function checkConnectableHost(
   }
 
   return { ok: true };
+}
+
+/**
+ * True for an address only this machine or its own network can reach: this
+ * machine itself (localhost, 127.x, ::1, a unix socket, no host at all) or a
+ * private network (10.x, 192.168.x, 172.16 to 172.31, *.local, *.internal).
+ *
+ * The rule private hosts are blocked by above, and the guess the Connections
+ * page starts from when it asks whether a new connection is local to this
+ * machine (lib/local-secrets).
+ */
+export function isPrivateHost(host: string | undefined): boolean {
+  const raw = (host ?? "").trim().toLowerCase();
+  const h = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  if (h === "" || h.startsWith("/") || h.startsWith("@")) return true;
+  const forms = [h];
+  const normalised = toIPv4Literal(h);
+  if (normalised !== null) forms.push(normalised);
+  return forms.some(
+    (f) =>
+      f === "localhost" ||
+      f.endsWith(".localhost") ||
+      f.startsWith("127.") ||
+      f === "::1" ||
+      f.startsWith("10.") ||
+      f.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(f) ||
+      f.endsWith(".internal") ||
+      f.endsWith(".local")
+  );
 }

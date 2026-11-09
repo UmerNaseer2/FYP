@@ -420,7 +420,7 @@ describe("taking the Production label off a connection", () => {
       if (/SELECT password, connection_string/.test(text)) {
         return { rows: [{ ...SAVED, name: "Production", environment }] };
       }
-      if (/SELECT name, environment, version, site_id FROM connections/.test(text)) {
+      if (/SELECT name, environment, version, site_id, password FROM connections/.test(text)) {
         return { rows: [{ name: "Production", environment }] };
       }
       if (/RETURNING/.test(text)) return { rows: [{ id: 4, name: "Production" }] };

@@ -32,7 +32,7 @@ import {
 } from "@/lib/generate-sql";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import type { CompareTarget, SchemaSnapshot } from "@/lib/postgres";
 import { fetchSchemaNames, fetchSchemaSnapshot, POOL_MAX } from "@/lib/postgres";
 import { mapWithLimit } from "@/lib/concurrency";
@@ -381,7 +381,7 @@ function tryBuildTarget(
     console.error(`Compare — could not read the credentials of "${connection.name}":`, message);
     return {
       target: null,
-      credentialError: `Could not use ${connectionDisplayName(connection)}. ${UNREADABLE_CREDENTIALS_MESSAGE}`,
+      credentialError: `Could not use ${connectionDisplayName(connection)}. ${credentialsMessage(error)}`,
     };
   }
 }

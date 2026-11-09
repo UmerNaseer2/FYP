@@ -6,7 +6,7 @@ import {
   type SchemaSnapshot,
 } from "./postgres";
 import { buildPgConfig } from "./connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "./secret-store";
+import { credentialsMessage } from "./secret-store";
 import { compareSchemas } from "./compare";
 import type { CompareReport } from "./compare-types";
 import { summarizeStructuralSeverity, type ChangeLevel } from "./version-detection";
@@ -913,7 +913,7 @@ export async function computeDriftDetail(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Drift check — could not read the credentials of "${t.connection_name}":`, message);
-    return { kind: "unreachable", ...subject, expected: ref, summary: UNREADABLE_CREDENTIALS_MESSAGE };
+    return { kind: "unreachable", ...subject, expected: ref, summary: credentialsMessage(error) };
   }
   const live = await fetchSchemaSnapshot(cfg, t.schema_name);
   if (!live.ok) {

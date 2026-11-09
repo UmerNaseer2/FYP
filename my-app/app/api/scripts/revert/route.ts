@@ -7,7 +7,7 @@ import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import { containsTransactionControl } from "@/lib/sql-guard";
 import {
   ScriptEndedTransactionError,
@@ -396,7 +396,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Revert — could not read the saved connection's credentials:", message);
-    return fail(500, { error: `Nothing was run. ${UNREADABLE_CREDENTIALS_MESSAGE}` });
+    return fail(500, { error: `Nothing was run. ${credentialsMessage(error)}` });
   }
 
   // The same check as the apply route: another saved connection to this

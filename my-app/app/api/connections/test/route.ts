@@ -3,6 +3,7 @@ import { requirePermission, type Principal } from "@/lib/auth-guard";
 import { hasPermission, refusalMessage } from "@/lib/permissions";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { runConnectionTest } from "@/lib/connection-config";
+import { editElsewhereMessage, savedSecrets } from "@/lib/connection-writes";
 import {
   REENTER_CONNECTION_STRING_MESSAGE,
   REENTER_PASSWORD_MESSAGE,
@@ -146,8 +147,12 @@ async function keptCredentials(
   // deleted one gets, so this cannot be used to learn which ids exist.
   if (!saved) return { ok: false, status: 404, error: "Connection not found." };
 
-  const storedPassword = String(saved.password ?? "");
-  const storedConnString = String(saved.connection_string ?? "");
+  // A local connection's secrets are on the machine that saved it, and only
+  // that machine can test an edit of it.
+  const secrets = savedSecrets(saved.password, saved.connection_string);
+  if (!secrets.ok) return { ok: false, status: 409, error: editElsewhereMessage(secrets.machine) };
+  const storedPassword = secrets.password;
+  const storedConnString = secrets.connectionString;
   const typedPassword = String(body.password ?? "");
   const typedConnString = String(body.connection_string ?? "").trim();
 

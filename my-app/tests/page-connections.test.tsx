@@ -667,8 +667,13 @@ describe("for a role that may not add, change or delete connections", () => {
     // that shows them.
     expect(document.querySelector(".drawer")).not.toHaveClass("open");
     expect(deleteDialog()).not.toHaveClass("open");
-    // The list of the person's own computers is a read, asked for on load.
-    expect(fetchCalls.map((c) => c.url).filter((url) => !url.startsWith("/api/computers"))).toEqual([
+    // The list of the person's own computers and this machine's name are
+    // reads, asked for on load.
+    expect(
+      fetchCalls
+        .map((c) => c.url)
+        .filter((url) => !url.startsWith("/api/computers") && url !== "/api/connections/machine")
+    ).toEqual([
       "/api/connections",
     ]);
   });

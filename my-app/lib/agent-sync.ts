@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { Principal } from "@/lib/auth-guard";
 import { decryptSecret } from "@/lib/secret-store";
+import { isLocalMarker } from "@/lib/local-secrets";
 import { hasPermission } from "@/lib/permissions";
 import { listOwnDrift } from "@/lib/drift-sync";
 import type { WebsiteDriftSchema } from "@/lib/agent-rules";
@@ -119,7 +120,12 @@ export async function readSync(principal: Principal, knownRev: string | null): P
     // none, the same as for someone not allowed it, rather than as ciphertext.
     let password = "";
     let connectionString = "";
-    if (withSecrets) {
+    // A connection whose password is kept on one machine goes as its marker,
+    // which is not a secret: the desktop then shows where it lives and says so
+    // when someone tries to use it there.
+    if (isLocalMarker(row.password)) {
+      password = row.password;
+    } else if (withSecrets) {
       try {
         password = decryptSecret(row.password) ?? "";
         connectionString = decryptSecret(row.connection_string) ?? "";

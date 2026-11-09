@@ -66,6 +66,7 @@ import {
   type FoundDatabase,
 } from "@/lib/desktop-bridge";
 import { apiFetch } from "@/lib/api-fetch";
+import { isPrivateHost } from "@/lib/host-guard";
 
 // ——— Data shapes ———
 type Connection = {
@@ -116,6 +117,10 @@ type Connection = {
   // Whether a password is stored. A website copy comes down without one for a
   // role that may not change connections.
   has_password?: boolean;
+  // A local connection: the machine that keeps its password, and whether that
+  // is this one. Null and false for a cloud connection.
+  lives_on?: string | null;
+  local_here?: boolean;
   updated_by?: string | null;
   updated_at?: string | null;
 };
@@ -200,6 +205,9 @@ const EMPTY_FORM = {
   environment: DEFAULT_ENVIRONMENT as Environment,
   applicationTable: "",
   executeRole: DEFAULT_EXECUTE_ROLE as ExecuteRole,
+  // "Only this machine can reach it". Null until the person ticks or unticks
+  // it, and then the address decides (see localOnlyShown).
+  localOnly: null as boolean | null,
 };
 
 function isLocalHost(host: string): boolean {
@@ -367,6 +375,7 @@ export default function ConnectionsPage() {
   // The one input on this page with a label that is not directly beside it —
   // it carries help text between the two — so it gets an explicit association.
   const appTableId = useId();
+  const localOnlyId = useId();
   const executeRoleId = useId();
   useDialogFocus(drawerOpen, drawerRef);
   useDialogFocus(deleteTarget !== null, deleteRef);
@@ -399,6 +408,22 @@ export default function ConnectionsPage() {
 
   // On the website: the person's own linked computers and what they hold.
   const [computers, setComputers] = useState<Computer[]>([]);
+
+  // The machine this copy runs on, when it keeps local connections' passwords
+  // itself (the Swinburne server). Null everywhere else.
+  const [machineName, setMachineName] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiFetch("/api/connections/machine")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (live && data && typeof data.name === "string") setMachineName(data.name);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // Toast
   const [toastMsg, setToastMsg] = useState("");
@@ -482,6 +507,16 @@ export default function ConnectionsPage() {
     };
   }, [bridge, mayCompare]);
 
+  /**
+   * Why a local connection cannot be used here, or null when it can: its
+   * password is kept on another machine. On its own machine with the password
+   * gone it can still be edited, to type the password again.
+   */
+  function elsewhereLock(conn: Connection): string | null {
+    if (!conn.lives_on || conn.local_here || conn.lives_on === machineName) return null;
+    return `This database lives on ${conn.lives_on}. Open Schema Studio there to use it.`;
+  }
+
   /** Why this row cannot be changed here right now, or null when it can. */
   function siteLock(conn: Connection): string | null {
     if (!bridge || conn.site_id == null) return null;
@@ -522,7 +557,7 @@ export default function ConnectionsPage() {
 
   function openEdit(conn: Connection) {
     // The button is off already.
-    if (updateRefusal !== null || siteLock(conn) !== null) return;
+    if (updateRefusal !== null || siteLock(conn) !== null || elsewhereLock(conn) !== null) return;
     const hasUri = Boolean(conn.has_connection_string);
     setEditingId(conn.id);
     fieldsFilledFrom.current = "";
@@ -540,6 +575,7 @@ export default function ConnectionsPage() {
       environment: connEnvironment(conn),
       applicationTable: conn.application_table ?? "",
       executeRole: toExecuteRole(conn.execute_role),
+      localOnly: conn.lives_on ? true : false,
     });
     setFormErrors({});
     setFieldMode(hasUri ? "uri" : "fields");
@@ -633,6 +669,19 @@ export default function ConnectionsPage() {
     setDrawerTest({ kind: "idle" });
   }
 
+  /**
+   * What the "Only this machine can reach it" box shows: the person's choice,
+   * or until they make one, whether the address is one only this machine's
+   * network can reach (the same guess the server makes).
+   */
+  function localOnlyShown(): boolean {
+    if (form.localOnly !== null) return form.localOnly;
+    const uri = form.uri.trim();
+    const parsed = fieldMode === "uri" && uri ? parsePostgresUri(uri) : null;
+    const host = parsed ? parsed.host : form.host.trim();
+    return isPrivateHost(host);
+  }
+
   // Build the test/save payload from the current form + mode.
   function buildPayload() {
     const uri = form.uri.trim();
@@ -654,6 +703,9 @@ export default function ConnectionsPage() {
       // could never be cleared once set, since a missing key means "leave it".
       application_table: form.applicationTable.trim(),
       execute_role: form.executeRole,
+      // Only on a copy that keeps local passwords, and then always what the
+      // box shows, so the server never guesses differently from the screen.
+      ...(machineName !== null ? { local_only: localOnlyShown() } : {}),
       connection_string: fieldMode === "uri" ? uri : "",
       // In Fields mode the user is defining the target by loose fields, so on
       // save any previously-stored connection string should be cleared (else
@@ -868,7 +920,7 @@ export default function ConnectionsPage() {
   async function testRow(conn: Connection, quiet = false) {
     // The button is off already, and the quiet re-test after a save asks the
     // same route, so a role without Connections: Update skips both.
-    if (updateRefusal !== null) return;
+    if (updateRefusal !== null || elsewhereLock(conn) !== null) return;
     const before = rowResults[conn.id];
     setRowResults((r) => ({ ...r, [conn.id]: { status: "testing" } }));
     try {
@@ -1555,6 +1607,7 @@ export default function ConnectionsPage() {
                     const local = isLocalHost(conn.host);
                     const sslMode = connSslMode(conn);
                     const lock = siteLock(conn);
+                    const elsewhere = elsewhereLock(conn);
                     return (
                       <tr key={conn.id}>
                         {/* Name */}
@@ -1592,6 +1645,18 @@ export default function ConnectionsPage() {
                                       This computer
                                     </span>
                                   ))}
+                                {conn.lives_on && (
+                                  <span
+                                    className="pill pill-outline"
+                                    title={
+                                      elsewhere ??
+                                      `Its password is kept on ${conn.lives_on} only. Everyone in ${orgName} sees it by name.`
+                                    }
+                                  >
+                                    <MonitorIcon size={11} />
+                                    On {conn.lives_on}
+                                  </span>
+                                )}
                                 {showWhere &&
                                   conn.site_id != null &&
                                   conn.has_password === false &&
@@ -1670,8 +1735,8 @@ export default function ConnectionsPage() {
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => testRow(conn)}
-                              disabled={result?.status === "testing" || updateRefusal !== null}
-                              title={updateRefusal ?? undefined}
+                              disabled={result?.status === "testing" || updateRefusal !== null || elsewhere !== null}
+                              title={updateRefusal ?? elsewhere ?? undefined}
                             >
                               <CheckIcon size={12} />
                               Test
@@ -1679,8 +1744,8 @@ export default function ConnectionsPage() {
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => openEdit(conn)}
-                              disabled={updateRefusal !== null || lock !== null}
-                              title={updateRefusal ?? lock ?? undefined}
+                              disabled={updateRefusal !== null || lock !== null || elsewhere !== null}
+                              title={updateRefusal ?? lock ?? elsewhere ?? undefined}
                             >
                               <EditIcon size={12} />
                               Edit
@@ -2217,6 +2282,30 @@ export default function ConnectionsPage() {
               </div>
             )}
           </div>
+
+          {/* Where the password is kept. Only on a copy with its own store for
+              local passwords (the Swinburne server); everywhere else every
+              connection is saved the same way, so there is nothing to choose. */}
+          {machineName !== null && (
+            <div className="mt-6">
+              <label className="flex items-center gap-2 cursor-pointer" htmlFor={localOnlyId}>
+                <input
+                  id={localOnlyId}
+                  type="checkbox"
+                  checked={localOnlyShown()}
+                  onChange={(e) => setForm((f) => ({ ...f, localOnly: e.target.checked }))}
+                />
+                <span className="label" style={{ margin: 0 }}>
+                  Only this machine can reach it
+                </span>
+              </label>
+              <div className="help mt-1.5">
+                {localOnlyShown()
+                  ? `The password stays on ${machineName}. Everyone in ${orgName} sees this connection by name, and it runs only here.`
+                  : `The password is saved for ${orgName}, so this connection works from every copy of Schema Studio.`}
+              </div>
+            </div>
+          )}
 
           {/* Application table — the other half of per-application script
               restrictions. A script says who it is for in its header; this

@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
 import { canExecute, toExecuteRole } from "@/lib/connection-access";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
 import { ADMIN_ROLE } from "@/lib/permissions";
 import type { PoolClient } from "pg";
@@ -134,7 +134,7 @@ export async function POST(request: NextRequest) {
       "Cancel — could not read the saved connection's credentials:",
       error instanceof Error ? error.message : error,
     );
-    return NextResponse.json({ ok: false, error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+    return NextResponse.json({ ok: false, error: credentialsMessage(error) }, { status: 500 });
   }
 
   let client: PoolClient | null = null;

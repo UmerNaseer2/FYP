@@ -3,6 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import {
   PUBLIC_COLUMNS,
+  publicRow,
   createConnection,
   deleteConnection,
   updateConnection,
@@ -55,7 +56,7 @@ export async function GET() {
       [gate.principal.orgId]
     );
 
-    return NextResponse.json(result.rows);
+    return NextResponse.json(result.rows.map(publicRow));
   } catch (error) {
     // This used to return `[]` with a 200. That made an unreachable metadata
     // database look exactly like "you have no connections yet" — the single

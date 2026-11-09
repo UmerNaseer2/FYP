@@ -15,7 +15,7 @@ import type { PoolConfig } from "pg";
 import pool, { syncMetadataTables } from "../version-db";
 import { fetchSchemaSnapshot, type SchemaSnapshot } from "../postgres";
 import { buildPgConfig } from "../connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "../secret-store";
+import { credentialsMessage } from "../secret-store";
 
 /** How long the schema capture waits for a lock on the target. */
 export const SNAPSHOT_LOCK_TIMEOUT_MS = 2_000;
@@ -91,7 +91,7 @@ export async function loadPgTarget(
       `${words.logPrefix}: could not read the connection's credentials:`,
       error instanceof Error ? error.message : error
     );
-    return refuse(UNREADABLE_CREDENTIALS_MESSAGE, 500);
+    return refuse(credentialsMessage(error), 500);
   }
 }
 

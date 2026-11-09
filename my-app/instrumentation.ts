@@ -20,6 +20,15 @@
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  // Local connections' passwords (only with LOCAL_DATABASE_URL), read before
+  // the drift scheduler's first tick needs them. It never throws.
+  try {
+    const { ensureLocalSecrets } = await import("./lib/local-store");
+    await ensureLocalSecrets();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Local password store — could not start: ${message}`);
+  }
   try {
     const { startDriftScheduler } = await import("./lib/drift-scheduler");
     startDriftScheduler();

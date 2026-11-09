@@ -1,8 +1,19 @@
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { Principal } from "@/lib/auth-guard";
 import { getConnectionDependents } from "@/lib/lineage-db";
-import { checkConnectionTarget } from "@/lib/connection-config";
+import { randomUUID } from "node:crypto";
+import { buildPgConfig, checkConnectionTarget } from "@/lib/connection-config";
 import { encryptSecret } from "@/lib/secret-store";
+import { isPrivateHost } from "@/lib/host-guard";
+import {
+  localMachineName,
+  localSecretFor,
+  localStoreConfigured,
+  makeLocalMarker,
+  parseLocalMarker,
+  type LocalEntry,
+} from "@/lib/local-secrets";
+import { deleteLocalSecret, saveLocalSecret } from "@/lib/local-store";
 import { hasPermission } from "@/lib/permissions";
 import { toEnvironment } from "@/lib/environments";
 import {
@@ -37,14 +48,101 @@ import {
  * version, such as an older page, is not checked, the way it never was.
  */
 
-/** Columns safe to return to the browser. */
+/**
+ * Columns safe to return to the browser, once passed through publicRow.
+ *
+ * A local connection's password column holds a marker, not a secret (see
+ * lib/local-secrets): `lives_on` is the machine named in it and `local_key`
+ * finds its password in that machine's own store. publicRow drops the key.
+ */
 export const PUBLIC_COLUMNS = `id, name, host, port, database_name, type, username,
                 (connection_string IS NOT NULL AND connection_string <> '') AS has_connection_string,
                 (password IS NOT NULL AND password <> '') AS has_password,
                 ssl, ssl_mode, environment, application_table, execute_role,
                 last_tested_at, last_test_ok, last_test_version,
                 last_test_latency_ms, last_test_error,
-                version, updated_at, updated_by, site_id, site_version`;
+                version, updated_at, updated_by, site_id, site_version,
+                substring(password from '^local:v1:[^:]*:(.*)$') AS lives_on,
+                substring(password from '^local:v1:([^:]*):') AS local_key`;
+
+/**
+ * A row read with PUBLIC_COLUMNS, ready for the browser.
+ *
+ * `local_here` says whether this machine holds a local connection's password,
+ * which is what lets the page offer Test and Edit. Whether it has a password or
+ * a connection string comes from this machine's store when it does.
+ */
+export function publicRow(row: Record<string, unknown>): Record<string, unknown> {
+  const { local_key: localKey, ...rest } = row;
+  if (typeof localKey !== "string" || localKey === "") {
+    return { ...rest, lives_on: null, local_here: false };
+  }
+  const entry = localSecretFor(localKey);
+  if (!entry) return { ...rest, local_here: false, has_password: true, has_connection_string: false };
+  return {
+    ...rest,
+    local_here: true,
+    has_password: Boolean(entry.password),
+    has_connection_string: Boolean(entry.connectionString),
+  };
+}
+
+/**
+ * Whether a saved connection should keep its password on this machine.
+ *
+ * Only a copy with its own store (LOCAL_DATABASE_URL) has local connections at
+ * all. The form says so with `local_only`; a caller that does not say (an
+ * older page, a script) gets the guess: an address only this machine or its
+ * network can reach is local.
+ */
+function wantsLocal(body: Record<string, unknown>, guess: () => boolean, current: boolean | null): boolean {
+  if (!localStoreConfigured()) return false;
+  if (typeof body.local_only === "boolean") return body.local_only;
+  return current ?? guess();
+}
+
+/** The host a connection would really dial, for the local guess. */
+function dialledHost(input: { host: string; port: number; database_name: string; username: string; password: string; connection_string: string }): string | undefined {
+  try {
+    return buildPgConfig({
+      host: input.host,
+      port: input.port,
+      database: input.database_name,
+      user: input.username,
+      password: input.password,
+      connectionString: input.connection_string,
+    }).host;
+  } catch {
+    return input.host;
+  }
+}
+
+/** Said when a local connection is changed on a machine that does not hold its password. */
+export function editElsewhereMessage(machine: string): string {
+  return `This database lives on ${machine}. Open Schema Studio there to change it.`;
+}
+
+/**
+ * The password and connection string saved for a row, still encrypted.
+ *
+ * A cloud row's are its own columns. A local row's come from this machine's
+ * store; on its own machine with the store emptied they are blank, so the
+ * person can type the password again. Anywhere else the answer names the
+ * machine that holds them.
+ */
+export function savedSecrets(
+  password: string | null | undefined,
+  connectionString: string | null | undefined
+): { ok: true; password: string; connectionString: string } | { ok: false; machine: string } {
+  const marker = parseLocalMarker(password);
+  if (!marker) return { ok: true, password: String(password ?? ""), connectionString: String(connectionString ?? "") };
+  const held = localSecretFor(marker.key);
+  if (held) return { ok: true, password: held.password ?? "", connectionString: held.connectionString ?? "" };
+  if (localStoreConfigured() && marker.machine === localMachineName()) {
+    return { ok: true, password: "", connectionString: "" };
+  }
+  return { ok: false, machine: marker.machine };
+}
 
 export type WriteAnswer = { status: number; body: unknown };
 
@@ -85,7 +183,7 @@ async function conflict(principal: Principal, id: number): Promise<WriteAnswer> 
     {
       error: `${who} "${current.name}" after you opened it. Keep their version, or save yours on top.`,
       conflict: true,
-      current: rows[0],
+      current: publicRow(rows[0]),
     },
     { status: 409 }
   );
@@ -131,8 +229,24 @@ export async function createConnection(
     return reply({ error: hostCheck.message }, { status: 400 });
   }
 
+  // A local connection's password is saved on this machine first, so the
+  // shared row never points at a password that is not there.
+  const localKey = wantsLocal(body, () => isPrivateHost(dialledHost(value)), null) ? randomUUID() : null;
+
   try {
     await syncMetadataTables();
+
+    if (localKey) {
+      try {
+        await saveLocalSecret(localKey, { password: value.password, connectionString: value.connection_string });
+      } catch (error) {
+        console.error("POST connection: the local password store could not be written:", error);
+        return reply(
+          { error: `The password could not be saved on ${localMachineName()}. Check its local database (LOCAL_DATABASE_URL).` },
+          { status: 500 }
+        );
+      }
+    }
 
     const result = await pool.query(
       `
@@ -150,8 +264,8 @@ export async function createConnection(
         value.database_name,
         value.type,
         value.username,
-        encryptSecret(value.password) ?? "",
-        encryptSecret(value.connection_string) || null,
+        localKey ? makeLocalMarker(localKey, localMachineName()) : (encryptSecret(value.password) ?? ""),
+        localKey ? null : encryptSecret(value.connection_string) || null,
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
         value.environment,
@@ -162,8 +276,9 @@ export async function createConnection(
       ]
     );
 
-    return reply(result.rows[0]);
+    return reply(publicRow(result.rows[0]));
   } catch (error) {
+    if (localKey) await deleteLocalSecret(localKey);
     console.error("POST connection error:", error);
     return reply({ error: "Failed to save connection." }, { status: 500 });
   }
@@ -203,6 +318,10 @@ export async function updateConnection(
   // must be cleared — otherwise the old URI would still win over the fields.
   const clearConnectionString = Boolean(body.clear_connection_string);
 
+  // Puts this machine's store back the way it was when the shared row could
+  // not be saved after all.
+  let undoLocalSave: (() => Promise<void>) | null = null;
+
   try {
     await syncMetadataTables();
 
@@ -239,6 +358,15 @@ export async function updateConnection(
     if (existing.rows[0].site_id != null) {
       return reply({ error: SITE_OWNED_MESSAGE, siteOwned: true }, { status: 409 });
     }
+    // A local connection is changed only on the machine that holds its
+    // password: anywhere else there is nothing to check the change against.
+    // On its own machine with the password gone (the store was reset), it can
+    // be saved again with the password typed in.
+    const marker = parseLocalMarker(existing.rows[0].password);
+    const held: LocalEntry | null = marker ? localSecretFor(marker.key) : null;
+    if (marker && !held && !(localStoreConfigured() && marker.machine === localMachineName())) {
+      return reply({ error: editElsewhereMessage(marker.machine), livesOn: marker.machine }, { status: 409 });
+    }
     // Checked before anything else about the change, so a person who started
     // from an old copy hears about that first, not about a rule the newer
     // version may have made moot.
@@ -265,8 +393,9 @@ export async function updateConnection(
     }
 
     // These stay encrypted — we only need to know whether they are non-empty.
-    const storedPassword = String(existing.rows[0].password ?? "");
-    const storedConnString = String(existing.rows[0].connection_string ?? "");
+    // A local connection's are the ones this machine holds.
+    const storedPassword = String((marker ? held?.password : existing.rows[0].password) ?? "");
+    const storedConnString = String((marker ? held?.connectionString : existing.rows[0].connection_string) ?? "");
 
     // Mirror the CASE logic in the UPDATE below exactly.
     const effectivePassword = value.password === "" ? storedPassword : value.password;
@@ -386,6 +515,35 @@ export async function updateConnection(
       );
     }
 
+    // Where the password lives after the save. The form says with
+    // `local_only`; without it the connection stays where it is. A local one
+    // is written to this machine's store first, then the shared row gets its
+    // marker; one moving back to the cloud takes its password with it.
+    const wasLocal = marker !== null;
+    const local = wantsLocal(body, () => false, wasLocal);
+    const localKey = local ? (marker?.key ?? randomUUID()) : null;
+    if (localKey) {
+      try {
+        await saveLocalSecret(localKey, { password: effectivePassword, connectionString: effectiveConnString });
+      } catch (error) {
+        console.error("PUT connection: the local password store could not be written:", error);
+        return reply(
+          { error: `The password could not be saved on ${localMachineName()}. Check its local database (LOCAL_DATABASE_URL).` },
+          { status: 500 }
+        );
+      }
+      undoLocalSave = held ? () => saveLocalSecret(localKey, held) : () => deleteLocalSecret(localKey);
+    }
+    const movesPassword = local || wasLocal;
+    const passwordValue = local
+      ? makeLocalMarker(localKey!, localMachineName())
+      : wasLocal
+        ? (encryptSecret(effectivePassword) ?? "")
+        : // Encrypt only a value the user actually typed; "" still means "keep".
+          (encryptSecret(value.password) ?? "");
+    const connStringValue =
+      wasLocal && !local ? (encryptSecret(effectiveConnString) ?? "") : (encryptSecret(value.connection_string) ?? "");
+
     const result = await pool.query(
       `
       UPDATE connections
@@ -395,9 +553,10 @@ export async function updateConnection(
           database_name = $4,
           type = $5,
           username = $6,
-          password = CASE WHEN $7 = '' THEN password ELSE $7 END,
+          password = CASE WHEN $15::boolean THEN $7 WHEN $7 = '' THEN password ELSE $7 END,
           connection_string = CASE
             WHEN $8 THEN NULL
+            WHEN $15::boolean THEN NULLIF($9, '')
             WHEN $9 = '' THEN connection_string
             ELSE $9
           END,
@@ -408,9 +567,9 @@ export async function updateConnection(
           execute_role = $14,
           version = version + 1,
           updated_at = now(),
-          updated_by = $17
-      WHERE id = $15 AND org_id = $16
-        AND ($18::int IS NULL OR version = $18::int)
+          updated_by = $18
+      WHERE id = $16 AND org_id = $17
+        AND ($19::int IS NULL OR version = $19::int)
       RETURNING ${PUBLIC_COLUMNS}
       `,
       [
@@ -420,15 +579,15 @@ export async function updateConnection(
         value.database_name,
         value.type,
         value.username,
-        // Encrypt only a value the user actually typed; "" still means "keep".
-        encryptSecret(value.password) ?? "",
-        clearConnectionString,
-        encryptSecret(value.connection_string) ?? "",
+        passwordValue,
+        local || clearConnectionString,
+        connStringValue,
         sslModeUsesTls(value.ssl_mode),
         value.ssl_mode,
         value.environment,
         value.application_table,
         value.execute_role,
+        movesPassword,
         id,
         principal.orgId,
         savedBy(principal),
@@ -439,11 +598,15 @@ export async function updateConnection(
     // Someone saved between the read above and this write: the version check
     // in the WHERE is what makes the two of them one decision.
     if (result.rows.length === 0) {
+      if (undoLocalSave) await undoLocalSave();
       return startedFrom !== null ? conflict(principal, id) : reply({ error: "Connection not found." }, { status: 404 });
     }
+    // Back in the cloud: the password is in the shared row now.
+    if (marker && !local) await deleteLocalSecret(marker.key);
 
-    return reply(result.rows[0]);
+    return reply(publicRow(result.rows[0]));
   } catch (error) {
+    if (undoLocalSave) await undoLocalSave().catch(() => undefined);
     console.error("PUT connection error:", error);
     return reply({ error: "Failed to update connection." }, { status: 500 });
   }
@@ -466,8 +629,9 @@ export async function deleteConnection(
       environment: string | null;
       version: number;
       site_id: number | null;
+      password: string | null;
     }>(
-      `SELECT name, environment, version, site_id FROM connections WHERE id = $1 AND org_id = $2`,
+      `SELECT name, environment, version, site_id, password FROM connections WHERE id = $1 AND org_id = $2`,
       [id, principal.orgId]
     );
     // Another organization's connection reads as missing, the same answer a
@@ -548,6 +712,11 @@ export async function deleteConnection(
       [id, principal.orgId, startedFrom]
     );
     if (rowCount === 0 && startedFrom !== null) return conflict(principal, id);
+
+    // A local connection can be deleted from anywhere. Its password goes too
+    // when it was kept here; one kept on another machine stays there, unused.
+    const marker = parseLocalMarker(existing.rows[0].password);
+    if (marker && localSecretFor(marker.key)) await deleteLocalSecret(marker.key);
 
     return reply({ success: true, dependents });
   } catch (error) {

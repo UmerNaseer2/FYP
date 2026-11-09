@@ -149,7 +149,8 @@ describe("saving from an old copy", () => {
     expect(result.status).toBe(409);
     expect(result.body.conflict).toBe(true);
     expect(result.body.error).toMatch(/^Sam Lee saved "Book shop" after you opened it\./);
-    expect(result.body.current).toEqual(CURRENT);
+    // A cloud connection: kept on no one machine.
+    expect(result.body.current).toEqual({ ...CURRENT, lives_on: null, local_here: false });
     expect(ran(/^\s*UPDATE connections/)).toHaveLength(0);
   });
 

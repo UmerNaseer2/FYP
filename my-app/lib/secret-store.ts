@@ -5,6 +5,7 @@ import {
   scryptSync,
 } from "node:crypto";
 import { isPlaceholderSecret, PLACEHOLDER_SECRETS } from "./placeholder-secrets";
+import { isLocalMarker, LivesElsewhereError } from "./local-secrets";
 
 /**
  * Encryption at rest for saved database credentials.
@@ -126,6 +127,10 @@ export function isEncrypted(value: string | null | undefined): boolean {
 export function encryptSecret(plain: string | null | undefined): string | null {
   if (plain === null || plain === undefined || plain === "") return plain ?? null;
   if (isEncrypted(plain)) return plain;
+  // A local connection's marker (lib/local-secrets) is not a secret: it names
+  // the machine that holds the password, and the shared database reads that
+  // name in SQL. It is kept readable.
+  if (isLocalMarker(plain)) return plain;
 
   const { key } = resolveKey();
   if (!key) return plain;
@@ -231,3 +236,12 @@ export const UNREADABLE_CREDENTIALS_MESSAGE =
   "This connection's stored credentials can't be read on this server. Set " +
   "APP_ENCRYPTION_KEY to the key they were saved with, or edit the connection on " +
   "the Connections screen and enter its password again.";
+
+/**
+ * What a screen says when a saved connection's credentials could not be
+ * prepared. A local connection kept on another machine says where it lives;
+ * anything else is the unreadable-credentials message above.
+ */
+export function credentialsMessage(error: unknown): string {
+  return error instanceof LivesElsewhereError ? error.message : UNREADABLE_CREDENTIALS_MESSAGE;
+}

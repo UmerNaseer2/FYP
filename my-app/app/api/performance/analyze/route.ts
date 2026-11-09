@@ -5,7 +5,7 @@ import { hasPermission, refusalMessage } from "@/lib/permissions";
 import { actorFor } from "@/lib/auth-mode";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
 import {
   QUERY_TIMEOUT_SECONDS,
@@ -364,7 +364,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Query analysis — could not read the saved connection's credentials:", message);
-    return fail(UNREADABLE_CREDENTIALS_MESSAGE, 500);
+    return fail(credentialsMessage(error), 500);
   }
   const target = getPoolForConfig(targetConfig);
 

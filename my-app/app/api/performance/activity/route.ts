@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import { getPoolForConfig } from "@/lib/postgres";
 import type { PoolClient } from "pg";
 import {
@@ -154,7 +154,7 @@ export async function GET(request: NextRequest) {
       "Activity — could not read the saved connection's credentials:",
       error instanceof Error ? error.message : error
     );
-    return NextResponse.json({ ok: false, error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+    return NextResponse.json({ ok: false, error: credentialsMessage(error) }, { status: 500 });
   }
 
   // The threshold is read before the target connection is opened, so a slow or

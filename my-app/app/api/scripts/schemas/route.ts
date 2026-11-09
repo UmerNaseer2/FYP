@@ -3,7 +3,7 @@ import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { getPoolForConfig, MANAGED_SCHEMAS } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 
 export async function GET(req: NextRequest) {
   const gate = await requirePermission("scripts:read", "deploy:read", "version_sync:read", "visualizer:read");
@@ -82,7 +82,7 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("Script schemas — could not read the saved connection's credentials:", message);
-    return NextResponse.json({ error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+    return NextResponse.json({ error: credentialsMessage(err) }, { status: 500 });
   }
   const targetPool = getPoolForConfig(targetConfig);
 

@@ -10,7 +10,7 @@ import pool, { syncMetadataTables } from "@/lib/version-db";
 import type { PoolClient } from "pg";
 import { getPoolForConfig } from "@/lib/postgres";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import {
   containsTransactionControl,
   enumAddValueTypeName,
@@ -921,8 +921,8 @@ async function runApply(request: NextRequest, attempt: AttemptContext) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Apply — could not read the saved connection's credentials:", message);
     return answerBeforeRun(
-      // The instruction every route gives for this (UNREADABLE_CREDENTIALS_MESSAGE).
-      { error: `Nothing ran. ${UNREADABLE_CREDENTIALS_MESSAGE}` },
+      // The instruction every route gives for this (credentialsMessage).
+      { error: `Nothing ran. ${credentialsMessage(error)}` },
       { status: 500 }
     );
   }

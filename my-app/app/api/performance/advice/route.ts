@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth-guard";
 import pool, { syncMetadataTables } from "@/lib/version-db";
 import { buildPgConfig } from "@/lib/connection-config";
-import { UNREADABLE_CREDENTIALS_MESSAGE } from "@/lib/secret-store";
+import { credentialsMessage } from "@/lib/secret-store";
 import { fetchSchemaSnapshot, getPoolForConfig, withoutToolTables } from "@/lib/postgres";
 import type { IndexSnapshot } from "@/lib/postgres";
 import type { PoolClient } from "pg";
@@ -242,7 +242,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Performance advice — could not read the saved connection's credentials:", message);
-    return NextResponse.json({ ok: false, error: UNREADABLE_CREDENTIALS_MESSAGE }, { status: 500 });
+    return NextResponse.json({ ok: false, error: credentialsMessage(error) }, { status: 500 });
   }
 
   // ── Pass one: the schema's structure ──────────────────────────────────────
