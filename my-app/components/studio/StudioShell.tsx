@@ -10,6 +10,7 @@ import { signOutEverywhere } from "@/lib/sign-out";
 import { Drawer } from "@/components/ui";
 import { DEFAULT_ROLE, presetFor, readKeyOf } from "@/lib/permissions";
 import { StudioSidebar, type StudioUser } from "./StudioSidebar";
+import { HelpButton, HelpProvider } from "@/components/help/HelpPanel";
 import { StudioTopbar } from "./StudioTopbar";
 import { SchemaChatButton } from "./SchemaChat";
 import { OrgSwitcher } from "./OrgSwitcher";
@@ -157,6 +158,9 @@ export function StudioShell({ children, user }: StudioShellProps) {
   );
 
   return (
+    // HelpProvider holds the Help panel, so the top bar's Help button and the
+    // one in each page's header open the same panel.
+    <HelpProvider>
     <div
       className="studio grid"
       style={{
@@ -201,7 +205,14 @@ export function StudioShell({ children, user }: StudioShellProps) {
           breadcrumbScreen={active.screen}
           showMenu={isMobile}
           onMenuClick={() => setMobileNavOpen(true)}
-          action={<SchemaChatButton />}
+          // Help first, then the schema chat: Help is on every page for
+          // everyone, the chat only shows where AI is switched on.
+          action={
+            <>
+              <HelpButton />
+              <SchemaChatButton />
+            </>
+          }
         />
         {/* tabIndex -1: the skip link can put focus here, Tab never stops on it. */}
         <main
@@ -227,5 +238,6 @@ export function StudioShell({ children, user }: StudioShellProps) {
         </Drawer>
       )}
     </div>
+    </HelpProvider>
   );
 }

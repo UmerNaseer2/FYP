@@ -7,6 +7,7 @@ import {
   fetchCalls,
   render,
   resetPageState,
+  setPathname,
   setRoutes,
   setSearchParams,
   setUser,
@@ -17,6 +18,7 @@ jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs
 jest.mock("next/navigation", () => require("./helpers/render-page").navigationStubs);
 
 import LinkComputerPage from "@/app/[org]/link-computer/page";
+import { HELP_TOPICS } from "@/lib/help";
 
 const ORGS: FetchRoute = {
   match: "/api/organizations",
@@ -49,6 +51,16 @@ beforeEach(() => {
 });
 
 describe("the link page", () => {
+  it("shows the page's name, its one line from the help file, and a Help button", async () => {
+    setPathname("/test-org/link-computer");
+    render(<LinkComputerPage />);
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Link a computer");
+    expect(screen.getByText(HELP_TOPICS["/link-computer"].blurb)).toBeInTheDocument();
+    // There is no shell on this page, so it brings the Help panel itself.
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    expect(await screen.findByText(HELP_TOPICS["/link-computer"].purpose)).toBeInTheDocument();
+  });
+
   it("warns before anything else", async () => {
     render(<LinkComputerPage />);
     expect(await screen.findByText(/Only link a computer you are sitting at/)).toBeInTheDocument();

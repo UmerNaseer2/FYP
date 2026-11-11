@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { EnvironmentPill, Pill, type PillTone } from "@/components/ui";
 import { DriftIcon, MonitorIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
 import { apiFetch } from "@/lib/api-fetch";
@@ -116,6 +117,12 @@ function CheckedByWebsite() {
     <Section
       icon={<DriftIcon size={14} />}
       title="Checked by the website"
+      hint={
+        <>
+          {drift.orgName} checks these schemas on its own connections. This computer shows their latest
+          results. The full diff is on the website.
+        </>
+      }
       action={
         href && (
           <a href={href} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
@@ -124,12 +131,12 @@ function CheckedByWebsite() {
         )
       }
     >
-      <p className="help max-w-[70ch] mb-3">
-        {drift.orgName} checks these schemas on its own connections. This computer shows their latest results;
-        the full diff is on the website.
-        {asOf && ` As of ${asOf}.`}
-        {!drift.online && " The website cannot be reached right now, so these may be out of date."}
-      </p>
+      {(asOf || !drift.online) && (
+        <p className="help max-w-[70ch] mb-3">
+          {asOf && `As of ${asOf}.`}
+          {!drift.online && " The website cannot be reached right now, so these may be out of date."}
+        </p>
+      )}
       <RowList rows={rows} label={`Drift checked by ${drift.orgName}`} />
     </Section>
   );
@@ -187,11 +194,11 @@ function OnYourComputers() {
 
   if (places.length === 0) return null;
   return (
-    <Section icon={<MonitorIcon size={14} />} title="On your computers">
-      <p className="help max-w-[70ch] mb-3">
-        Schemas the desktop app checks on your own computers, on connections that stay there. Only you see this
-        list. The full diff is in the desktop app on that computer.
-      </p>
+    <Section
+      icon={<MonitorIcon size={14} />}
+      title="On your computers"
+      hint="Schemas the desktop app checks on your own computers, on connections that stay there. Only you see this list. The full diff is in the desktop app on that computer."
+    >
       <div className="space-y-4">
         {places.map((place) => (
           <div key={place.key}>
@@ -227,20 +234,24 @@ function OnYourComputers() {
 function Section({
   icon,
   title,
+  hint,
   action,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
+  /** The short explanation behind the "?" beside the title. */
+  hint?: React.ReactNode;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section aria-label={title}>
-      <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
         <div className="flex items-center gap-2">
           <span style={{ color: "var(--text-3)" }}>{icon}</span>
           <h2 className="text-[14px] font-semibold">{title}</h2>
+          {hint && <HelpHint label={title}>{hint}</HelpHint>}
         </div>
         {action}
       </div>

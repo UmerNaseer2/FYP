@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, Pill, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, CheckIcon, InfoIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import {
@@ -222,12 +223,11 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
           <span className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
             for <span className="mono">{view.schema}</span> on {view.connectionName}
           </span>
-        </div>
-        <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-          These rules apply to this connection and this schema only, and every one
-          of them starts switched off. The numbers already in the boxes are
-          suggestions — this app has not looked at your database and decided what
-          is slow. A rule that is off is never checked and never fires.
+          <HelpHint label="Alert rules">
+            These rules apply to this connection and this schema only, and every one
+            starts switched off. The numbers in the boxes are suggestions: this app has
+            not looked at your database and decided what is slow.
+          </HelpHint>
         </div>
       </Card>
 
@@ -300,6 +300,26 @@ export function AlertThresholds({ target }: { target: PerfTarget | null }) {
   );
 }
 
+/**
+ * What each rule does, in a sentence or two, for the "?" beside its name. The
+ * fuller wording is in the help file (lib/help/performance.ts).
+ */
+const ROW_HINTS: Record<ThresholdKey, string> = {
+  query_exec_ms:
+    "Fires when an analysed query is timed at more than this. Only measured runs count, " +
+    "because an estimate has no time to compare.",
+  query_score: "Fires when an analysed query scores under this, out of 100.",
+  long_running_seconds:
+    "Fires when Live activity finds a session that has been on the same statement for " +
+    "longer than this.",
+  cache_hit_ratio:
+    "Checked on Live activity, for the whole database. It is the share of reads the server " +
+    "answered from its own memory, counted since its counters were last reset.",
+  dead_row_ratio:
+    "The share of dead rows at which Suggestions reports a table as needing a vacuum. " +
+    "Left off, that tab uses 20%.",
+};
+
 function ThresholdRow({
   definition,
   value,
@@ -326,6 +346,7 @@ function ThresholdRow({
           />
           {definition.label}
         </label>
+        <HelpHint label={definition.label}>{ROW_HINTS[definition.key]}</HelpHint>
 
         <div className="flex items-center gap-1.5 ml-auto">
           <label htmlFor={inputId} className="sr-only">
@@ -355,10 +376,11 @@ function ThresholdRow({
         </div>
       </div>
 
-      <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-        {definition.help}
-        {!value.enabled && " This rule is off, so it is never checked."}
-      </div>
+      {!value.enabled && (
+        <div className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+          This rule is off, so it is never checked.
+        </div>
+      )}
 
       {problem && (
         <div className="text-[12px]" style={{ color: "var(--break)" }}>

@@ -11,6 +11,7 @@
 import "@testing-library/jest-dom";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { REQUESTS_CHANGED_EVENT, type InboxRequest, type RequestsPayload } from "@/lib/access-requests";
+import { HELP_TOPICS } from "@/lib/help";
 import type { ListedApproval } from "@/lib/approvals-db";
 import { permissionLabel, type PermissionKey } from "@/lib/permissions";
 import {
@@ -149,10 +150,20 @@ afterEach(() => cleanup());
 describe("asking for something", () => {
   beforeEach(() => setUser("viewer"));
 
-  it("says this is the place to ask, and how an answer reaches you", async () => {
+  it("names the page and says in one line what it is for", async () => {
     await draw(payload());
-    expect(await screen.findByRole("heading", { name: "Ask for what your role can't do" })).toBeInTheDocument();
-    expect(screen.getByText(/does not send email/)).toBeInTheDocument();
+    // How an answer reaches you (the app sends no email) is in the page's help.
+    expect(await screen.findByRole("heading", { level: 1, name: "Requests" })).toBeInTheDocument();
+    expect(screen.getByText(HELP_TOPICS["/requests"].blurb)).toBeInTheDocument();
+    expect(HELP_TOPICS["/requests"].purpose).toMatch(/does not send email/);
+  });
+
+  it("keeps who a request goes to one click away, beside the picker", async () => {
+    await draw(payload());
+    fireEvent.click(await screen.findByRole("button", { name: "Help: What do you need?" }));
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Your request goes to the people here who can change roles or users."
+    );
   });
 
   it("offers only what the role can't do and an admin could give", async () => {
@@ -296,7 +307,7 @@ describe("asking for something", () => {
   it("does not offer an Admin the form, because an Admin already holds everything", async () => {
     setUser("admin");
     await draw(payload({ canAnswer: true }));
-    await screen.findByRole("heading", { name: "What people here need" });
+    await screen.findByRole("heading", { level: 1, name: "Requests" });
     expect(screen.queryByRole("combobox", { name: "What do you need?" })).toBeNull();
   });
 });

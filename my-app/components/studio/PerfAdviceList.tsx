@@ -190,17 +190,13 @@ export function PerfAdviceList({ target }: { target: PerfTarget | null }) {
               description={
                 // Without the counters, only the schema's own checks ran, so
                 // "nothing to flag" must not speak for the ones that did not.
+                // What the checks cover is in Help (lib/help/performance.ts).
                 view.statsUnavailable
                   ? `None of the checks on the schema itself found anything in ` +
-                    `${view.schema}. That covers missing keys and indexes, ` +
-                    `duplicated indexes, and column types that cost more than they ` +
-                    `need to. The checks that need live counters could not run ` +
-                    `(see above), so this says nothing about unused or invalid ` +
+                    `${view.schema}. The checks that need live counters could not ` +
+                    `run (see above), so this says nothing about unused or invalid ` +
                     `indexes or how these tables are being read.`
-                  : `None of the checks found anything in ${view.schema}. That covers ` +
-                    `missing keys and indexes, duplicated, unused and invalid indexes, ` +
-                    `column types that cost more than they need to, and how the ` +
-                    `server says these tables are actually being read.`
+                  : `None of the checks found anything in ${view.schema}.`
               }
             />
           </div>

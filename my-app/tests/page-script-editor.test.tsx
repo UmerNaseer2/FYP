@@ -32,6 +32,7 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import ScriptEditorPage from "@/app/[org]/(studio)/script-editor/page";
+import { HELP_TOPICS } from "@/lib/help";
 import {
   fetchCalls,
   flushAsync,
@@ -148,6 +149,24 @@ async function refusal(version: string) {
 
 beforeEach(() => resetPageState());
 afterEach(() => cleanup());
+
+describe("the page header", () => {
+  it("shows the page's name and the one line from its help file", async () => {
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Script Editor" })).toBeInTheDocument();
+    expect(screen.getByText(HELP_TOPICS["/script-editor"].blurb)).toBeInTheDocument();
+  });
+
+  it("keeps how the page works behind a hint, one click away", async () => {
+    setRoutes(baseRoutes());
+    render(<ScriptEditorPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Help: Where this script belongs" }));
+    expect(screen.getByRole("note")).toHaveTextContent(/Nothing runs against this database from here/);
+  });
+});
 
 describe("when the editor cannot do its job", () => {
   it("does not call an unreadable connection list an empty one", async () => {

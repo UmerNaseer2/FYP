@@ -42,7 +42,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DataCompare } from "@/components/studio/DataCompare";
 import type { DataCompareReport, TableDataCompare } from "@/lib/compare-data-summary";
@@ -552,23 +552,29 @@ describe("choosing which tables the next run reads", () => {
 
     expect(screen.getByText("Reading every table")).toBeInTheDocument();
     expect(screen.getByText(/Tick nothing/)).toHaveTextContent(
-      "Tick nothing to read every table again. A selection only changes which tables are READ — the rest are still listed below, as not read."
+      "Tick nothing to read every table again."
     );
   });
 });
 
-describe("what the footer admits to", () => {
+// The footer paragraph became the "?" note beside the panel's title, so both
+// tests open it first. The longer wording lives in Compare's help.
+describe("what the note beside Row data admits to", () => {
   it("states the timeout the run actually used", () => {
     render(<DataCompare result={aReport([aTable({ table: "invoices" })], { timeoutMs: 30000 })} />);
 
-    expect(screen.getByText(/Rows are compared by checksum/)).toHaveTextContent("capped at 30s each");
+    fireEvent.click(screen.getByRole("button", { name: "Help: How rows are compared" }));
+
+    expect(screen.getByRole("note")).toHaveTextContent("Each statement is capped at 30s.");
   });
 
   it("warns that two servers can render the same value differently", () => {
     render(<DataCompare result={aReport([aTable({ table: "invoices" })])} />);
 
-    expect(screen.getByText(/Values are hashed as text/)).toHaveTextContent(
-      "will read as different even when the data matches. Row counts are exact either way."
+    fireEvent.click(screen.getByRole("button", { name: "Help: How rows are compared" }));
+
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Values are hashed as text, so two servers that write a value differently can read as different. Row counts are exact."
     );
   });
 });

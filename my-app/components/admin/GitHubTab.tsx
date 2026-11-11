@@ -5,6 +5,7 @@ import { AskAdmin } from "@/components/studio/AskAdmin";
 import { useUser } from "@/hooks/useUser";
 import { Button, Card, ConfirmDialog, Input, Label, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, AlertTriangleIcon, CheckIcon, InfoIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { apiFetch } from "@/lib/api-fetch";
 import { errorFrom, jsonOf } from "@/lib/api-answer";
 import type { GitHubSettingsView } from "@/lib/github-settings";
@@ -272,9 +273,12 @@ export function GitHubTab({ active }: { active: boolean }) {
             <h3 className="section-title">{ownSettings ? "Change the repository or token" : "Connect a repository"}</h3>
             <div className="mt-2 space-y-3">
               <div>
-                <Label htmlFor={repositoryId} className="mb-1 block">
-                  Repository
-                </Label>
+                <div className="flex items-center mb-1">
+                  <Label htmlFor={repositoryId}>Repository</Label>
+                  <HelpHint label="Repository">
+                    Type it as owner/name, or paste its address from GitHub.
+                  </HelpHint>
+                </div>
                 <Input
                   id={repositoryId}
                   mono
@@ -288,22 +292,22 @@ export function GitHubTab({ active }: { active: boolean }) {
                     if (problem?.field === "repository") setProblem(null);
                   }}
                   aria-invalid={repositoryProblem ? true : undefined}
-                  aria-describedby={repositoryProblem ? `${repositoryId}-problem` : `${repositoryId}-help`}
+                  aria-describedby={repositoryProblem ? `${repositoryId}-problem` : undefined}
                 />
-                {repositoryProblem ? (
+                {repositoryProblem && (
                   <p id={`${repositoryId}-problem`} className="field-problem mt-1.5">
                     {repositoryProblem}
-                  </p>
-                ) : (
-                  <p id={`${repositoryId}-help`} className="text-[12.5px] mt-1.5" style={{ color: "var(--text-3)" }}>
-                    Type it as owner/name, or paste its address from GitHub.
                   </p>
                 )}
               </div>
               <div>
-                <Label htmlFor={tokenId} className="mb-1 block">
-                  Access token
-                </Label>
+                <div className="flex items-center mb-1">
+                  <Label htmlFor={tokenId}>Access token</Label>
+                  <HelpHint label="Access token">
+                    A GitHub fine-grained token that may read and write this repository (Contents: Read and
+                    write). It is stored encrypted and never shown again. Help has the steps for making one.
+                  </HelpHint>
+                </div>
                 <Input
                   id={tokenId}
                   type="password"
@@ -318,17 +322,11 @@ export function GitHubTab({ active }: { active: boolean }) {
                     if (problem?.field === "token") setProblem(null);
                   }}
                   aria-invalid={tokenProblem ? true : undefined}
-                  aria-describedby={tokenProblem ? `${tokenId}-problem` : `${tokenId}-help`}
+                  aria-describedby={tokenProblem ? `${tokenId}-problem` : undefined}
                 />
-                {tokenProblem ? (
+                {tokenProblem && (
                   <p id={`${tokenId}-problem`} className="field-problem mt-1.5">
                     {tokenProblem}
-                  </p>
-                ) : (
-                  <p id={`${tokenId}-help`} className="text-[12.5px] mt-1.5" style={{ color: "var(--text-3)" }}>
-                    {keepsToken
-                      ? "Leave it blank to keep the saved token. A new one is stored encrypted and is never shown again, here or anywhere else."
-                      : "It is stored encrypted and is never shown again, here or anywhere else."}
                   </p>
                 )}
               </div>
@@ -350,25 +348,6 @@ export function GitHubTab({ active }: { active: boolean }) {
               )}
             </div>
           </form>
-        </Card>
-      )}
-
-      {editable && (
-        <Card className="p-4 sm:p-5">
-          <h3 className="section-title">Making an access token</h3>
-          <ol className="mt-2 list-decimal pl-5 space-y-1.5 text-[13px]" style={{ color: "var(--text-2)" }}>
-            <li>
-              On GitHub, open Settings, then Developer settings, then Personal access tokens, then Fine-grained
-              tokens, and choose Generate new token.
-            </li>
-            <li>Under Repository access, choose Only select repositories, and pick the repository above.</li>
-            <li>Under Permissions, set Contents to Read and write. The app needs nothing else.</li>
-            <li>Generate the token, copy it, and paste it here.</li>
-          </ol>
-          <p className="text-[12.5px] mt-3" style={{ color: "var(--text-3)" }}>
-            {"A token stops working on the date you pick when you make it. When it does, make a new one and paste it here. " +
-              "If the repository belongs to a GitHub organization, that organization may have to approve the token first."}
-          </p>
         </Card>
       )}
 

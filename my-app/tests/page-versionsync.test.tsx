@@ -24,6 +24,7 @@ import VersionSyncPage from "@/app/[org]/(studio)/versionsync/page";
 import { sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
 import { fingerprintBody } from "@/lib/approval-fingerprint";
+import { HELP_TOPICS } from "@/lib/help";
 import {
   type FetchRoute,
   fetchCalls,
@@ -193,6 +194,24 @@ afterEach(() => cleanup());
  * state that covers a re-read of the same target. Both are below, and both
  * fail when their half is undone.
  */
+describe("the page header", () => {
+  it("shows the page's name and the one line from its help file", async () => {
+    setRoutes(baseRoutes());
+    render(<VersionSyncPage />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Version Sync" })).toBeInTheDocument();
+    expect(screen.getByText(HELP_TOPICS["/versionsync"].blurb)).toBeInTheDocument();
+  });
+
+  it("says what a Run button does in the note beside the list, for a role that may replay", async () => {
+    setRoutes(baseRoutes());
+    await pickStagingToLive();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Help: Missing on the Target" }));
+    expect(screen.getByRole("note")).toHaveTextContent(/The Run button replays the first version/);
+  });
+});
+
 describe("the replay check's production approval", () => {
   it("reads the approval that covers this exact run", async () => {
     const hash = await runFingerprint();
@@ -403,8 +422,10 @@ describe("who may replay", () => {
       )
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Run / })).not.toBeInTheDocument();
-    // The help line under the heading does not describe buttons that are not there.
-    expect(screen.queryByText(/The Run button replays/)).not.toBeInTheDocument();
+    // The note beside the heading does not describe buttons that are not there.
+    fireEvent.click(screen.getByRole("button", { name: "Help: Missing on the Target" }));
+    expect(screen.getByRole("note")).toHaveTextContent(/The exact scripts the Source ran/);
+    expect(screen.getByRole("note")).not.toHaveTextContent(/Run button/);
   });
 
   it("does not ask for approvals a role may not read, and keeps Replay on production shut", async () => {
@@ -430,8 +451,11 @@ describe("who may replay", () => {
         name: "I understand, and I mean to replay 1 version against production.",
       })
     );
-    // A rehearsal needs no approval, so it frees up; the replay does not.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Dry run" })).toBeEnabled());
+    // On production a rehearsal needs the approval too, so both buttons wait.
+    expect(
+      await screen.findByText("Dry run and Replay both need the approval above. A dry run does not use it up.")
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dry run" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Replay 1 version on production" })).toBeDisabled();
   });
 });

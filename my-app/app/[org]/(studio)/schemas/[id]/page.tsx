@@ -23,6 +23,8 @@ import {
   CompareIcon,
   InfoIcon,
 } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { RecheckDriftButton } from "@/components/studio/RecheckDriftButton";
 import { SchemaEnvironmentPicker } from "@/components/studio/SchemaEnvironmentPicker";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
@@ -211,87 +213,88 @@ export default function SchemaDetailPage({
         <ChevronLeftIcon size={14} /> Tracked schemas
       </Link>
 
-      {/* Header */}
-      <header className="flex items-start justify-between gap-6 flex-wrap">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <Pill tone={drift.tone}>{drift.label}</Pill>
-            <EnvironmentPill environment={detail.environment} />
-            {connectionGone ? (
-              <Pill tone="neutral">Connection removed</Pill>
-            ) : (
-              <Pill tone="brand" dot={false}>
-                {detail.connection?.type ?? "PostgreSQL"}
+      {/* Header. The title is the schema's own name; the line under it comes
+          from lib/help/schema-details.ts. */}
+      <PageHeader page="/schemas" title={detail.schemaName}>
+        <div className="flex items-start justify-between gap-6 flex-wrap mt-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <Pill tone={drift.tone}>{drift.label}</Pill>
+              <EnvironmentPill environment={detail.environment} />
+              {connectionGone ? (
+                <Pill tone="neutral">Connection removed</Pill>
+              ) : (
+                <Pill tone="brand" dot={false}>
+                  {detail.connection?.type ?? "PostgreSQL"}
+                </Pill>
+              )}
+              <Pill tone="neutral" dot={false}>
+                {detail.migrations.length} in lineage
               </Pill>
-            )}
-            <Pill tone="neutral" dot={false}>
-              {detail.migrations.length} in lineage
-            </Pill>
+            </div>
+            <div className="mono text-[13px]" style={{ color: "var(--text-3)" }}>
+              {source}
+              {detail.connection && (
+                <>
+                  {" · "}
+                  <span style={{ color: "var(--text-2)" }}>
+                    {detail.connection.host}:{detail.connection.port}/{detail.connection.database}
+                  </span>
+                </>
+              )}
+              {/*
+                These two counts come from the newest LINEAGE SNAPSHOT, not from
+                the live database — headSummary is migrations[0].snapshot. On a
+                drifted schema they are the numbers as they were captured, which
+                is exactly when a reader is most likely to take them for the
+                current shape. Say which one they are.
+              */}
+              {headSummary && (
+                <>
+                  {" · "}
+                  <span
+                    title="Counted from the newest lineage snapshot, not read live. After a drift the live schema can differ."
+                  >
+                    {countOf(headSummary.tableCount, "table")} ·{" "}
+                    {countOf(headSummary.columnCount, "column")} at HEAD
+                  </span>
+                </>
+              )}
+            </div>
           </div>
-          <h1 className="mono text-[30px] font-semibold tracking-[-0.02em] leading-tight">
-            {detail.schemaName}
-          </h1>
-          <div className="mono text-[13px] mt-1.5" style={{ color: "var(--text-3)" }}>
-            {source}
-            {detail.connection && (
-              <>
-                {" · "}
-                <span style={{ color: "var(--text-2)" }}>
-                  {detail.connection.host}:{detail.connection.port}/{detail.connection.database}
-                </span>
-              </>
-            )}
-            {/*
-              These two counts come from the newest LINEAGE SNAPSHOT, not from
-              the live database — headSummary is migrations[0].snapshot. On a
-              drifted schema they are the numbers as they were captured, which
-              is exactly when a reader is most likely to take them for the
-              current shape. Say which one they are.
-            */}
-            {headSummary && (
-              <>
-                {" · "}
-                <span
-                  title="Counted from the newest lineage snapshot, not read live. After a drift the live schema can differ."
-                >
-                  {countOf(headSummary.tableCount, "table")} ·{" "}
-                  {countOf(headSummary.columnCount, "column")} at HEAD
-                </span>
-              </>
-            )}
-          </div>
-        </div>
 
-        {/* Lineage card. Named "Lineage", not "Current": this is Schema
-            Studio's own counter for the tracked schema, and it must not be
-            read as the script version in GitHub or in script_patch. */}
-        <Card className="px-5 py-4 w-full sm:min-w-[260px]">
-          <div className="flex items-center justify-between mb-1">
-            <span className="section-title">Lineage</span>
-            <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-              counts structure changes — not a script version
-            </span>
-          </div>
-          <div className="flex items-baseline gap-2.5 mt-1">
-            <span className="mono text-[26px] font-semibold tracking-[-0.01em]">
-              {detail.headVersion ? displayVersion(detail.headVersion, true) : "—"}
-            </span>
-            {detail.headSeq !== null && (
-              <span className="mono text-[13px]" style={{ color: "var(--text-3)" }}>
-                · {fmtSeq(detail.headSeq)}
+          {/* Lineage card. Named "Lineage", not "Current": this is Schema
+              Studio's own counter for the tracked schema, and it must not be
+              read as the script version in GitHub or in script_patch. */}
+          <Card className="px-5 py-4 w-full sm:min-w-[260px]">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="section-title">Lineage</span>
+              <HelpHint label="Lineage">
+                Schema Studio&apos;s own counter for this tracked schema. It counts structure
+                changes. It is not a script version from GitHub or from Deploy.
+              </HelpHint>
+            </div>
+            <div className="flex items-baseline gap-2.5 mt-1">
+              <span className="mono text-[26px] font-semibold tracking-[-0.01em]">
+                {detail.headVersion ? displayVersion(detail.headVersion, true) : "—"}
               </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-3">
-            <Pill tone={drift.tone}>{drift.label}</Pill>
-            {detail.drift && (
-              <span className="mono text-[11px] ml-auto" style={{ color: "var(--text-3)" }}>
-                {fmtDate(detail.drift.detectedAt)}
-              </span>
-            )}
-          </div>
-        </Card>
-      </header>
+              {detail.headSeq !== null && (
+                <span className="mono text-[13px]" style={{ color: "var(--text-3)" }}>
+                  · {fmtSeq(detail.headSeq)}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <Pill tone={drift.tone}>{drift.label}</Pill>
+              {detail.drift && (
+                <span className="mono text-[11px] ml-auto" style={{ color: "var(--text-3)" }}>
+                  {fmtDate(detail.drift.detectedAt)}
+                </span>
+              )}
+            </div>
+          </Card>
+        </div>
+      </PageHeader>
 
       {/* Environment — editable here because tracking only seeds it from the
           connection, and a label nobody can correct is a label nobody trusts. */}
@@ -302,7 +305,9 @@ export default function SchemaDetailPage({
             environment={detail.environment}
             onDone={() => void load()}
           />
-          {isProduction(detail.environment) ? (
+          {/* Only the production warning. What the environment is for is in
+              the page's help (lib/help/schema-details.ts). */}
+          {isProduction(detail.environment) && (
             <div className="warn-inline">
               <span className="ico" style={{ color: "var(--break)" }}>
                 <AlertTriangleIcon size={14} />
@@ -311,17 +316,6 @@ export default function SchemaDetailPage({
                 <b>Production schema.</b> Re-baselining it on the Drift page accepts
                 whatever changed outside this app as correct, so look at what changed
                 before you do.
-              </div>
-            </div>
-          ) : (
-            <div className="warn-inline">
-              <span className="ico">
-                <InfoIcon size={14} />
-              </span>
-              <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                The environment is a typed field, not a word inside a name. It is what
-                Compare and Deploy read to decide whether to warn you before generating or
-                running SQL against this schema.
               </div>
             </div>
           )}
@@ -686,9 +680,11 @@ function LineageNodeCard({
             )}
             {unrecorded.length > 0 && (
               <p className="text-[11px] mt-2.5" style={{ color: "var(--text-3)" }}>
-                Not recorded in this snapshot: {unrecorded.join(", ").toLowerCase()}. It
-                was captured before this app read them, so a comparison against it
-                stays quiet about those rather than reporting them as missing.
+                Not recorded in this snapshot: {unrecorded.join(", ").toLowerCase()}.{" "}
+                <HelpHint label="Not recorded in this snapshot">
+                  This snapshot was captured before this app read them. A comparison against it
+                  stays quiet about those and does not report them as missing.
+                </HelpHint>
               </p>
             )}
             {previewNames.length > 0 && (

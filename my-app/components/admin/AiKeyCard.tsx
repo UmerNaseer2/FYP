@@ -4,6 +4,7 @@ import { useId, useState, type FormEvent } from "react";
 import { Button, Card, ConfirmDialog, Input, Label } from "@/components/ui";
 import { AlertCircleIcon } from "@/components/ui/icons";
 import { Select } from "@/components/ui/Select";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { apiFetch } from "@/lib/api-fetch";
 import { errorFrom, jsonOf } from "@/lib/api-answer";
 import {
@@ -94,13 +95,15 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
 
   return (
     <Card className="p-4 sm:p-5">
-      <h3 className="section-title">Organization AI key</h3>
-      <p className="text-[13px] mt-2 max-w-[68ch]" style={{ color: "var(--text-2)" }}>
-        {"AI uses the service set up on this server unless an Admin saves this organization's own key here. " +
-          "Every AI call for this organization then goes to that service with that key, and is billed to that account."}
-      </p>
+      <div className="flex items-center">
+        <h3 className="section-title">Organization AI key</h3>
+        <HelpHint label="Organization AI key">
+          {"AI uses the service set up on this server unless an Admin saves this organization's own key here. " +
+            "Every AI call then goes to that service with that key, and is billed to that account."}
+        </HelpHint>
+      </div>
 
-      <p className="text-[13px] mt-3" role="status">
+      <p className="text-[13px] mt-2" role="status">
         {saved
           ? `A key for ${saved.service} is saved, ending in ${saved.hint}. Models: ${saved.models.smart} for reviews and explanations, ${saved.models.fast} for short summaries.`
           : "No key saved. AI uses the server's settings."}
@@ -159,9 +162,13 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
               />
             </div>
             <div>
-              <Label htmlFor={keyId} className="mb-1 block">
-                API key
-              </Label>
+              <div className="flex items-center mb-1">
+                <Label htmlFor={keyId}>API key</Label>
+                <HelpHint label="API key">
+                  {`Make one at ${info.keyPage}. It is stored encrypted and never shown again, only its last four characters. ` +
+                    "It is not tried when you save it: the AI buttons say so if the service turns it down."}
+                </HelpHint>
+              </div>
               <Input
                 id={keyId}
                 type="password"
@@ -176,16 +183,15 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
                   setApiKey(event.target.value);
                   setProblem(null);
                 }}
-                aria-describedby={`${keyId}-help`}
               />
-              <p id={`${keyId}-help`} className="text-[12.5px] mt-1.5" style={{ color: "var(--text-3)" }}>
-                {`Make one at ${info.keyPage}. It is stored encrypted and never shown again, only its last four characters.`}
-              </p>
             </div>
             <div>
-              <Label htmlFor={smartId} className="mb-1 block">
-                Model for reviews and explanations
-              </Label>
+              <div className="flex items-center mb-1">
+                <Label htmlFor={smartId}>Model for reviews and explanations</Label>
+                <HelpHint label="Model names">
+                  Leave a model name empty to use the one shown in its box.
+                </HelpHint>
+              </div>
               <Input
                 id={smartId}
                 mono
@@ -213,11 +219,6 @@ export function AiKeyCard({ view, onChange }: { view: AiAdminView; onChange: (vi
               />
             </div>
           </div>
-          <p className="text-[12.5px] mt-2 max-w-[68ch]" style={{ color: "var(--text-3)" }}>
-            {"Leave the model names empty to use the ones shown. The key is not tried when you save it: " +
-              "if the service turns it down, the AI buttons say so the first time someone uses them."}
-          </p>
-
           {problem && (
             <p className="field-problem mt-3" role="alert">
               {problem}

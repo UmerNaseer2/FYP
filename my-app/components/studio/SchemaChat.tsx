@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Drawer, Pill } from "@/components/ui";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { AlertCircleIcon, CheckIcon, ClipboardIcon } from "@/components/ui/icons";
 import { useUser } from "@/hooks/useUser";
 import { useOrg, useOrgHref } from "@/hooks/useOrg";
@@ -365,10 +366,11 @@ export function SchemaChatButton() {
         <div aria-live="polite" className="space-y-4">
           {entries.length === 0 && (
             <p className="text-[13px]" style={{ color: "var(--text-2)" }}>
-              Ask about the schemas you can see: what a table holds, where a column is used, what changed between two
-              databases, what is drifting or waiting for approval. The AI looks things up through the app as you, so
-              it sees only what you may see, and it cannot change anything. Schema structure is sent to the AI, never
-              your rows.
+              Ask about the schemas you can see. Their structure is sent to the AI, never your rows.{" "}
+              <HelpHint label="Schema chat">
+                Ask what a table holds, where a column is used, what changed between two databases, or what is
+                drifting. The AI looks things up as you, so it sees only what you may see. It cannot change anything.
+              </HelpHint>
             </p>
           )}
           {entries.map((entry, i) => {

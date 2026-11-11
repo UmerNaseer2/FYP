@@ -15,6 +15,8 @@ import {
   InfoIcon,
 } from "@/components/ui/icons";
 import { EnvironmentPill } from "@/components/ui/EnvironmentPill";
+import { HelpHint } from "@/components/ui/HelpHint";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { ApprovalPanel, sha256Hex, type ApprovalRow } from "@/components/studio/ApprovalPanel";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
@@ -562,17 +564,7 @@ export default function VersionSyncPage() {
 
   return (
     <div className="px-4 sm:px-8 py-6 sm:py-8 max-w-[1080px]">
-      <div className="mb-5">
-        <div className="section-title mb-2">Version Sync</div>
-        <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Catch a schema up by version.</h1>
-        <p className="text-[13.5px] mt-1.5 max-w-[68ch]" style={{ color: "var(--text-2)" }}>
-          Replay the exact scripts an ahead schema already ran onto a behind one, in the order it
-          ran them — keeping the version history (a structural compare jumps straight to the end
-          state instead). A replay records each version in the Target&apos;s own ledger, never in
-          the GitHub registry. Pick a <b>Source</b> (ahead) and a <b>Target</b>{" "}
-          (behind) to see what&apos;s missing.
-        </p>
-      </div>
+      <PageHeader page="/versionsync" />
 
       {noConnections ? (
         connectionsFailed ? (
@@ -873,17 +865,16 @@ function Result({
       ? ` It also has ${countOf(diff.diverged.length, "version")} the Source does not — see below.`
       : "");
 
+  // The note behind the "?" beside the list's title. It only describes Run
+  // buttons that are on the page. The longer account is in lib/help/versionsync.
   const listHelp =
-    "These are the exact scripts the Source ran, in the order it ran them. A replay runs them " +
-    "onto the Target in that order, as one transaction: every version in it applies, or none does." +
+    "The exact scripts the Source ran, in its order. A replay runs them on the Target as one " +
+    "transaction: all apply, or none." +
     (reachable === 0 || !apply.mayRun
       ? ""
       : reachable === 1
-        ? " The Run button replays the first version. It opens a check of what will run, " +
-          "and nothing runs until you confirm it there."
-        : " Each Run button replays the versions from the top of the list down to its own row" +
-          (showRunAll ? ", and Run all replays the whole list" : "") +
-          ". Each opens a check of what will run, and nothing runs until you confirm it there.");
+        ? " The Run button replays the first version, after a check you confirm."
+        : " Each Run button replays from the top down to its own row, after a check you confirm.");
 
   // What to do about the version every run stops before.
   const stopFix =
@@ -984,8 +975,11 @@ function Result({
       {/* Missing list */}
       {total > 0 && (
         <div>
-          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-            <h2 className="section-title">Missing on the Target ({total})</h2>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div className="flex items-center">
+              <h2 className="section-title">Missing on the Target ({total})</h2>
+              <HelpHint label="Missing on the Target">{listHelp}</HelpHint>
+            </div>
             {showRunAll && (
               <button
                 className={`btn btn-sm ${apply.targetIsProduction ? "btn-destructive" : "btn-primary"}`}
@@ -998,8 +992,6 @@ function Result({
               </button>
             )}
           </div>
-          <p className="help mb-3" style={{ color: "var(--text-3)" }}>{listHelp}</p>
-
           {/* Said once, above the list, rather than as a dead button on every row. */}
           {!apply.mayRun && reachable > 0 && (
             <div className="role-note mb-3">
@@ -1091,9 +1083,8 @@ function Result({
           <div className="body">
             <div className="title">Cannot be replayed forward ({belowCount})</div>
             <div className="help mt-0.5">
-              The Target already runs a version of each of these scripts that is at or above the one
-              listed, and a replay only moves forward, so the server refuses them. To bring one
-              of these changes over, write it as a new version in the Script Editor and deploy it.
+              The Target is already at or above these versions, and a replay only moves forward.
+              To bring one over, write it as a new version in the Script Editor.
             </div>
             {diff.belowTarget.map((e) => (
               <details key={entryKey(e)} className="mt-1">
@@ -1575,7 +1566,12 @@ function ReplayBody({
   // The same rule as Deploy: every box ticked for both buttons, and on
   // production an approval for exactly this run before Replay.
   const runBlocked = !ready || unticked || dryRunning || approvalBusy;
-  const replayBlocked = runBlocked || (production && approved === null);
+  // On production the server asks for the approval on a dry run as well as on
+  // a real replay (a rehearsal still takes locks and can move sequences), so
+  // both buttons wait for it. A dry run hands the approval back afterwards.
+  const awaitingApproval = production && approved === null;
+  const dryRunBlocked = runBlocked || awaitingApproval;
+  const replayBlocked = runBlocked || awaitingApproval;
   const replayLabel = `Replay ${countOf(count, "version")}${production ? " on production" : ""}`;
   const hint =
     record.state === "loading"
@@ -1584,8 +1580,8 @@ function ReplayBody({
         ? "Both buttons stay off until the Target's tracking record can be read."
         : unticked
           ? "Tick every box above to turn on Dry run and Replay."
-          : production && approved === null
-            ? "Replay also needs the approval above. A dry run does not."
+          : awaitingApproval
+            ? "Dry run and Replay both need the approval above. A dry run does not use it up."
             : "";
 
   const louderSentence =
@@ -1613,9 +1609,9 @@ function ReplayBody({
         <p className="text-[13px] mt-1" style={{ color: "var(--text-2)" }}>
           {"This runs on "}
           <b className="mono">{schema}</b>
-          {`${databaseName ? ` (${databaseName})` : ""} — a live database — as one transaction: every version in it applies, or none does${
-            enumCount > 0 ? " — apart from the enum values named below" : ""
-          }. Each version is recorded in that schema's applied-script ledger, just as a Deploy run records it; nothing is written to GitHub.`}
+          {`${databaseName ? ` (${databaseName})` : ""}, a live database, as one transaction: every version in it applies, or none does${
+            enumCount > 0 ? ", apart from the enum values named below" : ""
+          }.`}
         </p>
         {diverged > 0 && (
           <p className="text-[13px] mt-2" style={{ color: "var(--drift)" }}>
@@ -1866,7 +1862,7 @@ function ReplayBody({
           </button>
           <button
             className="btn btn-secondary btn-sm"
-            disabled={runBlocked}
+            disabled={dryRunBlocked}
             title="Rehearse the replay: it runs inside a transaction that is always rolled back, so nothing is written"
             onClick={() => void rehearse()}
           >

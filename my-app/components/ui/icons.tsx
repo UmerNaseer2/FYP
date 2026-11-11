@@ -296,6 +296,16 @@ export function ClipboardIcon(props: IconProps) {
   );
 }
 
+/** Help: a question mark in a circle. */
+export function HelpIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01" />
+    </Svg>
+  );
+}
+
 export function InfoIcon(props: IconProps) {
   return (
     <Svg {...props}>

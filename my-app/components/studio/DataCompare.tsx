@@ -4,8 +4,8 @@ import {
   type TableDataCompare,
 } from "@/lib/compare-data-summary";
 import { describeSample, type RowSample } from "@/lib/compare-sample";
-import { CheckIcon, AlertTriangleIcon } from "@/components/ui/icons";
-import { dropModeFrom } from "@/components/studio/DiffReport";
+import { AlertTriangleIcon } from "@/components/ui/icons";
+import { dropModeFrom, SummaryHint } from "@/components/studio/DiffReport";
 import { plural } from "@/lib/plural";
 
 // ---------------------------------------------------------------------------
@@ -280,9 +280,9 @@ function TablePicker({
         <span className="help">
           {/* The way back matters more than the way in: after narrowing to one
               table, clearing the ticks is the only route to the rest, and
-              nothing else on the page says so. */}
-          Tick nothing to read every table again. A selection only changes which
-          tables are READ — the rest are still listed below, as not read.
+              nothing else on the page says so. That the tables left out are
+              still listed, as not read, is in Compare's help. */}
+          Tick nothing to read every table again.
         </span>
         <button
           type="submit"
@@ -425,6 +425,15 @@ export function DataCompare({
         <summary className="tg-header">
           <ChevronDown />
           <span className="name">Row data</span>
+          {/* How the rows are compared, and what that can get wrong. It was a
+              paragraph under the panel; the longer version is in Compare's
+              help (lib/help/compare.ts). */}
+          <SummaryHint label="How rows are compared">
+            Rows are compared by checksum, so no primary key is needed. Values
+            are hashed as text, so two servers that write a value differently
+            can read as different. Row counts are exact. Each statement is
+            capped at {Math.round(result.timeoutMs / 1000)}s.
+          </SummaryHint>
           {different.length + targetOnly.length > 0 ? (
             <span className="pill pill-drift">
               <span className="dot" />
@@ -596,18 +605,6 @@ export function DataCompare({
           formId={formId}
         />
       )}
-
-      <div className="help flex items-center gap-2">
-        <CheckIcon size={12} />
-        <span>
-          Rows are compared by checksum, so the order they are stored in does not
-          matter and no primary key is needed. Values are hashed as text: two
-          servers that render the same value differently — a different major
-          version, a different DateStyle — will read as different even when the
-          data matches. Row counts are exact either way. Statements are capped at{" "}
-          {Math.round(result.timeoutMs / 1000)}s each.
-        </span>
-      </div>
     </div>
   );
 }

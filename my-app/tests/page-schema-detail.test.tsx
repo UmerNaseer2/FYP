@@ -32,6 +32,7 @@ jest.mock("next/navigation", () => require("./helpers/render-page").navigationSt
 jest.mock("next-auth/react", () => require("./helpers/render-page").sessionStubs);
 
 import SchemaDetailPage from "@/app/[org]/(studio)/schemas/[id]/page";
+import { HELP_TOPICS } from "@/lib/help";
 import {
   fetchCalls,
   render,
@@ -167,6 +168,14 @@ describe("a schema page with nothing to show", () => {
 });
 
 describe("a tracked schema's header", () => {
+  it("is headed by the schema's own name, over the one line from its help", async () => {
+    setRoutes([ROUTE_7]);
+    show("7");
+
+    expect(await screen.findByRole("heading", { level: 1, name: "shop_dev" })).toBeInTheDocument();
+    expect(screen.getByText(HELP_TOPICS["/schemas"].blurb)).toBeInTheDocument();
+  });
+
   it("marks its counts as the snapshot's, not the live schema's", async () => {
     // The drifted case is the whole reason this label exists: the live schema
     // is known to differ, and these numbers are from before it did.
@@ -273,8 +282,10 @@ describe("a tracked schema's header", () => {
     setRoutes([ROUTE_7]);
     show("7");
 
-    expect(
-      await screen.findByText("counts structure changes — not a script version")
-    ).toBeInTheDocument();
+    // The explanation sits behind the "?" beside the card's title.
+    fireEvent.click(await screen.findByRole("button", { name: "Help: Lineage" }));
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "It counts structure changes. It is not a script version from GitHub or from Deploy."
+    );
   });
 });

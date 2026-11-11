@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ErrorNote, JSON_HEADERS, Meta, errorFrom } from "@/components/phone/parts";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { Button, Card, Input } from "@/components/ui";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { useOrg } from "@/hooks/useOrg";
@@ -158,7 +159,7 @@ export default function LinkComputer() {
       style={{ background: "var(--bg)", color: "var(--text)" }}
     >
       <main className="mx-auto w-full max-w-[460px] flex flex-col gap-4">
-        <h1 className="text-[20px] font-semibold">Link a computer</h1>
+        <PageHeader page="/link-computer" />
 
         {finished === "linked" && (
           <Card className="p-4">

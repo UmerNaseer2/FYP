@@ -6,6 +6,7 @@ import { Card, EmptyState, Pill } from "@/components/ui";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { AlertCircleIcon, CheckIcon, PlayIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { AskAdmin } from "./AskAdmin";
 import {
   FindingCard,
@@ -194,7 +195,7 @@ export function QueryAnalyzer({
   return (
     <div className="space-y-4">
       <Card className="p-4 space-y-3">
-        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
           <label
             htmlFor="analyze-sql"
             className="text-[10px] font-semibold uppercase tracking-[0.06em]"
@@ -202,8 +203,9 @@ export function QueryAnalyzer({
           >
             Query
           </label>
-          <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-            One query that reads data. Unqualified names resolve in{" "}
+          <HelpHint label="Query">
+            One query that reads data: SELECT, WITH, VALUES or TABLE. Names with no
+            schema in front resolve in{" "}
             <span className="mono">{target.schema}</span>
             {/* The search path is the schema, then public; saying "public,
                 then public" for the public schema would read as a typo. */}
@@ -214,7 +216,7 @@ export function QueryAnalyzer({
                 , then <span className="mono">public</span>.
               </>
             )}
-          </span>
+          </HelpHint>
         </div>
 
         <textarea
@@ -232,44 +234,47 @@ export function QueryAnalyzer({
         />
 
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <label
-            className={`flex items-start gap-2 text-[12.5px] max-w-[52ch] ${
-              canMeasure ? "cursor-pointer" : "cursor-not-allowed"
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={measure}
-              disabled={roleLoading || !canMeasure}
-              onChange={(e) => setWantsMeasure(e.target.checked)}
-              className="mt-0.5"
-            />
-            <span style={{ color: canMeasure ? "var(--text-2)" : "var(--text-3)" }}>
-              Run it and measure
-              <span className="block text-[11.5px]" style={{ color: "var(--text-3)" }}>
-                {canMeasure ? (
-                  <>
-                    Without this, the server only says what it would do. With it,
-                    the query really runs on{" "}
-                    <span className="mono">{target.connectionName}</span> and puts
-                    real load on that server until it finishes, or until it is
-                    stopped after {QUERY_TIMEOUT_SECONDS} seconds. It runs read-only
-                    and is rolled back, and known server-changing calls such as
-                    pg_terminate_backend are refused. A function can still do
-                    whatever the database user of this connection is allowed to
-                    do, so the permissions of that user are the real limit.
-                  </>
-                ) : (
-                  <>
-                    {refusalMessage(roleLabel, "performance:run")}
-                    <AskAdmin permission="performance:run" />{" "}
-                    You can still analyse it: the server will say what it would
-                    do, using its own estimates, without touching any rows.
-                  </>
-                )}
+          <div className="flex items-start gap-2">
+            <label
+              className={`flex items-start gap-2 text-[12.5px] max-w-[52ch] ${
+                canMeasure ? "cursor-pointer" : "cursor-not-allowed"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={measure}
+                disabled={roleLoading || !canMeasure}
+                onChange={(e) => setWantsMeasure(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span style={{ color: canMeasure ? "var(--text-2)" : "var(--text-3)" }}>
+                Run it and measure
+                <span className="block text-[11.5px]" style={{ color: "var(--text-3)" }}>
+                  {canMeasure ? (
+                    <>
+                      The query really runs on{" "}
+                      <span className="mono">{target.connectionName}</span> and puts
+                      real load on that server. It runs read-only, is rolled back,
+                      and is stopped after {QUERY_TIMEOUT_SECONDS} seconds.
+                    </>
+                  ) : (
+                    <>
+                      {refusalMessage(roleLabel, "performance:run")}
+                      <AskAdmin permission="performance:run" />{" "}
+                      You can still analyse it: the server will say what it would
+                      do, using its own estimates, without touching any rows.
+                    </>
+                  )}
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+            <HelpHint label="Run it and measure">
+              Without this, the server only says what it would do. Known server-changing
+              calls such as pg_terminate_backend are refused. A function can still do
+              whatever this connection&apos;s database user is allowed to do, so that
+              user&apos;s permissions are the real limit.
+            </HelpHint>
+          </div>
 
           <button
             type="button"
@@ -367,9 +372,7 @@ function Result({
               className="underline"
             >
               See every run of this query
-            </Link>{" "}
-            — this one was recorded, so the next time you analyse it the two can
-            be compared.
+            </Link>
           </div>
         )}
       </Card>

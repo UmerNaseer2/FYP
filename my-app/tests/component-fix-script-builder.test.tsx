@@ -211,7 +211,13 @@ const tick = (title: string) =>
 const copyButton = () => screen.getByRole("button", { name: /Copy as one script|Copied/ });
 const downloadButton = () => screen.getByRole("button", { name: "Download .sql" });
 const saveButton = () => screen.getByRole("button", { name: "Save as a migration" });
-const intro = () => screen.getByText(/Every schema change and maintenance fix/);
+/** The sentence about the ticks. It sits behind the "?" beside the panel's title. */
+const intro = () => {
+  if (!screen.queryByRole("note")) {
+    fireEvent.click(screen.getByRole("button", { name: "Help: Put these fixes in one script" }));
+  }
+  return screen.getByRole("note");
+};
 
 /** The last thing Copy put on the clipboard, once the promise behind it has settled. */
 async function copyScript() {

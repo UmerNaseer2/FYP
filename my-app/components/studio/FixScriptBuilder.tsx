@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui";
 import { CheckIcon, ClipboardIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { saveMigrationDraft } from "@/lib/migration-draft";
@@ -218,16 +219,15 @@ export function FixScriptBuilder({
 
   return (
     <Card className="p-4 space-y-3">
-      <div>
+      <div className="flex items-center gap-2">
         <div className="section-title">Put these fixes in one script</div>
-        <p className="text-[12.5px] mt-1 leading-[1.55]" style={{ color: "var(--text-2)" }}>
-          Every schema change and maintenance fix from this analysis starts ticked, including
-          any the severity filter hides. Untick any you do not want, then copy them as one
-          script or download them as a .sql file
+        <HelpHint label="Put these fixes in one script">
+          Every schema change and maintenance fix starts ticked, even ones the filter hides.
+          Untick any, then copy or download them as a .sql file
           {offerSave
-            ? `. Or save the ${migrationWhat} as a migration: the Script Editor opens and offers to load them, ready to version and save.`
+            ? `. Or save the ${migrationWhat} as a migration: the Script Editor opens with them.`
             : "."}
-        </p>
+        </HelpHint>
       </div>
 
       <FixGroup
@@ -254,8 +254,7 @@ export function FixScriptBuilder({
 
       {notListed > 0 && (
         <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-          Query rewrites and decisions are not listed. They stay on their cards: a rewrite
-          changes your query, not the database, and a decision needs your choice first.
+          Query rewrites and decisions are not listed. They stay on their cards.
         </p>
       )}
 

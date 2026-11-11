@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { SchemaMapIcon, ConnectionsIcon, CompareIcon } from "@/components/ui/icons";
 import {
   VisualizerPane,
@@ -167,39 +168,37 @@ export default function VisualizerPage() {
 
   return (
     <div className="viz-page">
-      <div className="px-8 pt-8 pb-4 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="section-title mb-2">Visualizer</div>
-          <h1 className="text-[28px] font-semibold tracking-[-0.018em]">See the schema.</h1>
-          <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-            A live entity-relationship map of any schema — tables, columns, keys, and the
-            foreign-key paths between them. Switch to side by side to compare two schemas at once.
-          </p>
-        </div>
-        {!noConnections && (
-          <div className="flex items-center gap-3">
-            {!narrow && <ModeToggle mode={mode} onChange={setMode} />}
-            {/* The one screen with no way onward. Every other step hands over to
-                the next one, and this one drew a picture and stopped — which is
-                a shame, because "side by side" is somebody looking for a
-                difference by eye. The diagram can show them one; it cannot
-                write the script that fixes it.
+      {/* The title and its one line come from lib/help/visualizer.ts. */}
+      <div className="px-8 pt-8">
+        <PageHeader
+          page="/visualizer"
+          actions={
+            !noConnections && (
+              <>
+                {!narrow && <ModeToggle mode={mode} onChange={setMode} />}
+                {/* The one screen with no way onward. Every other step hands over to
+                    the next one, and this one drew a picture and stopped — which is
+                    a shame, because "side by side" is somebody looking for a
+                    difference by eye. The diagram can show them one; it cannot
+                    write the script that fixes it.
 
-                Outside the `narrow` guard, unlike the toggle: side by side is
-                what does not fit on a small screen, but wanting the comparison
-                is not. Hiding the link there would leave exactly the reader
-                with the least room to squint at two diagrams as the only one
-                with no way out.
+                    Outside the `narrow` guard, unlike the toggle: side by side is
+                    what does not fit on a small screen, but wanting the comparison
+                    is not. Hiding the link there would leave exactly the reader
+                    with the least room to squint at two diagrams as the only one
+                    with no way out.
 
-                Ghost rather than a primary button: reading the diagram is a
-                legitimate reason to be here and most visits end here on
-                purpose. */}
-            <Link href={compareHref} className="btn btn-ghost btn-sm">
-              <CompareIcon size={14} />
-              Open in Compare
-            </Link>
-          </div>
-        )}
+                    Ghost rather than a primary button: reading the diagram is a
+                    legitimate reason to be here and most visits end here on
+                    purpose. */}
+                <Link href={compareHref} className="btn btn-ghost btn-sm">
+                  <CompareIcon size={14} />
+                  Open in Compare
+                </Link>
+              </>
+            )
+          }
+        />
       </div>
 
       {noConnections ? (

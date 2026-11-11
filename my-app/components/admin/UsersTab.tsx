@@ -15,6 +15,7 @@ import {
   type PillTone,
 } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
+import { HelpHint } from "@/components/ui/HelpHint";
 import {
   UsersIcon,
   RefreshIcon,
@@ -286,13 +287,15 @@ export function UsersTab({ active }: { active: boolean }) {
         <div className="role-note mt-4">
           <InfoIcon size={15} className="ico" />
           <div>
-            <div className="title">Sign-in is off for testing</div>
-            <div className="body">
-              Everyone using the app right now is the same stand-in admin, so nobody new is
-              added here. The people listed signed in before sign-in was turned off, and the
-              roles you give them apply when it is back on. To see the app as another role
-              now, use View as in the sidebar.
+            <div className="title">
+              Sign-in is off for testing
+              <HelpHint label="Sign-in is off for testing">
+                Everyone using the app now is the same stand-in admin. The people listed signed in
+                earlier, and the roles you give them apply when sign-in is back on. To try another
+                role, use View as in the sidebar.
+              </HelpHint>
             </div>
+            <div className="body">Nobody new is added to this list until it is back on.</div>
           </div>
         </div>
       )}

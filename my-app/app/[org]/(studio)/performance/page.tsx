@@ -4,7 +4,6 @@ import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Card, Skeleton } from "@/components/ui";
-import { GaugeIcon } from "@/components/ui/icons";
 import { PerfTargetPicker, type PerfTarget } from "@/components/studio/PerfTargetPicker";
 import { PerfAdviceList } from "@/components/studio/PerfAdviceList";
 import { QueryAnalyzer } from "@/components/studio/QueryAnalyzer";
@@ -12,6 +11,7 @@ import { SchemaTrends } from "@/components/studio/SchemaTrends";
 import { QueryHistoryPanel } from "@/components/studio/QueryHistoryPanel";
 import { LiveActivity } from "@/components/studio/LiveActivity";
 import { AlertThresholds } from "@/components/studio/AlertThresholds";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { useOrgHref } from "@/hooks/useOrg";
 
 /**
@@ -53,32 +53,15 @@ const TAB_TITLES: Record<PerfTab, string> = {
   alerts: "Alert thresholds",
 };
 
+// One short line per tab for the page header. The longer explanation of each
+// tab lives in the help file (lib/help/performance.ts), under its sections.
 const TAB_BLURBS: Record<PerfTab, string> = {
-  suggestions:
-    "What this schema is likely to be slow at, and what to do about it — worked " +
-    "out from its structure, and from the server's own record of how these " +
-    "tables are being read. Schema changes come as SQL you can save as a " +
-    "migration; the rest say what to run or decide.",
-  analyse:
-    "Paste a query and see what the server would actually do with it, step by " +
-    "step and in plain English — plus anything in the plan or the SQL itself " +
-    "that usually costs more than it looks.",
-  history:
-    "Every query analysed against this schema, with what it scored and what it " +
-    "cost. Pick one and you get each of its runs set against the last, which " +
-    "is the only way to tell whether a query has actually got slower.",
-  activity:
-    "What this server is doing at this moment — what is running, what has been " +
-    "running too long, and what is sitting in an open transaction holding locks " +
-    "that nobody is using. One reading, taken when you ask.",
-  trends:
-    "How this schema has changed over time — its structure, its size on disk " +
-    "and how often it drifted from its baseline. One reading is taken every " +
-    "time a drift check runs, so the history starts when the watching does.",
-  alerts:
-    "What should count as a problem here. Every rule starts switched off with a " +
-    "suggested number in the box, because a number this app invented is not a " +
-    "fact about your database.",
+  suggestions: "What this schema is likely to be slow at, and what to do about it.",
+  analyse: "Paste a query and see what the server would do with it, step by step.",
+  history: "Every query analysed against this schema, and whether it has got slower.",
+  activity: "What this server is doing at this moment. One reading, taken when you ask.",
+  trends: "How this schema's structure, size and drift have changed over time.",
+  alerts: "What should count as a problem here. Every rule starts switched off.",
 };
 
 export default function PerformancePage() {
@@ -101,7 +84,7 @@ function PerformanceScreen() {
 
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-7">
-      <Header tab={tab} />
+      <PageHeader page="/performance" title={TAB_TITLES[tab]} blurb={TAB_BLURBS[tab]} />
 
       {/* Six tabs no longer fit a phone, so the strip scrolls sideways rather
           than wrapping onto a second line that would leave the underline of the
@@ -174,25 +157,6 @@ function readTab(raw: string | null): PerfTab {
   return "suggestions";
 }
 
-function Header({ tab }: { tab: PerfTab }) {
-  return (
-    <header>
-      <div className="flex items-center gap-2">
-        <span style={{ color: "var(--text-3)" }}>
-          <GaugeIcon size={16} />
-        </span>
-        <div className="section-title">Performance</div>
-      </div>
-      <h1 className="text-[28px] font-semibold tracking-[-0.02em] mt-1">
-        {TAB_TITLES[tab]}
-      </h1>
-      <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-        {TAB_BLURBS[tab]}
-      </p>
-    </header>
-  );
-}
-
 function Tab({
   href,
   active,
@@ -229,7 +193,11 @@ function Tab({
 function PerformanceFallback() {
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-7">
-      <Header tab="suggestions" />
+      <PageHeader
+        page="/performance"
+        title={TAB_TITLES.suggestions}
+        blurb={TAB_BLURBS.suggestions}
+      />
       <Card className="p-4">
         <Skeleton width={320} height={18} />
       </Card>

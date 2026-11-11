@@ -27,6 +27,8 @@ import { MigrationWorkbench } from "@/components/studio/MigrationWorkbench";
 import { VersionDetectBar } from "@/components/studio/VersionDetectBar";
 import { CompareVersionTimeline } from "@/components/studio/CompareVersionTimeline";
 import { ComparisonSetBar } from "@/components/studio/ComparisonSetBar";
+import { PageHeader } from "@/components/studio/PageHeader";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Select } from "@/components/ui/Select";
@@ -233,31 +235,6 @@ function SlotPicker({
   );
 }
 
-function PageHeader({ targetCount }: { targetCount: number }) {
-  return (
-    <div className="mb-4">
-      <div className="section-title mb-2">Compare &amp; Author</div>
-      <h1 className="text-[28px] font-semibold tracking-[-0.018em]">
-        Turn a diff into editable SQL.
-      </h1>
-      <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-        Pick one <b>source</b> schema and compare it against{" "}
-        {targetCount === 1 ? "a target." : `${targetCount} targets at once.`} Each
-        target gets its own diff and its own migration, and every generated script
-        updates <b>that target</b> to match the source — you can edit it freely
-        before saving.
-      </p>
-      {targetCount > 1 && (
-        <p className="text-[12.5px] mt-1 max-w-[64ch]" style={{ color: "var(--text-3)" }}>
-          Each target is compared with the source only — targets are not compared
-          with each other. To compare two targets, press <b>Use as source</b> on
-          one of their results.
-        </p>
-      )}
-    </div>
-  );
-}
-
 /** The one-line "X of Y targets differ" bar above the per-target sections. */
 function RunSummary({ outcomes }: { outcomes: OutcomeView[] }) {
   const compared = outcomes.filter((o) => o.delta);
@@ -344,7 +321,7 @@ export default function ComparePage() {
 function LoadingScreen() {
   return (
     <div className="px-4 sm:px-8 py-6 sm:py-8">
-      <PageHeader targetCount={1} />
+      <PageHeader page="/compare" />
       <div className="source-bar">
         <div className="source-bar__group">
           <Skeleton width={180} height={11} />
@@ -462,7 +439,7 @@ function CompareScreenView({ query }: { query: string }) {
   if (error && !screen) {
     return (
       <div className="px-4 sm:px-8 py-6 sm:py-8">
-        <PageHeader targetCount={1} />
+        <PageHeader page="/compare" />
         <div className="warn-inline">
           <span className="ico">
             <AlertTriangleIcon size={14} />
@@ -551,7 +528,7 @@ function CompareScreenView({ query }: { query: string }) {
       aria-busy={loading}
       style={loading ? { opacity: 0.55, transition: "opacity 120ms" } : undefined}
     >
-      <PageHeader targetCount={resolvedTargets.length} />
+      <PageHeader page="/compare" />
 
       {/* A re-run that failed. The comparison below is the previous one, so it
           stays — but it is no longer what the screen was asked for. */}
@@ -682,57 +659,45 @@ function CompareScreenView({ query }: { query: string }) {
             </span>
           )}
           {/* These two decide whether the generated script destroys data and
-              whether the run reads table contents at all, and a hover tooltip
-              was the only place either of them said so — no use on a touch
-              screen, and nothing a screen reader announces. */}
-          <label
-            className="flex items-start gap-2 text-[12.5px] cursor-pointer"
-            style={{ color: "var(--text-2)" }}
-          >
-            <input
-              type="checkbox"
-              name="allowDataLoss"
-              value="1"
-              className="mt-[3px]"
-              checked={dataLossBox}
-              onChange={(e) => setPendingDataLoss(e.target.checked)}
-            />
-            <span className="flex flex-col">
+              whether the run reads table contents at all. What each one does
+              is in the "?" beside it, which opens on a click, so it works on a
+              touch screen and a screen reader announces it. The "?" sits
+              beside the label, not inside it, so pressing it never ticks the
+              box. */}
+          <span className="flex items-center text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                name="allowDataLoss"
+                value="1"
+                checked={dataLossBox}
+                onChange={(e) => setPendingDataLoss(e.target.checked)}
+              />
               Allow data loss
-              <span
-                className="text-[11.5px] max-w-[34ch]"
-                style={{ color: "var(--text-3)" }}
-              >
-                Off, DROP TABLE, DROP COLUMN and any materialized view rebuild
-                that has to drop the view first are written into the script but
-                commented out. Takes effect on the next Compare.
-              </span>
-            </span>
-          </label>
-          <label
-            className="flex items-start gap-2 text-[12.5px] cursor-pointer"
-            style={{ color: "var(--text-2)" }}
-          >
-            <input
-              type="checkbox"
-              name="compareData"
-              value="1"
-              className="mt-[3px]"
-              checked={rowDataBox}
-              onChange={(e) => setPendingRowData(e.target.checked)}
-            />
-            <span className="flex flex-col">
+            </label>
+            <HelpHint label="Allow data loss">
+              While this is off, DROP TABLE, DROP COLUMN and any materialized
+              view rebuild that has to drop the view first are written into the
+              script commented out. Takes effect on the next Compare.
+            </HelpHint>
+          </span>
+          <span className="flex items-center text-[12.5px]" style={{ color: "var(--text-2)" }}>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                name="compareData"
+                value="1"
+                checked={rowDataBox}
+                onChange={(e) => setPendingRowData(e.target.checked)}
+              />
               Compare row data
-              <span
-                className="text-[11.5px] max-w-[34ch]"
-                style={{ color: "var(--text-3)" }}
-              >
-                Reads the rows of every table and reports which ones differ, not
-                just the catalog — much slower on big tables. Takes effect on the
-                next Compare.
-              </span>
-            </span>
-          </label>
+            </label>
+            <HelpHint label="Compare row data">
+              Also reads the rows of every table and reports which tables differ,
+              not just the structure. Much slower on big tables. Takes effect on
+              the next Compare.
+            </HelpHint>
+          </span>
           <span className="source-bar__spacer" />
           {/* Said right by the button that applies it, because this is the moment
               the reader is deciding whether anything more is needed. The line

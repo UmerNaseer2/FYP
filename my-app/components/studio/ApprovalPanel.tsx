@@ -13,7 +13,18 @@ import { permissionLabel, refusalMessage } from "@/lib/permissions";
 import { countOf } from "@/lib/plural";
 import { vLabel } from "@/lib/rollback-plan";
 import { versionKey } from "@/lib/script-status";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { AskAdmin } from "./AskAdmin";
+
+/** How an approval works, one click away beside the panel's title. */
+function ApprovalHint() {
+  return (
+    <HelpHint label="Approval">
+      An approval covers one run of this exact SQL. Change the SQL and it needs
+      approving again. A dry run on production needs it too, and does not use it up.
+    </HelpHint>
+  );
+}
 
 // ── Deploy approvals (the two-person rule) ─────────────────────────────────
 // One row of `deploy_approvals`, exactly as /api/deploy/approvals returns it.
@@ -179,13 +190,12 @@ export function ApprovalPanel({
         <div className="appr__head" style={{ color: "var(--text-2)" }}>
           <UsersIcon size={15} className="ico" />
           <span>Approval</span>
+          <ApprovalHint />
         </div>
         <p className="appr__body">
           {action === "revert"
-            ? "Nothing to approve yet — an approval covers the exact rollback SQL " +
-              "that will run, and not every version above has a rollback that can run."
-            : "Pick a target version first — an approval covers one exact set of " +
-              "migrations, so there is nothing to approve yet."}
+            ? "Nothing to approve yet: not every version above has a rollback that can run."
+            : "Pick a target version first. There is nothing to approve yet."}
         </p>
       </div>
     );
@@ -333,6 +343,7 @@ export function ApprovalPanel({
                 ? "Needs an approval"
                 : "Needs a second person"}
         </span>
+        <ApprovalHint />
       </div>
 
       {approved ? (
@@ -364,13 +375,6 @@ export function ApprovalPanel({
               needs approving again.
             </p>
           )}
-          {approved.self_approved && (
-            <p className="appr__meta">
-              {bypass
-                ? "Recorded on the row as a self-approval, because with the bypass on there is only one principal to be."
-                : "Recorded on the row as a self-approval, which this organization allows while its two-person rule is off."}
-            </p>
-          )}
           {approved.note && <p className="appr__meta">Note: {approved.note}</p>}
         </>
       ) : pending ? (
@@ -378,7 +382,7 @@ export function ApprovalPanel({
           <p className="appr__body">
             Requested by {pending.requested_by}
             {utcStamp(pending.requested_at) ? ` · ${utcStamp(pending.requested_at)}` : ""}.
-            {pendingWhy} A dry run does not need it.
+            {pendingWhy}
           </p>
           {pending.note && <p className="appr__meta">Note: {pending.note}</p>}
           {!mayApprove ? (
@@ -416,9 +420,6 @@ export function ApprovalPanel({
                 value={note}
                 onChange={(event) => onNoteChange(event.target.value)}
               />
-              <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
-                Stored with the approval and shown in the audit log.
-              </p>
               <div className="appr__actions">
                 <button
                   type="button"
@@ -488,9 +489,6 @@ export function ApprovalPanel({
                 value={note}
                 onChange={(event) => onNoteChange(event.target.value)}
               />
-              <p className="text-[11.5px] mt-1" style={{ color: "var(--text-3)" }}>
-                Whoever approves this will see it.
-              </p>
               <div className="appr__actions">
                 <button
                   type="button"

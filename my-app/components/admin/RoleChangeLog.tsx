@@ -184,11 +184,7 @@ export function RoleChangeLog({ changes }: { changes: readonly RoleChange[] }) {
   const entries = describeRoleChanges(changes);
   if (entries.length === 0) {
     return (
-      <p className="help">
-        Nothing has been changed yet. Roles made or deleted, lines turned on or off, roles
-        given to people, invitations, people removed and changes to the organization all show
-        here, with who made them.
-      </p>
+      <p className="help">Nothing has been changed yet.</p>
     );
   }
   return (

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
 import { Button, Card, ConfirmDialog, Input, Label, Modal, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, AlertTriangleIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { apiFetch } from "@/lib/api-fetch";
 import { errorFrom, jsonOf } from "@/lib/api-answer";
 import { ORG_NAME_MAX_LENGTH } from "@/lib/new-organization";
@@ -175,9 +176,12 @@ export function OrganizationTab({ active }: { active: boolean }) {
           <h3 className="section-title">Name</h3>
           <div className="mt-2 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
             <div>
-              <Label htmlFor={nameId} className="mb-1 block">
-                Organization name
-              </Label>
+              <div className="flex items-center mb-1">
+                <Label htmlFor={nameId}>Organization name</Label>
+                <HelpHint label="Organization name">
+                  {`The address stays /${org.slug} when the name changes, so saved links keep working.`}
+                </HelpHint>
+              </div>
               <Input
                 id={nameId}
                 value={name}
@@ -185,7 +189,7 @@ export function OrganizationTab({ active }: { active: boolean }) {
                 readOnly={!canUpdate || saving !== null}
                 onChange={(event) => setName(event.target.value)}
                 aria-invalid={nameProblem ? true : undefined}
-                aria-describedby={nameProblem ? `${nameId}-problem` : `${nameId}-help`}
+                aria-describedby={nameProblem ? `${nameId}-problem` : undefined}
               />
             </div>
             {canUpdate && (
@@ -194,13 +198,9 @@ export function OrganizationTab({ active }: { active: boolean }) {
               </Button>
             )}
           </div>
-          {nameProblem ? (
+          {nameProblem && (
             <p id={`${nameId}-problem`} className="field-problem mt-1.5">
               {nameProblem}
-            </p>
-          ) : (
-            <p id={`${nameId}-help`} className="text-[12.5px] mt-1.5" style={{ color: "var(--text-3)" }}>
-              {`The address stays /${org.slug} when the name changes, so saved links keep working.`}
             </p>
           )}
         </form>

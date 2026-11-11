@@ -122,9 +122,10 @@ describe("before there is anything to say", () => {
   it("does not ask for an approval when no migrations are selected", () => {
     const panel = show({ migrationCount: 0 });
 
-    expect(panel).toHaveTextContent(
-      "Pick a target version first — an approval covers one exact set of migrations"
-    );
+    expect(panel).toHaveTextContent("Pick a target version first. There is nothing to approve yet.");
+    // Why there is nothing to approve is one click away, in the "?" beside the title.
+    fireEvent.click(screen.getByRole("button", { name: "Help: Approval" }));
+    expect(screen.getByRole("note")).toHaveTextContent("An approval covers one run of this exact SQL");
     // An approval covers exact SQL, so one requested against an empty selection
     // would be an approval of nothing that a later selection could inherit.
     expect(screen.queryByRole("button", { name: /Request approval/ })).not.toBeInTheDocument();
@@ -428,7 +429,7 @@ describe("what an approval says it covers", () => {
 
     expect(screen.getByText("Self-approved under the auth bypass")).toBeInTheDocument();
     expect(screen.queryByText("Approved by a second person")).not.toBeInTheDocument();
-    expect(panel).toHaveTextContent("because with the bypass on there is only one principal");
+    expect(panel).not.toHaveTextContent("second person");
   });
 
   it("says a self-approval came from the two-person rule being off", () => {
@@ -438,7 +439,7 @@ describe("what an approval says it covers", () => {
     });
 
     expect(screen.getByText("Self-approved (two-person rule off)")).toBeInTheDocument();
-    expect(panel).toHaveTextContent("which this organization allows while its two-person rule is off");
+    expect(panel).not.toHaveTextContent("second person");
   });
 
   it("lets the requester clear their own request while the two-person rule is off", () => {

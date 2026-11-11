@@ -23,6 +23,7 @@ import type {
 } from "@/lib/compare-types";
 import { CheckIcon } from "@/components/ui/icons";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
+import { HelpHint } from "@/components/ui/HelpHint";
 
 // ---------------------------------------------------------------------------
 // DiffReport — the reusable diff canvas.
@@ -40,7 +41,10 @@ import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
 // with it. That is fine and is the reason it may only import pure modules —
 // lib/compare grades changes and opens no connection. It also means every group
 // here collapses through a native <details>, with no state and no effects, so
-// nothing about being in the bundle costs anything to hydrate.
+// nothing about being in the bundle costs anything to hydrate. The one thing
+// here with state is the small "?" note (HelpHint), which holds the
+// explanations that used to be grey paragraphs; the rest of what the report
+// means is in the page's help (lib/help).
 // ---------------------------------------------------------------------------
 
 type DiffKind = "add" | "rem" | "chg";
@@ -147,6 +151,19 @@ function ObjHeader({ label, note }: { label: string; note?: string }) {
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * A "?" note that sits in a group's header. The header is a <summary>, so a
+ * click anywhere in it folds the group; this stops a click on the "?" or on
+ * its open note from doing that.
+ */
+export function SummaryHint({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span onClick={(event) => event.preventDefault()}>
+      <HelpHint label={label}>{children}</HelpHint>
+    </span>
   );
 }
 
@@ -867,10 +884,13 @@ function ExtraTableCard({
         {drift ? (
           <p className="help mt-1">
             This table is in the live database and not in the tracked baseline,
-            so somebody created it outside this app. Nothing on this page
-            changes it: <b>Re-baseline to live</b> accepts it as part of the expected
-            structure from now on, and <b>Acknowledge</b> records that you have
-            seen it and leaves the baseline alone.
+            so somebody created it outside this app.
+            <HelpHint label="What to do about this table">
+              Nothing on this page changes it. <b>Re-baseline to live</b> accepts
+              it as part of the expected structure from now on.{" "}
+              <b>Acknowledge</b> records that you have seen it and leaves the
+              baseline alone.
+            </HelpHint>
           </p>
         ) : (
           <p className="help mt-1">
@@ -1127,6 +1147,24 @@ function SchemaObjectsCard({
       <summary className="tg-header">
         <ChevronDown />
         <span className="name">Schema objects</span>
+        <SummaryHint label="Schema objects">
+          {sides === "expected-live" ? (
+            <>
+              These belong to the schema, not to one table. <b>Breaking</b> is
+              measured against putting the baseline back: the way back drops a
+              view that is only live, and one already gone has already broken
+              whatever called it.
+            </>
+          ) : (
+            <>
+              These belong to the schema, not to one table. A dropped view or
+              function is graded <b>breaking</b>: anything still calling it stops
+              working. A rebuilt view is dropped with{" "}
+              <span className="mono">CASCADE</span> first, then the script writes
+              its indexes and triggers back.
+            </>
+          )}
+        </SummaryHint>
         <LevelPill level={breaking ? "breaking" : "additive"} />
         <div className="ml-auto">
           <DeltaChips {...tally} sides={sides} />
@@ -1142,29 +1180,6 @@ function SchemaObjectsCard({
           dropMode={dropMode}
         />
       ))}
-
-      <div className="obj-group">
-        {sides === "expected-live" ? (
-          <p className="help">
-            These belong to the schema rather than to any one table. Like every
-            grade on this page, <b>breaking</b> is measured against putting the
-            baseline back: a view only in the live database is graded breaking
-            because the way back drops it, and one that is in the baseline and
-            already gone is graded breaking because whatever called it has
-            already stopped working.
-          </p>
-        ) : (
-          <p className="help">
-            These belong to the schema rather than to any one table. A dropped
-            view or function is graded breaking because the migration removes it
-            and anything still calling it stops working — a rebuilt view is
-            dropped with <span className="mono">CASCADE</span> first, which can
-            take dependents with it. Rebuilding a view also takes every index and
-            trigger on it, so the script writes all of them back, whether or not
-            they are listed here as changed.
-          </p>
-        )}
-      </div>
     </details>
   );
 }
@@ -1303,38 +1318,32 @@ export function DiffReport({
       {/* The signs are the first thing a reader has to decode, and they mean
           something different on each page: on /compare a "+" is work the script
           will do, on /drift it is something already missing from the live
-          database. Saying so once here is cheaper than qualifying every row. */}
-      <p className="help">
-        {sides === "expected-live" ? (
-          <>
-            Read this as the work it would take to put the live database back to
-            the baseline. <b>+</b> is in the baseline but missing from the live
-            database, <b>−</b> is in the live database and not in the baseline,
-            and <b>~</b> is in both with something different about it.
-          </>
-        ) : (
-          <>
-            Every row is a change to the <b>target</b>. <b>+</b> is created,{" "}
-            <b>−</b> is dropped, and <b>~</b> is altered in place — and a{" "}
-            <span className="mono">before → after</span> pair reads left to
-            right, the value the target has now and the value this migration
-            gives it.
-          </>
-        )}
-      </p>
-
-      {/* Destructive, breaking and held back are three different gradings of
-          one script, spread across this page and the workbench below it, and
-          nothing said how they relate. One line, only where there is something
-          to explain. */}
-      {sides !== "expected-live" && destructiveCount > 0 && (
-        <p className="help">
-          Two things are graded here. <b>Destructive</b> means a statement deletes
-          data; <b>breaking</b> means it can break something that reads this
-          schema. A statement can be either, both or neither. <b>Held back</b>{" "}
-          means it was generated and then commented out, so it will not run.
-        </p>
-      )}
+          database. The title says which way to read the rows and the "?" beside
+          it names the signs, which is cheaper than qualifying every row. How
+          destructive, breaking and held back relate is in Compare's help
+          (lib/help/compare.ts). */}
+      <div className="flex items-center">
+        <span className="section-title">
+          {sides === "expected-live" ? "Differences from the baseline" : "Changes to the target"}
+        </span>
+        <HelpHint label="What the signs mean">
+          {sides === "expected-live" ? (
+            <>
+              This is the work it would take to put the live database back to
+              the baseline. <b>+</b> is in the baseline but missing from the live
+              database, <b>−</b> is live only, and <b>~</b> is in both but
+              different.
+            </>
+          ) : (
+            <>
+              <b>+</b> is created, <b>−</b> is dropped and <b>~</b> is altered in
+              place. A <span className="mono">before → after</span> pair reads
+              left to right: the value the target has now, then the value this
+              migration gives it.
+            </>
+          )}
+        </HelpHint>
+      </div>
 
       {destructiveCount > 0 && (
         // Same rule as DataCompare.tsx — colour tracks risk, so a script whose

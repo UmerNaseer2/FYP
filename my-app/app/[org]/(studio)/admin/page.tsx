@@ -6,6 +6,7 @@ import { useUser } from "@/hooks/useUser";
 import { refusalMessage } from "@/lib/permissions";
 import { Skeleton } from "@/components/ui";
 import { InfoIcon } from "@/components/ui/icons";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { UsersTab } from "@/components/admin/UsersTab";
 import { RolesTab } from "@/components/admin/RolesTab";
 import { OrganizationTab } from "@/components/admin/OrganizationTab";
@@ -79,15 +80,7 @@ export default function AdminPage() {
 
   return (
     <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
-      <header>
-        <div className="section-title">Admin</div>
-        <h1 className="text-[26px] sm:text-[28px] font-semibold tracking-[-0.02em] mt-1">
-          People and the organization
-        </h1>
-        <p className="text-[13.5px] mt-1.5 max-w-[56ch]" style={{ color: "var(--text-2)" }}>
-          Decide who is in this organization, what each role can do in it, and how it is run.
-        </p>
-      </header>
+      <PageHeader page="/admin" />
 
       {tab === null ? (
         // Only a fallback: the layout's <AuthGuard feature={["users", "roles",

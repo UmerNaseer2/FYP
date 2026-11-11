@@ -46,6 +46,7 @@ import AdminPage from "@/app/[org]/(studio)/admin/page";
 import { ROLES_CHANGED_EVENT } from "@/components/studio/ViewAsSwitcher";
 import { resetUserCache } from "@/hooks/useUser";
 import type { GitHubSettingsView } from "@/lib/github-settings";
+import { HELP_TOPICS } from "@/lib/help";
 import type { InviteListing } from "@/lib/invites";
 import {
   ALL_PERMISSIONS,
@@ -237,6 +238,16 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
+describe("the page header", () => {
+  it("names the page and says in one line what it is for", async () => {
+    setRoutes([invitesRoute(), listRoute()]);
+    render(<AdminPage />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Admin" })).toBeInTheDocument();
+    expect(screen.getByText(HELP_TOPICS["/admin"].blurb)).toBeInTheDocument();
+  });
+});
+
 describe("the Users tab", () => {
   it("lists the profiles the server returned", async () => {
     setRoutes([invitesRoute(), listRoute()]);
@@ -277,7 +288,7 @@ describe("the Users tab", () => {
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     expect(screen.getByText("You can't manage users or roles")).toBeInTheDocument();
     // Nor the steps for a tab it does not show.
-    expect(screen.queryByRole("list", { name: "How to set up a role" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Help: How to set up a role" })).not.toBeInTheDocument();
   });
 
   it("leaves your own row read-only", async () => {
@@ -1172,23 +1183,26 @@ describe("the Roles & permissions tab", () => {
 });
 
 describe("the steps at the top of the Roles & permissions tab", () => {
-  /** The numbered steps, in order. */
-  function steps(): HTMLElement[] {
-    return within(screen.getByRole("list", { name: "How to set up a role" })).getAllByRole(
-      "listitem"
-    );
+  /** The steps, which now sit behind the "?" beside the tab's one line. */
+  function openSteps(): HTMLElement {
+    fireEvent.click(screen.getByRole("button", { name: "Help: How to set up a role" }));
+    return screen.getByRole("note");
   }
 
-  it("says how to set up a role in three steps", async () => {
+  it("keeps how to set up a role one click away", async () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
 
+    // Closed until asked for: the tab shows one short line, not the steps.
+    expect(screen.getByText(/Decide what each role may do\./)).toBeInTheDocument();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+
     // With real sign-in there is no View as on the sidebar, so no step for it.
-    expect(steps().map((step) => step.textContent)).toEqual([
-      "Pick a role, or make a new one.",
-      "Turn on what it may do, then press Save changes.",
-      "Give it to people on the Users tab.",
-    ]);
+    const note = openSteps();
+    expect(note).toHaveTextContent(
+      "Pick a role or make a new one. Turn on what it may do, then press Save changes. Give it to people on the Users tab."
+    );
+    expect(note).not.toHaveTextContent("View as");
   });
 
   it("adds a step for View as while sign-in is off for testing", async () => {
@@ -1196,8 +1210,12 @@ describe("the steps at the top of the Roles & permissions tab", () => {
     setRoutes(rolesRoutes());
     await openRolesTab();
 
-    expect(steps()).toHaveLength(4);
-    expect(within(steps()[3]).getByText("View as")).toBeInTheDocument();
+    expect(within(openSteps()).getByText("View as")).toBeInTheDocument();
+  });
+
+  it("has the same steps in the page's help", () => {
+    const section = HELP_TOPICS["/admin"].sections?.find((s) => s.title === "Setting up a role");
+    expect(section?.body).toHaveLength(4);
   });
 });
 
@@ -1220,7 +1238,8 @@ describe("the Organization tab", () => {
       method: "PATCH",
       body: { name: "Acme", slug: "test-org", twoPersonRule: true },
     });
-    expect(screen.getByText(/The address stays \/test-org/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Help: Organization name" }));
+    expect(screen.getByRole("note")).toHaveTextContent(/The address stays \/test-org/);
     const save = screen.getByRole("button", { name: "Save name" });
     // Nothing to save until the name differs from the saved one.
     expect(save).toBeDisabled();
@@ -1544,7 +1563,7 @@ describe("the GitHub tab", () => {
       screen.getByText(/^Your role \(Editor\) can't change the GitHub repository or its access token\./)
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Making an access token" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Help: Access token" })).not.toBeInTheDocument();
   });
 
   it("says so when the settings could not be loaded", async () => {

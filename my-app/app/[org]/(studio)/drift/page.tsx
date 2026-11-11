@@ -14,7 +14,6 @@ import {
 import { isProduction } from "@/lib/environments";
 import { displayVersion } from "@/lib/version-timeline";
 import {
-  DriftIcon,
   AlertTriangleIcon,
   AlertCircleIcon,
   CheckIcon,
@@ -31,6 +30,7 @@ import { driftExplainKey } from "@/lib/ai/features/drift-explain-view";
 import { AuditLogTable, type AuditRow } from "@/components/studio/AuditLogTable";
 import { ScheduleTable } from "@/components/studio/ScheduleTable";
 import { ElsewhereDrift } from "@/components/studio/ElsewhereDrift";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { describeCadence } from "@/lib/drift-schedule";
 import { utcStamp } from "@/lib/format-date";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -79,13 +79,12 @@ const TAB_TITLES: Record<DriftTab, string> = {
   schedule: "Schedule",
 };
 
+// One short line per tab for the page header. The longer explanation of each
+// tab lives in the help file (lib/help/drift.ts), under its sections.
 const TAB_BLURBS: Record<DriftTab, string> = {
-  detail:
-    "Compare a tracked schema's live structure against its expected lineage snapshot, and resolve any drift.",
-  audit:
-    "Every recorded drift check, newest first — filterable by status and searchable by schema, connection or summary.",
-  schedule:
-    "How often each tracked schema is checked on its own, when it was last looked at, and when the next check is due.",
+  detail: "Compare a tracked schema with its expected snapshot, and resolve any drift.",
+  audit: "Every recorded drift check, newest first.",
+  schedule: "How often each tracked schema is checked on its own.",
 };
 
 /** Drifted first, then unreachable, then never-checked, then in-sync. */
@@ -180,20 +179,7 @@ function Shell({
   const q = schema ? `&schema=${encodeURIComponent(schema)}` : "";
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-7">
-      <header>
-        <div className="flex items-center gap-2">
-          <span style={{ color: "var(--text-3)" }}>
-            <DriftIcon size={16} />
-          </span>
-          <div className="section-title">Drift &amp; Audit</div>
-        </div>
-        <h1 className="text-[28px] font-semibold tracking-[-0.02em] mt-1">
-          {TAB_TITLES[tab]}
-        </h1>
-        <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-          {TAB_BLURBS[tab]}
-        </p>
-      </header>
+      <PageHeader page="/drift" title={TAB_TITLES[tab]} blurb={TAB_BLURBS[tab]} />
 
       {/* Tabs */}
       <div className="flex items-center gap-1" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -628,8 +614,8 @@ function DetailTab({
             <InfoIcon size={14} />
           </span>
           <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-            <b>This connection belongs to the website.</b> The website checks it on its own timer, and its
-            results show under Checked by the website below. This computer no longer checks it on a timer.
+            <b>This connection belongs to the website.</b> The website checks it on a timer, not this
+            computer. Results show under Checked by the website below.
           </div>
         </div>
       )}

@@ -26,6 +26,8 @@ import {
   type Environment,
 } from "@/lib/environments";
 import { Select } from "@/components/ui/Select";
+import { HelpHint } from "@/components/ui/HelpHint";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { useDriftCheckRefusal } from "@/components/studio/RecheckDriftButton";
 import { useNow } from "@/hooks/useNow";
 import { useOrgHref } from "@/hooks/useOrg";
@@ -455,27 +457,23 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-8">
-      {/* Header */}
-      <header className="flex items-end justify-between gap-6 flex-wrap">
-        <div>
-          <div className="section-title">Dashboard</div>
-          <h1 className="text-[28px] font-semibold tracking-[-0.02em] mt-1">Tracked schemas</h1>
-          <p className="text-[13.5px] mt-1.5 max-w-[56ch]" style={{ color: "var(--text-2)" }}>
-            Every schema under version control, with its lineage version and the latest drift check.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            onClick={() => void loadList()}
-            disabled={listPhase === "loading"}
-            aria-label="Refresh"
-          >
-            <RefreshIcon size={14} /> Refresh
-          </Button>
-          {trackButton}
-        </div>
-      </header>
+      {/* Header. The title and its one line come from lib/help/studio.ts. */}
+      <PageHeader
+        page="/studio"
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => void loadList()}
+              disabled={listPhase === "loading"}
+              aria-label="Refresh"
+            >
+              <RefreshIcon size={14} /> Refresh
+            </Button>
+            {trackButton}
+          </>
+        }
+      />
 
       {/* Said once for the page rather than under every card's buttons. */}
       {roleNote && (
@@ -593,7 +591,7 @@ export default function DashboardPage() {
               <EmptyState
                 icon={<ConnectionsIcon size={22} />}
                 title="Add a connection first"
-                description="Schema Studio watches schemas on a PostgreSQL server you have saved. Save one connection, then come back and track a schema on it."
+                description="Save a PostgreSQL connection, then come back and track a schema on it."
                 actions={
                   <Link href={orgPath("/connections")} className="btn btn-primary btn-sm">
                     <PlusIcon size={14} /> Add a connection
@@ -612,7 +610,7 @@ export default function DashboardPage() {
               <EmptyState
                 icon={<DashboardIcon size={22} />}
                 title="Nothing tracked yet"
-                description="Tracking a schema records what it looks like today as version v1.0.0, so Schema Studio can tell you later when the live database has moved away from it."
+                description="Track a schema to record what it looks like today and to hear when the live database changes."
                 actions={trackButton}
               />
             </div>
@@ -676,8 +674,7 @@ export default function DashboardPage() {
         }
       >
         <p className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-          Pick a saved connection and one of its schemas. We capture a baseline snapshot now and
-          record it as lineage <span className="mono">v1.0.0</span>.
+          A baseline snapshot is taken now, as lineage <span className="mono">v1.0.0</span>.
         </p>
 
         <div>
@@ -778,16 +775,18 @@ export default function DashboardPage() {
         </div>
 
         <div>
-          <Label className="mb-1 block">Label (optional)</Label>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Label>Label (optional)</Label>
+            <HelpHint label="Label">
+              A friendly name to show on its card. Production warnings come from the Environment
+              setting above, not from this label.
+            </HelpHint>
+          </div>
           <Input
             placeholder="e.g. Billing service"
             value={trackLabel}
             onChange={(e) => setTrackLabel(e.target.value)}
           />
-          <p className="help mt-1">
-            A friendly name to show on its card. Production warnings come from the
-            Environment setting above, not from this label.
-          </p>
         </div>
 
         {trackError && (

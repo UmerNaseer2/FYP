@@ -48,6 +48,8 @@ import { vLabel } from "@/lib/rollback-plan";
 import { displayVersion } from "@/lib/version-timeline";
 import { CHANGE_LEVEL_PILL } from "@/lib/change-level";
 import { Pill } from "@/components/ui/Pill";
+import { HelpHint } from "@/components/ui/HelpHint";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { MigrationDraftBanner } from "@/components/studio/MigrationDraftBanner";
 import { planDraftLoad, type MigrationDraft } from "@/lib/migration-draft";
 import { useUser } from "@/hooks/useUser";
@@ -1030,22 +1032,12 @@ export default function ScriptEditorPage() {
   const fixCount = fixRows.length;
   const fixIntro = `${countOf(fixCount, "saved version")} of ${scriptName} ${
     fixCount === 1 ? "has" : "have"
-  } no rollback that runs, so Deploy can't undo ${fixCount === 1 ? "it" : "them"}. ${
-    fixCount === 1 ? "Pick it" : "Pick one"
-  } and write its rollback: it is saved beside that version as a .down.sql file, and the migration itself is not changed.`;
+  } no rollback that runs, so Deploy can't undo ${fixCount === 1 ? "it" : "them"}.`;
 
   // ── Render ──────────────────────────────────────────────────────────────--
   return (
     <div className="p-4 sm:p-6 max-w-[1080px]">
-      <div className="mb-4">
-        <div className="section-title mb-2">Script Editor</div>
-        <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Write a migration script.</h1>
-        <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-          Write SQL by hand, pick the schema and script group it belongs to, and save it to GitHub.
-          The version number is suggested from your SQL, and always stays above the versions
-          already applied or saved.
-        </p>
-      </div>
+      <PageHeader page="/script-editor" />
 
       {connectionsLoaded && connections.length === 0 ? (
         <div style={{ minHeight: 360 }}>
@@ -1090,12 +1082,14 @@ export default function ScriptEditorPage() {
           />
           {/* ── Target ─────────────────────────────────────────────────────── */}
           <div className="card p-5">
-            <div className="section-title mb-3">Where this script belongs</div>
-            <p className="help mb-3">
-              Nothing runs against this database. The connection only names the registry
-              folder and lets us read which versions it has already applied, so the new
-              version lands above them. Running the script is done on Deploy.
-            </p>
+            <div className="section-title mb-3">
+              Where this script belongs
+              <HelpHint label="Where this script belongs">
+                Nothing runs against this database from here. The connection names the registry
+                folder and shows which versions are already applied, so the new version lands
+                above them. Running is done on Deploy.
+              </HelpHint>
+            </div>
             {/* The labels are block, like the Script group one that shares its
                 row with a button: an inline label takes the page's taller line
                 height and set its picker 6px lower than that one. */}
@@ -1301,10 +1295,16 @@ export default function ScriptEditorPage() {
                 setOfferStatus(null);
               }}
             />
-            <label className="label mt-3 block" htmlFor="se-down">
-              Rollback SQL{" "}
-              <span style={{ color: "var(--text-3)" }}>(needed to undo this version from Deploy)</span>
-            </label>
+            {/* The hint sits beside the label, not inside it, so the box keeps
+                the name "Rollback SQL". */}
+            <div className="mt-3 flex items-center flex-wrap">
+              <label className="label" htmlFor="se-down">Rollback SQL</label>
+              <HelpHint label="Rollback file">
+                Deploy needs these statements to undo this version. They are saved beside the
+                script as a .down.sql file. Where you can, undo by renaming or keeping a column
+                instead of dropping it.
+              </HelpHint>
+            </div>
             <textarea
               id="se-down"
               className="input mono mt-1 se-textarea"
@@ -1320,7 +1320,7 @@ export default function ScriptEditorPage() {
             />
             <p className="help mt-1">
               {rollbackRuns && !saveWithoutRollback
-                ? "Saved beside the script as the .down.sql file Deploy runs when you revert this version. It restores structure, not rows — a rollback that drops a column deletes everything written into it since this version landed, and only a point-in-time restore brings that back. Where you can, undo by renaming or leaving the column in place instead of dropping it."
+                ? "A rollback restores structure, not rows. One that drops a column deletes everything written into it since this version landed."
                 : (rollbackProblem ??
                   "This version will be saved without a rollback, so Deploy will not be able to undo it.")}
             </p>
@@ -1347,12 +1347,15 @@ export default function ScriptEditorPage() {
                 <span>Save without a rollback — Deploy will not be able to undo this version</span>
               </label>
             )}
-            <label className="label mt-3 block" htmlFor="se-desc">
-              Change log{" "}
-              <span style={{ color: "var(--text-3)" }}>
-                (optional — saved in the script and recorded when it is deployed)
-              </span>
-            </label>
+            <div className="mt-3 flex items-center flex-wrap">
+              <label className="label" htmlFor="se-desc">
+                Change log <span style={{ color: "var(--text-3)" }}>(optional)</span>
+              </label>
+              <HelpHint label="Change log">
+                Says why this version exists. It is saved in the script and recorded when the
+                version is deployed.
+              </HelpHint>
+            </div>
             <input
               id="se-desc"
               className="input mt-1"
@@ -1681,7 +1684,14 @@ export default function ScriptEditorPage() {
           {/* ── Add a missing rollback ─────────────────────────────────────── */}
           {familyKey !== "" && (fixCount > 0 || (fixHere !== null && fixHere.kind !== "saving")) && (
             <div className="card p-5">
-              <div className="section-title mb-3">Add a missing rollback</div>
+              <div className="section-title mb-3">
+                Add a missing rollback
+                <HelpHint label="Add a missing rollback">
+                  Pick a version and write its rollback. It is saved beside that version as a
+                  .down.sql file, and the migration itself is not changed. Once saved, Deploy can
+                  undo the version, including where it is already applied.
+                </HelpHint>
+              </div>
               {fixCount > 0 && (
                 <>
                   <p className="help mb-3">{fixIntro}</p>
@@ -1748,8 +1758,7 @@ export default function ScriptEditorPage() {
                         <p className="help mt-1" style={{ color: "var(--break)" }}>{TXN_IN_ROLLBACK}</p>
                       )}
                       <p className="help mt-2">
-                        A saved rollback cannot be changed afterwards — read it carefully. Once saved,
-                        Deploy can undo this version, including where it is already applied.
+                        A saved rollback cannot be changed afterwards, so read it carefully.
                       </p>
                     </>
                   )}

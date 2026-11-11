@@ -18,6 +18,7 @@ import { DRIFT_INTERVAL_CHOICES } from "@/lib/drift-schedule";
 import { refusalMessage } from "@/lib/permissions";
 import { apiFetch } from "@/lib/api-fetch";
 import { useOrgHref } from "@/hooks/useOrg";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { AskAdmin } from "./AskAdmin";
 
 /** One row of the cadence table (mirrors ScheduleRow on the server). */
@@ -247,6 +248,11 @@ export function ScheduleTable() {
                 {scheduler.running ? "Running" : "Not running"}
               </Pill>
               <span className="text-[13px] font-medium">Automatic drift checking</span>
+              <HelpHint label="Automatic drift checking">
+                An automatic check records an audit row only when the result changes, so a
+                schema that stays in sync does not fill the log. The <b>Last checked</b> column
+                is stamped every time, whatever the result.
+              </HelpHint>
             </div>
             <p className="text-[12.5px] mt-1.5 max-w-[70ch]" style={{ color: "var(--text-2)" }}>
               {scheduler.running
@@ -382,12 +388,6 @@ export function ScheduleTable() {
           </table>
         </div>
       )}
-
-      <p className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
-        An automatic check records an audit row only when the result changes, so a schema that
-        stays in sync does not fill the log. The <b>Last checked</b> column is stamped every
-        time, whatever the result.
-      </p>
     </div>
   );
 }

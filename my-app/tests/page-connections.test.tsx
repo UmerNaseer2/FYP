@@ -38,6 +38,7 @@ import {
   setSessionLoading,
   setUser,
 } from "./helpers/render-page";
+import { HELP_TOPICS } from "@/lib/help";
 import type { FoundDatabase } from "@/lib/desktop-bridge";
 import {
   installDesktopBridge,
@@ -1535,5 +1536,29 @@ describe("the organization's linked computers, on the website", () => {
     fireEvent.click(screen.getByRole("button", { name: "Unlink this computer" }));
     expect(await screen.findByText(sentence)).toBeInTheDocument();
     expect(screen.getByText("Bea's Mac")).toBeInTheDocument();
+  });
+});
+
+describe("the header, and the explanations that moved into Help", () => {
+  it("shows the page's name and its one line from the help file", async () => {
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Connections");
+    expect(screen.getByText(HELP_TOPICS["/connections"].blurb)).toBeInTheDocument();
+  });
+
+  it("keeps a field's explanation one click away, behind its question mark", async () => {
+    setRoutes([{ match: "/api/connections", body: [] }]);
+    render(<ConnectionsPage />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: /Add your first connection/ }));
+
+    expect(screen.queryByText(/exporting are unaffected/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Help: Who may run migrations here" }));
+    expect(screen.getByRole("note")).toHaveTextContent(/exporting are unaffected/);
+    // The label still names the field on its own, without the question mark.
+    expect(screen.getByLabelText("Who may run migrations here")).toBeInTheDocument();
   });
 });

@@ -2,6 +2,8 @@
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { AskAdmin } from "@/components/studio/AskAdmin";
+import { PageHeader } from "@/components/studio/PageHeader";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useDesktopBridge } from "@/hooks/useDesktopBridge";
 import { useUser } from "@/hooks/useUser";
@@ -1336,18 +1338,9 @@ export default function ConnectionsPage() {
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
       {/* ——— Page header ——— */}
       <section className="px-8 pt-8 pb-2">
-        <div className="flex items-start justify-between gap-6 flex-wrap">
-          <div>
-            <div className="section-title mb-2">Connections</div>
-            <h1 className="text-[28px] font-semibold tracking-[-0.018em]">Where your databases live.</h1>
-            <p className="text-[13.5px] mt-1.5 max-w-[62ch]" style={{ color: "var(--text-2)" }}>
-              Saved ways to reach your PostgreSQL servers — local or hosted. Test, edit, and connect
-              tracked schemas through these. Passwords are never displayed.
-            </p>
-          </div>
-
-          {/* ml-auto keeps this on the right when it wraps under the title. */}
-          <div className="ml-auto flex flex-col items-end gap-3">
+        <PageHeader
+          page="/connections"
+          actions={
             <button
               className="btn btn-primary btn-sm"
               onClick={openAdd}
@@ -1357,43 +1350,44 @@ export default function ConnectionsPage() {
               <PlusIcon size={14} />
               Add connection
             </button>
-            {!noCountsToShow && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <SummaryTile label="Total" value={String(connections.length)} />
-              <SummaryTile
-                label="Production"
-                value={String(prodCount)}
-                dot={prodCount > 0 ? "var(--break)" : "var(--text-3)"}
-              />
-              <SummaryTile
-                label="Healthy"
-                // A bare "0" claimed every connection was unhealthy when the
-                // truth was that none had been tested. An em dash says
-                // "unknown"; once anything has been tested the count carries
-                // "of N" so 1 of 3 cannot be misread as 1 of 1.
-                value={untestedCount === connections.length ? "—" : String(healthyCount)}
-                unit={
-                  untestedCount === connections.length
-                    ? undefined
-                    : `of ${connections.length}`
-                }
-                dot={
-                  healthyCount > 0
-                    ? "var(--sync)"
-                    : failingCount > 0
-                      ? "var(--break)"
-                      : "var(--text-3)"
-                }
-              />
-              <SummaryTile
-                label="Avg latency"
-                value={avgLatency === null ? "—" : String(avgLatency)}
-                unit={avgLatency === null ? undefined : "ms"}
-              />
-            </div>
-            )}
+          }
+        >
+          {!noCountsToShow && (
+          <div className="flex flex-wrap gap-3 mt-4">
+            <SummaryTile label="Total" value={String(connections.length)} />
+            <SummaryTile
+              label="Production"
+              value={String(prodCount)}
+              dot={prodCount > 0 ? "var(--break)" : "var(--text-3)"}
+            />
+            <SummaryTile
+              label="Healthy"
+              // A bare "0" claimed every connection was unhealthy when the
+              // truth was that none had been tested. An em dash says
+              // "unknown"; once anything has been tested the count carries
+              // "of N" so 1 of 3 cannot be misread as 1 of 1.
+              value={untestedCount === connections.length ? "—" : String(healthyCount)}
+              unit={
+                untestedCount === connections.length
+                  ? undefined
+                  : `of ${connections.length}`
+              }
+              dot={
+                healthyCount > 0
+                  ? "var(--sync)"
+                  : failingCount > 0
+                    ? "var(--break)"
+                    : "var(--text-3)"
+              }
+            />
+            <SummaryTile
+              label="Avg latency"
+              value={avgLatency === null ? "—" : String(avgLatency)}
+              unit={avgLatency === null ? undefined : "ms"}
+            />
           </div>
-        </div>
+          )}
+        </PageHeader>
       </section>
 
       {/* Said once for the page rather than on every row's buttons. */}
@@ -1586,9 +1580,8 @@ export default function ConnectionsPage() {
                               Drift, Deploy — needs a connection before it can
                               show anything at all. */}
                           <div className="help max-w-[46ch]">
-                            A connection is one database on a PostgreSQL server this app can
-                            reach. Compare, Drift and Deploy all read through them, so this is
-                            the first thing to set up.
+                            Compare, Drift and Deploy all read through a connection, so add one
+                            first.
                           </div>
                           <button
                             className="btn btn-primary btn-sm"
@@ -1858,13 +1851,15 @@ export default function ConnectionsPage() {
             <div className="flex items-center gap-2">
               <MonitorIcon size={14} />
               <h2 className="text-[14px] font-semibold">On linked computers</h2>
+              <HelpHint label="On linked computers">
+                Connections kept in the desktop app on computers linked to {orgName}. Their passwords
+                stay on that computer, so they can&apos;t be changed or used here. Its owner can
+                compare them from here while it is on.
+              </HelpHint>
             </div>
             <p className="help max-w-[70ch] mt-1 mb-3">
-              Connections kept in the desktop app on computers linked to {orgName}. Their passwords
-              stay on that computer, so they can&apos;t be changed or used here. Open Schema Studio on
-              that computer to use them. Its owner can also compare them from here while it is on.
               A linked computer can open this organization&apos;s saved connections. Its owner or an
-              Admin can unlink it here, for instance when it is lost.
+              Admin can unlink it.
             </p>
             <div className="card overflow-hidden">
               {computersWithConnections.map((computer, index) => (
@@ -1973,7 +1968,13 @@ export default function ConnectionsPage() {
         <div className="drawer-body">
           {/* Quick start */}
           <div className="mb-5">
-            <div className="label mb-2">Quick start</div>
+            <div className="label mb-2">
+              Quick start
+              <HelpHint label="Quick start">
+                Fills in a name and the SSL mode each one needs. Hosted leaves the connection
+                string to you, so paste your own below.
+              </HelpHint>
+            </div>
             <div className="flex gap-2 flex-wrap">
               <button className="pill pill-outline" onClick={() => quickStart("local")}>
                 Local Postgres
@@ -1981,10 +1982,6 @@ export default function ConnectionsPage() {
               <button className="pill pill-outline" onClick={() => quickStart("hosted")}>
                 Hosted (Neon · Supabase · RDS)
               </button>
-            </div>
-            <div className="help mt-2">
-              Fills in a name and the SSL mode each one needs. Hosted leaves the
-              connection string to you, so paste your own below.
             </div>
           </div>
 
@@ -2004,7 +2001,6 @@ export default function ConnectionsPage() {
                   *
                 </span>
               </label>
-              <span className="help">Shown in lists and breadcrumbs.</span>
             </div>
             <input
               className="input"
@@ -2021,9 +2017,12 @@ export default function ConnectionsPage() {
               This is the field Compare and Deploy read before they touch a
               database, so "Prod — RDS" in the name above buys you nothing. */}
           <div className="mb-4">
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center mb-1.5">
               <label className="label">Environment</label>
-              <span className="help">Drives the production warnings.</span>
+              <HelpHint label="Environment">
+                Only a label, but Compare and Deploy read it to warn you before they touch
+                production, and to ask for approval before a deploy there.
+              </HelpHint>
             </div>
             <div className="seg" role="radiogroup" aria-label="Environment" style={{ display: "flex" }}>
               {ENVIRONMENTS.map((environment) => (
@@ -2162,7 +2161,7 @@ export default function ConnectionsPage() {
               />
               {editingId !== null && (
                 <div className="help">
-                  Leave blank to keep the saved connection string, or paste a new one to replace it.
+                  Leave blank to keep the saved one.
                 </div>
               )}
               <UriPreview uri={form.uri} />
@@ -2321,11 +2320,15 @@ export default function ConnectionsPage() {
               down is still deployable by anyone whose role may run
               deployments. The label shouts; it does not stop anything. */}
           <div className="mt-6">
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center mb-1.5">
               <label className="label" htmlFor={executeRoleId}>
                 Who may run migrations here
               </label>
-              <span className="help">Checked by Deploy and by Revert.</span>
+              <HelpHint label="Who may run migrations here">
+                Checked by Deploy, Revert and a Version Sync replay. It only decides who may make
+                this app write to this database. Comparing, generating scripts, previewing and
+                exporting are unaffected.
+              </HelpHint>
             </div>
             <select
               id={executeRoleId}
@@ -2341,19 +2344,13 @@ export default function ConnectionsPage() {
                 </option>
               ))}
             </select>
-            <div className="help mt-1.5">
-              Comparing, generating scripts, previewing and exporting are unaffected by
-              this — it only decides who may make this app write to this database.
-            </div>
             {form.executeRole === "none" && (
               <div className="warn-inline mt-2">
                 <span className="ico">
                   <InfoIcon size={14} />
                 </span>
                 <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                  Read-only applies to everyone, admins included. It is a statement about
-                  the database rather than a rank to be outranked — which is the point for
-                  a reference or model schema that other databases are compared against.
+                  Read-only applies to everyone, admins included.
                 </div>
               </div>
             )}
@@ -2377,8 +2374,8 @@ export default function ConnectionsPage() {
               </label>
               <div className="help mt-1.5">
                 {localOnlyShown()
-                  ? `The password stays on ${machineName}. Everyone in ${orgName} sees this connection by name, and it runs only here.`
-                  : `The password is saved for ${orgName}, so this connection works from every copy of Schema Studio.`}
+                  ? `The password stays on ${machineName}. Others in ${orgName} see this connection by name only.`
+                  : `The password is saved for ${orgName}, so it works from every copy of Schema Studio.`}
               </div>
             </div>
           )}
@@ -2389,11 +2386,16 @@ export default function ConnectionsPage() {
               answer: without it, unrestricted scripts deploy exactly as they
               always did and only restricted ones are held back. */}
           <div className="mt-6">
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center mb-1.5">
               <label className="label" htmlFor={appTableId}>
                 Application table <span className="help">optional</span>
               </label>
-              <span className="help">For scripts restricted to an application.</span>
+              <HelpHint label="Application table">
+                A table here with an <span className="mono">application_name</span> column. Deploy
+                reads it to decide whether a script marked{" "}
+                <span className="mono">-- {APPLIES_TO_HEADER_KEY}: billing</span> may run here. Write{" "}
+                <span className="mono">schema.table</span>, or just the table name.
+              </HelpHint>
             </div>
             <input
               id={appTableId}
@@ -2402,23 +2404,14 @@ export default function ConnectionsPage() {
               placeholder="public.application"
               onChange={(e) => setForm((f) => ({ ...f, applicationTable: e.target.value }))}
             />
-            <div className="help mt-1.5">
-              A table on this database with an <span className="mono">application_name</span>{" "}
-              column, naming the applications it hosts. Deploy reads it to decide whether a
-              script marked{" "}
-              <span className="mono">-- {APPLIES_TO_HEADER_KEY}: billing</span> may run here.
-              Write it as <span className="mono">schema.table</span>, or just the table name to
-              read it in the schema being deployed to.
-            </div>
             {form.applicationTable.trim() !== "" && (
               <div className="warn-inline mt-2">
                 <span className="ico">
                   <InfoIcon size={14} />
                 </span>
                 <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-                  If this table can&apos;t be read at deploy time — wrong name, missing, or no
-                  permission — restricted scripts are refused rather than let through. A
-                  restriction that lapses when the lookup fails wouldn&apos;t be one.
+                  If this table can&apos;t be read at deploy time, restricted scripts are refused
+                  rather than let through.
                 </div>
               </div>
             )}

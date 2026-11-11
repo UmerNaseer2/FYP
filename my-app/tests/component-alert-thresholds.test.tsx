@@ -164,9 +164,11 @@ describe("what the form says about itself", () => {
     show();
     await loaded();
 
-    expect(
-      screen.getByText(/this app has not looked at your database and decided what/)
-    ).toBeInTheDocument();
+    // The explanation sits behind the "?" beside the count, so open it first.
+    fireEvent.click(screen.getByRole("button", { name: "Help: Alert rules" }));
+    expect(screen.getByRole("note")).toHaveTextContent(
+      /this app has not looked at your database and decided what/
+    );
   });
 
   it("says of a rule that is off that it is never checked", async () => {

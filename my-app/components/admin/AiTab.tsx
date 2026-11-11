@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { Card, ConfirmDialog, Skeleton } from "@/components/ui";
 import { AlertCircleIcon, InfoIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { apiFetch } from "@/lib/api-fetch";
 import { errorFrom, jsonOf } from "@/lib/api-answer";
-import { AI_USAGE_NOTE, isAiAdminView, type AiAdminView } from "@/lib/ai/views";
+import { isAiAdminView, type AiAdminView } from "@/lib/ai/views";
 import type { AiFeature } from "@/lib/ai/prompts";
 import { resetAiStatus } from "@/components/studio/AiPanel";
 import { AiKeyCard } from "./AiKeyCard";
@@ -138,7 +139,12 @@ export function AiTab({ active }: { active: boolean }) {
       )}
 
       <Card className="p-4 sm:p-5">
-        <h3 className="section-title">AI assistance</h3>
+        <div className="flex items-center">
+          <h3 className="section-title">AI assistance</h3>
+          <HelpHint label="What is sent">
+            {`${SENT} Every answer is checked before it is shown, and nothing runs without approval.`}
+          </HelpHint>
+        </div>
         <label className="mt-2 flex items-start gap-3 text-[13.5px]">
           <input
             type="checkbox"
@@ -155,7 +161,7 @@ export function AiTab({ active }: { active: boolean }) {
             <span className="font-medium">Let people in this organization use AI assistance</span>
             <span className="block mt-0.5" style={{ color: "var(--text-2)" }}>
               {view.enabled
-                ? "On. Roles with Use AI assistance see the AI buttons on Compare, Deploy, Drift and the Script Editor, and Ask AI in the top bar."
+                ? "On. Roles with Use AI assistance see the AI buttons."
                 : "Off. Nothing about this organization's schemas is sent to an AI service."}
             </span>
           </span>
@@ -165,9 +171,6 @@ export function AiTab({ active }: { active: boolean }) {
             {`Service: ${setup.service}${setup.ownKey ? ", with this organization's own key" : ""}. Models: ${setup.models.smart} for reviews and explanations, ${setup.models.fast} for short summaries.`}
           </p>
         )}
-        <p className="text-[12.5px] mt-1.5 max-w-[68ch]" style={{ color: "var(--text-3)" }}>
-          {`What is sent: ${SENT} The app checks every answer against its own engine before showing it, and nothing the AI writes runs without someone approving it.`}
-        </p>
       </Card>
 
       <AiKeyCard
@@ -240,7 +243,14 @@ function UsageCard({ view }: { view: AiAdminView }) {
   return (
     <Card className="p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="section-title">{`Use in the last ${usage.days} days`}</h3>
+        <div className="flex items-center">
+          <h3 className="section-title">{`Use in the last ${usage.days} days`}</h3>
+          <HelpHint label="Use figures">
+            One request to the AI service is one call, retries included. Saved answers cost nothing.
+            Failed means no usable answer: the service was busy, out of allowance or too slow, or the
+            answer did not pass the checks.
+          </HelpHint>
+        </div>
         <span className="text-[12.5px]" style={{ color: "var(--text-3)" }}>
           {view.dailyLimit === null
             ? `${usage.today} calls today`
@@ -285,9 +295,6 @@ function UsageCard({ view }: { view: AiAdminView }) {
           </table>
         </div>
       )}
-      <p className="text-[12px] mt-2" style={{ color: "var(--text-3)" }}>
-        {AI_USAGE_NOTE}
-      </p>
     </Card>
   );
 }

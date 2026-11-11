@@ -23,6 +23,7 @@ import {
 import type { RoleChange, RoleSummary } from "@/lib/roles-db";
 import { Button, Card, ConfirmDialog, EmptyState, Input, Label, Skeleton } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
+import { HelpHint } from "@/components/ui/HelpHint";
 import {
   AlertCircleIcon,
   AlertTriangleIcon,
@@ -653,10 +654,12 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
 
           {view === "compare" && (
             <Card className="mt-4 p-4 sm:p-5">
-              <h2 className="text-[15px] font-semibold">Compare roles</h2>
-              <p className="help mt-0.5 mb-3">
-                Every role side by side. Pick a role above to change what it can do.
-              </p>
+              <div className="flex items-center mb-3">
+                <h2 className="text-[15px] font-semibold">Compare roles</h2>
+                <HelpHint label="Compare roles">
+                  Every role side by side. It only shows. Pick a role above to change what it can do.
+                </HelpHint>
+              </div>
               <RoleCompare roles={roles} hasDrafts={drafts.size > 0} />
             </Card>
           )}
@@ -821,10 +824,14 @@ export function RolesTab({ active, showViewAs = false, onShowUsers }: Props) {
           )}
 
           <Card className="mt-4 p-4 sm:p-5">
-            <h2 className="text-[15px] font-semibold">Recent changes</h2>
-            <p className="help mt-0.5 mb-3">
-              Changes to roles, to who has them and to the organization, newest first.
-            </p>
+            <div className="flex items-center mb-3">
+              <h2 className="text-[15px] font-semibold">Recent changes</h2>
+              <HelpHint label="Recent changes">
+                Newest first, with who made each change. Roles made or deleted, lines turned on or
+                off, roles given to people, invitations, people removed and changes to the
+                organization all show here.
+              </HelpHint>
+            </div>
             <RoleChangeLog changes={changes} />
           </Card>
         </>

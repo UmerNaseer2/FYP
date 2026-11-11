@@ -91,6 +91,8 @@ import { MigrationReviewPanel } from "@/components/studio/MigrationReviewPanel";
 import { ProductionGate, RiskGate } from "@/components/studio/RiskGate";
 import { VersionTimeline } from "@/components/studio/VersionTimeline";
 import { ChangeLevelPill } from "@/components/studio/ChangeLevelPill";
+import { PageHeader } from "@/components/studio/PageHeader";
+import { HelpHint } from "@/components/ui/HelpHint";
 import { shortUtcDate } from "@/lib/format-date";
 import { apiFetch } from "@/lib/api-fetch";
 import { REQUESTS_CHANGED_EVENT } from "@/lib/access-requests";
@@ -3093,15 +3095,9 @@ function DeployBody() {
     <div style={{ background: "var(--bg)", minHeight: "100%" }}>
       {/* ——— Page header ——— */}
       <section className="px-4 sm:px-8 pt-8 pb-2">
-        <div className="section-title mb-2">Deploy</div>
-        <h1 className="text-[28px] font-semibold tracking-[-0.018em]">
-          Bring the database up to a version.
-        </h1>
-        <p className="text-[13.5px] mt-1.5 max-w-[64ch]" style={{ color: "var(--text-2)" }}>
-          Pick a target connection, schema and script group, then rehearse or apply the
-          pending migrations: all of them, or up to the version whose Run button you pick.
-          Each run goes in one transaction — all of its migrations or none.
-        </p>
+        {/* The title and its one line come from lib/help/deploy.ts. How the
+            page works is in Help, not here. */}
+        <PageHeader page="/deploy" />
         {runRefusal && (
           <div className="role-note mt-4 max-w-[80ch]">
             <InfoIcon size={15} className="ico" />
@@ -3302,6 +3298,10 @@ function DeployBody() {
 
               <div>
                 <label className="label" htmlFor="dep-group">Script group</label>
+                <HelpHint label="Script group">
+                  One named set of migrations that carries a schema forward, one version
+                  at a time. A group shows up here once a script is saved for this schema.
+                </HelpHint>
                 <Select
                   variant="input"
                   id="dep-group"
@@ -3326,14 +3326,14 @@ function DeployBody() {
                   empty, because an empty list is exactly what leaves the picker
                   on its placeholder. So the one case it was written for was the
                   one case it never appeared in: the reader opened the picker,
-                  read "No options", and got no explanation of what a script
-                  group is or where one comes from.
+                  read "No options", and got no word on where a script group
+                  comes from. What a script group is sits in the "?" beside
+                  the label, and in Help.
                 */}
                 {githubScripts && schema && schemaScriptNames.length === 0 && (
                   <p className="help mt-1">
                     No scripts saved for <span className="mono">{schema}</span>{" "}
-                    yet. A script group is one named set of migrations that
-                    carries a schema forward, one version at a time. Make one on{" "}
+                    yet. Make one on{" "}
                     <Link href={orgPath("/compare")} className="underline">
                       Compare &amp; Author
                     </Link>
@@ -3341,7 +3341,7 @@ function DeployBody() {
                     <Link href={orgPath("/script-editor")} className="underline">
                       Script Editor
                     </Link>
-                    . It shows up here once it is saved.
+                    .
                   </p>
                 )}
               </div>
@@ -3470,6 +3470,11 @@ function DeployBody() {
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="section-title">
                       Roll back · <span className="mono">{scriptGroup}</span>
+                      <HelpHint label="Roll back">
+                        Pick a version to go back to. Every applied version above it is
+                        undone, newest first, in one transaction: all of them or none.
+                        Outside production it runs as soon as you press the button.
+                      </HelpHint>
                     </div>
                     {appliedNewestFirst.length > 0 && (
                       <button
@@ -3485,9 +3490,8 @@ function DeployBody() {
                   <p className="help mt-1">
                     {appliedNewestFirst.length === 0
                       ? `No version of ${scriptGroup} is applied to ${preflightResult.schema} now, so there is nothing to roll back.`
-                      : "Pick a version to go back to: every applied version above it is " +
-                        "undone, newest first, in one transaction — all of them or none. A " +
-                        "rollback restores structure, not rows."}
+                      : // The one line that stays: it is about losing data.
+                        "A rollback restores structure, not rows."}
                   </p>
 
                   {rollbackDone && (
@@ -3531,9 +3535,9 @@ function DeployBody() {
                       </div>
                       {rollbackListCapped && (
                         <p className="text-[12px]" style={{ color: "var(--text-3)" }}>
-                          A rollback undoes at most {MAX_ROLLBACK_VERSIONS} versions at a time, so this
-                          list stops at {vLabel(appliedNewestFirst[MAX_ROLLBACK_VERSIONS])}. To go further
-                          back, run this rollback first, then roll back again from there.
+                          This list stops at {vLabel(appliedNewestFirst[MAX_ROLLBACK_VERSIONS])}: a
+                          rollback undoes at most {MAX_ROLLBACK_VERSIONS} versions at a time. To go
+                          further back, run this one, then roll back again.
                         </p>
                       )}
 
@@ -3749,12 +3753,6 @@ function DeployBody() {
                       <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
                         {rollbackHint}
                       </div>
-                      {!targetIsProduction && (
-                        <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
-                          Outside production a rollback runs as soon as you press it — no
-                          second person is needed.
-                        </div>
-                      )}
                     </div>
                   )}
 
@@ -3797,9 +3795,12 @@ function DeployBody() {
                       app's own database, which is why they survive. */}
                   {attempts.length > 0 && (
                     <div className="mt-4">
-                      <div className="section-title mb-1">Deploy history (all attempts)</div>
-                      <div className="help mb-1">
-                        Everything run against this schema from here, whether or not it landed.
+                      <div className="section-title mb-1">
+                        Deploy history (all attempts)
+                        <HelpHint label="Deploy history">
+                          Everything run against this schema from here, whether or not it
+                          landed. Failed and refused runs are listed too, with the reason.
+                        </HelpHint>
                       </div>
                       {attempts.slice(0, 10).map((row) => (
                         <div
@@ -3894,23 +3895,24 @@ function DeployBody() {
                   <div className="space-y-4">
                     <div className="flex items-end justify-between gap-3 flex-wrap">
                       <div>
-                        <div className="section-title">Pending migrations</div>
+                        <div className="section-title">
+                          Pending migrations
+                          {/* Said once, here, rather than on every row: the boxes
+                              do not behave like a shopping list and a reader who
+                              unticks the middle one should know why the ones
+                              below it went with it. */}
+                          {pendingScripts.length > 1 && (
+                            <HelpHint label="Pending migrations">
+                              Tick a version to run everything up to it, or untick one to
+                              stop before it. A run is always an unbroken sequence from the
+                              first pending version, because a later migration changes what
+                              an earlier one creates.
+                            </HelpHint>
+                          )}
+                        </div>
                         <h2 className="text-[18px] font-semibold tracking-[-0.005em] mt-1">
                           {pendingScripts.length} pending · {scriptsUpToTarget.length} in this run
                         </h2>
-                        {/* Said once, here, rather than on every row: the boxes
-                            do not behave like a shopping list and a reader who
-                            unticks the middle one should know why the ones
-                            below it went with it. */}
-                        {pendingScripts.length > 1 && (
-                          <p className="help mt-1">
-                            Tick a version to run everything up to it, or untick one to stop
-                            before it. A run is always an unbroken sequence from the first
-                            pending version — a later migration alters what an earlier one
-                            creates, so there is no way to leave one out and still run the
-                            rest.
-                          </p>
-                        )}
                         {/* Taken out of the run by their own "Applies-to"
                             header. They are not in the list below, and a
                             version that is simply absent reads as one that
@@ -3927,9 +3929,7 @@ function DeployBody() {
                               preflightResult?.applications.source ?? "The application table"
                             } says this database hosts ${
                               preflightResult?.applications.names.join(", ") || "nothing by name"
-                            }. Later versions still run — ${
-                              addressedElsewhere.length === 1 ? "that script touches" : "those scripts touch"
-                            } another application's tables, which are not here.`}
+                            }. Later versions still run.`}
                           </p>
                         )}
                         {/* Skipped versions are not in the list below, so say

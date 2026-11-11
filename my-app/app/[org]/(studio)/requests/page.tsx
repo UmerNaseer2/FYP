@@ -6,6 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { Button, Card, ConfirmDialog, EmptyState, Pill, Skeleton } from "@/components/ui";
 import { Select } from "@/components/ui/Select";
 import { AlertTriangleIcon, InboxIcon } from "@/components/ui/icons";
+import { HelpHint } from "@/components/ui/HelpHint";
+import { PageHeader } from "@/components/studio/PageHeader";
 import { useOrgHref } from "@/hooks/useOrg";
 import { useUser } from "@/hooks/useUser";
 import {
@@ -212,9 +214,15 @@ function AskForm({ onSent }: { onSent: () => void }) {
 
   return (
     <Card className="p-4 sm:p-5 mt-6">
-      <label htmlFor="request-what" className="text-[13px] font-medium">
-        What do you need?
-      </label>
+      <div className="flex items-center">
+        <label htmlFor="request-what" className="text-[13px] font-medium">
+          What do you need?
+        </label>
+        <HelpHint label="What do you need?">
+          {"The list holds what your role can't do yet and an Admin could give. " +
+            "Your request goes to the people here who can change roles or users."}
+        </HelpHint>
+      </div>
       <div className="mt-1.5">
         <Select
           id="request-what"
@@ -254,9 +262,6 @@ function AskForm({ onSent }: { onSent: () => void }) {
         <Button variant="primary" size="sm" disabled={!ready || busy} onClick={() => void send()}>
           {busy ? "Sending..." : "Send request"}
         </Button>
-        <span className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
-          Goes to the people here who can change roles or users.
-        </span>
       </div>
       {sent && (
         <p className="text-[13px] mt-3" role="status" style={{ color: "var(--text-1)" }}>
@@ -463,6 +468,15 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
         >
           Decline
         </Button>
+        {mayWiden && (
+          <HelpHint label="Something in between" className="self-center">
+            For something in between, make a new role on the{" "}
+            <Link href={orgPath("/admin")} className="underline underline-offset-2">
+              Admin page
+            </Link>
+            , give it to them there, then mark this as done.
+          </HelpHint>
+        )}
       </div>
 
       {moveOptions && (
@@ -497,16 +511,6 @@ function InboxRow({ request, onChanged }: { request: InboxRequest; onChanged: ()
             </p>
           )}
         </div>
-      )}
-
-      {mayWiden && (
-        <p className="text-[12px] mt-3" style={{ color: "var(--text-3)" }}>
-          For something in between, make a new role on the{" "}
-          <Link href={orgPath("/admin")} className="underline underline-offset-2">
-            Admin page
-          </Link>
-          , give it to them there, then mark this as done.
-        </p>
       )}
 
       {error && <ErrorNote>{error}</ErrorNote>}
@@ -731,26 +735,14 @@ function RequestsBody() {
 
   return (
     <div className="max-w-[920px] mx-auto px-5 sm:px-8 py-8 sm:py-10">
-      <header>
-        <div className="section-title">Requests</div>
-        <h1 className="text-[26px] sm:text-[28px] font-semibold tracking-[-0.02em] mt-1">
-          {isAdmin ? "What people here need" : "Ask for what your role can't do"}
-        </h1>
-        <p className="text-[13.5px] mt-1.5 max-w-[60ch]" style={{ color: "var(--text-2)" }}>
-          {isAdmin
-            ? "Requests from your team and the production runs waiting on someone. "
-            : "Ask here and read the answer here. "}
-          The app does not send email, so a number beside Requests in the sidebar is how
-          people find out.
-        </p>
-        <p className="text-[13.5px] mt-1.5" style={{ color: "var(--text-2)" }}>
-          Away from a computer?{" "}
-          <Link href={orgPath("/phone")} className="underline underline-offset-2">
-            Open the phone app
+      <PageHeader
+        page="/requests"
+        actions={
+          <Link href={orgPath("/phone")} className="btn btn-sm">
+            Phone app
           </Link>
-          , which can alert you when something here needs you.
-        </p>
-      </header>
+        }
+      />
 
       {failed && <ErrorNote>{failed}</ErrorNote>}
 

@@ -11,7 +11,7 @@
  */
 
 import "@testing-library/jest-dom";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DiffReport } from "@/components/studio/DiffReport";
 import type { CompareReport, ObjectDiff } from "@/lib/compare-types";
@@ -254,5 +254,36 @@ describe("the rest of the object lines", () => {
   it("says schemas are in sync when there is nothing to report", () => {
     render(<DiffReport report={report([])} allowDataLoss={false} />);
     expect(screen.getByText("Schemas are in sync")).toBeInTheDocument();
+  });
+});
+
+describe("what the signs mean", () => {
+  // The legend was a paragraph above the report. It is now the "?" beside the
+  // report's title, and it still reads differently on each page.
+  it("is one click away on Compare, where a + is work the script will do", () => {
+    render(<DiffReport report={report([droppedView("open_orders", false)])} allowDataLoss={false} />);
+
+    expect(screen.getByText("Changes to the target")).toBeInTheDocument();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Help: What the signs mean" }));
+
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "+ is created, − is dropped and ~ is altered in place."
+    );
+  });
+
+  it("is one click away on Drift, where a + is something missing from the live database", () => {
+    render(
+      <DiffReport report={report([droppedView("open_orders", false)])} sides="expected-live" />
+    );
+
+    expect(screen.getByText("Differences from the baseline")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Help: What the signs mean" }));
+
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "+ is in the baseline but missing from the live database, − is live only, and ~ is in both but different."
+    );
   });
 });

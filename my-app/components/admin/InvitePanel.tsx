@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Button, Card, ConfirmDialog, Input, Label, Pill } from "@/components/ui";
 import { Select, type SelectOption } from "@/components/ui/Select";
+import { HelpHint } from "@/components/ui/HelpHint";
 import {
   AlertTriangleIcon,
   CheckIcon,
@@ -248,11 +249,13 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
 
   return (
     <Card className="mt-6 p-4 sm:p-5">
-      <h2 className="text-[15px] font-semibold">Invite people</h2>
-      <p className="help mt-0.5">
-        Make an invitation here, then send its link to the person yourself. The app does not send
-        email.
-      </p>
+      <div className="flex items-center">
+        <h2 className="text-[15px] font-semibold">Invite people</h2>
+        <HelpHint label="Invite people">
+          Make an invitation here, then send its link to the person yourself. The app does not send
+          email. The link is shown once, so copy it then.
+        </HelpHint>
+      </div>
 
       {!listing ? (
         <ListError message={listError ?? ""} onRetry={() => void load()} />
@@ -263,7 +266,13 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
           {made && <MadeInvite key={made.link} made={made} onDone={() => setMade(null)} />}
 
           <form className="mt-4" onSubmit={(event) => void makeEmailInvite(event)} noValidate>
-            <h3 className="section-title">To an email address</h3>
+            <div className="flex items-center">
+              <h3 className="section-title">To an email address</h3>
+              <HelpHint label="To an email address">
+                Only someone who signs in with this address can take it, once, within{" "}
+                {EMAIL_INVITE_DAYS} days.
+              </HelpHint>
+            </div>
             <div className="mt-2 grid gap-3 sm:grid-cols-[minmax(0,1fr)_170px_auto] sm:items-end">
               <div>
                 <Label htmlFor={emailId} className="mb-1 block">
@@ -283,7 +292,7 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
                   readOnly={making !== null}
                   onChange={(event) => setEmail(event.target.value)}
                   aria-invalid={emailProblems.email ? true : undefined}
-                  aria-describedby={emailProblems.email ? `${emailId}-problem` : `${emailId}-help`}
+                  aria-describedby={emailProblems.email ? `${emailId}-problem` : undefined}
                 />
               </div>
               <div>
@@ -315,10 +324,6 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
               </p>
             )}
             {emailProblems.role && <p className="field-problem mt-1.5">{emailProblems.role}</p>}
-            <p id={`${emailId}-help`} className="help mt-1.5">
-              Only someone who signs in with this address can take it, once, within{" "}
-              {EMAIL_INVITE_DAYS} days.
-            </p>
             {emailProblems.form && <FormProblem message={emailProblems.form} />}
           </form>
 
@@ -353,8 +358,8 @@ export function InvitePanel({ active, options }: { active: boolean; options: Sel
             </div>
             {linkProblems.days && <p className="field-problem mt-1.5">{linkProblems.days}</p>}
             <p className="help mt-1.5">
-              Anyone who has the link can join as a {viewerLabel} until it runs out or is
-              cancelled, so send it only to people you mean to let in.
+              Anyone who has the link can join as a {viewerLabel}, so send it only to people you
+              mean to let in.
             </p>
             {linkProblems.form && <FormProblem message={linkProblems.form} />}
           </form>
